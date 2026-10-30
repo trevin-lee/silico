@@ -13,7 +13,7 @@ use silico_protocol::{LENGTH_TOLERANCE, arc_from_points, distance};
 use super::split::{
     coordinate, line_parameter, next, point_at, project_on_line, reference_at, starts_at,
 };
-use super::{Edited, kinds_of, new_ids, no_member, ordered, own_curve, remove};
+use super::{Edited, NewIds, kinds_of, new_ids, no_member, ordered, own_curve, remove};
 use crate::document::sketch::{
     Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchArc, SketchConstraint,
     SketchLine, SketchPoint, TangentSide,
@@ -60,6 +60,17 @@ pub fn trim(
     curve: &ElementId,
     pick: [f64; 2],
     ids: &[ElementId],
+) -> Result<Trim, Error> {
+    trim_with(sketch, curve, pick, NewIds::Given(ids))
+}
+
+/// [`trim`], its new IDs the request's or drawn ([`NewIds`]): drawn only once every other
+/// refusal has been found, as many as the trim needs.
+pub fn trim_with(
+    sketch: &Sketch,
+    curve: &ElementId,
+    pick: [f64; 2],
+    ids: NewIds<'_>,
 ) -> Result<Trim, Error> {
     let kinds = kinds_of(sketch);
     let kind = match kinds.get(curve) {
@@ -226,14 +237,14 @@ pub fn trim(
         .filter(|j| j.shared.is_none() && j.tangent.is_none())
         .count();
     let needed = new_points + usize::from(layout.two_pieces()) + copies.len() + new_ons;
-    new_ids(
+    let ids = new_ids(
         &kinds,
         ids,
         needed,
         "the trim",
         "its new points along the curve, its new piece, the constraints copied to it, then its new ends' ons",
     )?;
-    let mut fresh = ids.iter().cloned();
+    let mut fresh = ids.into_iter();
     let mut added = Vec::new();
     let mut kinds = kinds;
     let mut edited = sketch.clone();

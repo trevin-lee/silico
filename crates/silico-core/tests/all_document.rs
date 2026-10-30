@@ -86,6 +86,8 @@ mod adversarial_session_timeline;
 mod adversarial_session_undo;
 #[path = "adversarial_sketch_edit_commands.rs"]
 mod adversarial_sketch_edit_commands;
+#[path = "adversarial_sketch_geometry_edits.rs"]
+mod adversarial_sketch_geometry_edits;
 #[path = "adversarial_sketch_read.rs"]
 mod adversarial_sketch_read;
 #[path = "adversarial_timeline.rs"]
@@ -154,6 +156,8 @@ mod session_render;
 mod session_sketch;
 #[path = "session_sketch_edits.rs"]
 mod session_sketch_edits;
+#[path = "session_sketch_geometry_edits.rs"]
+mod session_sketch_geometry_edits;
 #[path = "session_tracing.rs"]
 mod session_tracing;
 #[path = "session_transactions.rs"]

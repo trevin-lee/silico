@@ -48,6 +48,7 @@ fn main() -> std::process::ExitCode {
         Op::Fillet { .. }
         | Op::Translate { .. }
         | Op::Boolean { .. }
+        | Op::Copies { .. }
         | Op::Extrude { .. }
         | Op::Revolve { .. }
         | Op::MakeFaces(_)

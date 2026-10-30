@@ -1299,6 +1299,7 @@ fn an_element_nothing_names_is_unstable_and_stable_filters_on_it() {
             face_edges: face1(vec![vec![]; 5]),
             outer_edges: face1(vec![vec![]; 5]),
             edge_vertices: vec![vec![]; 12],
+            solid_faces: vec![(1..=6).collect()],
         },
     };
     history.validate(2).unwrap();

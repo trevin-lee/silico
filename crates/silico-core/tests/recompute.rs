@@ -433,6 +433,7 @@ fn a_step_only_a_feature_refused_mid_run_needs_is_counted_done_unrun_while_anoth
             face_edges: vec![vec![]; 12],
             outer_edges: vec![vec![]; 12],
             edge_vertices: vec![vec![]; 24],
+            solid_faces: vec![(1..=6).collect(), (7..=12).collect()],
         },
     };
     split.validate(2).unwrap();

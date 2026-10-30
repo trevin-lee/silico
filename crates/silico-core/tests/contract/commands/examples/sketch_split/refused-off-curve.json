@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "the split position is 0.25 mm from line na000001, farther than 1e-7 mm", "feature": "s0000001", "elements": ["na000001"], "elements_total": 1, "parameter": "at.0", "cause": null, "suggestion": "give a position on the curve", "candidates": []}

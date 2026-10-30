@@ -852,6 +852,7 @@ fn the_vertex_two_edges_meet_at_is_named_by_its_own_name_though_unstable() {
         face_edges: vec![vec![]; 6],
         outer_edges: vec![vec![]; 6],
         edge_vertices: vec![vec![]; 12],
+        solid_faces: vec![(1..=6).collect()],
     };
     let cut = History {
         inputs: vec![

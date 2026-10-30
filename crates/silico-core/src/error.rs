@@ -338,6 +338,15 @@ impl Error {
         Self(Box::new(Fields::new(code, message.into())))
     }
 
+    /// Its message said in other words, all else kept: a refusal a caller passes on as its
+    /// own (a sketch edit refused by its solve, "after the split, the sketch's constraints
+    /// conflict: ...").
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.0.message = message.into();
+        self
+    }
+
     /// The feature the error is about, by name.
     #[must_use]
     pub fn with_feature(mut self, feature: impl Into<String>) -> Self {

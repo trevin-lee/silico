@@ -59,8 +59,9 @@ fn serve_initializes_lists_its_tools_makes_a_document_and_ends_with_its_input() 
     );
     let tools = tools["result"]["tools"].as_array().unwrap();
     // M4.1's 26 commands, M5.1's move_feature and timeline, M5.3's drag_begin, drag_move,
-    // and drag_end, and M5.10's sketch, sketch_add, and sketch_remove.
-    assert_eq!(tools.len(), 34);
+    // and drag_end, and M5.10's sketch, sketch_add, sketch_remove, sketch_split, sketch_trim,
+    // sketch_unjoin, and sketch_merge.
+    assert_eq!(tools.len(), 38);
     assert_eq!(tools[1]["name"], "open");
     let opened = ask(
         &mut stdin,

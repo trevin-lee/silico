@@ -4,7 +4,7 @@
 //! and coordinate is worked by hand, on positions whose projections are exact in binary.
 
 use silico_core::Error;
-use silico_core::document::sketch_edit::{Split, split};
+use silico_core::document::sketch_edit::{NewIds, Split, split, split_with};
 use silico_core::document::{
     Direction, Document, ElementId, Form, Operation, Reference, Sketch, TangentSide, read, validate,
 };
@@ -1663,4 +1663,44 @@ fn an_arcs_tangent_at_at_its_far_end_goes_to_the_new_piece_named_second_too() {
         }
     );
     assert_eq!(done.edited.modified, ids(&["a0000000", "k0000002"]));
+}
+
+#[test]
+fn ids_drawn_for_a_split_are_never_the_sketchs_nor_each_others() {
+    // The drawer offers, in turn: p0000001 (the sketch's), x0000001, x0000001 again (drawn
+    // already), x0000002, x0000003. Each it's told is taken it skips: the split's three new
+    // members get x0000001, x0000002, x0000003, in `added`'s order.
+    let before = doc(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 10.0, 0.0)].join(", "),
+        &line("a0000000", "p0000001", "p0000002"),
+        "",
+        "",
+        "",
+    );
+    let mut offered = ["p0000001", "x0000001", "x0000001", "x0000002", "x0000003"]
+        .into_iter()
+        .map(id);
+    let mut refusals = Vec::new();
+    let mut draw = |taken: &dyn Fn(&ElementId) -> bool| loop {
+        let Some(next) = offered.next() else {
+            return Err(Error::new(silico_core::ErrorCode::Internal, "no more IDs"));
+        };
+        if taken(&next) {
+            refusals.push(next);
+        } else {
+            return Ok(next);
+        }
+    };
+    let split = split_with(
+        sketch_of(&before),
+        &id("a0000000"),
+        &[[5.0, 0.0]],
+        NewIds::Drawn(&mut draw),
+    )
+    .unwrap();
+    assert_eq!(
+        split.edited.added,
+        ids(&["x0000001", "x0000002", "x0000003"])
+    );
+    assert_eq!(refusals, ids(&["p0000001", "x0000001"]));
 }

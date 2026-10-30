@@ -63,6 +63,8 @@ mod adversarial_chamfer;
 mod adversarial_chamfer_report;
 #[path = "adversarial_classify.rs"]
 mod adversarial_classify;
+#[path = "adversarial_copies.rs"]
+mod adversarial_copies;
 #[path = "adversarial_describe.rs"]
 mod adversarial_describe;
 #[path = "adversarial_distance.rs"]
@@ -101,6 +103,8 @@ mod bridge;
 mod chamfer;
 #[path = "classify.rs"]
 mod classify;
+#[path = "copies.rs"]
+mod copies;
 #[path = "describe.rs"]
 mod describe;
 #[path = "distance.rs"]

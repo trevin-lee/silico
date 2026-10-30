@@ -41,8 +41,9 @@ pub use session::{
     DragEnded, DragFrame, DragGrab, DragOpen, FieldSet, FrameEnd, MAX_PUBLISHED_READS,
     MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers, Opened, OutlineAnswer,
     Progress, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced,
-    Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, SketchEdited,
-    Status, Stepped, Stopper, TOO_LONG, TextAnswer, TimelineAnswer, TryAgainBy, fault_suggestion,
+    Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, SketchCut,
+    SketchEdited, Status, Stepped, Stopper, TOO_LONG, TextAnswer, TimelineAnswer, TryAgainBy,
+    fault_suggestion,
 };
 pub use session_command::{ReadCommand, RunningCommand, SessionCommand};
 

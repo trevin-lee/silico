@@ -143,7 +143,8 @@ pub use types::{
     DragEnded, DragFrame, DragGrab, DragOpen, FieldSet, FrameEnd, ModelChoice, ModelRead, Moved,
     NewMembers, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
     RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, SketchEdited, Status, Stepped, Stopper, TextAnswer, TimelineAnswer,
+    SessionId, SessionInfo, SketchCut, SketchEdited, Status, Stepped, Stopper, TextAnswer,
+    TimelineAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 use waking::Waker;

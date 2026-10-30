@@ -1490,6 +1490,10 @@
               "sketch",
               "sketch_add",
               "sketch_remove",
+              "sketch_split",
+              "sketch_trim",
+              "sketch_unjoin",
+              "sketch_merge",
               "reload"
             ],
             "type": "string"
@@ -1702,7 +1706,11 @@
               "drag_end",
               "sketch",
               "sketch_add",
-              "sketch_remove"
+              "sketch_remove",
+              "sketch_split",
+              "sketch_trim",
+              "sketch_unjoin",
+              "sketch_merge"
             ],
             "type": "string"
           }
@@ -1961,7 +1969,11 @@
               "drag_end",
               "sketch",
               "sketch_add",
-              "sketch_remove"
+              "sketch_remove",
+              "sketch_split",
+              "sketch_trim",
+              "sketch_unjoin",
+              "sketch_merge"
             ],
             "type": "string"
           }
@@ -20199,6 +20211,1794 @@
         "type": "object"
       },
       "title": "Remove from a sketch"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Split a sketch curve"
+      },
+      "description": "Split one line or arc of a sketch at a position on it (within 1e-7 mm), or a circle at two, into pieces sharing a new point; the piece on the curve's start side keeps its ID, and `references` lists the features whose stored names the curve reached, which now find only that piece. Constraints on the curve follow the pieces (a length becomes a distance of the outer ends). `ids` gives the new members' IDs in `added`'s order, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`sketch_split`'s request: split one curve of a sketch at a position on it.",
+        "properties": {
+          "at": {
+            "description": "Where to split it, in the sketch's coordinates: one position for a line or an arc,\ntwo for a circle. Each within 1e-7 mm of the curve, where the new point goes at its\nprojection, and farther than 1e-7 mm from an end; a point the sketch holds on the\ncurve there is shared instead.",
+            "items": {
+              "items": {
+                "$ref": "#/$defs/Coordinate"
+              },
+              "maxItems": 2,
+              "minItems": 2,
+              "type": "array"
+            },
+            "type": "array"
+          },
+          "curve": {
+            "$ref": "#/$defs/ElementId",
+            "description": "The line, arc, or circle to split, by ID. The piece on its start's side keeps the ID\n(a circle's, the arc counter-clockwise from `at`'s first position to its second), so\na name a feature stores of it then finds that piece: the result's `references` lists\neach such feature."
+          },
+          "ids": {
+            "description": "The new members' IDs, in the order the result's `added` lists them (its new points\nalong the curve from its start, its new piece, then a line's join), each a fresh\nrandom 8-character ID; or null for the core to make them. A list of the wrong length\nis refused, saying how many the split needs. A replay passes back the `added` it\nrecorded.",
+            "items": {
+              "$ref": "#/$defs/ElementId"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "revision": {
+            "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "at",
+          "curve",
+          "ids",
+          "revision",
+          "session",
+          "sketch"
+        ],
+        "title": "SketchSplitRequest",
+        "type": "object"
+      },
+      "name": "sketch_split",
+      "outputSchema": {
+        "$defs": {
+          "CommitResult": {
+            "additionalProperties": false,
+            "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+            "properties": {
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "problems_total": {
+                "description": "How many problems there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refingerprinted": {
+                "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "resolved": {
+                "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "written": {
+                "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "problems",
+              "problems_total",
+              "refingerprinted",
+              "resolved",
+              "written"
+            ],
+            "type": "object"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`sketch_split`'s result.",
+                "properties": {
+                  "added": {
+                    "description": "The members added, in the order the split made them: by kind (points, lines,\ncircles, arcs, constraints), the new points along the curve from its start.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "changed": {
+                    "description": "Whether the document changed: always, for a split it makes.",
+                    "type": "boolean"
+                  },
+                  "commit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/CommitResult"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Outside a transaction, the commit that saved the edit; null inside one."
+                  },
+                  "modified": {
+                    "description": "The members changed in place (the curve, now its start-side piece; a constraint\nmoved to the other piece or retyped under its ID, a `length` a `distance`), by kind,\nthen by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "pieces": {
+                    "description": "The two pieces, the start-side one first, which keeps the curve's ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "references": {
+                    "description": "The features that store a name made from the curve's ID or its points' IDs, in\ntimeline order: each such name now finds only what the start-side piece makes.",
+                    "items": {
+                      "$ref": "#/$defs/FeatureId"
+                    },
+                    "type": "array"
+                  },
+                  "removed": {
+                    "description": "The members removed (an `on` the split point makes implied, a line's `equal`), by\nkind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch, as the request named it."
+                  }
+                },
+                "required": [
+                  "added",
+                  "changed",
+                  "commit",
+                  "modified",
+                  "pieces",
+                  "references",
+                  "removed",
+                  "sketch"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Split a sketch curve"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Trim a sketch curve"
+      },
+      "description": "Trim one curve of a sketch back to the curves that cut it either side of `pick`, removing that part, or the whole curve where nothing cuts it there. A new end shares a cutter's end held on the curve, or gets a new point held on the cutter. `ids` gives the new members' IDs in `added`'s order, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`sketch_trim`'s request: trim one curve of a sketch back to its neighbours where it was\npicked.",
+        "properties": {
+          "curve": {
+            "$ref": "#/$defs/ElementId",
+            "description": "The line, arc, or circle to trim, by ID. Every other curve cuts it, construction\ntoo, where they cross, touch, or one's end lies on it; the first piece left keeps\nthe ID."
+          },
+          "ids": {
+            "description": "The new members' IDs, in the order the result's `added` lists them (its new points\nalong the curve from its start, its new piece, the constraints copied to it, then\nits new ends' ons), each a fresh random 8-character ID; or null for the core to make\nthem. A list of the wrong length is refused, saying how many the trim needs.",
+            "items": {
+              "$ref": "#/$defs/ElementId"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "pick": {
+            "description": "Where the part to trim away was picked, in the sketch's coordinates: the piece\nbetween the cuts either side of its projection onto the curve is removed, or the\ncurve whole where nothing cuts it on a side.",
+            "items": {
+              "$ref": "#/$defs/Coordinate"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "revision": {
+            "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "curve",
+          "ids",
+          "pick",
+          "revision",
+          "session",
+          "sketch"
+        ],
+        "title": "SketchTrimRequest",
+        "type": "object"
+      },
+      "name": "sketch_trim",
+      "outputSchema": {
+        "$defs": {
+          "CommitResult": {
+            "additionalProperties": false,
+            "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+            "properties": {
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "problems_total": {
+                "description": "How many problems there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refingerprinted": {
+                "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "resolved": {
+                "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "written": {
+                "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "problems",
+              "problems_total",
+              "refingerprinted",
+              "resolved",
+              "written"
+            ],
+            "type": "object"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`sketch_trim`'s result.",
+                "properties": {
+                  "added": {
+                    "description": "The members added, in the order the trim made them: by kind (points, lines,\ncircles, arcs, constraints), the new points along the curve from its start.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "changed": {
+                    "description": "Whether the document changed: always, for a trim it makes.",
+                    "type": "boolean"
+                  },
+                  "commit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/CommitResult"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Outside a transaction, the commit that saved the edit; null inside one."
+                  },
+                  "modified": {
+                    "description": "The members changed in place (the curve, now its first piece; a constraint moved to\na piece or retyped under its ID), by kind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "pieces": {
+                    "description": "The pieces left, the first keeping the curve's ID: none when the trim removes the\ncurve whole, one when it shortens it or opens a circle, two when it takes out its\nmiddle.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "references": {
+                    "description": "The features that store a name made from the curve's ID or its points' IDs, in\ntimeline order: each such name now finds only what the first piece makes, or\nnothing, where the curve is removed whole.",
+                    "items": {
+                      "$ref": "#/$defs/FeatureId"
+                    },
+                    "type": "array"
+                  },
+                  "removed": {
+                    "description": "The members removed (the part trimmed away, its points no other curve uses, and the\nconstraints that go with it), by kind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch, as the request named it."
+                  }
+                },
+                "required": [
+                  "added",
+                  "changed",
+                  "commit",
+                  "modified",
+                  "pieces",
+                  "references",
+                  "removed",
+                  "sketch"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Trim a sketch curve"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Unjoin a sketch point"
+      },
+      "description": "Pull one curve off a point it shares with others: it gets a new point at the same place, keeping its own constraints; the others keep the point and its constraints. `check` then warns of the two points as `ends_not_joined` until something moves them. `ids` is the new point's ID, a list of one, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`sketch_unjoin`'s request: pull one curve's use of a shared point apart.",
+        "properties": {
+          "curve": {
+            "$ref": "#/$defs/ElementId",
+            "description": "The curve to detach, by ID: it gets a new point at the same coordinates, with none\nof the point's constraints but every one of its own."
+          },
+          "ids": {
+            "description": "The new point's ID, a list of one fresh random 8-character ID; or null for the core\nto make it.",
+            "items": {
+              "$ref": "#/$defs/ElementId"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "point": {
+            "$ref": "#/$defs/ElementId",
+            "description": "The point two or more curves share, by ID. The curves that stay keep it, and every\nconstraint on it."
+          },
+          "revision": {
+            "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "curve",
+          "ids",
+          "point",
+          "revision",
+          "session",
+          "sketch"
+        ],
+        "title": "SketchUnjoinRequest",
+        "type": "object"
+      },
+      "name": "sketch_unjoin",
+      "outputSchema": {
+        "$defs": {
+          "CommitResult": {
+            "additionalProperties": false,
+            "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+            "properties": {
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "problems_total": {
+                "description": "How many problems there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refingerprinted": {
+                "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "resolved": {
+                "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "written": {
+                "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "problems",
+              "problems_total",
+              "refingerprinted",
+              "resolved",
+              "written"
+            ],
+            "type": "object"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`sketch_unjoin`'s result.",
+                "properties": {
+                  "added": {
+                    "description": "The new point, the detached curve's.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "changed": {
+                    "description": "Whether the document changed: always, for an unjoin it makes.",
+                    "type": "boolean"
+                  },
+                  "commit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/CommitResult"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Outside a transaction, the commit that saved the edit; null inside one."
+                  },
+                  "modified": {
+                    "description": "The members changed in place (the detached curve; a `tangent_on` of it at the point,\nmoved to the new point), by kind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "removed": {
+                    "description": "The members removed (a `tangent_at` of the detached curve at the point), by kind,\nthen by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch, as the request named it."
+                  }
+                },
+                "required": [
+                  "added",
+                  "changed",
+                  "commit",
+                  "modified",
+                  "removed",
+                  "sketch"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Unjoin a sketch point"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Merge sketch points"
+      },
+      "description": "Make two or more points of a sketch one: the first named survives at its own coordinates, and the others' curves and constraints move to it. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): name first the point the constraints hold. `silico fmt --merge-touching` merges every `ends_not_joined` cluster so. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`sketch_merge`'s request: make several points of a sketch one.",
+        "properties": {
+          "points": {
+            "description": "The points to make one, two or more, by ID: the first survives at its own\ncoordinates, the sketch's solve starting from there, and the others' curves and\nconstraints are re-pointed to it.",
+            "items": {
+              "$ref": "#/$defs/ElementId"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "points",
+          "revision",
+          "session",
+          "sketch"
+        ],
+        "title": "SketchMergeRequest",
+        "type": "object"
+      },
+      "name": "sketch_merge",
+      "outputSchema": {
+        "$defs": {
+          "CommitResult": {
+            "additionalProperties": false,
+            "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+            "properties": {
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "problems_total": {
+                "description": "How many problems there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refingerprinted": {
+                "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "resolved": {
+                "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "written": {
+                "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "problems",
+              "problems_total",
+              "refingerprinted",
+              "resolved",
+              "written"
+            ],
+            "type": "object"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`sketch_merge`'s result.",
+                "properties": {
+                  "added": {
+                    "description": "Always empty: a merge makes no member.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "changed": {
+                    "description": "Whether the document changed: always, for a merge it makes.",
+                    "type": "boolean"
+                  },
+                  "commit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/CommitResult"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Outside a transaction, the commit that saved the edit; null inside one."
+                  },
+                  "modified": {
+                    "description": "The members changed in place (the curves and constraints re-pointed to the kept\npoint; an edge `tangent` now a `tangent_at` at the end the curves share, under its\nID), by kind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "removed": {
+                    "description": "The members removed (the points merged into the first, an `on` the merge makes hold\nan end on its own curve), by kind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch, as the request named it."
+                  }
+                },
+                "required": [
+                  "added",
+                  "changed",
+                  "commit",
+                  "modified",
+                  "removed",
+                  "sketch"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Merge sketch points"
     }
   ]
 }

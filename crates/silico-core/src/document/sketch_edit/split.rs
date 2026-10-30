@@ -8,7 +8,7 @@ use std::f64::consts::TAU;
 
 use silico_protocol::{LENGTH_TOLERANCE, arc_from_points, distance, format_number};
 
-use super::{Edited, kinds_of, new_ids, no_member, ordered, own_curve};
+use super::{Edited, NewIds, kinds_of, new_ids, no_member, ordered, own_curve};
 use crate::document::sketch::{
     Coordinate, Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchArc,
     SketchConstraint, SketchLine, SketchPoint, TangentSide,
@@ -50,6 +50,17 @@ pub fn split(
     curve: &ElementId,
     at: &[[f64; 2]],
     ids: &[ElementId],
+) -> Result<Split, Error> {
+    split_with(sketch, curve, at, NewIds::Given(ids))
+}
+
+/// [`split`], its new IDs the request's or drawn ([`NewIds`]): drawn only once every other
+/// refusal has been found, as many as the split needs.
+pub fn split_with(
+    sketch: &Sketch,
+    curve: &ElementId,
+    at: &[[f64; 2]],
+    ids: NewIds<'_>,
 ) -> Result<Split, Error> {
     let kinds = kinds_of(sketch);
     let kind = match kinds.get(curve) {
@@ -182,14 +193,14 @@ pub fn split(
     // The new IDs, in added's order.
     let needed =
         shared.iter().filter(|s| s.is_none()).count() + 1 + usize::from(kind == ElementKind::Line);
-    new_ids(
+    let ids = new_ids(
         &kinds,
         ids,
         needed,
         "the split",
         "its new points along the curve, its new piece, then a line's join",
     )?;
-    let mut fresh = ids.iter().cloned();
+    let mut fresh = ids.into_iter();
     let construction = shape.construction(sketch, curve);
     let mut edited = sketch.clone();
     let mut added = Vec::new();
