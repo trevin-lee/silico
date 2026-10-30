@@ -1779,3 +1779,66 @@ fn an_edit_held_behind_a_refused_save_lands_in_the_open_transaction() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
     assert_eq!(never_waits::waits(), 0);
 }
+
+/// Pin renamed "xPin" and saved, then typed again ("yxPin"), the field having typed both
+/// names.
+fn saved_then_typed(h: &mut AppHarness) {
+    step_until(h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(h, "Pin");
+    type_name(h, "x");
+    step_until(h, "xPin", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "xPin")
+    });
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(h, "saved", |h| {
+        h.state().tabs()[0].saves == 1 && !anywhere(h, "example.silico *")
+    });
+    type_name(h, "y");
+    step_until(h, "yxPin held", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "yxPin")
+    });
+}
+
+#[test]
+fn revert_to_a_name_the_field_typed_before_shows_that_name() {
+    // The name reverted to is one the field typed ("xPin", saved), so only the revert's
+    // reset, not the name, says the field's "yxPin" no longer stands.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    saved_then_typed(&mut h);
+    h.get_by_label("File").click();
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Revert").click();
+    step_until(&mut h, "reverted", |h| {
+        !anywhere(h, "example.silico *") && shows(h, "Timeline", "xPin")
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(name_field(&h).value().as_deref(), Some("xPin"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn reload_to_a_name_the_field_typed_before_shows_that_name() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    saved_then_typed(&mut h);
+    let theirs = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace(r#""name": "Hole""#, r#""name": "Drill""#);
+    assert!(theirs.contains(r#""name": "xPin""#), "{theirs}");
+    std::fs::write(&path, &theirs).unwrap();
+    let said = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, said));
+    h.get_by_role_and_label(Role::Button, "Reload").click();
+    step_until(&mut h, "reloaded", |h| {
+        shows(h, "Timeline", "Drill") && !anywhere(h, "example.silico *")
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(name_field(&h).value().as_deref(), Some("xPin"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
+    assert_eq!(never_waits::waits(), 0);
+}
