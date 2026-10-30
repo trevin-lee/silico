@@ -33,11 +33,11 @@ use crate::command::Gated;
 use crate::command::Revision;
 use crate::command::edit::{self, Candidate, Cut, FeatureIds, SketchChanges};
 use crate::document::sketch_edit::NewIds;
-use crate::document::{Checked, ElementId, FeatureId, Reference};
+use crate::document::{Checked, ElementId, FeatureId, Operation, Reference};
 use crate::drag::DragStop;
 use crate::kernel::Clients;
 use crate::recompute::SketchSolvers;
-use crate::sketch::SketchSolution;
+use crate::sketch::{Diagnosis, SketchSolution, Translation};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -304,7 +304,7 @@ impl<P: Clients + 'static> Sessions<P> {
                             return Ok(made);
                         };
                         let after = solved(&solvers, stop, checked_of(candidate)?, &sketch)?;
-                        if let Err(error) = &after
+                        if let Err(error) = &after.outcome
                             && always_refused(error)
                         {
                             return Err(refusal(&sketch, "merge", error.clone()));
@@ -397,7 +397,7 @@ fn judged<T>(
     let Some(candidate) = &made.1 else {
         return Ok(made);
     };
-    match solved(solvers, stop, checked_of(candidate)?, sketch)? {
+    match solved(solvers, stop, checked_of(candidate)?, sketch)?.outcome {
         Ok(_) => Ok(made),
         Err(error) => Err(refusal(sketch, edit, error)),
     }
@@ -427,32 +427,67 @@ impl Interrupt for SolveStop {
     }
 }
 
+/// A sketch's solve, as an edit's judgment reads it: its outcome, the solution or the solve's
+/// refusal of the sketch, and the diagnosis PlaneGCS gave with it, which every answer the
+/// worker gave has, refused or not (none for a sketch that couldn't be sent).
+struct Judged {
+    outcome: Result<SketchSolution, Error>,
+    diagnosis: Option<Diagnosis>,
+}
+
 /// The sketch `sketch` of `document` solved, as a rebuild solves it (M3.4: from the file's
 /// coordinates, FreeCAD's order), on a solver of `solvers`, given back after: the solution,
 /// or the solve's refusal of the sketch (a conflict, no solution, a result the file can't
-/// hold, or a sketch that can't be sent). A stop by the command `stop` is `cancelled`, the
-/// command's; a solver that couldn't be had, or failed in a way that isn't the sketch's (a
-/// crash, a hang, a reply it can't be trusted for), is that fault, refusing the edit.
+/// hold, or a sketch that can't be sent), and its diagnosis. A stop by the command `stop` is
+/// `cancelled`, the command's; a solver that couldn't be had, or failed in a way that isn't
+/// the sketch's (a crash, a hang, a reply it can't be trusted for), is that fault, refusing
+/// the edit.
 fn solved(
     solvers: &SketchSolvers,
     stop: &Ticket,
     document: &Checked,
     sketch: &FeatureId,
-) -> Result<Result<SketchSolution, Error>, Problems> {
+) -> Result<Judged, Problems> {
     let _span = tracing::info_span!("edit_solve", sketch = sketch.as_str()).entered();
+    let named = |e: Error| e.with_feature(sketch.as_str());
+    let found = document.feature(sketch).map_err(Problems::from)?;
+    let Operation::Sketch(drawn) = &found.operation else {
+        return Err(Problems::from(named(Error::new(
+            ErrorCode::Internal,
+            format!("an edit's sketch {sketch} isn't a sketch"),
+        ))));
+    };
+    let translation = match Translation::new(drawn) {
+        Ok(translation) => translation,
+        Err(refused) => {
+            return Ok(Judged {
+                outcome: Err(named(refused)),
+                diagnosis: None,
+            });
+        }
+    };
     let halt = Arc::new(SolveStop(DragStop::new()));
     stop.interrupt_with(Arc::downgrade(&halt) as Weak<dyn Interrupt>);
     let mut solver = solvers.take().map_err(Problems::from)?;
-    let outcome = halt.0.run(solver.as_mut(), |solver| {
-        crate::sketch::solve(document, sketch, solver)
-    });
+    let answer = halt
+        .0
+        .run(solver.as_mut(), |solver| translation.solve(solver));
     solvers.give_back(solver);
-    match outcome {
+    let answer = match answer {
         Err(error) if error.code() == ErrorCode::Cancelled || stop.cancelled() => {
-            Err(Problems::from(cancelled(stop.name())))
+            return Err(Problems::from(cancelled(stop.name())));
         }
-        Err(error) if error.code().is_kernel_fault() => Err(Problems::from(error)),
-        outcome => Ok(outcome),
+        Err(error) => return Err(Problems::from(named(error))),
+        Ok(_) if stop.cancelled() => return Err(Problems::from(cancelled(stop.name()))),
+        Ok(answer) => answer,
+    };
+    let diagnosis = answer.diagnosed().ok().map(|d| d.diagnosis().clone());
+    match answer.into_outcome() {
+        Err(error) if error.code().is_kernel_fault() => Err(Problems::from(named(error))),
+        outcome => Ok(Judged {
+            outcome: outcome.map_err(named),
+            diagnosis,
+        }),
     }
 }
 
@@ -491,18 +526,15 @@ fn severity(outcome: &Result<SketchSolution, Error>) -> u8 {
     }
 }
 
-/// The constraints `outcome` flags redundant (each all of whose equations repeat others':
-/// FreeCAD's redundant, not its partially redundant), and those in conflict.
-fn flagged(outcome: &Result<SketchSolution, Error>) -> (BTreeSet<String>, BTreeSet<String>) {
-    match outcome {
-        Ok(solution) => (
-            solution.redundant.keys().map(|id| id.to_string()).collect(),
-            BTreeSet::new(),
-        ),
-        Err(error) if error.code() == ErrorCode::OverConstrained => {
-            (BTreeSet::new(), error.elements().iter().cloned().collect())
-        }
-        Err(_) => (BTreeSet::new(), BTreeSet::new()),
+/// The constraints a solve flags redundant (each all of whose equations repeat others':
+/// FreeCAD's redundant, not its partially redundant) and in conflict, from its diagnosis,
+/// which a solve that failed gives too, as FreeCAD keeps its lists whatever the solve
+/// returned; or, for a sketch that couldn't be sent, from its refusal: none.
+fn flagged(judged: &Judged) -> (BTreeSet<String>, BTreeSet<String>) {
+    let ids = |set: &BTreeSet<ElementId>| set.iter().map(ToString::to_string).collect();
+    match &judged.diagnosis {
+        Some(diagnosis) => (ids(&diagnosis.redundant), ids(&diagnosis.conflicting)),
+        None => (BTreeSet::new(), BTreeSet::new()),
     }
 }
 
@@ -510,11 +542,8 @@ fn flagged(outcome: &Result<SketchSolution, Error>) -> (BTreeSet<String>, BTreeS
 /// FreeCAD main's `shouldRejectCoincidentSolve` decides (`cb2780e2fa`), a solve that's not a
 /// clean success and either ranks worse ([`severity`]) or flags a constraint redundant or in
 /// conflict that the solve before didn't, named. None if the merge stands.
-fn worse(
-    before: &Result<SketchSolution, Error>,
-    after: &Result<SketchSolution, Error>,
-) -> Option<Error> {
-    let rank = severity(after);
+fn worse(before: &Judged, after: &Judged) -> Option<Error> {
+    let rank = severity(&after.outcome);
     if rank == 0 {
         return None;
     }
@@ -522,12 +551,12 @@ fn worse(
     let (redundant, conflicting) = flagged(after);
     let new_redundant: Vec<String> = redundant.difference(&was_redundant).cloned().collect();
     let new_conflicting: Vec<String> = conflicting.difference(&was_conflicting).cloned().collect();
-    let worse_rank = rank > severity(before);
+    let worse_rank = rank > severity(&before.outcome);
     if !worse_rank && new_redundant.is_empty() && new_conflicting.is_empty() {
         return None;
     }
     const CAUSE: &str = "a merge whose solve is worse than the one before it is refused, as FreeCAD's Coincident command rolls it back";
-    Some(match after {
+    Some(match &after.outcome {
         Ok(_) => {
             let named = if new_redundant.is_empty() {
                 redundant.into_iter().collect()
@@ -537,7 +566,9 @@ fn worse(
             let n = named.len();
             Error::new(
                 ErrorCode::OverConstrained,
-                format!("after the merge, these {n} constraints repeat others, as the sketch's solve before it found none of them do"),
+                format!(
+                    "after the merge, these {n} constraints repeat others, as the sketch's solve before it found none of them do"
+                ),
             )
             .with_elements(named)
             .with_cause(CAUSE)

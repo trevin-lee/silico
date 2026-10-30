@@ -98,6 +98,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A drag whose frame moves more than points (a circle's radius through an `on`, a reference dimension measured again): a list of what changed built by comparing points alone misses them; and a drag of a point its constraints hold completely, which PlaneGCS answers with Success and nothing moved (FreeCAD's extend reports success too)
 - Rules that take two halves of one answer apart (a solve's diagnosis and its outcome): hand over a pair that disagree (a solution beside a listed conflict) and check every invariant the rules promise still holds
 - A state rule keyed on a constraint's kind (a dimension over-defines, a relation doesn't) fed by a solver whose redundancy contest ignores kinds: a dependent group of a relation and a dimension, in both tag orders, and the solver naming a third constraint more popular than both (a perpendicular and a 90° angle at one corner make PlaneGCS name the corner's vertical)
+- A rule comparing a solve before an edit with one after (FreeCAD's coincident rollback, `shouldRejectCoincidentSolve`): give the before a failed or conflicting solve that still diagnosed a redundancy (FreeCAD keeps `lastRedundant` whatever `solve()` returns); reading redundancies only from a solve that succeeded makes the same one look new after
 
 ## Features
 
@@ -221,6 +222,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A rewrite by rename-over (write beside, then rename): a symlink becomes a regular file and its target is never written, a hard link is split, and a 0444 file is rewritten since rename needs only the directory writable
 - A file edited while a command that rewrites it computes (a slow worker wrapper script: `sleep 3; exec worker "$@"`): the edit saved meanwhile is overwritten without a word
 - Environment failures (a worker that exits at once, or is missing) through each command and `--json`: they must be "couldn't run" (exit 2), not problems with the document, and every file named needs a result line, even one that couldn't be read
+- A command that wraps its steps in a transaction of its own (begin, edits, commit, close): make the commit fail (a read-only file, a file changed on disk) and read every line after it; a close with the transaction still open tells the user of a session and a transaction they never made
 
 ## MCP and agent input
 

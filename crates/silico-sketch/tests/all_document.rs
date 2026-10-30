@@ -33,6 +33,8 @@ mod adversarial_edge_drag;
 mod adversarial_extend;
 #[path = "adversarial_load_path.rs"]
 mod adversarial_load_path;
+#[path = "adversarial_sketch_geometry_edits.rs"]
+mod adversarial_sketch_geometry_edits;
 #[path = "adversarial_sketch_read.rs"]
 mod adversarial_sketch_read;
 #[path = "adversarial_stored_coordinates.rs"]
