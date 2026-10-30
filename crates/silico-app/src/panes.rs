@@ -17,6 +17,30 @@ use silico_core::timeline::{Entry, Health};
 use crate::tab::{Edit, Tab};
 use crate::theme;
 
+/// The property panel's Name field, while it's typed in: the document's feature it's of,
+/// its text, the name the document held when it was last drawn, every name it has typed,
+/// and the tab's count of resets then ([`crate::tab::Tab::resets`]).
+pub struct NameField {
+    session: SessionId,
+    feature: FeatureId,
+    text: String,
+    base: String,
+    typed: Vec<String>,
+    resets: u64,
+}
+
+impl NameField {
+    /// Whether its text still stands for the feature `feature` of session `session`, whose
+    /// name the document holds as `name`: the same feature, no reset since, and the name
+    /// unchanged or one this field typed.
+    fn keeps(&self, session: SessionId, feature: &FeatureId, name: &str, resets: u64) -> bool {
+        self.session == session
+            && &self.feature == feature
+            && self.resets == resets
+            && (self.base == name || self.typed.iter().any(|typed| typed == name))
+    }
+}
+
 /// A pane of the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
@@ -66,7 +90,7 @@ pub struct Panes<'a, P: Clients + 'static> {
     pub sessions: &'a Arc<Sessions<P>>,
     /// The property panel's name field, while it's being typed in: the feature, and the
     /// text.
-    pub name: &'a mut Option<(SessionId, FeatureId, String)>,
+    pub name: &'a mut Option<NameField>,
     /// Whether a command was started: the frame after polls it.
     pub started: &'a mut bool,
 }
@@ -283,12 +307,23 @@ impl<P: Clients + 'static> Panes<'_, P> {
             ui.weak("Select a feature on the timeline or in the browser");
             return;
         };
-        // The text typed, kept for this document's feature alone: two documents may hold
-        // features of one ID.
-        let typed = match self.name.take() {
-            Some((session, id, text)) if session == tab.id && id == entry.id => text,
-            _ => entry.name.clone(),
+        // The text typed, kept for this document's feature alone (two documents may hold
+        // features of one ID), and only while it's ahead of the document: the document's
+        // value again once that moves other than by this field's own edits (an undo, a
+        // revert, a reload, a refusal).
+        let mut field = match self.name.take() {
+            Some(field) if field.keeps(tab.id, &entry.id, &entry.name, tab.resets) => field,
+            _ => NameField {
+                session: tab.id,
+                feature: entry.id.clone(),
+                text: entry.name.clone(),
+                base: entry.name.clone(),
+                typed: Vec::new(),
+                resets: tab.resets,
+            },
         };
+        field.base = entry.name.clone();
+        let typed = field.text.clone();
         let mut text = typed.clone();
         ui.horizontal(|ui| {
             let label = ui.label("Name");
@@ -316,7 +351,11 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 *self.started = true;
             }
         }
-        *self.name = Some((tab.id, entry.id.clone(), text));
+        if text != typed {
+            field.typed.push(text.clone());
+        }
+        field.text = text;
+        *self.name = Some(field);
         ui.label(format!("Type: {}", entry.kind));
         if let Some(said) = tab.said.get(entry.id.as_str()) {
             let colour = match entry.health {

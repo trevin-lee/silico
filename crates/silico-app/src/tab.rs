@@ -80,7 +80,8 @@ enum Under {
 
 /// What waits for the tab's edits to answer before it's sent (#298's review): a save
 /// commits only once every edit made before it is the transaction's, and an undo or a redo
-/// steps only past them, never between an edit and the next it replaced.
+/// steps only past them, never between an edit and the next it replaced. They wait in
+/// order, each sent once the one before has answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pending {
     Save { then_close: bool },
@@ -147,7 +148,13 @@ pub struct Tab {
     checked: Option<(Revision, Option<Revision>)>,
     pub edits: Edits,
     under: Vec<Under>,
-    pending: Option<Pending>,
+    pending: std::collections::VecDeque<Pending>,
+    /// How many saves it has sent: what a test counts.
+    pub saves: u64,
+    /// One more each time the document moved under the person's typing other than by the
+    /// typing (an undo, a redo, or a revert answered; an edit refused): the property
+    /// panel's field then shows the document's value again.
+    pub resets: u64,
     /// A `begin` sent and not yet answered: the next edit begins none.
     beginning: bool,
     pub disk_choice: DiskChoice,
@@ -204,7 +211,9 @@ impl Tab {
             checked: None,
             edits: Edits::default(),
             under: Vec::new(),
-            pending: None,
+            pending: std::collections::VecDeque::new(),
+            saves: 0,
+            resets: 0,
             beginning: false,
             disk_choice: DiskChoice::None,
             selected: None,
@@ -365,6 +374,7 @@ impl Tab {
             } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
+                    self.resets += 1;
                     self.ended(response.result.map(|_| ()), then_close, close);
                     None
                 }
@@ -376,6 +386,7 @@ impl Tab {
             Under::Step(running) => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
+                    self.resets += 1;
                     if let Err(problems) = response.result {
                         self.message = Some(said(&problems));
                     }
@@ -406,6 +417,11 @@ impl Tab {
             Ok(()) => {
                 self.disk_choice = DiskChoice::None;
                 *close |= then_close;
+                if then_close {
+                    // Closing: nothing after it is sent.
+                    self.pending.clear();
+                    self.edits.waiting.clear();
+                }
             }
             Err(problems) => {
                 self.message = Some(said(&problems));
@@ -423,6 +439,7 @@ impl Tab {
                     self.took_session(&response);
                     if let Err(problems) = response.result {
                         self.message = Some(said(&problems));
+                        self.resets += 1;
                     }
                 }
                 Err(running) => {
@@ -431,8 +448,15 @@ impl Tab {
                 }
             }
         }
-        if self.edits.waiting.is_empty() {
+        // Held while a save, a revert, or a step runs, as behind an edit in flight: sent once
+        // it answers, against the revision it gave, in a transaction begun again if it ended
+        // one (#298's review).
+        if self.edits.waiting.is_empty() || self.blocked() {
             return;
+        }
+        if !self.transaction && !self.beginning {
+            self.beginning = true;
+            self.under.push(Under::Begin(sessions.begin(&self.id)));
         }
         let edit = self.edits.waiting.remove(0);
         self.edits.sent += 1;
@@ -445,16 +469,30 @@ impl Tab {
         ));
     }
 
-    /// What waits for the edits sent once they've all answered and none waits.
+    /// Whether a save, a revert, or a step is running: edits and what waits wait for it.
+    fn blocked(&self) -> bool {
+        self.under.iter().any(|under| {
+            matches!(
+                under,
+                Under::Commit { .. } | Under::Rollback { .. } | Under::Step(_)
+            )
+        })
+    }
+
+    /// The first of what waits sent, once every edit has answered, none waits, and nothing
+    /// else it waits behind runs.
     fn send_pending<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if !self.edits.idle() || self.beginning {
+        if !self.edits.idle() || self.beginning || self.blocked() {
             return;
         }
-        match self.pending.take() {
-            Some(Pending::Save { then_close }) => self.under.push(Under::Commit {
-                running: sessions.commit(&self.id),
-                then_close,
-            }),
+        match self.pending.pop_front() {
+            Some(Pending::Save { then_close }) => {
+                self.saves += 1;
+                self.under.push(Under::Commit {
+                    running: sessions.commit(&self.id),
+                    then_close,
+                });
+            }
             Some(Pending::Step { undo }) => {
                 let running = if undo {
                     sessions.undo(&self.id, self.revision, None)
@@ -470,19 +508,43 @@ impl Tab {
     /// `edit` made by the person: inside the tab's transaction, begun first if none is open
     /// (decision 1), and sent now if no edit is in flight, or else waiting (section 3).
     pub fn edit<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, edit: Edit) {
-        if !self.transaction && !self.beginning {
-            self.beginning = true;
-            self.under.push(Under::Begin(sessions.begin(&self.id)));
-        }
         self.edits.push(edit);
         self.take_edit(sessions);
     }
 
     /// Save (`commit`), then, if `then_close`, close: once every edit made before it has
     /// answered, so the commit saves them all.
+    /// One waiting already takes `then_close` too; a save asked for while one runs, and
+    /// none waits, is one too many, and isn't sent unless it's to close.
     pub fn save<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
-        self.pending = Some(Pending::Save { then_close });
+        let waiting = self.pending.iter_mut().find_map(|pending| match pending {
+            Pending::Save { then_close } => Some(then_close),
+            Pending::Step { .. } => None,
+        });
+        let running = self
+            .under
+            .iter()
+            .any(|under| matches!(under, Under::Commit { .. }));
+        match waiting {
+            Some(waiting) => *waiting |= then_close,
+            None if running && !then_close => {}
+            None => self.pending.push_back(Pending::Save { then_close }),
+        }
         self.send_pending(sessions);
+    }
+
+    /// What waits dropped, and, if a save waiting was to close the tab, that said as a
+    /// close refused, so a quit waiting on it stops.
+    fn drop_pending(&mut self) {
+        let closing = self
+            .pending
+            .iter()
+            .any(|pending| matches!(pending, Pending::Save { then_close: true }));
+        self.pending.clear();
+        if closing {
+            self.close_refused = true;
+            self.message = Some("the save that was to close it was dropped".to_owned());
+        }
     }
 
     /// Revert (`rollback`): the file's text, byte for byte; then, if `then_close`, close.
@@ -491,7 +553,7 @@ impl Tab {
     /// it once the transaction has ended (section 4).
     pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
         self.edits.waiting.clear();
-        self.pending = None;
+        self.drop_pending();
         self.under.push(Under::Rollback {
             running: sessions.rollback(&self.id),
             then_close,
@@ -502,14 +564,14 @@ impl Tab {
     /// decision 22); any waiting dropped.
     pub fn close<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         self.edits.waiting.clear();
-        self.pending = None;
+        self.drop_pending();
         self.under.push(Under::Close(sessions.close(&self.id)));
     }
 
     /// Undo or redo one edit of the transaction, once the edits made before it have
     /// answered.
     pub fn step<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, undo: bool) {
-        self.pending = Some(Pending::Step { undo });
+        self.pending.push_back(Pending::Step { undo });
         self.send_pending(sessions);
     }
 

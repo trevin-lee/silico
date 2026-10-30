@@ -12,7 +12,6 @@ use std::time::Duration;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Ui};
 use silico_core::command::{Opened, RebuildState, Running, RunningCommand, SessionId, Sessions};
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
-use silico_core::document::FeatureId;
 use silico_core::kernel::Clients;
 
 use crate::panes::{self, Pane, Panes};
@@ -53,7 +52,7 @@ pub struct App<P: Clients + 'static> {
     path: String,
     tree: egui_tiles::Tree<Pane>,
     /// The property panel's name field, while it's typed in.
-    name: Option<(SessionId, FeatureId, String)>,
+    name: Option<panes::NameField>,
     /// The last refusal not of a tab's (an open's), as said to the person.
     message: Option<String>,
     /// Quitting: once every tab has closed, the window does.
