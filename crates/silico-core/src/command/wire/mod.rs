@@ -31,7 +31,8 @@
 //! so not by itself what MCP's `outputSchema` checks `structuredContent`, the envelope,
 //! against (that is M4.9's to build from these and the envelope's). Each is added with the
 //! command's wire types ([`COMMANDS`]: [`session`], for `version`, `open`, `close`,
-//! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, and `format`;
+//! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, `format`,
+//! `undo`, and `redo`;
 //! [`edits`], for `add_feature`, `set_field`, `remove_feature`, `replace_text`, and
 //! `move_feature`; [`reads`], for `text`, `outline`, `check`, and `timeline`; [`cache`], for `cache_clear`;
 //! [`elements`], for `elements` and `query`; [`schema`]; [`measure`], for `mass_properties`,
@@ -841,6 +842,17 @@ impl<'a> RequestFields<'a> {
     pub fn revision(&mut self, key: &str) -> Option<Revision> {
         self.whole_in(key, 1, u64::MAX)
             .and_then(Revision::from_number)
+    }
+
+    /// A session's revision, or `null`.
+    pub fn nullable_revision(&mut self, key: &str) -> Option<Option<Revision>> {
+        match self.take_nullable(key)? {
+            None => Some(None),
+            Some(node) => self
+                .whole_of(key, node, 1, u64::MAX, " or null")
+                .and_then(Revision::from_number)
+                .map(Some),
+        }
     }
 
     /// A length, in millimetres: read exactly from its digits, and refused as a
@@ -1701,6 +1713,12 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         }
         Command::Timeline => {
             command_schema::<reads::TimelineRequestSchema, reads::TimelineResultSchema>
+        }
+        Command::Undo => {
+            command_schema::<transaction::UndoRequestSchema, transaction::UndoResultSchema>
+        }
+        Command::Redo => {
+            command_schema::<transaction::RedoRequestSchema, transaction::RedoResultSchema>
         }
     }
 }

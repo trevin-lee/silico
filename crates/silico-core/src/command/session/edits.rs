@@ -19,12 +19,23 @@ impl<C: Kernel + 'static> Session<C> {
     /// section 4), starting no rebuild (decision 13), and pushed on the transaction's undo
     /// stack, which drops its redo states (M5.0's A3), as [`Held::hold`] keeps it. Only the
     /// stack's compare and copy of what changed runs under the lock: the features' texts
-    /// were written as the candidate was made. As the command `stop` stops.
+    /// were written as the candidate was made, and whether its document differs from
+    /// `begin`'s is compared before the lock is taken again. As the command `stop` stops.
     pub(super) fn hold(&self, stop: &Ticket, candidate: Candidate) -> Result<Revision, Problems> {
+        let begun = self
+            .held
+            .read()
+            .transaction
+            .as_ref()
+            .map(|open| open.begun.clone());
+        // With the held state's lock let go, so `status` never waits on the compare; nothing
+        // else changes what's held meanwhile, since only the session's thread changes it.
+        let (text, gated) = candidate.parts();
+        let changed = begun.is_none_or(|begun| begun.differs(text, gated));
         let held = self.held.read();
         let next = held.next()?;
         let mut held = held.changing(stop)?;
-        if let Some(pushed) = held.hold(next, candidate)
+        if let Some(pushed) = held.hold(next, candidate, changed)
             && pushed.dropped > 0
         {
             tracing::info!(

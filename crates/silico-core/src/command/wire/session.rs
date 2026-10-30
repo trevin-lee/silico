@@ -13,7 +13,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 #[cfg(doc)]
 use super::COMMANDS;
-use super::transaction::BeginResultSchema;
+use super::transaction::TransactionSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
@@ -166,6 +166,7 @@ impl ToWire for Limits {
             ("export_bytes", Json::whole(self.export_bytes)),
             ("kernel_seconds", Json::whole(self.kernel_seconds)),
             ("sketch_seconds", Json::whole(self.sketch_seconds)),
+            ("undo_bytes", Json::count(self.undo_bytes)),
         ])
     }
 }
@@ -232,7 +233,8 @@ impl ToWire for Rebuild {
 
 impl ToWire for Status {
     /// `status`'s result: the number of features (`null` if the text doesn't read as a
-    /// document), whether the gate took it, the transaction open (`null` if none), the
+    /// document), whether the gate took it, the transaction open and its undo stack's counts
+    /// (`null` if none), the
     /// queued command running (`null` if none), the published reads running, and the
     /// rebuild.
     fn to_wire(&self) -> Json<'_> {
@@ -367,6 +369,11 @@ pub struct LimitsSchema {
     pub kernel_seconds: u64,
     /// How long one sketch's solve may take, in seconds: past it, a `worker_timeout`.
     pub sketch_seconds: u64,
+    /// The most bytes a transaction's undo stack holds, counted as `status`'s
+    /// `transaction.bytes` counts them: not refused, the oldest states after the one the
+    /// transaction began from are dropped and counted (`transaction.dropped`), and undo then
+    /// stops at the oldest kept; `rollback` still returns to the start.
+    pub undo_bytes: u64,
 }
 
 /// `version`'s result.
@@ -488,8 +495,9 @@ pub struct StatusResultSchema {
     pub features: Option<u64>,
     /// Whether the gate took the document.
     pub gated: bool,
-    /// The transaction open, as `begin` answered it: null if none is.
-    pub transaction: Option<BeginResultSchema>,
+    /// The transaction open, its base as `begin` answered it, with its undo and redo: null
+    /// if none is.
+    pub transaction: Option<TransactionSchema>,
     /// The session's queued command running, which `cancel` can stop: null if none is.
     pub running: Option<SessionCommandSchema>,
     /// Each read of the published model running, in the order they started: `cancel` stops

@@ -3870,6 +3870,15 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             .into_iter()
             .map(|(read, start)| (SessionCommand::from(read), start)),
     );
+    // M5.2's, after `timeline`.
+    queued.push((
+        SessionCommand::Undo,
+        Box::new(|| erased(s.undo(at, Revision::OPENED, None))),
+    ));
+    queued.push((
+        SessionCommand::Redo,
+        Box::new(|| erased(s.redo(at, Revision::OPENED, None))),
+    ));
     // `cache_clear`, which reads no model, after `check`, as the design lists it.
     let after_check = queued
         .iter()

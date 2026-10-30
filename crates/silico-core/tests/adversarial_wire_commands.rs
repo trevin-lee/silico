@@ -1034,7 +1034,9 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "read_logs",
                 "export",
                 "move_feature",
-                "timeline"
+                "timeline",
+                "undo",
+                "redo"
             ]
         );
         assert!(printable(error.message()), "{of:?}: {:?}", error.message());

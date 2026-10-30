@@ -14,8 +14,8 @@ use std::sync::Arc;
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{
-    Begun, CheckModel, Closed, ModelChoice, ReadCommand, Response, Revision, SessionId, Sessions,
-    TextAnswer,
+    CheckModel, Closed, ModelChoice, ReadCommand, Response, Revision, SessionId, Sessions,
+    TextAnswer, Transaction,
 };
 use silico_core::document::json::Node;
 use silico_core::fake::FakeKernel;
@@ -578,13 +578,20 @@ fn status_gives_the_open_transactions_base() {
     let status = |f: &Fixture| f.sessions.status(&f.id).result.unwrap().transaction;
     assert_eq!(status(&f), None);
     answer(f.sessions.begin(&f.id)).result.unwrap();
+    // Nothing to undo or redo yet; the stack holds the file's bytes as `begin` saw them.
     assert_eq!(
         status(&f),
-        Some(Begun {
-            base: Revision::OPENED
+        Some(Transaction {
+            base: Revision::OPENED,
+            changed: false,
+            undo: 0,
+            redo: 0,
+            dropped: 0,
+            bytes: BLOCK.len(),
         })
     );
-    // An edit moves the session on, not the transaction's base.
+    // An edit moves the session on, not the transaction's base: one edit to undo, and the
+    // stack still counts only `begin`'s bytes (the session's own state isn't counted).
     f.set_length(Revision::OPENED, "41").result.unwrap();
     assert_eq!(
         f.sessions.status(&f.id).session.unwrap().revision.number(),
@@ -592,8 +599,13 @@ fn status_gives_the_open_transactions_base() {
     );
     assert_eq!(
         status(&f),
-        Some(Begun {
-            base: Revision::OPENED
+        Some(Transaction {
+            base: Revision::OPENED,
+            changed: true,
+            undo: 1,
+            redo: 0,
+            dropped: 0,
+            bytes: BLOCK.len(),
         })
     );
     answer(f.sessions.rollback(&f.id)).result.unwrap();

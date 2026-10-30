@@ -526,6 +526,62 @@ fn past_its_bound_the_stack_drops_its_oldest_states_counted_by_hand_and_undo_sto
 }
 
 #[test]
+fn status_counts_the_bounds_drop_by_hand_as_the_stack_holds_it() {
+    // As the bound test above: 800 holds three states beside `begin`'s file. `status` gives
+    // each count as the stack keeps it (the design's section 6), and the wire writes them.
+    let f = opened_bounded(BOX, 800);
+    let status = |f: &Fixture| f.sessions.status(&f.id).result.unwrap().transaction;
+    f.begin();
+    let counts = |changed: bool, undo: usize, redo: usize, dropped: usize, bytes: usize| {
+        Some(Transaction {
+            base: Revision(1),
+            changed,
+            undo,
+            redo,
+            dropped,
+            bytes,
+        })
+    };
+    assert_eq!(status(&f), counts(false, 0, 0, 0, BOX_BYTES));
+    let mut seen = Vec::new();
+    for length in 41..=46 {
+        f.set("k7f2qx3m", "length", &length.to_string());
+        seen.push(status(&f));
+    }
+    assert_eq!(
+        seen,
+        [
+            counts(true, 1, 0, 0, BOX_BYTES),
+            counts(true, 2, 0, 0, BOX_BYTES + BOX_STATE),
+            counts(true, 3, 0, 0, BOX_BYTES + 2 * BOX_STATE),
+            counts(true, 4, 0, 0, BOX_BYTES + 3 * BOX_STATE),
+            // The first drop: 41's state, so neither it nor `begin`'s is in reach: 2.
+            counts(true, 3, 0, 2, BOX_BYTES + 3 * BOX_STATE),
+            // One more: 42's.
+            counts(true, 3, 0, 3, BOX_BYTES + 3 * BOX_STATE),
+        ]
+    );
+    // An undo moves a state from undo to redo; what's dropped stays dropped.
+    assert_eq!(stepped(f.undo(None)), (step(6, 2, 1, 0), Revision(8)));
+    assert_eq!(status(&f), counts(true, 2, 1, 3, BOX_BYTES + 3 * BOX_STATE));
+    let text = crate::command::wire::write(
+        &crate::command::wire::ToWire::to_wire(&status(&f).unwrap()),
+        crate::command::wire::Layout::OneLine,
+    )
+    .unwrap();
+    assert_eq!(
+        text,
+        format!(
+            r#"{{"base": 1, "changed": true, "undo": 2, "redo": 1, "dropped": 3, "bytes": {}}}"#,
+            212 + 3 * 174
+        )
+    );
+    // A rollback ends it: none.
+    f.sessions.rollback(&f.id).wait().result.unwrap();
+    assert_eq!(status(&f), None);
+}
+
+#[test]
 fn a_session_bounds_its_undo_stack_by_the_designs_256_mib() {
     let f = opened(BOX);
     assert_eq!(f.session().undo_bytes, 256 * 1024 * 1024);
@@ -714,8 +770,12 @@ fn an_undo_is_named_by_status_and_stopped_by_cancel_before_it_changes_anything()
     assert_eq!(stepped(f.undo(None)), (step(1, 0, 1, 0), Revision(3)));
     assert_eq!(SessionCommand::Undo.as_str(), "undo");
     assert_eq!(SessionCommand::Redo.as_str(), "redo");
-    assert_eq!(SessionCommand::Undo.command(), None);
-    assert_eq!(SessionCommand::Check.command(), Some(Command::Check));
+    // Every transport names them (M5.2's wire): commands of the wire's, by their own names.
+    assert_eq!(SessionCommand::Undo.command(), Command::Undo);
+    assert_eq!(SessionCommand::Redo.command(), Command::Redo);
+    assert_eq!(SessionCommand::Check.command(), Command::Check);
+    assert!(SessionCommand::ALL.contains(&SessionCommand::Undo));
+    assert!(SessionCommand::ALL.contains(&SessionCommand::Redo));
 }
 
 #[test]

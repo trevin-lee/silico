@@ -43,6 +43,11 @@ pub(super) struct Candidate {
 }
 
 impl Candidate {
+    /// Its text, and the gate's finding of it.
+    pub(super) fn parts(&self) -> (&[u8], &Gated) {
+        (&self.text, &self.gated)
+    }
+
     /// Its text, the gate's finding of it, and its features' canonical texts.
     pub(super) fn into_parts(self) -> (Arc<Vec<u8>>, Arc<Gated>, Prepared) {
         (self.text, self.gated, self.prepared)

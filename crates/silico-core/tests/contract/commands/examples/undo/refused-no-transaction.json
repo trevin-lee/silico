@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "no transaction is open in session s1", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": "undo steps through a transaction's edits: outside one, each edit was saved as it was made", "suggestion": "edit inside a transaction to undo; a saved file's history is git's", "candidates": []}

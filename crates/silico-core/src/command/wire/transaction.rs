@@ -1,16 +1,21 @@
-//! `begin`, `commit`, `rollback`, and `format`'s wire types (docs/design/m4.1-command-api.md,
-//! sections 4 and 7): their requests, read strictly ([`SessionRequest`], which `begin`,
-//! `commit`, and `rollback` each take, and [`FormatRequest`]); their results, written field
-//! for field ([`ToWire`]: a commit's too, which every edit made outside a transaction holds);
+//! `begin`, `commit`, `rollback`, `format`, `undo`, and `redo`'s wire types
+//! (docs/design/m4.1-command-api.md, sections 4 and 7; docs/design/m5.0-app.md, section 7,
+//! for `undo` and `redo`): their requests, read strictly ([`SessionRequest`], which `begin`,
+//! `commit`, and `rollback` each take, [`FormatRequest`], and [`StepRequest`], which `undo`
+//! and `redo` each take); their results, written field for field ([`ToWire`]: a commit's too,
+//! which every edit made outside a transaction holds, and the transaction `status` gives);
 //! and the mirrors their snapshots, `commands/begin.json`, `commit.json`, `rollback.json`,
-//! and `format.json`, are generated from. What the values mean (a transaction open or not, a
-//! feature the document hasn't) the session says.
+//! `format.json`, `undo.json`, and `redo.json`, are generated from. What the values mean (a
+//! transaction open or not, a feature the document hasn't, a revision the undo stack
+//! doesn't hold) the session says.
 
 use schemars::JsonSchema;
 
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape};
 use crate::command::session::SESSION_ID_PATTERN;
-use crate::command::{Begun, Committed, Problems, Reformatted, RolledBack, SessionId};
+use crate::command::{
+    Begun, Committed, Problems, Reformatted, Revision, RolledBack, SessionId, Stepped, Transaction,
+};
 use crate::document::json::Node;
 use crate::document::{FeatureId, PROBLEMS_LISTED};
 
@@ -35,6 +40,42 @@ impl ToWire for SessionRequest {
     /// The request as a client writes it.
     fn to_wire(&self) -> Json<'_> {
         Json::object([("session", self.session.to_wire())])
+    }
+}
+
+/// An `undo` or `redo` request: the session, the revision the step was made against, and
+/// the revision whose state to restore (`None` for one step).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepRequest {
+    pub session: SessionId,
+    pub revision: Revision,
+    pub to: Option<Revision>,
+}
+
+impl StepRequest {
+    /// The request `node` holds, or every reason its shape is refused.
+    pub fn read(node: &Node) -> Result<Self, Problems> {
+        RequestFields::read(node, |f| {
+            let session = f.session();
+            let revision = f.revision("revision");
+            let to = f.nullable_revision("to");
+            Some(StepRequest {
+                session: session?,
+                revision: revision?,
+                to: to?,
+            })
+        })
+    }
+}
+
+impl ToWire for StepRequest {
+    /// The request as a client writes it, every field in the shape's order.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("session", self.session.to_wire()),
+            ("revision", self.revision.to_wire()),
+            ("to", Json::or_null(self.to.as_ref(), ToWire::to_wire)),
+        ])
     }
 }
 
@@ -81,6 +122,35 @@ impl ToWire for Begun {
     /// `begin`'s result: the revision the transaction began from.
     fn to_wire(&self) -> Json<'_> {
         Json::object([("base", self.base.to_wire())])
+    }
+}
+
+impl ToWire for Transaction {
+    /// The transaction open, as `status` gives it: the revision it began from, whether its
+    /// document differs from that one's, the edits left to undo and to redo, those the
+    /// stack's bound put out of undo's reach, and what the stack holds.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("base", self.base.to_wire()),
+            ("changed", Json::bool(self.changed)),
+            ("undo", Json::count(self.undo)),
+            ("redo", Json::count(self.redo)),
+            ("dropped", Json::count(self.dropped)),
+            ("bytes", Json::count(self.bytes)),
+        ])
+    }
+}
+
+impl ToWire for Stepped {
+    /// `undo`'s and `redo`'s result: the revision whose state is restored, the edits left to
+    /// undo and to redo, and how many more the step put out of undo's reach.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("restored", self.restored.to_wire()),
+            ("undo", Json::count(self.undo)),
+            ("redo", Json::count(self.redo)),
+            ("dropped", Json::count(self.dropped)),
+        ])
     }
 }
 
@@ -144,6 +214,31 @@ pub struct BeginResultSchema {
     /// The revision the transaction began from: the one `rollback` returns to.
     #[schemars(range(min = 1))]
     pub base: u64,
+}
+
+/// The transaction open in a session, as `status` gives it.
+#[derive(JsonSchema)]
+#[schemars(rename = "Transaction", transform = wire_shape)]
+pub struct TransactionSchema {
+    /// The revision the transaction began from: the one `rollback` returns to.
+    #[schemars(range(min = 1))]
+    pub base: u64,
+    /// Whether its document differs from the one it began from, as a commit compares them:
+    /// unsaved changes. False after undoing back to that one, or editing back to it, and a
+    /// commit then writes nothing.
+    pub changed: bool,
+    /// How many of its edits `undo` can undo, one step each.
+    pub undo: u64,
+    /// How many `redo` can redo: the edits undone, until an edit drops them.
+    pub redo: u64,
+    /// How many of its edits undo can no longer reach, the undo stack's bound (`version`'s
+    /// `undo_bytes`) having dropped their states: 2 at the first drop (the edits before and
+    /// after the state dropped), one more at each after. `rollback` still returns to the
+    /// state it began from.
+    pub dropped: u64,
+    /// What its undo stack holds, in bytes, as its bound counts it: the file's bytes as it
+    /// began, and each earlier state's texts beyond what they share.
+    pub bytes: u64,
 }
 
 /// `commit`'s request: end the session's transaction, saving its document.
@@ -238,4 +333,82 @@ pub struct FormatResultSchema {
     pub problems: Vec<ErrorSchema>,
     /// How many problems there are, listed or not.
     pub problems_total: u64,
+}
+
+/// `undo`'s request: inside a transaction, the state before its last edit not undone
+/// restored, or with `to`, the state at that revision, undoing every edit after it; at a new
+/// revision, whose state equals that one, byte for byte. Never touches the file.
+#[derive(JsonSchema)]
+#[schemars(rename = "UndoRequest", transform = wire_shape)]
+pub struct UndoRequestSchema {
+    /// The session's ID, as `open` gave it.
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
+    pub session: String,
+    /// The session's revision the undo was made against: one against another is refused
+    /// as a `conflict`.
+    #[schemars(range(min = 1))]
+    pub revision: u64,
+    /// Null to undo one edit; or an earlier revision whose state the undo stack holds, to
+    /// undo every edit after it, as a dialog's Cancel undoes to the revision it opened at.
+    /// The session's own revision, a later one, or one the stack doesn't hold (from before
+    /// the transaction, past its bound, or dropped by an edit after an undo) is refused,
+    /// the revisions it holds its candidates.
+    #[schemars(range(min = 1))]
+    pub to: Option<u64>,
+}
+
+/// `undo`'s result. The session is at a new revision, whose state equals the restored one's.
+#[derive(JsonSchema)]
+#[schemars(rename = "UndoResult", transform = wire_shape)]
+pub struct UndoResultSchema {
+    /// The revision whose state is restored.
+    #[schemars(range(min = 1))]
+    pub restored: u64,
+    /// How many edits are left to undo.
+    pub undo: u64,
+    /// How many edits are left to redo.
+    pub redo: u64,
+    /// How many more of the transaction's edits this step put out of undo's reach, the
+    /// stack's bound having dropped its oldest states (a state restored can hold more than
+    /// the one it replaces): 2 at the first drop, one more at each after, as `status`'s
+    /// `transaction.dropped` counts them; 0 if it dropped none.
+    pub dropped: u64,
+}
+
+/// `redo`'s request: inside a transaction, the state after its last edit undone restored,
+/// or with `to`, the state at that revision, redoing every edit up to it; at a new revision,
+/// whose state equals that one, byte for byte. Never touches the file.
+#[derive(JsonSchema)]
+#[schemars(rename = "RedoRequest", transform = wire_shape)]
+pub struct RedoRequestSchema {
+    /// The session's ID, as `open` gave it.
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
+    pub session: String,
+    /// The session's revision the redo was made against: one against another is refused
+    /// as a `conflict`.
+    #[schemars(range(min = 1))]
+    pub revision: u64,
+    /// Null to redo one edit; or a later revision whose state the undo stack holds, to redo
+    /// every edit up to it. The session's own revision, an earlier one, or one the stack
+    /// doesn't hold (an edit after an undo drops what was undone) is refused, the revisions
+    /// it holds its candidates.
+    #[schemars(range(min = 1))]
+    pub to: Option<u64>,
+}
+
+/// `redo`'s result. The session is at a new revision, whose state equals the restored one's.
+#[derive(JsonSchema)]
+#[schemars(rename = "RedoResult", transform = wire_shape)]
+pub struct RedoResultSchema {
+    /// The revision whose state is restored.
+    #[schemars(range(min = 1))]
+    pub restored: u64,
+    /// How many edits are left to undo.
+    pub undo: u64,
+    /// How many edits are left to redo.
+    pub redo: u64,
+    /// How many more of the transaction's edits this step put out of undo's reach, the
+    /// stack's bound having dropped its oldest states: 2 at the first drop, one more at each
+    /// after, as `status`'s `transaction.dropped` counts them; 0 if it dropped none.
+    pub dropped: u64,
 }

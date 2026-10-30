@@ -89,6 +89,8 @@ fn the_commands_are_one_list_in_one_order() {
             "export",
             "move_feature",
             "timeline",
+            "undo",
+            "redo",
         ]
     );
     for command in Command::ALL {
@@ -1402,4 +1404,115 @@ fn the_timeline_commands_answer_by_name_as_their_typed_methods_do() {
         silico_core::document::read(text["result"]["text"].as_str().unwrap().as_bytes()).unwrap();
     let ids: Vec<&str> = document.features.iter().map(|f| f.id.as_str()).collect();
     assert_eq!(ids, ["b0000002", "k7f2qx3m", "f0000001"]);
+}
+
+#[test]
+fn undo_and_redo_answer_by_name_as_their_typed_methods_do() {
+    // The box, its length set twice in a transaction, then undone, redone, undone `to` the
+    // revision `begin` came at, and a refusal of each, by name and by its typed method, on
+    // sessions of their own; each answer the same, byte for byte, `status` among them.
+    let by_name = fixture();
+    let typed = fixture();
+    for f in [&by_name, &typed] {
+        f.file("part.silico", BOX);
+        answer(f.sessions.open("part.silico", false))
+            .result
+            .unwrap();
+    }
+    let t = &typed.sessions;
+    let s1 = s("s1");
+    let at = |n: u64| Revision::from_number(n).unwrap();
+    let length = |r: u64, value: &str| {
+        (
+            "set_field",
+            format!(
+                r#"{{"session": "s1", "revision": {r}, "feature": "k7f2qx3m", "field": "length", "value": {value}}}"#
+            ),
+        )
+    };
+    let step = |r: u64, to: &str| format!(r#"{{"session": "s1", "revision": {r}, "to": {to}}}"#);
+    let set = |r: u64, value: &str| {
+        as_written(&answer(t.set_field(
+            &s1,
+            at(r),
+            id("k7f2qx3m"),
+            "length".to_owned(),
+            silico_core::document::json::read(value.as_bytes()).unwrap(),
+        )))
+    };
+    let pairs: Vec<(&str, String, Answered)> = vec![
+        (
+            "begin",
+            r#"{"session": "s1"}"#.to_owned(),
+            as_written(&answer(t.begin(&s1))),
+        ),
+        {
+            let (name, args) = length(1, "41");
+            (name, args, set(1, "41"))
+        },
+        {
+            let (name, args) = length(2, "42");
+            (name, args, set(2, "42"))
+        },
+        (
+            "undo",
+            step(3, "null"),
+            as_written(&answer(t.undo(&s1, at(3), None))),
+        ),
+        (
+            "redo",
+            step(4, "null"),
+            as_written(&answer(t.redo(&s1, at(4), None))),
+        ),
+        (
+            "undo",
+            step(5, "1"),
+            as_written(&answer(t.undo(&s1, at(5), Some(at(1))))),
+        ),
+        (
+            "status",
+            r#"{"session": "s1"}"#.to_owned(),
+            as_written(&t.status(&s1)),
+        ),
+        // Refused: nothing left to undo, and a redo `to` the session's own revision.
+        (
+            "undo",
+            step(6, "null"),
+            as_written(&answer(t.undo(&s1, at(6), None))),
+        ),
+        (
+            "redo",
+            step(6, "6"),
+            as_written(&answer(t.redo(&s1, at(6), Some(at(6))))),
+        ),
+    ];
+    let ran: Vec<bool> = pairs.iter().map(|(_, _, answer)| answer.ok).collect();
+    assert_eq!(
+        ran,
+        [true, true, true, true, true, true, true, false, false]
+    );
+    for (name, arguments, expected) in pairs {
+        assert_eq!(
+            by_name.call(name, &arguments),
+            expected,
+            "{name} {arguments}"
+        );
+    }
+    // What each did, by hand: 42 undone (41's state, revision 2's), redone (3's), then both
+    // undone to `begin`'s, at revision 6, with both to redo and the document unchanged.
+    let undone = envelope(&by_name.call("undo", &step(6, "null")));
+    assert_eq!(
+        undone["errors"][0]["message"],
+        "nothing to undo in session s1's transaction"
+    );
+    let status = envelope(&by_name.call("status", r#"{"session": "s1"}"#));
+    assert_eq!(status["session"]["revision"], 6);
+    let file = BOX.len();
+    assert_eq!(
+        status["result"]["transaction"],
+        serde_json::json!({"base": 1, "changed": false, "undo": 0, "redo": 2, "dropped": 0,
+            // `begin`'s file, and the two states held for redo, each its list (24 and 8) and
+            // its chunk (16, 4 spaces of indent and the block's 122 characters).
+            "bytes": file + 2 * (24 + 8 + 16 + 4 + 122)})
+    );
 }

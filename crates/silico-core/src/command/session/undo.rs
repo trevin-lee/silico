@@ -60,7 +60,7 @@ impl<C: Kernel + 'static> Session<C> {
             to = to.map(Revision::number)
         )
         .entered();
-        let (next, restored) = {
+        let (next, restored, begun) = {
             let held = self.held.read();
             if held.transaction.is_none() {
                 return Err(Problems::from(no_transaction(self.id, way)));
@@ -75,9 +75,13 @@ impl<C: Kernel + 'static> Session<C> {
             }
             let next = held.next()?;
             let mut held = held.changing(stop)?;
-            let Some(Open { undo: stack, .. }) = held.transaction.as_mut() else {
+            let Some(Open {
+                undo: stack, begun, ..
+            }) = held.transaction.as_mut()
+            else {
                 return Err(Problems::from(no_transaction(self.id, way)));
             };
+            let begun = begun.clone();
             let stepped = match way {
                 Way::Undo => stack.undo(to, next),
                 Way::Redo => stack.redo(to, next),
@@ -85,13 +89,19 @@ impl<C: Kernel + 'static> Session<C> {
             (
                 next,
                 stepped.map_err(|refusal| refused(self.id, way, refusal))?,
+                begun,
             )
         };
-        // Gated with the held state's lock let go, so `status` never waits on it; nothing
-        // else changes what's held meanwhile, since only the session's thread changes it.
+        // Gated, and compared with `begin`'s document, with the held state's lock let go, so
+        // `status` never waits on either; nothing else changes what's held meanwhile, since
+        // only the session's thread changes it.
         let gated = Arc::new(Gated::of(&restored.text));
+        let changed = begun.differs(&restored.text, &gated);
         // Settled above, so never refused.
         let mut held = self.held.read().changing(stop)?;
+        if let Some(open) = held.transaction.as_mut() {
+            open.changed = changed;
+        }
         let carried = Arc::clone(&held.carried);
         held.change(next, restored.text, gated, carried);
         drop(held);

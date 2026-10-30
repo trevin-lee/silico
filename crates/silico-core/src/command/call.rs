@@ -37,7 +37,7 @@ use super::wire::reads::{CheckRequest, TextRequest, TimelineRequest};
 use super::wire::render::RenderRequest;
 use super::wire::schema::SchemaRequest;
 use super::wire::session::{CancelRequest, OpenRequest, VersionRequest};
-use super::wire::transaction::{FormatRequest, SessionRequest};
+use super::wire::transaction::{FormatRequest, SessionRequest, StepRequest};
 use super::wire::{self, Json, Layout, ToWire};
 use super::{Problems, Progress, Response, Running, Sessions, Stopper, VERSION};
 use crate::document::json::{self, Cause, MAX_INPUT_LEN, Node, SyntaxError};
@@ -76,12 +76,14 @@ pub enum Command {
     Export,
     MoveFeature,
     Timeline,
+    Undo,
+    Redo,
 }
 
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
     /// 7).
-    pub const ALL: [Command; 28] = [
+    pub const ALL: [Command; 30] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -110,6 +112,8 @@ impl Command {
         Command::Export,
         Command::MoveFeature,
         Command::Timeline,
+        Command::Undo,
+        Command::Redo,
     ];
 
     /// The command's name, as requests and tools give it.
@@ -143,6 +147,8 @@ impl Command {
             Command::Export => "export",
             Command::MoveFeature => "move_feature",
             Command::Timeline => "timeline",
+            Command::Undo => "undo",
+            Command::Redo => "redo",
         }
     }
 
@@ -187,7 +193,9 @@ impl Command {
             | Command::Render
             | Command::Export
             | Command::MoveFeature
-            | Command::Timeline => false,
+            | Command::Timeline
+            | Command::Undo
+            | Command::Redo => false,
         }
     }
 }
@@ -566,6 +574,12 @@ impl<P: Clients + 'static> Sessions<P> {
             }),
             Command::Timeline => typed(TimelineRequest::read(request), |r| {
                 self.timeline(&r.session, r.model)
+            }),
+            Command::Undo => typed(StepRequest::read(request), |r| {
+                self.undo(&r.session, r.revision, r.to)
+            }),
+            Command::Redo => typed(StepRequest::read(request), |r| {
+                self.redo(&r.session, r.revision, r.to)
             }),
         }
     }

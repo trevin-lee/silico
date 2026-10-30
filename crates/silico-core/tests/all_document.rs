@@ -158,6 +158,8 @@ mod wire_commands;
 mod wire_session_commands;
 #[path = "wire_session_reads.rs"]
 mod wire_session_reads;
+#[path = "wire_undo_commands.rs"]
+mod wire_undo_commands;
 
 /// Every file in tests/ is built: this crate lists its test programs (`autotests = false`),
 /// so a new file must be added as a module of one, or as one, or it would never run.
