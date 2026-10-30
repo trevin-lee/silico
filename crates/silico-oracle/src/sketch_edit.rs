@@ -1259,15 +1259,18 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         // the note doesn't pin FreeCAD's outcome as another than a refusal.
         (Some(ours), Some(theirs_why)) => match rule(p) {
             Some(r) => {
-                let raised = matches!(theirs, Some(Theirs::Failed(_)));
+                // FreeCAD's edit raising with the text the note gives it.
+                let raised = |text: &str| {
+                    matches!(theirs, Some(Theirs::Failed(why)) if why.contains(text))
+                };
                 let agrees = match r.pinned() {
                     None => true,
                     // A merge FreeCAD's solve fails, which its Coincident command rolls back:
                     // one of the two outcomes the note gives it (:278).
                     Some(Pinned::SolvesOrRollsBack) => rolled_back(p, theirs),
-                    Some(Pinned::Raises) => raised,
+                    Some(Pinned::Raises(text)) => raised(text),
                     // 1.1.3's vertex Delete raises only on an end with no coincidence (:234).
-                    Some(Pinned::UnjoinsVertex) => raised && !vertex_shared(p),
+                    Some(Pinned::UnjoinsVertex) => raised(VERTEX_DELETE_RAISES) && !vertex_shared(p),
                     Some(Pinned::Crashes | Pinned::Edits) => false,
                 };
                 match r.pinned() {
@@ -1428,7 +1431,7 @@ impl Rule {
             Rule::TrimPoint => vec![330],
             Rule::TrimAtCentre => vec![222],
             Rule::NoPieceTakes(_) => vec![217, 472],
-            Rule::UnjoinUnshared => vec![239],
+            Rule::UnjoinUnshared => vec![234, 239],
             Rule::MergeNamedTwice => vec![272],
             Rule::MergeCollapses => vec![273],
             Rule::MergeNamesTwice(_) => vec![274],
@@ -1442,14 +1445,15 @@ impl Rule {
     /// What the note says FreeCAD 1.1.3 does with an edit Silico refuses by this rule, where
     /// it pins that: then nothing else of FreeCAD's agrees, a refusal included. None where
     /// any refusal of FreeCAD's is the rule's counterpart (a merge its Coincident command
-    /// refuses, :51-53; an unshared point's unjoin, which 1.1.3 raises and main ignores,
-    /// :234), or the note gives FreeCAD both a refusal and an edit (a split at or beyond an
-    /// end raises, one near it makes a tiny piece, :117-118; a merge the gate refuses, whose
-    /// coincidences solve or are rolled back, :276).
+    /// refuses, :51-53), or the note gives FreeCAD both a refusal and an edit (a split at or
+    /// beyond an end raises, one near it makes a tiny piece, :117-118; a merge the gate
+    /// refuses, :276, whose coincidences FreeCAD's solve takes to a curve with length, or its
+    /// Coincident command rolls back as a worse solve, :53).
     pub fn pinned(&self) -> Option<Pinned> {
         match self {
             Rule::SplitNotCurve => Some(Pinned::Crashes),
-            Rule::TrimAtCentre => Some(Pinned::Raises),
+            Rule::TrimAtCentre => Some(Pinned::Raises("Unknown C++ exception")),
+            Rule::UnjoinUnshared => Some(Pinned::Raises(VERTEX_DELETE_RAISES)),
             Rule::SplitCircleAtOne
             | Rule::SplitOffCurve(_)
             | Rule::SplitEdgeTangent(_)
@@ -1462,14 +1466,19 @@ impl Rule {
     }
 }
 
+/// What FreeCAD 1.1.3's vertex Delete raises on an end with no coincidence (:234).
+pub const VERTEX_DELETE_RAISES: &str = "Not able to delete a constraint on point";
+
 /// FreeCAD 1.1.3's outcome as the note pins it for a [`Rule`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pinned {
     /// It crashes, by a segmentation fault (and the harness sees that, never a hang or a
     /// refusal).
     Crashes,
-    /// Its edit raises (a trim picked at a round's centre, :222).
-    Raises,
+    /// Its edit raises, with this text, as the note gives it (a trim picked at a round's
+    /// centre, "Unknown C++ exception", :222; an unjoin of an end with no coincidence,
+    /// [`VERTEX_DELETE_RAISES`], :234).
+    Raises(&'static str),
     /// It makes the edit, and its result is what the note says, which the excusal checks.
     Edits,
     /// It makes the merge, and its solve either succeeds, which the excusal checks, or fails
@@ -1486,7 +1495,7 @@ impl Pinned {
     fn does(self) -> &'static str {
         match self {
             Pinned::Crashes => "crash, by a segmentation fault",
-            Pinned::Raises => "raise",
+            Pinned::Raises(_) => "raise as the note gives it",
             Pinned::UnjoinsVertex => {
                 "unjoin the vertex its Delete is on, deleting no curve, or raise only where the end has no coincidence"
             }
@@ -1808,17 +1817,6 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
                 )
             })
         }
-        Rule::UnjoinUnshared => {
-            let sent = match &p.plan {
-                Plan::Run { job, .. } => job.constraints.len(),
-                Plan::Refuses(_) => return None,
-            };
-            (fc.constraints.len() == sent).then(|| {
-                format!(
-                    "unjoining a point no other curve shares: Silico refuses it ({NOTE}:239), FreeCAD's vertex Delete does nothing (main; 1.1.3 raises, :234)"
-                )
-            })
-        }
         Rule::MergeGated(curve) => {
             // FreeCAD's coincidences solve to a curve longer than 1e-7 mm, where Silico's
             // placement collapses it.
@@ -1841,10 +1839,7 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
         ))
         }
         Rule::RemovePointInUse => {
-            let Edit::Remove { members } = &p.edit else {
-                return None;
-            };
-            members.iter().any(|m| vertex_unjoined(p, fc, m)).then(|| format!(
+            vertex_unjoined(p, fc).then(|| format!(
                 "removing a point curves use: Silico refuses it ({NOTE}:109, decision 7), FreeCAD's Delete on the vertex unjoins that curve's end and deletes no curve (:105-107)"
             ))
         }
@@ -1955,28 +1950,45 @@ fn as_drawn(p: &Prepared, shape: &Shape, fc: &FreecadEdited, g: &FcGeometry) -> 
     g.kind == m.kind && places && radius && g.construction == m.construction
 }
 
-/// Whether the point a removal names is shared in FreeCAD's model: its first place, the
-/// vertex the Delete is on, joined to another (a coincidence there).
-fn vertex_shared(p: &Prepared) -> bool {
-    let Edit::Remove { members } = &p.edit else {
-        return false;
+/// A place of FreeCAD's model: a geometry index and a position.
+type Place = (i32, i32);
+
+/// The vertex FreeCAD's Delete is on (the job's geometry and position), and every other place
+/// of FreeCAD's model joined to it before the edit.
+fn vertex_deleted(p: &Prepared) -> Option<(Place, Vec<Place>)> {
+    let Plan::Run { job, .. } = &p.plan else {
+        return None;
     };
-    members
-        .iter()
-        .any(|m| p.model.places.get(m).is_some_and(|places| places.len() > 1))
+    let FreecadEdit::VertexDelete { geometry, position } = job.edit else {
+        return None;
+    };
+    let vertex = (geometry, position);
+    let others = p
+        .model
+        .places
+        .values()
+        .find(|places| places.contains(&vertex))
+        .map(|places| places.iter().copied().filter(|q| *q != vertex).collect())
+        .unwrap_or_default();
+    Some((vertex, others))
 }
 
-/// Whether FreeCAD's Delete on the vertex of `point` (its first place) did what the note says
-/// (:105-107, :231): every geometry kept where the case drew it, nothing made, and that end
-/// joined to none of the point's other places any more.
-fn vertex_unjoined(p: &Prepared, fc: &FreecadEdited, point: &str) -> bool {
-    let Some(&(g, pos)) = p.model.places.get(point).and_then(|ps| ps.first()) else {
+/// Whether the vertex FreeCAD's Delete is on is shared in its model: joined to another place
+/// (a coincidence there).
+fn vertex_shared(p: &Prepared) -> bool {
+    vertex_deleted(p).is_some_and(|(_, others)| !others.is_empty())
+}
+
+/// Whether FreeCAD's Delete on the job's vertex did what the note says (:105-107, :231):
+/// every geometry kept where the case drew it, nothing made, and that end joined to none of
+/// the places it was joined to any more.
+fn vertex_unjoined(p: &Prepared, fc: &FreecadEdited) -> bool {
+    let Some(((g, pos), others)) = vertex_deleted(p) else {
         return false;
     };
     let shape = Shape::of(&p.sketch);
     let ids = |list: &[FcGeometry]| list.iter().map(|g| g.id).collect::<Vec<_>>();
     let joins = Joins::of(fc);
-    let others = p.model.places.get(point).map_or(&[][..], |ps| &ps[1..]);
     ids(&fc.edited) == fc.ids_before
         && fc.edited.iter().all(|e| as_drawn(p, &shape, fc, e))
         && others.iter().all(|other| !joins.joined((g, pos), *other))

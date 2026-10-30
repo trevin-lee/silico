@@ -78,6 +78,17 @@ fn agrees(v: &Verdict) {
 #[test]
 fn every_case_agrees_with_freecad_modulo_the_note_or_is_a_reported_difference() {
     let all = sketch_edit::load(Path::new(CASES)).unwrap();
+    // Every case runs FreeCAD (#251's condition b): no plan is FreeCAD's refusal before it.
+    let mut worker = SketchWorker::start().unwrap();
+    for case in &all {
+        let p = prepare(case, &mut worker).unwrap();
+        assert!(
+            matches!(p.plan, Plan::Run { .. }),
+            "{}: {:?}",
+            p.name,
+            p.plan
+        );
+    }
     let verdicts = sketch_edit::run(&all).unwrap();
     assert_eq!(verdicts.len(), all.len());
     let (differ, shown, stale) = without_known(verdicts, KNOWN);
@@ -1652,9 +1663,72 @@ fn removing_a_point_curves_use_is_excused_only_where_freecads_vertex_delete_unjo
     }
     // Its Delete raising on a shared point, where 1.1.3 raises only on an end with no
     // coincidence (:234): a difference.
+    let raises = Theirs::Failed(sketch_edit::VERTEX_DELETE_RAISES.to_owned());
+    for theirs in [&raises, &Theirs::Failed("refused by hand".to_owned())] {
+        let v = verdict(p, Some(theirs));
+        assert!(!v.refused && v.excused.is_empty(), "{v:?}");
+        assert_eq!(v.how.len(), 1, "{v}");
+    }
+    // The job's vertex (the centre, on c0000008) moved to a0000004's start, p0000002, which
+    // no other curve uses: an end with no coincidence in FreeCAD's model (the centre still
+    // shared), where 1.1.3 raises, as the note gives it (:234), and both refuse; raising
+    // otherwise is a difference.
+    let Plan::Run { job, modulo } = &p.plan else {
+        panic!("FreeCAD isn't run");
+    };
+    assert!(
+        matches!(job.edit, FreecadEdit::VertexDelete { position: 3, .. }),
+        "{:?}",
+        job.edit
+    );
+    let geometry = i32::try_from(
+        p.model
+            .elements
+            .iter()
+            .position(|e| e == "a0000004")
+            .unwrap(),
+    )
+    .unwrap();
+    let mut moved = job.clone();
+    moved.edit = FreecadEdit::VertexDelete {
+        geometry,
+        position: 1,
+    };
+    let unshared = Prepared {
+        plan: Plan::Run {
+            job: moved,
+            modulo: modulo.clone(),
+        },
+        ..p.clone()
+    };
+    let v = verdict(&unshared, Some(&raises));
+    agrees(&v);
+    assert!(v.refused, "{v:?}");
+    let v = verdict(
+        &unshared,
+        Some(&Theirs::Failed("refused by hand".to_owned())),
+    );
+    assert!(!v.refused && v.how.len() == 1, "{v:?}");
+}
+
+#[test]
+fn an_unjoin_of_an_unshared_point_agrees_only_where_freecad_raises_as_the_note_says() {
+    // chain's p0000001, n0000005's start, no other curve's: 1.1.3's vertex Delete raises
+    // "Not able to delete a constraint on point" (:234).
+    let (_, prepared, theirs) = both(&["unjoin_unshared_point"]);
+    let p = &prepared[0];
+    assert_eq!(rule(p), Some(Rule::UnjoinUnshared));
+    assert!(
+        matches!(&theirs[0], Some(Theirs::Failed(why)) if why.contains(sketch_edit::VERTEX_DELETE_RAISES)),
+        "{:?}",
+        theirs[0]
+    );
+    let v = verdict(p, theirs[0].as_ref());
+    agrees(&v);
+    assert!(v.refused, "{v:?}");
+    // Raising otherwise: a difference.
     let v = verdict(p, Some(&Theirs::Failed("refused by hand".to_owned())));
-    assert!(!v.refused && v.excused.is_empty(), "{v:?}");
-    assert_eq!(v.how.len(), 1, "{v}");
+    assert!(!v.refused && v.how.len() == 1, "{v:?}");
 }
 
 #[test]
@@ -1692,6 +1766,9 @@ fn a_trim_at_a_rounds_centre_agrees_only_where_freecad_raises() {
     let v = verdict(p, theirs[0].as_ref());
     agrees(&v);
     assert!(v.refused, "{v:?}");
+    // Its edit raising otherwise: a difference.
+    let v = verdict(p, Some(&Theirs::Failed("refused by hand".to_owned())));
+    assert!(!v.refused && v.how.len() == 1, "{v:?}");
     // FreeCAD refusing it otherwise (its plan, never run): a difference.
     let planned = Prepared {
         plan: Plan::Refuses("refused by hand".to_owned()),

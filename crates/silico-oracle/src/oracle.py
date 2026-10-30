@@ -536,10 +536,18 @@ class EditRefused(Exception):
     """FreeCAD's own edit call raised: its refusal. Anything else that raises is the harness's."""
 
 
+# What a call raises when the harness calls it wrongly (a wrong argument, a missing name), never
+# FreeCAD refusing the edit: these surface as the harness's own failure.
+HARNESS_ERRORS = (TypeError, AttributeError, NameError, KeyError, AssertionError, ImportError)
+
+
 def edit_call(call, *args):
-    """Calls FreeCAD's edit `call`; what it raises is FreeCAD's refusal."""
+    """Calls FreeCAD's edit `call`; what it raises is FreeCAD's refusal, but for an error of
+    the harness's own (HARNESS_ERRORS), which is the harness's failure."""
     try:
         return call(*args)
+    except HARNESS_ERRORS:
+        raise
     except Exception as e:
         raise EditRefused(str(e) or type(e).__name__)
 

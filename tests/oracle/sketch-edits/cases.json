@@ -862,7 +862,7 @@
   },
   {
     "name": "unjoin_unshared_point",
-    "note": "Unjoining a point no other curve shares: Silico refuses it; FreeCAD's vertex Delete does nothing (bc4d463cdf).",
+    "note": "Unjoining a point no other curve shares: Silico refuses it; FreeCAD 1.1.3's vertex Delete raises \"Not able to delete a constraint on point\" (:234), where main's does nothing (bc4d463cdf).",
     "sketch": "chain",
     "edit": {
       "unjoin": {
