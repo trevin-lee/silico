@@ -185,6 +185,7 @@ fn by_hand() -> Vec<History> {
                 face_edges: vec![vec![1, 2], vec![2, 1, 3]],
                 outer_edges: vec![vec![1, 2], vec![1, 2, 3]],
                 edge_vertices: vec![vec![], vec![], vec![]],
+                solid_faces: vec![vec![1, 2]],
             },
         },
         // Six edges, each generated from one of the input's faces, all ending Vertex1.
@@ -202,6 +203,7 @@ fn by_hand() -> Vec<History> {
                 face_edges: vec![],
                 outer_edges: vec![],
                 edge_vertices: vec![vec![1]; 6],
+                solid_faces: vec![vec![]],
             },
         },
         // Two edges joining the same two kept vertices: named from below alike, `~1`; and
@@ -227,6 +229,7 @@ fn by_hand() -> Vec<History> {
                 face_edges: vec![vec![]],
                 outer_edges: vec![vec![]],
                 edge_vertices: vec![vec![1, 2], vec![2, 1]],
+                solid_faces: vec![vec![1]],
             },
         },
     ]

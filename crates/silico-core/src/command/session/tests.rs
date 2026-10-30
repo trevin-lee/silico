@@ -3796,6 +3796,10 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
                 ReadCommand::Timeline,
                 Box::new(move || erased(s.timeline(at, model))),
             ),
+            (
+                ReadCommand::Sketch,
+                Box::new(move || erased(s.sketch(at, model, id("k7f2qx3m")))),
+            ),
         ]
     };
     let mut queued: Vec<(SessionCommand, Start<'_>)> = vec![
@@ -3837,10 +3841,11 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         (SessionCommand::Text, Box::new(|| erased(s.text(at, None)))),
         (SessionCommand::Outline, Box::new(|| erased(s.outline(at)))),
     ];
-    // The reads M4.1 lists; `timeline`, M5.0's, after `export` and `move_feature`.
+    // The reads M4.1 lists; `timeline` and `sketch`, M5.0's, after `export` and
+    // `move_feature`.
     let (m4_reads, m5_reads): (Vec<_>, Vec<_>) = reads(ModelChoice::Current)
         .into_iter()
-        .partition(|(read, _)| *read != ReadCommand::Timeline);
+        .partition(|(read, _)| !matches!(read, ReadCommand::Timeline | ReadCommand::Sketch));
     queued.extend(
         m4_reads
             .into_iter()
@@ -3873,6 +3878,29 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             .into_iter()
             .map(|(read, start)| (SessionCommand::from(read), start)),
     );
+    // M5.0's sketch edits, after `timeline`, as the design lists them.
+    let empty = || crate::document::json::read(b"[]").unwrap();
+    queued.push((
+        SessionCommand::SketchAdd,
+        Box::new(move || {
+            erased(s.sketch_add(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                crate::command::NewMembers {
+                    points: empty(),
+                    lines: empty(),
+                    circles: empty(),
+                    arcs: empty(),
+                    constraints: empty(),
+                },
+            ))
+        }),
+    ));
+    queued.push((
+        SessionCommand::SketchRemove,
+        Box::new(move || erased(s.sketch_remove(at, Revision::OPENED, id("k7f2qx3m"), vec![]))),
+    ));
     // M5.2's, after `timeline`.
     queued.push((
         SessionCommand::Undo,

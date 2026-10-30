@@ -268,6 +268,7 @@ fn faces_history(
             face_edges: regions.clone(),
             outer_edges: regions,
             edge_vertices,
+            solid_faces: Vec::new(),
         },
     }
 }

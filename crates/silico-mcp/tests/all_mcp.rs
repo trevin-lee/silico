@@ -6,6 +6,8 @@
 mod client;
 
 mod adversarial_server;
+mod adversarial_sketch_edits;
+mod adversarial_sketch_read;
 mod adversarial_timeline_commands;
 mod adversarial_undo_commands;
 mod calls;
@@ -15,5 +17,6 @@ mod exact;
 mod handshake;
 mod hostile;
 mod lines;
+mod sketch_edits;
 mod timeline_commands;
 mod undo_commands;

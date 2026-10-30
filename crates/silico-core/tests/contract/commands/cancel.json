@@ -26,6 +26,9 @@
           "export",
           "move_feature",
           "timeline",
+          "sketch",
+          "sketch_add",
+          "sketch_remove",
           "undo",
           "redo"
         ],
@@ -80,6 +83,9 @@
           "export",
           "move_feature",
           "timeline",
+          "sketch",
+          "sketch_add",
+          "sketch_remove",
           "undo",
           "redo"
         ],

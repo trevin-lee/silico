@@ -159,7 +159,8 @@ fn effect(command: Command) -> Effect {
         | Command::MassProperties
         | Command::Distance
         | Command::Angle
-        | Command::Timeline => Effect::Reads,
+        | Command::Timeline
+        | Command::Sketch => Effect::Reads,
         // An edit outside a transaction saves at once; commit and format save the file.
         Command::Commit
         | Command::Format
@@ -167,7 +168,9 @@ fn effect(command: Command) -> Effect {
         | Command::SetField
         | Command::RemoveFeature
         | Command::ReplaceText
-        | Command::MoveFeature => Effect::Changes { destructive: true },
+        | Command::MoveFeature
+        | Command::SketchAdd
+        | Command::SketchRemove => Effect::Changes { destructive: true },
         // `replace: true` writes over a file at `to`, or at `path`.
         Command::Render | Command::Export => Effect::Changes { destructive: true },
         // A new document is only made where nothing is; the rest change what the server
@@ -263,6 +266,14 @@ fn words(command: Command) -> (&'static str, String) {
             "Replace the text",
             "Replace the document's whole text, read and checked as `silico check` reads a file; the text replaced is returned. Give the revision the edit was made against.",
         ),
+        Command::SketchAdd => (
+            "Add to a sketch",
+            "Add points, lines, circles, arcs, and constraints to one sketch, each as the document writes it with a fresh random 8-character ID, never one the sketch holds or a removal freed (a name a feature stores of the removed member would find the new one); a new curve may end at a point the sketch holds, joining it there. The batch is checked whole, each problem at its member's path (`circles.cb000003.radius`). A constraint that over-defines the sketch is added all the same: `check` then reports the conflict, and the sketch's features fail until it's mended (make the dimension driven with `set_field`, or remove it). Give the revision the edit was made against.",
+        ),
+        Command::SketchRemove => (
+            "Remove from a sketch",
+            "Remove members of one sketch by ID: a constraint; a curve, with its points no other curve uses and every constraint on what goes; a point only if no curve uses it. A sketch left under or over defined, or unsolvable, isn't refused: `check` reports it. Give the revision the edit was made against.",
+        ),
         Command::Text => (
             "Document text",
             "The document's text as the session holds it, or one feature's.",
@@ -311,6 +322,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Export",
             "Write the current model's bodies, or the features named, to `path` in the workspace: as a printable 3MF, each solid meshed at the tolerance (FreeCAD's default is 0.1 mm), or as STEP, exact, with `tolerance: null`. A file already at `path` is replaced only with `replace: true`.",
         ),
+        Command::Sketch => (
+            "Read a sketch",
+            "A sketch as the model solved it: its plane in 3D, its state (under, fully, or over defined, no solution, or invalid) and degrees of freedom, each point, curve, and constraint as the document writes it, at its solved values, with its own state, the regions its profile makes or why it makes none, and why it wasn't solved.",
+        ),
         Command::Render => (
             "Render",
             "A PNG of the model's bodies from a named view or a camera, with elements highlighted, returned as an image beside the result, and written to `to` in the workspace if given.",
@@ -323,11 +338,14 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::SetField
         | Command::RemoveFeature
         | Command::ReplaceText
-        | Command::MoveFeature => &[IN_A_TRANSACTION, READ_CURRENT],
+        | Command::MoveFeature
+        | Command::SketchAdd
+        | Command::SketchRemove => &[IN_A_TRANSACTION, READ_CURRENT],
         Command::Check
         | Command::MassProperties
         | Command::Render
         | Command::Timeline
+        | Command::Sketch
         | Command::Undo
         | Command::Redo => &[READ_CURRENT],
         Command::Elements | Command::Query | Command::Distance | Command::Angle => {

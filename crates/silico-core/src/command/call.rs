@@ -37,6 +37,8 @@ use super::wire::reads::{CheckRequest, TextRequest, TimelineRequest};
 use super::wire::render::RenderRequest;
 use super::wire::schema::SchemaRequest;
 use super::wire::session::{CancelRequest, OpenRequest, VersionRequest};
+use super::wire::sketch::SketchRequest;
+use super::wire::sketch_edits::{SketchAddRequest, SketchRemoveRequest};
 use super::wire::transaction::{FormatRequest, SessionRequest, StepRequest};
 use super::wire::{self, Json, Layout, ToWire};
 use super::{Problems, Progress, Response, Running, Sessions, Stopper, VERSION};
@@ -76,6 +78,9 @@ pub enum Command {
     Export,
     MoveFeature,
     Timeline,
+    Sketch,
+    SketchAdd,
+    SketchRemove,
     Undo,
     Redo,
 }
@@ -83,7 +88,7 @@ pub enum Command {
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
     /// 7).
-    pub const ALL: [Command; 30] = [
+    pub const ALL: [Command; 33] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -112,6 +117,9 @@ impl Command {
         Command::Export,
         Command::MoveFeature,
         Command::Timeline,
+        Command::Sketch,
+        Command::SketchAdd,
+        Command::SketchRemove,
         Command::Undo,
         Command::Redo,
     ];
@@ -147,6 +155,9 @@ impl Command {
             Command::Export => "export",
             Command::MoveFeature => "move_feature",
             Command::Timeline => "timeline",
+            Command::Sketch => "sketch",
+            Command::SketchAdd => "sketch_add",
+            Command::SketchRemove => "sketch_remove",
             Command::Undo => "undo",
             Command::Redo => "redo",
         }
@@ -194,6 +205,9 @@ impl Command {
             | Command::Export
             | Command::MoveFeature
             | Command::Timeline
+            | Command::Sketch
+            | Command::SketchAdd
+            | Command::SketchRemove
             | Command::Undo
             | Command::Redo => false,
         }
@@ -574,6 +588,15 @@ impl<P: Clients + 'static> Sessions<P> {
             }),
             Command::Timeline => typed(TimelineRequest::read(request), |r| {
                 self.timeline(&r.session, r.model)
+            }),
+            Command::Sketch => typed(SketchRequest::read(request), |r| {
+                self.sketch(&r.session, r.model, r.sketch)
+            }),
+            Command::SketchAdd => typed(SketchAddRequest::read(request), |r| {
+                self.sketch_add(&r.session, r.revision, r.sketch, r.members)
+            }),
+            Command::SketchRemove => typed(SketchRemoveRequest::read(request), |r| {
+                self.sketch_remove(&r.session, r.revision, r.sketch, r.members)
             }),
             Command::Undo => typed(StepRequest::read(request), |r| {
                 self.undo(&r.session, r.revision, r.to)

@@ -39,7 +39,7 @@ fn length(v: [f64; 3]) -> f64 {
 }
 
 /// That `point` is a place: each coordinate finite and at most [`MAX_LENGTH`] from 0.
-fn check_point(
+pub(crate) fn check_point(
     parameter: &'static str,
     what: &str,
     point: [f64; 3],
@@ -58,7 +58,7 @@ fn check_point(
 
 /// That `direction` is a unit vector, to rounding: the core sends the sketch plane's axes
 /// and lines' directions normalized, and the worker sweeps along exactly what it's sent.
-fn check_unit(
+pub(crate) fn check_unit(
     parameter: &'static str,
     what: &str,
     direction: [f64; 3],

@@ -21,14 +21,16 @@
 
 use std::sync::Arc;
 
-use super::{Gated, Problems};
+use super::{Gated, NewMembers, Problems};
 use crate::document::chain::{self, Rewired};
 use crate::document::json::{self, Member, Node, Plain, Value};
 use crate::document::undo::Prepared;
 use crate::document::{
     self, Checked, Document, ElementId, ElementKind, Feature, FeatureId, FeatureVersion,
-    ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Sketch,
+    ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Reference, Sketch,
+    sketch_edit,
 };
+use crate::references::CANDIDATES;
 use crate::{Error, ErrorCode};
 
 /// The state an accepted edit gives a session's document: its canonical text, that text as
@@ -895,6 +897,190 @@ pub(super) fn move_feature(
     }
     let candidate = candidate(&moved.document, "feature")?;
     Ok((moved, Some(candidate)))
+}
+
+/// What a sketch edit changed, by member ID, as [`sketch_edit::Edited`] lists them.
+pub(super) struct SketchChanges {
+    pub(super) added: Vec<ElementId>,
+    pub(super) modified: Vec<ElementId>,
+    pub(super) removed: Vec<ElementId>,
+}
+
+/// `members` added to the sketch `id` of `document` (docs/design/m5.0-app.md, section 7,
+/// `sketch_add`): what it added, and the state it leads to, none for an empty batch, which
+/// changes nothing. Each list is read by the document's own reader as the sketch's lists are
+/// read (its members named by their ID paths, `circles.cb000003.radius`), then added by
+/// [`sketch_edit::add`], and the document with the sketch so edited put through the gate.
+/// Never solved: once the gate takes it, it's applied, whatever its solve then finds (SD7).
+/// Refused for a feature that isn't a sketch, naming `sketch`, and with every problem the
+/// reader, the add, or the gate finds, each naming the sketch.
+pub(super) fn sketch_add(
+    document: &Document,
+    id: &FeatureId,
+    members: NewMembers,
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let (index, feature, sketch) = sketch_of(document, id)?;
+    let members = read_members(index, feature, members)?;
+    let edited = sketch_edit::add(sketch, &members).map_err(|refused| of_sketch(id, refused))?;
+    sketch_edited(document, index, sketch, edited)
+}
+
+/// `members` removed from the sketch `id` of `document` (docs/design/m5.0-app.md, section
+/// 7, `sketch_remove`; sketch-edit decision 7): what it removed and changed, and the state it
+/// leads to, none for an empty list, which removes nothing. Removed by
+/// [`sketch_edit::remove`] (a curve with the points only it used, every constraint naming
+/// what goes, a point only if no curve uses it, duplicates taken once), and the document
+/// put through the gate. Never solved, as [`sketch_add`] isn't (SD7). Refused for a feature
+/// that isn't a sketch, naming `sketch`; and with every problem the removal finds (a member
+/// the sketch hasn't, a fixed reference, `origin`, `x_axis`, or `y_axis`, a point a curve
+/// still uses), all in one answer, each once at its first place, or the gate finds, each
+/// naming the sketch.
+pub(super) fn sketch_remove(
+    document: &Document,
+    id: &FeatureId,
+    members: &[Reference],
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let (index, _, sketch) = sketch_of(document, id)?;
+    let edited = sketch_edit::remove(sketch, members).map_err(|refused| of_sketch(id, refused))?;
+    sketch_edited(document, index, sketch, edited)
+}
+
+/// The sketch `id` of `document`, with its place in the timeline and its feature; or the
+/// refusal, naming `sketch`, of a feature the document hasn't or one that isn't a sketch,
+/// the document's first sketches the candidates (as the `sketch` read refuses them).
+fn sketch_of<'a>(
+    document: &'a Document,
+    id: &FeatureId,
+) -> Result<(usize, &'a Feature, &'a Sketch), Problems> {
+    let refused = |message: String| {
+        let sketches: Vec<String> = document
+            .features
+            .iter()
+            .filter(|f| matches!(f.operation, Operation::Sketch(_)))
+            .take(CANDIDATES)
+            .map(|f| f.id.as_str().to_owned())
+            .collect();
+        let suggestion = if sketches.is_empty() {
+            "the document has no sketch: add one, and edit it by its ID"
+        } else {
+            "name a sketch of the document, by its ID"
+        };
+        Problems::from(
+            Error::new(ErrorCode::InvalidInput, message)
+                .with_parameter("sketch")
+                .with_suggestion(suggestion)
+                .with_candidates(sketches),
+        )
+    };
+    let Some((index, feature)) = document
+        .features
+        .iter()
+        .enumerate()
+        .find(|(_, f)| f.id == *id)
+    else {
+        return Err(refused(format!("the document has no feature {id}")));
+    };
+    match &feature.operation {
+        Operation::Sketch(sketch) => Ok((index, feature, sketch)),
+        other => Err(refused(format!(
+            "{id} is a {}, not a sketch",
+            other.type_name()
+        ))),
+    }
+}
+
+/// `members`' lists, read by the document's reader as `feature`'s (a sketch at `index`)
+/// own lists are: its canonical tree with each list replaced by the request's, read whole,
+/// so a member is refused in the words and at the path (`circles.cb000003.radius`) a file's
+/// would be, naming the sketch.
+fn read_members(
+    index: usize,
+    feature: &Feature,
+    members: NewMembers,
+) -> Result<sketch_edit::Members, Problems> {
+    let (_, mut tree) = feature_tree(feature)?;
+    let NewMembers {
+        points,
+        lines,
+        circles,
+        arcs,
+        constraints,
+    } = members;
+    let given = [points, lines, circles, arcs, constraints];
+    if let Value::Object(fields) = &mut tree.value {
+        for (kind, mut list) in ElementKind::ALL.into_iter().zip(given) {
+            json::unplace(&mut list);
+            match fields.iter_mut().find(|m| m.key == kind.list()) {
+                Some(field) => field.value = list,
+                None => fields.push(Member {
+                    key: kind.list().to_owned(),
+                    at: json::At::UNPLACED,
+                    value: list,
+                }),
+            }
+        }
+    }
+    let read = document::read_feature(index, tree)?;
+    match read.operation {
+        Operation::Sketch(sketch) => Ok(sketch_edit::Members {
+            points: sketch.points,
+            lines: sketch.lines,
+            circles: sketch.circles,
+            arcs: sketch.arcs,
+            constraints: sketch.constraints,
+        }),
+        _ => Err(Problems::from(
+            Error::new(
+                ErrorCode::Internal,
+                "a sketch's lists, read as its own, didn't read as a sketch",
+            )
+            .with_suggestion(crate::worker::SILICO_BUG),
+        )),
+    }
+}
+
+/// A sketch edit's refusal, each problem naming the sketch `id`, all counted.
+fn of_sketch(id: &FeatureId, refused: sketch_edit::Refused) -> Problems {
+    let listed = u64::try_from(refused.errors.len()).unwrap_or(u64::MAX);
+    let errors = refused
+        .errors
+        .into_iter()
+        .map(|e| match e.feature() {
+            Some(_) => e,
+            None => e.with_feature(id.as_str()),
+        })
+        .collect();
+    Problems::with_unlisted(errors, refused.total.saturating_sub(listed))
+}
+
+/// What `edited`, the sketch at `index` of `document` (`sketch`, before) edited, changed,
+/// and the state the document with it leads to: none if the sketch is the same, through the
+/// gate otherwise.
+fn sketch_edited(
+    document: &Document,
+    index: usize,
+    sketch: &Sketch,
+    edited: sketch_edit::Edited,
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let sketch_edit::Edited {
+        sketch: after,
+        added,
+        modified,
+        removed,
+    } = edited;
+    let changes = SketchChanges {
+        added,
+        modified,
+        removed,
+    };
+    if after == *sketch {
+        return Ok((changes, None));
+    }
+    let mut edited = document.clone();
+    if let Some(feature) = edited.features.get_mut(index) {
+        feature.operation = Operation::Sketch(after);
+    }
+    Ok((changes, Some(candidate(&edited, "sketch")?)))
 }
 
 /// The document's text replaced by `text` (the design's `replace_text`), put through the

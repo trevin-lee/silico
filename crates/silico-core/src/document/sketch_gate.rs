@@ -210,18 +210,13 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         if seen >= PROBLEMS_LISTED {
             return Vec::new();
         }
-        let mut near: Vec<(usize, &ElementId)> = by_id
-            .iter()
-            .filter(|&(_, &place)| fits(place))
-            .map(|(&other, _)| (differing(id, other), other))
-            .filter(|&(n, _)| n <= 2)
-            .collect();
-        // Stable, so IDs as near stay in the map's order, by ID.
-        near.sort_by_key(|&(n, _)| n);
-        near.into_iter()
-            .take(CANDIDATES)
-            .map(|(_, other)| other.as_str().to_owned())
-            .collect()
+        nearest_ids(
+            id,
+            by_id
+                .iter()
+                .filter(|&(_, &place)| fits(place))
+                .map(|(&other, _)| other),
+        )
     };
     // Where a point of this sketch is drawn.
     let at_of = |id: &ElementId| match lookup(id) {
@@ -933,6 +928,25 @@ impl Target {
     }
 }
 
+/// The IDs of `ids`, given in ID order, a reference to `id`, which none of them holds, most
+/// likely meant: each at most two characters from `id` (one mistyped, or two swapped), the
+/// nearest first, then by ID; at most [`CANDIDATES`].
+pub(crate) fn nearest_ids<'a>(
+    id: &ElementId,
+    ids: impl Iterator<Item = &'a ElementId>,
+) -> Vec<String> {
+    let mut near: Vec<(usize, &ElementId)> = ids
+        .map(|other| (differing(id, other), other))
+        .filter(|&(n, _)| n <= 2)
+        .collect();
+    // Stable, so IDs as near stay in the order given, by ID.
+    near.sort_by_key(|&(n, _)| n);
+    near.into_iter()
+        .take(CANDIDATES)
+        .map(|(_, other)| other.as_str().to_owned())
+        .collect()
+}
+
 /// How many places two IDs differ in, character by character: a mistyped character is one,
 /// two swapped are two. Every ID has `ID_LENGTH` characters, so one with a character
 /// dropped or added isn't an ID, and the reader refuses it first.
@@ -946,7 +960,7 @@ fn differing(a: &ElementId, b: &ElementId) -> usize {
 
 /// The advice for a reference to `id`, which no element holds, saying what its candidates
 /// are when it has any.
-fn with_candidates(advice: String, id: &ElementId, candidates: &[String]) -> String {
+pub(crate) fn with_candidates(advice: String, id: &ElementId, candidates: &[String]) -> String {
     if candidates.is_empty() {
         advice
     } else {

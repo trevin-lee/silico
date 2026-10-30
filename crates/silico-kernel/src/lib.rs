@@ -114,12 +114,12 @@ mod ffi {
 
     /// One of a pair of elements a boolean's OCCT skipped intersecting
     /// (`BOPAlgo_AlertIntersectionOfPairOfShapesFailed`): its kind, the input it's of (0
-    /// the base, 1 the tool, 2 neither: an element OCCT made of one), and its number there
-    /// (0 for neither).
+    /// the base, then the tool, or each copy in turn), and its number there; or, numbered 0,
+    /// of no input: an element OCCT made of one.
     #[derive(Clone, Copy)]
     struct SkippedElement {
         kind: Kind,
-        input: u8,
+        input: u32,
         index: u32,
     }
 
@@ -173,7 +173,8 @@ mod ffi {
 
     /// How a shape's elements bound each other (`silico_protocol::Topology`), flattened: for
     /// each face in order, its edges (`face_edge_counts` of them) and its outer wire's;
-    /// for each edge, its vertices. Each element numbered from 1 as the shape numbers it
+    /// for each edge, its vertices; for each solid, its faces. Each element numbered from 1
+    /// as the shape numbers it
     /// (0 if it somehow isn't one of the shape's).
     struct TopologyFacts {
         face_edges: Vec<u32>,
@@ -182,6 +183,29 @@ mod ffi {
         outer_edge_counts: Vec<u32>,
         edge_vertices: Vec<u32>,
         edge_vertex_counts: Vec<u32>,
+        solid_faces: Vec<u32>,
+        solid_face_counts: Vec<u32>,
+    }
+
+    /// What a copy's placement is (`silico_protocol::Placement`).
+    #[repr(u8)]
+    enum PlacementKind {
+        Translation,
+        Rotation,
+        Mirror,
+        TurnedAndMoved,
+    }
+
+    /// Where one copy of a tool goes, as the bridge takes it: moved by `offset`; turned
+    /// `angle` radians about the axis through `origin` along the unit `direction`; reflected
+    /// in the plane through `origin` whose unit normal is `direction`; or turned, then moved.
+    /// Unused fields are 0.
+    struct CopyPlacement {
+        kind: PlacementKind,
+        origin: Point3,
+        direction: Point3,
+        angle: f64,
+        offset: Point3,
     }
 
     /// What kind of curve a [`FaceCurve`] is.
@@ -408,6 +432,15 @@ mod ffi {
             warnings: &mut Vec<String>,
             skipped: &mut Vec<SkippedElement>,
         ) -> Result<UniquePtr<Shape>>;
+        fn make_copies(tool: &Shape, placements: &[CopyPlacement]) -> Result<UniquePtr<Shape>>;
+        fn copies_boolean(
+            op: BooleanOp,
+            base: &Shape,
+            copies: &Shape,
+            history: &mut Vec<HistoryEntry>,
+            warnings: &mut Vec<String>,
+            skipped: &mut Vec<SkippedElement>,
+        ) -> Result<UniquePtr<Shape>>;
         fn count_elements(shape: &Shape) -> Result<Counts>;
         fn topology(shape: &Shape) -> Result<TopologyFacts>;
         fn rough_amounts(shape: &Shape) -> Result<Amounts>;
@@ -514,10 +547,10 @@ mod ffi {
 }
 
 pub use silico_protocol::{
-    Axis, BooleanOp, ChamferSize, Curve, ElementCounts, ElementFate, ElementKind, ElementRef, Ends,
-    ExportMesh, FaceRegions, History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH,
-    MIN_RELATIVE_DEFLECTION, Mesh, MeshAt, PointPlace, Primitive, Profile, Refusal, Region,
-    Reported, ShapeSummary, SketchPlane, Topology, mesh_floor,
+    Axis, BooleanOp, ChamferSize, CopiesOp, Curve, ElementCounts, ElementFate, ElementKind,
+    ElementRef, Ends, ExportMesh, FaceRegions, History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH,
+    MIN_RELATIVE_DEFLECTION, Mesh, MeshAt, Placement, PointPlace, Primitive, Profile, Refusal,
+    Region, Reported, ShapeSummary, SketchPlane, Topology, mesh_floor,
 };
 use silico_protocol::{
     BrepDefect, FailureKind, HistoryDefect, MAX_EXPORT_TRIANGLES, Operation, Returned, Role,
@@ -1725,7 +1758,7 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
     if !skipped.is_empty() {
         tracing::warn!(
             "OCCT skipped intersecting {} in the {name}, taking them as not meeting",
-            skipped_words(&skipped)
+            skipped_words(&skipped, boolean_input)
         );
     }
     if let Some(result) = built.as_ref() {
@@ -1756,6 +1789,175 @@ pub fn boolean(op: BooleanOp, base: &Shape, tool: &Shape) -> Result<Built, Kerne
         shape: result,
         history,
     })
+}
+
+/// A copy of `tool` at each of `placements`, fused into `base` or cut from it in one
+/// boolean, each copy a tool of its own (docs/ports/patterns.md, §7, *The kernel*): a rigid
+/// move is a location, as [`translate`] places a shape, and a reflection a rebuilt copy
+/// (`from_brep` refuses a location that mirrors). The history has `base` as input 0 and copy
+/// k (at `placements[k - 1]`) as input k, each copy's elements numbered as the tool's. The
+/// placements are checked first ([`silico_protocol::check_copies`]); then it's refused and
+/// checked as [`boolean`] is: an empty base or tool, an empty result, one turned inside
+/// out, and the result check every operation's passes, each copy taking the tool's
+/// validity (a move or a reflection doesn't change it).
+pub fn copies(
+    op: CopiesOp,
+    base: &Shape,
+    tool: &Shape,
+    placements: &[Placement],
+) -> Result<Built, KernelError> {
+    silico_protocol::check_copies(placements).map_err(|refused| {
+        KernelError::new(Refusal::InvalidParameter {
+            parameter: refused.parameter,
+            message: refused.message,
+        })
+    })?;
+    let boolean = op.boolean();
+    let name = boolean.name().to_lowercase();
+    let _span = tracing::debug_span!("copies", op = %name, copies = placements.len()).entered();
+    let operation = Operation::Boolean { op: boolean };
+    let (base_inner, tool_inner) = (base.get()?, tool.get()?);
+    for (role, input) in [(Role::Base, base_inner), (Role::Tool, tool_inner)] {
+        if is_empty(input)? {
+            return Err(KernelError::new(Refusal::BooleanInputEmpty {
+                op: boolean,
+                role,
+            }));
+        }
+    }
+    let placements: Vec<ffi::CopyPlacement> = placements.iter().map(copy_placement).collect();
+    let copies = ffi::make_copies(tool_inner, &placements)
+        .map_err(|e| KernelError::from(e).during(operation.clone()))?;
+    let copies = copies.as_ref().ok_or_else(|| {
+        KernelError::new(Refusal::NothingReturned {
+            what: Returned::Shape,
+        })
+    })?;
+    let mut entries = Vec::new();
+    let mut warnings = Vec::new();
+    let mut skipped = Vec::new();
+    let bridge_op = match op {
+        CopiesOp::Fuse => ffi::BooleanOp::Fuse,
+        CopiesOp::Cut => ffi::BooleanOp::Cut,
+    };
+    let built = ffi::copies_boolean(
+        bridge_op,
+        base_inner,
+        copies,
+        &mut entries,
+        &mut warnings,
+        &mut skipped,
+    )
+    .map_err(|e| KernelError::from(e).during(operation.clone()))?;
+    if !warnings.is_empty() {
+        let alerts: std::collections::BTreeSet<&str> =
+            warnings.iter().map(String::as_str).collect();
+        tracing::warn!(
+            "OCCT warned about the {name} of copies: {}",
+            alerts.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    if !skipped.is_empty() {
+        tracing::warn!(
+            "OCCT skipped intersecting {} in the {name} of copies, taking them as not meeting",
+            skipped_words(&skipped, copies_input)
+        );
+    }
+    let result = built.as_ref().ok_or_else(|| {
+        KernelError::new(Refusal::NothingReturned {
+            what: Returned::Shape,
+        })
+    })?;
+    let amount = if is_empty(result)? {
+        Amount::None
+    } else {
+        amount_of(result, &[base_inner, tool_inner])?
+    };
+    match amount {
+        Amount::None => {
+            return Err(KernelError::new(Refusal::BooleanResultEmpty {
+                op: boolean,
+            }));
+        }
+        Amount::InsideOut => {
+            return Err(KernelError::new(Refusal::ResultInvalid {
+                operation,
+                edges: Vec::new(),
+            }));
+        }
+        Amount::Some => {}
+    }
+    // The faces in neither the base nor any copy must be valid (the copies' compound holds
+    // every copy's faces), and the whole result too when the base and the tool are.
+    if !ffi::is_valid_where_changed_from_two(base_inner, copies, result)? {
+        return Err(KernelError::new(Refusal::ResultInvalid {
+            operation,
+            edges: Vec::new(),
+        }));
+    }
+    let valid = ffi::is_valid(result)?;
+    if !valid && every_input_valid(&[base, tool])? {
+        return Err(KernelError::new(Refusal::ResultInvalid {
+            operation,
+            edges: Vec::new(),
+        }));
+    }
+    // Every copy has the tool's elements, in its order (the bridge checked), so each is
+    // counted as the tool.
+    let inputs: Vec<&ffi::Shape> = std::iter::once(base_inner)
+        .chain(std::iter::repeat_n(tool_inner, placements.len()))
+        .collect();
+    let history = history_of(&inputs, result, &entries)?;
+    Ok(Built {
+        shape: Shape::new(built).with_validity(valid),
+        history,
+    })
+}
+
+/// A placement as the bridge takes it, every unused field 0.
+fn copy_placement(placement: &Placement) -> ffi::CopyPlacement {
+    let none = || point3([0.0; 3]);
+    let (kind, origin, direction, angle, offset) = match *placement {
+        Placement::Translation { offset } => (
+            ffi::PlacementKind::Translation,
+            none(),
+            none(),
+            0.0,
+            point3(offset),
+        ),
+        Placement::Rotation { axis, angle } => (
+            ffi::PlacementKind::Rotation,
+            point3(axis.origin),
+            point3(axis.direction),
+            angle,
+            none(),
+        ),
+        Placement::Mirror { origin, normal } => (
+            ffi::PlacementKind::Mirror,
+            point3(origin),
+            point3(normal),
+            0.0,
+            none(),
+        ),
+        Placement::TurnedAndMoved {
+            axis,
+            angle,
+            offset,
+        } => (
+            ffi::PlacementKind::TurnedAndMoved,
+            point3(axis.origin),
+            point3(axis.direction),
+            angle,
+            point3(offset),
+        ),
+    };
+    ffi::CopyPlacement {
+        kind,
+        origin,
+        direction,
+        angle,
+        offset,
+    }
 }
 
 /// How much a boolean's result holds.
@@ -1842,10 +2044,17 @@ fn history_of(
             solids: c.solids,
         })
     };
-    let input_counts = inputs
-        .iter()
-        .map(|input| counts(input))
-        .collect::<Result<Vec<_>, _>>()?;
+    // A copies operation's inputs after its base are its tool again and again: counted once.
+    let mut input_counts: Vec<ElementCounts> = Vec::with_capacity(inputs.len());
+    let mut previous: Option<(&ffi::Shape, ElementCounts)> = None;
+    for &input in inputs {
+        let count = match previous {
+            Some((shape, count)) if std::ptr::eq(shape, input) => count,
+            _ => counts(input)?,
+        };
+        previous = Some((input, count));
+        input_counts.push(count);
+    }
     let result_counts = counts(result)?;
     let mut history = assemble_history(&input_counts, result_counts, entries)?;
     history.topology = topology(&ffi::topology(result)?, result_counts)?;
@@ -1878,10 +2087,15 @@ fn topology(facts: &ffi::TopologyFacts, counts: ElementCounts) -> Result<Topolog
     for list in &mut outer_edges {
         list.sort_unstable();
     }
+    let mut solid_faces = split(&facts.solid_faces, &facts.solid_face_counts)?;
+    for list in &mut solid_faces {
+        list.sort_unstable();
+    }
     let topology = Topology {
         face_edges: split(&facts.face_edges, &facts.face_edge_counts)?,
         outer_edges,
         edge_vertices: split(&facts.edge_vertices, &facts.edge_vertex_counts)?,
+        solid_faces,
     };
     topology.validate(counts).map_err(|why| {
         // The refusal says the topology is bad; the log says how, for the bug report.
@@ -1981,23 +2195,31 @@ fn assemble_history(
 /// How many skipped pairs a boolean's log names; the rest are counted.
 const PAIRS_NAMED: usize = 3;
 
+/// A boolean's input in words: `the base` (input 0) or `the tool`.
+fn boolean_input(input: u32) -> String {
+    if input == 0 { "the base" } else { "the tool" }.to_owned()
+}
+
+/// A copies boolean's input in words: `the base` (input 0) or `copy k` (input k).
+fn copies_input(input: u32) -> String {
+    match input {
+        0 => "the base".to_owned(),
+        k => format!("copy {k}"),
+    }
+}
+
 /// The pairs a boolean's OCCT skipped intersecting, from the bridge's elements two by two,
 /// each once in the order OCCT first gave it (a cut of the barrel raised its pair twice), in
-/// words: "the base's Face2 with the tool's Face3", by each input's own numbering, or "an
-/// edge OCCT made" for an element of neither input. The first few are named, the rest
-/// counted.
-fn skipped_words(elements: &[ffi::SkippedElement]) -> String {
+/// words: "the base's Face2 with the tool's Face3", each input as `input` words it, by its
+/// own numbering, or "an edge OCCT made" for an element of no input. The first few are named,
+/// the rest counted.
+fn skipped_words(elements: &[ffi::SkippedElement], input: fn(u32) -> String) -> String {
     let one = |element: &ffi::SkippedElement| {
         let kind = element_kind(element.kind);
-        match (kind, element.input) {
-            (Some(kind), 0 | 1) => format!(
-                "the {}'s {}",
-                if element.input == 0 { "base" } else { "tool" },
-                ElementRef {
-                    kind,
-                    index: element.index
-                }
-            ),
+        match (kind, element.index) {
+            (Some(kind), index @ 1..) => {
+                format!("{}'s {}", input(element.input), ElementRef { kind, index })
+            }
             (Some(ElementKind::Edge), _) => "an edge OCCT made".to_owned(),
             (Some(ElementKind::Vertex), _) => "a vertex OCCT made".to_owned(),
             (Some(ElementKind::Face), _) => "a face OCCT made".to_owned(),
@@ -2386,32 +2608,53 @@ mod imports;
 
 #[cfg(test)]
 mod tests {
-    use super::{ffi, skipped_words};
+    use super::{boolean_input, copies_input, ffi, skipped_words};
 
-    /// An element of the bridge's: its kind, its input (0 the base, 1 the tool, 2 neither),
-    /// its number there.
-    fn element(kind: ffi::Kind, input: u8, index: u32) -> ffi::SkippedElement {
+    /// An element of the bridge's: its kind, its input (0 the base, 1 the tool), its number
+    /// there (0 for no input's).
+    fn element(kind: ffi::Kind, input: u32, index: u32) -> ffi::SkippedElement {
         ffi::SkippedElement { kind, input, index }
     }
 
-    fn face(input: u8, index: u32) -> ffi::SkippedElement {
+    fn face(input: u32, index: u32) -> ffi::SkippedElement {
         element(ffi::Kind::Face, input, index)
+    }
+
+    /// The pairs in words, as a boolean of a base and a tool words them.
+    fn in_words(elements: &[ffi::SkippedElement]) -> String {
+        skipped_words(elements, boolean_input)
+    }
+
+    #[test]
+    fn a_copies_booleans_skipped_pairs_name_each_copy_by_its_input() {
+        // Input 0 the base, input k copy k; an element numbered 0 is of no input, whatever
+        // its input says.
+        let pairs = [
+            face(0, 2),
+            face(1, 3),
+            element(ffi::Kind::Edge, 998, 7),
+            element(ffi::Kind::Vertex, 12, 0),
+        ];
+        assert_eq!(
+            skipped_words(&pairs, copies_input),
+            "the base's Face2 with copy 1's Face3 and copy 998's Edge7 with a vertex OCCT made"
+        );
     }
 
     #[test]
     fn skipped_pairs_are_named_by_kind_and_input_or_as_occts_own() {
         // Each kind by its input's numbering, and an element of neither input by its kind.
-        let words = skipped_words(&[
+        let words = in_words(&[
             element(ffi::Kind::Vertex, 0, 4),
             element(ffi::Kind::Edge, 1, 7),
         ]);
         assert_eq!(words, "the base's Vertex4 with the tool's Edge7");
-        let words = skipped_words(&[
+        let words = in_words(&[
             element(ffi::Kind::Edge, 2, 0),
             element(ffi::Kind::Vertex, 2, 0),
         ]);
         assert_eq!(words, "an edge OCCT made with a vertex OCCT made");
-        let words = skipped_words(&[face(2, 0), element(ffi::Kind::Other, 2, 0)]);
+        let words = in_words(&[face(2, 0), element(ffi::Kind::Other, 2, 0)]);
         assert_eq!(words, "a face OCCT made with an element OCCT made");
     }
 
@@ -2420,34 +2663,34 @@ mod tests {
         let pair = |n| [face(0, 2), face(1, n)];
         let named = |n: u32| format!("the base's Face2 with the tool's Face{n}");
         // One, its repeats counted once.
-        let words = skipped_words(&[pair(3), pair(3), pair(3)].concat());
+        let words = in_words(&[pair(3), pair(3), pair(3)].concat());
         assert_eq!(words, named(3));
         // Two, and three.
         assert_eq!(
-            skipped_words(&[pair(1), pair(3)].concat()),
+            in_words(&[pair(1), pair(3)].concat()),
             format!("{} and {}", named(1), named(3))
         );
         assert_eq!(
-            skipped_words(&[pair(1), pair(3), pair(4)].concat()),
+            in_words(&[pair(1), pair(3), pair(4)].concat()),
             format!("{}, {}, and {}", named(1), named(3), named(4))
         );
         // Four, a repeat among them: three named, one more pair.
         assert_eq!(
-            skipped_words(&[pair(1), pair(3), pair(1), pair(4), pair(5)].concat()),
+            in_words(&[pair(1), pair(3), pair(1), pair(4), pair(5)].concat()),
             format!("{}, {}, {}, and 1 more pair", named(1), named(3), named(4))
         );
         // Five: two more pairs.
         assert_eq!(
-            skipped_words(&[pair(1), pair(3), pair(4), pair(5), pair(6)].concat()),
+            in_words(&[pair(1), pair(3), pair(4), pair(5), pair(6)].concat()),
             format!("{}, {}, {}, and 2 more pairs", named(1), named(3), named(4))
         );
         // Pairs that differ only in an element's input, or only in its kind, are two.
         assert_eq!(
-            skipped_words(&[[face(0, 2), face(1, 3)], [face(0, 2), face(0, 3)]].concat()),
+            in_words(&[[face(0, 2), face(1, 3)], [face(0, 2), face(0, 3)]].concat()),
             format!("{} and the base's Face2 with the base's Face3", named(3))
         );
         assert_eq!(
-            skipped_words(
+            in_words(
                 &[
                     [face(0, 2), face(1, 3)],
                     [face(0, 2), element(ffi::Kind::Edge, 1, 3)]
@@ -2458,7 +2701,7 @@ mod tests {
         );
         // A pair isn't its own reverse: the same two faces, the other way round, is another.
         assert_eq!(
-            skipped_words(&[[face(0, 2), face(1, 3)], [face(1, 3), face(0, 2)]].concat()),
+            in_words(&[[face(0, 2), face(1, 3)], [face(1, 3), face(0, 2)]].concat()),
             format!("{} and the tool's Face3 with the base's Face2", named(3))
         );
     }

@@ -142,6 +142,7 @@ fn duplicating_fuse() -> History {
             face_edges: vec![vec![]; 6],
             outer_edges: vec![vec![]; 6],
             edge_vertices: vec![vec![]; 12],
+            solid_faces: vec![(1..=6).collect()],
         },
     };
     history.validate(2).unwrap();
@@ -181,6 +182,7 @@ fn aliasing_fuse() -> History {
             face_edges: vec![vec![]; 6],
             outer_edges: vec![vec![]; 6],
             edge_vertices: vec![vec![]; 12],
+            solid_faces: vec![(1..=6).collect()],
         },
     };
     history.validate(2).unwrap();

@@ -146,6 +146,16 @@ pub fn handle(op: Op) -> Result<Reply, Failure> {
             let tool = shape_of(&tool)?;
             built_reply(crate::boolean(op, &base, &tool).map_err(failure)?)
         }
+        Op::Copies {
+            base,
+            tool,
+            op,
+            placements,
+        } => {
+            let base = shape_of(&base)?;
+            let tool = shape_of(&tool)?;
+            built_reply(crate::copies(op, &base, &tool, &placements).map_err(failure)?)
+        }
         Op::Tessellate {
             shape,
             deflection,

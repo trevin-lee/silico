@@ -107,6 +107,7 @@ fn pin_inside(op: OpCode) -> ElementMap {
             face_edges: vec![],
             outer_edges: vec![],
             edge_vertices: vec![vec![]],
+            solid_faces: vec![vec![]],
         },
     };
     history.validate(2).unwrap();
@@ -170,6 +171,7 @@ fn a_base_edge_kept_whole_outside_the_tool_is_named_alike_by_a_cut_and_a_fuse() 
             face_edges: vec![],
             outer_edges: vec![],
             edge_vertices: vec![vec![]],
+            solid_faces: vec![vec![]],
         },
     };
     history.validate(2).unwrap();
@@ -407,12 +409,22 @@ fn topology(result: ElementCounts) -> impl Strategy<Value = Topology> {
         proptest::collection::vec(face, result.faces as usize),
         proptest::collection::vec(subset(result.vertices, 2), result.edges as usize),
     )
-        .prop_map(|(faces, edge_vertices)| {
+        .prop_map(move |(faces, edge_vertices)| {
             let (face_edges, outer_edges) = faces.into_iter().unzip();
             Topology {
                 face_edges,
                 outer_edges,
                 edge_vertices,
+                // A solid for each the result counts, every face the first's.
+                solid_faces: (0..result.solids)
+                    .map(|n| {
+                        if n == 0 {
+                            (1..=result.faces).collect()
+                        } else {
+                            Vec::new()
+                        }
+                    })
+                    .collect(),
             }
         })
 }

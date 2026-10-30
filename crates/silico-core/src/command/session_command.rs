@@ -33,13 +33,16 @@ pub enum SessionCommand {
     Export,
     MoveFeature,
     Timeline,
+    Sketch,
+    SketchAdd,
+    SketchRemove,
     Undo,
     Redo,
 }
 
 impl SessionCommand {
     /// Every command that runs in a session, in the design's order (M4.1's, then M5.0's).
-    pub const ALL: [SessionCommand; 24] = [
+    pub const ALL: [SessionCommand; 27] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -62,6 +65,9 @@ impl SessionCommand {
         SessionCommand::Export,
         SessionCommand::MoveFeature,
         SessionCommand::Timeline,
+        SessionCommand::Sketch,
+        SessionCommand::SketchAdd,
+        SessionCommand::SketchRemove,
         SessionCommand::Undo,
         SessionCommand::Redo,
     ];
@@ -91,6 +97,9 @@ impl SessionCommand {
             SessionCommand::Export => Command::Export,
             SessionCommand::MoveFeature => Command::MoveFeature,
             SessionCommand::Timeline => Command::Timeline,
+            SessionCommand::Sketch => Command::Sketch,
+            SessionCommand::SketchAdd => Command::SketchAdd,
+            SessionCommand::SketchRemove => Command::SketchRemove,
             SessionCommand::Undo => Command::Undo,
             SessionCommand::Redo => Command::Redo,
         }
@@ -153,13 +162,14 @@ pub enum ReadCommand {
     Distance,
     Angle,
     Render,
+    Sketch,
     Timeline,
 }
 
 impl ReadCommand {
     /// Every command that reads a model, in the design's order (that of
     /// [`SessionCommand::ALL`]).
-    pub const ALL: [ReadCommand; 8] = [
+    pub const ALL: [ReadCommand; 9] = [
         ReadCommand::Check,
         ReadCommand::Elements,
         ReadCommand::Query,
@@ -168,6 +178,7 @@ impl ReadCommand {
         ReadCommand::Angle,
         ReadCommand::Render,
         ReadCommand::Timeline,
+        ReadCommand::Sketch,
     ];
 
     /// The session command it is.
@@ -180,6 +191,7 @@ impl ReadCommand {
             ReadCommand::Distance => SessionCommand::Distance,
             ReadCommand::Angle => SessionCommand::Angle,
             ReadCommand::Render => SessionCommand::Render,
+            ReadCommand::Sketch => SessionCommand::Sketch,
             ReadCommand::Timeline => SessionCommand::Timeline,
         }
     }

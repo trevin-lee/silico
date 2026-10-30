@@ -32,16 +32,17 @@ pub mod render;
 pub mod schema;
 mod session;
 mod session_command;
+pub mod sketch;
 pub mod wire;
 
 pub use call::{Answered, Call, Calling, Command};
 pub use session::{
     Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
-    MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, Opened,
-    OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted,
-    Removed, Replaced, Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions,
-    Status, Stepped, Stopper, TOO_LONG, TextAnswer, TimelineAnswer, Transaction, TryAgainBy,
-    fault_suggestion,
+    MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers,
+    Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
+    Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
+    SessionInfo, Sessions, SketchEdited, Status, Stepped, Stopper, TOO_LONG, TextAnswer,
+    TimelineAnswer, Transaction, TryAgainBy, fault_suggestion,
 };
 pub use session_command::{ReadCommand, RunningCommand, SessionCommand};
 
