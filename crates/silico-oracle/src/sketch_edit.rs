@@ -992,6 +992,12 @@ pub const KNOWN: &[Known] = &[
         shows: Shows::Varies(Rule::MergeHoldsOwn(String::new())),
         why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which a symmetric would mirror an end of n0000005 about n0000005 itself, which Silico refuses (:31, :303). FreeCAD's merge finds 13 constraints redundant with one conflicting (-3) in 7 of 10 runs, fails (-1) in 1, either way rolled back, and solves (0) in 2, its geometry different nearly every run",
     },
+    // `sketch-edit-sweep --seed 44 --count 500`'s case 310.
+    Known {
+        case: "edit_44_310",
+        shows: Shows::Varies(Rule::MergeSolveUnbuildable),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, whose solve puts a symmetry's two points at one place, which Silico refuses (:305). FreeCAD's merge finds 13 constraints redundant (-2) in 39 of 40 runs and one conflicting as well (-3) in 1, its geometry before the rollback different each run; either way its Coincident command rolls it back (:66), but an answer that varies is no oracle",
+    },
     // `sketch-edit-sweep --seed 32 --count 500`'s case 154.
     Known {
         case: "edit_32_154",
