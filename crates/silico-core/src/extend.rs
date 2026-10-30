@@ -9,8 +9,8 @@
 //!   as stored, moved once to the target, and ended, in one request held to a solve's
 //!   limits and time, not a drag's (an extend isn't a drag), so its constraints win (a line with a
 //!   length slides rather than grows, 1.1.3), and every curve sharing the end follows. The
-//!   frame's values are the edited sketch's coordinates, which the edit's solve then
-//!   settles, as a drag's end does.
+//!   frame's values seed the rest of the edited sketch, and the moving end is written at
+//!   the target, exactly; the edit's solve then settles them, as a drag's end does.
 //! - **An arc's end** moves by an `Angle`, written: its point turned about the centre
 //!   (the start back, the end on, so a positive angle lengthens the arc either way, as
 //!   FreeCAD's `setRange(start − increment, end)` and `(start, end + increment)` do). The

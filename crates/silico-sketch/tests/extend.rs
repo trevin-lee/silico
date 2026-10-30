@@ -239,8 +239,9 @@ fn a_line_extended_to_the_next_curve_ends_on_it() {
 fn a_free_lines_end_lands_on_its_target_exactly_and_onto_a_neighbours_end_joinably() {
     // The drag stops on its step and leaves the end about 1.6e-7 mm short; the extend
     // writes the end where the request named, the drag's frame seeding the rest, and the
-    // solve leaves a free end there bit for bit. A free line from (0, 0) to (10, 0): by 5,
-    // its end at (15, 0); to (18.066, 0), there; each the stored number exactly.
+    // solve leaves an end its constraints don't pull there bit for bit. A horizontal line
+    // from (0, 0) to (10, 0): by 5, its end at (15, 0); to b's start (18.066, 0), there;
+    // each the stored number exactly.
     let text = document(&fields(
         &[
             point("p0000000", 0.0, 0.0),
@@ -256,7 +257,7 @@ fn a_free_lines_end_lands_on_its_target_exactly_and_onto_a_neighbours_end_joinab
         .join(", "),
         "",
         "",
-        "",
+        r#"{"id": "k0000000", "type": "horizontal", "line": "a0000000"}"#,
     ));
     let before = read(text.as_bytes()).unwrap();
     let Operation::Sketch(sketch) = &before.features[0].operation else {
@@ -282,6 +283,12 @@ fn a_free_lines_end_lands_on_its_target_exactly_and_onto_a_neighbours_end_joinab
         .unwrap();
     let to = extend(sketch, &a, End::End, By::To(neighbours), &mut worker).unwrap();
     assert_eq!(at(&to.sketch, "p0000001"), [18.066, 0.0]);
+    // The very bits of b's start: one place, which `ends_not_joined` warns of and
+    // `--merge-touching` joins (1.6e-7 mm short, as the drag left it, neither would).
+    assert_eq!(
+        at(&to.sketch, "p0000001").map(f64::to_bits),
+        at(&to.sketch, "q0000000").map(f64::to_bits)
+    );
     // The edit's solve, from the written sketch, leaves the free end where it was written.
     let solution = Translation::new(&to.sketch)
         .unwrap()
@@ -295,8 +302,9 @@ fn a_free_lines_end_lands_on_its_target_exactly_and_onto_a_neighbours_end_joinab
             .unwrap(),
         [18.066, 0.0]
     );
-    // So the two ends are one place, which `ends_not_joined` warns of and a merge of the
-    // two points (what `--merge-touching` runs) joins: a's end becomes b's start.
+    // A merge of the two points (what `--merge-touching` runs) gives a sketch the gate
+    // takes, a's end b's start. (A merge joins points at any distance, so this shows only
+    // that the joined result is valid; the bits above show the two are one place.)
     let merged = silico_core::document::sketch_edit::merge(
         &to.sketch,
         &[
