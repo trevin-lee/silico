@@ -204,12 +204,17 @@ fn the_sketch_edit_tools_are_listed_as_edits() {
 /// (4e-8 mm off it), and a box: what the geometry edits edit.
 const ELL: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "b7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "p0000001", "x": 0, "y": 0, "construction": false}, {"id": "p0000002", "x": 10, "y": 0, "construction": false}, {"id": "p0000003", "x": 10, "y": 10, "construction": false}], "lines": [{"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}, {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "c0000001", "type": "horizontal", "line": "n0000001"}]}]}"#;
 
-/// The calls, each `(name, arguments)`: a split of the first line at its middle; its second
+/// The calls, each `(name, arguments)`: the open's rebuild waited for; a split of the first
+/// line at its middle; its second
 /// piece unjoined from the corner, and merged back; that piece trimmed (nothing cuts it but
 /// its neighbours, at its ends: removed whole); and refusals: a split off the line, an
 /// unjoin of a point one curve uses, a merge of a line's two ends, and a malformed trim.
-const GEOMETRY_CALLS: [(&str, &str); 10] = [
+const GEOMETRY_CALLS: [(&str, &str); 11] = [
     ("open", r#"{"path": "part.silico", "create": false}"#),
+    (
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": false}"#,
+    ),
     ("begin", r#"{"session": "s1"}"#),
     (
         "sketch_split",
@@ -284,24 +289,25 @@ fn each_geometry_edit_is_a_tool_whose_answer_is_the_cores_envelope_byte_for_byte
     // What each said, by hand.
     let envelope = |n: usize| serde_json::from_str::<Value>(&core[n].0).unwrap();
     assert_eq!(
-        envelope(2)["result"],
+        envelope(3)["result"],
         json!({"sketch": "k7f2qx3m", "pieces": ["n0000001", "n0000003"], "added": ["p0000004", "n0000003", "c0000002"], "modified": ["n0000001"], "removed": [], "references": [], "changed": true, "commit": null})
     );
     assert_eq!(
-        envelope(3)["result"],
+        envelope(4)["result"],
         json!({"sketch": "k7f2qx3m", "added": ["p0000005"], "modified": ["n0000003"], "removed": [], "changed": true, "commit": null})
     );
     assert_eq!(
-        envelope(4)["result"],
+        envelope(5)["result"],
         json!({"sketch": "k7f2qx3m", "added": [], "modified": ["n0000003"], "removed": ["p0000005"], "changed": true, "commit": null})
     );
     assert_eq!(
-        envelope(5)["result"],
+        envelope(6)["result"],
         json!({"sketch": "k7f2qx3m", "pieces": [], "added": [], "modified": [], "removed": ["n0000003", "c0000002"], "references": [], "changed": true, "commit": null})
     );
-    // The core's side asked its solver for each edit's solve (each clean, so none asks for
-    // the sketch's solve before it).
-    assert!(solver.requests().len() >= 4);
+    // The core's side asked its solver once for the open's rebuild, which `check` waited for,
+    // and once for each edit's solve: each clean, so none asked for the sketch's solve
+    // before it.
+    assert_eq!(solver.requests().len(), 5);
     let first = |n: usize| {
         let e = envelope(n);
         assert_eq!(e["ok"], false, "{e}");
@@ -311,14 +317,14 @@ fn each_geometry_edit_is_a_tool_whose_answer_is_the_cores_envelope_byte_for_byte
         )
     };
     assert_eq!(
-        first(6),
+        first(7),
         (
             "at.0".to_owned(),
             "the split position is 1 mm from line n0000002, farther than 1e-7 mm".to_owned()
         )
     );
     assert_eq!(
-        first(7),
+        first(8),
         (
             "point".to_owned(),
             "point p0000003 is used by no curve but line n0000002, so there's nothing to unjoin"
@@ -326,7 +332,7 @@ fn each_geometry_edit_is_a_tool_whose_answer_is_the_cores_envelope_byte_for_byte
         )
     );
     assert_eq!(
-        first(8),
+        first(9),
         (
             "points".to_owned(),
             "merging p0000001 and p0000004 would give line n0000001 one point at both ends"
@@ -334,7 +340,7 @@ fn each_geometry_edit_is_a_tool_whose_answer_is_the_cores_envelope_byte_for_byte
         )
     );
     assert_eq!(
-        first(9),
+        first(10),
         (
             "pick".to_owned(),
             "pick must be a position, two numbers [x, y] in millimetres, got 1 of them".to_owned()

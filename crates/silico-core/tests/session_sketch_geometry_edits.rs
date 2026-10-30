@@ -1784,6 +1784,13 @@ fn a_merge_whose_sketch_solves_unbuildable_before_and_after_is_refused() {
         envelope["errors"][0]["code"], "invalid_result",
         "{envelope}"
     );
+    // The solve's own advice: the merge's lever is for a solve that fails, not for one that
+    // reaches what can't be built.
+    assert_eq!(
+        envelope["errors"][0]["suggestion"],
+        "draw the geometry nearer its solution, or check the dimensions that move it past a kilometre or shrink it to nothing",
+        "{envelope}"
+    );
 }
 
 #[test]
@@ -1816,4 +1823,35 @@ fn a_split_of_an_arc_or_a_circle_lists_the_features_storing_a_name_made_from_it_
         ),
     );
     assert_eq!(result["references"], json!(["f000000c"]), "{result}");
+}
+
+#[test]
+fn a_clean_edit_asks_the_solver_once_never_for_the_sketchs_solve_before_it() {
+    // Each edit whose solve is clean needs no judgment against the sketch before it: one
+    // solve each, the edit's, on the fake (which solves everything cleanly).
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    for (command, request) in [
+        (
+            "sketch_split",
+            split(1, "s0000001", "na000001", json!([[30, 0]]), json!(null)),
+        ),
+        (
+            "sketch_unjoin",
+            unjoin(2, "s0000001", "pa000004", "na000004", json!(["pa000008"])),
+        ),
+        (
+            "sketch_merge",
+            merge(3, "s0000001", &["pa000004", "pa000008"]),
+        ),
+        (
+            "sketch_trim",
+            trim(4, "s0000001", "na000003", [30.0, 5.0], json!(null)),
+        ),
+    ] {
+        let solves = f.sketches.requests().len();
+        f.ran(command, &request);
+        assert_eq!(f.sketches.requests().len(), solves + 1, "{command}");
+    }
 }

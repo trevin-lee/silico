@@ -202,6 +202,55 @@ fn an_edit_far_from_a_conflict_the_sketch_had_is_made_inside_a_transaction_and_o
 }
 
 #[test]
+fn a_split_of_the_over_defined_base_line_makes_both_lengths_distances_of_its_outer_ends_which_still_conflict()
+ {
+    // Split, each length of the base line becomes a distance of its outer ends, under its
+    // ID (§3's table): 60 and 61 between pa000001 and pa000002, which can't both hold, the
+    // same pair as before the split. The rank is the same, and nothing new is flagged, so the
+    // split is made (SD7, refined: a conflict the sketch had already isn't the edit's). The
+    // pair is matched by ID, which the retype keeps; FreeCAD's rollback matches flagged
+    // constraints by their content (`getConstraintDiagnosticIdentity`: type, geometry,
+    // positions, value), by which a length retyped to a distance would be a new one.
+    let f = bracket();
+    f.ran("begin", r#"{"session": "s1"}"#);
+    f.over_define();
+    let at = f.revision();
+    let made = f.ran(
+        "sketch_split",
+        &json!({"session": "s1", "revision": at, "sketch": "s0000001", "curve": "na000001", "at": [[30, 0]], "ids": ["pa000007", "na000007", "ka00000e"]}).to_string(),
+    );
+    assert_eq!(
+        made["modified"],
+        json!(["na000001", "ka000009", "ka00000d"])
+    );
+    let document: Value = serde_json::from_str(&f.text()).unwrap();
+    let constraints = document["features"][0]["constraints"].as_array().unwrap();
+    for (id, value) in [("ka000009", 60), ("ka00000d", 61)] {
+        let constraint = constraints.iter().find(|c| c["id"] == id).unwrap();
+        assert_eq!(
+            constraint,
+            &json!({"id": id, "type": "distance", "a": "pa000001", "b": "pa000002", "value": value, "driving": true})
+        );
+    }
+    let checked = f.ran(
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": false}"#,
+    );
+    let conflict = checked["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["feature"] == "s0000001")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (&conflict["code"], &conflict["elements"]),
+        (&json!("over_constrained"), &json!(["ka000009", "ka00000d"])),
+        "{checked}"
+    );
+}
+
+#[test]
 fn a_merge_that_takes_a_conflicting_sketch_past_its_last_freedom_is_refused_as_main_rolls_it_back()
 {
     // The review's case, reproduced on FreeCAD 1.1.3: the L, its inside corner unjoined, a
@@ -300,11 +349,14 @@ fn freecads_failed_tangent_substitution_is_refused_as_a_merge_the_text_as_it_was
     // left). Merging the line's end with the arc's start makes the tangency an end tangency
     // there (open item 13), which can't hold with the line's end 10 from the centre's line:
     // main's command rolls the substitution back. As a merge, the line's end kept: refused,
-    // the text as it was.
-    let start = [5.0 * libm::cos(0.5), 5.0 + 5.0 * libm::sin(0.5)];
-    let end = [5.0 * libm::cos(2.5), 5.0 + 5.0 * libm::sin(2.5)];
+    // the text as it was. FreeCAD's fixture also holds the arc's ends at x = 5 cos 0.5 and
+    // 5 cos 2.5 (its DistanceX of the arc's start and end): here as distance_x of the ends
+    // from the origin, each value the nearest nanometre a document holds (4.387913 and
+    // -4.005718), the ends drawn exactly there.
+    let start = [4.387913, 5.0 + libm::sqrt(25.0 - 4.387913 * 4.387913)];
+    let end = [-4.005718, 5.0 + libm::sqrt(25.0 - 4.005718 * 4.005718)];
     let sketch = format!(
-        r#"{{"id": "s0000001", "type": "sketch", "v": 1, "name": "Tangent", "plane": "xy", "points": [{{"id": "pa000001", "x": -10, "y": 0, "construction": false}}, {{"id": "pa000002", "x": 10, "y": 0, "construction": false}}, {{"id": "pa000003", "x": 0, "y": 5, "construction": false}}, {{"id": "pa000004", "x": {}, "y": {}, "construction": false}}, {{"id": "pa000005", "x": {}, "y": {}, "construction": false}}], "lines": [{{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}}], "circles": [], "arcs": [{{"id": "aa000001", "center": "pa000003", "start": "pa000004", "end": "pa000005", "construction": false}}], "constraints": [{{"id": "ka000001", "type": "horizontal", "line": "na000001"}}, {{"id": "ka000002", "type": "distance_x", "a": "origin", "b": "pa000001", "value": -10, "driving": true}}, {{"id": "ka000003", "type": "distance_y", "a": "origin", "b": "pa000001", "value": 0, "driving": true}}, {{"id": "ka000004", "type": "length", "line": "na000001", "value": 20, "driving": true}}, {{"id": "ka000005", "type": "distance_x", "a": "origin", "b": "pa000003", "value": 0, "driving": true}}, {{"id": "ka000006", "type": "radius", "curve": "aa000001", "value": 5, "driving": true}}, {{"id": "ka000007", "type": "tangent", "a": "na000001", "b": "aa000001", "side": "left"}}]}}"#,
+        r#"{{"id": "s0000001", "type": "sketch", "v": 1, "name": "Tangent", "plane": "xy", "points": [{{"id": "pa000001", "x": -10, "y": 0, "construction": false}}, {{"id": "pa000002", "x": 10, "y": 0, "construction": false}}, {{"id": "pa000003", "x": 0, "y": 5, "construction": false}}, {{"id": "pa000004", "x": {}, "y": {}, "construction": false}}, {{"id": "pa000005", "x": {}, "y": {}, "construction": false}}], "lines": [{{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}}], "circles": [], "arcs": [{{"id": "aa000001", "center": "pa000003", "start": "pa000004", "end": "pa000005", "construction": false}}], "constraints": [{{"id": "ka000001", "type": "horizontal", "line": "na000001"}}, {{"id": "ka000002", "type": "distance_x", "a": "origin", "b": "pa000001", "value": -10, "driving": true}}, {{"id": "ka000003", "type": "distance_y", "a": "origin", "b": "pa000001", "value": 0, "driving": true}}, {{"id": "ka000004", "type": "length", "line": "na000001", "value": 20, "driving": true}}, {{"id": "ka000005", "type": "distance_x", "a": "origin", "b": "pa000003", "value": 0, "driving": true}}, {{"id": "ka000006", "type": "radius", "curve": "aa000001", "value": 5, "driving": true}}, {{"id": "ka000007", "type": "tangent", "a": "na000001", "b": "aa000001", "side": "left"}}, {{"id": "ka000008", "type": "distance_x", "a": "origin", "b": "pa000004", "value": 4.387913, "driving": true}}, {{"id": "ka000009", "type": "distance_x", "a": "origin", "b": "pa000005", "value": -4.005718, "driving": true}}]}}"#,
         start[0], start[1], end[0], end[1]
     );
     let f = opened(&document(&[&sketch]));
@@ -326,12 +378,13 @@ fn freecads_failed_tangent_substitution_is_refused_as_a_merge_the_text_as_it_was
         &json!({"session": "s1", "revision": 1, "sketch": "s0000001", "points": ["pa000002", "pa000004"]}).to_string(),
     );
     // The tangent, now at the shared end (ka000007, kept under its ID), with the line's
-    // and the centre's holds: six that can't all hold.
+    // holds, the centre's, the radius, and the arc start's hold, now on the line's end
+    // (ka000008): seven that can't all hold. The arc end's hold (ka000009) isn't among them.
     assert_eq!(refused[0]["code"], "over_constrained", "{refused}");
     assert_eq!(
         refused[0]["elements"],
         json!([
-            "ka000001", "ka000002", "ka000004", "ka000005", "ka000006", "ka000007"
+            "ka000001", "ka000002", "ka000004", "ka000005", "ka000006", "ka000007", "ka000008"
         ])
     );
     assert_eq!(refused[0]["cause"], WORSE);
