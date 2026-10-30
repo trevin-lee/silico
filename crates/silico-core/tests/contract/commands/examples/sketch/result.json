@@ -1,0 +1,30 @@
+{
+  "sketch": "s0000002",
+  "plane": {"origin": [0, 0, 0], "x": [1, 0, 0], "y": [0, 1, 0], "normal": [0, 0, 1]},
+  "state": "fully_defined",
+  "dofs": 0,
+  "points": [
+    {"id": "pb000001", "x": 40, "y": 12, "construction": false, "state": "fully_defined"},
+    {"id": "pb000002", "x": 40, "y": 28, "construction": false, "state": "fully_defined"}
+  ],
+  "lines": [],
+  "circles": [
+    {"id": "cb000001", "center": "pb000001", "radius": 2.75, "construction": false, "state": "fully_defined"},
+    {"id": "cb000002", "center": "pb000002", "radius": 2.75, "construction": false, "state": "fully_defined"}
+  ],
+  "arcs": [],
+  "constraints": [
+    {"id": "kb000001", "type": "diameter", "curve": "cb000001", "value": 5.5, "driving": true, "state": "satisfied"},
+    {"id": "kb000002", "type": "equal", "a": "cb000001", "b": "cb000002", "state": "satisfied"},
+    {"id": "kb000003", "type": "distance_x", "a": "origin", "b": "pb000001", "value": 40, "driving": true, "state": "satisfied"},
+    {"id": "kb000004", "type": "distance_y", "a": "origin", "b": "pb000001", "value": 12, "driving": true, "state": "satisfied"},
+    {"id": "kb000005", "type": "vertical_points", "a": "pb000001", "b": "pb000002", "state": "satisfied"},
+    {"id": "kb000006", "type": "distance_y", "a": "pb000001", "b": "pb000002", "value": 16, "driving": true, "state": "satisfied"}
+  ],
+  "regions": [
+    {"outer": ["cb000001"], "holes": []},
+    {"outer": ["cb000002"], "holes": []}
+  ],
+  "profile_problems": [],
+  "solve_problem": null
+}

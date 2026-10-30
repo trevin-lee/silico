@@ -223,6 +223,25 @@ impl<C> Read<'_, C> {
         f(&read)
     }
 
+    /// `solve` run under `stopper`, its sketch solver's stop for the solve it begins: a
+    /// cancel, or the session closing, stops that solve while `solve` runs, and never once it
+    /// has returned, when the solver is given back and may be solving another's.
+    pub(crate) fn solving<T>(
+        &self,
+        stopper: Option<crate::sketch::SolveStopper>,
+        solve: impl FnOnce() -> T,
+    ) -> T {
+        let Some(stopper) = stopper else {
+            return solve();
+        };
+        let stop = Arc::new(SolveStop(std::sync::Mutex::new(Some(stopper))));
+        self.stop
+            .interrupt_with(Arc::downgrade(&stop) as std::sync::Weak<dyn super::cancel::Interrupt>);
+        let solved = solve();
+        crate::worker::lock(&stop.0).take();
+        solved
+    }
+
     /// `f` given whether the read was stopped (a cancel, or the session closing), `turns`
     /// woken as it is: so an export waiting for its turn to mesh stops waiting then.
     pub(crate) fn meshing<T>(
@@ -285,6 +304,18 @@ struct StepExportStop(crate::step_worker::StepStop);
 impl super::cancel::Interrupt for StepExportStop {
     fn interrupt(&self, _why: super::cancel::Why) {
         self.0.stop();
+    }
+}
+
+/// A sketch solve's stop, as a read's stop interrupts it: cancelled or closed, it stops the
+/// solve, until the solve is over and it's taken away ([`Read::solving`]).
+struct SolveStop(std::sync::Mutex<Option<crate::sketch::SolveStopper>>);
+
+impl super::cancel::Interrupt for SolveStop {
+    fn interrupt(&self, _why: super::cancel::Why) {
+        if let Some(stopper) = crate::worker::lock(&self.0).as_ref() {
+            stopper.stop();
+        }
     }
 }
 

@@ -36,6 +36,7 @@ use super::wire::reads::{CheckRequest, TextRequest};
 use super::wire::render::RenderRequest;
 use super::wire::schema::SchemaRequest;
 use super::wire::session::{CancelRequest, OpenRequest, VersionRequest};
+use super::wire::sketch::SketchRequest;
 use super::wire::transaction::{FormatRequest, SessionRequest};
 use super::wire::{self, Json, Layout, ToWire};
 use super::{Problems, Progress, Response, Running, Sessions, Stopper, VERSION};
@@ -73,11 +74,12 @@ pub enum Command {
     Render,
     ReadLogs,
     Export,
+    Sketch,
 }
 
 impl Command {
     /// Every command, in the design's order.
-    pub const ALL: [Command; 26] = [
+    pub const ALL: [Command; 27] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -104,6 +106,7 @@ impl Command {
         Command::Render,
         Command::ReadLogs,
         Command::Export,
+        Command::Sketch,
     ];
 
     /// The command's name, as requests and tools give it.
@@ -135,6 +138,7 @@ impl Command {
             Command::Render => "render",
             Command::ReadLogs => "read_logs",
             Command::Export => "export",
+            Command::Sketch => "sketch",
         }
     }
 
@@ -177,7 +181,8 @@ impl Command {
             | Command::Distance
             | Command::Angle
             | Command::Render
-            | Command::Export => false,
+            | Command::Export
+            | Command::Sketch => false,
         }
     }
 }
@@ -550,6 +555,9 @@ impl<P: Clients + 'static> Sessions<P> {
             }
             Command::Export => typed(ExportRequest::read(request), |r| {
                 self.export(&r.session, r.export)
+            }),
+            Command::Sketch => typed(SketchRequest::read(request), |r| {
+                self.sketch(&r.session, r.model, r.sketch)
             }),
         }
     }

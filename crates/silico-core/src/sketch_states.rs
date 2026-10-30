@@ -45,6 +45,15 @@ pub enum SketchState {
 }
 
 impl SketchState {
+    /// Every state, in SolidWorks' order (docs/ux/solidworks.md, §2).
+    pub const ALL: [SketchState; 5] = [
+        SketchState::UnderDefined,
+        SketchState::FullyDefined,
+        SketchState::OverDefined,
+        SketchState::NoSolution,
+        SketchState::Invalid,
+    ];
+
     /// The state's word: `under_defined`, `fully_defined`, `over_defined`, `no_solution`,
     /// or `invalid`.
     pub fn as_str(self) -> &'static str {
@@ -71,6 +80,13 @@ pub enum MemberState {
 }
 
 impl MemberState {
+    /// Every state, in SolidWorks' order.
+    pub const ALL: [MemberState; 3] = [
+        MemberState::UnderDefined,
+        MemberState::FullyDefined,
+        MemberState::OverDefined,
+    ];
+
     /// The state's word: `under_defined`, `fully_defined`, or `over_defined`.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -100,6 +116,15 @@ pub enum ConstraintState {
 }
 
 impl ConstraintState {
+    /// Every state, satisfied first, then those flagged, then unsolved.
+    pub const ALL: [ConstraintState; 5] = [
+        ConstraintState::Satisfied,
+        ConstraintState::Conflicting,
+        ConstraintState::Redundant,
+        ConstraintState::PartiallyRedundant,
+        ConstraintState::Unsolved,
+    ];
+
     /// The state's word: `satisfied`, `conflicting`, `redundant`, `partially_redundant`, or
     /// `unsolved`.
     pub fn as_str(self) -> &'static str {

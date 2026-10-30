@@ -42,7 +42,8 @@
           "mass_properties",
           "distance",
           "angle",
-          "render"
+          "render",
+          "sketch"
         ],
         "type": "string"
       },
@@ -135,7 +136,8 @@
           "distance",
           "angle",
           "render",
-          "export"
+          "export",
+          "sketch"
         ],
         "type": "string"
       }

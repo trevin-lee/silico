@@ -114,6 +114,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "distance",
         "angle",
         "read_logs",
+        "sketch",
     ];
     let destructive = [
         "commit",
@@ -340,8 +341,8 @@ fn every_example_holds_to_its_tools_schemas() {
     }
     // Every file in the contract's examples, counted by hand: 89 on M4.9's branch,
     // export's 8 (#182), cache_clear's 2 (#183), STEP export's 4 (#186), check's
-    // warning (#189), and read_logs' 3 and version's result (#194).
-    assert_eq!(seen, 108);
+    // warning (#189), read_logs' 3 and version's result (#194), and sketch's 2 (M5.10).
+    assert_eq!(seen, 110);
 }
 
 #[test]
