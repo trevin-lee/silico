@@ -346,3 +346,26 @@ fn the_session_watches_its_new_file_on_disk_and_reloads_an_agents_change_to_it()
     assert_eq!(envelope(&text)["result"]["text"], OUTSIDE);
     assert_eq!(f.read("part.silico"), BOX);
 }
+
+#[test]
+fn a_path_refused_is_refused_before_the_rebuild_is_waited_for() {
+    // Every rebuild held: the commit's path is checked first, so its refusal doesn't wait.
+    let f = fixture();
+    let hold = f.kernel.hold(|_| true);
+    f.lengthened(50);
+    f.file("copy.silico", "an old copy");
+    let calling = f.calling(
+        "commit",
+        r#"{"session": "s1", "path": "copy.silico", "replace": false}"#,
+    );
+    let Ok(answered) = calling.wait_timeout(std::time::Duration::from_secs(10)) else {
+        panic!("the refusal waited for the rebuild");
+    };
+    let answer = envelope(&answered);
+    assert_eq!(
+        answer["errors"][0]["message"], "\"copy.silico\" exists",
+        "{answer}"
+    );
+    hold.release();
+    assert_eq!(f.read("copy.silico"), "an old copy");
+}
