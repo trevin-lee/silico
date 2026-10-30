@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use super::cancel::Ticket;
 use super::edits::{Stale, stale};
-use super::transaction::Open;
 use super::{Gated, Problems, Revision, Session, SessionId, Stepped};
 use crate::document::PROBLEMS_LISTED;
 use crate::document::undo::Refusal;
@@ -60,11 +59,13 @@ impl<C: Kernel + 'static> Session<C> {
             to = to.map(Revision::number)
         )
         .entered();
-        let (next, restored, begun) = {
+        // What the step restores, found under the held state's lock with the stack left as
+        // it is, so a `status` read meanwhile is the state before the step, whole.
+        let (next, plan, begun) = {
             let held = self.held.read();
-            if held.transaction.is_none() {
+            let Some(open) = held.transaction.as_ref() else {
                 return Err(Problems::from(no_transaction(self.id, way)));
-            }
+            };
             if held.revision != revision {
                 let what = match way {
                     Way::Undo => Stale::Undo,
@@ -74,36 +75,36 @@ impl<C: Kernel + 'static> Session<C> {
                 return Err(Problems::from(stale(what, revision, held.revision, None)));
             }
             let next = held.next()?;
-            let mut held = held.changing(stop)?;
-            let Some(Open {
-                undo: stack, begun, ..
-            }) = held.transaction.as_mut()
-            else {
-                return Err(Problems::from(no_transaction(self.id, way)));
-            };
-            let begun = begun.clone();
-            let stepped = match way {
-                Way::Undo => stack.undo(to, next),
-                Way::Redo => stack.redo(to, next),
+            let plan = match way {
+                Way::Undo => open.undo.plan_undo(to),
+                Way::Redo => open.undo.plan_redo(to),
             };
             (
                 next,
-                stepped.map_err(|refusal| refused(self.id, way, refusal))?,
-                begun,
+                plan.map_err(|refusal| refused(self.id, way, refusal))?,
+                open.begun.clone(),
             )
         };
-        // Gated, and compared with `begin`'s document, with the held state's lock let go, so
-        // `status` never waits on either; nothing else changes what's held meanwhile, since
-        // only the session's thread changes it.
-        let gated = Arc::new(Gated::of(&restored.text));
-        let changed = begun.differs(&restored.text, &gated);
-        // Settled above, so never refused.
+        // Written from the stack's chunks, gated, and compared with `begin`'s document with
+        // the lock let go, so `status` never waits on any of it. Only the session's thread
+        // moves the stack or changes what's held, and this is it: the plan is still the
+        // stack's when the lock is taken again.
+        let text = plan.text();
+        let gated = Arc::new(Gated::of(&text));
+        let changed = begun.differs(&text, &gated);
+        // Then the stack stepped, `changed`, and the document changed, under one lock, so a
+        // `status` read after is the state after the step, whole.
         let mut held = self.held.read().changing(stop)?;
-        if let Some(open) = held.transaction.as_mut() {
-            open.changed = changed;
-        }
+        let Some(open) = held.transaction.as_mut() else {
+            return Err(Problems::from(no_transaction(self.id, way)));
+        };
+        let restored = open
+            .undo
+            .apply(plan, next)
+            .map_err(|refusal| refused(self.id, way, refusal))?;
+        open.changed = changed;
         let carried = Arc::clone(&held.carried);
-        held.change(next, restored.text, gated, carried);
+        held.change(next, text, gated, carried);
         drop(held);
         tracing::info!(
             session = %self.id,
@@ -188,18 +189,19 @@ fn refused(id: SessionId, way: Way, refusal: Refusal<Revision>) -> Problems {
     })
 }
 
-/// The refusal of `way` in session `id` to `to`, a revision its undo stack doesn't hold:
-/// the revisions it holds, `held` (in order), named as a range, and the newest
-/// [`PROBLEMS_LISTED`] of them its candidates, newest first, since the range can have gaps
-/// (an edit after an undo drops the redo states' revisions from between held ones, so the
-/// range can even include `to`).
+/// The refusal of `way` in session `id` to `to`, a revision no state `way` can restore
+/// was: the revisions those states were, `held` (in order: for undo, those before the
+/// session's state that undo reaches; for redo, those after it), named as a range, and the
+/// newest [`PROBLEMS_LISTED`] of them its candidates, newest first, each a `to` the same
+/// command takes. The range can have gaps (an edit after an undo drops the redo states'
+/// revisions from between held ones), so it can even include `to`.
 fn not_held(id: SessionId, way: Way, to: Revision, held: &[Revision]) -> Error {
     let holds = match (held.first(), held.last()) {
         (Some(first), Some(last)) if first == last => format!("revision {}", first.number()),
         (Some(first), Some(last)) => {
             format!("revisions {} to {}", first.number(), last.number())
         }
-        _ => "no revision".to_owned(),
+        _ => "none".to_owned(),
     };
     let cause = match way {
         Way::Undo => {
@@ -212,14 +214,15 @@ fn not_held(id: SessionId, way: Way, to: Revision, held: &[Revision]) -> Error {
     Error::new(
         ErrorCode::InvalidInput,
         format!(
-            "revision {} isn't a state of session {id}'s undo stack, which holds {holds}",
-            to.number()
+            "revision {} isn't a state of session {id}'s undo stack that {way} can restore: it can restore {holds}",
+            to.number(),
+            way = way.name()
         ),
     )
     .with_parameter("to")
     .with_cause(cause)
     .with_suggestion(format!(
-        "{} to a revision the stack holds, or roll back to the transaction's start",
+        "{} to a revision it can restore, or roll back to the transaction's start",
         way.name()
     ))
     .with_candidates(

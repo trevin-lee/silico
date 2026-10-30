@@ -338,11 +338,12 @@ fn status_read_beside_undos_and_redos_of_a_long_document_is_always_one_states() 
     // one to redo, unchanged). A status read while a step runs is one revision's: its
     // counts and `changed` that revision's, never the stack's after the step with the
     // document and revision of before it.
-    // BREAKS: `step` moves the stack under one lock (undo.rs, `stack.undo`), then gates the
-    // restored text and compares it with begin's off the lock, then changes the document,
-    // the revision, and `changed` under a second. A `status` between them gives the
-    // revision and `changed` of before the step with the stack's counts of after it: at
-    // revision 2 (the edit standing, changed), `undo: 0, redo: 1`.
+    // Broke (break-it): `step` moved the stack under one lock, then gated the restored text
+    // and compared it with begin's off the lock, then changed the document, the revision,
+    // and `changed` under a second. A `status` between them gave the revision and `changed`
+    // of before the step with the stack's counts of after it: at revision 2 (the edit
+    // standing, changed), `undo: 0, redo: 1`. Now the step is planned under the first lock,
+    // the stack left as it is, and applied with the rest under the second.
     let f = opened(&long_document(4000));
     answer(f.sessions.begin(&f.id)).result.unwrap();
     answer(f.sessions.set_field(

@@ -313,36 +313,37 @@ fn an_edit_after_an_undo_drops_the_redo_and_its_revisions_from_the_stack() {
     );
     assert!(candidates.is_empty());
     assert_eq!(revision, Revision(5));
-    // Revision 3's state is gone, though the stack holds revisions on either side of it: 1
-    // (`begin`'s), 2 and 4 (the first edit's, and its undo's), and 5.
+    // Revision 3's state is gone. Nothing is after the session's state (5), so redo can
+    // restore none; undo can restore the states before it, revisions on either side of 3:
+    // 1 (`begin`'s), and 2 and 4 (the first edit's, and its undo's).
     let (words_, candidates, _) = refusal(f.redo(Some(3)));
     assert_eq!(
         words_,
         words(
             ErrorCode::InvalidInput,
-            "revision 3 isn't a state of session s1's undo stack, which holds revisions 1 to 5",
+            "revision 3 isn't a state of session s1's undo stack that redo can restore: it can restore none",
             "to",
             Some(
                 "an edit after an undo drops what was undone, or the revision isn't one of the transaction's states the stack kept"
             ),
-            "redo to a revision the stack holds, or roll back to the transaction's start",
+            "redo to a revision it can restore, or roll back to the transaction's start",
         )
     );
-    assert_eq!(candidates, ["5", "4", "2", "1"]);
+    assert!(candidates.is_empty());
     let (words_, candidates, _) = refusal(f.undo(Some(3)));
     assert_eq!(
         words_,
         words(
             ErrorCode::InvalidInput,
-            "revision 3 isn't a state of session s1's undo stack, which holds revisions 1 to 5",
+            "revision 3 isn't a state of session s1's undo stack that undo can restore: it can restore revisions 1 to 4",
             "to",
             Some(
                 "the stack dropped its oldest edits past its bound, or the revision is from before the transaction"
             ),
-            "undo to a revision the stack holds, or roll back to the transaction's start",
+            "undo to a revision it can restore, or roll back to the transaction's start",
         )
     );
-    assert_eq!(candidates, ["5", "4", "2", "1"]);
+    assert_eq!(candidates, ["4", "2", "1"]);
     // The refusals changed nothing: two undos reach 41, then `begin`'s.
     assert_eq!(stepped(f.undo(None)), (step(2, 1, 1, 0), Revision(6)));
     assert_eq!(f.text(), box_text(41));
@@ -492,7 +493,8 @@ fn past_its_bound_the_stack_drops_its_oldest_states_counted_by_hand_and_undo_sto
             (BOX_BYTES + 3 * BOX_STATE, 3, 3),
         ]
     );
-    // Revisions 1 (`begin`'s), 2 and 3 (41's and 42's) are out of reach; 4 to 7 are held.
+    // Revisions 1 (`begin`'s), 2 and 3 (41's and 42's) are out of reach; 4 to 7 are held,
+    // and undo can restore 4 to 6 (7's is the session's).
     for to in [1, 3] {
         let (said, candidates, revision) = refusal(f.undo(Some(to)));
         assert_eq!(
@@ -500,16 +502,16 @@ fn past_its_bound_the_stack_drops_its_oldest_states_counted_by_hand_and_undo_sto
             words(
                 ErrorCode::InvalidInput,
                 &format!(
-                    "revision {to} isn't a state of session s1's undo stack, which holds revisions 4 to 7"
+                    "revision {to} isn't a state of session s1's undo stack that undo can restore: it can restore revisions 4 to 6"
                 ),
                 "to",
                 Some(
                     "the stack dropped its oldest edits past its bound, or the revision is from before the transaction"
                 ),
-                "undo to a revision the stack holds, or roll back to the transaction's start",
+                "undo to a revision it can restore, or roll back to the transaction's start",
             )
         );
-        assert_eq!(candidates, ["7", "6", "5", "4"]);
+        assert_eq!(candidates, ["6", "5", "4"]);
         assert_eq!(revision, Revision(7));
     }
     // Three undos land on the first kept state, 43's; a fourth is refused.
@@ -718,22 +720,23 @@ fn undo_and_redo_are_refused_with_the_designs_words() {
 
 #[test]
 fn a_not_held_refusal_lists_the_newest_hundred_revisions_newest_first() {
-    // An edit, then 110 steps back and forth: every revision from 1 to 112 is a state the
-    // stack holds, `begin`'s or the edit's.
+    // An edit (revision 2), then 220 steps back and forth: `begin`'s state is the session's
+    // at 1 and every odd revision to 221, the edit's at every even one to 222. At 222, undo
+    // can restore `begin`'s, so its 111 revisions; the newest 100 are its candidates.
     let f = opened(BOX);
     f.begin();
     f.set("k7f2qx3m", "length", "41");
-    for _ in 0..55 {
+    for _ in 0..110 {
         f.undo(None).result.unwrap();
         f.redo(None).result.unwrap();
     }
-    assert_eq!(f.revision(), Revision(112));
+    assert_eq!(f.revision(), Revision(222));
     let (said, candidates, _) = refusal(f.undo(Some(500)));
     assert_eq!(
         said.1,
-        "revision 500 isn't a state of session s1's undo stack, which holds revisions 1 to 112"
+        "revision 500 isn't a state of session s1's undo stack that undo can restore: it can restore revisions 1 to 221"
     );
-    let newest: Vec<String> = (13..=112).rev().map(|n: u64| n.to_string()).collect();
+    let newest: Vec<String> = (0..100).map(|k: u64| (221 - 2 * k).to_string()).collect();
     assert_eq!(candidates, newest);
 }
 
@@ -946,7 +949,7 @@ fn an_undo_that_holds_more_than_it_releases_drops_past_the_bound_and_says_so() {
 }
 
 #[test]
-fn a_stack_of_one_state_names_it_alone_and_no_transaction_comes_before_a_stale_revision() {
+fn a_stack_of_one_state_can_restore_none_and_no_transaction_comes_before_a_stale_revision() {
     let f = opened(BOX);
     // Outside a transaction, a revision that isn't the session's: no transaction is said.
     let (said, _, _) = refusal(f.sessions.undo(&f.id, Revision(9), None).wait());
@@ -954,10 +957,20 @@ fn a_stack_of_one_state_names_it_alone_and_no_transaction_comes_before_a_stale_r
     let (said, _, _) = refusal(f.sessions.redo(&f.id, Revision(9), None).wait());
     assert_eq!(said.1, "no transaction is open in session s1");
     f.begin();
-    let (said, candidates, _) = refusal(f.undo(Some(7)));
-    assert_eq!(
-        said.1,
-        "revision 7 isn't a state of session s1's undo stack, which holds revision 1"
-    );
-    assert_eq!(candidates, ["1"]);
+    // `begin`'s state alone, the session's: neither command can restore it.
+    for way in ["undo", "redo"] {
+        let response = if way == "undo" {
+            f.undo(Some(7))
+        } else {
+            f.redo(Some(7))
+        };
+        let (said, candidates, _) = refusal(response);
+        assert_eq!(
+            said.1,
+            format!(
+                "revision 7 isn't a state of session s1's undo stack that {way} can restore: it can restore none"
+            )
+        );
+        assert!(candidates.is_empty(), "{way}");
+    }
 }

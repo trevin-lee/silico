@@ -161,17 +161,14 @@ fn undo_and_redo_answer_as_the_core_does_and_hold_to_their_tools() {
         ),
         (
             json!(
-                "revision 99 isn't a state of session s1's undo stack, which holds revisions 1 to 6"
+                "revision 99 isn't a state of session s1's undo stack that redo can restore: it can restore revisions 2 to 5"
             ),
             json!("to")
         )
     );
-    // The stack's revisions, newest first: `begin`'s state was the session's at 1 and 6,
-    // 41's at 2 and 4, 42's at 3 and 5.
-    assert_eq!(
-        refusal(9)["candidates"],
-        json!(["6", "5", "4", "3", "2", "1"])
-    );
+    // The revisions redo can restore, newest first: the session is at `begin`'s state (1
+    // and 6), so those of the states after it, 41's at 2 and 4 and 42's at 3 and 5.
+    assert_eq!(refusal(9)["candidates"], json!(["5", "4", "3", "2"]));
     assert_eq!(refusal(10)["message"], "no session s9 is open");
 }
 

@@ -171,8 +171,8 @@ fn effect(command: Command) -> Effect {
         // `replace: true` writes over a file at `to`, or at `path`.
         Command::Render | Command::Export => Effect::Changes { destructive: true },
         // A new document is only made where nothing is; the rest change what the server
-        // holds, never a file: an undo's or a redo's state stays on the transaction's stack,
-        // and `rollback` restores what `begin` saw.
+        // holds, never a file. An undo or a redo can drop the stack's oldest states past
+        // its bound, but it never touches a file, and `rollback` still reaches `begin`'s.
         Command::Open
         | Command::Close
         | Command::Cancel

@@ -260,13 +260,14 @@ fn three_edits() -> Fixture {
     f
 }
 
-/// Each file of the design's section, in order.
-const UNDO_FILES: [&str; 5] = [
-    "request",
-    "result",
-    "refused-no-transaction",
-    "refused-nothing",
-    "refused-not-held",
+/// Each file of the design's section, in order, by its command's directory.
+const DESIGN_FILES: [&str; 6] = [
+    "undo/request",
+    "undo/result",
+    "undo/refused-no-transaction",
+    "undo/refused-nothing",
+    "undo/refused-not-held",
+    "redo/refused-not-held",
 ];
 
 /// `redo`'s examples, by hand from the design's prose: after the design's undo (revision 16,
@@ -280,13 +281,9 @@ const REDO_NOTHING: &str = r#"{"code": "invalid_input", "message": "nothing to r
 fn the_examples_are_the_designs_own_text_and_redos_by_hand_from_its_words() {
     let section = design_section(UNDO_SECTION.0, UNDO_SECTION.1);
     let found = blocks(&section);
-    assert_eq!(found.len(), UNDO_FILES.len());
-    for (block, name) in found.iter().zip(UNDO_FILES) {
-        assert_eq!(
-            format!("{block}\n"),
-            example(&format!("undo/{name}")),
-            "{name}"
-        );
+    assert_eq!(found.len(), DESIGN_FILES.len());
+    for (block, name) in found.iter().zip(DESIGN_FILES) {
+        assert_eq!(format!("{block}\n"), example(name), "{name}");
     }
     // A dialog's Cancel, in the design's prose.
     let to = r#"{"session": "s1", "revision": 16, "to": 13}"#;
@@ -320,7 +317,10 @@ fn the_examples_are_the_designs_own_text_and_redos_by_hand_from_its_words() {
                 "result",
             ][..],
         ),
-        ("redo", &["refused-nothing", "request", "result"][..]),
+        (
+            "redo",
+            &["refused-not-held", "refused-nothing", "request", "result"][..],
+        ),
     ] {
         let mut files: Vec<String> =
             std::fs::read_dir(contract(&format!("commands/examples/{dir}")))
@@ -474,12 +474,16 @@ fn each_result_and_refusal_is_the_sessions_own_as_the_design_sets_them_up() {
     check("redo/refused-nothing", the_refusal(&refused));
     assert_eq!(refused.session.as_ref().unwrap().revision, revision(17));
 
-    // At 16, after the one undo: a `to` from before the transaction, refused, the stack's
-    // revisions its candidates; then a dialog's Cancel, `to` 13, restores 13's state.
+    // At 16, after the one undo: a `to` from before the transaction, refused by each, the
+    // revisions it can restore its candidates; then a dialog's Cancel, `to` 13, restores
+    // 13's state.
     let f = three_edits();
     f.undo(&example("undo/request")).result.unwrap();
     let refused = f.undo(r#"{"session": "s1", "revision": 16, "to": 3}"#);
     check("undo/refused-not-held", the_refusal(&refused));
+    assert_eq!(refused.session.as_ref().unwrap().revision, revision(16));
+    let refused = f.redo(r#"{"session": "s1", "revision": 16, "to": 3}"#);
+    check("redo/refused-not-held", the_refusal(&refused));
     assert_eq!(refused.session.as_ref().unwrap().revision, revision(16));
     let cancelled = f.undo(&example("undo/request-to"));
     assert_eq!(cancelled.session.as_ref().unwrap().revision, revision(17));
@@ -729,4 +733,101 @@ fn a_dialogs_edits_are_undone_as_one_and_the_inline_edit_before_it_kept() {
     );
     assert_eq!(f.text(), block("41"));
     assert!(f.transaction().unwrap().changed);
+}
+
+impl Fixture {
+    /// `undo` (`way` "undo") or `redo` to the revision `to`, at the session's revision.
+    fn step_to(&self, way: &str, to: u64) -> Response<Stepped> {
+        let text = format!(
+            r#"{{"session": "s1", "revision": {}, "to": {to}}}"#,
+            self.revision().number()
+        );
+        match way {
+            "undo" => self.undo(&text),
+            _ => self.redo(&text),
+        }
+    }
+}
+
+/// The one error of `response`: its message and candidates.
+fn not_held<T: std::fmt::Debug>(response: &Response<T>) -> (String, Vec<String>) {
+    let problems = response.result.as_ref().unwrap_err();
+    assert_eq!(problems.total(), 1, "{:?}", problems.errors());
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::InvalidInput, Some("to"))
+    );
+    (e.message().to_owned(), e.candidates().to_vec())
+}
+
+#[test]
+fn a_not_held_refusals_candidates_are_each_a_to_the_same_command_takes() {
+    // Begin at 1, ten edits (lengths 41 to 50, revisions 2 to 11), then an undo to 2, as
+    // revision 12: the session at the first edit's state (2 and 12), `begin`'s (1) before
+    // it, the other nine edits' (3 to 11) after it.
+    let f = opened();
+    f.begin();
+    for length in 41..=50 {
+        f.set(&length.to_string());
+    }
+    f.step_to("undo", 2).result.unwrap();
+    assert_eq!(f.revision(), revision(12));
+    // Undo's candidates are `begin`'s alone: never the session's own (2, 12), nor a state
+    // after it, which undo refuses.
+    let (message, candidates) = not_held(&f.step_to("undo", 99));
+    assert_eq!(
+        message,
+        "revision 99 isn't a state of session s1's undo stack that undo can restore: it can restore revision 1"
+    );
+    assert_eq!(candidates, ["1"]);
+    // Redo's, the mirror: the nine after the session's, newest first.
+    let (message, redo_candidates) = not_held(&f.step_to("redo", 99));
+    assert_eq!(
+        message,
+        "revision 99 isn't a state of session s1's undo stack that redo can restore: it can restore revisions 3 to 11"
+    );
+    let want: Vec<String> = (3..=11).rev().map(|n: u64| n.to_string()).collect();
+    assert_eq!(redo_candidates, want);
+    // Each is taken by the command it came from: each redo candidate redone to, then back
+    // to 2 by an undo; then the undo candidate.
+    for candidate in &redo_candidates {
+        let to: u64 = candidate.parse().unwrap();
+        let redone = f.step_to("redo", to);
+        assert_eq!(
+            redone.result.as_ref().unwrap().restored,
+            revision(to),
+            "redo to {to}"
+        );
+        assert_eq!(f.text(), block(&(39 + to).to_string()), "redo to {to}");
+        f.step_to("undo", 2).result.unwrap();
+        assert_eq!(f.text(), block("41"));
+    }
+    for candidate in &candidates {
+        let to: u64 = candidate.parse().unwrap();
+        let undone = f.step_to("undo", to);
+        assert_eq!(undone.result.as_ref().unwrap().restored, revision(to));
+        assert_eq!(f.text(), block("40"));
+    }
+}
+
+#[test]
+fn undoing_or_redoing_to_a_state_equal_to_begins_is_unchanged_whichever_it_is() {
+    // 41, then back to 40 (begin's document, at revision 3), then 42. `changed` is the
+    // document's, not the revision's: 3's state is unchanged though it isn't `begin`'s.
+    let f = opened();
+    f.begin();
+    for length in ["41", "40", "42"] {
+        f.set(length);
+    }
+    assert!(f.transaction().unwrap().changed);
+    f.step_to("undo", 3).result.unwrap();
+    assert_eq!(f.text(), block("40"));
+    assert!(!f.transaction().unwrap().changed);
+    f.step_to("undo", 2).result.unwrap();
+    assert_eq!(f.text(), block("41"));
+    assert!(f.transaction().unwrap().changed);
+    f.step_to("redo", 3).result.unwrap();
+    assert_eq!(f.text(), block("40"));
+    assert!(!f.transaction().unwrap().changed);
 }
