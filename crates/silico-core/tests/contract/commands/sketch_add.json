@@ -689,7 +689,7 @@
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`sketch_add`'s request: add members to a sketch, as the document writes them.",
+    "description": "`sketch_add`'s request: add members to a sketch, as the document writes them, each with a\nfresh random 8-character ID, never one a removal freed: a name a feature stores of the\nremoved member would find the new one.",
     "properties": {
       "arcs": {
         "description": "The arcs to add.",
@@ -706,7 +706,7 @@
         "type": "array"
       },
       "constraints": {
-        "description": "The constraints to add, naming the sketch's members, the members added, or the\nfixed references. One that conflicts with others, or repeats them, is added all the\nsame: the sketch then reads as over defined, and its features fail until it's mended.",
+        "description": "The constraints to add, naming the sketch's members, the members added, or the\nfixed references. One that conflicts with others, or repeats them, is added all the\nsame: `check` then reports the conflict, and the sketch's features fail until it's\nmended.",
         "items": {
           "$ref": "#/$defs/SketchConstraint"
         },
@@ -720,7 +720,7 @@
         "type": "array"
       },
       "points": {
-        "description": "The points to add, each with an ID the sketch doesn't hold.",
+        "description": "The points to add, each with an ID the sketch doesn't hold, a fresh one.",
         "items": {
           "$ref": "#/$defs/SketchPoint"
         },

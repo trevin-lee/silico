@@ -192,7 +192,9 @@ fn members(ids: &[ElementId]) -> Json<'_> {
     Json::array(ids.iter().map(|id| Json::str(id.as_str())))
 }
 
-/// `sketch_add`'s request: add members to a sketch, as the document writes them.
+/// `sketch_add`'s request: add members to a sketch, as the document writes them, each with a
+/// fresh random 8-character ID, never one a removal freed: a name a feature stores of the
+/// removed member would find the new one.
 #[derive(JsonSchema)]
 #[schemars(rename = "SketchAddRequest", transform = wire_shape)]
 pub struct SketchAddRequestSchema {
@@ -205,7 +207,7 @@ pub struct SketchAddRequestSchema {
     pub revision: u64,
     /// The sketch, by its feature's ID.
     pub sketch: FeatureId,
-    /// The points to add, each with an ID the sketch doesn't hold.
+    /// The points to add, each with an ID the sketch doesn't hold, a fresh one.
     pub points: Vec<SketchPoint>,
     /// The lines to add: each may end at a point the sketch holds, which joins it to that
     /// point's curves, or at one of the points added.
@@ -216,7 +218,8 @@ pub struct SketchAddRequestSchema {
     pub arcs: Vec<SketchArc>,
     /// The constraints to add, naming the sketch's members, the members added, or the
     /// fixed references. One that conflicts with others, or repeats them, is added all the
-    /// same: the sketch then reads as over defined, and its features fail until it's mended.
+    /// same: `check` then reports the conflict, and the sketch's features fail until it's
+    /// mended.
     pub constraints: Vec<SketchConstraint>,
 }
 

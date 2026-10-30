@@ -254,7 +254,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::SketchAdd => (
             "Add to a sketch",
-            "Add points, lines, circles, arcs, and constraints to one sketch, each as the document writes it with an ID the sketch doesn't hold; a new curve may end at a point the sketch holds, joining it there. The batch is checked whole, each problem at its member's path (`circles.cb000003.radius`). A constraint that over-defines the sketch is added all the same: `check` then reports the conflict, and the sketch's features fail until it's mended (make the dimension driven with `set_field`, or remove it). Give the revision the edit was made against.",
+            "Add points, lines, circles, arcs, and constraints to one sketch, each as the document writes it with a fresh random 8-character ID, never one the sketch holds or a removal freed (a name a feature stores of the removed member would find the new one); a new curve may end at a point the sketch holds, joining it there. The batch is checked whole, each problem at its member's path (`circles.cb000003.radius`). A constraint that over-defines the sketch is added all the same: `check` then reports the conflict, and the sketch's features fail until it's mended (make the dimension driven with `set_field`, or remove it). Give the revision the edit was made against.",
         ),
         Command::SketchRemove => (
             "Remove from a sketch",
