@@ -504,3 +504,52 @@ fn a_diagnosis_the_solver_failed_is_never_kept_so_the_next_rebuild_diagnoses_the
         "{read}"
     );
 }
+
+#[test]
+fn a_sketch_not_found_offers_the_documents_first_five_sketches_in_timeline_order() {
+    // Seven sketches, their IDs out of order along the timeline, a box among them. A
+    // feature the document hasn't, and the box, are each refused naming `sketch`, with the
+    // first five sketches the timeline meets as the candidates (`references::CANDIDATES`,
+    // as a chain's edit offers its bases): s0000007, s0000003, s0000006, s0000001, s0000005;
+    // not the five smallest IDs, nor all seven.
+    let dir = tempfile::tempdir().unwrap();
+    let sketches = FakeSketches::new();
+    let solver = sketches.clone();
+    let empty = |id: &str| OTHER.replace("m7f2qx3m", id);
+    let block = r#"{"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 20, "height": 10}"#;
+    let features = [
+        empty("s0000007"),
+        empty("s0000003"),
+        empty("s0000006"),
+        block.to_owned(),
+        empty("s0000001"),
+        empty("s0000005"),
+        empty("s0000002"),
+        empty("s0000004"),
+    ];
+    let features: Vec<&str> = features.iter().map(String::as_str).collect();
+    let sessions = opened(&dir, &document(&features), move || {
+        Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
+    });
+    for (sketch, message) in [
+        ("s0000009", "the document has no feature s0000009"),
+        ("b0000001", "b0000001 is a box, not a sketch"),
+    ] {
+        let read = call(
+            &sessions,
+            "sketch",
+            &json!({"session": "s1", "model": "current", "sketch": sketch}).to_string(),
+        );
+        assert_eq!(
+            (&read["ok"], &read["errors"][0]["message"], &read["total"]),
+            (&json!(false), &json!(message), &json!(1)),
+            "{read}"
+        );
+        assert_eq!(
+            read["errors"][0]["candidates"],
+            json!(["s0000007", "s0000003", "s0000006", "s0000001", "s0000005"]),
+            "{read}"
+        );
+        assert_eq!(read["errors"][0]["parameter"], "sketch", "{read}");
+    }
+}

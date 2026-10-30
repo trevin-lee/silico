@@ -46,12 +46,33 @@ fn the_sketch_tool_refuses_a_box_and_an_unknown_feature_naming_sketch_with_the_s
     }
 }
 
+/// M3.5's refusal of an open end of the line n0000001, at `point`, as the error contract
+/// writes it.
+fn open_end(point: &str) -> Value {
+    json!({
+        "code": "invalid_input",
+        "message": format!(
+            "point {point} ends line n0000001 and no other profile curve, so the profile is open there"
+        ),
+        "feature": "k7f2qx3m",
+        "elements": [point, "n0000001"],
+        "elements_total": 2,
+        "parameter": null,
+        "cause": null,
+        "suggestion": "end another curve at the point to close the outline, or make the curve construction geometry",
+        "candidates": [],
+    })
+}
+
 #[test]
 fn the_sketch_tool_answers_a_sketch_or_says_why_its_solver_isnt_there() {
     // The server's sessions solve on sketch workers found beside the executable: here
-    // there may be none. Either way the answer is the core's envelope, never an RPC error:
-    // solved (four degrees free, both points under defined), or refused with the rebuild's
-    // failure, naming the sketch, with advice.
+    // there may be none. Either way the answer is the core's envelope, never an RPC error.
+    // Solved, the whole result by hand: no equations, two points of two values each, all
+    // free, 4 left and every member under defined; the line open at both ends, M3.5's
+    // refusal for each in point order, 2 in all; no dependency. Or refused with the
+    // rebuild's failure: no sketch worker where Silico looks for one, a fault of no
+    // feature (as every read words a worker that couldn't be had), saying how to build it.
     let mut c = Client::initialized();
     c.file("part.silico", LINE);
     c.open(1, "part.silico");
@@ -62,15 +83,51 @@ fn the_sketch_tool_answers_a_sketch_or_says_why_its_solver_isnt_there() {
     );
     let envelope = &result["structuredContent"];
     if envelope["ok"] == true {
-        assert_eq!(envelope["result"]["dofs"], 4, "{result}");
-        assert_eq!(envelope["result"]["state"], "under_defined");
+        assert_eq!(
+            envelope["result"],
+            json!({
+                "sketch": "k7f2qx3m",
+                "plane": {"origin": [0, 0, 0], "x": [1, 0, 0], "y": [0, 1, 0], "normal": [0, 0, 1]},
+                "state": "under_defined",
+                "dofs": 4,
+                "points": [
+                    {"id": "p0000001", "x": 0, "y": 0, "construction": false, "state": "under_defined"},
+                    {"id": "p0000002", "x": 10, "y": 3, "construction": false, "state": "under_defined"},
+                ],
+                "lines": [{"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false, "state": "under_defined"}],
+                "circles": [],
+                "arcs": [],
+                "constraints": [],
+                "regions": [],
+                "dependencies": [],
+                "dependencies_total": 0,
+                "profile_problems": [open_end("p0000001"), open_end("p0000002")],
+                "profile_problems_total": 2,
+                "solve_problem": null,
+            }),
+            "{result}"
+        );
     } else {
         let error = &envelope["errors"][0];
-        assert_eq!(error["feature"], "k7f2qx3m", "{result}");
-        assert!(error["suggestion"].is_string(), "{result}");
-        assert_ne!(error["code"], Value::Null);
+        assert_eq!(
+            (&error["code"], &error["feature"], &envelope["total"]),
+            (&json!("worker_unavailable"), &Value::Null, &json!(1)),
+            "{result}"
+        );
+        assert!(
+            error["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("silico-sketch-worker")),
+            "{result}"
+        );
+        assert!(
+            error["suggestion"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("build it")),
+            "{result}"
+        );
     }
-    // The session goes on: a ping and a check after it answer.
+    // The session goes on: a check after it answers.
     let check = c.envelope(3, "check", crate::client::CHECK);
     assert_eq!(check["ok"], true, "{check}");
 }

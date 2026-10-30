@@ -985,3 +985,39 @@ fn a_sketch_kept_from_an_earlier_rebuild_or_carried_by_a_save_reads_as_its_first
     );
     reads_alike(5, "formatted");
 }
+
+#[test]
+fn two_square_holes_in_the_rectangle_are_walked_clockwise_from_their_smallest_curves_in_id_order() {
+    // M3.5's rule (src/profile.rs, `walk` and the nesting): each loop from its curve with
+    // the smallest ID, walked as that curve is drawn; an outer loop counter-clockwise, a
+    // hole clockwise, a loop walked the wrong way turned round from that first curve; the
+    // holes by their smallest curve IDs. By hand:
+    // - Hole q, x 5 to 10, y 5 to 10, drawn first: from q0000001, (10, 5) up to (10, 10),
+    //   then q0000004 left, q0000002 down, q0000003 right: counter-clockwise, so turned
+    //   round from q0000001: q0000001, q0000003, q0000002, q0000004.
+    // - Hole m, x 25 to 30, y 5 to 10, drawn after: from m0000001, (25, 5) up to (25, 10),
+    //   then m0000002 right, m0000003 down, m0000004 left: clockwise already, as drawn.
+    // - m0000001 < q0000001, so hole m first, though drawn after and further along x.
+    let f = fixture();
+    let points = r#""points": [{"id": "ha000001", "x": 5, "y": 5, "construction": false}, {"id": "ha000002", "x": 10, "y": 5, "construction": false}, {"id": "ha000003", "x": 10, "y": 10, "construction": false}, {"id": "ha000004", "x": 5, "y": 10, "construction": false}, {"id": "hb000001", "x": 25, "y": 5, "construction": false}, {"id": "hb000002", "x": 30, "y": 5, "construction": false}, {"id": "hb000003", "x": 30, "y": 10, "construction": false}, {"id": "hb000004", "x": 25, "y": 10, "construction": false}, "#;
+    let lines = r#""lines": [{"id": "q0000003", "from": "ha000001", "to": "ha000002", "construction": false}, {"id": "q0000001", "from": "ha000002", "to": "ha000003", "construction": false}, {"id": "q0000004", "from": "ha000004", "to": "ha000003", "construction": false}, {"id": "q0000002", "from": "ha000001", "to": "ha000004", "construction": false}, {"id": "m0000001", "from": "hb000001", "to": "hb000004", "construction": false}, {"id": "m0000002", "from": "hb000004", "to": "hb000003", "construction": false}, {"id": "m0000003", "from": "hb000003", "to": "hb000002", "construction": false}, {"id": "m0000004", "from": "hb000002", "to": "hb000001", "construction": false}, "#;
+    let text = rectangle(&[], "")
+        .replace(r#""points": ["#, points)
+        .replace(r#""lines": ["#, lines);
+    f.open("holes.silico", &document(&[&text]));
+    let holed = f.result("k7f2qx3m");
+    assert_eq!(
+        holed["regions"],
+        json!([{
+            "outer": ["6t7v8w9x", "a0b1c2d3", "j8k9m0n1", "p2q3r4s5"],
+            "holes": [
+                ["m0000001", "m0000002", "m0000003", "m0000004"],
+                ["q0000001", "q0000003", "q0000002", "q0000004"]
+            ]
+        }])
+    );
+    assert_eq!(
+        (&holed["profile_problems"], &holed["profile_problems_total"]),
+        (&json!([]), &json!(0))
+    );
+}
