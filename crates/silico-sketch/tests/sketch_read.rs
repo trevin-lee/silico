@@ -540,6 +540,7 @@ fn the_rectangle_given_a_second_width_that_disagrees_reads_negative_degrees_of_f
         )
     );
     let constraints = states(&read, "constraints");
+    assert_eq!(constraints.len(), 9, "{constraints:?}");
     for (id, state) in &constraints {
         let want = if id == "g4h5j6k7" || id == "zz000003" {
             "conflicting"
