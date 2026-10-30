@@ -899,6 +899,48 @@ def edit_extend(s, e, applied):
     # FreeCAD's own extend (SketchObject::extend): a line's end through moveGeometry's drag,
     # an arc's range written by setRange, each then solved (sketch-edit.md section 7).
     edit_call(s.extend, e["geometry"], e["increment"], e["position"])
+    if e["target"] is None:
+        return
+    # A line's moving end, written at the request's target after the drag, as decision (3)
+    # writes Silico's (sketch-edit.md:328), at each of FreeCAD's places that are Silico's
+    # point, so both solves start alike; the rest of FreeCAD's drag frame as it left it. An
+    # arc is set as Silico's model takes one from its points (arc_from_points): the radius
+    # from its centre to its start, the angles of its start and end. The geometry list set
+    # whole is a property change, which FreeCAD takes without a solve; a point's copy loses
+    # its geometry ID and construction, so each is set back as it was.
+    at = V(e["target"][0], e["target"][1], 0)
+    ids = [(i, s.getGeometryId(i)) for i in range(len(s.Geometry))]
+    construction = [s.getConstruction(i) for i in range(len(s.Geometry))]
+    geos = s.Geometry
+    for g, pos in e["places"]:
+        geo = geos[g]
+        kind = curve_kind(geo)
+        if kind == "line" and pos == 1:
+            geo.StartPoint = at
+        elif kind == "line" and pos == 2:
+            geo.EndPoint = at
+        elif kind == "circle" and pos == 3:
+            geo.Center = at
+        elif kind == "arc" and pos in (1, 2, 3):
+            c, a, b = geo.Center, geo.StartPoint, geo.EndPoint
+            c, a, b = [at if pos == p else q for p, q in ((3, c), (1, a), (2, b))]
+            start = math.atan2(a.y - c.y, a.x - c.x)
+            end = math.atan2(b.y - c.y, b.x - c.x)
+            if end < start:
+                end += 2 * math.pi
+            geo.Center = c
+            geo.Radius = math.hypot(a.x - c.x, a.y - c.y)
+            geo.setParameterRange(start, end)
+        elif kind == "point" and pos == 1:
+            geo.X, geo.Y = at.x, at.y
+        else:
+            raise RuntimeError("extend: geometry %d's position %d (a %s) can't be written" % (g, pos, kind))
+    s.Geometry = geos
+    s.setGeometryIds(ids)
+    for i, was in enumerate(construction):
+        if s.getConstruction(i) != was:
+            s.setConstruction(i, was)
+    applied.append(328)
 
 
 SKETCH_EDITS = {
