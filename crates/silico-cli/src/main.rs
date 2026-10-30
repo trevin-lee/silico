@@ -4,7 +4,9 @@
 //! stdin and stdout (`silico_mcp`; docs/design/m4.9-mcp.md). `check`, `fmt`, `show`,
 //! `cache clear`, and `export` each open a file as a session, run one session command on it
 //! (`check`, `format`, `outline`, `cache_clear`, `export`), and close it
-//! (docs/design/m4.1-command-api.md, section 9). `check` and `fmt` run every file on one
+//! (docs/design/m4.1-command-api.md, section 9); `fmt --merge-touching` runs `check` and a
+//! `sketch_merge` of each cluster of touching ends before its `format`, in one transaction
+//! (`begin`, then `commit`). `check` and `fmt` run every file on one
 //! kernel pool and one sketch solver, and `export` its file on one of each; `show` and
 //! `cache clear` rebuild nothing, so they start neither.
 //!
@@ -36,7 +38,7 @@ macro_rules! say {
 }
 
 const USAGE: &str = "usage: silico check [--json] [--fresh] [--] FILE...
-       silico fmt [--check] [--] FILE...
+       silico fmt [--check] [--merge-touching] [--] FILE...
        silico show [--] FILE
        silico cache clear [--] FILE...
        silico export [--tolerance=MM] [--features=ID,...] [--replace] [--] FILE OUT.3mf
@@ -92,6 +94,7 @@ enum Command {
     },
     Fmt {
         check: bool,
+        merge_touching: bool,
     },
     Show,
     CacheClear,
@@ -131,8 +134,9 @@ impl Command {
             "fmt" => (
                 Command::Fmt {
                     check: flag("--check"),
+                    merge_touching: flag("--merge-touching"),
                 },
-                &["--check"],
+                &["--check", "--merge-touching"],
             ),
             "show" => (Command::Show, &[]),
             "export" => (
@@ -262,7 +266,13 @@ fn main() -> ExitCode {
         (Command::Check { json, fresh }, _) => {
             each(&|sessions, file| check(sessions, file, json, fresh))
         }
-        (Command::Fmt { check }, _) => each(&|sessions, file| fmt(sessions, file, check)),
+        (
+            Command::Fmt {
+                check,
+                merge_touching,
+            },
+            _,
+        ) => each(&|sessions, file| fmt(sessions, file, check, merge_touching)),
         (Command::CacheClear, _) => {
             // Nothing is rebuilt: no kernel is started, and the user's cache secret is
             // neither read nor made (a clear removes entries whoever sealed them).
@@ -843,28 +853,61 @@ impl<'a> LineError<'a> {
 /// write. A read-only file, or one changed while it was rebuilt, isn't written (exit 2). A
 /// kernel fault the rebuild met is said last (exit 2): the features it stopped keep what's
 /// stored with them, as failed ones do, and the rest is written (decision 32).
-fn fmt(sessions: &Sessions<KernelPool>, file: &Path, check_only: bool) -> Ended {
+///
+/// With `--merge-touching` (docs/design/m5.0-app.md, `sketch_merge`, decision 17), first,
+/// inside one transaction, one `sketch_merge` for each `ends_not_joined` cluster `check`
+/// warns of, keeping the cluster's least ID ([`merge_touching`]); then the `format`, held in
+/// the transaction, and its `commit`, which writes the file (with `--check`, a `rollback`,
+/// nothing written, and a merge it would make said as a rewrite it would make).
+fn fmt(
+    sessions: &Sessions<KernelPool>,
+    file: &Path,
+    check_only: bool,
+    merge_touching: bool,
+) -> Ended {
     in_session(
         sessions,
         file,
         "fmt",
         |refusal| refusal.said(file),
         |id| {
+            let mut ended = Ended::Clean;
+            let mut merged = false;
+            if merge_touching {
+                if let Err(problems) = sessions.begin(id).wait().result {
+                    return Refusal::of_command("fmt", &problems).said(file);
+                }
+                let (made, end) = self::merge_touching(sessions, id, file, check_only);
+                merged = made;
+                ended = ended.and(end);
+                if matches!(ended, Ended::Failed) {
+                    let _ = sessions.rollback(id).wait();
+                    return ended;
+                }
+            }
             let Response { model, result, .. } = sessions.format(id, None, !check_only).wait();
             let formatted = match result {
                 Ok(formatted) => formatted,
                 Err(problems) => {
+                    if merge_touching {
+                        let _ = sessions.rollback(id).wait();
+                    }
                     let fault = model.and_then(|read| read.fault);
-                    return Refusal::of_command("fmt", &problems)
-                        .with_fault(fault, "fmt")
-                        .said(file);
+                    return ended.and(
+                        Refusal::of_command("fmt", &problems)
+                            .with_fault(fault, "fmt")
+                            .said(file),
+                    );
                 }
             };
             let problems = &formatted.problems;
             print_problems(file, problems.errors(), problems.total());
-            let mut ended = Ended::of(problems);
+            ended = ended.and(Ended::of(problems));
             if check_only {
-                if formatted.changed {
+                if merge_touching {
+                    let _ = sessions.rollback(id).wait();
+                }
+                if formatted.changed || merged {
                     say!(
                         "{}: not in canonical form; `silico fmt` would rewrite it",
                         shown(file)
@@ -872,6 +915,16 @@ fn fmt(sessions: &Sessions<KernelPool>, file: &Path, check_only: bool) -> Ended 
                     ended = ended.and(Ended::Problems);
                 }
             } else {
+                // Inside the transaction, the format held what it would write, and the
+                // commit writes it.
+                if merge_touching {
+                    match sessions.commit(id).wait().result {
+                        Ok(_) => {}
+                        Err(problems) => {
+                            return ended.and(Refusal::of_command("fmt", &problems).said(file));
+                        }
+                    }
+                }
                 // A feature whose drift it accepted had a fingerprint stored, which it
                 // rewrote; every other had none.
                 for id in &formatted.refingerprinted {
@@ -893,6 +946,107 @@ fn fmt(sessions: &Sessions<KernelPool>, file: &Path, check_only: bool) -> Ended 
             ended
         },
     )
+}
+
+/// The most rounds of `check` and merges [`merge_touching`] makes: each round merges every
+/// cluster `check` lists (the first hundred warnings, each the first hundred points), so a
+/// cluster or a document with more needs another; a round that merges nothing new ends it.
+const MERGE_ROUNDS: usize = 64;
+
+/// `fmt --merge-touching`'s merges, in session `id`'s open transaction: for each
+/// `ends_not_joined` cluster the current model's `check` warns of (by timeline, then by its
+/// least point ID, as warnings are ordered), one `sketch_merge` of its points, the least ID
+/// first, so the point it keeps is the same on every machine and the file written is too
+/// (the merge makes no new ID). Each merge said on stderr (`merged` or, with `check_only`,
+/// `would merge`); a cluster whose merge is refused is said with why, and the others still
+/// merge (a refused merge leaves the transaction as it was), the document then having
+/// problems (exit 1). Whether any merge was made, and how it ended: a kernel fault, or a
+/// command that couldn't run, ends it (exit 2).
+fn merge_touching(
+    sessions: &Sessions<KernelPool>,
+    id: &SessionId,
+    file: &Path,
+    check_only: bool,
+) -> (bool, Ended) {
+    use silico_core::WarningCode;
+    use silico_core::document::{ElementId, FeatureId};
+    let mut tried: std::collections::BTreeSet<(String, Vec<String>)> = Default::default();
+    let mut merged = false;
+    let mut ended = Ended::Clean;
+    for _ in 0..MERGE_ROUNDS {
+        let Response { model, result, .. } = sessions
+            .check(id, CheckModel::Current { fresh: false })
+            .wait();
+        let warnings = match result {
+            Ok(answer) => answer.warnings,
+            Err(problems) => {
+                let fault = model.and_then(|read| read.fault);
+                return (
+                    merged,
+                    Refusal::of_command("fmt", &problems)
+                        .with_fault(fault, "fmt")
+                        .said(file),
+                );
+            }
+        };
+        if let Some(fault) = model.and_then(|read| read.fault) {
+            say!("{}: {}", shown(file), with_retry(&fault, "fmt"));
+            return (merged, Ended::Failed);
+        }
+        let clusters: Vec<(String, Vec<String>)> = warnings
+            .listed()
+            .iter()
+            .filter(|w| w.code() == WarningCode::EndsNotJoined)
+            .filter_map(|w| {
+                let mut points = w.elements().to_vec();
+                points.sort();
+                Some((w.feature()?.to_owned(), points))
+            })
+            .filter(|cluster| !tried.contains(cluster))
+            .collect();
+        if clusters.is_empty() {
+            break;
+        }
+        for (sketch, points) in clusters {
+            tried.insert((sketch.clone(), points.clone()));
+            let ids: Option<Vec<ElementId>> = points.iter().map(|p| ElementId::new(p)).collect();
+            let (Some(feature), Some(ids)) = (FeatureId::new(&sketch), ids) else {
+                continue;
+            };
+            let revision = match sessions.status(id).session {
+                Some(info) => info.revision,
+                None => return (merged, Ended::Failed),
+            };
+            let listed = points.join(", ");
+            match sessions
+                .sketch_merge(id, revision, feature, ids)
+                .wait()
+                .result
+            {
+                Ok(_) => {
+                    merged = true;
+                    let what = if check_only { "would merge" } else { "merged" };
+                    say!(
+                        "{}: {what} points {listed} of sketch {sketch}, keeping {}",
+                        shown(file),
+                        points[0]
+                    );
+                }
+                Err(problems) => {
+                    let refusal = Refusal::of_command("fmt", &problems);
+                    if refusal.failed {
+                        return (merged, refusal.said(file));
+                    }
+                    say!(
+                        "{}: couldn't merge points {listed} of sketch {sketch}:",
+                        shown(file)
+                    );
+                    ended = ended.and(refusal.said(file));
+                }
+            }
+        }
+    }
+    (merged, ended)
 }
 
 /// `silico export FILE OUT.3mf` or `OUT.step`: open, the session's `export` of its current

@@ -16,8 +16,8 @@ use serde_json::value::RawValue;
 use silico_core::cache::Cache;
 use silico_core::command::Sessions;
 use silico_core::fake::{FakeKernel, FakeRenderer, FakeSketches};
-use silico_core::sketch::SketchSolver;
 use silico_core::kernel::{Op, Primitive};
+use silico_core::sketch::SketchSolver;
 use silico_mcp::{Ended, Server, Stop};
 use tempfile::TempDir;
 

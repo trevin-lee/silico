@@ -309,9 +309,7 @@ fn named_edge(f: &Fixture, session: &str) -> ([f64; 3], [f64; 3]) {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| {
-            e["name"] == NAME || e["aliases"].as_array().unwrap().iter().any(|a| a == NAME)
-        })
+        .filter(|e| e["name"] == NAME || e["aliases"].as_array().unwrap().iter().any(|a| a == NAME))
         .collect();
     let [edge] = found.as_slice() else {
         panic!("{NAME}: {found:?}")
@@ -326,7 +324,7 @@ fn named_edge(f: &Fixture, session: &str) -> ([f64; 3], [f64; 3]) {
 
 #[test]
 fn a_split_lists_the_fillet_whose_name_its_line_reaches_and_the_name_then_finds_the_start_side_piece()
-{
+ {
     // docs/design/m5.0-app.md, open item 11: na000001, from (-30, -15) to (30, -15), split
     // at (0, -15): the start-side piece keeps its ID, so the name made from it finds the
     // edge that piece sweeps, from x = -30 to 0, half of what it found; the split's

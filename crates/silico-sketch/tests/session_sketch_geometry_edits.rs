@@ -214,7 +214,7 @@ fn a_split_trim_or_unjoin_whose_solve_conflicts_is_refused_as_data_inside_a_tran
 
 #[test]
 fn a_split_of_the_over_defined_base_line_makes_both_lengths_distances_of_its_outer_ends_which_conflict()
-{
+ {
     // Split, each length of the base line becomes a distance of its outer ends, under its
     // ID (§3's table): 60 and 61 between pa000001 and pa000002, which can't both hold.
     let f = bracket();
