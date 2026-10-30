@@ -511,7 +511,13 @@ fn hostile_step_requests_by_name_are_refused_at_their_fields_and_leave_the_stack
 
 #[test]
 fn a_step_after_rollback_or_commit_is_refused_as_no_transaction_and_status_has_none() {
-    for end in ["rollback", "commit"] {
+    for (end, request) in [
+        ("rollback", r#"{"session": "s1"}"#),
+        (
+            "commit",
+            r#"{"session": "s1", "path": null, "replace": false}"#,
+        ),
+    ] {
         let f = opened(&block(40));
         answer(f.sessions.begin(&f.id)).result.unwrap();
         answer(f.sessions.set_field(
@@ -523,7 +529,7 @@ fn a_step_after_rollback_or_commit_is_refused_as_no_transaction_and_status_has_n
         ))
         .result
         .unwrap();
-        let ended = call(&f, end, r#"{"session": "s1"}"#);
+        let ended = call(&f, end, request);
         assert_eq!(ended["ok"], true, "{end}: {ended}");
         let at = f.revision().number();
         for name in ["undo", "redo"] {
