@@ -786,7 +786,9 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "angle",
                 "render",
                 "read_logs",
-                "export"
+                "export",
+                "move_feature",
+                "timeline"
             ]
         );
     }

@@ -158,14 +158,16 @@ fn effect(command: Command) -> Effect {
         | Command::Schema
         | Command::MassProperties
         | Command::Distance
-        | Command::Angle => Effect::Reads,
+        | Command::Angle
+        | Command::Timeline => Effect::Reads,
         // An edit outside a transaction saves at once; commit and format save the file.
         Command::Commit
         | Command::Format
         | Command::AddFeature
         | Command::SetField
         | Command::RemoveFeature
-        | Command::ReplaceText => Effect::Changes { destructive: true },
+        | Command::ReplaceText
+        | Command::MoveFeature => Effect::Changes { destructive: true },
         // `replace: true` writes over a file at `to`, or at `path`.
         Command::Render | Command::Export => Effect::Changes { destructive: true },
         // A new document is only made where nothing is; the rest change what the server
@@ -230,7 +232,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::AddFeature => (
             "Add a feature",
-            "Add a feature at the end of the session's timeline. Give the revision the edit was made against, as the session's last answer says it.",
+            "Add a feature at the end of the session's timeline (`before: null`), or before another: then each input it takes (its base, its tool) that a feature after it consumed is consumed by it instead, that feature's field rewired to it, listed in `rewired`. Give the revision the edit was made against, as the session's last answer says it.",
         ),
         Command::SetField => (
             "Set a field",
@@ -238,7 +240,11 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::RemoveFeature => (
             "Remove a feature",
-            "Remove one feature, which no other may use; its JSON is returned. Give the revision the edit was made against.",
+            "Remove one feature; its JSON is returned. The feature that consumed it takes its base, listed in `rewired`. Refused, naming both, where nothing can stand in: a chain's first feature under one that needs a base, a feature's sketch, or a feature whose elements another names. Give the revision the edit was made against.",
+        ),
+        Command::MoveFeature => (
+            "Move a feature",
+            "Move one feature before another, or to the end (`before: null`), rewiring the chains it leaves and joins: its consumer takes its base, it builds on the last feature of its chain before the new place, and the next one builds on it, each change listed in `rewired`. Refused, naming both, where a child would come before its parent (its sketch, its tool, a feature whose elements it names). Give the revision the edit was made against.",
         ),
         Command::ReplaceText => (
             "Replace the text",
@@ -251,6 +257,10 @@ fn words(command: Command) -> (&'static str, String) {
         Command::Outline => (
             "Outline",
             "The document's outline, one line a feature with its values, as `silico show` prints it.",
+        ),
+        Command::Timeline => (
+            "Timeline",
+            "The document's features in timeline order, structured: each one's ID, type, name, inputs, and health (healthy, warning, error, suppressed, or unknown) from the model named, with how many problems and warnings it has (`check` gives their text); and the bodies. A document the gate refuses is listed too, every health unknown.",
         ),
         Command::Check => (
             "Check",
@@ -299,8 +309,11 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::AddFeature
         | Command::SetField
         | Command::RemoveFeature
-        | Command::ReplaceText => &[IN_A_TRANSACTION, READ_CURRENT],
-        Command::Check | Command::MassProperties | Command::Render => &[READ_CURRENT],
+        | Command::ReplaceText
+        | Command::MoveFeature => &[IN_A_TRANSACTION, READ_CURRENT],
+        Command::Check | Command::MassProperties | Command::Render | Command::Timeline => {
+            &[READ_CURRENT]
+        }
         Command::Elements | Command::Query | Command::Distance | Command::Angle => {
             &[READ_CURRENT, NAMES_FROM_ELEMENTS]
         }

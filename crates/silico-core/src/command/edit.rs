@@ -1,10 +1,12 @@
-//! Edits of a session's document (docs/design/m4.1-command-api.md, section 5): a feature
-//! added, a field set, a feature removed, the whole text replaced. A feature added and a
+//! Edits of a session's document (docs/design/m4.1-command-api.md, section 5; and
+//! docs/design/m5.0-app.md, section 7): a feature added (at the end, or before another), a
+//! field set, a feature removed or moved, the whole text replaced. A feature added and a
 //! field set are made on a feature's JSON tree (`document::json::Node`): the request's
 //! feature, or the feature's canonical tree with the request's value put where its field
 //! is, read back by the one reader every file is read by, with no place in a text (so its
-//! errors name fields by their paths alone). A feature is removed from the document as it
-//! is; a text replaced is read as a file is. Each edited document is then written in
+//! errors name fields by their paths alone). A feature inserted before another, removed, or
+//! moved is placed in its chain by `document::chain`, which rewires the `base` and `tool`
+//! links the edit changes; a text replaced is read as a file is. Each edited document is then written in
 //! canonical form, and that text put through the reader and the gate, once: a bad edit is
 //! refused whole, with every error the gate finds, places counted as the edited document
 //! has them (the request's or the text's own order, not the canonical text's).
@@ -20,6 +22,7 @@
 use std::sync::Arc;
 
 use super::{Gated, Problems};
+use crate::document::chain::{self, Rewired};
 use crate::document::json::{self, Member, Node, Plain, Value};
 use crate::document::undo::Prepared;
 use crate::document::{
@@ -629,21 +632,37 @@ fn repeated_ids(
     }
 }
 
-/// `feature`, a feature as the document writes it, added to the end of `document`'s
-/// timeline (the design's `add_feature`): with the ID `new_id` makes if it gives none, and
-/// the feature type's current version if it gives no `v` (each `null` given as none, as is
-/// a `null` fingerprint, note, or other member the feature may leave out: the design's
-/// section 2); the feature as the document then holds it, and the state it leads
-/// to. Refused for a feature that isn't an object (in the words the wire refuses one in,
-/// before it gets here: this is for the Rust API's callers), gives a fingerprint (a commit
-/// writes it), or gives an ID that isn't one, or that the document holds (each naming
-/// `feature.id`); and with every error the reader or the gate finds in the document with
-/// it added.
+/// What `add_feature` made: the feature as the document then holds it, its place, from 0,
+/// what its insert rewired, and the state it leads to.
+pub(super) struct Inserted {
+    pub(super) feature: Feature,
+    pub(super) index: usize,
+    pub(super) rewired: Vec<Rewired>,
+    pub(super) candidate: Candidate,
+}
+
+/// `feature`, a feature as the document writes it, added to `checked`'s timeline before the
+/// feature `before`, or at the end for none (the design's `add_feature`, with M5.0's
+/// `before`): with the ID `new_id` makes if it gives none, and the feature type's current
+/// version if it gives no `v` (each `null` given as none, as is a `null` fingerprint, note,
+/// or other member the feature may leave out: the design's section 2). Before a feature,
+/// it's inserted into its chain (`document::chain::insert`): each input it consumes that a
+/// feature at or after its place consumed is consumed by it instead, that feature's field
+/// rewired to it. At the end, it's appended, as M4 adds a feature, and an input another
+/// consumes is the gate's to refuse ("already consumed"). Refused for a `before` the
+/// document hasn't (naming `before`), for a feature that isn't an object (in the words the
+/// wire refuses one in, before it gets here: this is for the Rust API's callers), gives a
+/// fingerprint (a commit writes it), or gives an ID that isn't one, or that the document
+/// holds (each naming `feature.id`); for an insert the chain refuses; and with every error
+/// the reader or the gate finds in the document with it added.
 pub(super) fn add_feature(
-    document: &Document,
+    checked: &Checked,
+    before: Option<&FeatureId>,
     feature: Node,
     new_id: impl FnOnce(&Document) -> Result<FeatureId, Error>,
-) -> Result<(Feature, Candidate), Problems> {
+) -> Result<Inserted, Problems> {
+    let document = checked.document();
+    let index = chain::insert_place(document, before)?;
     let Value::Object(mut members) = feature.value else {
         return Err(Problems::from(
             Error::new(
@@ -730,7 +749,6 @@ pub(super) fn add_feature(
             value: unplaced(Value::Number(FeatureVersion::NUMBER.to_string())),
         });
     }
-    let index = document.features.len();
     let mut node = unplaced(Value::Object(members));
     json::unplace(&mut node);
     let place = format!("features[{index}]");
@@ -744,8 +762,17 @@ pub(super) fn add_feature(
             e
         }
     })?;
-    let mut edited = document.clone();
-    edited.features.push(added);
+    let (edited, rewired) = match before {
+        None => {
+            let mut edited = document.clone();
+            edited.features.push(added);
+            (edited, Vec::new())
+        }
+        Some(before) => {
+            let inserted = chain::insert(checked, added, Some(before))?;
+            (inserted.document, inserted.rewired)
+        }
+    };
     let candidate = candidate(&edited, "feature")?;
     // As the document now holds it: the text read again.
     let held = candidate
@@ -763,22 +790,49 @@ pub(super) fn add_feature(
                 .with_suggestion(crate::worker::SILICO_BUG),
             )
         })?;
-    Ok((held, candidate))
+    Ok(Inserted {
+        feature: held,
+        index,
+        rewired,
+        candidate,
+    })
 }
 
-/// The feature `id` removed from `document` (the design's `remove_feature`): the feature as
-/// the document held it, its place in the timeline, from 0, and the state it leads to.
-/// Refused for a feature the document hasn't, and with every error the gate finds in the
-/// document without it: each feature that used it, naming it.
+/// The feature `id` removed from `checked` (the design's `remove_feature`, as M5.0's A9
+/// amends it: `document::chain::remove`): the chain's removal (the feature as the document
+/// held it, its place in the timeline, from 0, and each consumer that took its base), and
+/// the state it leads to. Refused for a feature the document hasn't, where nothing can stand
+/// in for it (a chain's root under a feature that needs a base, a feature whose sketch it
+/// is, or one that stores names of its elements, each naming both), where a feature's base
+/// would no longer be built from a maker of its stored names (open item 2b), and with every
+/// error the gate finds in the document without it.
 pub(super) fn remove_feature(
-    document: &Document,
+    checked: &Checked,
     id: &FeatureId,
-) -> Result<(Feature, usize, Candidate), Problems> {
-    let (index, removed) = place_of(document, id)?;
-    let removed = removed.clone();
-    let mut edited = document.clone();
-    edited.features.retain(|feature| feature.id != *id);
-    Ok((removed, index, candidate(&edited, "feature")?))
+) -> Result<(chain::Removed, Candidate), Problems> {
+    place_of(checked.document(), id)?;
+    let removed = chain::remove(checked, id)?;
+    let candidate = candidate(&removed.document, "feature")?;
+    Ok((removed, candidate))
+}
+
+/// The feature `id` of `checked` moved before the feature `before`, or to the end for none
+/// (docs/design/m5.0-app.md, `move_feature`: `document::chain::move_feature`): the chain's
+/// move, and the state it leads to, none for a move to where it is. Refused for a feature
+/// or a `before` the document hasn't, for each move the chain refuses (naming both
+/// features), and with every error the gate finds in the document after the move.
+pub(super) fn move_feature(
+    checked: &Checked,
+    id: &FeatureId,
+    before: Option<&FeatureId>,
+) -> Result<(chain::Moved, Option<Candidate>), Problems> {
+    place_of(checked.document(), id)?;
+    let moved = chain::move_feature(checked, id, before)?;
+    if !moved.changed {
+        return Ok((moved, None));
+    }
+    let candidate = candidate(&moved.document, "feature")?;
+    Ok((moved, Some(candidate)))
 }
 
 /// The document's text replaced by `text` (the design's `replace_text`), put through the

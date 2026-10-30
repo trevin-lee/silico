@@ -9,7 +9,7 @@ use super::cancel::Ticket;
 use super::transaction::Held;
 use super::{Committed, Gated, ModelRead, Problems, Revision, Session, SessionId, shown_path};
 use crate::command::edit::Candidate;
-use crate::document::Document;
+use crate::document::{Checked, Document};
 use crate::kernel::Kernel;
 use crate::{Error, ErrorCode};
 
@@ -119,12 +119,13 @@ pub(super) struct Base<'a> {
 }
 
 impl<'a> Base<'a> {
-    /// The document a typed edit (`add_feature`, `set_field`, `remove_feature`) edits: one
+    /// The document a typed edit (`add_feature`, `set_field`, `remove_feature`,
+    /// `move_feature`) edits: one
     /// the gate took. A document it refused is mended by `replace_text` alone (decision 21),
     /// so every other edit of it is refused.
-    pub(super) fn checked(&self) -> Result<&'a Document, Problems> {
+    pub(super) fn checked(&self) -> Result<&'a Checked, Problems> {
         match self.gated {
-            Gated::Checked(checked) => Ok(checked.document()),
+            Gated::Checked(checked) => Ok(checked),
             Gated::Unread(_) | Gated::Refused(..) => Err(Problems::from(
                 Error::new(
                     ErrorCode::InvalidInput,

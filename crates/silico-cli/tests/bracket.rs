@@ -22,6 +22,10 @@
 //! FreeCAD 1.1.3 (the oracle) reads it back, makes a solid of it, and finds that solid
 //! valid, with the mesh's volume.
 //!
+//! **M5.1's timeline commands** on the same bracket and the real kernel: its timeline, its
+//! pockets swapped (`move_feature`), the first removed and added back `before` the sketch
+//! that followed it, each result the design's example and each volume by hand.
+//!
 //! **Recording.** With `SILICO_BRACKET_RECORD=1` set, the session is first driven live by
 //! [`record`], which plays the agent (each request built from the replies before it, as an
 //! agent reads them), and `session.jsonl` is written from the real replies; the replay and
@@ -44,6 +48,10 @@ mod run;
 mod serve;
 #[path = "common/threemf.rs"]
 mod threemf;
+// The bracket's features as its session added them, which silico-core's timeline edits'
+// tests share.
+#[path = "../../silico-core/tests/common/bracket.rs"]
+mod features;
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -399,7 +407,7 @@ impl Recorder {
     /// `add_feature` of `feature` (JSON text), against the session's revision.
     fn add(&mut self, note: &str, feature: &str) -> Value {
         let arguments = format!(
-            r#"{{"session": "s1", "revision": {}, "feature": {feature}}}"#,
+            r#"{{"session": "s1", "revision": {}, "before": null, "feature": {feature}}}"#,
             self.revision
         );
         self.call(note, "add_feature", &arguments)
@@ -1002,4 +1010,166 @@ fn the_bracket_session_replays_measures_as_by_hand_and_its_3mf_reads_back_in_the
         (theirs - mesh_volume).abs() <= 1e-9 * mesh_volume,
         "FreeCAD's solid {theirs} mm³, the mesh {mesh_volume}"
     );
+}
+
+// --- M5.1's timeline commands on the real kernel ---------------------------------------------
+
+/// silico-core's committed example `name` (`move_feature/result`), read as JSON.
+fn core_example(name: &str) -> Value {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../silico-core/tests/contract/commands/examples")
+        .join(format!("{name}.json"));
+    serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+}
+
+/// A tool's answer's envelope, through `serve`.
+fn called(serve: &mut Serve, id: u64, tool: &str, arguments: &str) -> Value {
+    let send = format!(
+        r#"{{"jsonrpc": "2.0", "id": {id}, "method": "tools/call", "params": {{"name": "{tool}", "arguments": {arguments}}}}}"#
+    );
+    let reply = serve.send(&send).unwrap();
+    let answer: Reply = serde_json::from_str(&reply).unwrap();
+    let envelope: Value = serde_json::from_str(answer.result.structured.get()).unwrap();
+    assert_eq!(
+        answer.result.is_error,
+        envelope["ok"] == false,
+        "{tool}: {envelope}"
+    );
+    holds(&tools()[tool]["outputSchema"], &envelope, tool);
+    envelope
+}
+
+#[test]
+fn the_bracket_s_timeline_edits_through_serve_measure_as_by_hand() {
+    // The design's M5.1 examples on the real kernel (docs/design/m5.0-app.md, section 7):
+    // the bracket, formatted so each feature stores its fingerprint, then, inside a
+    // transaction, its timeline, the pockets swapped by `move_feature`, the first removed,
+    // and it added back before s0000003; each result the design's, each volume by hand.
+    use features::*;
+    let mut serve = Serve::start();
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        [
+            S0000001, P0000001, S0000002, H0000001, S0000003, H0000002, F0000001
+        ]
+        .join(", ")
+    );
+    std::fs::write(serve.work.join("bracket.silico"), text).unwrap();
+    serve.send(INITIALIZE).unwrap();
+    assert!(serve.send(INITIALIZED).is_none());
+    let mut id = 0;
+    let mut call = |serve: &mut Serve, tool: &str, arguments: &str| {
+        id += 1;
+        called(serve, id, tool, arguments)
+    };
+    let opened = call(
+        &mut serve,
+        "open",
+        r#"{"path": "bracket.silico", "create": false}"#,
+    );
+    assert_eq!(opened["ok"], true, "{opened}");
+    let formatted = call(
+        &mut serve,
+        "format",
+        r#"{"session": "s1", "features": null, "write": true}"#,
+    );
+    assert_eq!(formatted["result"]["written"], true, "{formatted}");
+    let volume = |serve: &mut Serve, call: &mut dyn FnMut(&mut Serve, &str, &str) -> Value| {
+        let answer = call(
+            serve,
+            "mass_properties",
+            r#"{"session": "s1", "model": "current", "feature": null}"#,
+        );
+        mass(&answer)["volume"].clone()
+    };
+    // All built: the legs, less the four holes, and the fillet's spandrel, 20,739.435948.
+    let whole = bracket().volume;
+    measured("the bracket", &volume(&mut serve, &mut call), whole);
+    let begun = call(&mut serve, "begin", r#"{"session": "s1"}"#);
+    let at = begun["session"]["revision"].as_u64().unwrap();
+
+    // The timeline: every feature healthy, as the design's example lists them, the fillet
+    // the one body.
+    let timeline = call(
+        &mut serve,
+        "timeline",
+        r#"{"session": "s1", "model": "current"}"#,
+    );
+    let example = core_example("timeline/result");
+    assert_eq!(
+        timeline["result"]["features"], example["features"],
+        "{timeline}"
+    );
+    assert_eq!(timeline["result"]["bodies"], example["bodies"]);
+    assert_eq!(timeline["result"]["revision"], at);
+    assert_eq!(timeline["result"]["model_revision"], at);
+    assert_eq!(timeline["result"]["problems"], 0);
+
+    // The pockets swapped: the design's result, word for word; the cuts commute, so the
+    // volume is the same.
+    let moved = call(
+        &mut serve,
+        "move_feature",
+        &format!(
+            r#"{{"session": "s1", "revision": {at}, "feature": "h0000001", "before": "f0000001"}}"#
+        ),
+    );
+    assert_eq!(
+        moved["result"],
+        core_example("move_feature/result"),
+        "{moved}"
+    );
+    measured("the pockets swapped", &volume(&mut serve, &mut call), whole);
+    // Rebuilt on their new bases, each feature still healthy: the edits' reach is excepted
+    // from drift until the commit writes it.
+    let timeline = call(
+        &mut serve,
+        "timeline",
+        r#"{"session": "s1", "model": "current"}"#,
+    );
+    for entry in timeline["result"]["features"].as_array().unwrap() {
+        assert_eq!(entry["health"], "healthy", "{entry}");
+    }
+    let rolled = call(&mut serve, "rollback", r#"{"session": "s1"}"#);
+    let at = rolled["session"]["revision"].as_u64().unwrap();
+    call(&mut serve, "begin", r#"{"session": "s1"}"#);
+
+    // The first pocket removed: h0000002 on the pad, so two holes fewer, 20,977.019.
+    let removed = call(
+        &mut serve,
+        "remove_feature",
+        &format!(r#"{{"session": "s1", "revision": {at}, "feature": "h0000001"}}"#),
+    );
+    assert_eq!(
+        removed["result"]["rewired"],
+        core_example("remove_feature/result-rewired")["rewired"]
+    );
+    assert_eq!(removed["result"]["index"], 3);
+    let one_pocket = whole + 2.0 * HOLE;
+    measured(
+        "the first pocket removed",
+        &volume(&mut serve, &mut call),
+        one_pocket,
+    );
+    // Added back before s0000003, its fingerprint left out: h0000002's base rewired back,
+    // and the volume as before.
+    let mut back = removed["result"]["feature"].clone();
+    back.as_object_mut().unwrap().remove("fingerprint");
+    let added = call(
+        &mut serve,
+        "add_feature",
+        &format!(
+            r#"{{"session": "s1", "revision": {}, "before": "s0000003", "feature": {back}}}"#,
+            at + 1
+        ),
+    );
+    assert_eq!(added["result"]["index"], 3, "{added}");
+    assert_eq!(
+        added["result"]["rewired"],
+        serde_json::json!([{"feature": "h0000002", "field": "base", "from": "p0000001", "to": "h0000001"}])
+    );
+    measured("the pocket back", &volume(&mut serve, &mut call), whole);
+    call(&mut serve, "rollback", r#"{"session": "s1"}"#);
+    call(&mut serve, "close", r#"{"session": "s1"}"#);
+    serve.end();
 }

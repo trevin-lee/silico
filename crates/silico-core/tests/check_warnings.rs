@@ -1414,7 +1414,7 @@ fn a_feature_a_transactions_edits_reached_isnt_warned_of_for_its_fingerprint_its
     answer(f.sessions.begin(&s1())).result.unwrap();
     let revision = f.sessions.status(&s1()).session.unwrap().revision;
     let added: Node = silico_core::document::json::read(block("m0000002", 10).as_bytes()).unwrap();
-    answer(f.sessions.add_feature(&s1(), revision, added))
+    answer(f.sessions.add_feature(&s1(), revision, None, added))
         .result
         .unwrap();
     let added_at = f.sessions.status(&s1()).session.unwrap().revision;
@@ -1456,7 +1456,7 @@ fn carried_and_built() -> (Fixture, [Said; 2]) {
     let revision = f.sessions.status(&s1()).session.unwrap().revision;
     let added = r#"{"id": "m0000002", "type": "box", "v": 1, "name": "Block", "position": [10, 0, 0], "length": 7, "width": 2, "height": 1}"#;
     let added: Node = silico_core::document::json::read(added.as_bytes()).unwrap();
-    answer(f.sessions.add_feature(&s1(), revision, added))
+    answer(f.sessions.add_feature(&s1(), revision, None, added))
         .result
         .unwrap();
     let committed = answer(f.sessions.commit(&s1())).result.unwrap();
@@ -1529,7 +1529,7 @@ fn a_carried_feature_isnt_warned_of_in_a_published_check_of_an_older_model_while
     answer(f.sessions.begin(&s1())).result.unwrap();
     let revision = f.sessions.status(&s1()).session.unwrap().revision;
     let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
-    answer(f.sessions.add_feature(&s1(), revision, added))
+    answer(f.sessions.add_feature(&s1(), revision, None, added))
         .result
         .unwrap();
     let session = f.sessions.status(&s1()).session.unwrap();
@@ -1578,7 +1578,7 @@ fn a_carried_feature_is_warned_of_in_a_published_check_after_a_commit_that_write
     answer(f.sessions.begin(&s1())).result.unwrap();
     let revision = f.sessions.status(&s1()).session.unwrap().revision;
     let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
-    answer(f.sessions.add_feature(&s1(), revision, added))
+    answer(f.sessions.add_feature(&s1(), revision, None, added))
         .result
         .unwrap();
     assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
@@ -1628,7 +1628,7 @@ fn a_feature_a_transaction_added_isnt_warned_of_in_a_published_check_after_a_com
     for added in [drawn, block("m0000002", 10)] {
         let revision = f.sessions.status(&s1()).session.unwrap().revision;
         let added: Node = silico_core::document::json::read(added.as_bytes()).unwrap();
-        answer(f.sessions.add_feature(&s1(), revision, added))
+        answer(f.sessions.add_feature(&s1(), revision, None, added))
             .result
             .unwrap();
     }
@@ -1734,7 +1734,7 @@ fn a_carried_feature_an_edits_commit_fingerprinted_isnt_warned_of_in_a_published
     assert_eq!(said(&published_check(&f, before)), [k7.clone(), m2]);
     moving_pa000001(&f);
     let added: Node = silico_core::document::json::read(drawn().as_bytes()).unwrap();
-    let added = answer(f.sessions.add_feature(&s1(), before, added))
+    let added = answer(f.sessions.add_feature(&s1(), before, None, added))
         .result
         .unwrap();
     let committed = added.commit.unwrap();
@@ -1835,7 +1835,7 @@ fn after_a_commit_that_wrote_nothing_and_a_reload_a_carried_feature_is_warned_of
     answer(f.sessions.begin(&s1())).result.unwrap();
     let revision = f.sessions.status(&s1()).session.unwrap().revision;
     let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
-    answer(f.sessions.add_feature(&s1(), revision, added))
+    answer(f.sessions.add_feature(&s1(), revision, None, added))
         .result
         .unwrap();
     assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
@@ -1870,7 +1870,7 @@ fn after_a_commit_that_wrote_nothing_and_a_reload_of_a_file_that_doesnt_read_a_p
     answer(f.sessions.begin(&s1())).result.unwrap();
     let revision = f.sessions.status(&s1()).session.unwrap().revision;
     let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
-    answer(f.sessions.add_feature(&s1(), revision, added))
+    answer(f.sessions.add_feature(&s1(), revision, None, added))
         .result
         .unwrap();
     assert_eq!(said(&f.check()), std::slice::from_ref(&k7));

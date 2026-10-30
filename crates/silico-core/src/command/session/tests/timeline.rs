@@ -417,9 +417,15 @@ fn a_timeline_is_named_by_status_and_stopped_by_cancel_queued_or_read_beside_the
             "{choice:?}"
         );
     }
-    // No transport names it yet.
-    assert_eq!(SessionCommand::Timeline.command(), None);
-    assert!(!ReadCommand::ALL.contains(&ReadCommand::Timeline));
+    // Every transport names it (M5.1's wire): a command of the wire's, by its own name,
+    // and a read of the published model `status` lists.
+    assert_eq!(
+        SessionCommand::Timeline.command(),
+        Some(crate::command::Command::Timeline)
+    );
+    assert_eq!(SessionCommand::Timeline.as_str(), "timeline");
+    assert!(SessionCommand::ALL.contains(&SessionCommand::Timeline));
+    assert!(ReadCommand::ALL.contains(&ReadCommand::Timeline));
 }
 
 /// The lug 20 long (revision 2), its model published by a current timeline, then the block

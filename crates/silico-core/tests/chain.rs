@@ -509,18 +509,57 @@ fn a_chains_root_moved_past_a_pocket_that_needs_it_is_refused() {
     assert!(error.candidates().is_empty());
 }
 
+// The two refusals for named elements are cases of the lineage rule (open item 2b, as
+// decided): a move before a feature whose elements it names, or after one that names its
+// elements, takes the maker out of what the namer's base is built from, so the lineage's
+// refusal names both.
 #[test]
 fn a_move_after_a_feature_naming_its_elements_or_before_one_it_names_is_refused() {
-    // The fillet names p0000001's and s0000001's elements.
+    // The fillet names p0000001's and s0000001's elements; p0000001 uses s0000001 as its
+    // sketch.
     let error = move_feature(&bracket(), &id("s0000001"), None).unwrap_err();
     assert_eq!(
         error.message(),
         "s0000001 would come after p0000001, which uses s0000001 as its sketch"
     );
+    // Before p0000001, the root of its chain: nothing there can be its base, which refuses
+    // it before the lineage does, naming both.
     let error = move_feature(&bracket(), &id("f0000001"), Some(&id("p0000001"))).unwrap_err();
     assert_eq!(
         error.message(),
-        "f0000001 would come before p0000001, whose elements it names"
+        "f0000001, a fillet, can't be placed before p0000001, its chain's root: it needs a base"
+    );
+    assert_eq!(error.feature(), Some("f0000001"));
+    // A fillet of h0000001's rim, on h0000002. Moved before h0000001, it would build on
+    // p0000001, and h0000001 on it: its base no longer built from h0000001.
+    let rim = r#"{"id": "f0000002", "type": "fillet", "v": 1, "name": "Rim", "base": "h0000002", "edges": ["h0000001.pocket.Edge(M s0000002.sketch.Edge.cb000001)"], "radius": 0.5}"#;
+    let rimmed = document(&[
+        S0000001, P0000001, S0000002, H0000001, S0000003, H0000002, rim,
+    ]);
+    let error = move_feature(&rimmed, &id("f0000002"), Some(&id("h0000001"))).unwrap_err();
+    assert_eq!(
+        error.message(),
+        "f0000002 names elements of h0000001, which its base would no longer be built from once f0000002 moves there"
+    );
+    assert_eq!(error.feature(), Some("f0000002"));
+    assert_eq!(error.parameter(), Some("before"));
+    assert_eq!(
+        error.suggestion(),
+        Some(
+            "keep f0000002 after h0000001, whose elements it names, or set its edges to names of other features' elements"
+        )
+    );
+    // h0000001 moved after the fillet naming its elements: h0000002 takes p0000001, so the
+    // fillet's base is no longer built from h0000001.
+    let error = move_feature(&rimmed, &id("h0000001"), None).unwrap_err();
+    assert_eq!(
+        error.message(),
+        "f0000002 names elements of h0000001, which its base would no longer be built from once h0000001 moves there"
+    );
+    assert_eq!(error.feature(), Some("h0000001"));
+    assert_eq!(
+        error.suggestion(),
+        Some("move h0000001 elsewhere, or remove f0000002 first")
     );
 }
 
@@ -1476,7 +1515,15 @@ mod hostile {
             let all: Vec<String> = original.features.iter().map(|f| f.id.to_string()).collect();
             for f in &all {
                 for before in all.iter().map(Some).chain([None]) {
-                    let got = move_feature(&original, &id(f), before.map(|b| id(b)).as_ref());
+                    // A move the chain takes is put through the gate, as the session puts
+                    // every edit (`document::chain`'s contract): a stored name the move
+                    // leaves after its feature, already outside its base's lineage (so not
+                    // the lineage rule's), is the gate's to refuse.
+                    let got = move_feature(&original, &id(f), before.map(|b| id(b)).as_ref())
+                        .and_then(|moved| match validate(&moved.document) {
+                            Ok(_) => Ok(moved),
+                            Err(invalid) => Err(invalid.errors()[0].clone()),
+                        });
                     let want = move_model(&original, f, before.map(String::as_str));
                     let at = format!("{f} before {before:?} in {all:?}");
                     match (got, want) {

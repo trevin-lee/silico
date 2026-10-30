@@ -13,6 +13,7 @@
     "fingerprint": {"volume": 7797.770072, "area": 2907.692109, "bbox": [0, 0, 0, 40, 20, 10], "faces": 9, "edges": 20, "vertices": 13}
   },
   "index": 4,
+  "rewired": [],
   "changed": true,
   "commit": null
 }

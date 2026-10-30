@@ -98,3 +98,5 @@ mod stored_coordinates;
 mod timeline;
 #[path = "undo.rs"]
 mod undo;
+#[path = "wire_timeline_commands.rs"]
+mod wire_timeline_commands;

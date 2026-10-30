@@ -1,10 +1,13 @@
-//! `add_feature`, `set_field`, `remove_feature`, and `replace_text`'s wire types
-//! (docs/design/m4.1-command-api.md, sections 5 and 7): their requests, read strictly
-//! ([`AddFeatureRequest`], [`SetFieldRequest`], [`RemoveFeatureRequest`],
-//! [`ReplaceTextRequest`]); their results, written field for field ([`ToWire`]: a feature as
-//! the document's canonical form writes it, a field's value as the document holds it); and
-//! the mirrors their snapshots, `commands/add_feature.json`, `set_field.json`,
-//! `remove_feature.json`, and `replace_text.json`, are generated from. A request's shape is
+//! `add_feature`, `set_field`, `remove_feature`, `replace_text`, and `move_feature`'s wire
+//! types (docs/design/m4.1-command-api.md, sections 5 and 7; docs/design/m5.0-app.md,
+//! section 7, for `add_feature`'s `before`, `remove_feature`'s `rewired`, and
+//! `move_feature`): their requests, read strictly ([`AddFeatureRequest`],
+//! [`SetFieldRequest`], [`RemoveFeatureRequest`], [`ReplaceTextRequest`],
+//! [`MoveFeatureRequest`]); their results, written field for field ([`ToWire`]: a feature as
+//! the document's canonical form writes it, a field's value as the document holds it, each
+//! `base` and `tool` an edit of the chain changed as a [`Rewired`]); and the mirrors their
+//! snapshots, `commands/add_feature.json`, `set_field.json`, `remove_feature.json`,
+//! `replace_text.json`, and `move_feature.json`, are generated from. A request's shape is
 //! read here; the feature an edit gives and the value it sets are read by the document's own
 //! reader, in the session, so the wire and a Rust client meet one set of refusals.
 
@@ -13,19 +16,21 @@ use std::borrow::Cow;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 use super::transaction::CommitResultSchema;
-use super::{Json, RequestFields, ToWire, wire_shape};
+use super::{Json, RequestFields, ToWire, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
-use crate::command::{Added, FieldSet, Problems, Removed, Replaced, Revision, SessionId};
+use crate::command::{Added, FieldSet, Moved, Problems, Removed, Replaced, Revision, SessionId};
+use crate::document::chain::Rewired;
 use crate::document::json::Node;
 use crate::document::{Feature, FeatureId};
 
-/// An `add_feature` request: the session, the revision the edit was made against, and the
-/// feature, an object as the document writes it, read by the document's reader when it's
-/// added.
+/// An `add_feature` request: the session, the revision the edit was made against, the
+/// feature to add it before (none for the end), and the feature, an object as the document
+/// writes it, read by the document's reader when it's added.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AddFeatureRequest {
     pub session: SessionId,
     pub revision: Revision,
+    pub before: Option<FeatureId>,
     pub feature: Node,
 }
 
@@ -35,10 +40,12 @@ impl AddFeatureRequest {
         RequestFields::read(node, |f| {
             let session = f.session();
             let revision = f.revision("revision");
+            let before = f.nullable_feature("before");
             let feature = f.whole_object("feature");
             Some(AddFeatureRequest {
                 session: session?,
                 revision: revision?,
+                before: before?,
                 feature: feature?.clone(),
             })
         })
@@ -52,7 +59,54 @@ impl ToWire for AddFeatureRequest {
         Json::object([
             ("session", self.session.to_wire()),
             ("revision", self.revision.to_wire()),
+            (
+                "before",
+                Json::or_null(self.before.as_ref(), ToWire::to_wire),
+            ),
             ("feature", Json::node(&self.feature)),
+        ])
+    }
+}
+
+/// A `move_feature` request: the session, the revision the edit was made against, the
+/// feature to move, and the feature to move it before (none for the end).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveFeatureRequest {
+    pub session: SessionId,
+    pub revision: Revision,
+    pub feature: FeatureId,
+    pub before: Option<FeatureId>,
+}
+
+impl MoveFeatureRequest {
+    /// The request `node` holds, or every reason its shape is refused.
+    pub fn read(node: &Node) -> Result<Self, Problems> {
+        RequestFields::read(node, |f| {
+            let session = f.session();
+            let revision = f.revision("revision");
+            let feature = f.feature("feature");
+            let before = f.nullable_feature("before");
+            Some(MoveFeatureRequest {
+                session: session?,
+                revision: revision?,
+                feature: feature?,
+                before: before?,
+            })
+        })
+    }
+}
+
+impl ToWire for MoveFeatureRequest {
+    /// The request as a client writes it, every field in the shape's order.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("session", self.session.to_wire()),
+            ("revision", self.revision.to_wire()),
+            ("feature", self.feature.to_wire()),
+            (
+                "before",
+                Json::or_null(self.before.as_ref(), ToWire::to_wire),
+            ),
         ])
     }
 }
@@ -173,12 +227,32 @@ impl ToWire for ReplaceTextRequest {
     }
 }
 
+impl ToWire for Rewired {
+    /// A feature whose `base` or `tool` an edit changed: the feature, the field, what it
+    /// named before the edit, and what it names after (`null` for none).
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("feature", self.feature.to_wire()),
+            ("field", Json::str(self.field)),
+            ("from", Json::or_null(self.from.as_ref(), ToWire::to_wire)),
+            ("to", Json::or_null(self.to.as_ref(), ToWire::to_wire)),
+        ])
+    }
+}
+
+/// Each of `rewired`, in its order.
+fn rewired(rewired: &[Rewired]) -> Json<'_> {
+    Json::array(rewired.iter().map(ToWire::to_wire))
+}
+
 impl ToWire for Added {
-    /// `add_feature`'s result: the feature as the document now holds it, whether the document
-    /// changed, and the commit outside a transaction.
+    /// `add_feature`'s result: the feature as the document now holds it, its place, what it
+    /// rewired, whether the document changed, and the commit outside a transaction.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("feature", Json::feature(&self.feature)),
+            ("index", Json::count(self.index)),
+            ("rewired", rewired(&self.rewired)),
             ("changed", Json::bool(self.changed)),
             (
                 "commit",
@@ -207,12 +281,31 @@ impl ToWire for FieldSet {
 }
 
 impl ToWire for Removed {
-    /// `remove_feature`'s result: the feature as the document held it, its place, whether
-    /// the document changed, and the commit outside a transaction.
+    /// `remove_feature`'s result: the feature as the document held it, its place, what its
+    /// removal rewired, whether the document changed, and the commit outside a transaction.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("feature", Json::feature(&self.feature)),
             ("index", Json::count(self.index)),
+            ("rewired", rewired(&self.rewired)),
+            ("changed", Json::bool(self.changed)),
+            (
+                "commit",
+                Json::or_null(self.commit.as_ref(), ToWire::to_wire),
+            ),
+        ])
+    }
+}
+
+impl ToWire for Moved {
+    /// `move_feature`'s result: the feature, where it was and where it is, what it rewired,
+    /// whether the document changed, and the commit outside a transaction.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("feature", self.feature.to_wire()),
+            ("from", Json::count(self.from)),
+            ("to", Json::count(self.to)),
+            ("rewired", rewired(&self.rewired)),
             ("changed", Json::bool(self.changed)),
             (
                 "commit",
@@ -256,7 +349,7 @@ impl JsonSchema for NewFeatureSchema {
             object.insert(
                 "description".to_owned(),
                 serde_json::Value::String(
-                    "A feature as the document writes it, to add at the end of the timeline. \
+                    "A feature as the document writes it, to add to the timeline. \
                      Its id may be left out, for one the core makes that no feature holds, and \
                      its v, for the type's current version. A fingerprint is refused, but for \
                      null: a commit writes it. Each member the feature may leave out (its id, \
@@ -358,7 +451,8 @@ impl JsonSchema for FieldValueSchema {
     }
 }
 
-/// `add_feature`'s request: add a feature at the end of the session's timeline.
+/// `add_feature`'s request: add a feature to the session's timeline, at the end or before
+/// another.
 #[derive(JsonSchema)]
 #[schemars(rename = "AddFeatureRequest", transform = wire_shape)]
 pub struct AddFeatureRequestSchema {
@@ -369,7 +463,42 @@ pub struct AddFeatureRequestSchema {
     /// refused as a `conflict`, so it never writes over a change it didn't see.
     #[schemars(range(min = 1))]
     pub revision: u64,
+    /// The feature to add it before, by ID, or null for the end. Before a feature, each
+    /// input it takes (its `base`, its `tool`) that a feature at or after that place
+    /// consumed is consumed by it instead: that feature's field now names the new one,
+    /// listed in `rewired`. One consumed by a feature before the place is refused.
+    pub before: Option<FeatureId>,
     pub feature: NewFeatureSchema,
+}
+
+/// A feature whose `base` or `tool` an edit changed, which the edit reaches.
+#[derive(JsonSchema)]
+#[schemars(rename = "Rewired", transform = wire_shape)]
+pub struct RewiredSchema {
+    /// The feature, by ID.
+    pub feature: FeatureId,
+    pub field: InputFieldSchema,
+    /// What the field named before the edit: null where the feature had no base.
+    pub from: Option<FeatureId>,
+    /// What it names after: null where the feature is left with no base (a pad or revolve,
+    /// which then begins a body).
+    pub to: Option<FeatureId>,
+}
+
+/// Which of a feature's inputs an edit changed: its `base` or its `tool`.
+pub struct InputFieldSchema;
+
+impl JsonSchema for InputFieldSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "InputField".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        words(
+            "Which of the feature's inputs changed: its base, or a boolean's tool.",
+            ["base", "tool"],
+        )
+    }
 }
 
 /// `add_feature`'s result.
@@ -380,6 +509,11 @@ pub struct AddFeatureResultSchema {
     /// made) and its version; outside a transaction, as the commit saved it, with the
     /// fingerprint it wrote.
     pub feature: Feature,
+    /// Its place in the timeline, from 0.
+    pub index: u64,
+    /// Each feature whose `base` or `tool` now names the new feature instead of the input
+    /// it consumes, in timeline order: empty at the end.
+    pub rewired: Vec<RewiredSchema>,
     /// Whether the document changed: always, a feature added.
     pub changed: bool,
     /// Outside a transaction, the commit that saved the edit; null inside one.
@@ -431,7 +565,8 @@ pub struct SetFieldResultSchema {
     pub commit: Option<CommitResultSchema>,
 }
 
-/// `remove_feature`'s request: remove one feature, which no other may use.
+/// `remove_feature`'s request: remove one feature, the feature that consumed it taking its
+/// base.
 #[derive(JsonSchema)]
 #[schemars(rename = "RemoveFeatureRequest", transform = wire_shape)]
 pub struct RemoveFeatureRequestSchema {
@@ -442,8 +577,9 @@ pub struct RemoveFeatureRequestSchema {
     /// refused as a `conflict`.
     #[schemars(range(min = 1))]
     pub revision: u64,
-    /// The feature to remove, by ID. A feature others use is refused, each naming it:
-    /// remove those first.
+    /// The feature to remove, by ID. The feature that consumed it takes its base. Refused,
+    /// naming both, where nothing can stand in: a chain's root under a feature that needs a
+    /// base, a feature whose sketch it is, or one that names its elements.
     pub feature: FeatureId,
 }
 
@@ -451,10 +587,15 @@ pub struct RemoveFeatureRequestSchema {
 #[derive(JsonSchema)]
 #[schemars(rename = "RemoveFeatureResult", transform = wire_shape)]
 pub struct RemoveFeatureResultSchema {
-    /// The feature removed, as the document held it: `replace_text` can put it back.
+    /// The feature removed, as the document held it: `add_feature` can put it back, before
+    /// the feature that followed it.
     pub feature: Feature,
     /// Its place in the timeline, from 0.
     pub index: u64,
+    /// Each feature whose `base` or `tool` named the removed feature and now names what it
+    /// named (null where it named none, a pad or revolve then beginning a body), in
+    /// timeline order.
+    pub rewired: Vec<RewiredSchema>,
     /// Whether the document changed: always, a feature removed.
     pub changed: bool,
     /// Outside a transaction, the commit that saved the edit; null inside one.
@@ -489,6 +630,50 @@ pub struct ReplaceTextResultSchema {
     /// Outside a transaction, the text replaced, so it can be put back; null inside one,
     /// where `rollback` restores it.
     pub before: Option<String>,
+    /// Outside a transaction, the commit that saved the edit; null inside one, or if
+    /// nothing changed.
+    pub commit: Option<CommitResultSchema>,
+}
+
+/// `move_feature`'s request: move one feature to another place in the timeline, rewiring the
+/// chains it leaves and joins.
+#[derive(JsonSchema)]
+#[schemars(rename = "MoveFeatureRequest", transform = wire_shape)]
+pub struct MoveFeatureRequestSchema {
+    /// The session's ID, as `open` gave it.
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
+    pub session: String,
+    /// The session's revision the edit was made against: an edit against another is
+    /// refused as a `conflict`.
+    #[schemars(range(min = 1))]
+    pub revision: u64,
+    /// The feature to move, by ID. Its consumer takes its base; it takes as its base the
+    /// last feature of its chain before the new place, and the chain's next feature after
+    /// that place takes it as its base. Refused, naming both, where a child would come
+    /// before its parent: before its sketch or its tool, after a feature using it as its
+    /// sketch, or where a feature's base would no longer be built from a feature whose
+    /// elements it names.
+    pub feature: FeatureId,
+    /// The feature to move it before, by ID, or null for the end.
+    pub before: Option<FeatureId>,
+}
+
+/// `move_feature`'s result.
+#[derive(JsonSchema)]
+#[schemars(rename = "MoveFeatureResult", transform = wire_shape)]
+pub struct MoveFeatureResultSchema {
+    /// The feature moved, as the request named it.
+    pub feature: FeatureId,
+    /// Its place in the timeline before the move, from 0.
+    pub from: u64,
+    /// Its place after the move, from 0, counted in the timeline after it.
+    pub to: u64,
+    /// Each feature whose `base` or `tool` the move changed, in timeline order after the
+    /// move: empty for a move that leaves it between its base and its consumer.
+    pub rewired: Vec<RewiredSchema>,
+    /// Whether the document changed: false for a move to where it is, which makes no new
+    /// revision and writes nothing.
+    pub changed: bool,
     /// Outside a transaction, the commit that saved the edit; null inside one, or if
     /// nothing changed.
     pub commit: Option<CommitResultSchema>,
