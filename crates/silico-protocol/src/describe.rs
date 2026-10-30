@@ -400,12 +400,6 @@ impl Impossible {
     }
 }
 
-impl fmt::Display for Impossible {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.problem)
-    }
-}
-
 /// The batches that describe a shape of `faces`, `edges`, and `vertices`, in order: each
 /// kind's from 1, at most [`DESCRIBE_BATCH`] at a time, faces, then edges, then vertices, as
 /// `(kind, first, count)`. Made one at a time, so however large a count is, it costs nothing
@@ -751,7 +745,7 @@ mod tests {
             let mut d = good();
             spoil(&mut d);
             let e = d.validate(1).unwrap_err();
-            assert!(e.problem.starts_with(says), "{e}, not {says}");
+            assert!(e.problem.starts_with(says), "{}, not {says}", e.problem);
             // The element as data, the one the words name.
             assert!(
                 says.starts_with(&format!("the kernel's {}'s ", e.element)),
