@@ -1387,7 +1387,9 @@ fn a_merge_whose_solve_silico_cant_take_agrees_where_freecads_solves_or_rolls_ba
     }
     for other in [
         Theirs::Failed("refused by hand".to_owned()),
-        Theirs::Lost("FreeCAD crashed building it (signal: 11 (SIGSEGV))".to_owned()),
+        Theirs::Lost(
+            "FreeCAD crashed building it by a segmentation fault (signal: 11 (SIGSEGV))".to_owned(),
+        ),
         Theirs::Lost("FreeCAD took longer than 60 s building it".to_owned()),
     ] {
         let v = verdict(p, Some(&other));
@@ -1447,9 +1449,25 @@ fn a_freecad_crash_is_its_own_outcome_agreeing_only_where_the_note_has_it_crash(
     agrees(&v);
     assert!(v.crashed && !v.refused, "{v:?}");
     assert_eq!(v.modulo, [142, 180], "{v:?}");
-    // FreeCAD hanging on it, raising, or making it: not the crash the note has.
+    // On Linux, FreeCAD 1.1.3's SIGSEGV handler prints its line and exits with status 1
+    // (src/App/Application.cpp:1815-1825), which the harness tells as a segmentation fault
+    // too: the crash the note has.
+    let linux = Theirs::Lost(
+        "FreeCAD crashed building it by a segmentation fault (exit status: 1, after its SIGSEGV handler's \"Program received signal SIGSEGV, Segmentation fault.\"); its last output:\n#20  0x0 in main".to_owned(),
+    );
+    let v = verdict(p, Some(&linux));
+    agrees(&v);
+    assert!(v.crashed && !v.refused, "{v:?}");
+    assert_eq!(v.modulo, [142, 180], "{v:?}");
+    // FreeCAD hanging on it, raising, or making it: not the crash the note has; nor exiting
+    // with status 1 without the handler's line, even with the line in its output, which the
+    // harness doesn't read (it tells how FreeCAD ended); nor an abort or another status.
     for other in [
         Theirs::Lost("FreeCAD took longer than 60 s building it".to_owned()),
+        Theirs::Lost("FreeCAD crashed building it (exit status: 1)".to_owned()),
+        Theirs::Lost(
+            "FreeCAD crashed building it (exit status: 1); its last output:\nProgram received signal SIGSEGV, Segmentation fault.\nFreeCAD crashed building it by a segmentation fault".to_owned(),
+        ),
         Theirs::Lost("FreeCAD crashed building it (exit status: 3)".to_owned()),
         Theirs::Lost("FreeCAD crashed building it (signal: 6 (SIGABRT))".to_owned()),
         Theirs::Failed("refused by hand".to_owned()),
@@ -1461,7 +1479,9 @@ fn a_freecad_crash_is_its_own_outcome_agreeing_only_where_the_note_has_it_crash(
     // A crash where the note has FreeCAD refuse (a collapse, :65; a split past the end, in
     // OCCT, :144), or make the edit (a trim of a point, :186, a line's split): a difference,
     // never its refusal.
-    let crash = Theirs::Lost("FreeCAD crashed building it (signal: 11 (SIGSEGV))".to_owned());
+    let crash = Theirs::Lost(
+        "FreeCAD crashed building it by a segmentation fault (signal: 11 (SIGSEGV))".to_owned(),
+    );
     for p in &prepared[1..] {
         let v = verdict(p, Some(&crash));
         assert!(!v.crashed && !v.refused, "{}: {v:?}", p.name);
@@ -1776,7 +1796,9 @@ fn a_trim_at_a_rounds_centre_agrees_only_where_freecad_raises() {
     assert_eq!(v.how.len(), 1, "{v}");
     // A crash or a hang instead: a difference.
     for other in [
-        Theirs::Lost("FreeCAD crashed building it (signal: 11 (SIGSEGV))".to_owned()),
+        Theirs::Lost(
+            "FreeCAD crashed building it by a segmentation fault (signal: 11 (SIGSEGV))".to_owned(),
+        ),
         Theirs::Lost("FreeCAD took longer than 60 s building it".to_owned()),
     ] {
         let v = verdict(p, Some(&other));

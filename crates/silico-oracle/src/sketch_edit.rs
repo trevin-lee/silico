@@ -1403,14 +1403,18 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
 /// How `p` came out where FreeCAD crashed or hung on it (`why`): its own outcome, never its
 /// refusal. It agrees only where Silico refuses it by a rule whose edit the note says FreeCAD
 /// 1.1.3 crashes on (splitting a point, :142), and FreeCAD crashed as the note says, by a
-/// segmentation fault, not otherwise and not by hanging; anything else is a difference.
+/// segmentation fault (killed by SIGSEGV, or, on Linux, where its handler catches it,
+/// exiting with status 1 after the handler's line: [`freecad::SEGFAULT`]), not otherwise and
+/// not by hanging; anything else is a difference. Only how it ended is read, never its output.
 fn lost(p: &Prepared, mut v: Verdict, why: &str) -> Verdict {
     let crashes = match &p.silico {
         SilicoSide::Refused(_) => rule(p).filter(|r| r.pinned() == Some(Pinned::Crashes)),
         _ => None,
     };
+    let ended = why.lines().next().unwrap_or_default();
+    let segfault = ended.starts_with("FreeCAD crashed") && ended.contains(freecad::SEGFAULT);
     match crashes {
-        Some(r) if why.starts_with("FreeCAD crashed") && why.contains("SIGSEGV") => {
+        Some(r) if segfault => {
             v.crashed = true;
             v.modulo.extend(r.lines());
         }
