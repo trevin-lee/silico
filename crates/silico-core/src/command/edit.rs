@@ -855,7 +855,7 @@ fn kept_record(mut added: Feature, begun: Option<&Document>) -> Feature {
         && let (Some(was_text), Some(added_text)) = (unprinted(was), unprinted(&added))
         && was_text == added_text
     {
-        added.fingerprint = Some(fingerprint.clone());
+        added.fingerprint = Some(*fingerprint);
     }
     added
 }

@@ -946,14 +946,10 @@ fn removed_and_added_back_drifted_it_keeps_its_stale_record_and_its_drift_as_unt
     assert_eq!(with.problems, alone.problems);
     assert_eq!(with.refingerprinted, alone.refingerprinted);
     assert_eq!(round_trip, by_itself);
-    let stored = document::read(round_trip.as_bytes()).unwrap().features[3]
-        .fingerprint
-        .clone();
+    let stored = document::read(round_trip.as_bytes()).unwrap().features[3].fingerprint;
     assert_eq!(
         stored,
-        document::read(file.as_bytes()).unwrap().features[3]
-            .fingerprint
-            .clone()
+        document::read(file.as_bytes()).unwrap().features[3].fingerprint
     );
 }
 
@@ -1076,16 +1072,21 @@ fn a_move_past_unrelated_features_rewires_nothing_and_writes_no_fingerprint() {
 fn a_move_to_where_a_feature_is_changes_nothing_and_a_move_to_the_end_takes_the_last_as_base() {
     let f = opened(&bracket());
     f.inside_at(12);
-    for before in [Some("s0000003")] {
-        let moved = f.moved("h0000001", before).result.unwrap();
-        assert_eq!(
-            (moved.from, moved.to, moved.changed, moved.commit),
-            (3, 3, false, None),
-            "{before:?}"
-        );
-        assert!(moved.rewired.is_empty());
-        assert_eq!(f.revision(), revision(12));
-    }
+    // Before the feature after it: where it is.
+    let moved = f.moved("h0000001", Some("s0000003")).result.unwrap();
+    assert_eq!(
+        (moved.from, moved.to, moved.changed, moved.commit),
+        (3, 3, false, None)
+    );
+    assert!(moved.rewired.is_empty());
+    assert_eq!(f.revision(), revision(12));
+    // Before itself: no place, refused.
+    let itself = the_error(&f.moved("h0000001", Some("h0000001")));
+    assert_eq!(
+        (itself.message(), itself.parameter()),
+        ("h0000001 can't be moved before itself", Some("before"))
+    );
+    assert_eq!(f.revision(), revision(12));
     let value: serde_json::Value =
         serde_json::from_str(&written(&f.moved("f0000001", None).result.unwrap())).unwrap();
     assert_eq!(
