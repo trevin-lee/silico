@@ -942,7 +942,25 @@ fn stopped_unpublished(id: SessionId) -> Error {
 /// rollback gave it to, if any did), unless a rebuild of that revision started after it has
 /// said what it came to ([`Rebuilds::said_later`]); and, if it's still the rebuild running,
 /// as running no more (one stopped and started again, or another's since, is left running).
+///
+/// While it runs, the client is woken as each of its steps settles (its count's `done` or
+/// `steps` changes: `status`'s progress), and once more as its end is recorded, with no
+/// lock held.
 pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Label, run: Run) {
+    let waker = session.upgrade().map(|session| Arc::clone(&session.waker));
+    let progress = run.progress();
+    let mut seen = progress.now();
+    while !seen.ended {
+        let next = progress.changed_since(&seen);
+        // Told as `done` or `steps` moves, a last step's settling with the end too; the end
+        // alone is told once it's recorded, below.
+        if (next.done, next.steps) != (seen.done, seen.steps)
+            && let Some(waker) = &waker
+        {
+            waker.wake();
+        }
+        seen = next;
+    }
     let outcome = run.wait();
     let Some(session) = session.upgrade() else {
         return;
@@ -961,6 +979,7 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
         rebuilds.candidate = Some((label.clone(), outcome));
         drop(rebuilds);
         session.rebuilt.notify_all();
+        session.waker.wake();
         return;
     }
     match outcome {
@@ -1003,6 +1022,7 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
     }
     drop(rebuilds);
     session.rebuilt.notify_all();
+    session.waker.wake();
 }
 
 #[cfg(test)]

@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use silico_core::ErrorCode;
 use silico_core::command::{
     CacheCleared, CheckAnswer, CheckModel, ModelChoice, ModelRead, RebuildState, Response,
-    Revision, SessionCommand, SessionId,
+    Revision, RunningCommand, SessionCommand, SessionId,
 };
 
 use crate::cache_control::{Fixture, fixture};
@@ -281,7 +281,10 @@ fn a_fresh_check_is_cancelled_by_name_and_its_rebuild_stopped() {
     let running = f.sessions.check(&a, CheckModel::Current { fresh: true });
     assert!(f.kernel.wait_running(1, HANG));
     let status = f.sessions.status(&a).result.unwrap();
-    assert_eq!(status.running, Some(SessionCommand::Check));
+    assert_eq!(
+        status.running,
+        Some(RunningCommand::Command(SessionCommand::Check))
+    );
     assert_eq!(status.rebuild.state, RebuildState::Running);
     let cancelled = f.sessions.cancel(&a, SessionCommand::Check).result.unwrap();
     assert!(cancelled.stopped);

@@ -42,7 +42,7 @@ pub use session::{
     Removed, Replaced, Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions,
     Status, Stepped, Stopper, TOO_LONG, TextAnswer, TimelineAnswer, TryAgainBy, fault_suggestion,
 };
-pub use session_command::{ReadCommand, SessionCommand};
+pub use session_command::{ReadCommand, RunningCommand, SessionCommand};
 
 pub use crate::warnings::Warnings;
 

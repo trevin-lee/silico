@@ -21,6 +21,17 @@ impl<C: Kernel + 'static> Session<C> {
     /// stack's compare and copy of what changed runs under the lock: the features' texts
     /// were written as the candidate was made. As the command `stop` stops.
     pub(super) fn hold(&self, stop: &Ticket, candidate: Candidate) -> Result<Revision, Problems> {
+        self.hold_then(stop, candidate, |_| {})
+    }
+
+    /// [`hold`](Self::hold), and `then` given what's held, under the same lock: the
+    /// transaction's record of what made the edit (`format`'s).
+    pub(super) fn hold_then(
+        &self,
+        stop: &Ticket,
+        candidate: Candidate,
+        then: impl FnOnce(&mut super::transaction::Held),
+    ) -> Result<Revision, Problems> {
         let held = self.held.read();
         let next = held.next()?;
         let mut held = held.changing(stop)?;
@@ -34,6 +45,7 @@ impl<C: Kernel + 'static> Session<C> {
                 "the undo stack passed its bound: its oldest edits are out of undo's reach"
             );
         }
+        then(&mut held);
         Ok(next)
     }
 

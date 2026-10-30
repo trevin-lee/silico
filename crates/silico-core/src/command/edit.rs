@@ -43,6 +43,11 @@ pub(super) struct Candidate {
 }
 
 impl Candidate {
+    /// The gate's finding of its text.
+    pub(super) fn gated(&self) -> &Gated {
+        &self.gated
+    }
+
     /// Its text, the gate's finding of it, and its features' canonical texts.
     pub(super) fn into_parts(self) -> (Arc<Vec<u8>>, Arc<Gated>, Prepared) {
         (self.text, self.gated, self.prepared)
@@ -925,6 +930,13 @@ pub(super) fn replace_text(
         .document()
         .is_ok_and(|before| before.canonically_eq(&replaced));
     Ok((features, (!unchanged).then_some(candidate)))
+}
+
+/// `text`, a document's canonical text (`format`'s, inside a transaction), as an edit's
+/// candidate, read as a file is and through the gate.
+pub(super) fn as_text(text: &[u8]) -> Result<Candidate, Problems> {
+    let read = document::read_tree(document::tree(text)?)?;
+    candidate(&read, "text")
 }
 
 /// Whether a document's tree is an object whose header has a `naming` (or isn't an object

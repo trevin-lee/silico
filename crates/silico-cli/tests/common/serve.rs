@@ -21,14 +21,13 @@ pub const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "
 pub const INITIALIZE: &str = r#"{"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}}"#;
 
 /// `silico serve` in the workspace `dir`, its stdin and stdout piped, its stderr to
-/// `stderr`, its log at `log` (or the default), with a render worker that isn't there (so
-/// it starts, refusing only `render`).
+/// `stderr`, its log at `log` (or the default), with the workers beside it (the render
+/// worker started only by a render).
 pub fn serve(dir: &Path, log: Option<&str>, stderr: Stdio) -> Child {
     let mut command = Command::new(env!("CARGO_BIN_EXE_silico"));
     command
         .args(["serve", "--workspace"])
         .arg(dir)
-        .env("SILICO_RENDER_WORKER", dir.join("no-such-worker"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(stderr);
@@ -49,6 +48,7 @@ pub fn serve_working(dir: &Path, home: &Path, stderr: Stdio) -> Child {
         "silico-kernel-worker",
         "silico-sketch-worker",
         "silico-render-worker",
+        "silico-step-worker",
     ] {
         assert!(
             silico.with_file_name(worker).is_file(),
@@ -63,6 +63,7 @@ pub fn serve_working(dir: &Path, home: &Path, stderr: Stdio) -> Child {
         .env_remove("SILICO_KERNEL_WORKER")
         .env_remove("SILICO_SKETCH_WORKER")
         .env_remove("SILICO_RENDER_WORKER")
+        .env_remove("SILICO_STEP_WORKER")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(stderr)
