@@ -61,6 +61,7 @@ fn open_end(point: &str) -> Value {
         "cause": null,
         "suggestion": "end another curve at the point to close the outline, or make the curve construction geometry",
         "candidates": [],
+        "advice": null,
     })
 }
 

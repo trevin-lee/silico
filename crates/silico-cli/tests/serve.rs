@@ -690,7 +690,6 @@ fn serve_gives_a_kernel_faults_advice_as_data_in_the_models_fault() {
         .args(["serve", "--workspace"])
         .arg(&workspace)
         .env("SILICO_KERNEL_WORKER", &kernel)
-        .env("SILICO_RENDER_WORKER", workspace.join("no-such-worker"))
         .env("XDG_CACHE_HOME", root.path().join("cache-home"))
         .env_remove("SILICO_LOG")
         .stdin(Stdio::piped())
