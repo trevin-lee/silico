@@ -691,7 +691,7 @@ fn a_known_difference_that_no_longer_shows_is_a_problem() {
 fn a_case_freecad_answers_otherwise_run_to_run_is_shown_whatever_it_shows() {
     let known = [sketch_edit::Known {
         case: "c",
-        shows: sketch_edit::Shows::Varies(Some(Rule::MergeSolveUnbuildable)),
+        shows: sketch_edit::Shows::Varies(Rule::MergeSolveUnbuildable),
         why: "FreeCAD varies",
     }];
     // Agreeing or differing, Silico's side the rule's, it's shown as known, never a
@@ -722,29 +722,16 @@ fn a_case_freecad_answers_otherwise_run_to_run_is_shown_whatever_it_shows() {
         assert!(shown.is_empty(), "{rule:?}");
         assert_eq!(stale.len(), 1, "{rule:?}");
     }
-    // A case where Silico makes the edit, or refuses it for a reason no rule names, and
-    // FreeCAD varies (Varies(None)): shown while so, a problem once Silico refuses it by a
-    // rule.
-    let edits = [sketch_edit::Known {
-        case: "c",
-        shows: sketch_edit::Shows::Varies(None),
-        why: "FreeCAD varies",
-    }];
-    for (rule, shown_known) in [(None, true), (Some(Rule::MergeSolveConflicts), false)] {
-        let v = Verdict {
-            case: "c".to_owned(),
-            how: vec!["it differs".to_owned()],
-            rule: rule.clone(),
-            ..Verdict::default()
-        };
-        let (differ, shown, stale) = without_known(vec![v], &edits);
-        assert_eq!(shown.len() == 1, shown_known, "{rule:?}");
-        assert_eq!(
-            differ.len() == 1 && stale.len() == 1,
-            !shown_known,
-            "{rule:?}"
-        );
-    }
+    // The rule's, but the case itself with a problem: compared, and a problem.
+    let v = Verdict {
+        case: "c".to_owned(),
+        how: vec!["it differs".to_owned()],
+        rule: Some(Rule::MergeSolveUnbuildable),
+        problem: true,
+        ..Verdict::default()
+    };
+    let (differ, shown, stale) = without_known(vec![v], &known);
+    assert!(differ.len() == 1 && shown.is_empty() && stale.len() == 1);
     // Another case is compared as ever.
     let other = Verdict {
         case: "d".to_owned(),
@@ -2011,8 +1998,18 @@ fn a_merge_freecad_rolls_back_after_finding_constraints_redundant_agrees() {
     let v = verdict(p, theirs[0].as_ref());
     agrees(&v);
     assert!(v.refused, "{v:?}");
-    // FreeCAD's merge's coincidence missing, or a case's constraint gone: a difference.
-    let changes: [(&str, Doctor); 2] = [
+    // FreeCAD's merge's coincidence missing, a case's constraint gone, or its solve finding a
+    // conflict (-3, or a conflicting constraint beside the redundancy) rather than only
+    // redundancy: a difference.
+    let changes: [(&str, Doctor); 5] = [
+        ("a conflict", |fc| {
+            fc.after.code = -3;
+            fc.after.conflicting = vec![1];
+        }),
+        ("a conflict's code alone", |fc| fc.after.code = -3),
+        ("redundant with a conflict", |fc| {
+            fc.after.conflicting = vec![1]
+        }),
         ("the coincidence missing", |fc| {
             fc.constraints.pop();
         }),
@@ -2051,4 +2048,151 @@ fn a_split_circles_edge_tangent_goes_to_the_arc_whose_sweep_holds_the_contact() 
         && matches!(&k.form, Form::Tangent { b, .. } if b.element() == Some(&id("w0000002")))));
     let theirs = freecad_outcomes(&prepared).unwrap();
     agrees(&verdict(p, theirs[0].as_ref()));
+}
+
+#[test]
+fn a_varying_case_is_shown_known_only_while_silicos_side_is_its_rules_refusal() {
+    // merge_holds_own_point_on_line, made known here as FreeCAD varying by its rule: shown
+    // so while Silico refuses it by MergeHoldsOwn; with Silico's result gated, refused for a
+    // reason no rule names, or the case's sketch not drawn as it solves, it's compared, and
+    // the known case a problem.
+    let (_, prepared, theirs) = both(&["merge_holds_own_point_on_line"]);
+    let p = &prepared[0];
+    let known = [sketch_edit::Known {
+        case: "merge_holds_own_point_on_line",
+        shows: sketch_edit::Shows::Varies(Rule::MergeHoldsOwn(String::new())),
+        why: "varies here",
+    }];
+    let (differ, shown, stale) = without_known(vec![verdict(p, theirs[0].as_ref())], &known);
+    assert!(differ.is_empty() && stale.is_empty() && shown.len() == 1);
+    let mut problem = p.clone();
+    problem
+        .problems
+        .push("the case's sketch isn't drawn as it solves".to_owned());
+    for (what, other) in [
+        (
+            "gated",
+            Prepared {
+                silico: SilicoSide::Gated(vec!["a line of length 0".to_owned()]),
+                ..p.clone()
+            },
+        ),
+        (
+            "refused for no rule",
+            Prepared {
+                silico: SilicoSide::Refused("refused by hand".into()),
+                ..p.clone()
+            },
+        ),
+        ("a problem of its own", problem),
+    ] {
+        let v = verdict(&other, theirs[0].as_ref());
+        let (differ, shown, stale) = without_known(vec![v], &known);
+        assert!(
+            differ.len() == 1 && shown.is_empty() && stale.len() == 1,
+            "{what}: {differ:?} {shown:?} {stale:?}"
+        );
+    }
+}
+
+#[test]
+fn a_merge_left_with_an_edge_tangent_beside_a_tangent_on_is_the_gates_rule() {
+    // `sketch-edit-sweep --seed 45 --count 500`'s case 93: the merge would leave the edge
+    // tangent k0000020 beside the tangent_on k0000024 of the same pair, which the gate
+    // refuses (#290, :303). Naming another constraint isn't the rule.
+    let mut sweep = silico_oracle::generate::sketch_edit_cases(45, 500).unwrap();
+    let case = sweep.swap_remove(93);
+    assert_eq!(case.name, "edit_45_93");
+    let mut worker = SketchWorker::start().unwrap();
+    let p = prepare(&case, &mut worker).unwrap();
+    assert!(
+        matches!(rule(&p), Some(Rule::MergeGatedTangentOn(id)) if id == "k0000024"),
+        "{:?}",
+        p.silico
+    );
+    let SilicoSide::Refused(r) = &p.silico else {
+        panic!("{:?}", p.silico);
+    };
+    for change in [
+        |r: &mut Refusal| *r.elements.last_mut().unwrap() = "k0000020".to_owned(),
+        |r: &mut Refusal| {
+            r.message = r
+                .message
+                .replace("constraint k0000020", "constraint k0000099")
+        },
+    ] {
+        let mut r = r.clone();
+        change(&mut r);
+        let wrong = Prepared {
+            silico: SilicoSide::Refused(r),
+            ..p.clone()
+        };
+        assert!(rule(&wrong).is_none(), "{:?}", wrong.silico);
+    }
+}
+
+#[test]
+fn a_split_circles_edge_tangent_in_the_kept_arc_across_its_wrap_stays_on_it() {
+    // A circle about the origin, radius 5, tangent to the upright line x = 5 at (5, 0),
+    // 0 degrees, split at 300 and 60 degrees: the kept arc runs from 300 to 60 across 0,
+    // which holds the contact, so the tangent stays on it, c0000002, on both sides.
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "p0000001", "x": 0, "y": 0, "construction": false}, {"id": "p0000003", "x": 5, "y": -8, "construction": false}, {"id": "p0000004", "x": 5, "y": 8, "construction": false}], "lines": [{"id": "n0000005", "from": "p0000003", "to": "p0000004", "construction": false}], "circles": [{"id": "c0000002", "center": "p0000001", "radius": 5, "construction": false}], "arcs": [], "constraints": [{"id": "k0000006", "type": "tangent", "a": "n0000005", "b": "c0000002", "side": "left"}]}]}"#;
+    let document = Checked::new(read(text.as_bytes()).unwrap())
+        .unwrap()
+        .document()
+        .clone();
+    let at = |deg: f64| {
+        let r = deg.to_radians();
+        [5.0 * libm::cos(r), 5.0 * libm::sin(r)]
+    };
+    let case = EditCase {
+        name: "split_circle_contact_across_the_wrap".to_owned(),
+        note: String::new(),
+        document,
+        feature: 0,
+        edit: Edit::Split {
+            curve: "c0000002".to_owned(),
+            at: vec![at(300.0), at(60.0)],
+        },
+    };
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let p = &prepared[0];
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("{:?}", p.silico);
+    };
+    assert!(s.edited.sketch.constraints.iter().any(|k| k.id == id("k0000006")
+        && matches!(&k.form, Form::Tangent { b, .. } if b.element() == Some(&id("c0000002")))));
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    agrees(&verdict(p, theirs[0].as_ref()));
+}
+
+#[test]
+fn a_merge_freecad_rolls_back_after_finding_constraints_conflicting_agrees() {
+    // `sketch-edit-sweep --seed 45 --count 500`'s case 243: a merge whose solve fails from
+    // the kept point's place, which Silico refuses (:305, :307). FreeCAD 1.1.3's merge finds
+    // eight constraints conflicting (-3, 10 of 10 runs), which its Coincident command rolls
+    // back.
+    let mut sweep = silico_oracle::generate::sketch_edit_cases(45, 500).unwrap();
+    let case = sweep.swap_remove(243);
+    assert_eq!(case.name, "edit_45_243");
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let p = &prepared[0];
+    assert_eq!(rule(p), Some(Rule::MergeSolveFails), "{:?}", p.silico);
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    let v = verdict(p, theirs[0].as_ref());
+    agrees(&v);
+    assert!(v.refused, "{v:?}");
+    // Its conflict beside a redundancy, or a malformed constraint: not what was measured.
+    let changes: [(&str, Doctor); 2] = [
+        ("a redundancy too", |fc| fc.after.redundant = vec![1]),
+        ("a malformed constraint too", |fc| {
+            fc.after.malformed = vec![1]
+        }),
+    ];
+    for (what, change) in changes {
+        let v = verdict(p, Some(&doctored(&theirs[0], change)));
+        assert!(!v.refused && !v.how.is_empty(), "{what}: {v:?}");
+    }
 }
