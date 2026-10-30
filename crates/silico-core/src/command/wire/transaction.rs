@@ -221,7 +221,7 @@ pub struct FormatRequestSchema {
 #[schemars(rename = "FormatResult", transform = wire_shape)]
 pub struct FormatResultSchema {
     /// Whether the canonical text differs from the file; inside a transaction, whether the
-    /// transaction's document differs.
+    /// canonical text differs from the transaction's.
     pub changed: bool,
     /// Whether the file was written: never inside a transaction.
     pub written: bool,

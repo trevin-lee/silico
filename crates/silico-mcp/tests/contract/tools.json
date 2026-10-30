@@ -3135,7 +3135,7 @@
                     "type": "array"
                   },
                   "changed": {
-                    "description": "Whether the canonical text differs from the file; inside a transaction, whether the\ntransaction's document differs.",
+                    "description": "Whether the canonical text differs from the file; inside a transaction, whether the\ncanonical text differs from the transaction's.",
                     "type": "boolean"
                   },
                   "path": {
