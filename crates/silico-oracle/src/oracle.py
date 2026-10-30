@@ -586,6 +586,11 @@ def edit_unjoin(s, e, applied):
             applied.append(240)
 
 
+def edit_vertex_delete(s, e, applied):
+    # The Gui's Delete on a curve's end (sketch-edit.md:105-107), as it is: no note form.
+    edit_call(s.delConstraintOnPoint, e["geometry"], e["position"])
+
+
 def edit_merge(s, e, applied):
     import Sketcher
 
@@ -871,6 +876,7 @@ def sketch_edit_outcome(doc, job):
 SKETCH_EDITS = {
     "delete": edit_delete,
     "unjoin": edit_unjoin,
+    "vertex_delete": edit_vertex_delete,
     "merge": edit_merge,
     "split": edit_split,
     "trim": edit_trim,

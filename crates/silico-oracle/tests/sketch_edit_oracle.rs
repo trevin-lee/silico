@@ -8,13 +8,16 @@
 use std::path::Path;
 
 use silico_core::document::sketch_edit::Edited;
-use silico_core::document::{Checked, ElementId, Operation, Sketch, read};
+use silico_core::document::{
+    Checked, ElementId, Form, Length, LineSide, Operation, Reference, Sketch, SketchConstraint,
+    read,
+};
 use silico_core::sketch::{SketchWorker, Translation};
 use silico_oracle::sketch::freecad_sketch;
 use silico_oracle::sketch_edit::{
-    self, Edit, EditCase, FreecadEdit, FreecadEdited, KNOWN, Plan, Prepared, Refusal, Rule,
-    SilicoSide, Theirs, Verdict, freecad_outcomes, plan, prepare, rule, silico_side, verdict,
-    without_known,
+    self, Edit, EditCase, FcConstraint, FcGeometry, FreecadEdit, FreecadEdited, KNOWN, Plan,
+    Prepared, Refusal, Rule, SilicoSide, Theirs, Verdict, freecad_outcomes, plan, prepare, rule,
+    silico_side, verdict, without_known,
 };
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
@@ -562,29 +565,41 @@ fn an_unjoins_shared_point_keeps_its_constraints_on_a_curve_that_keeps_it() {
 }
 
 #[test]
-fn edits_freecad_has_no_counterpart_for_are_its_refusals_citing_the_note() {
+fn edits_freecad_has_no_counterpart_for_still_run_freecad() {
     let s = three_way();
-    // Deleting a point curves end at: FreeCAD has no such edit (:109).
-    let Plan::Refuses(why) = planned(
+    // Deleting a point curves end at: FreeCAD has no such edit (:109), so it's given its
+    // Delete on that vertex, the point's first place, n0000001's end (:105-107).
+    let Plan::Run { job, .. } = planned(
         &s,
         Edit::Remove {
             members: vec!["p0000002".to_owned()],
         },
     ) else {
-        panic!("FreeCAD's plan runs it");
+        panic!("FreeCAD isn't run");
     };
-    assert!(why.contains(":109"), "{why}");
-    // A merge naming a point twice: FreeCAD's Coincident command refuses points already
-    // coincident (:51).
-    let Plan::Refuses(why) = planned(
+    assert_eq!(
+        job.edit,
+        FreecadEdit::VertexDelete {
+            geometry: 0,
+            position: 2
+        }
+    );
+    // A merge naming a point twice: FreeCAD is given the coincidence of n0000001's start with
+    // itself, which its Coincident command refuses as already coincident (:51).
+    let Plan::Run { job, .. } = planned(
         &s,
         Edit::Merge {
             points: vec!["p0000001".to_owned(), "p0000001".to_owned()],
         },
     ) else {
-        panic!("FreeCAD's plan runs it");
+        panic!("FreeCAD isn't run");
     };
-    assert!(why.contains(":51"), "{why}");
+    assert_eq!(
+        job.edit,
+        FreecadEdit::Merge {
+            coincidences: vec![[0, 1, 0, 1]]
+        }
+    );
     // Deleting a curve at the joint: geometry 1, the coincidences first (:91); the
     // distance_x sits on n0000001's end, which stays, so nothing moves.
     let Plan::Run { job, modulo } = planned(
@@ -635,20 +650,36 @@ fn a_known_difference_that_no_longer_shows_is_a_problem() {
 fn a_case_freecad_answers_otherwise_run_to_run_is_shown_whatever_it_shows() {
     let known = [sketch_edit::Known {
         case: "c",
-        shows: sketch_edit::Shows::Varies,
+        shows: sketch_edit::Shows::Varies(Rule::MergeSolveUnbuildable),
         why: "FreeCAD varies",
     }];
-    // Agreeing or differing, it's shown as known, never a difference, and never stale.
+    // Agreeing or differing, Silico's side the rule's, it's shown as known, never a
+    // difference, and never stale.
     for how in [Vec::new(), vec!["it differs".to_owned()]] {
         let v = Verdict {
             case: "c".to_owned(),
             how: how.clone(),
+            rule: Some(Rule::MergeSolveUnbuildable),
             ..Verdict::default()
         };
         let (differ, shown, stale) = without_known(vec![v], &known);
         assert!(differ.is_empty() && stale.is_empty(), "{how:?}");
         assert_eq!(shown.len(), 1, "{how:?}");
         assert!(shown[0].contains("varies run to run"), "{shown:?}");
+    }
+    // Silico's side otherwise (a regression: it made the merge, or refused it for another
+    // rule): compared, and the known case a problem.
+    for rule in [None, Some(Rule::MergeSolveConflicts)] {
+        let v = Verdict {
+            case: "c".to_owned(),
+            how: vec!["it differs".to_owned()],
+            rule: rule.clone(),
+            ..Verdict::default()
+        };
+        let (differ, shown, stale) = without_known(vec![v], &known);
+        assert_eq!(differ.len(), 1, "{rule:?}");
+        assert!(shown.is_empty(), "{rule:?}");
+        assert_eq!(stale.len(), 1, "{rule:?}");
     }
     // Another case is compared as ever.
     let other = Verdict {
@@ -915,8 +946,10 @@ fn the_harnesss_own_failure_is_never_freecads_refusal() {
 
 // ---- Every case pins FreeCAD's outcome (#251's condition b) ----
 
-/// A change made to FreeCAD's result of a case.
-type Doctor = fn(&Prepared, &mut FreecadEdited);
+/// A change made to FreeCAD's result of a case, given the case.
+type CaseDoctor = fn(&Prepared, &mut FreecadEdited);
+/// A change to FreeCAD's result.
+type Doctor = fn(&mut FreecadEdited);
 /// A change made to FreeCAD's result that captures what it sets.
 type Doctoring = Box<dyn Fn(&mut FreecadEdited)>;
 
@@ -931,13 +964,13 @@ fn refused_against_freecads_edit(v: &Verdict, what: &str) {
     );
 }
 
-/// FreeCAD's geometry for `member` of `p`'s sketch, by the ID it had before the edit.
-fn geometry<'a>(
+/// The FreeCAD geometry of `p`'s element `element`, after the edit (before the last solve).
+fn edited_geometry<'a>(
     p: &Prepared,
     fc: &'a mut FreecadEdited,
-    member: &str,
-) -> &'a mut silico_oracle::sketch_edit::FcGeometry {
-    let i = p.model.elements.iter().position(|e| e == member).unwrap();
+    element: &str,
+) -> &'a mut FcGeometry {
+    let i = p.model.elements.iter().position(|e| e == element).unwrap();
     let id = fc.ids_before[i];
     fc.edited.iter_mut().find(|g| g.id == id).unwrap()
 }
@@ -953,33 +986,42 @@ fn a_circle_split_at_one_position_is_excused_only_where_freecad_opens_it_into_on
     agrees(&v);
     assert_eq!(v.excused.len(), 1, "{v:?}");
     // FreeCAD's arc otherwise than the note says: each a difference.
-    let changes: [(&str, Doctor); 6] = [
+    let changes: [(&str, CaseDoctor); 7] = [
+        ("opened 10 degrees on", |p, fc| {
+            let arc = edited_geometry(p, fc, "c0000002");
+            let c = arc.points["3"];
+            let (sin, cos) = (libm::sin(10f64.to_radians()), libm::cos(10f64.to_radians()));
+            for k in ["1", "2"] {
+                let e = arc.points.get_mut(k).unwrap();
+                let (dx, dy) = (e[0] - c[0], e[1] - c[1]);
+                *e = [c[0] + dx * cos - dy * sin, c[1] + dx * sin + dy * cos];
+            }
+        }),
         ("its ends joined", |_, fc| {
-            fc.constraints
-                .push(silico_oracle::sketch_edit::FcConstraint {
-                    kind: "Coincident".to_owned(),
-                    refs: vec![[0, 1], [0, 2]],
-                    value: 0.0,
-                    driving: true,
-                    name: String::new(),
-                });
+            fc.constraints.push(FcConstraint {
+                kind: "Coincident".to_owned(),
+                refs: vec![[0, 1], [0, 2]],
+                value: 0.0,
+                driving: true,
+                name: String::new(),
+            });
         }),
         ("its end 1 mm on", |p, fc| {
-            let arc = geometry(p, fc, "c0000002");
+            let arc = edited_geometry(p, fc, "c0000002");
             arc.points.get_mut("2").unwrap()[0] += 1.0;
         }),
         ("its centre moved", |p, fc| {
-            let arc = geometry(p, fc, "c0000002");
+            let arc = edited_geometry(p, fc, "c0000002");
             arc.points.get_mut("3").unwrap()[1] += 1.0;
         }),
         ("its radius 4", |p, fc| {
-            geometry(p, fc, "c0000002").radius = Some(4.0);
+            edited_geometry(p, fc, "c0000002").radius = Some(4.0);
         }),
         ("still a circle", |p, fc| {
-            geometry(p, fc, "c0000002").kind = "circle".to_owned();
+            edited_geometry(p, fc, "c0000002").kind = "circle".to_owned();
         }),
         ("a second arc made", |p, fc| {
-            let mut arc = geometry(p, fc, "c0000002").clone();
+            let mut arc = edited_geometry(p, fc, "c0000002").clone();
             arc.id = 99;
             fc.edited.push(arc.clone());
             fc.geometry.push(arc);
@@ -1026,7 +1068,33 @@ fn a_split_off_the_curve_is_excused_only_where_freecads_pieces_meet_at_its_proje
         );
         // FreeCAD's pieces meeting at the position as given, not its projection; meeting
         // nowhere; one piece only; or pieces of another kind: each a difference.
-        let changes: [(&str, Doctoring); 4] = [
+        let changes: [(&str, Doctoring); 7] = [
+            (
+                "the kept piece's start moved",
+                Box::new(|fc| {
+                    fc.edited[0].points.get_mut("1").unwrap()[1] += 1e-6;
+                }),
+            ),
+            (
+                "the new piece's end moved",
+                Box::new(|fc| {
+                    fc.edited[1].points.get_mut("2").unwrap()[0] -= 1e-6;
+                }),
+            ),
+            (
+                "a piece about another centre, or of another radius",
+                Box::new(|fc| {
+                    if let Some(c) = fc.edited[1].points.get_mut("3") {
+                        c[0] += 1e-6;
+                    }
+                    if let Some(r) = &mut fc.edited[1].radius {
+                        *r += 1e-6;
+                    } else {
+                        // A line has neither: move its start off the joint instead.
+                        fc.edited[1].points.get_mut("1").unwrap()[1] += 1e-6;
+                    }
+                }),
+            ),
             (
                 "split at the position given",
                 Box::new(move |fc| {
@@ -1071,17 +1139,23 @@ fn a_split_beside_an_edge_tangent_is_excused_only_where_freecad_splits_the_curve
     let p = &prepared[0];
     assert!(matches!(rule(p), Some(Rule::SplitEdgeTangent(_))));
     agrees(&verdict(p, theirs[0].as_ref()));
-    let changes: [(&str, Doctor); 2] = [
+    let changes: [(&str, CaseDoctor); 2] = [
         ("the line left whole", |p, fc| {
             let (i, id) = made(fc);
             fc.edited.remove(i);
             fc.geometry.retain(|g| g.id != id);
-            *geometry(p, fc, "n0000003").points.get_mut("2").unwrap() = [10.0, 0.0];
+            *edited_geometry(p, fc, "n0000003")
+                .points
+                .get_mut("2")
+                .unwrap() = [10.0, 0.0];
         }),
         ("split at (6, 0)", |p, fc| {
             let (i, _) = made(fc);
             *fc.edited[i].points.get_mut("1").unwrap() = [6.0, 0.0];
-            *geometry(p, fc, "n0000003").points.get_mut("2").unwrap() = [6.0, 0.0];
+            *edited_geometry(p, fc, "n0000003")
+                .points
+                .get_mut("2")
+                .unwrap() = [6.0, 0.0];
         }),
     ];
     for (what, change) in changes {
@@ -1101,7 +1175,13 @@ fn a_trim_of_a_point_is_excused_only_where_freecad_deletes_it_and_nothing_else()
     agrees(&v);
     assert_eq!(v.excused.len(), 1, "{v:?}");
     let point_id = fc_id(p, &theirs[0], "p0000001");
-    let changes: [(&str, Doctoring); 3] = [
+    let changes: [(&str, Doctoring); 4] = [
+        (
+            "the line moved",
+            Box::new(|fc| {
+                fc.edited[0].points.get_mut("2").unwrap()[0] += 1e-6;
+            }),
+        ),
         (
             "the point kept",
             Box::new(move |fc| {
@@ -1177,21 +1257,57 @@ fn a_merge_whose_solve_silico_cant_take_agrees_where_freecads_solves_or_rolls_ba
     agrees(&v);
     assert!(v.refused && v.excused.is_empty(), "{v:?}");
     assert_eq!(v.modulo, [278, 279, 280], "{v:?}");
-    // Its solve succeeding instead, the note's other outcome: Silico's refusal excused.
-    let v = verdict(
-        p,
-        Some(&doctored(&theirs[0], |fc| {
-            fc.after.code = 0;
-        })),
+    // Its solve succeeding instead, the note's other outcome, the merged places (the job's
+    // coincidence of geometry 4's end and geometry 2's end) at one place: Silico's refusal
+    // excused.
+    let Plan::Run { job, .. } = &p.plan else {
+        panic!("FreeCAD isn't run");
+    };
+    assert_eq!(
+        job.edit,
+        FreecadEdit::Merge {
+            coincidences: vec![[4, 2, 2, 2]]
+        }
     );
+    let solved = |fc: &mut FreecadEdited| {
+        fc.after.code = 0;
+        let to = fc.geometry[4].points["2"];
+        *fc.geometry[2].points.get_mut("2").unwrap() = to;
+    };
+    let v = verdict(p, Some(&doctored(&theirs[0], solved)));
     agrees(&v);
     assert!(!v.refused, "{v:?}");
     assert_eq!(v.excused.len(), 1, "{v:?}");
+    // Its solve succeeding with the places apart, or without the coincidence: not merged, a
+    // difference.
+    let unmerged: [(&str, Doctor); 2] = [
+        ("code 0, the places apart", |fc| fc.after.code = 0),
+        ("code 0, no coincidence", |fc| {
+            let to = fc.geometry[4].points["2"];
+            *fc.geometry[2].points.get_mut("2").unwrap() = to;
+            fc.after.code = 0;
+            fc.constraints.pop();
+        }),
+    ];
+    for (what, change) in unmerged {
+        refused_against_freecads_edit(&verdict(p, Some(&doctored(&theirs[0], change))), what);
+    }
     // Anything else FreeCAD does is a difference: a failure that moved a point, a partial
     // merge (its coincidence missing), a constraint of the case's gone or one more, a
     // geometry made or gone, a failure as redundant (-2), a failure where the sketch failed
     // before the merge too (nothing to roll back), its edit raising, a crash, or a hang.
     let failed: Vec<(&str, Doctoring)> = vec![
+        (
+            "a dimension's value another",
+            Box::new(|fc| {
+                let length = fc
+                    .constraints
+                    .iter_mut()
+                    .find(|c| c.kind == "Distance")
+                    .unwrap();
+                length.value += 1e-6;
+            }),
+        ),
         (
             "a point moved",
             Box::new(|fc| {
@@ -1282,8 +1398,16 @@ fn freecad_refusing_an_edit_the_note_has_it_make_is_a_difference() {
         "split_line_at_freecads_position",
         "split_line_at_tangent_on_end_with_edge_tangent",
         "trim_point",
+        "trim_symmetric_about_line_into_two",
+        "trim_arc_tangent_no_piece_touches",
     ]);
     for p in &prepared {
+        assert_eq!(
+            rule(p).and_then(|r| r.pinned()),
+            Some(sketch_edit::Pinned::Edits),
+            "{}",
+            p.name
+        );
         let v = verdict(p, Some(&Theirs::Failed("refused by hand".to_owned())));
         assert!(!v.refused && v.excused.is_empty(), "{}: {v:?}", p.name);
         assert_eq!(v.how.len(), 1, "{}: {v}", p.name);
@@ -1318,6 +1442,8 @@ fn a_freecad_crash_is_its_own_outcome_agreeing_only_where_the_note_has_it_crash(
     // FreeCAD hanging on it, raising, or making it: not the crash the note has.
     for other in [
         Theirs::Lost("FreeCAD took longer than 60 s building it".to_owned()),
+        Theirs::Lost("FreeCAD crashed building it (exit status: 3)".to_owned()),
+        Theirs::Lost("FreeCAD crashed building it (signal: 6 (SIGABRT))".to_owned()),
         Theirs::Failed("refused by hand".to_owned()),
     ] {
         let v = verdict(p, Some(&other));
@@ -1374,6 +1500,45 @@ fn a_trim_in_the_tangency_band_compares_every_curve_it_doesnt_touch() {
         ["Silico's n0000008 is construction, FreeCAD's isn't"],
         "{v}"
     );
+    // A `vertical` on the upright line on Silico's side only: reported, and the freedom it
+    // takes. A distance from the trimmed piece's centre to the upright line, 3 as drawn, on
+    // Silico's side only: it names the touched piece, so isn't compared, but the freedom it
+    // takes still is (11 less 1).
+    let constrained = |form: Form| {
+        move |s: &mut Sketch| {
+            s.constraints.push(SketchConstraint {
+                id: id("k0000099"),
+                form,
+            });
+        }
+    };
+    let vertical = Form::Vertical {
+        line: Reference::Element(id("n0000008")),
+    };
+    let v = verdict(
+        &changed(&cases[0], p, constrained(vertical)),
+        theirs[0].as_ref(),
+    );
+    assert_eq!(
+        v.how,
+        [
+            "Silico has Vertical(n0000008) (k0000099), FreeCAD hasn't",
+            "degrees of freedom 10 against FreeCAD's 11",
+        ],
+        "{v}"
+    );
+    let distance = Form::PointLineDistance {
+        point: Reference::Element(id("p0000001")),
+        line: Reference::Element(id("n0000008")),
+        value: Length::from_nm(3_000_000),
+        side: LineSide::Left,
+        driving: true,
+    };
+    let v = verdict(
+        &changed(&cases[0], p, constrained(distance)),
+        theirs[0].as_ref(),
+    );
+    assert_eq!(v.how, ["degrees of freedom 10 against FreeCAD's 11"], "{v}");
     // Its top end moved 1 mm right: before and after the solve, reported.
     let v = verdict(
         &changed(&cases[0], p, |s| {
@@ -1442,4 +1607,121 @@ fn a_trim_in_the_tangency_band_compares_every_curve_it_doesnt_touch() {
             .any(|h| h == "Silico has line n0000008, which FreeCAD hasn't"),
         "{v}"
     );
+}
+
+// ---- Edits FreeCAD has no counterpart for still run FreeCAD (#251's condition b) ----
+
+#[test]
+fn removing_a_point_curves_use_is_excused_only_where_freecads_vertex_delete_unjoins_it() {
+    // arcs_through_circle_centre: the centre p0000001 of the arcs a0000004 and a0000007 and
+    // the circle c0000008. FreeCAD has no edit deleting it (:109); its Delete on that vertex,
+    // a0000004's centre, unjoins that centre from the others, deleting no curve (:105-107).
+    let (_, prepared, theirs) = both(&["remove_point_curves_use"]);
+    let p = &prepared[0];
+    assert_eq!(rule(p), Some(Rule::RemovePointInUse));
+    assert!(
+        matches!(theirs[0], Some(Theirs::Edited(_))),
+        "{:?}",
+        theirs[0]
+    );
+    let v = verdict(p, theirs[0].as_ref());
+    agrees(&v);
+    assert_eq!(v.excused.len(), 1, "{v:?}");
+    // A curve deleted, a curve moved, or the end still joined: not the vertex Delete, a
+    // difference.
+    let changes: [(&str, Doctor); 3] = [
+        ("a curve deleted", |fc| {
+            fc.edited.pop();
+            fc.geometry.pop();
+        }),
+        ("a curve moved", |fc| {
+            fc.edited[1].points.get_mut("3").unwrap()[0] += 1e-6;
+        }),
+        ("the end still joined", |fc| {
+            fc.constraints.push(FcConstraint {
+                kind: "Coincident".to_owned(),
+                refs: vec![[0, 3], [1, 3]],
+                value: 0.0,
+                driving: true,
+                name: String::new(),
+            });
+        }),
+    ];
+    for (what, change) in changes {
+        refused_against_freecads_edit(&verdict(p, Some(&doctored(&theirs[0], change))), what);
+    }
+    // Its Delete raising on a shared point, where 1.1.3 raises only on an end with no
+    // coincidence (:234): a difference.
+    let v = verdict(p, Some(&Theirs::Failed("refused by hand".to_owned())));
+    assert!(!v.refused && v.excused.is_empty(), "{v:?}");
+    assert_eq!(v.how.len(), 1, "{v}");
+}
+
+#[test]
+fn a_point_merged_with_itself_runs_freecad_whose_command_refuses_it() {
+    let (_, prepared, theirs) = both(&["merge_named_twice"]);
+    let p = &prepared[0];
+    assert_eq!(rule(p), Some(Rule::MergeNamedTwice));
+    assert!(
+        matches!(theirs[0], Some(Theirs::Edited(_))),
+        "{:?}",
+        theirs[0]
+    );
+    let v = verdict(p, theirs[0].as_ref());
+    agrees(&v);
+    assert!(v.refused, "{v:?}");
+    // Its solve after the coincidence no worse than before: the command still refuses it,
+    // the points being one already (:51).
+    let clean = doctored(&theirs[0], |fc| fc.after = fc.before.clone());
+    let v = verdict(p, Some(&clean));
+    agrees(&v);
+    assert!(v.refused, "{v:?}");
+}
+
+#[test]
+fn a_trim_at_a_rounds_centre_agrees_only_where_freecad_raises() {
+    // 1.1.3 throws "Unknown C++ exception" (:222).
+    let (_, prepared, theirs) = both(&["trim_at_centre"]);
+    let p = &prepared[0];
+    assert_eq!(rule(p), Some(Rule::TrimAtCentre));
+    assert!(
+        matches!(theirs[0], Some(Theirs::Failed(_))),
+        "{:?}",
+        theirs[0]
+    );
+    let v = verdict(p, theirs[0].as_ref());
+    agrees(&v);
+    assert!(v.refused, "{v:?}");
+    // FreeCAD refusing it otherwise (its plan, never run): a difference.
+    let planned = Prepared {
+        plan: Plan::Refuses("refused by hand".to_owned()),
+        ..p.clone()
+    };
+    let v = verdict(&planned, None);
+    assert!(!v.refused, "{v:?}");
+    assert_eq!(v.how.len(), 1, "{v}");
+    // A crash or a hang instead: a difference.
+    for other in [
+        Theirs::Lost("FreeCAD crashed building it (signal: 11 (SIGSEGV))".to_owned()),
+        Theirs::Lost("FreeCAD took longer than 60 s building it".to_owned()),
+    ] {
+        let v = verdict(p, Some(&other));
+        assert!(!v.refused && !v.crashed, "{other:?}: {v:?}");
+        assert_eq!(v.how.len(), 1, "{other:?}: {v}");
+    }
+}
+
+#[test]
+fn a_case_freecad_was_run_on_and_gave_no_outcome_is_a_difference() {
+    let (_, prepared, _) = both(&["split_point", "split_level_line"]);
+    for p in &prepared {
+        let v = verdict(p, None);
+        assert!(!v.refused && !v.crashed, "{}: {v:?}", p.name);
+        assert_eq!(
+            v.how,
+            ["FreeCAD was run on it and gave no outcome"],
+            "{}",
+            p.name
+        );
+    }
 }
