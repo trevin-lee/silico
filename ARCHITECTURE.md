@@ -21,19 +21,24 @@ This document records decisions. The **Invariants** section is enforced by the r
 ## Process model
 
 ```
-┌─────────────────────── silico app process (Rust only) ───────────────────────┐
-│                                                                              │
-│   egui UI ──┐                                                                │
-│   MCP server ├──► command API ──► silico-core                                │
-│   CLI ──────┘                     document · feature DAG · naming ·          │
-│                                   recompute scheduler · cache · errors       │
-└──────────────────────────────────────┬───────────────────────────────────────┘
-                                       │ IPC (silico-protocol)
-         ┌──────────────┬──────────────┼───────────────┬───────────────┐
-   kernel worker  kernel worker  sketch worker  assembly worker  render worker
-       (OCCT)         (OCCT)       (PlaneGCS)    (OndselSolver)    (lavapipe)
+┌─ silico app ────────┐  ┌─ silico serve ──────┐  ┌─ silico (CLI) ──────┐
+│ egui UI             │  │ MCP server (stdio)  │  │ check · fmt · show  │
+│   └► command API    │  │   └► command API    │  │   └► command API    │
+└─────────┬───────────┘  └─────────┬───────────┘  └─────────┬───────────┘
+          └────────────────────────┬────────────────────────┘
+                                   │
+                  silico-core, linked into each process:
+               document · feature DAG · naming · recompute
+               scheduler · cache · errors (Rust only)
+                                   │ IPC (silico-protocol), each process
+                                   │ starting its own workers
+      ┌────────────┬────────────┬──┴──────────┬─────────────┬─────────────┐
+    kernel       kernel       sketch       assembly       render         STEP
+    worker       worker       worker        worker        worker        worker
+    (OCCT)       (OCCT)     (PlaneGCS)  (OndselSolver)  (lavapipe)   (OCCT STEP)
 ```
 
+- **Clients are processes of their own** (docs/design/m4.1-command-api.md, decision 30(a)). The app, `silico serve` (the MCP server, one client over stdio), and the CLI each link `silico-core` and run every capability through its command API; a session belongs to one client, and clients share a document across processes through its file (decision 2: a session reloads what another commits, outside its own transaction). Each process starts its own workers.
 - **Worker pool.** Up to one kernel worker a core, each started when a request first needs it and kept, so a rebuild pays only for the workers it uses at once. A client can start some ahead of any request, waiting until they've started (`Sessions::warm`, over `KernelPool::warm` and `SketchSolvers::warm`): the app is to start one of each at launch, off its UI thread (decision 10, pending the maintainer), and a rebuild that comes while they start waits for them rather than starting more (M5.3; the padded bracket's first rebuild on CI, p50 of 15: 20.9 ms cold, 12.7 ms warmed, 16.6 ms while warming). Independent branches of the feature DAG recompute in parallel across them. OCCT isn't reliably thread-safe, so process-level parallelism is the safe route.
 - **Failure handling.** Every request has a timeout. A crashed or hung worker is killed and respawned, and the request fails with a structured error naming the feature. Each request carries a generation number of the client that submitted it (the pool's own, or a client the pool gives, `KernelPool::client`, each with generations of its own: a session's rebuilds take one, and its reads of the published model one or more others (docs/design/m4.1-command-api.md, decision 33)): results for that client's superseded generations are discarded, and work still running for them is stopped once it has run longer than replacing a worker takes (50 ms by default), unless it finishes first. One client's newer generation never touches another's work, and the pool serves its clients' waiting requests in turn. A request whose `Pending` is dropped before its outcome is given up: one still waiting is dropped unrun, without taking its client's turn, and one running runs on, its result discarded; its generation and every other request are left as they are.
 - **Worker output.** Serialized B-rep (OCCT binary format), raw history maps, and tessellation when requested. The render worker's: a PNG, and the ID buffer (each pixel's body and face or edge number) when asked.
@@ -71,7 +76,7 @@ Evidence, in `tests/determinism/`: with OCCT 7.9.3, PR #1600, and the full shim,
 |---|---|
 | `silico-core` | Document model, feature DAG, recompute, topological naming, cache, serialization, command API |
 | `silico-protocol` | IPC message types shared by the core and workers. Few dependencies. |
-| `silico-kernel` | Thin C++ shim over OCCT plus the worker binary. The only crate that links OCCT. |
+| `silico-kernel` | Thin C++ shim over OCCT plus the worker binaries: the kernel worker, and the STEP worker (OCCT's STEP writer, `TKDESTEP`, linked into it alone; started for each export, M4.8). The only crate that links OCCT. |
 | `silico-sketch` | PlaneGCS binding and sketch worker |
 | `silico-worker` | What every worker process is: the inherited socket, the request loop, and logging, shared by every worker; the floating-point trap checks, by those whose output is a result |
 | `silico-assembly` | OndselSolver binding and assembly worker (later) |
@@ -183,7 +188,7 @@ FreeCAD avoids this problem by storing each feature's B-rep in the file and load
 
 ## Errors and logging
 
-`tracing` is used throughout. Span IDs are passed into worker requests so a failure can be traced from the user action to the feature to the OCCT call. Worker crash reports are captured and attached to the error. Error codes are stable and documented.
+`tracing` is used throughout. Span IDs are passed into worker requests so a failure can be traced from the user action to the feature to the OCCT call. Worker crash reports are captured and attached to the error. Error codes are stable and documented. Each session keeps the events of its own work (its commands, its rebuilds, and the worker lines re-emitted under the calls that asked for them) in a bounded buffer of its own, which `read_logs` reads by level, feature, and a cursor; one session's events never reach another's. Logs are diagnostics: their times and their order across threads reach no result, name, or file.
 
 ## Performance
 

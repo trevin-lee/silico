@@ -23,7 +23,6 @@
     "properties": {
       "restored": {
         "description": "The revision whose state is restored: the one the transaction began from.",
-        "format": "uint64",
         "minimum": 1,
         "type": "integer"
       }

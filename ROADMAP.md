@@ -12,7 +12,8 @@ Every milestone ends with `/adversarial-review --milestone`, and the council mus
 | M1 – The kernel layer | [docs/roadmap/m1-kernel.md](docs/roadmap/m1-kernel.md) | Detailed |
 | M2 – Document and naming | [docs/roadmap/m2-document-naming.md](docs/roadmap/m2-document-naming.md) | Detailed |
 | M3 – Sketcher | [docs/roadmap/m3-sketcher.md](docs/roadmap/m3-sketcher.md) | Detailed |
-| M4, M5 | This file | Detailed when M3 ends |
+| M4 – MCP, before any UI | [docs/roadmap/m4-mcp.md](docs/roadmap/m4-mcp.md) | Detailed, with each step as built |
+| M5 | This file | Detailed when M4 ends |
 | FreeCAD file import | [docs/roadmap/freecad-import.md](docs/roadmap/freecad-import.md) | Outline, detailed when its prerequisites exist |
 
 **How to work through a plan:**
@@ -54,6 +55,8 @@ The command API exposed over MCP: transactions, geometry queries that return sta
 A Fusion-style layout with browser tree, timeline bar, and property panel. A viewport built on `re_renderer` with crisp edges and GPU picking. The core's drag client, with the pool's rules for drags (ARCHITECTURE.md, *Sketches solve in the sketch worker*). The sketch-mode UI. Behavior follows SolidWorks; visuals follow Fusion 360. Sketch points are shared, merged as SolidWorks merges them (docs/design/m3.2-sketch-format.md, D2): drawing from a point shares it; trim, split, delete, and pulling a corner apart create or split shared points explicitly; unmerging is a deliberate act; deleting a curve keeps its neighbours' shared point.
 
 **Done when** the vertical slice works end to end in both the UI and MCP.
+
+The plan, its decisions taken: [docs/roadmap/m5-app.md](docs/roadmap/m5-app.md).
 
 ### FreeCAD file import
 Once M2, M3, refine, and the `import` feature (with a deterministic STEP writer) exist; it doesn't block the slice. Silico opens a FreeCAD `.FCStd` file and saves it as a Silico document, one way: features Silico has become Silico features, checked against the shapes FreeCAD stored, and the rest come in as shapes with no history or are left out, reported. Silico never writes `.FCStd`.
