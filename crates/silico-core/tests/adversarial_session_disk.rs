@@ -354,6 +354,8 @@ fn a_reload_of_text_the_gate_refuses_is_unchanged_at_once() {
         f.reloads_itself(Revision::OPENED);
         let read = answer(f.sessions.text(&f.id, None));
         assert!(!read.session.unwrap().reloaded, "{text:?}");
+        // The text the gate refuses is the session's, as the file holds it.
+        assert_eq!(read.result.unwrap().text, text, "{text:?}");
         let status = f.sessions.status(&f.id).result.unwrap();
         assert!(!status.gated, "{text:?}");
         assert_eq!(f.disk(), Some(Disk::Unchanged), "{text:?}");

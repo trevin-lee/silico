@@ -219,11 +219,20 @@ struct Session<C: Kernel + 'static> {
     reloading: Gate,
 }
 
-/// A session's own reloads (A3): one queued, and the bytes the last refused, if one was.
+/// A session's own reloads (A3): one queued, and what the last refused, if it was refused
+/// and none has been taken since: the digest of the bytes it was queued for, and the
+/// registry's count of claims then (`Book::claims`), since a file another session claimed
+/// may be taken once its claim changes.
 #[derive(Default)]
 struct Reloads {
     queued: bool,
-    refused: Option<Vec<u8>>,
+    refused: Option<([u8; 32], u64)>,
+}
+
+/// The digest of a file's bytes, as a refused reload keeps them.
+fn digest(bytes: &[u8]) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes).into()
 }
 
 /// Where a file a command writes may go ([`Sessions::write_rules`]).
@@ -400,7 +409,7 @@ impl<C: Kernel + 'static> Session<C> {
     /// where its old text is), nor while one is queued, nor for the bytes a reload refused
     /// last (a file another session holds, say), which would be refused again. If it should,
     /// it's marked queued.
-    fn reload_wanted(&self, found: &[u8]) -> bool {
+    fn reload_wanted(&self, found: &[u8], claims: u64) -> bool {
         {
             let held = self.held.read();
             if held.transaction.is_some() || held.part_written.is_some() {
@@ -408,7 +417,11 @@ impl<C: Kernel + 'static> Session<C> {
             }
         }
         let mut reloads = lock(&self.reloads);
-        if reloads.queued || reloads.refused.as_deref() == Some(found) {
+        if reloads.queued
+            || reloads
+                .refused
+                .is_some_and(|refused| refused == (digest(found), claims))
+        {
             return false;
         }
         reloads.queued = true;
@@ -420,8 +433,14 @@ impl<C: Kernel + 'static> Session<C> {
     /// at a new revision; the file found as the session holds it (a `begin` or another
     /// command ahead of it reloaded it first), the finding then `unchanged`; inside a
     /// transaction and changed, nothing, the finding left `changed`; or refused, `found`
-    /// kept so the same bytes aren't queued again. Whether the client should be woken.
-    fn reloaded_itself(&self, reloaded: Result<Reload, Problems>, found: Vec<u8>) -> bool {
+    /// kept with `claims` so the same bytes aren't queued again until a claim changes; any
+    /// other answer forgets a refusal. Whether the client should be woken.
+    fn reloaded_itself(
+        &self,
+        reloaded: Result<Reload, Problems>,
+        found: [u8; 32],
+        claims: u64,
+    ) -> bool {
         let (woken, refused) = match reloaded {
             Ok(Reload::Reloaded) => (true, None),
             Ok(Reload::AsHeld) => {
@@ -439,14 +458,13 @@ impl<C: Kernel + 'static> Session<C> {
                     "the file changed on disk, and the session couldn't reload it: {:?}",
                     problems.errors()
                 );
-                (false, Some(found))
+                (false, Some((found, claims)))
             }
         };
         let mut reloads = lock(&self.reloads);
         reloads.queued = false;
-        if refused.is_some() {
-            reloads.refused = refused;
-        }
+        // Any reload taken forgets a refusal: its bytes may come back, to be tried again.
+        reloads.refused = refused;
         woken
     }
 }
@@ -463,8 +481,11 @@ fn reloader<P: Clients + 'static>(
         let Some(session) = session.upgrade() else {
             return;
         };
-        if session.reload_wanted(found) {
-            session.queue(reload_job(Weak::clone(&registry), found.to_vec()));
+        let claims = registry
+            .upgrade()
+            .map_or(0, |registry| lock(&registry.book).claims);
+        if session.reload_wanted(found, claims) {
+            session.queue(reload_job(Weak::clone(&registry), digest(found)));
         }
     })
 }
@@ -473,7 +494,10 @@ fn reloader<P: Clients + 'static>(
 /// (claimed as every command's read is, outside a transaction reloaded at a new revision),
 /// named `reload` in `status.running` and the session's logs while it runs, and the client
 /// woken by what it changed. A session closed first never runs it.
-fn reload_job<P: Clients + 'static>(registry: Weak<Registry<P>>, found: Vec<u8>) -> Job<P::Client> {
+fn reload_job<P: Clients + 'static>(
+    registry: Weak<Registry<P>>,
+    found: [u8; 32],
+) -> Job<P::Client> {
     Box::new(move |turn| {
         let Turn::Run(session) = turn else {
             return;
@@ -499,7 +523,11 @@ fn reload_job<P: Clients + 'static>(registry: Weak<Registry<P>>, found: Vec<u8>)
                 None => Ok(()),
             };
             let reloaded = session.reload(Rereads::Always, &claimed);
-            session.reloaded_itself(reloaded, found)
+            // The claims as the reload left them: a refusal is kept until they change.
+            let claims = registry
+                .upgrade()
+                .map_or(0, |registry| lock(&registry.book).claims);
+            session.reloaded_itself(reloaded, found, claims)
         };
         lock(&session.command).take();
         if woken {
@@ -581,6 +609,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     threads: Threads::new(),
                     released: Threads::new(),
                     stopping: false,
+                    claims: 0,
                 }),
                 renderer: Mutex::new(None),
                 step: Mutex::new(Arc::new(crate::step_worker::StepWorkers::new())),
@@ -604,9 +633,11 @@ impl<P: Clients + 'static> Sessions<P> {
     /// rebuild ends (its model published, or its end recorded); as a disk comparison's
     /// finding changes; and as the session reloads its file itself. A command answered as
     /// it's asked for (refused before it's queued) wakes nothing: its caller has the answer.
-    /// It's called off the caller's thread, with no lock of the core's held, so it may ask
-    /// the sessions anything; it should only ask for a frame, never draw. Given again, the
-    /// new one replaces the old.
+    /// It's called with no lock of the core's held, so it may ask the sessions anything,
+    /// and off the caller's thread, but for one case: a command sent to a session that has
+    /// just closed (its queue ended) is answered, and wakes the client, on the thread that
+    /// sent it. It should only ask for a frame, never draw. Given again, the new one replaces
+    /// the old.
     pub fn on_change(&self, waker: impl Fn() + Send + Sync + 'static) {
         self.registry.waker.set(Arc::new(waker));
     }
@@ -1217,7 +1248,8 @@ impl<P: Clients + 'static> Sessions<P> {
                     return Running::answered(refused(too_many_reads(*session)));
                 }
                 let stop = Arc::clone(&ticket);
-                let waker = Arc::clone(&self.registry.waker);
+                // Answered here only as its session opens or doesn't, whose open's answer
+                // wakes the client after this one's is sent, with no lock held.
                 opening.reads.push(Box::new(move |turn| {
                     let refusal = match turn {
                         Turn::Run(found) => {
@@ -1238,7 +1270,6 @@ impl<P: Clients + 'static> Sessions<P> {
                     };
                     // Never run: cancelled, if it was first, or refused, and either way settled.
                     let _ = reply.send(stop.answer(|| None, || refusal));
-                    waker.wake();
                 }));
                 Running::new(answer, READ_STOPPED, Some(ticket), None)
             }

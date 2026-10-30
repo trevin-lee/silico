@@ -803,3 +803,232 @@ fn a_finding_wakes_only_as_it_changes_and_the_sessions_own_reload_once() {
     reaches(&count, 3);
     assert_eq!(w.f.at(), Revision(2));
 }
+
+// ---- #297's review ----
+
+#[test]
+fn a_part_written_file_reads_changed_and_is_never_reloaded() {
+    // The session's own save left it part written: the next save says where the old text
+    // is, so no reload takes the half-written file.
+    let f = opened(STORED);
+    f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
+    let old = f.path.with_file_name(".a.silico.fmt-1");
+    f.session().held.session_changing().part_written = Some(old);
+    std::fs::write(&f.path, "part written").unwrap();
+    f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    f.status_stays(Duration::from_millis(300), |status, revision| {
+        revision == Revision::OPENED
+            && status.disk == Some(Disk::Changed)
+            && status.running.is_none()
+    });
+}
+
+#[test]
+fn a_published_read_wakes_the_client_once_as_it_answers() {
+    let f = opened(BOX);
+    // Published once.
+    f.sessions
+        .check(&f.id, CheckModel::Current { fresh: false })
+        .wait()
+        .result
+        .unwrap();
+    let count = counting(&f.sessions);
+    reaches(&count, 0);
+    let read = f.sessions.check(&f.id, CheckModel::Published);
+    reaches(&count, 1);
+    read.try_take().ok().unwrap().result.unwrap();
+}
+
+#[test]
+fn an_open_wakes_the_client_as_it_answers_and_so_does_one_refused() {
+    let f = opened(BOX);
+    let count = counting(&f.sessions);
+    let other = f.path.with_file_name("b.silico");
+    std::fs::write(&other, BOX).unwrap();
+    let opening = f.sessions.open(&other, false);
+    reaches(&count, 1);
+    opening.try_take().ok().unwrap().result.unwrap();
+    let refused = f.sessions.open(f.path.with_file_name("none.silico"), false);
+    reaches(&count, 2);
+    assert!(refused.try_take().ok().unwrap().result.is_err());
+}
+
+/// A cache opener held, while it's held, as a session opens: the open waits in it.
+#[derive(Default)]
+struct HeldOpen {
+    held: Mutex<bool>,
+    opened: Condvar,
+    entered: AtomicUsize,
+}
+
+#[test]
+fn a_read_sent_while_its_session_opens_is_answered_before_the_wake_that_tells_of_it() {
+    // The open cancelled while held, so the read sent meanwhile is refused as naming no
+    // session: answered, then the client woken once, with the registry's book let go, from
+    // inside which the waker can take the read's answer.
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let path = dir.path().join("a.silico");
+    std::fs::write(&path, BOX).unwrap();
+    let gate = Arc::new(HeldOpen::default());
+    *lock(&gate.held) = true;
+    let opener = Arc::clone(&gate);
+    let sessions = Arc::new(Sessions::with_stand_ins(
+        Arc::new(FakeKernel::new(1).unwrap()),
+        move |cache| {
+            opener.entered.fetch_add(1, Ordering::SeqCst);
+            let mut held = lock(&opener.held);
+            while *held {
+                held = opener.opened.wait(held).unwrap();
+            }
+            Cache::with_secret(cache, &secret)
+        },
+        || Ok(Box::new(crate::fake::FakeSketches::new()) as Box<dyn SketchSolver>),
+    ));
+    let slot: Arc<Mutex<Option<Running<CheckAnswer>>>> = Arc::default();
+    let taken = Arc::new(AtomicUsize::new(0));
+    let wakes = Arc::new(AtomicUsize::new(0));
+    {
+        let (slot, taken, wakes) = (Arc::clone(&slot), Arc::clone(&taken), Arc::clone(&wakes));
+        sessions.on_change(move || {
+            wakes.fetch_add(1, Ordering::SeqCst);
+            let running = lock(&slot).take();
+            if let Some(running) = running {
+                match running.try_take() {
+                    Ok(_) => {
+                        taken.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Err(running) => *lock(&slot) = Some(running),
+                }
+            }
+        });
+    }
+    let opening = sessions.open(&path, false);
+    let deadline = std::time::Instant::now() + WAIT;
+    while gate.entered.load(Ordering::SeqCst) == 0 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    *lock(&slot) = Some(sessions.check(&SessionId(1), CheckModel::Published));
+    assert!(opening.cancel());
+    *lock(&gate.held) = false;
+    gate.opened.notify_all();
+    let deadline = std::time::Instant::now() + WAIT;
+    while taken.load(Ordering::SeqCst) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no wake found the read's answer"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(wakes.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_reload_that_finds_the_file_as_held_moves_the_finding_itself() {
+    // With the clock held, no comparison runs after the one that found the change: only the
+    // reload, finding the file put back, can say it's unchanged.
+    let w = watched(BOX);
+    let f = &w.f;
+    f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
+    let (started, through) = shut(&f.session().reloading);
+    std::fs::write(&f.path, SPHERE).unwrap();
+    w.clock.advance(DISK_CHECK_INTERVAL);
+    f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    started.recv_timeout(WAIT).unwrap();
+    let reads = w.reader.started();
+    std::fs::write(&f.path, BOX).unwrap();
+    open_gate(&f.session().reloading);
+    through.send(()).unwrap();
+    f.status_reaches(|status, _| status.running.is_none() && status.disk == Some(Disk::Unchanged));
+    assert_eq!(w.reader.started(), reads, "a comparison ran");
+    assert_eq!(f.at(), Revision::OPENED);
+}
+
+#[test]
+fn a_refused_reload_is_tried_again_once_the_claim_that_refused_it_is_let_go() {
+    // s1's path a link to s2's document: refused while s2 holds it; once s2 closes, the
+    // same bytes are reloaded.
+    let f = opened(BOX);
+    f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
+    let other = f.path.with_file_name("b.silico");
+    std::fs::write(&other, SPHERE).unwrap();
+    let second = f.sessions.open(&other, false).wait().session.unwrap().id;
+    std::fs::remove_file(&f.path).unwrap();
+    std::os::unix::fs::symlink(&other, &f.path).unwrap();
+    f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    f.status_stays(Duration::from_millis(200), |_, revision| {
+        revision == Revision::OPENED
+    });
+    f.sessions.close(&second).wait().result.unwrap();
+    f.status_reaches(|status, revision| {
+        revision == Revision(2) && status.disk == Some(Disk::Unchanged)
+    });
+    assert_eq!(f.held_text(), SPHERE);
+}
+
+#[test]
+fn bytes_a_reload_refused_come_back_after_another_reload_and_are_tried_again() {
+    let f = opened(BOX);
+    f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
+    let other = f.path.with_file_name("b.silico");
+    std::fs::write(&other, SPHERE).unwrap();
+    let _second = f.sessions.open(&other, false).wait().session.unwrap().id;
+    let (started, through) = shut(&f.session().reloading);
+    let link = || {
+        let _ = std::fs::remove_file(&f.path);
+        std::os::unix::fs::symlink(&other, &f.path).unwrap();
+    };
+    link();
+    f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    started.recv_timeout(WAIT).unwrap();
+    through.send(()).unwrap();
+    f.status_reaches(|status, _| status.running.is_none());
+    // Other bytes of its own: reloaded.
+    std::fs::remove_file(&f.path).unwrap();
+    std::fs::write(&f.path, BOX.replace("Block", "Brick")).unwrap();
+    f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    started.recv_timeout(WAIT).unwrap();
+    through.send(()).unwrap();
+    f.status_reaches(|status, revision| {
+        revision == Revision(2) && status.disk == Some(Disk::Unchanged)
+    });
+    // The refused bytes back: tried again, not passed over.
+    link();
+    f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    assert!(
+        started.recv_timeout(WAIT).is_ok(),
+        "the bytes refused before weren't tried again"
+    );
+    open_gate(&f.session().reloading);
+    drop(through);
+}
+
+#[test]
+fn a_comparison_stuck_reading_keeps_no_waker_alive_past_the_sessions() {
+    let w = watched(BOX);
+    w.f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
+    let token = Arc::new(());
+    let held = Arc::clone(&token);
+    w.f.sessions.on_change(move || {
+        let _ = &held;
+    });
+    assert_eq!(Arc::strong_count(&token), 2);
+    w.reader.hold();
+    w.clock.advance(DISK_CHECK_INTERVAL);
+    let before = w.reader.started();
+    w.f.status();
+    let deadline = std::time::Instant::now() + WAIT;
+    while w.reader.started() == before {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let Watched { f, reader, .. } = w;
+    drop(f);
+    assert_eq!(
+        Arc::strong_count(&token),
+        1,
+        "the stuck comparison holds the waker"
+    );
+    reader.release();
+}
