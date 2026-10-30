@@ -2251,12 +2251,13 @@ fn base_of(inputs: &[(&'static str, Option<usize>)]) -> Option<usize> {
 impl Plan {
     /// Each sketch's solve's key, in timeline order, and which of them a pad, pocket,
     /// revolve, or groove sweeps: those are solved before the plan is made (design S3).
-    /// A suppressed sketch isn't solved, and a suppressed feature sweeps nothing.
+    /// A suppressed feature sweeps nothing, so a suppressed sketch, whose every user the gate
+    /// has suppressed with it, is no sketch swept, and isn't solved before the plan (nor
+    /// after it: the plan lists no suppressed feature's solve).
     fn sketches_of(document: &Checked) -> (Vec<(FeatureId, Key)>, BTreeSet<FeatureId>) {
         let features = &document.document().features;
         let sketches = features
             .iter()
-            .filter(|f| !f.suppressed)
             .filter_map(|f| match &f.operation {
                 Operation::Sketch(sketch) => Some((f.id.clone(), sketch_key(&f.id, sketch))),
                 _ => None,
