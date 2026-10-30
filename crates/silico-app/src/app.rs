@@ -104,6 +104,12 @@ impl<P: Clients + 'static> App<P> {
         &self.tabs
     }
 
+    /// Each open document's tab, to act on as the window's controls do (a client driving
+    /// the app without its window, a test).
+    pub fn tabs_mut(&mut self) -> &mut [Tab] {
+        &mut self.tabs
+    }
+
     /// Opens the document at `path`, as the Open dialog does: a tab once it has opened.
     pub fn open(&mut self, path: &str, create: bool) {
         self.opening
@@ -271,6 +277,12 @@ impl<P: Clients + 'static> App<P> {
                         .active_place()
                         .and_then(|at| self.tabs.get(at))
                         .is_some_and(|tab| tab.transaction);
+                    // Revert is off while the tab closes: its close drops the edits already.
+                    let revertible = transaction
+                        && self
+                            .active_place()
+                            .and_then(|at| self.tabs.get(at))
+                            .is_some_and(|tab| !tab.closing());
                     ui.menu_button("File", |ui| {
                         if ui.button("New…").clicked() {
                             self.asking = Some(Asking::Path { create: true });
@@ -281,7 +293,7 @@ impl<P: Clients + 'static> App<P> {
                             ui.close();
                         }
                         if ui
-                            .add_enabled(transaction, egui::Button::new("Revert"))
+                            .add_enabled(revertible, egui::Button::new("Revert"))
                             .clicked()
                         {
                             if let Some(tab) =
@@ -436,7 +448,11 @@ impl<P: Clients + 'static> App<P> {
                     ui.visuals().warn_fg_color,
                     format!("{} {what} while you have unsaved edits.", tab.name()),
                 );
-                if ui.button("Reload").clicked() {
+                // Off while the tab closes: its close drops the edits already.
+                if ui
+                    .add_enabled(!tab.closing(), egui::Button::new("Reload"))
+                    .clicked()
+                {
                     tab.revert(&self.sessions, false);
                     *started = true;
                 }

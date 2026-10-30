@@ -601,7 +601,8 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// Revert (`rollback`): the file's text, byte for byte; then, if `then_close`, close.
+    /// Revert (`rollback`): the file's text, byte for byte; then, if `then_close` or a
+    /// revert it drops was to close the tab, close.
     /// The edits and steps queued since the last save queued are dropped, and the revert
     /// waits behind that save, which saves what was asked before it (#298's review): one in
     /// flight answers first, and the rollback undoes it. Also how a file changed on disk is
@@ -614,6 +615,13 @@ impl Tab {
             .iter()
             .rposition(|queued| matches!(queued, Queued::Save { .. }))
             .map_or(0, |save| save + 1);
+        // A revert queued to close it (Don't save) still closes it: its intent is carried.
+        let then_close = then_close
+            || self
+                .edits
+                .queue
+                .range(kept..)
+                .any(|queued| matches!(queued, Queued::Revert { then_close: true }));
         self.edits.queue.truncate(kept);
         self.edits.queue.push_back(Queued::Revert { then_close });
         self.advance(sessions);

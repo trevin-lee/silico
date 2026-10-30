@@ -2010,3 +2010,84 @@ fn ctrl_s_right_after_the_first_keystroke_saves_it() {
     assert_eq!(names_in(&path), ["Block", "sPin", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn a_revert_after_dont_save_on_a_quit_still_closes_the_tab() {
+    // Don't save on a quit while an edit is held: the revert that closes the tab waits
+    // queued. Revert is off then; a revert asked all the same (as the disk banner's Reload
+    // asks one) keeps the close, and the window closes.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the transaction begun", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "y");
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step(&mut h);
+    assert!(h.state().tabs()[0].closing());
+    h.get_by_label("File").click();
+    step(&mut h);
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Revert")
+            .accesskit_node()
+            .is_disabled()
+    );
+    let sessions = Arc::clone(h.state().sessions());
+    h.state_mut().tabs_mut()[0].revert(&sessions, false);
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the window closing", |h| told(h, true));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn reload_is_off_while_the_tab_closes() {
+    // Don't save on a close while an edit is held, then the file changes on disk: the
+    // banner says so, and its Reload is off, the close dropping the edits already.
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the transaction begun", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "y");
+    h.get_by_label("Close example.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step(&mut h);
+    assert!(h.state().tabs()[0].closing());
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#),
+    )
+    .unwrap();
+    let said = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, said));
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Reload")
+            .accesskit_node()
+            .is_disabled()
+    );
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
