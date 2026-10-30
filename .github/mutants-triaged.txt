@@ -171,6 +171,7 @@ crates/silico-core/src/warnings.rs | Warnings::none | replace Warnings::none -> 
 # apart by `hypot`; FreeCAD's join, under 1e-7 by sqrt(dx^2 + dy^2), never holds where `hypot`
 # is above it (none in 1.4e8 pairs searched at the boundary), so two ends never warn.
 crates/silico-core/src/warnings.rs | ends_not_joined | replace < with <= | #189
+crates/silico-core/src/warnings.rs | ends_not_joined | replace < with == | #275
 # `k * 1` adds the pair of each point with itself, 0 apart, to a maximum that starts at 0.
 crates/silico-core/src/warnings.rs | cluster_warning | replace + with * | #189
 # `k * 1` compares each point with itself too: 0 apart along x, so no break, and joining a
@@ -227,3 +228,21 @@ crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > w
 crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > with == | #273
 crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > with >= | #273
 crates/silico-core/src/document/sketch_gate.rs | check | replace < with <= | #277
+# The flags of one open share no bit (O_RDONLY is 0), so `^` of them is their `|`, however
+# it binds: the same flags. With #129's line, one for each `|` in the call.
+crates/silico-core/src/cache/at.rs | open_to_read | replace | with ^ | #275
+crates/silico-core/src/cache/at.rs | open_to_read | replace | with ^ | #275
+# Every fault passed in is a kernel fault, so a listed error with its code already set it.
+crates/silico-cli/src/main.rs | Refusal::with_fault | delete field failed from struct Refusal expression | #275
+# Every end sends an event that breaks serve's loop with the same reason; and an ignored
+# notification differs from an expected one only by a debug event no log keeps.
+crates/silico-mcp/src/lib.rs | Control::why | replace Control::why -> Option<Ended> with None | #275
+crates/silico-mcp/src/lib.rs | Dispatch<'_, P>::message | delete match arm "notifications/initialized" | #275
+# VULKAN and METAL are disjoint bits; the default backends add only GL on Linux, after
+# lavapipe, and the default flags change no adapter CI's host has, nor anything drawn.
+crates/silico-render/src/lib.rs | all_adapters | replace | with ^ | #275
+crates/silico-render/src/lib.rs | all_adapters | delete field backends from struct wgpu::InstanceDescriptor expression | #275
+crates/silico-render/src/lib.rs | all_adapters | delete field flags from struct wgpu::InstanceDescriptor expression | #275
+# The compiled-in ICD path is the build's own pixi file: empty or there, both forms agree; they
+# differ only when it was removed after the build, which no test can arrange.
+crates/silico-render/src/lavapipe.rs | environment | replace && with || | #275

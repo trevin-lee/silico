@@ -91,21 +91,21 @@ pub(super) struct Meta {
 impl Meta {
     fn of(stat: &Stat) -> Self {
         // Each as the system gives it; a time it can't be (before the epoch by more than a
-        // `SystemTime` holds, or nanoseconds past a second) is the epoch, as a time the
-        // system won't give is.
+        // `SystemTime` holds, or nanoseconds outside a second) is the epoch, the whole time,
+        // as a time the system won't give is.
         let nanos = u32::try_from(stat.st_mtime_nsec)
             .ok()
             .filter(|nanos| *nanos < 1_000_000_000)
-            .map_or(Duration::ZERO, |nanos| {
-                Duration::from_nanos(u64::from(nanos))
-            });
-        let modified = match u64::try_from(stat.st_mtime) {
+            .map(|nanos| Duration::from_nanos(u64::from(nanos)));
+        let seconds = match u64::try_from(stat.st_mtime) {
             Ok(seconds) => SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds)),
             Err(_) => SystemTime::UNIX_EPOCH
                 .checked_sub(Duration::from_secs(stat.st_mtime.unsigned_abs())),
-        }
-        .and_then(|seconds| seconds.checked_add(nanos))
-        .unwrap_or(SystemTime::UNIX_EPOCH);
+        };
+        let modified = seconds
+            .zip(nanos)
+            .and_then(|(seconds, nanos)| seconds.checked_add(nanos))
+            .unwrap_or(SystemTime::UNIX_EPOCH);
         Meta {
             kind: FileType::from_raw_mode(stat.st_mode),
             len: u64::try_from(stat.st_size).unwrap_or(0),
@@ -242,6 +242,52 @@ pub(super) fn new_file(dir: impl AsFd, mode: Mode) -> rustix::io::Result<(String
             Ok(file) => return Ok((partial, std::fs::File::from(file))),
             Err(Errno::EXIST) if attempt < 8 => attempt += 1,
             Err(e) => return Err(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_modification_time_with_nanoseconds_of_a_second_or_more_is_the_epoch() {
+        // Found by the M4 milestone's mutation run: taking exactly 1,000,000,000 nanoseconds
+        // as part of a second passed every test (a whole second more). No system gives a
+        // time with that many (POSIX's `tv_nsec` is below 10^9, and `utimensat` refuses
+        // more), but a FUSE daemon or a damaged inode can, and such a time is no time at
+        // all: the epoch, its seconds too, as `Meta::of` says. A real file's stat, its time
+        // set by hand: at the epoch's own second and 5 s after it, 999,999,999 ns is kept to
+        // the nanosecond; 1,000,000,000 and more are the epoch exactly.
+        let file = tempfile::tempfile().unwrap();
+        let mut stat = rustix::fs::fstat(&file).unwrap();
+        for (seconds, after) in [(0, Duration::ZERO), (5, Duration::from_secs(5))] {
+            stat.st_mtime = seconds;
+            stat.st_mtime_nsec = 999_999_999;
+            assert_eq!(
+                Meta::of(&stat).modified(),
+                SystemTime::UNIX_EPOCH + after + Duration::from_nanos(999_999_999),
+                "{seconds}"
+            );
+            for nanos in [1_000_000_000, 1_000_000_001] {
+                stat.st_mtime_nsec = nanos;
+                assert_eq!(
+                    Meta::of(&stat).modified(),
+                    SystemTime::UNIX_EPOCH,
+                    "{seconds} {nanos}"
+                );
+            }
+            // A negative count, which macOS's signed field can hold (Linux's is unsigned): no
+            // time either, the epoch.
+            #[cfg(target_os = "macos")]
+            {
+                stat.st_mtime_nsec = -1;
+                assert_eq!(
+                    Meta::of(&stat).modified(),
+                    SystemTime::UNIX_EPOCH,
+                    "{seconds} -1"
+                );
+            }
         }
     }
 }
