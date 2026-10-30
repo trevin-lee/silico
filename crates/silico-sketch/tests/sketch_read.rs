@@ -900,3 +900,88 @@ fn a_sketch_that_cant_be_held_reads_invalid_from_its_diagnosis_as_check_refuses_
     );
     assert_eq!(read["points"][1]["y"], 3);
 }
+
+#[test]
+fn a_sketch_kept_from_an_earlier_rebuild_or_carried_by_a_save_reads_as_its_first_solve() {
+    // The rectangle (fully defined, one region), its corner 8j9k0m1n stored half a
+    // millimetre off its solve at (40, 20), beside a box. Each later model takes the
+    // sketch's solve from the first rebuild's, its step unchanged: an edit of the box alone,
+    // outside a transaction (a save, its published model rebound to the saved document) and
+    // inside one; and the commit's save, rebound too. `format` then writes the sketch as
+    // solved, a new step solved again from the solve's own coordinates, to the same
+    // solution. Each read, current and published, gives the first read's result, byte for
+    // byte, at its own revision: what the solve gave (the rectangle's states by hand,
+    // docs/ports/sketcher.md's rules: 8 unknowns, 8 independent equations, every member
+    // fully defined, the corner at (40, 20)).
+    let block = |length: u32| {
+        format!(
+            r#"{{"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": {length}, "width": 20, "height": 10}}"#
+        )
+    };
+    let f = fixture();
+    let off = rectangle(&[], "").replace(
+        r#"{"id": "8j9k0m1n", "x": 40, "y": 20,"#,
+        r#"{"id": "8j9k0m1n", "x": 40, "y": 20.5,"#,
+    );
+    let path = f.open("kept.silico", &document(&[&off, &block(10)]));
+    let first = f.result("k7f2qx3m");
+    assert_eq!(
+        first["points"][3],
+        json!({"id": "8j9k0m1n", "x": 40, "y": 20, "construction": false, "state": "fully_defined"})
+    );
+    assert_eq!(
+        (&first["state"], &first["dofs"]),
+        (&json!("fully_defined"), &json!(0))
+    );
+    assert_eq!(states(&first, "constraints"), rectangle_constraints(&[]));
+    assert_eq!(
+        first["regions"],
+        json!([{"outer": ["6t7v8w9x", "a0b1c2d3", "j8k9m0n1", "p2q3r4s5"], "holes": []}])
+    );
+    let reads_alike = |revision: u64, what: &str| {
+        for model in ["current", "published"] {
+            let read = f.read(model, "k7f2qx3m");
+            assert_eq!(read["ok"], true, "{what}, {model}: {read}");
+            assert_eq!(
+                read["model"],
+                json!({"revision": revision, "of": model, "fault": null}),
+                "{what}, {model}"
+            );
+            assert_eq!(read["result"], first, "{what}, {model}");
+        }
+    };
+    let call = |name: &str, arguments: Value| {
+        let answer = f.call(name, &arguments.to_string());
+        assert!(answer.ok, "{name}: {}", answer.text);
+    };
+    call(
+        "set_field",
+        json!({"session": "s1", "revision": 1, "feature": "b0000001", "field": "length", "value": 12}),
+    );
+    reads_alike(2, "the box edited");
+    call("begin", json!({"session": "s1"}));
+    call(
+        "set_field",
+        json!({"session": "s1", "revision": 2, "feature": "b0000001", "field": "length", "value": 14}),
+    );
+    reads_alike(3, "the box edited in a transaction");
+    call("commit", json!({"session": "s1"}));
+    reads_alike(4, "committed");
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains(r#"{"id": "8j9k0m1n", "x": 40, "y": 20.5,"#),
+        "no save before format writes the sketch's solve"
+    );
+    call(
+        "format",
+        json!({"session": "s1", "features": null, "write": true}),
+    );
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains(r#"{"id": "8j9k0m1n", "x": 40, "y": 20,"#),
+        "format writes the sketch's solve"
+    );
+    reads_alike(5, "formatted");
+}
