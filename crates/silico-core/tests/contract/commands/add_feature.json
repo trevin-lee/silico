@@ -72,7 +72,7 @@
         "type": "string"
       },
       "NewFeature": {
-        "description": "A feature as the document writes it, to add at the end of the timeline. Its id may be left out, for one the core makes that no feature holds, and its v, for the type's current version. A fingerprint is refused, but for null: a commit writes it. Each member the feature may leave out (its id, v, note, and fingerprint, and a pad's or revolve's base) may be given as null, which is the same as leaving it out.",
+        "description": "A feature as the document writes it, to add to the timeline. Its id may be left out, for one the core makes that no feature holds, and its v, for the type's current version. A fingerprint is refused, but for null: a commit writes it. Each member the feature may leave out (its id, v, note, and fingerprint, and a pad's or revolve's base) may be given as null, which is the same as leaving it out.",
         "oneOf": [
           {
             "description": "A box from `position` (its lowest corner), `length` along x, `width` along y, and\n`height` along z.",
@@ -1429,8 +1429,19 @@
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`add_feature`'s request: add a feature at the end of the session's timeline.",
+    "description": "`add_feature`'s request: add a feature to the session's timeline, at the end or before\nanother.",
     "properties": {
+      "before": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FeatureId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The feature to add it before, by ID, or null for the end. Before a feature, each\ninput it takes (its `base`, its `tool`) that a feature at or after that place\nconsumed is consumed by it instead: that feature's field now names the new one,\nlisted in `rewired`. One consumed by a feature before the place is refused."
+      },
       "feature": {
         "$ref": "#/$defs/NewFeature"
       },
@@ -1446,6 +1457,7 @@
       }
     },
     "required": [
+      "before",
       "feature",
       "revision",
       "session"
@@ -2140,6 +2152,14 @@
         ],
         "type": "object"
       },
+      "InputField": {
+        "description": "Which of the feature's inputs changed: its base, or a boolean's tool.",
+        "enum": [
+          "base",
+          "tool"
+        ],
+        "type": "string"
+      },
       "Length": {
         "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
         "type": "number"
@@ -2321,6 +2341,48 @@
             "type": "object"
           }
         ]
+      },
+      "Rewired": {
+        "additionalProperties": false,
+        "description": "A feature whose `base` or `tool` an edit changed, which the edit reaches.",
+        "properties": {
+          "feature": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The feature, by ID."
+          },
+          "field": {
+            "$ref": "#/$defs/InputField"
+          },
+          "from": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the field named before the edit: null where the feature had no base."
+          },
+          "to": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What it names after: null where the feature is left with no base (a pad or revolve,\nwhich then begins a body)."
+          }
+        },
+        "required": [
+          "feature",
+          "field",
+          "from",
+          "to"
+        ],
+        "type": "object"
       },
       "SketchArc": {
         "additionalProperties": false,
@@ -3037,12 +3099,26 @@
       "feature": {
         "$ref": "#/$defs/Feature",
         "description": "The feature as the document now holds it: with its ID (the one given, or the one\nmade) and its version; outside a transaction, as the commit saved it, with the\nfingerprint it wrote."
+      },
+      "index": {
+        "description": "Its place in the timeline, from 0.",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "rewired": {
+        "description": "Each feature whose `base` or `tool` now names the new feature instead of the input\nit consumes, in timeline order: empty at the end.",
+        "items": {
+          "$ref": "#/$defs/Rewired"
+        },
+        "type": "array"
       }
     },
     "required": [
       "changed",
       "commit",
-      "feature"
+      "feature",
+      "index",
+      "rewired"
     ],
     "title": "AddFeatureResult",
     "type": "object"

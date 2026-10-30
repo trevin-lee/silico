@@ -164,6 +164,48 @@ fn a_tangent_added_onto_curves_an_existing_on_joins_is_refused_at_the_added_tang
     assert_eq!(refused.errors[0].elements(), ["kz000001"]);
 }
 
+#[test]
+fn a_tangent_on_and_an_edge_tangent_of_one_pair_are_refused_at_the_added_one_either_way() {
+    // #258's pair through an edit: the sketch above's na and cd, one of the pair the
+    // sketch's (kt000001) and the other the batch's, whose ID (ka000001) sorts before it, so
+    // a refusal at the later in ID order would name the sketch's own constraint. The batch
+    // appends, and the gate refuses the member the request gave.
+    let pair = [
+        (
+            r#"{"id": "kt000001", "type": "tangent", "a": "na000000", "b": "cd000000", "side": "left"}"#,
+            r#"{"id": "ka000001", "type": "tangent_on", "a": "na000000", "at": "pb000000", "b": "cd000000", "direction": "same"}"#,
+            "constraints.ka000001.at",
+        ),
+        (
+            r#"{"id": "kt000001", "type": "tangent_on", "a": "na000000", "at": "pb000000", "b": "cd000000", "direction": "same"}"#,
+            r#"{"id": "ka000001", "type": "tangent", "a": "na000000", "b": "cd000000", "side": "left"}"#,
+            "constraints.ka000001.b",
+        ),
+    ];
+    for (held, added, at) in pair {
+        let before = doc(
+            &[
+                point("pa000000", 0.0, 0.0),
+                point("pb000000", 10.0, 0.0),
+                point("pd000000", 10.0, 5.0),
+            ]
+            .join(", "),
+            &line("na000000", "pa000000", "pb000000"),
+            &circle("cd000000", "pd000000", 5.0),
+            "",
+            held,
+        );
+        validate(&before).unwrap();
+        let refused = refused(sketch_of(&before), &members("", "", "", "", added));
+        assert_eq!(parameters(&refused), [at]);
+        assert_eq!(refused.errors[0].elements(), ["ka000001"]);
+        assert_eq!(
+            refused.errors[0].suggestion(),
+            Some("remove the tangent: the tangent_on already makes them tangent at point pb000000")
+        );
+    }
+}
+
 // ---- the solver's limits
 
 /// A sketch of one line, na from pa (0, 0) to pb (10, 0), with `n` driving lengths of 10 on

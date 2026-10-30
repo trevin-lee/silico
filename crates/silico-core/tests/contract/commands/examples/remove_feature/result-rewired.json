@@ -1,0 +1,17 @@
+{
+  "feature": {
+    "id": "h0000001",
+    "type": "pocket",
+    "v": 1,
+    "name": "Base holes",
+    "base": "p0000001",
+    "sketch": "s0000002",
+    "extent": {"type": "through_all", "reversed": true}
+  },
+  "index": 3,
+  "rewired": [
+    {"feature": "h0000002", "field": "base", "from": "h0000001", "to": "p0000001"}
+  ],
+  "changed": true,
+  "commit": null
+}

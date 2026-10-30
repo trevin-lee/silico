@@ -1,0 +1,16 @@
+{
+  "session": "s1",
+  "revision": 12,
+  "sketch": "s0000002",
+  "points": [
+    {"id": "pb000003", "x": 40, "y": 20, "construction": false}
+  ],
+  "lines": [],
+  "circles": [
+    {"id": "cb000003", "center": "pb000003", "radius": 2.75, "construction": false}
+  ],
+  "arcs": [],
+  "constraints": [
+    {"id": "kb000007", "type": "equal", "a": "cb000001", "b": "cb000003"}
+  ]
+}

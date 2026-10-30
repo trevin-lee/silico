@@ -149,6 +149,75 @@ impl std::io::BufRead for Parts {
     }
 }
 
+/// An input that gives `text` once `go` says so, then ends, and says when it's dropped.
+struct Released {
+    text: std::io::Cursor<Vec<u8>>,
+    go: Option<std::sync::mpsc::Receiver<()>>,
+    dropped: std::sync::mpsc::Sender<()>,
+}
+
+impl std::io::Read for Released {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let bytes = std::io::BufRead::fill_buf(self)?;
+        let n = bytes.len().min(out.len());
+        out[..n].copy_from_slice(&bytes[..n]);
+        std::io::BufRead::consume(self, n);
+        Ok(n)
+    }
+}
+
+impl std::io::BufRead for Released {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        if let Some(go) = self.go.take() {
+            let _ = go.recv();
+        }
+        std::io::BufRead::fill_buf(&mut self.text)
+    }
+
+    fn consume(&mut self, n: usize) {
+        std::io::BufRead::consume(&mut self.text, n);
+    }
+}
+
+impl Drop for Released {
+    fn drop(&mut self) {
+        let _ = self.dropped.send(());
+    }
+}
+
+#[test]
+fn the_input_is_let_go_at_its_end_while_an_answer_is_still_being_written() {
+    // Found by the M4 milestone's mutation run: a reader that held its input after reading
+    // its end, until serve returned, passed every test. The reader's work ends with its
+    // input's (serve's doc: reading is on a thread of its own, kept only while a read is):
+    // once the end is read, nothing more can be, so the input (a socket, say) is let go
+    // then, not when serve is done writing to a client that's slow to read. No timing
+    // decides it: the pong's write is held until the input has been let go.
+    let (go, wait) = std::sync::mpsc::channel();
+    let (dropped, let_go) = std::sync::mpsc::channel();
+    let mut c = Client::reading(Released {
+        text: std::io::Cursor::new(
+            b"{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"ping\"}\n".to_vec(),
+        ),
+        go: Some(wait),
+        dropped,
+    });
+    // The client stops reading before anything is read, so the pong's write is held.
+    c.stall_output();
+    go.send(()).unwrap();
+    c.wait_stalled();
+    // Serve waits for the held pong after the input's end (it can't have returned), and
+    // the input has been let go meanwhile.
+    assert!(
+        let_go.recv_timeout(HANG).is_ok(),
+        "the input was held past its end"
+    );
+    assert!(!c.has_ended());
+    c.release_output();
+    assert_eq!(c.ended(), Ended::Input);
+    assert_eq!(c.line(), r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+}
+
 #[test]
 fn a_read_interrupted_is_read_again_and_a_read_that_fails_ends_serve() {
     use std::io::ErrorKind;

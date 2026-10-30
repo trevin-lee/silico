@@ -1,10 +1,12 @@
-//! Edits of a session's document (docs/design/m4.1-command-api.md, section 5): a feature
-//! added, a field set, a feature removed, the whole text replaced. A feature added and a
+//! Edits of a session's document (docs/design/m4.1-command-api.md, section 5; and
+//! docs/design/m5.0-app.md, section 7): a feature added (at the end, or before another), a
+//! field set, a feature removed or moved, the whole text replaced. A feature added and a
 //! field set are made on a feature's JSON tree (`document::json::Node`): the request's
 //! feature, or the feature's canonical tree with the request's value put where its field
 //! is, read back by the one reader every file is read by, with no place in a text (so its
-//! errors name fields by their paths alone). A feature is removed from the document as it
-//! is; a text replaced is read as a file is. Each edited document is then written in
+//! errors name fields by their paths alone). A feature inserted before another, removed, or
+//! moved is placed in its chain by `document::chain`, which rewires the `base` and `tool`
+//! links the edit changes; a text replaced is read as a file is. Each edited document is then written in
 //! canonical form, and that text put through the reader and the gate, once: a bad edit is
 //! refused whole, with every error the gate finds, places counted as the edited document
 //! has them (the request's or the text's own order, not the canonical text's).
@@ -19,13 +21,16 @@
 
 use std::sync::Arc;
 
-use super::{Gated, Problems};
+use super::{Gated, NewMembers, Problems};
+use crate::document::chain::{self, Rewired};
 use crate::document::json::{self, Member, Node, Plain, Value};
 use crate::document::undo::Prepared;
 use crate::document::{
     self, Checked, Document, ElementId, ElementKind, Feature, FeatureId, FeatureVersion,
-    ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Sketch,
+    ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Reference, Sketch,
+    sketch_edit,
 };
+use crate::references::CANDIDATES;
 use crate::{Error, ErrorCode};
 
 /// The state an accepted edit gives a session's document: its canonical text, that text as
@@ -40,6 +45,11 @@ pub(super) struct Candidate {
 }
 
 impl Candidate {
+    /// The gate's finding of its text.
+    pub(super) fn gated(&self) -> &Gated {
+        &self.gated
+    }
+
     /// Its text, the gate's finding of it, and its features' canonical texts.
     pub(super) fn into_parts(self) -> (Arc<Vec<u8>>, Arc<Gated>, Prepared) {
         (self.text, self.gated, self.prepared)
@@ -629,21 +639,103 @@ fn repeated_ids(
     }
 }
 
-/// `feature`, a feature as the document writes it, added to the end of `document`'s
-/// timeline (the design's `add_feature`): with the ID `new_id` makes if it gives none, and
-/// the feature type's current version if it gives no `v` (each `null` given as none, as is
-/// a `null` fingerprint, note, or other member the feature may leave out: the design's
-/// section 2); the feature as the document then holds it, and the state it leads
-/// to. Refused for a feature that isn't an object (in the words the wire refuses one in,
-/// before it gets here: this is for the Rust API's callers), gives a fingerprint (a commit
-/// writes it), or gives an ID that isn't one, or that the document holds (each naming
-/// `feature.id`); and with every error the reader or the gate finds in the document with
-/// it added.
+/// What `add_feature` made: the feature as the document then holds it, its place, from 0,
+/// what its insert rewired, and the state it leads to.
+pub(super) struct Inserted {
+    pub(super) feature: Feature,
+    pub(super) index: usize,
+    pub(super) rewired: Vec<Rewired>,
+    pub(super) candidate: Candidate,
+}
+
+/// `feature`, a feature as the document writes it, added to `checked`'s timeline before the
+/// feature `before`, or at the end for none (the design's `add_feature`, with M5.0's
+/// `before`): with the ID `new_id` makes if it gives none, and the feature type's current
+/// version if it gives no `v` (each `null` given as none, as is a `null` fingerprint, note,
+/// or other member the feature may leave out: the design's section 2). Before a feature,
+/// it's inserted into its chain (`document::chain::insert`): each input it consumes that a
+/// feature at or after its place consumed is consumed by it instead, that feature's field
+/// rewired to it. At the end, it's appended, as M4 adds a feature, and an input another
+/// consumes is the gate's to refuse ("already consumed"). Refused for a `before` the
+/// document hasn't (naming `before`), for a feature that isn't an object (in the words the
+/// wire refuses one in, before it gets here: this is for the Rust API's callers), gives a
+/// fingerprint (a commit writes it), or gives an ID that isn't one, or that the document
+/// holds (each naming `feature.id`), each of these at once with a `before` the document
+/// hasn't; for an insert the chain refuses; and with every error the reader or the gate
+/// finds in the document with it added. Inside a transaction (`begun`, the document it
+/// began from), a feature of an ID `begun` stored a fingerprint for carries it
+/// ([`kept_record`]).
 pub(super) fn add_feature(
+    checked: &Checked,
+    before: Option<&FeatureId>,
+    feature: Node,
+    begun: Option<&Document>,
+    new_id: impl FnOnce(&Document) -> Result<FeatureId, Error>,
+) -> Result<Inserted, Problems> {
+    let document = checked.document();
+    let place = chain::insert_place(document, before);
+    let index = *place.as_ref().unwrap_or(&document.features.len());
+    // A `before` the document hasn't, refused with every refusal of the feature's own, at
+    // once, as every edit's are.
+    let added = match (place, new_feature(document, index, feature, new_id)) {
+        (Ok(_), Ok(added)) => added,
+        (place, read) => {
+            let mut problems = Problems::none();
+            if let Err(error) = place {
+                problems.push(error);
+            }
+            if let Err(read) = read {
+                problems.absorb(read);
+            }
+            return Err(problems);
+        }
+    };
+    let added = kept_record(added, begun);
+    let (edited, rewired) = match before {
+        None => {
+            let mut edited = document.clone();
+            edited.features.push(added);
+            (edited, Vec::new())
+        }
+        Some(before) => {
+            let inserted = chain::insert(checked, added, Some(before))?;
+            (inserted.document, inserted.rewired)
+        }
+    };
+    let candidate = candidate(&edited, "feature")?;
+    // As the document now holds it: the text read again.
+    let held = candidate
+        .gated
+        .document()
+        .ok()
+        .and_then(|document| document.features.get(index))
+        .cloned()
+        .ok_or_else(|| {
+            Problems::from(
+                Error::new(
+                    ErrorCode::Internal,
+                    "the feature added isn't in the document",
+                )
+                .with_suggestion(crate::worker::SILICO_BUG),
+            )
+        })?;
+    Ok(Inserted {
+        feature: held,
+        index,
+        rewired,
+        candidate,
+    })
+}
+
+/// `feature`, a request's feature, read as the document's feature at place `index`: with
+/// the ID `new_id` makes if it gives none, and its type's current version if it gives no
+/// `v`; refused as [`add_feature`] says, every reason the reader finds.
+fn new_feature(
     document: &Document,
+    index: usize,
     feature: Node,
     new_id: impl FnOnce(&Document) -> Result<FeatureId, Error>,
-) -> Result<(Feature, Candidate), Problems> {
+) -> Result<Feature, Problems> {
     let Value::Object(mut members) = feature.value else {
         return Err(Problems::from(
             Error::new(
@@ -730,55 +822,260 @@ pub(super) fn add_feature(
             value: unplaced(Value::Number(FeatureVersion::NUMBER.to_string())),
         });
     }
-    let index = document.features.len();
     let mut node = unplaced(Value::Object(members));
     json::unplace(&mut node);
     let place = format!("features[{index}]");
-    let added = document::read_feature(index, node).map_err(|e| {
-        // The request's own field: an ID that isn't one is the request's `feature.id`. The
-        // reader names a feature by its place only until it has read its ID, and the feature
-        // is an object, so every error that names its place is its `id`'s.
-        if e.feature() == Some(place.as_str()) {
-            e.with_parameter("feature.id")
-        } else {
-            e
-        }
-    })?;
-    let mut edited = document.clone();
-    edited.features.push(added);
-    let candidate = candidate(&edited, "feature")?;
-    // As the document now holds it: the text read again.
-    let held = candidate
-        .gated
-        .document()
-        .ok()
-        .and_then(|document| document.features.get(index))
-        .cloned()
-        .ok_or_else(|| {
-            Problems::from(
-                Error::new(
-                    ErrorCode::Internal,
-                    "the feature added isn't in the document",
-                )
-                .with_suggestion(crate::worker::SILICO_BUG),
-            )
-        })?;
-    Ok((held, candidate))
+    document::read_feature(index, node)
+        .map_err(|e| {
+            // The request's own field: an ID that isn't one is the request's `feature.id`. The
+            // reader names a feature by its place only until it has read its ID, and the feature
+            // is an object, so every error that names its place is its `id`'s.
+            if e.feature() == Some(place.as_str()) {
+                e.with_parameter("feature.id")
+            } else {
+                e
+            }
+        })
+        .map_err(Problems::from)
 }
 
-/// The feature `id` removed from `document` (the design's `remove_feature`): the feature as
-/// the document held it, its place in the timeline, from 0, and the state it leads to.
-/// Refused for a feature the document hasn't, and with every error the gate finds in the
-/// document without it: each feature that used it, naming it.
+/// `added`, carrying the fingerprint the document a transaction began from (`begun`) stored
+/// for the feature of its ID, whatever its fields: the saved file is a function of the
+/// document's state, not of the edits' path, and what the edits reach (decision 28) decides
+/// whether that record is read. Added back with values as `begun` held them (its name and
+/// note aside, which reach nothing, or set back after), it's unreached, held to its old
+/// record, its drift reported as an untouched feature's is; with others, it's reached, its
+/// drift not read, and its commit writes it fresh. Outside a transaction (`begun` none), or
+/// for an ID `begun` stored no fingerprint for, as given.
+fn kept_record(mut added: Feature, begun: Option<&Document>) -> Feature {
+    if let Some(fingerprint) = begun
+        .and_then(|begun| begun.features.iter().find(|f| f.id == added.id))
+        .and_then(|was| was.fingerprint)
+    {
+        added.fingerprint = Some(fingerprint);
+    }
+    added
+}
+
+/// The feature `id` removed from `checked` (the design's `remove_feature`, as M5.0's A9
+/// amends it: `document::chain::remove`): the chain's removal (the feature as the document
+/// held it, its place in the timeline, from 0, and each consumer that took its base), and
+/// the state it leads to. Refused for a feature the document hasn't, where nothing can stand
+/// in for it (a chain's root under a feature that needs a base, a feature whose sketch it
+/// is, or one that stores names of its elements, each naming both), where a feature's base
+/// would no longer be built from a maker of its stored names (open item 2b), and with every
+/// error the gate finds in the document without it.
 pub(super) fn remove_feature(
+    checked: &Checked,
+    id: &FeatureId,
+) -> Result<(chain::Removed, Candidate), Problems> {
+    place_of(checked.document(), id)?;
+    let removed = chain::remove(checked, id)?;
+    let candidate = candidate(&removed.document, "feature")?;
+    Ok((removed, candidate))
+}
+
+/// The feature `id` of `checked` moved before the feature `before`, or to the end for none
+/// (docs/design/m5.0-app.md, `move_feature`: `document::chain::move_feature`): the chain's
+/// move, and the state it leads to, none for a move to where it is. Refused for a feature
+/// or a `before` the document hasn't, for each move the chain refuses (naming both
+/// features), and with every error the gate finds in the document after the move.
+pub(super) fn move_feature(
+    checked: &Checked,
+    id: &FeatureId,
+    before: Option<&FeatureId>,
+) -> Result<(chain::Moved, Option<Candidate>), Problems> {
+    place_of(checked.document(), id)?;
+    let moved = chain::move_feature(checked, id, before)?;
+    if !moved.changed {
+        return Ok((moved, None));
+    }
+    let candidate = candidate(&moved.document, "feature")?;
+    Ok((moved, Some(candidate)))
+}
+
+/// What a sketch edit changed, by member ID, as [`sketch_edit::Edited`] lists them.
+pub(super) struct SketchChanges {
+    pub(super) added: Vec<ElementId>,
+    pub(super) modified: Vec<ElementId>,
+    pub(super) removed: Vec<ElementId>,
+}
+
+/// `members` added to the sketch `id` of `document` (docs/design/m5.0-app.md, section 7,
+/// `sketch_add`): what it added, and the state it leads to, none for an empty batch, which
+/// changes nothing. Each list is read by the document's own reader as the sketch's lists are
+/// read (its members named by their ID paths, `circles.cb000003.radius`), then added by
+/// [`sketch_edit::add`], and the document with the sketch so edited put through the gate.
+/// Never solved: once the gate takes it, it's applied, whatever its solve then finds (SD7).
+/// Refused for a feature that isn't a sketch, naming `sketch`, and with every problem the
+/// reader, the add, or the gate finds, each naming the sketch.
+pub(super) fn sketch_add(
     document: &Document,
     id: &FeatureId,
-) -> Result<(Feature, usize, Candidate), Problems> {
-    let (index, removed) = place_of(document, id)?;
-    let removed = removed.clone();
+    members: NewMembers,
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let (index, feature, sketch) = sketch_of(document, id)?;
+    let members = read_members(index, feature, members)?;
+    let edited = sketch_edit::add(sketch, &members).map_err(|refused| of_sketch(id, refused))?;
+    sketch_edited(document, index, sketch, edited)
+}
+
+/// `members` removed from the sketch `id` of `document` (docs/design/m5.0-app.md, section
+/// 7, `sketch_remove`; sketch-edit decision 7): what it removed and changed, and the state it
+/// leads to, none for an empty list, which removes nothing. Removed by
+/// [`sketch_edit::remove`] (a curve with the points only it used, every constraint naming
+/// what goes, a point only if no curve uses it, duplicates taken once), and the document
+/// put through the gate. Never solved, as [`sketch_add`] isn't (SD7). Refused for a feature
+/// that isn't a sketch, naming `sketch`; and with every problem the removal finds (a member
+/// the sketch hasn't, a fixed reference, `origin`, `x_axis`, or `y_axis`, a point a curve
+/// still uses), all in one answer, each once at its first place, or the gate finds, each
+/// naming the sketch.
+pub(super) fn sketch_remove(
+    document: &Document,
+    id: &FeatureId,
+    members: &[Reference],
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let (index, _, sketch) = sketch_of(document, id)?;
+    let edited = sketch_edit::remove(sketch, members).map_err(|refused| of_sketch(id, refused))?;
+    sketch_edited(document, index, sketch, edited)
+}
+
+/// The sketch `id` of `document`, with its place in the timeline and its feature; or the
+/// refusal, naming `sketch`, of a feature the document hasn't or one that isn't a sketch,
+/// the document's first sketches the candidates (as the `sketch` read refuses them).
+fn sketch_of<'a>(
+    document: &'a Document,
+    id: &FeatureId,
+) -> Result<(usize, &'a Feature, &'a Sketch), Problems> {
+    let refused = |message: String| {
+        let sketches: Vec<String> = document
+            .features
+            .iter()
+            .filter(|f| matches!(f.operation, Operation::Sketch(_)))
+            .take(CANDIDATES)
+            .map(|f| f.id.as_str().to_owned())
+            .collect();
+        let suggestion = if sketches.is_empty() {
+            "the document has no sketch: add one, and edit it by its ID"
+        } else {
+            "name a sketch of the document, by its ID"
+        };
+        Problems::from(
+            Error::new(ErrorCode::InvalidInput, message)
+                .with_parameter("sketch")
+                .with_suggestion(suggestion)
+                .with_candidates(sketches),
+        )
+    };
+    let Some((index, feature)) = document
+        .features
+        .iter()
+        .enumerate()
+        .find(|(_, f)| f.id == *id)
+    else {
+        return Err(refused(format!("the document has no feature {id}")));
+    };
+    match &feature.operation {
+        Operation::Sketch(sketch) => Ok((index, feature, sketch)),
+        other => Err(refused(format!(
+            "{id} is a {}, not a sketch",
+            other.type_name()
+        ))),
+    }
+}
+
+/// `members`' lists, read by the document's reader as `feature`'s (a sketch at `index`)
+/// own lists are: its canonical tree with each list replaced by the request's, read whole,
+/// so a member is refused in the words and at the path (`circles.cb000003.radius`) a file's
+/// would be, naming the sketch.
+fn read_members(
+    index: usize,
+    feature: &Feature,
+    members: NewMembers,
+) -> Result<sketch_edit::Members, Problems> {
+    let (_, mut tree) = feature_tree(feature)?;
+    let NewMembers {
+        points,
+        lines,
+        circles,
+        arcs,
+        constraints,
+    } = members;
+    let given = [points, lines, circles, arcs, constraints];
+    if let Value::Object(fields) = &mut tree.value {
+        for (kind, mut list) in ElementKind::ALL.into_iter().zip(given) {
+            json::unplace(&mut list);
+            match fields.iter_mut().find(|m| m.key == kind.list()) {
+                Some(field) => field.value = list,
+                None => fields.push(Member {
+                    key: kind.list().to_owned(),
+                    at: json::At::UNPLACED,
+                    value: list,
+                }),
+            }
+        }
+    }
+    let read = document::read_feature(index, tree)?;
+    match read.operation {
+        Operation::Sketch(sketch) => Ok(sketch_edit::Members {
+            points: sketch.points,
+            lines: sketch.lines,
+            circles: sketch.circles,
+            arcs: sketch.arcs,
+            constraints: sketch.constraints,
+        }),
+        _ => Err(Problems::from(
+            Error::new(
+                ErrorCode::Internal,
+                "a sketch's lists, read as its own, didn't read as a sketch",
+            )
+            .with_suggestion(crate::worker::SILICO_BUG),
+        )),
+    }
+}
+
+/// A sketch edit's refusal, each problem naming the sketch `id`, all counted.
+fn of_sketch(id: &FeatureId, refused: sketch_edit::Refused) -> Problems {
+    let listed = u64::try_from(refused.errors.len()).unwrap_or(u64::MAX);
+    let errors = refused
+        .errors
+        .into_iter()
+        .map(|e| match e.feature() {
+            Some(_) => e,
+            None => e.with_feature(id.as_str()),
+        })
+        .collect();
+    Problems::with_unlisted(errors, refused.total.saturating_sub(listed))
+}
+
+/// What `edited`, the sketch at `index` of `document` (`sketch`, before) edited, changed,
+/// and the state the document with it leads to: none if the sketch is the same, through the
+/// gate otherwise.
+fn sketch_edited(
+    document: &Document,
+    index: usize,
+    sketch: &Sketch,
+    edited: sketch_edit::Edited,
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let sketch_edit::Edited {
+        sketch: after,
+        added,
+        modified,
+        removed,
+    } = edited;
+    let changes = SketchChanges {
+        added,
+        modified,
+        removed,
+    };
+    if after == *sketch {
+        return Ok((changes, None));
+    }
     let mut edited = document.clone();
-    edited.features.retain(|feature| feature.id != *id);
-    Ok((removed, index, candidate(&edited, "feature")?))
+    if let Some(feature) = edited.features.get_mut(index) {
+        feature.operation = Operation::Sketch(after);
+    }
+    Ok((changes, Some(candidate(&edited, "sketch")?)))
 }
 
 /// The document's text replaced by `text` (the design's `replace_text`), put through the
@@ -819,6 +1116,13 @@ pub(super) fn replace_text(
         .document()
         .is_ok_and(|before| before.canonically_eq(&replaced));
     Ok((features, (!unchanged).then_some(candidate)))
+}
+
+/// `text`, a document's canonical text (`format`'s, inside a transaction), as an edit's
+/// candidate, read as a file is and through the gate.
+pub(super) fn as_text(text: &[u8]) -> Result<Candidate, Problems> {
+    let read = document::read_tree(document::tree(text)?)?;
+    candidate(&read, "text")
 }
 
 /// Whether a document's tree is an object whose header has a `naming` (or isn't an object

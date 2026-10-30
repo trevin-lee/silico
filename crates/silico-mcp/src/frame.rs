@@ -359,7 +359,9 @@ impl<'a> Walk<'a> {
                     depth = depth.checked_sub(1)?;
                     self.at += 1;
                 }
-                b',' if depth == 0 => return Some(()),
+                // A member with no value (`"a":,`, which RFC 8259 never allows): no member to
+                // walk past, so the walk ends here, as it does at `"a":}`.
+                b',' if depth == 0 => return None,
                 _ => self.at += 1,
             }
             if depth == 0 {
@@ -469,5 +471,55 @@ mod tests {
         assert_eq!(of(r#""\ud800""#), of(r#""\ud800""#));
         assert_ne!(of(r#""\ud800""#), of(r#""\uD800""#));
         assert_ne!(of(r#""\ud800""#), of(r#""\\ud800""#));
+    }
+
+    #[test]
+    fn ids_compare_partially_as_they_compare_wholly() {
+        // Found by the M4 milestone's mutation run: no order at all from `partial_cmp`
+        // passed every test (a `BTreeMap` of IDs orders by `Ord`). std's contract for
+        // `PartialOrd` beside `Ord` (core::cmp::PartialOrd: "implementations must be
+        // consistent"): `partial_cmp(a, b)` is `Some(cmp(a, b))` for every pair; and an ID is
+        // the same however its string is escaped, so neither of two such is less.
+        let of = |text: &str| Id::of(serde_json::from_str::<&RawValue>(text).unwrap()).unwrap();
+        let ids = [
+            of("1"),
+            of("-2.5e3"),
+            of(r#""ab""#),
+            of(r#""\u0061b""#),
+            of(r#""ac""#),
+            of(r#""\ud800""#),
+        ];
+        for a in &ids {
+            for b in &ids {
+                assert_eq!(a.partial_cmp(b), Some(a.cmp(b)), "{} {}", a.raw(), b.raw());
+            }
+        }
+        assert_eq!(
+            of(r#""ab""#).partial_cmp(&of(r#""\u0061b""#)),
+            Some(std::cmp::Ordering::Equal)
+        );
+    }
+
+    #[test]
+    fn a_strings_commas_spaces_and_brackets_are_its_own_not_the_objects() {
+        // Found by the M4 milestone's mutation run: walking a string value as structure
+        // passed every test. RFC 8259: within a string, `,`, a space, `]` and `}` are
+        // characters of the string, not structure, so the member after it is the object's
+        // next: the ID is found.
+        assert_eq!(id(r#"{"method":"a, b","id":7}"#), Some("7".to_owned()));
+        assert_eq!(id(r#"{"method":"a b","id":7}"#), Some("7".to_owned()));
+        assert_eq!(id(r#"{"s":"]","id":8}"#), Some("8".to_owned()));
+        assert_eq!(id(r#"{"s":"}","id":9,"x":"#), Some("9".to_owned()));
+    }
+
+    #[test]
+    fn a_member_with_no_value_ends_the_walk() {
+        // Found by the M4 milestone's mutation run, which showed an empty value taken as a
+        // member's. RFC 8259: a member is a name, a colon, and a value, and no value is empty;
+        // so the walk stops at `"a":,` as it does at `"a":}`, and an ID after it is one
+        // JSON-RPC 2.0 can't say was detected (section 5: then the reply's id is null).
+        assert_eq!(id(r#"{"a":,"id":1}"#), None);
+        assert_eq!(id(r#"{"a": ,"id":1,"id":2}"#), None);
+        assert_eq!(id(r#"{"a":}"#), None);
     }
 }

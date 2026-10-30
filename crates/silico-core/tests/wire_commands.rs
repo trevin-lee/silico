@@ -26,11 +26,13 @@ use silico_core::command::schema::schema;
 use silico_core::command::wire::elements::{ElementsRequest, QueryRequest};
 use silico_core::command::wire::measure::{MassPropertiesRequest, PairRequest};
 use silico_core::command::wire::schema::SchemaRequest;
+use silico_core::command::wire::sketch::SketchRequest;
 use silico_core::command::wire::{COMMANDS, Layout, ToWire, snapshot, snapshot_value, write};
 use silico_core::command::{ModelChoice, Problems, SessionId};
 use silico_core::document::json::{Node, read};
 use silico_core::document::{Angle, ElementName, FeatureId, Length, Measure};
 use silico_core::kernel::ElementKind;
+use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
 use silico_core::views::NamedView;
 
 fn contract(name: &str) -> PathBuf {
@@ -786,7 +788,12 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "angle",
                 "render",
                 "read_logs",
-                "export"
+                "export",
+                "move_feature",
+                "timeline",
+                "sketch",
+                "sketch_add",
+                "sketch_remove"
             ]
         );
     }
@@ -2077,4 +2084,181 @@ fn a_read_logs_cursor_is_a_whole_number_or_null_and_its_other_fields_are_read_st
             .as_deref(),
         Some("span")
     );
+}
+
+/// M5.0's design's JSON code blocks between the headings `from` and `to`, in order.
+fn m5_design(from: &str, to: &str) -> Vec<String> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/design/m5.0-app.md");
+    let doc = std::fs::read_to_string(&path).unwrap();
+    let section = &doc[doc.find(from).unwrap()..doc.find(to).unwrap()];
+    section
+        .split("```json\n")
+        .skip(1)
+        .map(|block| block.split("\n```").next().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn the_sketch_examples_are_the_designs_own_text() {
+    // docs/design/m5.0-app.md's `sketch` section: its request, and its result, the bracket's
+    // base holes.
+    let blocks = m5_design("### `sketch` (M5.10)", "### The sketch edits (M5.10)");
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(format!("{}\n", blocks[0]), example("sketch/request"));
+    assert_eq!(format!("{}\n", blocks[1]), example("sketch/result"));
+}
+
+#[test]
+fn a_sketch_request_is_read_written_back_and_holds_to_its_schema_and_its_result_too() {
+    let text = example("sketch/request");
+    let request = SketchRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        request,
+        SketchRequest {
+            session: s1(),
+            model: ModelChoice::Current,
+            sketch: id("s0000002"),
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(
+        &schema_of("sketch", "request", None),
+        &text,
+        "sketch request",
+    );
+    let published = r#"{"session": "s4", "model": "published", "sketch": "k7f2qx3m"}"#;
+    assert_eq!(
+        SketchRequest::read(&parsed(published)).unwrap(),
+        SketchRequest {
+            session: SessionId::parse("s4").unwrap(),
+            model: ModelChoice::Published,
+            sketch: id("k7f2qx3m"),
+        }
+    );
+    // The result, and what isn't one: a member's state not a state's word, a constraint
+    // with a field its type hasn't, a member with no state, a region's hole not a loop.
+    let result = example("sketch/result");
+    let schema = schema_of("sketch", "result", None);
+    holds(&schema, &result, "sketch result");
+    for (from, to, what) in [
+        (
+            r#""x": 40, "y": 12, "construction": false, "state": "fully_defined""#,
+            r#""x": 40, "y": 12, "construction": false, "state": "satisfied""#,
+            "a point satisfied",
+        ),
+        (
+            r#""type": "equal", "a": "cb000001", "b": "cb000002", "state": "satisfied""#,
+            r#""type": "equal", "a": "cb000001", "b": "cb000002", "value": 1, "state": "satisfied""#,
+            "an equal with a value",
+        ),
+        (
+            r#""type": "equal", "a": "cb000001", "b": "cb000002", "state": "satisfied""#,
+            r#""type": "equal", "a": "cb000001", "b": "cb000002""#,
+            "a constraint with no state",
+        ),
+        (
+            r#""center": "pb000002", "radius": 2.75, "construction": false, "state": "fully_defined"}"#,
+            r#""center": "pb000002", "radius": 2.75, "construction": false}"#,
+            "a circle with no state",
+        ),
+        (
+            r#""state": "fully_defined",
+  "dofs": 0"#,
+            r#""state": "satisfied",
+  "dofs": 0"#,
+            "a sketch satisfied",
+        ),
+        (
+            r#"{"outer": ["cb000002"], "holes": []}"#,
+            r#"{"outer": ["cb000002"], "holes": ["cb000001"]}"#,
+            "a hole of one curve, not a loop",
+        ),
+        (r#""dofs": 0"#, r#""dofs": 0.5"#, "half a degree of freedom"),
+        (
+            r#"  "profile_problems_total": 0,
+"#,
+            "",
+            "no profile problems' total",
+        ),
+    ] {
+        assert_eq!(result.matches(from).count(), 1, "{what}");
+        fails(&schema, &result.replacen(from, to, 1), what);
+    }
+    // Every member's state's word, and a sketch's, and negative degrees of freedom.
+    for (from, to) in [
+        (
+            r#""state": "fully_defined",
+  "dofs": 0"#,
+            r#""state": "over_defined",
+  "dofs": -1"#,
+        ),
+        (
+            r#""cb000002", "state": "satisfied""#,
+            r#""cb000002", "state": "partially_redundant""#,
+        ),
+    ] {
+        holds(&schema, &result.replacen(from, to, 1), to);
+    }
+}
+
+#[test]
+fn the_sketch_states_words_in_its_snapshot_are_the_states_own() {
+    let sketch = snapshot_value("sketch").unwrap();
+    let defs = &sketch["result"]["$defs"];
+    let words = |def: &serde_json::Value| -> Vec<String> {
+        def["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().unwrap().to_owned())
+            .collect()
+    };
+    // SolidWorks' five, its three for an entity, and item 32's five for a constraint, by
+    // hand, and each the core's own word for it.
+    assert_eq!(
+        words(&defs["SketchState"]),
+        [
+            "under_defined",
+            "fully_defined",
+            "over_defined",
+            "no_solution",
+            "invalid"
+        ]
+    );
+    assert_eq!(
+        words(&defs["SketchState"]),
+        SketchState::ALL.map(|s| s.as_str().to_owned())
+    );
+    assert_eq!(
+        words(&defs["MemberState"]),
+        ["under_defined", "fully_defined", "over_defined"]
+    );
+    assert_eq!(
+        words(&defs["MemberState"]),
+        MemberState::ALL.map(|s| s.as_str().to_owned())
+    );
+    assert_eq!(
+        words(&defs["ConstraintState"]),
+        [
+            "satisfied",
+            "conflicting",
+            "redundant",
+            "partially_redundant",
+            "unsolved"
+        ]
+    );
+    assert_eq!(
+        words(&defs["ConstraintState"]),
+        ConstraintState::ALL.map(|s| s.as_str().to_owned())
+    );
+    // A constraint read is each of the document's forms, its ID and state beside its type's
+    // fields: as many as the document has types.
+    let forms = defs["SketchConstraintRead"]["oneOf"].as_array().unwrap();
+    let types: Vec<&str> = forms
+        .iter()
+        .map(|f| f["properties"]["type"]["const"].as_str().unwrap())
+        .collect();
+    assert_eq!(types, silico_core::document::CONSTRAINT_TYPES);
+    assert_eq!(sketch["request"]["title"], "SketchRequest");
+    assert_eq!(sketch["result"]["title"], "SketchResult");
 }

@@ -63,6 +63,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A finder and its consumer that each decide "on the carrier within the tolerance" their own way (a next crossing measured off an arc's circle from its start by √(dx² + dy²), then checked from the moving end by `hypot`; a line projected from one end, then from the other): points the finder offers 1e-7 off are refused an ulp past it, and an arc whose end isn't on its start's circle (the gate leaves that to the solve) has every offer refused; feed every answer to its consumer in a proptest biased to the tolerance
 - Near-tangent contacts reported at the perpendicular's foot: a line that joins an arc at a shared point within g of tangent has its foot √(2rg) from the joint (4.5 µm at g = 1e-12, r = 10), so "the next curve past the end" is the curve it already joins, microns on
 - Collinear neighbours as crossings: a line chained straight into another (a shared end) is offered the other's far end, an overlap no edit can take
+- A fixed reference (`origin`, an axis) where a rule reads only the sketch's own elements (`reference.element()` is none): an edit's rewrite "while the point stays" (a removed line's `midpoint` made a `symmetric` of its ends) skips the origin, which always stays, and drops the constraint; give each rewrite's every reference the origin and the axes in turn
 
 ## Sketch solver
 
@@ -178,6 +179,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Per-feature views of a model (a timeline's health and counts) beside the document-wide `check`: compare them under an open transaction (drift `check` excepts), with a kernel fault on only a feature's measure, and for a feature blocked by both a fault and a real failure, in each operand order
 - A read answered of the session's newest document while an older published model is the one read (a published read after a change the gate refuses, or before the new revision's rebuild): the response's model block (its revision, its fault) can name a model the answer doesn't mark by, and `check` of the same published model counts other problems; read both models first and last after every edit, change on disk, undo, and rollback, and compare each answer's own revision and model with the response's
 - Functions over a document that take `&Document`, not the gate's `Checked`: a feature that is its own base is its own consumer, and a walk down the chain from it starts past the end of the timeline without it
+- Timeline edits that rewire a chain committed one at a time, then the saved file reopened in a fresh session and rebuilt: a feature whose `base` field didn't change but whose base was rebuilt otherwise (a fillet after a reordered pocket) must have its fingerprint written too, or the file drifts
+- Edits that change nothing (a move to where a feature is, a move before the next feature) made against a stale revision, and on a document the gate refused: the empty-edit shortcut mustn't skip the revision check or the refused-document refusal
+- Inserts, moves, and removals near the top of a long document inside a transaction (more features than one undo chunk holds): every later feature shifts across the chunks' bounds; undo and redo each state and compare the text byte for byte
 
 ## Files
 
@@ -245,6 +249,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Helpers shared between commands that word an error with one command's name ("the session closed before the render finished", "render it there"): reach each shared failure path from the other command and read its words
 - Per-name reasons that copy a shared one (each name of a failed feature given the feature's whole failure, up to its hundred listed errors): 10,000 names of one broken fillet's faces are a million errors, 300 MB from a 250 KB selection; count what the answer holds, not only its time
 - Parser words written for a document reused by a request with no place in a timeline ("no feature b0000001 before this one" for a selected name): read each refusal of a shared parser from every caller
+- A result that copies the first hundred of a helper's refusals (`Refused::errors()`) without its count (`total()`): 202 profile refusals read as 100, with nothing saying there are more, though `check` words the count
 
 ## Kernel worker and IPC
 
@@ -303,6 +308,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A watch that drops findings against a superseded counter, told of the session's own write after it lands or before: a comparison that reads the new bytes and ends between the write and `held` (or reads the old ones between `held` and the write) is kept as changed; gate a stand-in reader and try both orders
 - A save bracketed for a watch, ended every way a save ends (a conflict, a cancel before it writes, a directory that won't take the file, a file it can't read to check): after each, the finding goes back to what's on disk, never stuck unknown and never the session's own text where nothing was written; then a save that works is its own
 - A background job's "running" flag cleared only after a callback returns (a reader, a solver): a callback that panics leaves it set, and no job ever starts again
+
+- Reads that redo work a model already did (a sketch read solving its sketch again) on a shared pool whose take starts a worker whenever none is idle: N reads at once start N workers, kept idle for ever; count the starts against the design's bound on workers
+- Reads that redo a model's step against a model whose step failed transiently (a worker crash under the rebuild): the read answers a result the model never had, beside the envelope's fault naming the same feature
 
 ## Oracles and comparisons
 

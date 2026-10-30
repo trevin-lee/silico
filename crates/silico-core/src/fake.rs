@@ -3044,6 +3044,7 @@ pub struct FakeRenderer {
     sent: Mutex<Vec<silico_protocol::RenderScene>>,
     failing: Mutex<Option<Error>>,
     cancelling: std::sync::atomic::AtomicBool,
+    holding: std::sync::atomic::AtomicBool,
 }
 
 impl FakeRenderer {
@@ -3066,6 +3067,13 @@ impl FakeRenderer {
         self.cancelling
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+
+    /// Holds every render from now on, queued and never drawn, until it's cancelled (its
+    /// read's stop), which answers it cancelled, as a render still queued is.
+    pub fn hold_all(&self) {
+        self.holding
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl crate::command::render::Renderer for FakeRenderer {
@@ -3074,6 +3082,9 @@ impl crate::command::render::Renderer for FakeRenderer {
         lock(&self.sent).push(scene);
         if self.cancelling.load(std::sync::atomic::Ordering::SeqCst) {
             return crate::render::RenderTicket::answered(crate::render::RenderOutcome::Cancelled);
+        }
+        if self.holding.load(std::sync::atomic::Ordering::SeqCst) {
+            return crate::render::RenderTicket::queued();
         }
         let outcome = match lock(&self.failing).clone() {
             Some(error) => Err(error),

@@ -210,18 +210,13 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         if seen >= PROBLEMS_LISTED {
             return Vec::new();
         }
-        let mut near: Vec<(usize, &ElementId)> = by_id
-            .iter()
-            .filter(|&(_, &place)| fits(place))
-            .map(|(&other, _)| (differing(id, other), other))
-            .filter(|&(n, _)| n <= 2)
-            .collect();
-        // Stable, so IDs as near stay in the map's order, by ID.
-        near.sort_by_key(|&(n, _)| n);
-        near.into_iter()
-            .take(CANDIDATES)
-            .map(|(_, other)| other.as_str().to_owned())
-            .collect()
+        nearest_ids(
+            id,
+            by_id
+                .iter()
+                .filter(|&(_, &place)| fits(place))
+                .map(|(&other, _)| other),
+        )
     };
     // Where a point of this sketch is drawn.
     let at_of = |id: &ElementId| match lookup(id) {
@@ -468,16 +463,23 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
     }
 
     // The tangent rule below ("a curve ending on another is tangent where it ends") judges
-    // pairs of an edge `tangent` and an `on`, and refuses each pair at whichever of the two
-    // comes later in the constraint list: a file's order (sorted by ID, as written), or an
-    // edit's, which appends what it adds, so the refusal names the member the edit gave.
-    // Every `on` of a point, by its curve and point, its places in the list in order.
-    let mut ons: BTreeMap<(&Reference, &ElementId), Vec<(usize, &ElementId)>> = BTreeMap::new();
+    // pairs of an edge `tangent` and an `on` or a `tangent_on`, which holds its a's end on its
+    // b as an `on` does (#258), and refuses each pair at whichever of the two comes later in
+    // the constraint list: a file's order (sorted by ID, as written), or an edit's, which
+    // appends what it adds, so the refusal names the member the edit gave. Every constraint
+    // holding a point on a curve, by its curve and point, its places in the list in order,
+    // each with the tangent_on's a, the curve it makes tangent there (none for an `on`).
+    let mut ons: BTreeMap<(&Reference, &ElementId), Vec<Hold>> = BTreeMap::new();
     for (i, c) in sketch.constraints.iter().enumerate() {
-        if let Form::On { point, curve } = &c.form
-            && let Some(point) = point.element()
-        {
-            ons.entry((curve, point)).or_default().push((i, &c.id));
+        let (point, curve, tangent) = match &c.form {
+            Form::On { point, curve } => (point, curve, None),
+            Form::TangentOn { a, at, b, .. } => (at, b, Some(a)),
+            _ => continue,
+        };
+        if let Some(point) = point.element() {
+            ons.entry((curve, point))
+                .or_default()
+                .push((i, &c.id, tangent));
         }
     }
     // Each edge `tangent` the rule applies to, as it's passed, by the curve one of its
@@ -610,7 +612,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         ),
                         format!("make it a tangent_at, at point {point}"),
                     ));
-                } else if let Some((point, ending, other, on)) = {
+                } else if let Some((point, ending, other, on, tangent)) = {
                     // Either curve may be the one ending on the other: each way round, the
                     // tangent kept for an `on` after it, and the first `on` before it that
                     // holds an end of x on y (one way round, then the other).
@@ -632,11 +634,11 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                             found = ends
                                 .into_iter()
                                 .filter_map(|end| {
-                                    let &(place, id) = ons.get(&(y, end))?.first()?;
-                                    (place < i).then_some((place, end, id))
+                                    let &(place, id, tangent) = ons.get(&(y, end))?.first()?;
+                                    (place < i).then_some((place, end, id, tangent))
                                 })
                                 .min_by_key(|&(place, ..)| place)
-                                .map(|(_, end, id)| (end, x, y, id));
+                                .map(|(_, end, id, tangent)| (end, x, y, id, tangent));
                         }
                     }
                     found
@@ -649,9 +651,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         format!(
                             "a tangent's {ending} ends at point {point}, which constraint {on} puts on {other}: a curve ending on another is tangent where it ends"
                         ),
-                        format!(
-                            "make the two one tangent_on, with a {ending}, at {point}, and b {other}"
-                        ),
+                        one_tangency(ending, point, other, tangent),
                     ));
                 }
                 let (line_a, line_b) = (is_line(0), is_line(1));
@@ -686,6 +686,19 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 ));
             }
             Form::TangentOn { a, at: end, b, .. } => {
+                // The tangent rule's pair, refused here when the tangent_on comes after the
+                // tangent.
+                if let Some(point) = end.element()
+                    && let Some(&(tangent, ending)) = tangents.get(&(b, point))
+                {
+                    add(refuse(
+                        &format!("{at}.at"),
+                        format!(
+                            "a tangent_on puts point {point}, where {ending} ends, on {b}, which constraint {tangent} makes {ending} edge tangent to: a curve ending on another is tangent where it ends"
+                        ),
+                        one_tangency(ending, point, b, Some(a)),
+                    ));
+                }
                 if let Some(point) = end.element() {
                     let ends = a.element().map(|a| ends_of(sketch, a, lookup));
                     let ends_b = b.element().map(|b| ends_of(sketch, b, lookup));
@@ -756,9 +769,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         format!(
                             "an on puts point {end}, where {ending} ends, on {curve}, which constraint {tangent} makes {ending} edge tangent to: a curve ending on another is tangent where it ends"
                         ),
-                        format!(
-                            "make the two one tangent_on, with a {ending}, at {end}, and b {curve}"
-                        ),
+                        one_tangency(ending, end, curve, None),
                     ));
                 }
             }
@@ -917,6 +928,25 @@ impl Target {
     }
 }
 
+/// The IDs of `ids`, given in ID order, a reference to `id`, which none of them holds, most
+/// likely meant: each at most two characters from `id` (one mistyped, or two swapped), the
+/// nearest first, then by ID; at most [`CANDIDATES`].
+pub(crate) fn nearest_ids<'a>(
+    id: &ElementId,
+    ids: impl Iterator<Item = &'a ElementId>,
+) -> Vec<String> {
+    let mut near: Vec<(usize, &ElementId)> = ids
+        .map(|other| (differing(id, other), other))
+        .filter(|&(n, _)| n <= 2)
+        .collect();
+    // Stable, so IDs as near stay in the order given, by ID.
+    near.sort_by_key(|&(n, _)| n);
+    near.into_iter()
+        .take(CANDIDATES)
+        .map(|(_, other)| other.as_str().to_owned())
+        .collect()
+}
+
 /// How many places two IDs differ in, character by character: a mistyped character is one,
 /// two swapped are two. Every ID has `ID_LENGTH` characters, so one with a character
 /// dropped or added isn't an ID, and the reader refuses it first.
@@ -930,7 +960,7 @@ fn differing(a: &ElementId, b: &ElementId) -> usize {
 
 /// The advice for a reference to `id`, which no element holds, saying what its candidates
 /// are when it has any.
-fn with_candidates(advice: String, id: &ElementId, candidates: &[String]) -> String {
+pub(crate) fn with_candidates(advice: String, id: &ElementId, candidates: &[String]) -> String {
     if candidates.is_empty() {
         advice
     } else {
@@ -980,6 +1010,35 @@ fn own_points<'a>(
             .map(|a| vec![&a.center, &a.start, &a.end])
             .unwrap_or_default(),
         _ => ends_of(sketch, curve, lookup),
+    }
+}
+
+/// A constraint holding a point on a curve, for the tangent rule: its place in the constraint
+/// list, its ID, and a `tangent_on`'s a, the curve it makes tangent there (none for an `on`).
+type Hold<'a> = (usize, &'a ElementId, Option<&'a Reference>);
+
+/// What makes one tangency of an edge `tangent` of `ending` and `other` and the constraint
+/// holding `ending`'s end, `point`, on `other`: an `on` (`tangent` none) and the edge tangent
+/// become one `tangent_on`; a `tangent_on` that makes `ending` tangent there already says
+/// what the edge tangent does, so the edge tangent goes; one that makes another curve tangent
+/// there (ending at the same point) stays, holding the point, and the edge tangent becomes a
+/// `tangent_on` of its own.
+fn one_tangency(
+    ending: &Reference,
+    point: &ElementId,
+    other: &Reference,
+    tangent: Option<&Reference>,
+) -> String {
+    match tangent {
+        None => format!("make the two one tangent_on, with a {ending}, at {point}, and b {other}"),
+        Some(a) if a == ending => {
+            format!(
+                "remove the tangent: the tangent_on already makes them tangent at point {point}"
+            )
+        }
+        Some(a) => format!(
+            "make the tangent a tangent_on, with a {ending}, at {point}, and b {other}, keeping {a}'s"
+        ),
     }
 }
 

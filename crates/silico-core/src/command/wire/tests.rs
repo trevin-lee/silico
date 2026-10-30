@@ -1177,3 +1177,40 @@ fn wire_shape_closes_an_object_and_leaves_any_other_schema_as_it_is() {
         serde_json::json!({"type": "object", "additionalProperties": false})
     );
 }
+
+#[test]
+fn only_a_ref_reaches_a_definition_not_a_string_that_reads_like_one() {
+    // Found by the M4 milestone's mutation run: taking any member whose text starts
+    // `#/$defs/` as a reference passed every test, as no committed schema has one that isn't
+    // a `$ref`. JSON Schema 2020-12 (Core, section 8.2.3.1): `$ref` is the keyword that
+    // references a schema; `const` and `default` hold values and `description` an
+    // annotation, whatever their text. So of these definitions only `Used`, reached by
+    // `$ref`, is kept; the others are reached by nothing (`FromUsed` only by `Used`'s
+    // description).
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "a": {"$ref": "#/$defs/Used"},
+            "b": {
+                "const": "#/$defs/Constant",
+                "default": "#/$defs/Defaulted",
+                "description": "#/$defs/Described"
+            }
+        },
+        "$defs": {
+            "Used": {"type": "string", "description": "#/$defs/FromUsed"},
+            "Constant": {"type": "null"},
+            "Defaulted": {"type": "null"},
+            "Described": {"type": "null"},
+            "FromUsed": {"type": "null"}
+        }
+    });
+    let pruned = super::pruned(schema);
+    let kept: Vec<&str> = pruned["$defs"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(kept, ["Used"]);
+}

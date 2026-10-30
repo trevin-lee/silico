@@ -695,6 +695,99 @@ fn a_curve_ending_on_another_and_tangent_there_is_refused_at_the_later_of_the_tw
     );
 }
 
+/// #258's case: a line nq from pq (0, 0) to pm (32, 0), and an arc aa about pc (10, 10)
+/// from ps (10, 0), on the line, to pe (20, 10), so the arc ends on the line and runs along
+/// it there; and these constraints.
+fn arc_ending_on_the_line(constraints: &str) -> String {
+    document(&fields(
+        r#"{"id": "pq000000", "x": 0, "y": 0, "construction": false}, {"id": "pm000000", "x": 32, "y": 0, "construction": false}, {"id": "pc000000", "x": 10, "y": 10, "construction": false}, {"id": "ps000000", "x": 10, "y": 0, "construction": false}, {"id": "pe000000", "x": 20, "y": 10, "construction": false}"#,
+        r#"{"id": "nq000000", "from": "pq000000", "to": "pm000000", "construction": false}"#,
+        "",
+        r#"{"id": "aa000000", "center": "pc000000", "start": "ps000000", "end": "pe000000", "construction": false}"#,
+        constraints,
+    ))
+}
+
+const ARC_TANGENT_ON: &str = r#"{"id": "k0000000", "type": "tangent_on", "a": "aa000000", "at": "ps000000", "b": "nq000000", "direction": "same"}"#;
+
+#[test]
+fn an_edge_tangent_beside_a_tangent_on_of_the_pair_is_refused_at_the_later_of_the_two() {
+    // A tangent_on holds its a's end on its b as an `on` does, and makes them tangent there,
+    // so an edge tangent of the same two curves says nothing more: FreeCAD 1.1.3 diagnoses the
+    // pair redundant (solve -2, redundant [1], #258). The tangent_on alone is taken.
+    none(&arc_ending_on_the_line(ARC_TANGENT_ON));
+    let remove = "remove the tangent: the tangent_on already makes them tangent at point ps000000";
+    // The tangent after the tangent_on, either way round: refused at the tangent.
+    for tangent in [
+        r#"{"id": "k0000001", "type": "tangent", "a": "aa000000", "b": "nq000000", "side": "left"}"#,
+        r#"{"id": "k0000001", "type": "tangent", "a": "nq000000", "b": "aa000000", "side": "left"}"#,
+    ] {
+        let text = arc_ending_on_the_line(&format!("{ARC_TANGENT_ON}, {tangent}"));
+        only(
+            &text,
+            "constraints.k0000001.b",
+            "a tangent's aa000000 ends at point ps000000, which constraint k0000000 puts on nq000000: a curve ending on another is tangent where it ends",
+        );
+        let all = problems(&text);
+        assert_eq!(all[0].elements(), ["k0000001"]);
+        assert_eq!(all[0].suggestion(), Some(remove));
+    }
+    // The tangent_on after the tangent, either way round: refused at the tangent_on, so an
+    // edit that appends it is refused at its own member, naming the tangent.
+    for tangent in [
+        r#"{"id": "k0000000", "type": "tangent", "a": "aa000000", "b": "nq000000", "side": "left"}"#,
+        r#"{"id": "k0000000", "type": "tangent", "a": "nq000000", "b": "aa000000", "side": "left"}"#,
+    ] {
+        let text = arc_ending_on_the_line(&format!(
+            r#"{tangent}, {{"id": "k0000001", "type": "tangent_on", "a": "aa000000", "at": "ps000000", "b": "nq000000", "direction": "same"}}"#
+        ));
+        only(
+            &text,
+            "constraints.k0000001.at",
+            "a tangent_on puts point ps000000, where aa000000 ends, on nq000000, which constraint k0000000 makes aa000000 edge tangent to: a curve ending on another is tangent where it ends",
+        );
+        let all = problems(&text);
+        assert_eq!(all[0].elements(), ["k0000001"]);
+        assert_eq!(all[0].suggestion(), Some(remove));
+    }
+}
+
+#[test]
+fn a_tangent_on_holds_its_point_for_another_curve_ending_there_as_an_on_does() {
+    // Lines nz and ny both end at pt, on the circle; the tangent_on makes nz tangent there,
+    // and the edge tangent is ny's. pt is on the circle all the same, so ny ends on it and is
+    // tangent where it ends: the tangent becomes a tangent_on of ny, and nz's stays (both
+    // ways round, after the tangent_on and before it).
+    let lines_on_the_circle = |constraints: &str| {
+        document(&fields(
+            r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pt000000", "x": 0, "y": 5, "construction": false}, {"id": "pz000000", "x": -20, "y": 5, "construction": false}, {"id": "pw000000", "x": 20, "y": 5, "construction": false}"#,
+            r#"{"id": "nz000000", "from": "pz000000", "to": "pt000000", "construction": false}, {"id": "ny000000", "from": "pt000000", "to": "pw000000", "construction": false}"#,
+            CIRCLE,
+            "",
+            constraints,
+        ))
+    };
+    let keep = "make the tangent a tangent_on, with a ny000000, at pt000000, and b ca000000, keeping nz000000's";
+    let text = lines_on_the_circle(
+        r#"{"id": "k0000000", "type": "tangent_on", "a": "nz000000", "at": "pt000000", "b": "ca000000", "direction": "same"}, {"id": "k0000001", "type": "tangent", "a": "ny000000", "b": "ca000000", "side": "left"}"#,
+    );
+    only(
+        &text,
+        "constraints.k0000001.b",
+        "a tangent's ny000000 ends at point pt000000, which constraint k0000000 puts on ca000000",
+    );
+    assert_eq!(problems(&text)[0].suggestion(), Some(keep));
+    let text = lines_on_the_circle(
+        r#"{"id": "k0000000", "type": "tangent", "a": "ny000000", "b": "ca000000", "side": "left"}, {"id": "k0000001", "type": "tangent_on", "a": "nz000000", "at": "pt000000", "b": "ca000000", "direction": "same"}"#,
+    );
+    only(
+        &text,
+        "constraints.k0000001.at",
+        "a tangent_on puts point pt000000, where ny000000 ends, on ca000000, which constraint k0000000 makes ny000000 edge tangent to",
+    );
+    assert_eq!(problems(&text)[0].suggestion(), Some(keep));
+}
+
 #[test]
 fn a_curve_tangent_to_itself_makes_no_pair_with_an_on_of_its_end_on_it() {
     // The tangent names nz000000 twice and the on holds nz000000's own end on it: each is

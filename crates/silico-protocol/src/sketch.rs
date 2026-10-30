@@ -473,7 +473,12 @@ pub enum SolveStatus {
 /// What the sketch worker found: the diagnosis, then the solve.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Solved {
-    /// Degrees of freedom left: negative when over-constrained.
+    /// Degrees of freedom left, PlaneGCS's `dofsNumber`: its unknowns less the rank of its
+    /// rows, never negative while something is free, a conflict or not. Where nothing is free
+    /// and a linear dependency among the rows holds no constraint the redundancy solve found
+    /// redundant (a conflict, or an arc's own rules repeating each other), PlaneGCS gives its
+    /// unknowns less the rows left instead (`nonredundantconstrNum`), which is negative: a
+    /// rectangle given two widths that disagree reads -1.
     pub dofs: i32,
     /// Constraints in conflict, by tag, in increasing order.
     pub conflicting: Vec<Tag>,

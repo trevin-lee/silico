@@ -36,7 +36,7 @@ fn requests(session: &str) -> Vec<(&'static str, String)> {
         (
             "add_feature",
             format!(
-                r#"{{"session": "{s}", "revision": 1, "feature": {{"id": "q0000001", "type": "box", "name": "B", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}}}}"#
+                r#"{{"session": "{s}", "revision": 1, "before": null, "feature": {{"id": "q0000001", "type": "box", "name": "B", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}}}}"#
             ),
         ),
         (
@@ -96,6 +96,16 @@ fn requests(session: &str) -> Vec<(&'static str, String)> {
             format!(
                 r#"{{"session": "{s}", "model": "current", "view": "front", "camera": null, "width": 40, "height": 30, "highlight": [], "to": null, "replace": false}}"#
             ),
+        ),
+        (
+            "move_feature",
+            format!(
+                r#"{{"session": "{s}", "revision": 1, "feature": "k7f2qx3m", "before": null}}"#
+            ),
+        ),
+        (
+            "timeline",
+            format!(r#"{{"session": "{s}", "model": "current"}}"#),
         ),
     ]
 }
@@ -379,7 +389,7 @@ fn after_open() -> Vec<(&'static str, String)> {
         ("begin", s1.clone()),
         (
             "add_feature",
-            r#"{"session": "s1", "revision": 2, "feature": {"id": "q0000001", "type": "box", "name": "B", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}}"#
+            r#"{"session": "s1", "revision": 2, "before": null, "feature": {"id": "q0000001", "type": "box", "name": "B", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}}"#
                 .to_owned(),
         ),
         ("commit", s1.clone()),

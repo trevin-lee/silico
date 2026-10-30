@@ -23,7 +23,12 @@
           "distance",
           "angle",
           "render",
-          "export"
+          "export",
+          "move_feature",
+          "timeline",
+          "sketch",
+          "sketch_add",
+          "sketch_remove"
         ],
         "type": "string"
       }
@@ -73,7 +78,12 @@
           "distance",
           "angle",
           "render",
-          "export"
+          "export",
+          "move_feature",
+          "timeline",
+          "sketch",
+          "sketch_add",
+          "sketch_remove"
         ],
         "type": "string"
       }

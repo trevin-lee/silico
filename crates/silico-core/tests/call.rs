@@ -57,7 +57,7 @@ fn the_commands_are_one_list_in_one_order() {
     let listed: Vec<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
     assert_eq!(names, listed);
     // The design's section 7, in its order, written out by hand (read_logs comes with its
-    // command).
+    // command), then M5.0's section 7's, in its order (M5.1's, then M5.10's).
     assert_eq!(
         names,
         [
@@ -87,6 +87,11 @@ fn the_commands_are_one_list_in_one_order() {
             "render",
             "read_logs",
             "export",
+            "move_feature",
+            "timeline",
+            "sketch",
+            "sketch_add",
+            "sketch_remove",
         ]
     );
     for command in Command::ALL {
@@ -367,8 +372,13 @@ fn the_measures_queries_and_the_rest_of_the_edits_answer_as_their_typed_methods_
         ),
         (
             "add_feature",
-            format!(r#"{{"session": "s1", "revision": 1, "feature": {added}}}"#),
-            as_written(&answer(t.add_feature(&s1, Revision::OPENED, value(added)))),
+            format!(r#"{{"session": "s1", "revision": 1, "before": null, "feature": {added}}}"#),
+            as_written(&answer(t.add_feature(
+                &s1,
+                Revision::OPENED,
+                None,
+                value(added),
+            ))),
         ),
         (
             "rollback",
@@ -377,10 +387,11 @@ fn the_measures_queries_and_the_rest_of_the_edits_answer_as_their_typed_methods_
         ),
         (
             "add_feature",
-            format!(r#"{{"session": "s1", "revision": 3, "feature": {added}}}"#),
+            format!(r#"{{"session": "s1", "revision": 3, "before": null, "feature": {added}}}"#),
             as_written(&answer(t.add_feature(
                 &s1,
                 Revision::OPENED.next().unwrap().next().unwrap(),
+                None,
                 value(added),
             ))),
         ),
@@ -1305,4 +1316,93 @@ fn cache_clear_and_a_fresh_check_answer_as_their_typed_methods_do() {
             serde_json::json!({"directory": ".silico-cache", "removed": removed})
         );
     }
+}
+
+#[test]
+fn the_timeline_commands_answer_by_name_as_their_typed_methods_do() {
+    // A block, a fillet of its Edge1, and a lug nothing uses: the lug moved first, a chamfer
+    // inserted under the fillet, removed again, and the timeline of each model, each by
+    // name and by its typed method, on sessions of their own; each answer the same, byte
+    // for byte, and each ran.
+    let parts = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge1"], "radius": 1}, {"id": "b0000002", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 5, "width": 5, "height": 5}]}"#;
+    let chamfer = r#"{"id": "c0000001", "type": "chamfer", "name": "Bevel", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 1}}"#;
+    let by_name = fixture();
+    let typed = fixture();
+    for f in [&by_name, &typed] {
+        f.file("part.silico", parts);
+        answer(f.sessions.open("part.silico", false))
+            .result
+            .unwrap();
+    }
+    let t = &typed.sessions;
+    let s1 = s("s1");
+    let at = |n: u64| Revision::from_number(n).unwrap();
+    let pairs: Vec<(&str, String, Answered)> = vec![
+        (
+            "begin",
+            r#"{"session": "s1"}"#.to_owned(),
+            as_written(&answer(t.begin(&s1))),
+        ),
+        (
+            "move_feature",
+            r#"{"session": "s1", "revision": 1, "feature": "b0000002", "before": "k7f2qx3m"}"#
+                .to_owned(),
+            as_written(&answer(t.move_feature(
+                &s1,
+                at(1),
+                id("b0000002"),
+                Some(id("k7f2qx3m")),
+            ))),
+        ),
+        (
+            "add_feature",
+            format!(
+                r#"{{"session": "s1", "revision": 2, "before": "f0000001", "feature": {chamfer}}}"#
+            ),
+            as_written(&answer(t.add_feature(
+                &s1,
+                at(2),
+                Some(id("f0000001")),
+                value(chamfer),
+            ))),
+        ),
+        (
+            "remove_feature",
+            r#"{"session": "s1", "revision": 3, "feature": "c0000001"}"#.to_owned(),
+            as_written(&answer(t.remove_feature(&s1, at(3), id("c0000001")))),
+        ),
+        (
+            "timeline",
+            r#"{"session": "s1", "model": "current"}"#.to_owned(),
+            as_written(&answer(t.timeline(&s1, ModelChoice::Current))),
+        ),
+        (
+            "timeline",
+            r#"{"session": "s1", "model": "published"}"#.to_owned(),
+            as_written(&answer(t.timeline(&s1, ModelChoice::Published))),
+        ),
+    ];
+    for (name, arguments, expected) in pairs {
+        assert!(expected.ok, "{name}: {}", expected.text);
+        assert_eq!(
+            by_name.call(name, &arguments),
+            expected,
+            "{name} {arguments}"
+        );
+    }
+    // What each did, by hand: the lug moved from 2 to 0, rewiring nothing; the chamfer at
+    // 2, the fillet rewired to it; its removal giving the fillet the block back.
+    let moved = envelope(&by_name.call(
+        "move_feature",
+        r#"{"session": "s1", "revision": 4, "feature": "b0000002", "before": "k7f2qx3m"}"#,
+    ));
+    assert_eq!(
+        moved["result"],
+        serde_json::json!({"feature": "b0000002", "from": 0, "to": 0, "rewired": [], "changed": false, "commit": null})
+    );
+    let text = envelope(&by_name.call("text", r#"{"session": "s1", "feature": null}"#));
+    let document =
+        silico_core::document::read(text["result"]["text"].as_str().unwrap().as_bytes()).unwrap();
+    let ids: Vec<&str> = document.features.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(ids, ["b0000002", "k7f2qx3m", "f0000001"]);
 }

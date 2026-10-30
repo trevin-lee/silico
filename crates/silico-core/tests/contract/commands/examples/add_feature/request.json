@@ -1,6 +1,7 @@
 {
   "session": "s1",
   "revision": 6,
+  "before": null,
   "feature": {
     "type": "pocket",
     "name": "Leg holes",

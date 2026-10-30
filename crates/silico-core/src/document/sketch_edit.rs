@@ -10,10 +10,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::PROBLEMS_LISTED;
 use super::sketch::{
     Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchPoint, TangentSide,
 };
+use super::{PROBLEMS_LISTED, nearest_ids, with_candidates};
 use crate::{Error, ErrorCode};
 
 mod add;
@@ -38,6 +38,33 @@ pub struct Edited {
     pub removed: Vec<ElementId>,
 }
 
+/// What [`remove`] can be asked to take: a member, by ID, or one of the sketch's fixed
+/// references, which it refuses in its own words, never as a member it doesn't know.
+pub trait Named {
+    /// The member's ID; none for a fixed reference.
+    fn member(&self) -> Option<&ElementId>;
+    /// As the request names it.
+    fn text(&self) -> &str;
+}
+
+impl Named for ElementId {
+    fn member(&self) -> Option<&ElementId> {
+        Some(self)
+    }
+    fn text(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Named for Reference {
+    fn member(&self) -> Option<&ElementId> {
+        self.element()
+    }
+    fn text(&self) -> &str {
+        self.as_str()
+    }
+}
+
 /// Removes `members` (sketch-edit decision 7): each constraint named; each curve named,
 /// with each of its points no curve uses after the edit; each point named, which no curve
 /// may use after it; and every constraint that names a member removed, in any of its
@@ -47,12 +74,19 @@ pub struct Edited {
 /// that meet there stay joined (shared points, where FreeCAD re-points coincidences); a
 /// `tangent_at` naming a removed curve goes with it, never onto a neighbour (`9ce5756011`).
 /// A removed line's `midpoint` becomes a `symmetric` of its ends about the point while the
-/// point and both ends stay, as FreeCAD's is stored (a `Symmetric` of the line's ends, which
+/// point and both ends stay (the origin, a fixed reference, always does), as FreeCAD's is
+/// stored (a `Symmetric` of the line's ends, which
 /// the line's delete leaves on the ends its neighbours keep), and as split makes it.
-pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused> {
+///
+/// Refused, every problem in one answer, each once, at the first place in `members` that
+/// names it, in their order: a member the sketch hasn't (with the sketch's IDs nearest it as
+/// candidates, as the gate gives them for a reference), a fixed reference (`origin`,
+/// `x_axis`, `y_axis`; FreeCAD `2a401ee895`, `83d14b785e`), and a point a curve still uses.
+pub fn remove<N: Named>(sketch: &Sketch, members: &[N]) -> Result<Edited, Refused> {
     let kinds = kinds_of(sketch);
     let named: BTreeSet<&ElementId> = members
         .iter()
+        .filter_map(Named::member)
         .filter(|id| kinds.contains_key(*id))
         .collect();
     let curves_removed: BTreeSet<&ElementId> = named
@@ -65,27 +99,52 @@ pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused>
             )
         })
         .collect();
-    // Who uses each point, among the curves that stay.
-    let mut users: BTreeMap<&ElementId, Vec<(ElementKind, &ElementId)>> = BTreeMap::new();
+    // Who uses each point, among the curves that stay, and whether as its centre: a
+    // circle's one point, and an arc's first ([`curves`]' order).
+    let mut users: BTreeMap<&ElementId, Vec<(ElementKind, &ElementId, bool)>> = BTreeMap::new();
     for (kind, curve, points) in curves(sketch) {
         if !curves_removed.contains(curve) {
-            for point in points {
-                users.entry(point).or_default().push((kind, curve));
+            for (place, point) in points.into_iter().enumerate() {
+                let centre = place == 0 && matches!(kind, ElementKind::Circle | ElementKind::Arc);
+                users.entry(point).or_default().push((kind, curve, centre));
             }
         }
     }
     // Each problem once, at the first place its member is named, in the request's order.
     let mut refused = Refused::default();
     let mut said: BTreeSet<&ElementId> = BTreeSet::new();
-    for (place, id) in members.iter().enumerate() {
+    let mut fixed_said: BTreeSet<&str> = BTreeSet::new();
+    for (place, member) in members.iter().enumerate() {
+        let Some(id) = member.member() else {
+            let fixed = member.text();
+            if fixed_said.insert(fixed) {
+                refused.push(|| {
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "{fixed} is one of the sketch's fixed references, which can't be removed"
+                        ),
+                    )
+                    .with_parameter(format!("members.{place}"))
+                    .with_suggestion("remove the constraints that name it instead")
+                });
+            }
+            continue;
+        };
         match kinds.get(id) {
             None if said.insert(id) => refused.push(|| {
+                let near = nearest_ids(id, kinds.keys());
                 Error::new(
                     ErrorCode::InvalidInput,
                     format!("the sketch has no member {id}"),
                 )
                 .with_parameter(format!("members.{place}"))
-                .with_suggestion("name a point, curve, or constraint of this sketch by its ID")
+                .with_suggestion(with_candidates(
+                    "name a point, curve, or constraint of this sketch by its ID".to_owned(),
+                    id,
+                    &near,
+                ))
+                .with_candidates(near)
             }),
             Some(ElementKind::Point) => {
                 if let Some(using) = users.get(id)
@@ -123,7 +182,7 @@ pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused>
         if let Form::Midpoint { point, line } = &constraint.form
             && let Some(removed) = line.element().filter(|l| gone.contains(*l))
             && !gone.contains(&constraint.id)
-            && point.element().is_some_and(|p| !gone.contains(p))
+            && point.element().is_none_or(|p| !gone.contains(p))
             && let Some(l) = sketch.lines.iter().find(|l| l.id == *removed)
             && !gone.contains(&l.from)
             && !gone.contains(&l.to)
@@ -569,8 +628,9 @@ fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Res
                 // Curves that share an end: where they meet, a tangency is a tangent_at. A
                 // merge's is made one (`tangents_at_shared_ends`), but not where the two share
                 // both ends. A split meets one only at a curve's end held tangent on it,
-                // whose tangent_on becomes that tangent_at (the gate refuses an edge tangency
-                // beside an `on` of an end), so it's refused, repeating it.
+                // whose tangent_on becomes that tangent_at, so it's refused, repeating it:
+                // never from a checked sketch, since the gate refuses an edge tangency beside
+                // an `on` or a `tangent_on` of an end (#258).
                 let shared = match (a.element(), b.element()) {
                     (Some(a), Some(b)) => ends
                         .get(a)
@@ -704,30 +764,40 @@ fn references_mut(form: &mut Form) -> Vec<&mut Reference> {
 
 /// A point that curves still use, refused as removed alone: the point and the first of
 /// its curves in `elements`, up to [`PROBLEMS_LISTED`], all counted, and the message naming
-/// the first few.
+/// the first few. Its cause says what the point is to them, from each use's `centre`:
+/// their end, their centre, or (some of each) their end or centre (docs/design/m5.0-app.md,
+/// `sketch_remove`'s error, for a point two lines end at).
 fn point_in_use(
     point: &ElementId,
-    using: &[(ElementKind, &ElementId)],
+    using: &[(ElementKind, &ElementId, bool)],
     parameter: String,
 ) -> Error {
     const SAID: usize = 3;
-    let nouns: BTreeSet<&str> = using.iter().map(|(kind, _)| kind.noun()).collect();
+    let nouns: BTreeSet<&str> = using.iter().map(|(kind, _, _)| kind.noun()).collect();
     let noun = match (using, nouns.len()) {
-        ([(kind, _)], _) => kind.noun().to_owned(),
-        ([(kind, _), ..], 1) => format!("{}s", kind.noun()),
+        ([(kind, _, _)], _) => kind.noun().to_owned(),
+        ([(kind, _, _), ..], 1) => format!("{}s", kind.noun()),
         _ => "curves".to_owned(),
+    };
+    let role = match (
+        using.iter().any(|(_, _, centre)| !centre),
+        using.iter().any(|(_, _, centre)| *centre),
+    ) {
+        (true, true) => "end or centre",
+        (false, true) => "centre",
+        _ => "end",
     };
     let said: Vec<String> = using
         .iter()
         .take(SAID)
-        .map(|(_, id)| id.to_string())
+        .map(|(_, id, _)| id.to_string())
         .collect();
     let curves = match using.len() {
         n if n <= SAID => listed(&said),
         n => format!("{} and {} more", said.join(", "), n - SAID),
     };
     let elements = std::iter::once(point.to_string())
-        .chain(using.iter().map(|(_, id)| id.to_string()))
+        .chain(using.iter().map(|(_, id, _)| id.to_string()))
         .take(PROBLEMS_LISTED);
     let total = u64::try_from(using.len()).map_or(u64::MAX, |n| n.saturating_add(1));
     Error::new(
@@ -737,7 +807,7 @@ fn point_in_use(
     .with_elements(elements)
     .with_elements_total(total)
     .with_parameter(parameter)
-    .with_cause("a point that curves use is those curves' end or centre")
+    .with_cause(format!("a point that curves use is those curves' {role}"))
     .with_suggestion("remove the curves that use it with it, or unjoin it first")
 }
 

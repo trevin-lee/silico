@@ -1110,6 +1110,31 @@
             ],
             "type": "object"
           },
+          "Disk": {
+            "description": "What a comparison of a session's file on disk found, as `status` gives it.",
+            "oneOf": [
+              {
+                "const": "unchanged",
+                "description": "The bytes the session last read or wrote.",
+                "type": "string"
+              },
+              {
+                "const": "changed",
+                "description": "Other bytes. With no transaction open, the session reloads them itself (`reload`);\ninside one, its `commit` is refused as a `conflict` until it rolls back. A file this\nsession's own save left part written reads `changed` too, and isn't reloaded: the\nnext save says where its old text is.",
+                "type": "string"
+              },
+              {
+                "const": "gone",
+                "description": "No file at its path.",
+                "type": "string"
+              },
+              {
+                "const": "unreadable",
+                "description": "Not a regular file this user may read, or past what Silico reads of a document.",
+                "type": "string"
+              }
+            ]
+          },
           "Error": {
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
@@ -1231,7 +1256,9 @@
               "mass_properties",
               "distance",
               "angle",
-              "render"
+              "render",
+              "timeline",
+              "sketch"
             ],
             "type": "string"
           },
@@ -1355,6 +1382,38 @@
             ],
             "type": "object"
           },
+          "RunningCommand": {
+            "description": "What runs on a session's thread, by name: a command, as a tool is named, which `cancel` stops; or `reload`, the session's own reload of its file, found changed on disk with no transaction open, which nothing cancels.",
+            "enum": [
+              "close",
+              "begin",
+              "commit",
+              "rollback",
+              "format",
+              "add_feature",
+              "set_field",
+              "remove_feature",
+              "replace_text",
+              "text",
+              "outline",
+              "check",
+              "cache_clear",
+              "elements",
+              "query",
+              "mass_properties",
+              "distance",
+              "angle",
+              "render",
+              "export",
+              "move_feature",
+              "timeline",
+              "sketch",
+              "sketch_add",
+              "sketch_remove",
+              "reload"
+            ],
+            "type": "string"
+          },
           "Session": {
             "additionalProperties": false,
             "description": "The session as the command left it.",
@@ -1389,32 +1448,6 @@
               "transaction"
             ],
             "type": "object"
-          },
-          "SessionCommand": {
-            "description": "A command that runs in a session, by name, as a tool is named: what `status` says is running, and `cancel` stops.",
-            "enum": [
-              "close",
-              "begin",
-              "commit",
-              "rollback",
-              "format",
-              "add_feature",
-              "set_field",
-              "remove_feature",
-              "replace_text",
-              "text",
-              "outline",
-              "check",
-              "cache_clear",
-              "elements",
-              "query",
-              "mass_properties",
-              "distance",
-              "angle",
-              "render",
-              "export"
-            ],
-            "type": "string"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1442,6 +1475,17 @@
                 "additionalProperties": false,
                 "description": "`status`'s result. What's running is a diagnostic, not a result: it depends on when it's\nasked.",
                 "properties": {
+                  "disk": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/Disk"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "What the last comparison of the session's file on disk found, against the bytes the\nsession last read or wrote: a diagnostic, never a result, and it reloads nothing\nitself. `status` starts the next comparison, off its caller's thread, once the last\nended a second ago or more. Null before one has ended, while the session's own save\nruns, and after a save that failed until the next comparison ends."
+                  },
                   "features": {
                     "description": "How many features the document has: null if its text doesn't read as a document.",
                     "minimum": 0,
@@ -1467,13 +1511,13 @@
                   "running": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/SessionCommand"
+                        "$ref": "#/$defs/RunningCommand"
                       },
                       {
                         "type": "null"
                       }
                     ],
-                    "description": "The session's queued command running, which `cancel` can stop: null if none is."
+                    "description": "What's running on the session's thread: a queued command, which `cancel` can stop,\nor `reload`, its own reload of a file changed on disk; null if nothing is."
                   },
                   "transaction": {
                     "anyOf": [
@@ -1488,6 +1532,7 @@
                   }
                 },
                 "required": [
+                  "disk",
                   "features",
                   "gated",
                   "reads",
@@ -1557,7 +1602,12 @@
               "distance",
               "angle",
               "render",
-              "export"
+              "export",
+              "move_feature",
+              "timeline",
+              "sketch",
+              "sketch_add",
+              "sketch_remove"
             ],
             "type": "string"
           }
@@ -1808,7 +1858,12 @@
               "distance",
               "angle",
               "render",
-              "export"
+              "export",
+              "move_feature",
+              "timeline",
+              "sketch",
+              "sketch_add",
+              "sketch_remove"
             ],
             "type": "string"
           }
@@ -2818,7 +2873,7 @@
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "`format`'s request: save the document in canonical form with every feature's\nfingerprint as rebuilt, as `silico fmt` does, accepting the drift of the features named.",
+        "description": "`format`'s request: save the document in canonical form with every feature's\nfingerprint as rebuilt, as `silico fmt` does, accepting the drift of the features named.\nInside a transaction it writes no file: what it would write becomes the transaction's\ndocument, one edit `undo` can undo, which the transaction's `commit` saves.",
         "properties": {
           "features": {
             "description": "The features whose drift to accept, by ID, or null for every feature's. Any other\ndrifted feature keeps its stored fingerprint and is a problem.",
@@ -2836,7 +2891,7 @@
             "type": "string"
           },
           "write": {
-            "description": "Whether to write the file: false only says whether it would change (`silico fmt\n--check`).",
+            "description": "Whether to write the file (inside a transaction, its document): false only says\nwhether it would change (`silico fmt --check`), changing nothing.",
             "type": "boolean"
           }
         },
@@ -3090,7 +3145,7 @@
                     "type": "array"
                   },
                   "changed": {
-                    "description": "Whether the canonical text differs from the file.",
+                    "description": "Whether the canonical text differs from the file; inside a transaction, whether the\ncanonical text differs from the transaction's.",
                     "type": "boolean"
                   },
                   "path": {
@@ -3125,7 +3180,7 @@
                     "type": "array"
                   },
                   "written": {
-                    "description": "Whether the file was written.",
+                    "description": "Whether the file was written: never inside a transaction.",
                     "type": "boolean"
                   }
                 },
@@ -3176,7 +3231,7 @@
         "readOnlyHint": false,
         "title": "Add a feature"
       },
-      "description": "Add a feature at the end of the session's timeline. Give the revision the edit was made against, as the session's last answer says it. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "description": "Add a feature at the end of the session's timeline (`before: null`), or before another: then each input it takes (its base, its tool) that a feature after it consumed is consumed by it instead, that feature's field rewired to it, listed in `rewired`. Give the revision the edit was made against, as the session's last answer says it. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
       "inputSchema": {
         "$defs": {
           "Angle": {
@@ -3250,7 +3305,7 @@
             "type": "string"
           },
           "NewFeature": {
-            "description": "A feature as the document writes it, to add at the end of the timeline. Its id may be left out, for one the core makes that no feature holds, and its v, for the type's current version. A fingerprint is refused, but for null: a commit writes it. Each member the feature may leave out (its id, v, note, and fingerprint, and a pad's or revolve's base) may be given as null, which is the same as leaving it out.",
+            "description": "A feature as the document writes it, to add to the timeline. Its id may be left out, for one the core makes that no feature holds, and its v, for the type's current version. A fingerprint is refused, but for null: a commit writes it. Each member the feature may leave out (its id, v, note, and fingerprint, and a pad's or revolve's base) may be given as null, which is the same as leaving it out.",
             "oneOf": [
               {
                 "description": "A box from `position` (its lowest corner), `length` along x, `width` along y, and\n`height` along z.",
@@ -4607,8 +4662,19 @@
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "`add_feature`'s request: add a feature at the end of the session's timeline.",
+        "description": "`add_feature`'s request: add a feature to the session's timeline, at the end or before\nanother.",
         "properties": {
+          "before": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The feature to add it before, by ID, or null for the end. Before a feature, each\ninput it takes (its `base`, its `tool`) that a feature at or after that place\nconsumed is consumed by it instead: that feature's field now names the new one,\nlisted in `rewired`. One consumed by a feature before the place is refused."
+          },
           "feature": {
             "$ref": "#/$defs/NewFeature"
           },
@@ -4624,6 +4690,7 @@
           }
         },
         "required": [
+          "before",
           "feature",
           "revision",
           "session"
@@ -5319,6 +5386,14 @@
             ],
             "type": "object"
           },
+          "InputField": {
+            "description": "Which of the feature's inputs changed: its base, or a boolean's tool.",
+            "enum": [
+              "base",
+              "tool"
+            ],
+            "type": "string"
+          },
           "Length": {
             "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
             "type": "number"
@@ -5590,6 +5665,48 @@
               "ok",
               "session",
               "total"
+            ],
+            "type": "object"
+          },
+          "Rewired": {
+            "additionalProperties": false,
+            "description": "A feature whose `base` or `tool` an edit changed, which the edit reaches.",
+            "properties": {
+              "feature": {
+                "$ref": "#/$defs/FeatureId",
+                "description": "The feature, by ID."
+              },
+              "field": {
+                "$ref": "#/$defs/InputField"
+              },
+              "from": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "What the field named before the edit: null where the feature had no base."
+              },
+              "to": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "What it names after: null where the feature is left with no base (a pad or revolve,\nwhich then begins a body)."
+              }
+            },
+            "required": [
+              "feature",
+              "field",
+              "from",
+              "to"
             ],
             "type": "object"
           },
@@ -6364,12 +6481,26 @@
                   "feature": {
                     "$ref": "#/$defs/Feature",
                     "description": "The feature as the document now holds it: with its ID (the one given, or the one\nmade) and its version; outside a transaction, as the commit saved it, with the\nfingerprint it wrote."
+                  },
+                  "index": {
+                    "description": "Its place in the timeline, from 0.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "rewired": {
+                    "description": "Each feature whose `base` or `tool` now names the new feature instead of the input\nit consumes, in timeline order: empty at the end.",
+                    "items": {
+                      "$ref": "#/$defs/Rewired"
+                    },
+                    "type": "array"
                   }
                 },
                 "required": [
                   "changed",
                   "commit",
-                  "feature"
+                  "feature",
+                  "index",
+                  "rewired"
                 ],
                 "type": "object"
               },
@@ -6821,7 +6952,7 @@
         "readOnlyHint": false,
         "title": "Remove a feature"
       },
-      "description": "Remove one feature, which no other may use; its JSON is returned. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "description": "Remove one feature; its JSON is returned. The feature that consumed it takes its base, listed in `rewired`. Refused, naming both, where nothing can stand in: a chain's first feature under one that needs a base, a feature's sketch, or a feature whose elements another names. To put it back, give `add_feature` the returned feature without its `fingerprint`, `before` the feature that followed it (inside a transaction, the fingerprint `begin` saw is kept), then `set_field` `base` back on each `rewired` entry whose `to` is null; or remove inside a transaction and `rollback`. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
       "inputSchema": {
         "$defs": {
           "FeatureId": {
@@ -6832,11 +6963,11 @@
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "`remove_feature`'s request: remove one feature, which no other may use.",
+        "description": "`remove_feature`'s request: remove one feature, the feature that consumed it taking its\nbase.",
         "properties": {
           "feature": {
             "$ref": "#/$defs/FeatureId",
-            "description": "The feature to remove, by ID. A feature others use is refused, each naming it:\nremove those first."
+            "description": "The feature to remove, by ID. The feature that consumed it takes its base. Refused,\nnaming both, where nothing can stand in: a chain's root under a feature that needs a\nbase, a feature whose sketch it is, or one that names its elements."
           },
           "revision": {
             "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
@@ -7545,6 +7676,14 @@
             ],
             "type": "object"
           },
+          "InputField": {
+            "description": "Which of the feature's inputs changed: its base, or a boolean's tool.",
+            "enum": [
+              "base",
+              "tool"
+            ],
+            "type": "string"
+          },
           "Length": {
             "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
             "type": "number"
@@ -7816,6 +7955,48 @@
               "ok",
               "session",
               "total"
+            ],
+            "type": "object"
+          },
+          "Rewired": {
+            "additionalProperties": false,
+            "description": "A feature whose `base` or `tool` an edit changed, which the edit reaches.",
+            "properties": {
+              "feature": {
+                "$ref": "#/$defs/FeatureId",
+                "description": "The feature, by ID."
+              },
+              "field": {
+                "$ref": "#/$defs/InputField"
+              },
+              "from": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "What the field named before the edit: null where the feature had no base."
+              },
+              "to": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "What it names after: null where the feature is left with no base (a pad or revolve,\nwhich then begins a body)."
+              }
+            },
+            "required": [
+              "feature",
+              "field",
+              "from",
+              "to"
             ],
             "type": "object"
           },
@@ -8589,19 +8770,27 @@
                   },
                   "feature": {
                     "$ref": "#/$defs/Feature",
-                    "description": "The feature removed, as the document held it: `replace_text` can put it back."
+                    "description": "The feature removed, as the document held it, its fingerprint too. To put it back,\ngive `add_feature` this feature without its `fingerprint`, `before` the feature that\nfollowed it (inside a transaction, the fingerprint `begin`'s document stored is\nkept); then, with `set_field`, set `base` back on each\n`rewired` entry whose `to` is null. Or undo the removal whole: remove inside a\ntransaction (`begin`), and `rollback`."
                   },
                   "index": {
                     "description": "Its place in the timeline, from 0.",
                     "minimum": 0,
                     "type": "integer"
+                  },
+                  "rewired": {
+                    "description": "Each feature whose `base` or `tool` named the removed feature and now names what it\nnamed (null where it named none, a pad or revolve then beginning a body), in\ntimeline order.",
+                    "items": {
+                      "$ref": "#/$defs/Rewired"
+                    },
+                    "type": "array"
                   }
                 },
                 "required": [
                   "changed",
                   "commit",
                   "feature",
-                  "index"
+                  "index",
+                  "rewired"
                 ],
                 "type": "object"
               },
@@ -14880,6 +15069,3837 @@
         "type": "object"
       },
       "title": "Export"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Move a feature"
+      },
+      "description": "Move one feature before another, or to the end (`before: null`), rewiring the chains it leaves and joins: its consumer takes its base, it builds on the last feature of its chain before the new place, and the next one builds on it, each change listed in `rewired`. Refused, naming both, where a child would come before its parent (its sketch, its tool, a feature whose elements it names). Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`move_feature`'s request: move one feature to another place in the timeline, rewiring the\nchains it leaves and joins.",
+        "properties": {
+          "before": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The feature to move it before, by ID, or null for the end."
+          },
+          "feature": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The feature to move, by ID. Its consumer takes its base; it takes as its base the\nlast feature of its chain before the new place, and the chain's next feature after\nthat place takes it as its base. Refused, naming both, where a child would come\nbefore its parent: before its sketch or its tool, after a feature using it as its\nsketch, or where a feature's base would no longer be built from a feature whose\nelements it names."
+          },
+          "revision": {
+            "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "before",
+          "feature",
+          "revision",
+          "session"
+        ],
+        "title": "MoveFeatureRequest",
+        "type": "object"
+      },
+      "name": "move_feature",
+      "outputSchema": {
+        "$defs": {
+          "CommitResult": {
+            "additionalProperties": false,
+            "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+            "properties": {
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "problems_total": {
+                "description": "How many problems there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refingerprinted": {
+                "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "resolved": {
+                "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "written": {
+                "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "problems",
+              "problems_total",
+              "refingerprinted",
+              "resolved",
+              "written"
+            ],
+            "type": "object"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "InputField": {
+            "description": "Which of the feature's inputs changed: its base, or a boolean's tool.",
+            "enum": [
+              "base",
+              "tool"
+            ],
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Rewired": {
+            "additionalProperties": false,
+            "description": "A feature whose `base` or `tool` an edit changed, which the edit reaches.",
+            "properties": {
+              "feature": {
+                "$ref": "#/$defs/FeatureId",
+                "description": "The feature, by ID."
+              },
+              "field": {
+                "$ref": "#/$defs/InputField"
+              },
+              "from": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "What the field named before the edit: null where the feature had no base."
+              },
+              "to": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "What it names after: null where the feature is left with no base (a pad or revolve,\nwhich then begins a body)."
+              }
+            },
+            "required": [
+              "feature",
+              "field",
+              "from",
+              "to"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`move_feature`'s result.",
+                "properties": {
+                  "changed": {
+                    "description": "Whether the document changed: false for a move to where it is, which makes no new\nrevision and writes nothing.",
+                    "type": "boolean"
+                  },
+                  "commit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/CommitResult"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Outside a transaction, the commit that saved the edit; null inside one, or if\nnothing changed."
+                  },
+                  "feature": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The feature moved, as the request named it."
+                  },
+                  "from": {
+                    "description": "Its place in the timeline before the move, from 0.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "rewired": {
+                    "description": "Each feature whose `base` or `tool` the move changed, in timeline order after the\nmove: empty for a move that leaves it between its base and its consumer.",
+                    "items": {
+                      "$ref": "#/$defs/Rewired"
+                    },
+                    "type": "array"
+                  },
+                  "to": {
+                    "description": "Its place after the move, from 0, counted in the timeline after it.",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "changed",
+                  "commit",
+                  "feature",
+                  "from",
+                  "rewired",
+                  "to"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Move a feature"
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Timeline"
+      },
+      "description": "The document's features in timeline order, structured: each one's ID, type, name, inputs, and health (healthy, warning, error, suppressed, or unknown) from the model named, with how many problems and warnings it has (`check` gives their text); and the bodies. A document the gate refuses is listed too, every health unknown. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "ModelChoice": {
+            "description": "Which model to read: the current one, or the newest published.",
+            "oneOf": [
+              {
+                "const": "current",
+                "description": "The session's current revision's model, rebuilt if it isn't yet: what an agent that\njust edited reads.",
+                "type": "string"
+              },
+              {
+                "const": "published",
+                "description": "The newest model published, which may be an older revision's, read at once: what a\nUI reads while a rebuild runs.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`timeline`'s request: the document's features as the browser and the timeline draw them,\neach with its health, from the model named.",
+        "properties": {
+          "model": {
+            "$ref": "#/$defs/ModelChoice"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model",
+          "session"
+        ],
+        "title": "TimelineRequest",
+        "type": "object"
+      },
+      "name": "timeline",
+      "outputSchema": {
+        "$defs": {
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Health": {
+            "description": "A feature's health, as the model gave it: healthy (built, or solved, with no problem or warning), warning (built with warnings), error (not built, or built failing a check: a failure, a broken reference, drift; or blocked by a failure upstream), suppressed, or unknown (not built by this model: added or edited since, or using one that was; stopped by a kernel fault; or no model at all).",
+            "enum": [
+              "healthy",
+              "warning",
+              "error",
+              "suppressed",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          },
+          "TimelineEntry": {
+            "additionalProperties": false,
+            "description": "A feature as the browser and the timeline draw it.",
+            "properties": {
+              "health": {
+                "$ref": "#/$defs/Health"
+              },
+              "id": {
+                "$ref": "#/$defs/FeatureId",
+                "description": "Its ID. Unique, but in a document the gate refuses for an ID used twice."
+              },
+              "inputs": {
+                "description": "The features it names: its `base` and `tool`, then its `sketch`, in that order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "name": {
+                "description": "Its name.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "How many problems the model has on it, whose text `check` gives.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "suppressed": {
+                "description": "Whether it's suppressed.",
+                "type": "boolean"
+              },
+              "type": {
+                "description": "Its type, as the document writes it (`sketch`, `pad`, `fillet`, ...).",
+                "type": "string"
+              },
+              "warnings": {
+                "description": "How many warnings the model has on it, whose text `check` gives.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "health",
+              "id",
+              "inputs",
+              "name",
+              "problems",
+              "suppressed",
+              "type",
+              "warnings"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`timeline`'s result. The features are the session's document's at its revision; their\nhealth is the model's, of `model_revision`, which may be older.",
+                "properties": {
+                  "bodies": {
+                    "description": "The bodies the model has, in timeline order: the solids no later feature consumes.\nEmpty with no model.",
+                    "items": {
+                      "$ref": "#/$defs/FeatureId"
+                    },
+                    "type": "array"
+                  },
+                  "features": {
+                    "description": "The features, in timeline order: null if the text doesn't read as a document. While\nthe gate refuses the document, every health is `unknown`, and an ID used twice is\nlisted twice, so don't key entries by ID then.",
+                    "items": {
+                      "$ref": "#/$defs/TimelineEntry"
+                    },
+                    "type": [
+                      "array",
+                      "null"
+                    ]
+                  },
+                  "model_revision": {
+                    "description": "The revision of the model the health comes from, as the response's `model` names\nit: older than `revision` where the published model is an older revision's. Null\nwith no model to read (a document the gate refused, with nothing published).",
+                    "minimum": 1,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "problems": {
+                    "description": "How many problems the gate found in the document (or the reader, in text that\ndoesn't read as one): 0 for a document the gate took, whose model's problems\n`check` gives.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "revision": {
+                    "description": "The session's revision, whose document the features are.",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "bodies",
+                  "features",
+                  "model_revision",
+                  "problems",
+                  "revision"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Timeline"
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Read a sketch"
+      },
+      "description": "A sketch as the model solved it: its plane in 3D, its state (under, fully, or over defined, no solution, or invalid) and degrees of freedom, each point, curve, and constraint as the document writes it, at its solved values, with its own state, the regions its profile makes or why it makes none, and why it wasn't solved. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "ModelChoice": {
+            "description": "Which model to read: the current one, or the newest published.",
+            "oneOf": [
+              {
+                "const": "current",
+                "description": "The session's current revision's model, rebuilt if it isn't yet: what an agent that\njust edited reads.",
+                "type": "string"
+              },
+              {
+                "const": "published",
+                "description": "The newest model published, which may be an older revision's, read at once: what a\nUI reads while a rebuild runs.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`sketch`'s request: a sketch as the model named solved it.",
+        "properties": {
+          "model": {
+            "$ref": "#/$defs/ModelChoice"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "model",
+          "session",
+          "sketch"
+        ],
+        "title": "SketchRequest",
+        "type": "object"
+      },
+      "name": "sketch",
+      "outputSchema": {
+        "$defs": {
+          "Angle": {
+            "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
+          "ConstraintState": {
+            "description": "A constraint's state: conflicting (in conflict with others, so the sketch isn't solved); redundant (its equations repeat others': removing it, or one of those it repeats, resolves it); partially_redundant (some of them do); satisfied (on a solved sketch, independent of the others and met, a reference dimension always); or unsolved (on a sketch that wasn't solved, any not flagged).",
+            "enum": [
+              "satisfied",
+              "conflicting",
+              "redundant",
+              "partially_redundant",
+              "unsolved"
+            ],
+            "type": "string"
+          },
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          },
+          "Direction": {
+            "description": "How two curves meeting at a point run there: on in the `same` direction (a smooth\njoin), or back the `opposite` way (a cusp).",
+            "enum": [
+              "same",
+              "opposite"
+            ],
+            "type": "string"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Length": {
+            "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
+          "LineSide": {
+            "description": "Which side of a line, facing from its start (`from`) to its end (`to`); for an axis,\nfacing along it (+x, +y).",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "MemberState": {
+            "description": "A point's or a curve's state: over_defined when a constraint that over-defines governs it (a point when such a constraint reads its x or y; a curve when one names it, not taking its points' state); otherwise under_defined when any of its values (a curve's own, or its points') is free; otherwise fully_defined.",
+            "enum": [
+              "under_defined",
+              "fully_defined",
+              "over_defined"
+            ],
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          },
+          "SketchArcRead": {
+            "additionalProperties": false,
+            "description": "An arc, as the document writes it, with its state.",
+            "properties": {
+              "center": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "construction": {
+                "type": "boolean"
+              },
+              "end": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "start": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "state": {
+                "$ref": "#/$defs/MemberState"
+              }
+            },
+            "required": [
+              "center",
+              "construction",
+              "end",
+              "id",
+              "start",
+              "state"
+            ],
+            "type": "object"
+          },
+          "SketchCircleRead": {
+            "additionalProperties": false,
+            "description": "A circle, as the document writes it, at its solved radius, with its state.",
+            "properties": {
+              "center": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "construction": {
+                "type": "boolean"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "radius": {
+                "$ref": "#/$defs/Coordinate",
+                "description": "Its radius, as solved (as stored, if the sketch wasn't solved)."
+              },
+              "state": {
+                "$ref": "#/$defs/MemberState"
+              }
+            },
+            "required": [
+              "center",
+              "construction",
+              "id",
+              "radius",
+              "state"
+            ],
+            "type": "object"
+          },
+          "SketchConstraintRead": {
+            "description": "A constraint, as the document writes it (its ID, its type, and its form's fields, a reference dimension's value as the solve measured it), with its state.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "The line parallel to x.",
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "horizontal",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "line",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The line parallel to y.",
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "vertical",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "line",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The two points level.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "horizontal_points",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "One point above the other.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "vertical_points",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The line's length.",
+                "properties": {
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "length",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "driving",
+                  "id",
+                  "line",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The distance between two points.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "distance",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "x(b) − x(a), signed.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "distance_x",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "y(b) − y(a), signed.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "distance_y",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The point's distance from the line (extended), on the given side of it.",
+                "properties": {
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "point": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "side": {
+                    "$ref": "#/$defs/LineSide"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "point_line_distance",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "driving",
+                  "id",
+                  "line",
+                  "point",
+                  "side",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The point on the curve: a line extended, or an arc's whole circle, as FreeCAD's.",
+                "properties": {
+                  "curve": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "point": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "on",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "curve",
+                  "id",
+                  "point",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "parallel",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "perpendicular",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The angle from `a`'s direction to `b`'s, counter-clockwise, signed.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "angle",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Angle"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A circle's or arc's radius.",
+                "properties": {
+                  "curve": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "radius",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "curve",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A circle's or arc's diameter.",
+                "properties": {
+                  "curve": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "diameter",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "curve",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Two lines of equal length, or two circles or arcs of equal radius.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "equal",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Tangent along their edges: a line and a circle or arc, or two circles or arcs.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "side": {
+                    "$ref": "#/$defs/TangentSide"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "tangent",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "side",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Tangent where `a` ends on `b`: the point `at`, an end of `a`, lies on `b`, and `a`\nruns there along `b`, its direction leaving `at` the `same` as `b`'s or `opposite`\n(FreeCAD's endpoint-to-edge `Tangent`).",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "at": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "direction": {
+                    "$ref": "#/$defs/Direction"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "tangent_on",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "at",
+                  "b",
+                  "direction",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Tangent where two curves meet, at the point `at` they share.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "at": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "direction": {
+                    "$ref": "#/$defs/Direction"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "tangent_at",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "at",
+                  "b",
+                  "direction",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "`a` and `b` mirror each other about a line or a point.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "about": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "symmetric",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "about",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The point midway along the line.",
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "point": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "midpoint",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "line",
+                  "point",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "SketchFrame": {
+            "additionalProperties": false,
+            "description": "The sketch's plane in global coordinates: its origin, and the directions of its x, its y,\nand its normal (x × y, about which counter-clockwise turns), each a unit vector.",
+            "properties": {
+              "normal": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "origin": {
+                "description": "The sketch's (0, 0), in global coordinates (mm).",
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "x": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "y": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              }
+            },
+            "required": [
+              "normal",
+              "origin",
+              "x",
+              "y"
+            ],
+            "type": "object"
+          },
+          "SketchLineRead": {
+            "additionalProperties": false,
+            "description": "A line, as the document writes it, with its state.",
+            "properties": {
+              "construction": {
+                "type": "boolean"
+              },
+              "from": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "state": {
+                "$ref": "#/$defs/MemberState"
+              },
+              "to": {
+                "$ref": "#/$defs/ElementId"
+              }
+            },
+            "required": [
+              "construction",
+              "from",
+              "id",
+              "state",
+              "to"
+            ],
+            "type": "object"
+          },
+          "SketchPointRead": {
+            "additionalProperties": false,
+            "description": "A point, as the document writes it, at its solved place, with its state.",
+            "properties": {
+              "construction": {
+                "type": "boolean"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "state": {
+                "$ref": "#/$defs/MemberState"
+              },
+              "x": {
+                "$ref": "#/$defs/Coordinate",
+                "description": "Its x, as solved (as stored, if the sketch wasn't solved)."
+              },
+              "y": {
+                "$ref": "#/$defs/Coordinate",
+                "description": "Its y, as solved (as stored, if the sketch wasn't solved)."
+              }
+            },
+            "required": [
+              "construction",
+              "id",
+              "state",
+              "x",
+              "y"
+            ],
+            "type": "object"
+          },
+          "SketchReference": {
+            "description": "An element of this sketch, by its ID, or one of the fixed references every sketch has: origin, x_axis (from the origin along +x), y_axis (from the origin along +y).",
+            "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|origin|x_axis|y_axis)$",
+            "type": "string"
+          },
+          "SketchRegion": {
+            "additionalProperties": false,
+            "description": "A region of the profile: its outer loop's curves and each hole's, by ID.",
+            "properties": {
+              "holes": {
+                "description": "Each hole's curves, in the order it walks them, clockwise; the holes by their\nsmallest curve IDs.",
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "outer": {
+                "description": "The outer loop's curves, in the order it walks them, counter-clockwise.",
+                "items": {
+                  "$ref": "#/$defs/ElementId"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "holes",
+              "outer"
+            ],
+            "type": "object"
+          },
+          "SketchState": {
+            "description": "The sketch's state, as SolidWorks names it: under_defined (solved, something free), fully_defined (solved, nothing free; or empty), over_defined (constraints in conflict, so not solved; or solved, with a driving dimension the solver found redundant), no_solution (no algorithm placed it), or invalid (solved only to geometry that can't be built or held).",
+            "enum": [
+              "under_defined",
+              "fully_defined",
+              "over_defined",
+              "no_solution",
+              "invalid"
+            ],
+            "type": "string"
+          },
+          "TangentSide": {
+            "description": "Where a tangent curve lies: for a line and a circle or arc, the side of the line the\ncurve is on (facing from its start to its end); for two circles or arcs, each outside\nthe other, or one inside the other.",
+            "enum": [
+              "left",
+              "right",
+              "outside",
+              "inside"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`sketch`'s result: the sketch as the model's rebuild solved it, for sketch mode to draw\nand colour.",
+                "properties": {
+                  "arcs": {
+                    "description": "Each arc, by ID, as the document writes it.",
+                    "items": {
+                      "$ref": "#/$defs/SketchArcRead"
+                    },
+                    "type": "array"
+                  },
+                  "circles": {
+                    "description": "Each circle, by ID, as the document writes it, at its solved radius.",
+                    "items": {
+                      "$ref": "#/$defs/SketchCircleRead"
+                    },
+                    "type": "array"
+                  },
+                  "constraints": {
+                    "description": "Each constraint, by ID, as the document writes it, a reference dimension's value as\nthe solve measured it.",
+                    "items": {
+                      "$ref": "#/$defs/SketchConstraintRead"
+                    },
+                    "type": "array"
+                  },
+                  "dofs": {
+                    "description": "The degrees of freedom left, PlaneGCS's number as given: its unknowns less the rank\nof its equations, so 0 or more while something is free, a conflict or not (two\nlengths on one free line leave 3). Where nothing is free and a linear dependency\namong the equations holds no constraint PlaneGCS found redundant (a conflict, or an\narc's own rules repeating each other), PlaneGCS counts the equations left in place of\ntheir rank, and the number is negative: a 40 by 20 rectangle given a second width of\n50 reads -1. 0 for an empty sketch.",
+                    "type": "integer"
+                  },
+                  "lines": {
+                    "description": "Each line, by ID, as the document writes it.",
+                    "items": {
+                      "$ref": "#/$defs/SketchLineRead"
+                    },
+                    "type": "array"
+                  },
+                  "plane": {
+                    "$ref": "#/$defs/SketchFrame"
+                  },
+                  "points": {
+                    "description": "Each point, by ID, as the document writes it, at its solved place.",
+                    "items": {
+                      "$ref": "#/$defs/SketchPointRead"
+                    },
+                    "type": "array"
+                  },
+                  "profile_problems": {
+                    "description": "Why the solved sketch makes no profile, each as an error (the first 100, in the\norder they're checked): none if it makes one, or wasn't solved (`solve_problem` says\nwhy).",
+                    "items": {
+                      "$ref": "#/$defs/Error"
+                    },
+                    "maxItems": 100,
+                    "type": "array"
+                  },
+                  "profile_problems_total": {
+                    "description": "How many reasons there are, listed or not.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "regions": {
+                    "description": "The profile's regions, as the profile finds them from the solved curves that aren't\nconstruction geometry (each a face a pad, pocket, revolve, or groove of the sketch\nsweeps), by their outer loops' smallest curve IDs: none if the sketch makes no\nprofile, or wasn't solved.",
+                    "items": {
+                      "$ref": "#/$defs/SketchRegion"
+                    },
+                    "type": "array"
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch, by its feature's ID."
+                  },
+                  "solve_problem": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/Error"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Why the sketch wasn't solved, as `check` reports it: a conflict (`over_constrained`),\nno solution (`solve_failed`), or geometry that can't be held (`invalid_result`,\n`invalid_input`). Null when it solved."
+                  },
+                  "state": {
+                    "$ref": "#/$defs/SketchState"
+                  }
+                },
+                "required": [
+                  "arcs",
+                  "circles",
+                  "constraints",
+                  "dofs",
+                  "lines",
+                  "plane",
+                  "points",
+                  "profile_problems",
+                  "profile_problems_total",
+                  "regions",
+                  "sketch",
+                  "solve_problem",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Read a sketch"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Add to a sketch"
+      },
+      "description": "Add points, lines, circles, arcs, and constraints to one sketch, each as the document writes it with a fresh random 8-character ID, never one the sketch holds or a removal freed (a name a feature stores of the removed member would find the new one); a new curve may end at a point the sketch holds, joining it there. The batch is checked whole, each problem at its member's path (`circles.cb000003.radius`). A constraint that over-defines the sketch is added all the same: `check` then reports the conflict, and the sketch's features fail until it's mended (make the dimension driven with `set_field`, or remove it). Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "Angle": {
+            "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          },
+          "Direction": {
+            "description": "How two curves meeting at a point run there: on in the `same` direction (a smooth\njoin), or back the `opposite` way (a cusp).",
+            "enum": [
+              "same",
+              "opposite"
+            ],
+            "type": "string"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Length": {
+            "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
+          "LineSide": {
+            "description": "Which side of a line, facing from its start (`from`) to its end (`to`); for an axis,\nfacing along it (+x, +y).",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "SketchArc": {
+            "additionalProperties": false,
+            "description": "An arc about `center`, counter-clockwise from `start` to `end`. Its points are its\ndefinition: its radius and angles are the solver's, worked out from them, and the\nsolve holds its ends on it (D2, arcs).",
+            "properties": {
+              "center": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "construction": {
+                "type": "boolean"
+              },
+              "end": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "start": {
+                "$ref": "#/$defs/ElementId"
+              }
+            },
+            "required": [
+              "id",
+              "center",
+              "start",
+              "end",
+              "construction"
+            ],
+            "type": "object"
+          },
+          "SketchCircle": {
+            "additionalProperties": false,
+            "description": "A circle about a point.",
+            "properties": {
+              "center": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "construction": {
+                "type": "boolean"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "radius": {
+                "$ref": "#/$defs/Coordinate",
+                "description": "Worked out by the solver, as coordinates are."
+              }
+            },
+            "required": [
+              "id",
+              "center",
+              "radius",
+              "construction"
+            ],
+            "type": "object"
+          },
+          "SketchConstraint": {
+            "description": "One constraint: its ID and its form.",
+            "oneOf": [
+              {
+                "description": "The line parallel to x.",
+                "properties": {
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "type": {
+                    "const": "horizontal",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "line"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The line parallel to y.",
+                "properties": {
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "type": {
+                    "const": "vertical",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "line"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The two points level.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "type": {
+                    "const": "horizontal_points",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "One point above the other.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "type": {
+                    "const": "vertical_points",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The line's length.",
+                "properties": {
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "type": {
+                    "const": "length",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "type",
+                  "line",
+                  "value",
+                  "driving"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The distance between two points.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "const": "distance",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b",
+                  "value",
+                  "driving"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "x(b) − x(a), signed.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "const": "distance_x",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b",
+                  "value",
+                  "driving"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "y(b) − y(a), signed.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "const": "distance_y",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b",
+                  "value",
+                  "driving"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The point's distance from the line (extended), on the given side of it.",
+                "properties": {
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "point": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "side": {
+                    "$ref": "#/$defs/LineSide"
+                  },
+                  "type": {
+                    "const": "point_line_distance",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "type",
+                  "point",
+                  "line",
+                  "value",
+                  "side",
+                  "driving"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The point on the curve: a line extended, or an arc's whole circle, as FreeCAD's.",
+                "properties": {
+                  "curve": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "point": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "type": {
+                    "const": "on",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "point",
+                  "curve"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "type": {
+                    "const": "parallel",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "type": {
+                    "const": "perpendicular",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The angle from `a`'s direction to `b`'s, counter-clockwise, signed.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "const": "angle",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Angle"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b",
+                  "value",
+                  "driving"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A circle's or arc's radius.",
+                "properties": {
+                  "curve": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "const": "radius",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "type",
+                  "curve",
+                  "value",
+                  "driving"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "A circle's or arc's diameter.",
+                "properties": {
+                  "curve": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "type": {
+                    "const": "diameter",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "type",
+                  "curve",
+                  "value",
+                  "driving"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Two lines of equal length, or two circles or arcs of equal radius.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "type": {
+                    "const": "equal",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Tangent along their edges: a line and a circle or arc, or two circles or arcs.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "side": {
+                    "$ref": "#/$defs/TangentSide"
+                  },
+                  "type": {
+                    "const": "tangent",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b",
+                  "side"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Tangent where `a` ends on `b`: the point `at`, an end of `a`, lies on `b`, and `a`\nruns there along `b`, its direction leaving `at` the `same` as `b`'s or `opposite`\n(FreeCAD's endpoint-to-edge `Tangent`).",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "at": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "direction": {
+                    "$ref": "#/$defs/Direction"
+                  },
+                  "type": {
+                    "const": "tangent_on",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "at",
+                  "b",
+                  "direction"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "Tangent where two curves meet, at the point `at` they share.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "at": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "direction": {
+                    "$ref": "#/$defs/Direction"
+                  },
+                  "type": {
+                    "const": "tangent_at",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b",
+                  "at",
+                  "direction"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "`a` and `b` mirror each other about a line or a point.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "about": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "type": {
+                    "const": "symmetric",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "a",
+                  "b",
+                  "about"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "The point midway along the line.",
+                "properties": {
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "point": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "type": {
+                    "const": "midpoint",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "point",
+                  "line"
+                ],
+                "type": "object"
+              }
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object",
+            "unevaluatedProperties": false
+          },
+          "SketchLine": {
+            "additionalProperties": false,
+            "description": "A line from one point to another.",
+            "properties": {
+              "construction": {
+                "type": "boolean"
+              },
+              "from": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "to": {
+                "$ref": "#/$defs/ElementId"
+              }
+            },
+            "required": [
+              "id",
+              "from",
+              "to",
+              "construction"
+            ],
+            "type": "object"
+          },
+          "SketchPoint": {
+            "additionalProperties": false,
+            "description": "A point of the sketch, which curves share.",
+            "properties": {
+              "construction": {
+                "description": "Construction geometry is solved like any other and left out of the profile (D7).",
+                "type": "boolean"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "x": {
+                "$ref": "#/$defs/Coordinate"
+              },
+              "y": {
+                "$ref": "#/$defs/Coordinate"
+              }
+            },
+            "required": [
+              "id",
+              "x",
+              "y",
+              "construction"
+            ],
+            "type": "object"
+          },
+          "SketchReference": {
+            "description": "An element of this sketch, by its ID, or one of the fixed references every sketch has: origin, x_axis (from the origin along +x), y_axis (from the origin along +y).",
+            "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|origin|x_axis|y_axis)$",
+            "type": "string"
+          },
+          "TangentSide": {
+            "description": "Where a tangent curve lies: for a line and a circle or arc, the side of the line the\ncurve is on (facing from its start to its end); for two circles or arcs, each outside\nthe other, or one inside the other.",
+            "enum": [
+              "left",
+              "right",
+              "outside",
+              "inside"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`sketch_add`'s request: add members to a sketch, as the document writes them, each with a\nfresh random 8-character ID, never one a removal freed: a name a feature stores of the\nremoved member would find the new one.",
+        "properties": {
+          "arcs": {
+            "description": "The arcs to add.",
+            "items": {
+              "$ref": "#/$defs/SketchArc"
+            },
+            "type": "array"
+          },
+          "circles": {
+            "description": "The circles to add.",
+            "items": {
+              "$ref": "#/$defs/SketchCircle"
+            },
+            "type": "array"
+          },
+          "constraints": {
+            "description": "The constraints to add, naming the sketch's members, the members added, or the\nfixed references. One that conflicts with others, or repeats them, is added all the\nsame: `check` then reports the conflict, and the sketch's features fail until it's\nmended.",
+            "items": {
+              "$ref": "#/$defs/SketchConstraint"
+            },
+            "type": "array"
+          },
+          "lines": {
+            "description": "The lines to add: each may end at a point the sketch holds, which joins it to that\npoint's curves, or at one of the points added.",
+            "items": {
+              "$ref": "#/$defs/SketchLine"
+            },
+            "type": "array"
+          },
+          "points": {
+            "description": "The points to add, each with an ID the sketch doesn't hold, a fresh one.",
+            "items": {
+              "$ref": "#/$defs/SketchPoint"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "arcs",
+          "circles",
+          "constraints",
+          "lines",
+          "points",
+          "revision",
+          "session",
+          "sketch"
+        ],
+        "title": "SketchAddRequest",
+        "type": "object"
+      },
+      "name": "sketch_add",
+      "outputSchema": {
+        "$defs": {
+          "CommitResult": {
+            "additionalProperties": false,
+            "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+            "properties": {
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "problems_total": {
+                "description": "How many problems there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refingerprinted": {
+                "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "resolved": {
+                "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "written": {
+                "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "problems",
+              "problems_total",
+              "refingerprinted",
+              "resolved",
+              "written"
+            ],
+            "type": "object"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`sketch_add`'s and `sketch_remove`'s result.",
+                "properties": {
+                  "added": {
+                    "description": "The members added, in the order the edit made them: by kind (points, lines,\ncircles, arcs, constraints), each kind in the order given.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "changed": {
+                    "description": "Whether the document changed: false for an empty batch, which makes no new revision\nand writes nothing.",
+                    "type": "boolean"
+                  },
+                  "commit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/CommitResult"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Outside a transaction, the commit that saved the edit; null inside one, or if\nnothing changed."
+                  },
+                  "modified": {
+                    "description": "The members changed in place (a removed line's midpoint, now a symmetric of its\nends), by kind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "removed": {
+                    "description": "The members removed, by kind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch, as the request named it."
+                  }
+                },
+                "required": [
+                  "added",
+                  "changed",
+                  "commit",
+                  "modified",
+                  "removed",
+                  "sketch"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Add to a sketch"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Remove from a sketch"
+      },
+      "description": "Remove members of one sketch by ID: a constraint; a curve, with its points no other curve uses and every constraint on what goes; a point only if no curve uses it. A sketch left under or over defined, or unsolvable, isn't refused: `check` reports it. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`sketch_remove`'s request: remove members from a sketch, by ID.",
+        "properties": {
+          "members": {
+            "description": "The members to remove, judged as a set (a member named twice is taken once): a\nconstraint; a curve, with each of its points no other curve uses and every\nconstraint naming what goes; a point only if no curve uses it after the edit, so a\npoint and the curves that use it go together.",
+            "items": {
+              "$ref": "#/$defs/ElementId"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "members",
+          "revision",
+          "session",
+          "sketch"
+        ],
+        "title": "SketchRemoveRequest",
+        "type": "object"
+      },
+      "name": "sketch_remove",
+      "outputSchema": {
+        "$defs": {
+          "CommitResult": {
+            "additionalProperties": false,
+            "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+            "properties": {
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "problems_total": {
+                "description": "How many problems there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refingerprinted": {
+                "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "resolved": {
+                "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "written": {
+                "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "problems",
+              "problems_total",
+              "refingerprinted",
+              "resolved",
+              "written"
+            ],
+            "type": "object"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`sketch_add`'s and `sketch_remove`'s result.",
+                "properties": {
+                  "added": {
+                    "description": "The members added, in the order the edit made them: by kind (points, lines,\ncircles, arcs, constraints), each kind in the order given.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "changed": {
+                    "description": "Whether the document changed: false for an empty batch, which makes no new revision\nand writes nothing.",
+                    "type": "boolean"
+                  },
+                  "commit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/CommitResult"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Outside a transaction, the commit that saved the edit; null inside one, or if\nnothing changed."
+                  },
+                  "modified": {
+                    "description": "The members changed in place (a removed line's midpoint, now a symmetric of its\nends), by kind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "removed": {
+                    "description": "The members removed, by kind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch, as the request named it."
+                  }
+                },
+                "required": [
+                  "added",
+                  "changed",
+                  "commit",
+                  "modified",
+                  "removed",
+                  "sketch"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Remove from a sketch"
     }
   ]
 }

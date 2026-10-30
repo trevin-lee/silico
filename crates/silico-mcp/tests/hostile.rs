@@ -94,3 +94,40 @@ fn calls_cancelled_as_they_come_against_a_hung_request_are_bounded_and_settle() 
         );
     }
 }
+
+#[test]
+fn replies_past_the_queue_while_the_client_isnt_reading_wait_for_room_and_none_is_dropped() {
+    // Found by the M4 milestone's mutation run: dropping a reply that finds the queue full,
+    // as if the server were ending, passed every test. JSON-RPC 2.0 (section 4): every
+    // request is answered; the note's backpressure: a reader with a full queue of replies
+    // waits for room, never drops one. One pong held in the stalled write, 64 queued behind
+    // it, and as many again past them: once the client reads, every pong is written, once,
+    // in the order asked (MCP's ping: an empty result). Whenever the client reads again,
+    // every pong is written; reading again only after the reader has filled the queue (it
+    // reads each ping in microseconds) is what tells a dropped one.
+    let mut c = Client::initialized();
+    c.stall_output();
+    let pings = 2 * MAX_QUEUED_REPLIES as u64 + 2;
+    for id in 10..10 + pings {
+        c.send(&format!(
+            r#"{{"jsonrpc": "2.0", "id": {id}, "method": "ping"}}"#
+        ));
+    }
+    c.wait_stalled();
+    c.close_input();
+    let release = c.releaser();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        release();
+    });
+    assert_eq!(c.ended(), Ended::Input);
+    let mut written = Vec::new();
+    while let Some(line) = c.line_within(std::time::Duration::ZERO) {
+        written.push(line);
+    }
+    let pongs: Vec<String> = (10..10 + pings)
+        .map(|id| format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{}}}}"#))
+        .collect();
+    assert_eq!(written.len(), pongs.len(), "pongs written");
+    assert_eq!(written, pongs);
+}

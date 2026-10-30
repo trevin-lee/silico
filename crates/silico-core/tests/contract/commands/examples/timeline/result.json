@@ -1,0 +1,15 @@
+{
+  "revision": 12,
+  "model_revision": 12,
+  "problems": 0,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "name": "Bracket profile", "suppressed": false, "inputs": [], "health": "healthy", "problems": 0, "warnings": 0},
+    {"id": "p0000001", "type": "pad", "name": "Legs", "suppressed": false, "inputs": ["s0000001"], "health": "healthy", "problems": 0, "warnings": 0},
+    {"id": "s0000002", "type": "sketch", "name": "Base holes", "suppressed": false, "inputs": [], "health": "healthy", "problems": 0, "warnings": 0},
+    {"id": "h0000001", "type": "pocket", "name": "Base holes", "suppressed": false, "inputs": ["p0000001", "s0000002"], "health": "healthy", "problems": 0, "warnings": 0},
+    {"id": "s0000003", "type": "sketch", "name": "Upright holes", "suppressed": false, "inputs": [], "health": "healthy", "problems": 0, "warnings": 0},
+    {"id": "h0000002", "type": "pocket", "name": "Upright holes", "suppressed": false, "inputs": ["h0000001", "s0000003"], "health": "healthy", "problems": 0, "warnings": 0},
+    {"id": "f0000001", "type": "fillet", "name": "Inside corner", "suppressed": false, "inputs": ["h0000002"], "health": "healthy", "problems": 0, "warnings": 0}
+  ],
+  "bodies": ["f0000001"]
+}

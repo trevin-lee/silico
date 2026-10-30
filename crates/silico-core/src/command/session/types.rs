@@ -13,11 +13,12 @@ use super::cancel::Ticket;
 use super::rebuilds::met_fault;
 use super::rebuilds::{Label, Newest};
 use super::transaction::{Checking, Reached};
-use super::{Gated, Problems, ReadCommand, SessionCommand};
+use super::{Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
 #[cfg(doc)]
 use crate::document;
-use crate::document::json::Plain;
-use crate::document::{Feature, FeatureId};
+use crate::document::chain::Rewired;
+use crate::document::json::{Node, Plain};
+use crate::document::{ElementId, Feature, FeatureId};
 use crate::recompute::{Model, StepCount};
 use crate::timeline::{Entry, Excepted, Timeline, timeline};
 use crate::warnings::Warnings;
@@ -788,13 +789,17 @@ pub struct Reformatted {
     pub problems: Problems,
 }
 
-/// What `add_feature` did (the design's section 7): the feature as the document now holds it
-/// (its ID, the one given or the one made, and its version; outside a transaction, as its
-/// commit saved it, with the fingerprint written), whether the document changed (always, a
-/// feature added), and, outside a transaction, the commit's result, none inside one.
+/// What `add_feature` did (the design's section 7, and M5.0's `before`): the feature as the
+/// document now holds it (its ID, the one given or the one made, and its version; outside a
+/// transaction, as its commit saved it, with the fingerprint written), its place in the
+/// timeline, from 0, each feature whose `base` or `tool` now names it instead of the input it
+/// consumes ([`Rewired`], in timeline order), whether the document changed (always, a feature
+/// added), and, outside a transaction, the commit's result, none inside one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Added {
     pub feature: Feature,
+    pub index: usize,
+    pub rewired: Vec<Rewired>,
     pub changed: bool,
     pub commit: Option<Committed>,
 }
@@ -816,14 +821,35 @@ pub struct FieldSet {
     pub commit: Option<Committed>,
 }
 
-/// What `remove_feature` did (the design's section 7): the feature removed, as the document
-/// held it, its place in the timeline, from 0, so `replace_text` can put it back, whether the
-/// document changed (always), and, outside a transaction, the commit's result, none inside
-/// one.
+/// What `remove_feature` did (the design's section 7, as M5.0's A9 amends it): the feature
+/// removed, as the document held it (its fingerprint too), its place in the timeline, from
+/// 0, the features whose `base` or `tool` took its base ([`Rewired`], in timeline order),
+/// whether the document changed (always), and, outside a transaction, the commit's result,
+/// none inside one. Its way back: the feature given to `add_feature` without its
+/// fingerprint, `before` the feature that followed it (inside a transaction, the
+/// fingerprint `begin`'s document stored is kept), then `base`
+/// set back with `set_field` on each rewired entry whose `to` is none; or `rollback`, of a
+/// removal made in a transaction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Removed {
     pub feature: Feature,
     pub index: usize,
+    pub rewired: Vec<Rewired>,
+    pub changed: bool,
+    pub commit: Option<Committed>,
+}
+
+/// What `move_feature` did (docs/design/m5.0-app.md, section 7): the feature, where it was
+/// and where it is, from 0 (`to` counted after the move), each `base` and `tool` the move
+/// changed ([`Rewired`], in timeline order, after the move), whether the document changed
+/// (not for a move to where it is: then there's no new revision and nothing is written), and,
+/// outside a transaction, the commit's result, none inside one or if nothing changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Moved {
+    pub feature: FeatureId,
+    pub from: usize,
+    pub to: usize,
+    pub rewired: Vec<Rewired>,
     pub changed: bool,
     pub commit: Option<Committed>,
 }
@@ -841,19 +867,52 @@ pub struct Replaced {
     pub commit: Option<Committed>,
 }
 
+/// The members a `sketch_add` adds (docs/design/m5.0-app.md, section 7, `sketch_add`): each
+/// list as the request gives it, as the document writes a sketch's (each member with the ID
+/// it's to have), read by the document's own reader when the edit is made, as
+/// `add_feature`'s feature is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewMembers {
+    pub points: Node,
+    pub lines: Node,
+    pub circles: Node,
+    pub arcs: Node,
+    pub constraints: Node,
+}
+
+/// What a sketch edit did (`sketch_add`, `sketch_remove`: docs/design/m5.0-app.md, section
+/// 7, *What a result lists*): the sketch, as the request named it; the members it made, in
+/// the order it made them; those it changed in place, and those it removed, each by kind,
+/// then by ID; whether the document changed (not for an edit of nothing, an empty batch:
+/// then there's no new revision and nothing is written); and, outside a transaction, the
+/// commit's result, none inside one or if nothing changed. Never what the sketch's solve
+/// then finds: that's the sketch's state, for `sketch` and `check` to read (SD7).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchEdited {
+    pub sketch: FeatureId,
+    pub added: Vec<ElementId>,
+    pub modified: Vec<ElementId>,
+    pub removed: Vec<ElementId>,
+    pub changed: bool,
+    pub commit: Option<Committed>,
+}
+
 /// What `status` says of a session, from what it holds: how many features its document has
 /// (none if its text doesn't read as one), whether the gate took it, the transaction open,
-/// if one is (the revision it began from, which `rollback` returns to), the queued command
-/// running, if one is, the published reads running, in the order they started, and its
-/// current revision's rebuild.
+/// if one is (the revision it began from, which `rollback` returns to), what's running on
+/// its thread, if anything is (a queued command, or its own reload), the published reads
+/// running, in the order they started, its current revision's rebuild, and what the last
+/// comparison of its file on disk found (docs/design/m5.0-app.md, section 6): none before
+/// one has ended, while its own save runs, and after a save that failed until the next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub features: Option<usize>,
     pub gated: bool,
     pub transaction: Option<Begun>,
-    pub running: Option<SessionCommand>,
+    pub running: Option<RunningCommand>,
     pub reads: Vec<ReadCommand>,
     pub rebuild: Rebuild,
+    pub disk: Option<crate::disk::Disk>,
 }
 
 /// A session's current revision's rebuild, as `status` gives it: the revision, what's

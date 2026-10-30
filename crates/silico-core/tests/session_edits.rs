@@ -292,7 +292,10 @@ fn an_edit_against_another_revision_is_a_conflict() {
             .remove_feature(&f.id, Revision::OPENED, id("k7f2qx3m")),
     );
     assert_eq!(refusal(&removed).0, ErrorCode::Conflict);
-    let added = answer(f.sessions.add_feature(&f.id, Revision::OPENED, value("{}")));
+    let added = answer(
+        f.sessions
+            .add_feature(&f.id, Revision::OPENED, None, value("{}")),
+    );
     assert_eq!(refusal(&added).0, ErrorCode::Conflict);
     let replaced = answer(
         f.sessions
@@ -390,8 +393,22 @@ fn a_refused_commit_of_an_edit_outside_a_transaction_leaves_the_session_as_it_wa
         (ErrorCode::Conflict, Some("path"))
     );
     assert_eq!(f.file(), "edited elsewhere");
+    // Read without `status`, whose comparison would have the session reload the change
+    // itself (M5.0's A3) before the command below could.
     assert_eq!(
-        f.sessions.status(&f.id).session.unwrap().revision,
+        f.sessions
+            .read_logs(
+                &f.id,
+                &silico_core::command::logs::LogQuery {
+                    level: silico_core::command::logs::LogLevel::Error,
+                    feature: None,
+                    after: None,
+                    limit: 1,
+                },
+            )
+            .session
+            .unwrap()
+            .revision,
         Revision::OPENED
     );
     // And nothing of the edit is published: the session's published model is none yet
@@ -769,20 +786,29 @@ fn an_edit_that_repeats_an_id_is_refused_at_the_field_it_named() {
 fn a_removed_feature_comes_back_with_its_place_and_one_others_use_is_refused() {
     let f = opened(FUSED);
     f.begin();
-    // The block, which the fuse uses: refused, the fuse naming it.
+    // The block, the root of the fuse's chain, which a fuse can't do without: refused,
+    // naming both (M5.0's A9), nothing before the fuse to stand in for it (the lug is the
+    // fuse's tool).
     let error = the_error(&answer(f.sessions.remove_feature(
         &f.id,
         Revision::OPENED,
         id("k7f2qx3m"),
     )));
     assert_eq!(
-        (error.message(), error.feature(), error.parameter()),
         (
-            "base k7f2qx3m isn't the ID of any feature",
-            Some("f0000001"),
-            Some("base")
+            error.message(),
+            error.feature(),
+            error.parameter(),
+            error.suggestion()
+        ),
+        (
+            "k7f2qx3m is the root of f0000001's chain, and f0000001, a fuse, can't be left without a base",
+            Some("k7f2qx3m"),
+            Some("feature"),
+            Some("nothing before f0000001 but k7f2qx3m can be its base; remove f0000001 first")
         )
     );
+    assert!(error.candidates().is_empty());
     let removed = answer(
         f.sessions
             .remove_feature(&f.id, Revision::OPENED, id("f0000001")),
@@ -821,9 +847,12 @@ fn a_feature_added_without_an_id_is_given_a_new_one_and_with_one_keeps_it() {
     let f = opened(FUSED);
     f.begin();
     let ball = r#"{"type": "sphere", "name": "Ball", "position": [0, 0, 50], "radius": 5}"#;
-    let added = answer(f.sessions.add_feature(&f.id, Revision::OPENED, value(ball)))
-        .result
-        .unwrap();
+    let added = answer(
+        f.sessions
+            .add_feature(&f.id, Revision::OPENED, None, value(ball)),
+    )
+    .result
+    .unwrap();
     assert!(added.changed);
     assert_eq!(added.commit, None);
     let new = added.feature.id.clone();
@@ -838,9 +867,12 @@ fn a_feature_added_without_an_id_is_given_a_new_one_and_with_one_keeps_it() {
         )
     );
     let named = r#"{"id": "z0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 80], "radius": 5}"#;
-    let added = answer(f.sessions.add_feature(&f.id, f.revision(), value(named)))
-        .result
-        .unwrap();
+    let added = answer(
+        f.sessions
+            .add_feature(&f.id, f.revision(), None, value(named)),
+    )
+    .result
+    .unwrap();
     assert_eq!(added.feature.id, id("z0000001"));
 }
 
@@ -852,6 +884,7 @@ fn a_feature_added_is_refused_with_what_the_request_may_not_give_and_the_gate_s_
         refusal(&answer(f.sessions.add_feature(
             &f.id,
             Revision::OPENED,
+            None,
             value(fingerprinted)
         ))),
         (
@@ -865,6 +898,7 @@ fn a_feature_added_is_refused_with_what_the_request_may_not_give_and_the_gate_s_
         refusal(&answer(f.sessions.add_feature(
             &f.id,
             Revision::OPENED,
+            None,
             value("[]")
         )))
         .1,
@@ -875,6 +909,7 @@ fn a_feature_added_is_refused_with_what_the_request_may_not_give_and_the_gate_s_
     let error = the_error(&answer(f.sessions.add_feature(
         &f.id,
         Revision::OPENED,
+        None,
         value(pocket),
     )));
     assert_eq!(
@@ -890,6 +925,7 @@ fn a_feature_added_is_refused_with_what_the_request_may_not_give_and_the_gate_s_
     let error = the_error(&answer(f.sessions.add_feature(
         &f.id,
         Revision::OPENED,
+        None,
         value(again),
     )));
     assert_eq!(
@@ -1077,6 +1113,7 @@ fn a_refused_document_is_mended_by_replace_text_alone() {
         refusal(&answer(f.sessions.add_feature(
             &f.id,
             Revision::OPENED,
+            None,
             value("{}")
         ))),
         refused
@@ -1164,6 +1201,7 @@ fn hostile_paths_and_ids_are_refused_saying_what_they_are() {
     let error = the_error(&answer(f.sessions.add_feature(
         &f.id,
         Revision::OPENED,
+        None,
         value(bad),
     )));
     assert_eq!(
@@ -1303,9 +1341,12 @@ fn a_feature_added_with_a_null_id_or_version_is_given_them() {
         r#"{"id": null, "type": "sphere", "name": "Ball", "position": [0, 0, 50], "radius": 5}"#,
         r#"{"id": "z0000001", "type": "sphere", "v": null, "name": "Ball", "position": [0, 0, 50], "radius": 5}"#,
     ] {
-        let added = answer(f.sessions.add_feature(&f.id, f.revision(), value(ball)))
-            .result
-            .unwrap();
+        let added = answer(
+            f.sessions
+                .add_feature(&f.id, f.revision(), None, value(ball)),
+        )
+        .result
+        .unwrap();
         let new = added.feature.id.clone();
         assert_ne!(new, id("k7f2qx3m"));
         assert_eq!(
@@ -1360,6 +1401,7 @@ fn an_edited_feature_s_errors_name_no_place_in_a_text() {
     let error = the_error(&answer(f.sessions.add_feature(
         &f.id,
         Revision::OPENED,
+        None,
         value(ball),
     )));
     assert_eq!(error.parameter(), Some("radius"));
@@ -1443,7 +1485,10 @@ fn a_feature_removed_from_the_middle_gives_its_place() {
 fn a_feature_added_and_removed_outside_a_transaction_each_save_their_commit() {
     let f = opened(BLOCK);
     let lug = r#"{"id": "b0000001", "type": "box", "name": "Lug", "position": [100, 0, 0], "length": 1, "width": 2, "height": 3}"#;
-    let response = answer(f.sessions.add_feature(&f.id, Revision::OPENED, value(lug)));
+    let response = answer(
+        f.sessions
+            .add_feature(&f.id, Revision::OPENED, None, value(lug)),
+    );
     assert_eq!(response.session.unwrap().revision.number(), 2);
     let commit = response.result.unwrap().commit.unwrap();
     assert!(commit.written);
@@ -1474,7 +1519,7 @@ fn a_sketch_added_is_given_back_as_the_document_holds_it() {
     let sketch = r#"{"id": "s0000009", "type": "sketch", "name": "S", "plane": "xy", "points": [{"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}"#;
     let added = answer(
         f.sessions
-            .add_feature(&f.id, Revision::OPENED, value(sketch)),
+            .add_feature(&f.id, Revision::OPENED, None, value(sketch)),
     )
     .result
     .unwrap();
@@ -1592,6 +1637,7 @@ fn an_edit_refused_counts_places_in_its_own_order_not_the_canonical_text_s() {
     let error = the_error(&answer(f.sessions.add_feature(
         &f.id,
         Revision::OPENED,
+        None,
         value(REPEATED),
     )));
     assert_eq!(
@@ -1656,9 +1702,12 @@ fn a_feature_added_with_a_null_fingerprint_note_or_base_has_none() {
         r#"{"type": "sphere", "name": "Ball", "position": [0, 0, 50], "radius": 5, "fingerprint": null}"#,
         r#"{"type": "sphere", "name": "Ball", "position": [0, 0, 50], "radius": 5, "note": null}"#,
     ] {
-        let added = answer(f.sessions.add_feature(&f.id, f.revision(), value(given)))
-            .result
-            .unwrap();
+        let added = answer(
+            f.sessions
+                .add_feature(&f.id, f.revision(), None, value(given)),
+        )
+        .result
+        .unwrap();
         let new = added.feature.id.clone();
         assert_eq!(
             document::write_feature(&added.feature).unwrap(),
@@ -1668,9 +1717,12 @@ fn a_feature_added_with_a_null_fingerprint_note_or_base_has_none() {
         );
     }
     let pad = r#"{"type": "pad", "name": "Pad", "sketch": "s0000003", "extent": {"type": "one_side", "length": 6, "reversed": false}, "base": null}"#;
-    let added = answer(f.sessions.add_feature(&f.id, f.revision(), value(pad)))
-        .result
-        .unwrap();
+    let added = answer(
+        f.sessions
+            .add_feature(&f.id, f.revision(), None, value(pad)),
+    )
+    .result
+    .unwrap();
     match &added.feature.operation {
         Operation::Pad { base, .. } => assert_eq!(*base, None),
         other => panic!("{other:?}"),
@@ -1720,9 +1772,12 @@ fn a_path_below_a_member_the_feature_hasnt_is_a_field_it_hasnt() {
 fn a_feature_added_outside_a_transaction_comes_back_as_saved_fingerprint_and_all() {
     let f = opened(BLOCK);
     let lug = r#"{"id": "b0000002", "type": "box", "name": "Lug", "position": [100, 0, 0], "length": 1, "width": 2, "height": 3}"#;
-    let added = answer(f.sessions.add_feature(&f.id, Revision::OPENED, value(lug)))
-        .result
-        .unwrap();
+    let added = answer(
+        f.sessions
+            .add_feature(&f.id, Revision::OPENED, None, value(lug)),
+    )
+    .result
+    .unwrap();
     assert!(added.commit.unwrap().written);
     // Its fingerprint, by hand: 1 × 2 × 3 = 6, area 2(2 + 3 + 6) = 22, from (100, 0, 0)
     // to (101, 2, 3); as the saved file holds it.
