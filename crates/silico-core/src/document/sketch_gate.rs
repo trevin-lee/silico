@@ -1007,17 +1007,24 @@ type Hold<'a> = (usize, &'a ElementId, Option<&'a Reference>);
 /// holding `ending`'s end, `point`, on `other`: an `on` (`tangent` none) and the edge tangent
 /// become one `tangent_on`; a `tangent_on` that makes `ending` tangent there already says
 /// what the edge tangent does, so the edge tangent goes; one that makes another curve tangent
-/// there (ending at the same point) only holds the point, as an `on` does.
+/// there (ending at the same point) stays, holding the point, and the edge tangent becomes a
+/// `tangent_on` of its own.
 fn one_tangency(
     ending: &Reference,
     point: &ElementId,
     other: &Reference,
     tangent: Option<&Reference>,
 ) -> String {
-    if tangent == Some(ending) {
-        format!("remove the tangent: the tangent_on already makes them tangent at point {point}")
-    } else {
-        format!("make the two one tangent_on, with a {ending}, at {point}, and b {other}")
+    match tangent {
+        None => format!("make the two one tangent_on, with a {ending}, at {point}, and b {other}"),
+        Some(a) if a == ending => {
+            format!(
+                "remove the tangent: the tangent_on already makes them tangent at point {point}"
+            )
+        }
+        Some(a) => format!(
+            "make the tangent a tangent_on, with a {ending}, at {point}, and b {other}, keeping {a}'s"
+        ),
     }
 }
 

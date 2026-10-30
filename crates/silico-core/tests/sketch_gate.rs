@@ -756,27 +756,36 @@ fn an_edge_tangent_beside_a_tangent_on_of_the_pair_is_refused_at_the_later_of_th
 fn a_tangent_on_holds_its_point_for_another_curve_ending_there_as_an_on_does() {
     // Lines nz and ny both end at pt, on the circle; the tangent_on makes nz tangent there,
     // and the edge tangent is ny's. pt is on the circle all the same, so ny ends on it and is
-    // tangent where it ends: the tangent and the tangent_on's point are one tangent_on of ny,
-    // as with an `on`.
-    let ny = r#"{"id": "pw000000", "x": 20, "y": 5, "construction": false}"#;
-    let text = document(&fields(
-        &format!(
-            r#"{{"id": "pa000000", "x": 0, "y": 0, "construction": false}}, {{"id": "pt000000", "x": 0, "y": 5, "construction": false}}, {{"id": "pz000000", "x": -20, "y": 5, "construction": false}}, {ny}"#
-        ),
-        r#"{"id": "nz000000", "from": "pz000000", "to": "pt000000", "construction": false}, {"id": "ny000000", "from": "pt000000", "to": "pw000000", "construction": false}"#,
-        CIRCLE,
-        "",
+    // tangent where it ends: the tangent becomes a tangent_on of ny, and nz's stays (both
+    // ways round, after the tangent_on and before it).
+    let lines_on_the_circle = |constraints: &str| {
+        document(&fields(
+            r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pt000000", "x": 0, "y": 5, "construction": false}, {"id": "pz000000", "x": -20, "y": 5, "construction": false}, {"id": "pw000000", "x": 20, "y": 5, "construction": false}"#,
+            r#"{"id": "nz000000", "from": "pz000000", "to": "pt000000", "construction": false}, {"id": "ny000000", "from": "pt000000", "to": "pw000000", "construction": false}"#,
+            CIRCLE,
+            "",
+            constraints,
+        ))
+    };
+    let keep = "make the tangent a tangent_on, with a ny000000, at pt000000, and b ca000000, keeping nz000000's";
+    let text = lines_on_the_circle(
         r#"{"id": "k0000000", "type": "tangent_on", "a": "nz000000", "at": "pt000000", "b": "ca000000", "direction": "same"}, {"id": "k0000001", "type": "tangent", "a": "ny000000", "b": "ca000000", "side": "left"}"#,
-    ));
+    );
     only(
         &text,
         "constraints.k0000001.b",
         "a tangent's ny000000 ends at point pt000000, which constraint k0000000 puts on ca000000",
     );
-    assert_eq!(
-        problems(&text)[0].suggestion(),
-        Some("make the two one tangent_on, with a ny000000, at pt000000, and b ca000000")
+    assert_eq!(problems(&text)[0].suggestion(), Some(keep));
+    let text = lines_on_the_circle(
+        r#"{"id": "k0000000", "type": "tangent", "a": "ny000000", "b": "ca000000", "side": "left"}, {"id": "k0000001", "type": "tangent_on", "a": "nz000000", "at": "pt000000", "b": "ca000000", "direction": "same"}"#,
     );
+    only(
+        &text,
+        "constraints.k0000001.at",
+        "a tangent_on puts point pt000000, where ny000000 ends, on ca000000, which constraint k0000000 makes ny000000 edge tangent to",
+    );
+    assert_eq!(problems(&text)[0].suggestion(), Some(keep));
 }
 
 #[test]
