@@ -2008,10 +2008,11 @@ fn a_solver_that_crashes_in_an_edits_solve_refuses_it_as_the_crash() {
 }
 
 #[test]
-fn an_edit_whose_solve_its_sessions_close_stops_answers_cancelled_as_the_command() {
+fn an_edit_whose_solve_its_sessions_close_stops_answers_not_open_as_a_closed_session() {
     // The sessions dropped while the split's solve is held: its session closes, which stops
-    // the solve (not a cancel of the command), and the split answers as its own stop, never
-    // as the drag's words for a stopped solve.
+    // the solve. No client stopped it, so the split answers as every command of a session
+    // that isn't open does (the design's `close`), never `cancelled`, nor the drag's words for
+    // a stopped solve.
     let f = opened(&bracket());
     f.checked();
     f.begin();
@@ -2035,14 +2036,14 @@ fn an_edit_whose_solve_its_sessions_close_stops_answers_cancelled_as_the_command
     assert_eq!(
         envelope["errors"],
         json!([error(
-            "cancelled",
-            "sketch_split was cancelled before it finished",
+            "invalid_input",
+            "no session s1 is open",
             None,
             &[],
-            None,
+            Some("session"),
             None,
             Some(
-                "run it again when you want its answer; every rebuild step that finished is kept in the cache"
+                "open the document again: a session ends when it's closed or its client goes away"
             )
         )]),
         "{envelope}"

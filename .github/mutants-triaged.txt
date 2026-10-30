@@ -252,10 +252,3 @@ crates/silico-render/src/lavapipe.rs | environment | replace && with || | #275
 # returns and ends the count itself. The guard covers a bug outside those, which nothing
 # can cause on purpose; without it a watcher would wait for a change that never comes.
 crates/silico-core/src/recompute.rs | <impl Drop for EndsCount>::drop | replace <impl Drop for EndsCount>::drop with () | #297
-# `Ok(_) if stop.cancelled()` in an edit's `solved`: DragStop::run answers its own
-# `cancelled` for any solve its stop was told of before the solve ended, so Ok with the
-# command cancelled comes only from a cancel landing between run's last check and this one;
-# the mutant then goes on, and the edit's hold or commit settles the ticket, refused as
-# `cancelled`, and Ticket::answer answers `cancelled` for a command cancelled before it
-# settled, whatever it returned: the same answer and the same session, in every order.
-crates/silico-core/src/command/session/sketch_edits.rs | solved | replace match guard stop.cancelled() with false | #308

@@ -26,10 +26,10 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, Weak};
 
-use super::cancel::{Interrupt, Ticket, Why, cancelled};
+use super::cancel::{Interrupt, Ticket, Why};
 use super::{
     NewMembers, Problems, Running, SessionCommand, SessionId, Sessions, SketchCut, SketchEdited,
-    reclaim,
+    not_open, reclaim,
 };
 use crate::command::Gated;
 use crate::command::Revision;
@@ -161,7 +161,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         let made = with_ids(ids.as_deref(), &drawn, |ids| {
                             edit::sketch_split(checked.document(), &sketch, &curve, &at, ids)
                         })?;
-                        judged(&solvers, stop, checked, &sketch, SPLIT, made)
+                        judged(&solvers, stop, base.id, checked, &sketch, SPLIT, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -210,7 +210,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         let made = with_ids(ids.as_deref(), &drawn, |ids| {
                             edit::sketch_trim(checked.document(), &sketch, &curve, pick, ids)
                         })?;
-                        judged(&solvers, stop, checked, &sketch, TRIM, made)
+                        judged(&solvers, stop, base.id, checked, &sketch, TRIM, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -257,7 +257,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         let made = with_ids(ids.as_deref(), &drawn, |ids| {
                             edit::sketch_unjoin(checked.document(), &sketch, &point, &curve, ids)
                         })?;
-                        judged(&solvers, stop, checked, &sketch, UNJOIN, made)
+                        judged(&solvers, stop, base.id, checked, &sketch, UNJOIN, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -302,7 +302,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     |base| {
                         let checked = base.checked()?;
                         let made = edit::sketch_merge(checked.document(), &sketch, &points)?;
-                        judged(&solvers, stop, checked, &sketch, MERGE, made)
+                        judged(&solvers, stop, base.id, checked, &sketch, MERGE, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -406,10 +406,12 @@ const MERGE: Edit = Edit {
 /// conflict the sketch had already isn't the edit's): its candidate's sketch `sketch` solved,
 /// and `made` given back unless that solve is worse than the solve of `before`, the document
 /// the edit was made to ([`worse`]): refused then, as `edit`'s. An edit that changes nothing
-/// isn't solved, nor is `before` where the edit's solve is clean.
+/// isn't solved, nor is `before` where the edit's solve is clean. Its solves are stopped by
+/// the command `stop`, of the session `session` ([`solved`]).
 fn judged<T>(
     solvers: &SketchSolvers,
     stop: &Ticket,
+    session: SessionId,
     before: &Checked,
     sketch: &FeatureId,
     edit: Edit,
@@ -418,13 +420,17 @@ fn judged<T>(
     let Some(candidate) = &made.1 else {
         return Ok(made);
     };
-    let after = solved(solvers, stop, checked_of(candidate)?, sketch)?;
+    let after = solved(solvers, stop, session, checked_of(candidate)?, sketch)?;
     // A clean solve is never worse, and one the file can't hold always is: neither needs the
     // solve before.
     let refusal = match severity(&after) {
         0 => None,
         UNBUILDABLE => worse(None, &after, edit),
-        _ => worse(Some(&solved(solvers, stop, before, sketch)?), &after, edit),
+        _ => worse(
+            Some(&solved(solvers, stop, session, before, sketch)?),
+            &after,
+            edit,
+        ),
     };
     match refusal {
         Some(error) => Err(Problems::from(error.with_feature(sketch.as_str()))),
@@ -446,8 +452,9 @@ fn checked_of(candidate: &Candidate) -> Result<&Checked, Problems> {
     }
 }
 
-/// What stops an edit's solve: its command's `cancel` (or its session's close) stops the
-/// solve on the worker, which the edit then answers as `cancelled`.
+/// What stops an edit's solve: its command's `cancel`, or its session's close, stops the
+/// solve on the worker, which the edit then answers as `cancelled` or `not_open`
+/// ([`solved`]).
 struct SolveStop(DragStop);
 
 impl Interrupt for SolveStop {
@@ -467,13 +474,16 @@ struct Judged {
 /// The sketch `sketch` of `document` solved, as a rebuild solves it (M3.4: from the file's
 /// coordinates, FreeCAD's order), on a solver of `solvers`, given back after: the solution,
 /// or the solve's refusal of the sketch (a conflict, no solution, a result the file can't
-/// hold, or a sketch that can't be sent), and its diagnosis. A stop by the command `stop` is
-/// `cancelled`, the command's; a solver that couldn't be had, or failed in a way that isn't
-/// the sketch's (a crash, a hang, a reply it can't be trusted for), is that fault, refusing
-/// the edit.
+/// hold, or a sketch that can't be sent), and its diagnosis. Stopped by the command `stop`:
+/// refused `not_open` if `session` closed, as a session that isn't open is, since no client
+/// stopped it; a cancel answers `cancelled` whatever the edit returns, as every command
+/// cancelled before it settles does ([`Ticket::answer`]). A solver that couldn't be had, or
+/// failed in a way that isn't the sketch's (a crash, a hang, a reply it can't be trusted
+/// for), is that fault, refusing the edit.
 fn solved(
     solvers: &SketchSolvers,
     stop: &Ticket,
+    session: SessionId,
     document: &Checked,
     sketch: &FeatureId,
 ) -> Result<Judged, Problems> {
@@ -502,12 +512,11 @@ fn solved(
         .0
         .run(solver.as_mut(), |solver| translation.solve(solver));
     solvers.give_back(solver);
+    // Its session's close stopped it, or came as it ended: either way the session is gone,
+    // and the drag's words for a stopped solve never reach the client.
     let answer = match answer {
-        Err(error) if error.code() == ErrorCode::Cancelled || stop.cancelled() => {
-            return Err(Problems::from(cancelled(stop.name())));
-        }
+        _ if stop.closed() => return Err(Problems::from(not_open(session))),
         Err(error) => return Err(Problems::from(named(error))),
-        Ok(_) if stop.cancelled() => return Err(Problems::from(cancelled(stop.name()))),
         Ok(answer) => answer,
     };
     let diagnosis = answer.diagnosed().ok().map(|d| d.diagnosis().clone());
