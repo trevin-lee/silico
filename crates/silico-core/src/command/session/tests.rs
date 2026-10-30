@@ -81,6 +81,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         settled: Gate::default(),
         writing: Gate::default(),
         reloading: Gate::default(),
+        watching: Gate::default(),
     });
     (session, jobs)
 }

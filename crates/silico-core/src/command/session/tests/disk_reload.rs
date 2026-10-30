@@ -671,7 +671,7 @@ fn woken(count: &AtomicUsize, want: usize) {
             "woken {} times, never {want}",
             count.load(Ordering::SeqCst)
         );
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -682,7 +682,13 @@ fn woken(count: &AtomicUsize, want: usize) {
 /// through: its own wake counted too, which the count returned includes.
 #[track_caller]
 fn settled(f: &Fixture, count: &AtomicUsize) -> usize {
-    let session = f.session();
+    settled_in(&f.sessions, &f.id, count)
+}
+
+/// [`settled`], of the session `id` of `sessions`.
+#[track_caller]
+fn settled_in(sessions: &Sessions<Arc<FakeKernel>>, id: &SessionId, count: &AtomicUsize) -> usize {
+    let session = sessions.find(id).unwrap();
     let watchers = std::mem::replace(&mut lock(&session.rebuilds).watchers, Threads::new());
     watchers.join();
     let reads = lock(&session.reads)
@@ -693,7 +699,7 @@ fn settled(f: &Fixture, count: &AtomicUsize) -> usize {
         reads.join();
     }
     let (started, through) = shut(&session.gate);
-    let text = f.sessions.text(&f.id, None);
+    let text = sessions.text(id, None);
     started.recv_timeout(WAIT).unwrap();
     let before = count.load(Ordering::SeqCst);
     through.send(()).unwrap();
@@ -770,6 +776,8 @@ fn a_held_command_wakes_once_as_it_answers_and_nothing_wakes_while_nothing_is_pe
     let (started, through) = shut(&f.session().gate);
     let text = f.sessions.text(&f.id, None);
     started.recv_timeout(WAIT).unwrap();
+    // Held: nothing woke.
+    assert_eq!(count.load(Ordering::SeqCst), base);
     through.send(()).unwrap();
     woken(&count, base + 1);
     text.try_take().ok().unwrap().result.unwrap();
@@ -787,6 +795,10 @@ fn each_step_of_a_held_rebuild_wakes_once_as_it_settles_then_its_end_and_its_ans
     let f = opened(TWO_BOXES);
     let count = counting(&f.sessions);
     let base = settled(&f, &count);
+    // The rebuild's watcher held before it first looks, until its plan is made: so the
+    // plan is never told (it was made before the watcher looked), and every wake after is
+    // a step's, the end's, or the answer's.
+    let (watching, watched) = shut(&f.session().watching);
     let block = f
         .kernel
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx > 20.0));
@@ -800,15 +812,19 @@ fn each_step_of_a_held_rebuild_wakes_once_as_it_settles_then_its_end_and_its_ans
     // Its plan made: two steps, none settled.
     let progress = check.progress().unwrap();
     assert_eq!((progress.done, progress.steps), (0, 2));
+    watching.recv_timeout(WAIT).unwrap();
+    watched.send(()).unwrap();
+    drop(watched);
+    open_gate(&f.session().watching);
+    assert_eq!(count.load(Ordering::SeqCst), base);
     block.release();
     woken(&count, base + 1);
     lug.release();
+    woken(&count, base + 2);
     check.wait().result.unwrap();
     // The block's step, the lug's, the rebuild's end (its model published), and the
-    // check's answer; and the plan, told once unless it was made before its watcher first
-    // looked, which nothing here decides. Then `settled`'s own.
-    let woke = settled(&f, &count) - base - 1;
-    assert!(woke == 4 || woke == 5, "{woke}");
+    // check's answer; then `settled`'s own.
+    assert_eq!(settled(&f, &count), base + 5);
 }
 
 #[test]
@@ -828,10 +844,22 @@ fn a_finding_wakes_only_as_it_changes_and_the_sessions_own_reload_once() {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     }
-    // An agent's commit: the finding changed, then the session's reload.
+    // An agent's commit: the finding changed, then the session's reload. Asked, a full
+    // interval later each time, until the comparison starts: the one before may still be
+    // ending as the reader says it ended, and then stamps its end at the clock's time
+    // after this advance, so a next is due only an interval after that.
     std::fs::write(&w.f.path, SPHERE).unwrap();
-    w.clock.advance(DISK_CHECK_INTERVAL);
-    w.f.status();
+    let before = w.reader.started();
+    let deadline = std::time::Instant::now() + WAIT;
+    while w.reader.started() == before {
+        w.clock.advance(DISK_CHECK_INTERVAL);
+        w.f.status();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no comparison started"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
     woken(&count, base + 3);
     assert_eq!(w.f.at(), Revision(2));
     // Three, and none besides (the second comparison, unchanged, told nothing); then
@@ -881,8 +909,8 @@ fn an_open_wakes_the_client_as_it_answers_and_so_does_one_refused() {
     // Counted from before the first open, so each open's wake is counted, whenever it
     // comes: the wake follows the answer on the open's own thread, so a count installed
     // after an open answered could meet that open's wake late (a loaded machine) and count
-    // it as the next one's. Each open waited for by its wake, then the sessions dropped,
-    // which joins every session's thread: no wake can come after, so the count is exact.
+    // it as the next one's. At the end the sessions dropped, which joins every session's
+    // thread: no wake can come after, so the count is exact.
     let dir = tempfile::tempdir().unwrap();
     let secret = dir.path().join("secret");
     let sessions = Sessions::with_stand_ins(
@@ -892,18 +920,23 @@ fn an_open_wakes_the_client_as_it_answers_and_so_does_one_refused() {
     )
     .checking_disk_every(Duration::ZERO);
     let count = counting(&sessions);
+    // Each open's wake comes on its own session's thread before any command it runs: a
+    // `text` held there counts exactly what came, one wake for the open and, after, one
+    // for the `text` itself.
     for (n, name) in ["a.silico", "b.silico"].into_iter().enumerate() {
         let path = dir.path().join(name);
         std::fs::write(&path, BOX).unwrap();
-        sessions.open(&path, false).wait().result.unwrap();
-        woken(&count, n + 1);
+        let opened = sessions.open(&path, false).wait();
+        let id = opened.session.unwrap().id;
+        opened.result.unwrap();
+        assert_eq!(settled_in(&sessions, &id, &count), 2 * n + 2);
     }
     let refused = sessions.open(dir.path().join("none.silico"), false).wait();
     assert!(refused.result.is_err());
-    woken(&count, 3);
+    woken(&count, 5);
     drop(sessions);
-    // One wake an open, and none besides.
-    assert_eq!(count.load(Ordering::SeqCst), 3);
+    // One wake an open, the refused one's too, and none besides.
+    assert_eq!(count.load(Ordering::SeqCst), 5);
 }
 
 /// A cache opener held, while it's held, as a session opens: the open waits in it.
