@@ -177,8 +177,17 @@ fn undo_and_redo_answer_as_the_core_does_and_hold_to_their_tools() {
 
 #[test]
 fn undo_and_redo_are_edits_of_what_the_server_holds_never_read_only_nor_destructive() {
+    // What the server builds, and what's committed, the same.
+    let built = silico_mcp::tools::list().unwrap();
     for name in ["undo", "redo"] {
-        let annotations = &tool(name)["annotations"];
+        let sent = built["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap();
+        assert_eq!(*sent, tool(name), "{name}");
+        let annotations = &sent["annotations"];
         assert_eq!(annotations["readOnlyHint"], false, "{name}");
         assert_eq!(annotations["destructiveHint"], false, "{name}");
         assert_eq!(annotations["openWorldHint"], false, "{name}");
