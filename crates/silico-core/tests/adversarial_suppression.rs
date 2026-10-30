@@ -141,6 +141,19 @@ fn the_gate_refuses_a_fuse_suppressed_by_hand_under_a_chamfer_of_its_tools_edge(
         "the gate took it; rebuilt: {:?}",
         troubles(&d, &rebuilt(&d))
     );
+    // Naming both, in a lost name's words: the chamfer at its edge, the fuse whose tool
+    // the edge's maker reaches it through.
+    let refused = refused.unwrap_err();
+    assert_eq!(refused.total(), 1);
+    let error = &refused.errors()[0];
+    assert_eq!(
+        (error.feature(), error.parameter(), error.message()),
+        (
+            Some("c0000001"),
+            Some("edges.0"),
+            "c0000001 isn't suppressed, but edges.0 names an element of t0000001, which reaches its base only as m0000001's tool, and m0000001 is suppressed: a feature that depends on a suppressed one is suppressed with it"
+        )
+    );
 }
 
 #[test]
@@ -159,6 +172,75 @@ fn unsuppressing_the_chamfer_of_a_fuses_tool_edge_gives_back_the_fuse() {
         Vec::<String>::new(),
         "unsuppressed {:?}",
         done.unsuppressed
+    );
+    // The fuse given back with it, and nothing else suppressed.
+    assert_eq!(done.unsuppressed, ids(&["m0000001", "c0000001"]));
+    assert!(!done.document.features[2].suppressed);
+}
+
+/// Boxes a, a2, and t2; a fuse j of a2 and t2; a fuse m of a and (as its tool) j; and a
+/// chamfer c on m naming t2's edge, which both fuses keep under t2's name. Nothing with a
+/// tool is suppressed until a cascade suppresses one.
+fn fused_twice() -> Document {
+    let a = a_box("a0000001", 0, 10);
+    let a2 = a_box("a0000002", 5, 10);
+    let t2 = a_box("t0000002", 8, 10);
+    let j = boolean("j0000002", "fuse", "a0000002", "t0000002");
+    let m = boolean("m0000001", "fuse", "a0000001", "j0000002");
+    let c = chamfer("c0000001", "m0000001", "t0000002.box.Edge5");
+    document(&[&a, &a2, &t2, &j, &m, &c])
+}
+
+#[test]
+fn a_boolean_the_cascade_suppresses_loses_its_tools_names_too() {
+    // The tests review's: suppressing a2 takes j (its base gone, with nothing up its
+    // chain), then m (its tool's chain all suppressed); neither is suppressed in the text,
+    // and c's name of t2's edge reaches m only through j's and m's tools: lost, so c goes.
+    let d = fused_twice();
+    validate(&d).unwrap();
+    assert_eq!(troubles(&d, &rebuilt(&d)), Vec::<String>::new(), "the control");
+    let done = suppression::suppress(&checked(&d), &id("a0000002")).unwrap();
+    assert_eq!(
+        done.suppressed,
+        ids(&["a0000002", "j0000002", "m0000001", "c0000001"])
+    );
+    validate(&done.document).unwrap();
+    assert_eq!(
+        troubles(&done.document, &rebuilt(&done.document)),
+        Vec::<String>::new()
+    );
+    // Unsuppressing c gives every one of them back.
+    let back = suppression::unsuppress(&checked(&done.document), &id("c0000001")).unwrap();
+    assert_eq!(
+        back.unsuppressed,
+        ids(&["a0000002", "j0000002", "m0000001", "c0000001"])
+    );
+    assert!(back.document.canonically_eq(&d));
+}
+
+#[test]
+fn the_gate_refuses_a_cascades_lost_name_in_one_check_naming_the_nearest_boolean() {
+    // Only a2 suppressed by hand: j, m, and c refused at once; c's at edges.0, naming j,
+    // the boolean nearest t2 whose tool it passes, as having to go with a2.
+    let mut d = fused_twice();
+    d.features[1].suppressed = true;
+    let refused = validate(&d).unwrap_err();
+    let said: Vec<(&str, &str)> = refused
+        .errors()
+        .iter()
+        .map(|e| (e.feature().unwrap(), e.parameter().unwrap()))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            ("j0000002", "base"),
+            ("m0000001", "tool"),
+            ("c0000001", "edges.0")
+        ]
+    );
+    assert_eq!(
+        refused.errors()[2].message(),
+        "c0000001 isn't suppressed, but edges.0 names an element of t0000002, which reaches its base only as j0000002's tool, and j0000002 has to be suppressed with a0000002: a feature that depends on a suppressed one is suppressed with it"
     );
 }
 

@@ -599,6 +599,10 @@ fn the_root_suppressed_keeps_its_fingerprints_and_the_fillet_unsuppressed_takes_
     assert_eq!(back.unsuppressed, ids(&["p0000001", "f0000001"]));
     assert_eq!(back.commit.unwrap().refingerprinted, ids(&["f0000001"]));
     assert_eq!(f.drift(), (Vec::new(), 0));
+    assert_eq!(
+        f.fingerprinted(),
+        ids(&["p0000001", "h0000001", "h0000002", "f0000001"])
+    );
 }
 
 #[test]
