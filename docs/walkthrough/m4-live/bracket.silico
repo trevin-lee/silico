@@ -1,0 +1,120 @@
+{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {
+      "id": "base0000",
+      "type": "box",
+      "v": 1,
+      "name": "Base leg",
+      "position": [0, 0, 0],
+      "length": 60,
+      "width": 40,
+      "height": 5,
+      "fingerprint": {"volume": 12000, "area": 5800, "bbox": [0, 0, 0, 60, 40, 5], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "rght0000",
+      "type": "box",
+      "v": 1,
+      "name": "Upright leg",
+      "position": [0, 0, 0],
+      "length": 5,
+      "width": 40,
+      "height": 50,
+      "fingerprint": {"volume": 10000, "area": 4900, "bbox": [0, 0, 0, 5, 40, 50], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "merge000",
+      "type": "fuse",
+      "v": 1,
+      "name": "L body",
+      "base": "base0000",
+      "tool": "rght0000",
+      "fingerprint": {"volume": 21000, "area": 9850, "bbox": [0, 0, 0, 60, 40, 50], "faces": 14, "edges": 28, "vertices": 16}
+    },
+    {
+      "id": "rnd00000",
+      "type": "fillet",
+      "v": 1,
+      "name": "Inside fillet",
+      "base": "merge000",
+      "edges": [
+        "merge000.fuse.Edge(G base0000.box.Face6, G rght0000.box.Face2)"
+      ],
+      "radius": 5,
+      "fingerprint": {"volume": 21214.601837, "area": 9774.889357, "bbox": [0, 0, 0, 60, 40, 50], "faces": 15, "edges": 33, "vertices": 20}
+    },
+    {
+      "id": "skbase00",
+      "type": "sketch",
+      "v": 1,
+      "name": "Base holes sketch",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 40, "y": 12, "construction": false},
+        {"id": "p0000002", "x": 40, "y": 28, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 2.75, "construction": false},
+        {"id": "c0000002", "center": "p0000002", "radius": 2.75, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [
+        {"id": "cn000001", "type": "diameter", "curve": "c0000001", "value": 5.5, "driving": true},
+        {"id": "cn000002", "type": "diameter", "curve": "c0000002", "value": 5.5, "driving": true},
+        {"id": "cn000003", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 40, "driving": true},
+        {"id": "cn000004", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 12, "driving": true},
+        {"id": "cn000005", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 40, "driving": true},
+        {"id": "cn000006", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 28, "driving": true}
+      ]
+    },
+    {
+      "id": "pkbase00",
+      "type": "pocket",
+      "v": 1,
+      "name": "Base holes",
+      "base": "rnd00000",
+      "sketch": "skbase00",
+      "extent": {"type": "through_all", "reversed": true},
+      "fingerprint": {"volume": 20977.018892, "area": 9852.643775, "bbox": [0, 0, 0, 60, 40, 50], "faces": 17, "edges": 39, "vertices": 24}
+    },
+    {
+      "id": "skrght00",
+      "type": "sketch",
+      "v": 1,
+      "name": "Upright holes sketch",
+      "plane": "yz",
+      "points": [
+        {"id": "p0000001", "x": 12, "y": 35, "construction": false},
+        {"id": "p0000002", "x": 28, "y": 35, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000001", "center": "p0000001", "radius": 2.75, "construction": false},
+        {"id": "c0000002", "center": "p0000002", "radius": 2.75, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [
+        {"id": "cn000001", "type": "diameter", "curve": "c0000001", "value": 5.5, "driving": true},
+        {"id": "cn000002", "type": "diameter", "curve": "c0000002", "value": 5.5, "driving": true},
+        {"id": "cn000003", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 12, "driving": true},
+        {"id": "cn000004", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 35, "driving": true},
+        {"id": "cn000005", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 28, "driving": true},
+        {"id": "cn000006", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 35, "driving": true}
+      ]
+    },
+    {
+      "id": "pkrght00",
+      "type": "pocket",
+      "v": 1,
+      "name": "Upright holes",
+      "base": "pkbase00",
+      "sketch": "skrght00",
+      "extent": {"type": "through_all", "reversed": true},
+      "fingerprint": {"volume": 20739.435948, "area": 9930.398194, "bbox": [0, 0, 0, 60, 40, 50], "faces": 19, "edges": 45, "vertices": 28}
+    }
+  ]
+}

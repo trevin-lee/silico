@@ -366,3 +366,46 @@ fn an_output_schema_tells_its_commands_result_from_anothers() {
     );
     fails(close, &json!([]), "an array");
 }
+
+/// Every `format` keyword a schema in `value` gives, with where. A property named `format`
+/// (export's) is a schema, an object, so never taken for the keyword, a string.
+fn formats(value: &Value, at: &str, found: &mut Vec<(String, String)>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(format)) = map.get("format") {
+                found.push((at.to_owned(), format.clone()));
+            }
+            for (key, value) in map {
+                formats(value, &format!("{at}/{key}"), found);
+            }
+        }
+        Value::Array(items) => {
+            for (i, value) in items.iter().enumerate() {
+                formats(value, &format!("{at}/{i}"), found);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn no_tools_schema_gives_a_format() {
+    // JSON Schema's formats are all strings', and Silico's strings have none: a `format` a
+    // schema gave would be schemars' name of a Rust number's type (`uint64`, `double`),
+    // which a strict validator (Ajv, the MCP SDKs') warns of, once each place it's given.
+    let sent = sent();
+    let mut found = Vec::new();
+    formats(&sent, "", &mut found);
+    assert!(found.is_empty(), "{found:?}");
+    // Each bound is said where its field is declared: `elements`' `limit` keeps its 1,000,
+    // and render's result its width's and height's 4,096, the request's.
+    let elements = &tool(&sent, "elements")["inputSchema"]["properties"]["limit"];
+    assert_eq!(elements["maximum"], 1000, "{elements}");
+    let render = tool(&sent, "render")["outputSchema"].to_string();
+    for side in ["width", "height"] {
+        let bounded = format!(
+            r#""{side}":{{"description":"The image's {side} in pixels.","maximum":4096,"minimum":1,"type":"integer"}}"#
+        );
+        assert!(render.contains(&bounded), "{side}: {render}");
+    }
+}

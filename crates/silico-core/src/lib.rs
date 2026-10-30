@@ -12,8 +12,10 @@
 //! ([`profile`]: its loops, nested into regions and oriented, or what keeps it from being
 //! one, named), and what a sketch feature's rebuild refuses of its profile, its solve, and
 //! its result ([`sweep`]); and a rebuilt document's warnings ([`warnings`]: what `check` finds
-//! that fails nothing); and each sketch member's definition state, from its solve's
-//! diagnosis ([`sketch_states`]); the rest of the command API arrives later.
+//! that fails nothing); each sketch member's definition state, from its solve's
+//! diagnosis ([`sketch_states`]); and a selection read against a model ([`selection`]: each
+//! name's element and whether a store can take it, or why it's gone); the rest of the
+//! command API arrives later.
 
 pub mod cache;
 pub mod command;
@@ -37,6 +39,7 @@ pub mod profile;
 pub mod recompute;
 mod references;
 pub mod render;
+pub mod selection;
 pub mod sketch;
 pub mod sketch_states;
 pub mod step_worker;

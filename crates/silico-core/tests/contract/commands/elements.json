@@ -15,7 +15,6 @@
           },
           "revision": {
             "description": "The revision the listing is of: a cursor of another is refused, as a `conflict`.",
-            "format": "uint64",
             "minimum": 1,
             "type": "integer"
           }
@@ -76,7 +75,6 @@
       },
       "limit": {
         "description": "How many entries to list.",
-        "format": "uint32",
         "maximum": 1000,
         "minimum": 1,
         "type": "integer"
@@ -150,7 +148,6 @@
           },
           "revision": {
             "description": "The revision the listing is of: a cursor of another is refused, as a `conflict`.",
-            "format": "uint64",
             "minimum": 1,
             "type": "integer"
           }
@@ -355,7 +352,6 @@
           "normal": {
             "description": "A planar face's outward unit normal.",
             "items": {
-              "format": "double",
               "type": "number"
             },
             "maxItems": 3,
@@ -448,7 +444,6 @@
         "properties": {
           "direction": {
             "items": {
-              "format": "double",
               "type": "number"
             },
             "maxItems": 3,
@@ -509,7 +504,6 @@
       },
       "total": {
         "description": "How many entries the listing holds in all, on every page.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       }

@@ -243,6 +243,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Lists checked for repeats by scanning the entries before each (`list[..i].contains(x)`): 200,000 distinct IDs (2 MB of a 64 MiB request) take minutes; time a long list of distinct members, not only of repeats
 - Edit requests with no size bound of their own, checked by a gate whose size limits come last: a batch far past the solver's limit runs every rule first, a quadratic one included (each edge tangent scans every `on`: 80,000 constraints, about 43 s in a debug build); time a batch eight times the limit
 - Helpers shared between commands that word an error with one command's name ("the session closed before the render finished", "render it there"): reach each shared failure path from the other command and read its words
+- Per-name reasons that copy a shared one (each name of a failed feature given the feature's whole failure, up to its hundred listed errors): 10,000 names of one broken fillet's faces are a million errors, 300 MB from a 250 KB selection; count what the answer holds, not only its time
+- Parser words written for a document reused by a request with no place in a timeline ("no feature b0000001 before this one" for a selected name): read each refusal of a shared parser from every caller
 
 ## Kernel worker and IPC
 

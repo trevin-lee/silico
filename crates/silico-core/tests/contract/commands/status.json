@@ -24,7 +24,6 @@
         "properties": {
           "base": {
             "description": "The revision the transaction began from: the one `rollback` returns to.",
-            "format": "uint64",
             "minimum": 1,
             "type": "integer"
           }
@@ -53,7 +52,6 @@
         "properties": {
           "done": {
             "description": "The rebuild's steps settled so far (built, failed, kept from before, or never to\nrun), all of them once it has finished: progress, a diagnostic, not a result. Null if\nno rebuild of the revision has started.",
-            "format": "uint64",
             "minimum": 0,
             "type": [
               "integer",
@@ -62,7 +60,6 @@
           },
           "revision": {
             "description": "The revision it's of: the session's current one.",
-            "format": "uint64",
             "minimum": 1,
             "type": "integer"
           },
@@ -71,7 +68,6 @@
           },
           "steps": {
             "description": "The steps in the rebuild's plan, none until it's made: progress, a diagnostic. Null\nif no rebuild of the revision has started.",
-            "format": "uint64",
             "minimum": 0,
             "type": [
               "integer",
@@ -150,7 +146,6 @@
     "properties": {
       "features": {
         "description": "How many features the document has: null if its text doesn't read as a document.",
-        "format": "uint64",
         "minimum": 0,
         "type": [
           "integer",

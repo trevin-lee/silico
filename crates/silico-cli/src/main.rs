@@ -40,7 +40,7 @@ const USAGE: &str = "usage: silico check [--json] [--fresh] [--] FILE...
        silico show [--] FILE
        silico cache clear [--] FILE...
        silico export [--tolerance=MM] [--features=ID,...] [--replace] [--] FILE OUT.3mf
-       silico export [--features=ID,...] [--replace] [--] FILE OUT.step
+       silico export [--features=ID,...] [--replace] [--] FILE OUT.step|OUT.stp
        silico textconv [--] FILE
        silico schema [NAME]
        silico serve [--workspace DIR]";
@@ -899,10 +899,13 @@ fn export(
 ) -> Ended {
     use silico_core::command::export::{DEFAULT_TOLERANCE, Export, ExportFormat};
     use silico_core::document::{FeatureId, Length};
-    let is = |extension: &str| {
-        out.extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case(extension))
+    let is = |format: ExportFormat| {
+        out.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            format
+                .extensions()
+                .iter()
+                .any(|x| e.eq_ignore_ascii_case(x))
+        })
     };
     let tolerance = match tolerance.map(Length::parse) {
         None => None,
@@ -912,11 +915,13 @@ fn export(
             return Ended::Failed;
         }
     };
-    let format = if is("3mf") {
+    let format = if is(ExportFormat::ThreeMf {
+        tolerance: DEFAULT_TOLERANCE,
+    }) {
         ExportFormat::ThreeMf {
             tolerance: tolerance.unwrap_or(DEFAULT_TOLERANCE),
         }
-    } else if is("step") {
+    } else if is(ExportFormat::Step) {
         if tolerance.is_some() {
             say!(
                 "silico export: --tolerance is a 3MF mesh's; a STEP file holds each body's \
@@ -926,7 +931,7 @@ fn export(
         }
         ExportFormat::Step
     } else {
-        say!("silico export: the output must end in .3mf or .step, by its format\n{USAGE}");
+        say!("silico export: the output must end in .3mf, .step, or .stp, by its format\n{USAGE}");
         return Ended::Failed;
     };
     let features = match features {
