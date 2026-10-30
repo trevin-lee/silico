@@ -82,7 +82,7 @@ impl<C: Kernel + 'static> Session<C> {
             .map_err(|refusal| refused(self.id, way, refusal))?;
             // What `format` had put into the document at the state restored: an undo of a
             // `format` takes it back, a redo gives it back.
-            let formatted = open.formatted_at(plan.restored());
+            let formatted = Arc::clone(plan.extra());
             let mut begun = open.begun.clone();
             begun.set_formatted(Arc::clone(&formatted));
             (next, plan, begun, formatted)

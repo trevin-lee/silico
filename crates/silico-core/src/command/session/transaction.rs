@@ -68,32 +68,17 @@ pub(super) struct Held {
 /// there exactly while the transaction is.
 pub(super) struct Open {
     pub(super) begun: Snapshot,
-    pub(super) undo: UndoStack<Revision>,
+    /// Each state holding what `format` had put into the document then ([`Formatted`]), so
+    /// an undo or a redo of a `format` takes it back or gives it back with the text, and the
+    /// stack drops and counts it with the state.
+    pub(super) undo: UndoStack<Revision, Arc<Formatted>>,
     /// Whether the session's document differs from the one `begin` saw, as a commit finds
     /// it ([`Snapshot::differs`]): worked out off the lock as each edit is held and each
     /// undo or redo restores a state, never by `status` (the design's section 6).
     pub(super) changed: bool,
-    /// What `format` had put into the document at each state the stack holds, by the
-    /// revision the state was made at (`begin`'s, none): so an undo or a redo of a `format`
-    /// takes back or gives back what it put in ([`Formatted`]), as it does the text.
-    formats: BTreeMap<Revision, Arc<Formatted>>,
 }
 
 impl Open {
-    /// What `format` had put into the document at the state made at `revision`.
-    pub(super) fn formatted_at(&self, revision: Option<Revision>) -> Arc<Formatted> {
-        revision
-            .and_then(|revision| self.formats.get(&revision))
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// The state made at `revision` holds what `format` has put into the document now.
-    fn keep_formatted(&mut self, revision: Revision) {
-        self.formats
-            .insert(revision, Arc::clone(&self.begun.formatted));
-    }
-
     /// The transaction as `status` gives it: its base, whether its document changed, and
     /// its undo stack's counts, each kept as the stack changes, so none is worked out here.
     pub(super) fn status(&self) -> Transaction {
@@ -150,6 +135,38 @@ pub(super) struct Snapshot {
 pub(super) struct Formatted {
     written: BTreeMap<FeatureId, document::Feature>,
     layout: bool,
+    /// What it counts for on the undo stack ([`Formatted::cost`]), worked out as it's made.
+    bytes: usize,
+}
+
+/// What a [`Formatted`] counts for on the undo stack beyond its features: its own fields.
+const FORMATTED_BYTES: usize = 32;
+
+impl Formatted {
+    /// What it counts for: each feature it wrote, as its canonical text's bytes, and
+    /// [`FORMATTED_BYTES`].
+    fn cost(&self) -> usize {
+        FORMATTED_BYTES
+            + self
+                .written
+                .values()
+                .map(|feature| {
+                    document::write::feature_text(feature, usize::MAX).map_or(0, |text| text.len())
+                })
+                .sum::<usize>()
+    }
+}
+
+impl crate::document::undo::Extra for Arc<Formatted> {
+    /// Shared by every state an edit after the `format` made (each takes the one before's):
+    /// counted once. One that holds nothing (no `format` yet) costs nothing.
+    fn shared(&self) -> Option<usize> {
+        (self.layout || !self.written.is_empty()).then_some(Arc::as_ptr(self) as usize)
+    }
+
+    fn cost(&self) -> usize {
+        self.bytes
+    }
 }
 
 impl Snapshot {
@@ -427,9 +444,7 @@ impl Held {
                 open.begun.mend = None;
             }
             open.changed = changed;
-            let pushed = open.undo.edit(after, revision);
-            open.keep_formatted(revision);
-            pushed
+            open.undo.edit(after, revision)
         });
         let carried = Arc::clone(&self.carried);
         self.change(revision, text, gated, carried);
@@ -722,9 +737,8 @@ impl<C: Kernel + 'static> Session<C> {
         drop(rebuilds);
         held.transaction = Some(Open {
             begun: held.snapshot(),
-            undo: UndoStack::new(Arc::clone(&held.text), revision, self.undo_bytes),
+            undo: UndoStack::holding(Arc::clone(&held.text), revision, self.undo_bytes),
             changed: false,
-            formats: BTreeMap::new(),
         });
         Ok(Begun { base: revision })
     }
@@ -1218,13 +1232,13 @@ impl<C: Kernel + 'static> Session<C> {
                         Err(_) => BTreeMap::new(),
                     };
                 self.hold_then(stop, candidate, true, |held| {
-                    let revision = held.revision;
                     if let Some(open) = &mut held.transaction {
                         let formatted = Arc::make_mut(&mut open.begun.formatted);
                         formatted.written.extend(written);
                         formatted.layout = true;
+                        formatted.bytes = formatted.cost();
                         // The format's own state holds it, for an undo past it to take back.
-                        open.keep_formatted(revision);
+                        open.undo.set_extra(Arc::clone(&open.begun.formatted));
                     }
                 })?;
             }

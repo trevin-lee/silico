@@ -4469,4 +4469,5 @@ mod disk_reload;
 mod timeline;
 mod undo;
 mod undo_adversarial;
+mod undo_format;
 mod undo_status;

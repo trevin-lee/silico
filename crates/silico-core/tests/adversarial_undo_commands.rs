@@ -143,6 +143,9 @@ enum Op {
     Redo,
     UndoTo(u64),
     RedoTo(u64),
+    /// `format` inside the transaction: canonical form asked for, compared byte for byte
+    /// from its state on (M5.0's A6), until a step restores a state from before it.
+    Format,
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -155,17 +158,60 @@ fn op() -> impl Strategy<Value = Op> {
         2 => Just(Op::Redo),
         1 => (1u64..=20).prop_map(Op::UndoTo),
         1 => (1u64..=20).prop_map(Op::RedoTo),
+        2 => Just(Op::Format),
     ]
 }
 
+/// A model of the stack's states, for the oracle: each one's revisions (the one it was
+/// made at first) and whether a `format` had asked for canonical form by then (set on a
+/// format's state, taken by each edit's after it, restored with the state by a step).
+struct Model {
+    states: Vec<(Vec<Revision>, bool)>,
+    at: usize,
+}
+
+impl Model {
+    fn new(begun: Revision) -> Self {
+        Model {
+            states: vec![(vec![begun], false)],
+            at: 0,
+        }
+    }
+
+    /// An edit's state, at `revision`: the redo states dropped; formatted if the state
+    /// before was, or if it's a format's.
+    fn edit(&mut self, revision: Revision, format: bool) {
+        let formatted = self.formatted() || format;
+        self.states.truncate(self.at + 1);
+        self.states.push((vec![revision], formatted));
+        self.at += 1;
+    }
+
+    /// A step that restored the state made at `restored`, at `revision`, a new one.
+    fn step(&mut self, restored: Revision, revision: Revision) {
+        self.at = self
+            .states
+            .iter()
+            .position(|(revisions, _)| revisions.first() == Some(&restored))
+            .unwrap();
+        self.states[self.at].0.push(revision);
+    }
+
+    fn formatted(&self) -> bool {
+        self.states[self.at].1
+    }
+}
+
 /// Runs `ops` in a transaction begun on [`block`] 40 long, checking `status`'s transaction
-/// after each: `changed` as the oracle has it, `undo` + `redo` the states the stack holds
-/// beside the session's, and a step's counts the ones `status` then gives. Then the
-/// commit: written exactly when `changed` said so (where the text reads).
+/// after each: `changed` as the oracle has it (byte for byte once a format in force at the
+/// session's state asked for canonical form, as the model has it), `undo` + `redo` the
+/// states the stack holds beside the session's, and a step's counts the ones `status` then
+/// gives. Then the commit: written exactly when `changed` said so (where the text reads).
 fn run(ops: &[Op]) {
     let begun = block(40);
     let f = opened(&begun);
     answer(f.sessions.begin(&f.id)).result.unwrap();
+    let mut model = Model::new(f.revision());
     let unread = format!("<<<<<<< ours\n{begun}");
     // The states the stack holds: begin's, and one for each edit kept.
     let mut held = 1usize;
@@ -186,6 +232,18 @@ fn run(ops: &[Op]) {
                 {
                     let t = f.transaction();
                     held = t.undo + 1;
+                    model.edit(f.revision(), false);
+                }
+                None
+            }
+            Op::Format => {
+                // Refused where the text doesn't read; a change held only if the canonical
+                // text isn't the transaction's already.
+                if let Ok(formatted) = answer(f.sessions.format(&f.id, None, true)).result
+                    && formatted.changed
+                {
+                    held = f.transaction().undo + 1;
+                    model.edit(f.revision(), true);
                 }
                 None
             }
@@ -200,6 +258,7 @@ fn run(ops: &[Op]) {
                     && replaced.changed
                 {
                     held = f.transaction().undo + 1;
+                    model.edit(f.revision(), false);
                 }
                 None
             }
@@ -208,11 +267,18 @@ fn run(ops: &[Op]) {
             Op::UndoTo(to) => Some(f.undo(Some(*to))),
             Op::RedoTo(to) => Some(f.redo(Some(*to))),
         };
+        if let Some(Ok(stepped)) = step.as_ref().map(|s| s.result.as_ref()) {
+            model.step(stepped.restored, f.revision());
+        }
         let t = f.transaction();
         let now = f.text();
+        let changed = if model.formatted() {
+            begun != now
+        } else {
+            differs(&begun, &now)
+        };
         assert_eq!(
-            t.changed,
-            differs(&begun, &now),
+            t.changed, changed,
             "op {i}: {op:?}: status {t:?}, text {now:?}"
         );
         assert_eq!(t.undo + t.redo + 1, held, "op {i}: {op:?}: {t:?}");
@@ -1389,5 +1455,54 @@ fn an_edit_after_a_format_keeps_the_format_when_redone() {
     assert!(f.transaction().changed);
     let committed = answer(f.sessions.commit(&f.id)).result.unwrap();
     assert!(committed.written);
+    assert_eq!(f.file(), canonical);
+}
+
+#[test]
+fn an_edit_after_a_format_undone_back_to_the_format_is_changed_and_the_commit_writes() {
+    // Formatted, then set to 41, then that undone: the format's own state, canonical form
+    // of the file's document, which the format asked for: changed, and the commit writes it.
+    let f = opened(&block(40));
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    answer(f.sessions.format(&f.id, None, true)).result.unwrap();
+    let canonical = f.text();
+    f.set_length("41");
+    assert!(f.undo(None).result.is_ok());
+    assert_eq!(f.text(), canonical);
+    assert!(f.transaction().changed);
+    let committed = answer(f.sessions.commit(&f.id)).result.unwrap();
+    assert!(committed.written);
+    assert_eq!(f.file(), canonical);
+}
+
+#[test]
+fn a_step_to_a_revision_takes_the_format_in_force_there() {
+    // Begun at r0; formatted at r1; set to 41 at r2 and 42 at r3. Undone to r1, the
+    // format's: changed (canonical form, byte for byte). Undone to r0, begin's: unchanged,
+    // the format no longer in force. Redone to r3: the format in force again, changed.
+    let f = opened(&block(40));
+    let r0 = f.revision().number();
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    answer(f.sessions.format(&f.id, None, true)).result.unwrap();
+    let r1 = f.revision().number();
+    let canonical = f.text();
+    f.set_length("41");
+    f.set_length("42");
+    let r3 = f.revision().number();
+    assert_eq!(r3, r1 + 2);
+    assert!(f.undo(Some(r1)).result.is_ok());
+    assert_eq!(f.text(), canonical);
+    assert!(f.transaction().changed);
+    assert!(f.undo(Some(r0)).result.is_ok());
+    assert_eq!(f.text(), block(40));
+    assert!(!f.transaction().changed);
+    assert!(f.redo(Some(r3)).result.is_ok());
+    assert!(f.transaction().changed);
+    // At 42 either way; then set back to 40 there: the format still in force, so canonical
+    // form of the file's document is a change.
+    f.set_length("40");
+    assert_eq!(f.text(), canonical);
+    assert!(f.transaction().changed);
+    assert!(answer(f.sessions.commit(&f.id)).result.unwrap().written);
     assert_eq!(f.file(), canonical);
 }
