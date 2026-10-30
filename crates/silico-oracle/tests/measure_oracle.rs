@@ -164,6 +164,7 @@ fn distance_case(distance: f64, center: Option<f64>, normal: Option<f64>) -> Mea
             distance,
             center_distance: center,
             normal_distance: normal,
+            center_to_element: None,
             witness: None,
         }),
     }
@@ -225,6 +226,7 @@ fn freecad_distance(distance: f64, dist_to_shape: f64, witness: [f64; 2]) -> The
         to: Some([0.0, 0.0, distance]),
         dist_to_shape: Some(dist_to_shape),
         witness: Some(witness),
+        center_to_element: None,
         angle: None,
     })
 }
@@ -237,6 +239,7 @@ fn freecad_angle(angle: f64) -> Theirs {
         to: None,
         dist_to_shape: None,
         witness: None,
+        center_to_element: None,
         angle: Some(angle),
     })
 }
@@ -488,6 +491,88 @@ fn every_expected_value_is_checked() {
     assert_eq!(against_expected(&angle_case(10.0, None), &ours).len(), 1);
 }
 
+/// `ours` with Silico's `center_to_element` `mm`.
+fn centred(mut ours: Ours, mm_: Option<f64>) -> Ours {
+    if let Ok(Answer::Distance(d)) = &mut ours.answer {
+        d.center_to_element = mm_.map(mm);
+    }
+    ours
+}
+
+/// FreeCAD's distance measure of 5 with its centre's distance `theirs`.
+fn freecad_centred(theirs: Option<f64>) -> Theirs {
+    let mut measured = freecad_distance(5.0, 5.0, [0.0; 2]);
+    if let Theirs::Measured(m) = &mut measured {
+        m.center_to_element = theirs;
+    }
+    measured
+}
+
+#[test]
+fn center_to_element_is_compared_with_freecads_and_with_its_hand_value() {
+    // circle_and_a_line as Silico answers it: 5 apart, the circle's centre 10 from the line.
+    let d = distance_case(5.0, None, None);
+    let rim_and_line = |a: Element, b: Element, centre: Option<f64>| {
+        centred(
+            distance_answer(a, b, [5.0, 0.0, 0.0], [10.0, 0.0, 0.0], None, None),
+            centre,
+        )
+    };
+    let ours = rim_and_line(edge("circle"), edge("line"), Some(10.0));
+    let against = |ours: &Ours, theirs| compare(&d, Rule::Least, ours, &freecad_centred(theirs));
+    // FreeCAD's, to LENGTH_TOLERANCE.
+    assert!(against(&ours, Some(10.0)).is_empty());
+    assert!(against(&ours, Some(10.0 + 5e-7)).is_empty());
+    assert_eq!(
+        against(&ours, Some(10.0 + 2e-6)),
+        ["Silico's center_to_element (FreeCAD's) 10 against FreeCAD's Some(10.000002)"]
+    );
+    // Compared only where FreeCAD defines one: none of Silico's against FreeCAD's number is
+    // a difference; where FreeCAD has none, for any pair of elements alike (a cylinder's
+    // axis to a plane is Silico's own), Silico's number isn't compared with it, and is
+    // checked by hand only (below).
+    let none = rim_and_line(edge("circle"), edge("line"), None);
+    assert_eq!(
+        against(&none, Some(10.0)),
+        ["Silico's center_to_element None against FreeCAD's Some(10.0)"]
+    );
+    assert!(against(&none, None).is_empty());
+    for (a, b) in [
+        (edge("circle"), edge("line")),
+        (face("cylinder"), face("plane")),
+        (edge("line"), face("cylinder")),
+        (face("cylinder"), face("sphere")),
+        (Element::Vertex { point: [0.0; 3] }, face("plane")),
+    ] {
+        let ours = rim_and_line(a.clone(), b.clone(), Some(10.0));
+        assert!(against(&ours, None).is_empty(), "{a:?} and {b:?}");
+        assert_eq!(against(&ours, Some(9.0)).len(), 1, "{a:?} and {b:?}");
+    }
+
+    // The case's hand value: Silico's must be it, to the nanometre, null where it's null.
+    let case = |centre: Option<f64>| {
+        let mut case = distance_case(5.0, None, None);
+        if let Expected::Distance(d) = &mut case.expected {
+            d.center_to_element = centre;
+        }
+        case
+    };
+    assert!(against_expected(&case(Some(10.0)), &ours).is_empty());
+    assert_eq!(
+        against_expected(&case(Some(10.000001)), &ours),
+        ["center_to_element Some(Length(10000000)) against the expected Some(10.000001)"]
+    );
+    assert_eq!(
+        against_expected(&case(None), &ours),
+        ["center_to_element Some(Length(10000000)) against the expected None"]
+    );
+    assert_eq!(
+        against_expected(&case(Some(10.0)), &none),
+        ["center_to_element None against the expected Some(10.0)"]
+    );
+    assert!(against_expected(&case(None), &none).is_empty());
+}
+
 /// A copy of the oracle's measure cases with `cases.json` replaced by `text`.
 fn load(text: &str) -> Result<Option<Cases>, String> {
     let dir = tempfile::tempdir().unwrap();
@@ -509,7 +594,7 @@ fn a_case_file_that_would_check_less_than_it_seems_is_refused() {
             r#"{{"name": "{name}", "note": "", "elements": ["bxa00001.box.Face5", "bxa00001.box.Face6"], "expected": {expected}}}"#
         )
     };
-    let good = r#"{"distance": {"distance": 10, "center_distance": null, "normal_distance": 10}}"#;
+    let good = r#"{"distance": {"distance": 10, "center_distance": null, "normal_distance": 10, "center_to_element": null}}"#;
     assert_eq!(
         load(&format!("[{}]", case("a", good)))
             .unwrap()
@@ -519,14 +604,19 @@ fn a_case_file_that_would_check_less_than_it_seems_is_refused() {
         1
     );
     // A null left out, as if it weren't checked.
-    let missing = r#"{"distance": {"distance": 10, "normal_distance": 10}}"#;
+    let missing =
+        r#"{"distance": {"distance": 10, "normal_distance": 10, "center_to_element": null}}"#;
     let refused = load(&format!("[{}]", case("a", missing))).unwrap_err();
     assert!(refused.contains("center_distance"), "{refused}");
+    let missing =
+        r#"{"distance": {"distance": 10, "center_distance": null, "normal_distance": 10}}"#;
+    let refused = load(&format!("[{}]", case("a", missing))).unwrap_err();
+    assert!(refused.contains("center_to_element"), "{refused}");
     let no_vertex = r#"{"angle": {"angle": 0}}"#;
     let refused = load(&format!("[{}]", case("a", no_vertex))).unwrap_err();
     assert!(refused.contains("vertex"), "{refused}");
     // A value it doesn't know.
-    let unknown = r#"{"distance": {"distance": 10, "center_distance": null, "normal_distance": 10, "length": 3}}"#;
+    let unknown = r#"{"distance": {"distance": 10, "center_distance": null, "normal_distance": 10, "center_to_element": null, "length": 3}}"#;
     assert!(load(&format!("[{}]", case("a", unknown))).is_err());
     // Two cases of one name, and none.
     let refused = load(&format!("[{}, {}]", case("a", good), case("a", good))).unwrap_err();

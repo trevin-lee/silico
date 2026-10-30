@@ -1257,7 +1257,7 @@ fn a_directory_of_measure_cases_alone_is_run_and_its_differences_counted() {
     std::fs::write(
         measures.join(silico_oracle::measures::CASES),
         r#"[{"name": "cube_bottom_and_top", "note": "10 apart, said to be 11.", "elements": ["bxa00001.box.Face5", "bxa00001.box.Face6"],
-            "expected": {"distance": {"distance": 11, "center_distance": null, "normal_distance": 10}}}]"#,
+            "expected": {"distance": {"distance": 11, "center_distance": null, "normal_distance": 10, "center_to_element": null}}}]"#,
     )
     .unwrap();
     let cases = dir.join("cases");
@@ -1294,7 +1294,7 @@ fn a_run_of_measure_cases_prints_each_that_differs_and_counts_them_all() {
     let case = |name: &str| {
         format!(
             r#"{{"name": "{name}", "note": "", "elements": ["bxa00001.box.Face5", "bxa00001.box.Face6"],
-                "expected": {{"distance": {{"distance": 10, "center_distance": null, "normal_distance": 10}}}}}}"#
+                "expected": {{"distance": {{"distance": 10, "center_distance": null, "normal_distance": 10, "center_to_element": null}}}}}}"#
         )
     };
     std::fs::write(

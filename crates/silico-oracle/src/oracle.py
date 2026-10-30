@@ -303,8 +303,8 @@ def measure_pair(doc, m):
     """A measure case (silico-oracle's measures.rs): each body the pair is in built as a
     Part::Feature, each element found in it by its geometry, and the pair measured by
     MeasureDistance or MeasureAngle as the GUI's Measure tool makes them; for a distance,
-    also distToShape's least distance, and how far Silico's witness points are from the
-    elements they're on."""
+    also distToShape's least distance, how far Silico's witness points are from the
+    elements they're on, and the distance from one's centre to the other (centre_to)."""
     bodies = {}
     for body, spec in sorted(m["bodies"].items()):
         o = doc.addObject("Part::Feature", "Body")
@@ -329,9 +329,39 @@ def measure_pair(doc, m):
     out["from"] = list(o.Position1)
     out["to"] = list(o.Position2)
     out["dist_to_shape"] = shapes[0].distToShape(shapes[1])[0]
+    out["center_to_element"] = centre_to(shapes)
     if m["witness"] is not None:
         out["witness"] = [shape.distToShape(Part.Vertex(V(*p)))[0] for shape, p in zip(shapes, m["witness"])]
     return out
+
+
+def centre(shape):
+    """A vertex's point, or a circle's or arc's centre; None for any other element."""
+    if shape.ShapeType == "Vertex":
+        return shape.Point
+    if shape.ShapeType == "Edge" and isinstance(shape.Curve, Part.Circle):
+        return shape.Curve.Center
+    return None
+
+
+def flat(shape):
+    """A planar face or a straight edge."""
+    if shape.ShapeType == "Face":
+        return isinstance(shape.Surface, Part.Plane)
+    return shape.ShapeType == "Edge" and isinstance(shape.Curve, Part.Line)
+
+
+def centre_to(shapes):
+    """Where one element has a centre (a vertex's point, a circle's or arc's centre) and the
+    other is a planar face or a straight edge, the centre made a vertex and its least
+    distance to the other: a vertex's own least distance, or a circle's centre as
+    Measurement::circleCenterDistance builds it (BRepBuilderAPI_MakeVertex, then
+    BRepExtrema_DistShapeShape; Measurement.cpp); else None."""
+    for this, other in (shapes, shapes[::-1]):
+        point = centre(this)
+        if point is not None and flat(other):
+            return Part.Vertex(point).distToShape(other)[0]
+    return None
 
 
 def measure(s):
