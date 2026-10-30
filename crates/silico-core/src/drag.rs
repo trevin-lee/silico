@@ -377,7 +377,7 @@ fn off_the_edge(
 ) -> Option<f64> {
     let at = |v: Value| system.values.get(v.0 as usize).copied();
     let point = |p: silico_protocol::PointValues| Some([at(p.x)?, at(p.y)?]);
-    let distance = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
+    let distance = silico_protocol::distance;
     match system.geometry.get(curve.0 as usize)? {
         SketchGeometry::Line { start, end } => {
             let (a, b) = (point(*start)?, point(*end)?);
@@ -403,7 +403,7 @@ fn off_the_edge(
         } => {
             let c = point(*center)?;
             let (from, to) = (at(*start_angle)?, at(*end_angle)?);
-            let angle = (press[1] - c[1]).atan2(press[0] - c[0]);
+            let angle = libm::atan2(press[1] - c[1], press[0] - c[0]);
             // Counter-clockwise from its start's angle: within its sweep, or past it.
             let turn = std::f64::consts::TAU;
             let sweep = (to - from).rem_euclid(turn);

@@ -865,7 +865,7 @@ fn press() -> impl Strategy<Value = [f64; 2]> {
 fn off_segment(press: [f64; 2], a: (f64, f64), b: (f64, f64)) -> f64 {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let t = (((press[0] - a.0) * dx + (press[1] - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-    (press[0] - (a.0 + t * dx)).hypot(press[1] - (a.1 + t * dy))
+    libm::hypot(press[0] - (a.0 + t * dx), press[1] - (a.1 + t * dy))
 }
 
 fn op() -> impl Strategy<Value = Op> {
