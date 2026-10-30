@@ -928,9 +928,6 @@ impl Target {
     }
 }
 
-/// How many places two IDs differ in, character by character: a mistyped character is one,
-/// two swapped are two. Every ID has `ID_LENGTH` characters, so one with a character
-/// dropped or added isn't an ID, and the reader refuses it first.
 /// The IDs of `ids`, given in ID order, a reference to `id`, which none of them holds, most
 /// likely meant: each at most two characters from `id` (one mistyped, or two swapped), the
 /// nearest first, then by ID; at most [`CANDIDATES`].
@@ -950,6 +947,9 @@ pub(crate) fn nearest_ids<'a>(
         .collect()
 }
 
+/// How many places two IDs differ in, character by character: a mistyped character is one,
+/// two swapped are two. Every ID has `ID_LENGTH` characters, so one with a character
+/// dropped or added isn't an ID, and the reader refuses it first.
 fn differing(a: &ElementId, b: &ElementId) -> usize {
     a.as_str()
         .chars()

@@ -966,9 +966,10 @@ fn an_arcs_start_or_end_alone_is_said_to_be_its_end() {
 
 #[test]
 fn a_removals_modified_and_removed_are_by_kind_then_by_id_whatever_the_requests_order() {
-    // Two lines whose ends their neighbours keep, each with a midpoint, the lower ID on the
-    // line named first, and a lone point between them in the request: each midpoint becomes
-    // a symmetric of its line's ends, in `modified` by ID; `removed` holds the point, then
+    // Two lines whose ends their neighbours keep, each with a midpoint, the higher ID
+    // (ka00000e) on the line named first, and a lone point between them in the request:
+    // each midpoint becomes a symmetric of its line's ends, in `modified` by ID, not in the
+    // request's order; `removed` holds the point, then
     // the lines, then the constraints naming them (ka000001 and ka000003, their horizontals,
     // and ka000009, na000001's length), each kind by ID.
     let f = opened(&bracket());
@@ -990,7 +991,7 @@ fn a_removals_modified_and_removed_are_by_kind_then_by_id_whatever_the_requests_
     assert_eq!(
         f.ran(
             "sketch_remove",
-            &remove_request(2, "s0000001", &["na000003", "pa000009", "na000001"])
+            &remove_request(2, "s0000001", &["na000001", "pa000009", "na000003"])
         ),
         json!({
             "sketch": "s0000001",
