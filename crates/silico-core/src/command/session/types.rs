@@ -822,10 +822,14 @@ pub struct FieldSet {
 }
 
 /// What `remove_feature` did (the design's section 7, as M5.0's A9 amends it): the feature
-/// removed, as the document held it, its place in the timeline, from 0, so `add_feature`
-/// can put it back `before` the feature that followed it, the features whose `base` or
-/// `tool` took its base ([`Rewired`], in timeline order), whether the document changed
-/// (always), and, outside a transaction, the commit's result, none inside one.
+/// removed, as the document held it (its fingerprint too), its place in the timeline, from
+/// 0, the features whose `base` or `tool` took its base ([`Rewired`], in timeline order),
+/// whether the document changed (always), and, outside a transaction, the commit's result,
+/// none inside one. Its way back: the feature given to `add_feature` without its
+/// fingerprint, `before` the feature that followed it (inside a transaction, the
+/// fingerprint `begin`'s document stored is kept if it's added back as it was), then `base`
+/// set back with `set_field` on each rewired entry whose `to` is none; or `rollback`, of a
+/// removal made in a transaction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Removed {
     pub feature: Feature,

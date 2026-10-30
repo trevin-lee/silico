@@ -280,7 +280,6 @@ fn a_no_op_move_outside_a_transaction_leaves_the_file_untouched() {
     let f = opened(&file);
     let before = std::fs::metadata(f.path()).unwrap().modified().unwrap();
     for (feature, place) in [
-        ("h0000001", Some("h0000001")),
         ("h0000001", Some("s0000003")),
         ("f0000001", None),
         ("s0000001", Some("p0000001")),
@@ -291,6 +290,10 @@ fn a_no_op_move_outside_a_transaction_leaves_the_file_untouched() {
         assert!(moved.rewired.is_empty());
         assert_eq!(moved.from, moved.to);
     }
+    // Before itself names no place: refused, the session as it was.
+    let itself = f.moved("h0000001", Some("h0000001"));
+    let refused = itself.result.unwrap_err();
+    assert_eq!(refused.errors()[0].parameter(), Some("before"));
     assert_eq!(f.revision(), Revision::OPENED);
     assert_eq!(f.file(), file);
     assert_eq!(
@@ -1475,13 +1478,13 @@ fn the_timeline_commands_refusals_and_edge_cases_by_name_are_the_typed_methods_b
     }
     // The file each saved, the same.
     assert!(by_name.file() == typed.file());
-    // Which ran, by hand: a move to where it is; the pocket inserted under the fillet (and
-    // not before the first sketch); the timelines; h0000001 to the end; the pocket removed;
-    // h0000001 back.
+    // Which ran, by hand: not a move before itself, which names no place; the pocket
+    // inserted under the fillet (and not before the first sketch); the timelines; h0000001
+    // to the end; the pocket removed; h0000001 back.
     assert_eq!(
         ran,
         [
-            true, false, false, false, false, false, false, false, false, false, true, true, true,
+            false, false, false, false, false, false, false, false, false, false, true, true, true,
             true, true, true, true, true, true
         ]
     );

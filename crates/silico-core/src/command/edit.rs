@@ -653,16 +653,82 @@ pub(super) struct Inserted {
 /// document hasn't (naming `before`), for a feature that isn't an object (in the words the
 /// wire refuses one in, before it gets here: this is for the Rust API's callers), gives a
 /// fingerprint (a commit writes it), or gives an ID that isn't one, or that the document
-/// holds (each naming `feature.id`); for an insert the chain refuses; and with every error
-/// the reader or the gate finds in the document with it added.
+/// holds (each naming `feature.id`), each of these at once with a `before` the document
+/// hasn't; for an insert the chain refuses; and with every error the reader or the gate
+/// finds in the document with it added. Inside a transaction (`begun`, the document it
+/// began from), a feature of an ID `begun` holds, with all its fields but its fingerprint,
+/// keeps the fingerprint `begun` stored ([`kept_record`]).
 pub(super) fn add_feature(
     checked: &Checked,
     before: Option<&FeatureId>,
     feature: Node,
+    begun: Option<&Document>,
     new_id: impl FnOnce(&Document) -> Result<FeatureId, Error>,
 ) -> Result<Inserted, Problems> {
     let document = checked.document();
-    let index = chain::insert_place(document, before)?;
+    let place = chain::insert_place(document, before);
+    let index = *place.as_ref().unwrap_or(&document.features.len());
+    // A `before` the document hasn't, refused with every refusal of the feature's own, at
+    // once, as every edit's are.
+    let added = match (place, new_feature(document, index, feature, new_id)) {
+        (Ok(_), Ok(added)) => added,
+        (place, read) => {
+            let mut problems = Problems::none();
+            if let Err(error) = place {
+                problems.push(error);
+            }
+            if let Err(read) = read {
+                problems.absorb(read);
+            }
+            return Err(problems);
+        }
+    };
+    let added = kept_record(added, begun);
+    let (edited, rewired) = match before {
+        None => {
+            let mut edited = document.clone();
+            edited.features.push(added);
+            (edited, Vec::new())
+        }
+        Some(before) => {
+            let inserted = chain::insert(checked, added, Some(before))?;
+            (inserted.document, inserted.rewired)
+        }
+    };
+    let candidate = candidate(&edited, "feature")?;
+    // As the document now holds it: the text read again.
+    let held = candidate
+        .gated
+        .document()
+        .ok()
+        .and_then(|document| document.features.get(index))
+        .cloned()
+        .ok_or_else(|| {
+            Problems::from(
+                Error::new(
+                    ErrorCode::Internal,
+                    "the feature added isn't in the document",
+                )
+                .with_suggestion(crate::worker::SILICO_BUG),
+            )
+        })?;
+    Ok(Inserted {
+        feature: held,
+        index,
+        rewired,
+        candidate,
+    })
+}
+
+/// `feature`, a request's feature, read as the document's feature at place `index`: with
+/// the ID `new_id` makes if it gives none, and its type's current version if it gives no
+/// `v`; refused as [`add_feature`] says, every reason the reader finds.
+fn new_feature(
+    document: &Document,
+    index: usize,
+    feature: Node,
+    new_id: impl FnOnce(&Document) -> Result<FeatureId, Error>,
+) -> Result<Feature, Problems> {
     let Value::Object(mut members) = feature.value else {
         return Err(Problems::from(
             Error::new(
@@ -752,50 +818,46 @@ pub(super) fn add_feature(
     let mut node = unplaced(Value::Object(members));
     json::unplace(&mut node);
     let place = format!("features[{index}]");
-    let added = document::read_feature(index, node).map_err(|e| {
-        // The request's own field: an ID that isn't one is the request's `feature.id`. The
-        // reader names a feature by its place only until it has read its ID, and the feature
-        // is an object, so every error that names its place is its `id`'s.
-        if e.feature() == Some(place.as_str()) {
-            e.with_parameter("feature.id")
-        } else {
-            e
-        }
-    })?;
-    let (edited, rewired) = match before {
-        None => {
-            let mut edited = document.clone();
-            edited.features.push(added);
-            (edited, Vec::new())
-        }
-        Some(before) => {
-            let inserted = chain::insert(checked, added, Some(before))?;
-            (inserted.document, inserted.rewired)
-        }
+    document::read_feature(index, node)
+        .map_err(|e| {
+            // The request's own field: an ID that isn't one is the request's `feature.id`. The
+            // reader names a feature by its place only until it has read its ID, and the feature
+            // is an object, so every error that names its place is its `id`'s.
+            if e.feature() == Some(place.as_str()) {
+                e.with_parameter("feature.id")
+            } else {
+                e
+            }
+        })
+        .map_err(Problems::from)
+}
+
+/// `added`, with the fingerprint the document a transaction began from (`begun`) stored for
+/// the feature of its ID, if that feature holds the same fields as `added` in all but its
+/// fingerprint: a feature removed and added back as it was is saved as never touching it
+/// saves (the saved file a function of the document's state, not of the edits' path), so
+/// it's held to its old record, its drift reported as an untouched feature's is. Any other
+/// is added as given, with none: a feature of other values under the ID is reached, and its
+/// commit writes it fresh. Outside a transaction (`begun` none), as given.
+fn kept_record(mut added: Feature, begun: Option<&Document>) -> Feature {
+    let Some(was) = begun.and_then(|begun| begun.features.iter().find(|f| f.id == added.id)) else {
+        return added;
     };
-    let candidate = candidate(&edited, "feature")?;
-    // As the document now holds it: the text read again.
-    let held = candidate
-        .gated
-        .document()
-        .ok()
-        .and_then(|document| document.features.get(index))
-        .cloned()
-        .ok_or_else(|| {
-            Problems::from(
-                Error::new(
-                    ErrorCode::Internal,
-                    "the feature added isn't in the document",
-                )
-                .with_suggestion(crate::worker::SILICO_BUG),
-            )
-        })?;
-    Ok(Inserted {
-        feature: held,
-        index,
-        rewired,
-        candidate,
-    })
+    let Some(fingerprint) = was.fingerprint.as_ref() else {
+        return added;
+    };
+    let unprinted = |feature: &Feature| {
+        let mut feature = feature.clone();
+        feature.fingerprint = None;
+        document::write_feature(&feature).ok()
+    };
+    if added.fingerprint.is_none()
+        && let (Some(was_text), Some(added_text)) = (unprinted(was), unprinted(&added))
+        && was_text == added_text
+    {
+        added.fingerprint = Some(fingerprint.clone());
+    }
+    added
 }
 
 /// The feature `id` removed from `checked` (the design's `remove_feature`, as M5.0's A9

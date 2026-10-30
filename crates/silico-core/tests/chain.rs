@@ -464,14 +464,25 @@ fn a_move_that_leaves_a_feature_between_its_base_and_its_consumer_rewires_nothin
 
 #[test]
 fn a_move_to_where_a_feature_is_changes_nothing() {
-    for before in [Some(id("h0000001")), Some(id("s0000003"))] {
-        let moved = move_feature(&bracket(), &id("h0000001"), before.as_ref()).unwrap();
-        assert!(!moved.changed);
-        assert!(moved.rewired.is_empty());
-        assert!(moved.document.canonically_eq(&bracket()));
-    }
+    let moved = move_feature(&bracket(), &id("h0000001"), Some(&id("s0000003"))).unwrap();
+    assert!(!moved.changed);
+    assert!(moved.rewired.is_empty());
+    assert!(moved.document.canonically_eq(&bracket()));
     let moved = move_feature(&bracket(), &id("f0000001"), None).unwrap();
     assert!(!moved.changed);
+    // Before itself names no place: refused, naming `before`.
+    let error = move_feature(&bracket(), &id("h0000001"), Some(&id("h0000001"))).unwrap_err();
+    assert_eq!(error.message(), "h0000001 can't be moved before itself");
+    assert_eq!(
+        (error.feature(), error.parameter()),
+        (Some("h0000001"), Some("before"))
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some(
+            "name the feature h0000001 is to come before, another than h0000001 itself, or give null to move it to the end"
+        )
+    );
 }
 
 #[test]
@@ -1329,13 +1340,33 @@ mod hostile {
         })
     }
 
+    /// Whether a stored name of `document` has a maker (other than its own feature) that its
+    /// feature's base isn't built from: a name broken before any edit, the rebuild's to
+    /// report, which the lineage rule leaves alone.
+    fn broken_before(document: &Document) -> bool {
+        document.features.iter().any(|f| {
+            let Some(base) = base_of(f) else {
+                return false;
+            };
+            let lineage = built_from(document, &base);
+            names(f, document).iter().any(|makers| {
+                makers
+                    .iter()
+                    .any(|m| *m != f.id.as_str() && !lineage.contains(m))
+            })
+        })
+    }
+
     /// What the design says a move of `id` before `before` gives: the document, or a
     /// refusal (none); unchanged where it stays.
     fn move_model(original: &Document, id: &str, before: Option<&str>) -> Option<(Document, bool)> {
         let ids: Vec<String> = original.features.iter().map(|f| f.id.to_string()).collect();
         let from = ids.iter().position(|i| i == id).unwrap();
         let target = before.map_or(ids.len(), |b| ids.iter().position(|i| i == b).unwrap());
-        if target == from || target == from + 1 {
+        if target == from {
+            return None;
+        }
+        if target == from + 1 {
             return Some((original.clone(), false));
         }
         let mut order = ids.clone();
@@ -1519,11 +1550,24 @@ mod hostile {
                     // every edit (`document::chain`'s contract): a stored name the move
                     // leaves after its feature, already outside its base's lineage (so not
                     // the lineage rule's), is the gate's to refuse.
-                    let got = move_feature(&original, &id(f), before.map(|b| id(b)).as_ref())
-                        .and_then(|moved| match validate(&moved.document) {
-                            Ok(_) => Ok(moved),
-                            Err(invalid) => Err(invalid.errors()[0].clone()),
-                        });
+                    let raw = move_feature(&original, &id(f), before.map(|b| id(b)).as_ref());
+                    // The chain's own answer, without the gate, is the model's wherever no
+                    // stored name was outside its base's lineage before the move: only such
+                    // a name can make the chain take a move the gate then refuses.
+                    if let Ok(moved) = &raw
+                        && validate(&moved.document).is_err()
+                    {
+                        prop_assert!(
+                            broken_before(&original),
+                            "{} before {:?}: the chain took a move the gate refuses, and no name was broken before it",
+                            f,
+                            before
+                        );
+                    }
+                    let got = raw.and_then(|moved| match validate(&moved.document) {
+                        Ok(_) => Ok(moved),
+                        Err(invalid) => Err(invalid.errors()[0].clone()),
+                    });
                     let want = move_model(&original, f, before.map(String::as_str));
                     let at = format!("{f} before {before:?} in {all:?}");
                     match (got, want) {

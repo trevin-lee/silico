@@ -226,7 +226,9 @@ pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
 /// rewires it; its base becomes the last member of its chain before the new place (none for
 /// a pad or revolve placed before the chain's root); and the chain's next member after that
 /// place takes it as its base, never as its tool. A move that leaves it between its base and
-/// its consumer rewires nothing; a move to where it is changes nothing.
+/// its consumer rewires nothing; a move to where it is (before the feature after it, or to
+/// the end when it's last) changes nothing; and a move before itself is refused, naming
+/// `before`, since it names no place.
 ///
 /// Refused, naming both features: a move that puts it before its sketch or its tool; after
 /// a feature that uses it as its sketch; one that leaves a chain's root's consumer without
@@ -257,7 +259,18 @@ pub fn move_feature(
             .place(target)
             .ok_or_else(|| no_feature(target, "before"))?,
     };
-    if target == from || target == from + 1 {
+    if target == from {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("{id} can't be moved before itself"),
+        )
+        .with_feature(id.as_str())
+        .with_parameter("before")
+        .with_suggestion(format!(
+            "name the feature {id} is to come before, another than {id} itself, or give null to move it to the end"
+        )));
+    }
+    if target == from + 1 {
         return Ok(Moved {
             document: document.clone(),
             from,

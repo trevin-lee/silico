@@ -1250,6 +1250,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// consumed is consumed by it instead, that feature's field rewired to it and listed
     /// (`document::chain::insert`); refused, naming `before`, where that consumer comes
     /// before the place, and naming both where a boolean's two inputs both had consumers.
+    /// Inside a transaction, a feature added with the ID of one `begin`'s document held,
+    /// and every field of that one's but its fingerprint, keeps the fingerprint it stored, so
+    /// a feature removed and added back as it was is saved as never touching it saves.
     /// Through the gate, all at once; inside a transaction, applied, starting no rebuild;
     /// outside one, saved as its own transaction (decision 1). Refused whole, the session as
     /// it was, as every edit is ([`Session::edit`]), for a `before` the document hasn't, and
@@ -1281,6 +1284,7 @@ impl<P: Clients + 'static> Sessions<P> {
                             base.checked()?,
                             before.as_ref(),
                             feature,
+                            base.begun,
                             |document| lock(&ids).next_free(document),
                         )?;
                         Ok(((feature, index, rewired), Some(candidate)))
@@ -1355,8 +1359,12 @@ impl<P: Clients + 'static> Sessions<P> {
 
     /// Removes `session`'s feature `feature` (the design's `remove_feature`, as M5.0's A9
     /// amends it), as an edit made against `revision`, giving it back as the document held
-    /// it, with its place in the timeline, so `add_feature` can put it back `before` the
-    /// feature that followed it. The feature that consumed it takes its base, listed in
+    /// it (its fingerprint too), with its place in the timeline: to put it back, give
+    /// `add_feature` the feature without its fingerprint, `before` the feature that followed
+    /// it (inside a transaction, the fingerprint `begin`'s document stored is kept if it's
+    /// added back as it was), then set `base` back with `set_field` on each rewired entry
+    /// whose `to` is none; or `rollback`, of a removal inside a transaction. The feature
+    /// that consumed it takes its base, listed in
     /// `rewired` (`document::chain::remove`). Refused, naming both features, where nothing
     /// can stand in: a chain's root under a feature that needs a base, a feature whose
     /// sketch it is, or one that stores names of its elements; and where a feature's base
@@ -1407,7 +1415,10 @@ impl<P: Clients + 'static> Sessions<P> {
     /// consumer without a base, that would give a primitive a base or leave a feature that
     /// needs one without, that takes a feature off a tool's chain past its boolean, or after
     /// which a feature's base is no longer built from a maker of the names it stores (open
-    /// item 2b); otherwise as [`add_feature`](Self::add_feature).
+    /// item 2b); refused, naming `before`, before itself. A move that leaves a stored name
+    /// already broken (its maker never in its base's lineage) before its maker is refused by
+    /// the gate, in its words, naming the feature that stores it. Otherwise as
+    /// [`add_feature`](Self::add_feature).
     pub fn move_feature(
         &self,
         session: &SessionId,

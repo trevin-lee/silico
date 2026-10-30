@@ -54,7 +54,7 @@ impl<C: Kernel + 'static> Session<C> {
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Edited<T>, Problems> {
-        let (text, gated, transaction) = {
+        let (text, gated, transaction, begun) = {
             let held = self.held.read();
             if held.revision != revision {
                 // Stale because the file changed outside the session, if a reload since
@@ -74,6 +74,7 @@ impl<C: Kernel + 'static> Session<C> {
                 Arc::clone(&held.text),
                 Arc::clone(&held.gated),
                 held.transaction.is_some(),
+                held.begun(),
             )
         };
         let (made, candidate) = {
@@ -83,6 +84,7 @@ impl<C: Kernel + 'static> Session<C> {
                 text: &text,
                 gated: &gated,
                 transaction,
+                begun: begun.as_deref().and_then(|begun| begun.document().ok()),
             })?
         };
         let Some(candidate) = candidate else {
@@ -110,12 +112,15 @@ impl<C: Kernel + 'static> Session<C> {
 }
 
 /// What an edit is made from ([`Session::edit`]): the session's ID, its text, the gate's
-/// finding of it, and whether a transaction is open.
+/// finding of it, whether a transaction is open, and, inside one, the document it began
+/// from (`begin`'s, or its mend, if `begin`'s text didn't read), whose stored records a
+/// feature added back as it was keeps.
 pub(super) struct Base<'a> {
     pub(super) id: SessionId,
     pub(super) text: &'a [u8],
     pub(super) gated: &'a Gated,
     pub(super) transaction: bool,
+    pub(super) begun: Option<&'a Document>,
 }
 
 impl<'a> Base<'a> {

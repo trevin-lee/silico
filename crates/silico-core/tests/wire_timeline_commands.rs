@@ -841,20 +841,172 @@ fn a_removal_is_undone_by_adding_the_feature_back_before_the_one_that_followed_i
         [id("h0000001"), id("h0000002"), id("f0000001")]
     );
     assert_eq!(f.file(), file);
-    // Inside one transaction, the chain is back as it was, and the document but for the
-    // fingerprint add_feature can't be given: the edits' net reach is nothing (h0000001's
-    // values are as begin saw them), so the commit keeps what's stored, none for it.
+}
+
+/// `file` with h0000001's stored fingerprint one face off what it builds: drift, as a hand
+/// edit leaves it.
+fn drifted(file: &str) -> String {
+    let mut document = document::read(file.as_bytes()).unwrap();
+    let pocket = &mut document.features[3];
+    assert_eq!(pocket.id, id("h0000001"));
+    pocket.fingerprint.as_mut().unwrap().faces += 1;
+    document::write(&document).unwrap()
+}
+
+/// `text` opened, a transaction begun, `edit` made in it, and committed: the commit, and the
+/// file it left.
+fn committed_after(
+    text: &str,
+    edit: impl Fn(&Fixture),
+) -> (silico_core::command::Committed, String) {
+    let f = opened(text);
     f.begin();
+    edit(&f);
+    let commit = answer(f.sessions.commit(&f.id)).result.unwrap();
+    (commit, f.file())
+}
+
+/// h0000001 removed and added back as it was, its fingerprint left out, before s0000003.
+fn removed_and_added_back(f: &Fixture, feature: &str) {
     f.remove("h0000001").result.unwrap();
-    f.add(&format!(
-        r#"{{"session": "s1", "revision": 1, "before": "s0000003", "feature": {feature}}}"#
+    let added = f
+        .add(&format!(
+            r#"{{"session": "s1", "revision": 1, "before": "s0000003", "feature": {feature}}}"#
+        ))
+        .result
+        .unwrap();
+    assert_eq!(added.index, 3);
+}
+
+/// An edit of the fillet that reaches nothing (its note), so a commit writes the file.
+fn noted(f: &Fixture) {
+    answer(f.sessions.set_field(
+        &f.id,
+        f.revision(),
+        id("f0000001"),
+        "note".to_owned(),
+        parsed(r#""Checked""#),
     ))
     .result
     .unwrap();
-    let mut want = document::read(file.as_bytes()).unwrap();
-    want.features[3].fingerprint = None;
+}
+
+#[test]
+fn removed_and_added_back_as_it_was_in_a_transaction_saves_what_never_touching_it_saves() {
+    // The saved file is a function of the document's state, not of the edits' path: inside
+    // a transaction, h0000001 added back with begin's fields keeps begin's fingerprint, so
+    // the transaction's document is begin's, byte for byte, and its commit writes nothing.
+    let file = fingerprinted();
+    let pocket = unprinted(&document::read(file.as_bytes()).unwrap().features[3]);
+    let f = opened(&file);
+    f.begin();
     let text = answer(f.sessions.text(&f.id, None)).result.unwrap().text;
-    assert_eq!(text, document::write(&want).unwrap());
+    removed_and_added_back(&f, &pocket);
+    assert_eq!(
+        answer(f.sessions.text(&f.id, None)).result.unwrap().text,
+        text
+    );
+    let commit = answer(f.sessions.commit(&f.id)).result.unwrap();
+    assert!(!commit.written, "{commit:?}");
+    assert_eq!(f.file(), file);
+    // Beside an edit that writes the file: the same file, and the same commit, as that edit
+    // alone.
+    let (alone, by_itself) = committed_after(&file, noted);
+    let (with, round_trip) = committed_after(&file, |f| {
+        removed_and_added_back(f, &pocket);
+        noted(f);
+    });
+    assert!(alone.written);
+    assert_eq!(round_trip, by_itself);
+    assert_eq!(
+        (&with.refingerprinted, &with.problems),
+        (&alone.refingerprinted, &alone.problems)
+    );
+}
+
+#[test]
+fn removed_and_added_back_drifted_it_keeps_its_stale_record_and_its_drift_as_untouched() {
+    // h0000001 drifted at begin (its stored faces one off): added back as it was, the commit
+    // reports the same drift as leaving it untouched does, and the file holds the stale
+    // record exactly.
+    let file = drifted(&fingerprinted());
+    let pocket = unprinted(&document::read(file.as_bytes()).unwrap().features[3]);
+    let (alone, by_itself) = committed_after(&file, noted);
+    let (with, round_trip) = committed_after(&file, |f| {
+        removed_and_added_back(f, &pocket);
+        noted(f);
+    });
+    let drift: Vec<(ErrorCode, Option<&str>)> = alone
+        .problems
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature()))
+        .collect();
+    assert_eq!(drift, [(ErrorCode::Drift, Some("h0000001"))]);
+    assert_eq!(with.problems, alone.problems);
+    assert_eq!(with.refingerprinted, alone.refingerprinted);
+    assert_eq!(round_trip, by_itself);
+    let stored = document::read(round_trip.as_bytes()).unwrap().features[3]
+        .fingerprint
+        .clone();
+    assert_eq!(
+        stored,
+        document::read(file.as_bytes()).unwrap().features[3]
+            .fingerprint
+            .clone()
+    );
+}
+
+#[test]
+fn added_back_with_other_values_it_is_reached_and_written_fresh() {
+    // h0000001 added back under its ID with another value (its extent, 5 deep): no
+    // record of begin's is restored; it's reached, so `check` reports no drift on it, and
+    // the commit writes it fresh, as setting the value in place does.
+    let file = fingerprinted();
+    let mut other = document::read(file.as_bytes()).unwrap().features[3].clone();
+    other.fingerprint = None;
+    let text = document::write_feature(&other).unwrap().replace(
+        r#""extent": {"type": "through_all", "reversed": true}"#,
+        r#""extent": {"type": "one_side", "length": 5, "reversed": true}"#,
+    );
+    assert!(text.contains(r#""length": 5"#), "{text}");
+    let f = opened(&file);
+    f.begin();
+    f.remove("h0000001").result.unwrap();
+    let added = f
+        .add(&format!(
+            r#"{{"session": "s1", "revision": 1, "before": "s0000003", "feature": {text}}}"#
+        ))
+        .result
+        .unwrap();
+    assert_eq!(added.feature.fingerprint, None);
+    let check = answer(f.sessions.check(
+        &f.id,
+        silico_core::command::CheckModel::Current { fresh: false },
+    ))
+    .result
+    .unwrap();
+    assert!(check.problems.is_empty(), "{:?}", check.problems.errors());
+    let commit = answer(f.sessions.commit(&f.id)).result.unwrap();
+    assert!(commit.written);
+    assert_eq!(
+        commit.refingerprinted,
+        [id("h0000001"), id("h0000002"), id("f0000001")]
+    );
+    // As the value set in place, never removed.
+    let (set, in_place) = committed_after(&file, |f| {
+        answer(f.sessions.set_field(
+            &f.id,
+            f.revision(),
+            id("h0000001"),
+            "extent".to_owned(),
+            parsed(r#"{"type": "one_side", "length": 5, "reversed": true}"#),
+        ))
+        .result
+        .unwrap();
+    });
+    assert_eq!(f.file(), in_place);
+    assert_eq!(commit.refingerprinted, set.refingerprinted);
 }
 
 #[test]
@@ -924,7 +1076,7 @@ fn a_move_past_unrelated_features_rewires_nothing_and_writes_no_fingerprint() {
 fn a_move_to_where_a_feature_is_changes_nothing_and_a_move_to_the_end_takes_the_last_as_base() {
     let f = opened(&bracket());
     f.inside_at(12);
-    for before in [Some("h0000001"), Some("s0000003")] {
+    for before in [Some("s0000003")] {
         let moved = f.moved("h0000001", before).result.unwrap();
         assert_eq!(
             (moved.from, moved.to, moved.changed, moved.commit),
@@ -1116,4 +1268,161 @@ fn the_lineage_rule_refuses_a_fuses_move_past_and_its_removal_under_a_fillet_of_
     assert!(fuse.rewired.is_empty());
     let ids: Vec<String> = f.chain().into_iter().map(|(id, _)| id).collect();
     assert_eq!(ids, ["b0000001", "t0000001"]);
+}
+
+#[test]
+fn a_move_leaving_a_name_already_broken_after_its_maker_is_the_gates_to_refuse() {
+    // The fillet on b0000001 names t0000001's edge, which its base was never built from:
+    // broken already, so not the lineage rule's. Moving t0000001 to the end leaves the name
+    // a maker the fillet comes before, which the gate refuses in its own words, naming the
+    // fillet; the session as it was.
+    let f = opened(&text_of(&[
+        r#"{"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#,
+        r#"{"id": "t0000001", "type": "box", "v": 1, "name": "Tool", "position": [20, 0, 0], "length": 10, "width": 10, "height": 10}"#,
+        r#"{"id": "r0000001", "type": "fillet", "v": 1, "name": "Round", "base": "b0000001", "edges": ["t0000001.box.Edge1"], "radius": 1}"#,
+    ]));
+    f.begin();
+    let at = f.revision();
+    let text = answer(f.sessions.text(&f.id, None)).result.unwrap().text;
+    let error = the_error(&f.moved("t0000001", None));
+    assert_eq!(
+        (error.code(), error.feature(), error.parameter()),
+        (ErrorCode::InvalidInput, Some("r0000001"), Some("edges.0"))
+    );
+    assert_eq!(
+        error.message(),
+        r#"edges.0, "t0000001.box.Edge1", isn't an edge's name: no feature t0000001 before this one, at column 1"#
+    );
+    assert_eq!(f.revision(), at);
+    assert_eq!(
+        answer(f.sessions.text(&f.id, None)).result.unwrap().text,
+        text
+    );
+}
+
+#[test]
+fn an_inserted_features_reader_errors_name_its_place_in_the_timeline() {
+    // A chamfer with an ID that isn't one, inserted before h0000002: the reader names it by
+    // the place it would take, features[5], at the request's feature.id.
+    let f = opened(&bracket());
+    f.begin();
+    let request =
+        example("add_feature/request-before").replace(r#""id": "c0000002""#, r#""id": "C0000002""#);
+    assert!(request.contains("C0000002"));
+    let error = the_error(&f.add(&request));
+    assert_eq!(
+        (error.feature(), error.parameter()),
+        (Some("features[5]"), Some("feature.id"))
+    );
+}
+
+#[test]
+fn a_timelines_counts_are_each_its_own_and_an_older_models_revision_is_named() {
+    // The bracket, no fingerprints stored, and a fillet f0000002 on the end of its chain
+    // whose edge name nothing makes. By hand: every solid that builds warns of its missing
+    // fingerprint (problems 0, warnings 1), sketches neither; f0000002 fails on its broken
+    // reference (problems 1) and, failed, isn't warned of (warnings 0).
+    let broken = r#"{"id": "f0000002", "type": "fillet", "v": 1, "name": "Broken", "base": "f0000001", "edges": ["p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000001, G s0000001.sketch.Vertex.pa000003)"], "radius": 1}"#;
+    let f = opened(&text_of(&[
+        S0000001, P0000001, S0000002, H0000001, S0000003, H0000002, F0000001, broken,
+    ]));
+    f.begin();
+    let current = answer(f.sessions.timeline(&f.id, ModelChoice::Current))
+        .result
+        .unwrap();
+    let built = current.model.unwrap();
+    // An edit the model needn't rebuild for: the session moves on, the published model
+    // stays the older revision's.
+    answer(f.sessions.set_field(
+        &f.id,
+        f.revision(),
+        id("s0000002"),
+        "note".to_owned(),
+        parsed(r#""Holes""#),
+    ))
+    .result
+    .unwrap();
+    let response = answer(f.sessions.timeline(&f.id, ModelChoice::Published));
+    let text = written(response.result.as_ref().unwrap());
+    holds(&schema_of("timeline", "result"), &text, "counts");
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(value["revision"], built.number() + 1);
+    assert_eq!(value["model_revision"], built.number());
+    let marks: Vec<(String, String, u64, u64)> = value["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["id"].as_str().unwrap().to_owned(),
+                e["health"].as_str().unwrap().to_owned(),
+                e["problems"].as_u64().unwrap(),
+                e["warnings"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    let want: Vec<(String, String, u64, u64)> = [
+        ("s0000001", "healthy", 0, 0),
+        ("p0000001", "warning", 0, 1),
+        ("s0000002", "healthy", 0, 0),
+        ("h0000001", "warning", 0, 1),
+        ("s0000003", "healthy", 0, 0),
+        ("h0000002", "warning", 0, 1),
+        ("f0000001", "warning", 0, 1),
+        ("f0000002", "error", 1, 0),
+    ]
+    .iter()
+    .map(|(i, h, p, w)| ((*i).to_owned(), (*h).to_owned(), *p, *w))
+    .collect();
+    assert_eq!(marks, want);
+    // On the wire, each count under its own key, literally.
+    assert!(
+        text.contains(r#""id": "f0000002", "type": "fillet", "name": "Broken", "suppressed": false, "inputs": ["f0000001"], "health": "error", "problems": 1, "warnings": 0}"#),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#""id": "h0000001", "type": "pocket", "name": "Base holes", "suppressed": false, "inputs": ["p0000001", "s0000002"], "health": "warning", "problems": 0, "warnings": 1}"#),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_before_the_document_hasnt_is_refused_with_the_features_own_refusals_at_once() {
+    // A `before` the document hasn't, and a feature that gives a fingerprint: both refused
+    // in one answer, `before` first, as every edit gives every reason at once.
+    let f = opened(&bracket());
+    f.begin();
+    let at = f.revision();
+    let request = with(
+        &example("add_feature/request-before"),
+        "before",
+        r#""z0000001""#,
+    )
+    .replace(
+        r#""name":"Base edge","#,
+        r#""name":"Base edge","fingerprint":{"volume":1,"area":1,"faces":1,"edges":1,"vertices":1},"#,
+    );
+    assert!(request.contains("fingerprint"), "{request}");
+    let refused = f.add(&request);
+    let errors = refused.result.as_ref().unwrap_err();
+    let said: Vec<(Option<&str>, &str)> = errors
+        .errors()
+        .iter()
+        .map(|e| (e.parameter(), e.message()))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (
+                Some("before"),
+                "the document has no feature z0000001 to add this one before"
+            ),
+            (
+                Some("feature.fingerprint"),
+                "a new feature has no fingerprint: a commit writes it"
+            ),
+        ]
+    );
+    assert_eq!(errors.total(), 2);
+    assert_eq!(f.revision(), at);
 }

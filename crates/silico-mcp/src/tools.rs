@@ -240,7 +240,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::RemoveFeature => (
             "Remove a feature",
-            "Remove one feature; its JSON is returned. The feature that consumed it takes its base, listed in `rewired`. Refused, naming both, where nothing can stand in: a chain's first feature under one that needs a base, a feature's sketch, or a feature whose elements another names. Give the revision the edit was made against.",
+            "Remove one feature; its JSON is returned. The feature that consumed it takes its base, listed in `rewired`. Refused, naming both, where nothing can stand in: a chain's first feature under one that needs a base, a feature's sketch, or a feature whose elements another names. To put it back, give `add_feature` the returned feature without its `fingerprint`, `before` the feature that followed it (inside a transaction, the fingerprint `begin` saw is kept), then `set_field` `base` back on each `rewired` entry whose `to` is null; or remove inside a transaction and `rollback`. Give the revision the edit was made against.",
         ),
         Command::MoveFeature => (
             "Move a feature",
