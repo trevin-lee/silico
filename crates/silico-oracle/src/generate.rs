@@ -372,7 +372,7 @@ struct Drawing {
 impl Drawing {
     fn id(&mut self, prefix: char) -> String {
         self.next += 1;
-        format!("{prefix}{:7}", self.next)
+        format!("{prefix}{:07}", self.next)
     }
 
     fn point(&mut self, at: [f64; 2]) -> String {
