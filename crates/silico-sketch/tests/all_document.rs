@@ -47,6 +47,8 @@ mod drag;
 mod extend;
 #[path = "session_sketch_edits.rs"]
 mod session_sketch_edits;
+#[path = "session_sketch_geometry_edits.rs"]
+mod session_sketch_geometry_edits;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
 #[path = "sketch_read.rs"]
