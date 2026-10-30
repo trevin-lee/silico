@@ -2037,6 +2037,7 @@ fn a_revert_after_dont_save_on_a_quit_still_closes_the_tab() {
     assert!(h.state().tabs()[0].closing());
     h.get_by_label("File").click();
     step(&mut h);
+    step(&mut h);
     assert!(
         h.get_by_role_and_label(Role::Button, "Revert")
             .accesskit_node()
