@@ -10,10 +10,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::PROBLEMS_LISTED;
 use super::sketch::{
     Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchPoint, TangentSide,
 };
+use super::{PROBLEMS_LISTED, nearest_ids, with_candidates};
 use crate::{Error, ErrorCode};
 
 mod add;
@@ -38,6 +38,33 @@ pub struct Edited {
     pub removed: Vec<ElementId>,
 }
 
+/// What [`remove`] can be asked to take: a member, by ID, or one of the sketch's fixed
+/// references, which it refuses in its own words, never as a member it doesn't know.
+pub trait Named {
+    /// The member's ID; none for a fixed reference.
+    fn member(&self) -> Option<&ElementId>;
+    /// As the request names it.
+    fn text(&self) -> &str;
+}
+
+impl Named for ElementId {
+    fn member(&self) -> Option<&ElementId> {
+        Some(self)
+    }
+    fn text(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Named for Reference {
+    fn member(&self) -> Option<&ElementId> {
+        self.element()
+    }
+    fn text(&self) -> &str {
+        self.as_str()
+    }
+}
+
 /// Removes `members` (sketch-edit decision 7): each constraint named; each curve named,
 /// with each of its points no curve uses after the edit; each point named, which no curve
 /// may use after it; and every constraint that names a member removed, in any of its
@@ -50,10 +77,16 @@ pub struct Edited {
 /// point and both ends stay (the origin, a fixed reference, always does), as FreeCAD's is
 /// stored (a `Symmetric` of the line's ends, which
 /// the line's delete leaves on the ends its neighbours keep), and as split makes it.
-pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused> {
+///
+/// Refused, every problem in one answer, each once, at the first place in `members` that
+/// names it, in their order: a member the sketch hasn't (with the sketch's IDs nearest it as
+/// candidates, as the gate gives them for a reference), a fixed reference (`origin`,
+/// `x_axis`, `y_axis`; FreeCAD `2a401ee895`, `83d14b785e`), and a point a curve still uses.
+pub fn remove<N: Named>(sketch: &Sketch, members: &[N]) -> Result<Edited, Refused> {
     let kinds = kinds_of(sketch);
     let named: BTreeSet<&ElementId> = members
         .iter()
+        .filter_map(Named::member)
         .filter(|id| kinds.contains_key(*id))
         .collect();
     let curves_removed: BTreeSet<&ElementId> = named
@@ -80,15 +113,38 @@ pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused>
     // Each problem once, at the first place its member is named, in the request's order.
     let mut refused = Refused::default();
     let mut said: BTreeSet<&ElementId> = BTreeSet::new();
-    for (place, id) in members.iter().enumerate() {
+    let mut fixed_said: BTreeSet<&str> = BTreeSet::new();
+    for (place, member) in members.iter().enumerate() {
+        let Some(id) = member.member() else {
+            let fixed = member.text();
+            if fixed_said.insert(fixed) {
+                refused.push(|| {
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "{fixed} is one of the sketch's fixed references, which can't be removed"
+                        ),
+                    )
+                    .with_parameter(format!("members.{place}"))
+                    .with_suggestion("remove the constraints that name it instead")
+                });
+            }
+            continue;
+        };
         match kinds.get(id) {
             None if said.insert(id) => refused.push(|| {
+                let near = nearest_ids(id, kinds.keys());
                 Error::new(
                     ErrorCode::InvalidInput,
                     format!("the sketch has no member {id}"),
                 )
                 .with_parameter(format!("members.{place}"))
-                .with_suggestion("name a point, curve, or constraint of this sketch by its ID")
+                .with_suggestion(with_candidates(
+                    "name a point, curve, or constraint of this sketch by its ID".to_owned(),
+                    id,
+                    &near,
+                ))
+                .with_candidates(near)
             }),
             Some(ElementKind::Point) => {
                 if let Some(using) = users.get(id)

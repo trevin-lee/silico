@@ -921,39 +921,17 @@ pub(super) fn sketch_add(
 /// [`sketch_edit::remove`] (a curve with the points only it used, every constraint naming
 /// what goes, a point only if no curve uses it, duplicates taken once), and the document
 /// put through the gate. Never solved, as [`sketch_add`] isn't (SD7). Refused for a feature
-/// that isn't a sketch, naming `sketch`; for a fixed reference (`origin`, `x_axis`,
-/// `y_axis`), each at its place, before anything else is judged; and with every problem the
-/// removal or the gate finds, each naming the sketch.
+/// that isn't a sketch, naming `sketch`; and with every problem the removal finds (a member
+/// the sketch hasn't, a fixed reference, `origin`, `x_axis`, or `y_axis`, a point a curve
+/// still uses), all in one answer, each once at its first place, or the gate finds, each
+/// naming the sketch.
 pub(super) fn sketch_remove(
     document: &Document,
     id: &FeatureId,
     members: &[Reference],
 ) -> Result<(SketchChanges, Option<Candidate>), Problems> {
     let (index, _, sketch) = sketch_of(document, id)?;
-    let mut fixed = Vec::new();
-    let mut unlisted = 0;
-    let mut ids = Vec::with_capacity(members.len());
-    for (place, member) in members.iter().enumerate() {
-        match member.element() {
-            Some(element) => ids.push(element.clone()),
-            None if fixed.len() < PROBLEMS_LISTED => fixed.push(
-                Error::new(
-                    ErrorCode::InvalidInput,
-                    format!(
-                        "{member} is one of the sketch's fixed references, which can't be removed"
-                    ),
-                )
-                .with_feature(id.as_str())
-                .with_parameter(format!("members.{place}"))
-                .with_suggestion("remove the constraints that name it instead"),
-            ),
-            None => unlisted += 1,
-        }
-    }
-    if !fixed.is_empty() {
-        return Err(Problems::with_unlisted(fixed, unlisted));
-    }
-    let edited = sketch_edit::remove(sketch, &ids).map_err(|refused| of_sketch(id, refused))?;
+    let edited = sketch_edit::remove(sketch, members).map_err(|refused| of_sketch(id, refused))?;
     sketch_edited(document, index, sketch, edited)
 }
 

@@ -556,15 +556,32 @@ fn a_remove_of_one_line_named_two_hundred_thousand_times_removes_it_once() {
 }
 
 #[test]
-fn a_remove_of_the_origin_two_hundred_thousand_times_lists_a_hundred_and_counts_them_all() {
+fn a_remove_of_the_origin_two_hundred_thousand_times_says_it_once_at_its_first_place() {
+    // Each problem once, at the first place that names it, as an unknown member's is: the
+    // origin named 200,000 times is one problem, not 200,000.
     let f = opened(&bracket());
     f.begin();
     let text = f.text();
     let members = vec!["origin"; 200_000];
+    let started = Instant::now();
     let envelope = f.call("sketch_remove", &remove(1, "s0000001", &members));
+    assert!(started.elapsed() < BOUNDED);
     assert_eq!(envelope["ok"], false);
-    assert_eq!(envelope["errors"].as_array().unwrap().len(), 100);
-    assert_eq!(envelope["total"], 200_000);
+    assert_eq!(
+        envelope["errors"],
+        json!([{
+            "code": "invalid_input",
+            "message": "origin is one of the sketch's fixed references, which can't be removed",
+            "feature": "s0000001",
+            "elements": [],
+            "elements_total": 0,
+            "parameter": "members.0",
+            "cause": null,
+            "suggestion": "remove the constraints that name it instead",
+            "candidates": []
+        }])
+    );
+    assert_eq!(envelope["total"], 1);
     f.unharmed(&text, 1, "s0000001");
 }
 
@@ -694,10 +711,31 @@ fn everything_removed_from_a_padded_sketch_is_applied_and_check_says_why_the_pad
         "check",
         r#"{"session": "s1", "model": "current", "fresh": false}"#,
     );
-    // Whatever check says, it says it as data naming a feature, never a crash.
-    let failed = checked.to_string();
+    // The pad fails, as data naming it: its sketch has no curves (profile.rs's first
+    // refusal, its advice in the cause), one refusal (sweep.rs's `unprofiled`), its parameter
+    // the pad's `sketch`, no element at fault. The sketch itself isn't failed.
+    assert_eq!(checked["ok"], true, "{checked}");
+    let problems = checked["result"]["problems"].as_array().unwrap();
+    let pad = problems
+        .iter()
+        .find(|p| p["feature"] == "p0000001")
+        .unwrap_or_else(|| panic!("{checked}"));
+    assert_eq!(
+        *pad,
+        json!({
+            "code": "invalid_input",
+            "message": "pad p0000001 sweeps sketch s0000001, which makes no profile (1 refusal)",
+            "feature": "p0000001",
+            "elements": [],
+            "elements_total": 0,
+            "parameter": "sketch",
+            "cause": "the sketch has no curves to make a profile of (draw a closed outline of lines, arcs, or circles that aren't construction geometry)",
+            "suggestion": "fix sketch s0000001 where the cause says, or sweep another sketch",
+            "candidates": []
+        })
+    );
     assert!(
-        failed.contains("p0000001") || failed.contains("s0000001"),
+        problems.iter().all(|p| p["feature"] != "s0000001"),
         "{checked}"
     );
     let at = Revision::from_number(f.revision()).unwrap();

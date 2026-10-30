@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::wire::sketch_edits::{SketchAddRequest, SketchRemoveRequest};
 use silico_core::command::wire::{Layout, ToWire, write};
@@ -667,9 +668,26 @@ fn an_edit_of_nothing_changes_nothing_and_writes_nothing() {
         ),
         nothing
     );
-    // Nothing pushed on the undo stack: there's nothing to undo.
+    // Nothing pushed on the undo stack: there's nothing to undo (session/undo.rs's words).
     let undone = answer(f.sessions.undo(&s1(), revision(1), None));
-    assert!(undone.result.is_err(), "{:?}", undone.result);
+    let refused = undone.result.unwrap_err();
+    let [error] = refused.errors() else {
+        panic!("{refused:?}")
+    };
+    assert_eq!(
+        (
+            error.code(),
+            error.message(),
+            error.parameter(),
+            error.cause()
+        ),
+        (
+            ErrorCode::InvalidInput,
+            "nothing to undo in session s1's transaction",
+            Some("session"),
+            None
+        )
+    );
     assert_eq!(f.revision(), revision(1));
 }
 
@@ -762,7 +780,24 @@ fn each_edit_is_undone_and_redone_byte_for_byte() {
         &remove_request(8, "s0000002", &["kb000006"]),
     );
     let stepped = answer(f.sessions.redo(&s1(), revision(9), None));
-    assert!(stepped.result.is_err());
+    let refused = stepped.result.unwrap_err();
+    let [error] = refused.errors() else {
+        panic!("{refused:?}")
+    };
+    assert_eq!(
+        (
+            error.code(),
+            error.message(),
+            error.parameter(),
+            error.cause()
+        ),
+        (
+            ErrorCode::InvalidInput,
+            "nothing to redo in session s1's transaction",
+            Some("session"),
+            Some("an edit after an undo drops what was undone")
+        )
+    );
     // Rolled back, the file as it was opened.
     answer(f.sessions.rollback(&s1())).result.unwrap();
     assert_eq!(f.text(), opened);
@@ -773,14 +808,26 @@ fn the_edits_own_refusals_name_their_members_and_the_sketch() {
     let f = opened(&bracket());
     f.begin();
     let text = f.text();
-    // An unknown member, each named once at its first place; a duplicate taken once.
+    // An unknown member, each named once at its first place; a duplicate taken once. Its
+    // candidates, by the gate's rule for a reference to an ID no member holds (at most two
+    // characters off, the nearest first, then by ID, at most five), by hand from the L
+    // profile's IDs (pa000001 to pa000006, na000001 to na000006, ka000001 to ka00000c):
+    // pa000009 is one character from ka000009 and from each of the six points, the first
+    // five by ID taken;
+    // kb000001 one from ka000001, and two from every other ka, na, and pa, of which ka000002
+    // to ka000005 come first by ID. zzzzzzzz is near none.
+    let near = |id: &str| {
+        format!(
+            "name a point, curve, or constraint of this sketch by its ID: the candidates are this sketch's IDs a character or two from {id}, none taken for it"
+        )
+    };
     assert_eq!(
         f.refused(
             "sketch_remove",
             &remove_request(
                 1,
                 "s0000001",
-                &["na000003", "pa000009", "pa000009", "kb000001"]
+                &["na000003", "pa000009", "pa000009", "kb000001", "zzzzzzzz"]
             )
         ),
         json!([
@@ -790,8 +837,8 @@ fn the_edits_own_refusals_name_their_members_and_the_sketch() {
                 &[],
                 "members.1",
                 None,
-                "name a point, curve, or constraint of this sketch by its ID",
-                &[]
+                &near("pa000009"),
+                &["ka000009", "pa000001", "pa000002", "pa000003", "pa000004"]
             ),
             error(
                 "the sketch has no member kb000001",
@@ -799,18 +846,41 @@ fn the_edits_own_refusals_name_their_members_and_the_sketch() {
                 &[],
                 "members.3",
                 None,
+                &near("kb000001"),
+                &["ka000001", "ka000002", "ka000003", "ka000004", "ka000005"]
+            ),
+            error(
+                "the sketch has no member zzzzzzzz",
+                Some("s0000001"),
+                &[],
+                "members.4",
+                None,
                 "name a point, curve, or constraint of this sketch by its ID",
                 &[]
             )
         ])
     );
-    // Each fixed reference, refused at its place, before anything else.
+    // Each fixed reference, refused at its place, in one answer with every other problem,
+    // each said once, at its first place.
     assert_eq!(
         f.refused(
             "sketch_remove",
-            &remove_request(1, "s0000001", &["pa000009", "x_axis", "y_axis"])
+            &remove_request(
+                1,
+                "s0000001",
+                &["pa000009", "x_axis", "y_axis", "x_axis", "pa000005"]
+            )
         ),
         json!([
+            error(
+                "the sketch has no member pa000009",
+                Some("s0000001"),
+                &[],
+                "members.0",
+                None,
+                &near("pa000009"),
+                &["ka000009", "pa000001", "pa000002", "pa000003", "pa000004"]
+            ),
             error(
                 "x_axis is one of the sketch's fixed references, which can't be removed",
                 Some("s0000001"),
@@ -828,6 +898,15 @@ fn the_edits_own_refusals_name_their_members_and_the_sketch() {
                 None,
                 "remove the constraints that name it instead",
                 &[]
+            ),
+            error(
+                "point pa000005 is used by lines na000004 and na000005",
+                Some("s0000001"),
+                &["pa000005", "na000004", "na000005"],
+                "members.4",
+                Some("a point that curves use is those curves' end"),
+                "remove the curves that use it with it, or unjoin it first",
+                &[]
             )
         ])
     );
@@ -839,6 +918,129 @@ fn the_edits_own_refusals_name_their_members_and_the_sketch() {
             &remove_request(1, "s0000001", &["na000003", "ka000003", "na000003"])
         )["removed"],
         json!(["na000003", "ka000003"])
+    );
+}
+
+#[test]
+fn an_arcs_start_or_end_alone_is_said_to_be_its_end() {
+    // An arc's points are its centre, then its ends (`curves`' order): a point only an arc's
+    // start or end is that arc's end, its centre its centre (point_in_use's words, by hand).
+    let f = opened(&bracket());
+    f.begin();
+    f.ran(
+        "sketch_add",
+        &add_request(
+            1,
+            "s0000002",
+            [
+                r#"{"id": "pz000001", "x": 50, "y": 10, "construction": true}, {"id": "pz000002", "x": 55, "y": 10, "construction": true}, {"id": "pz000003", "x": 50, "y": 15, "construction": true}"#,
+                "",
+                "",
+                r#"{"id": "az000001", "center": "pz000001", "start": "pz000002", "end": "pz000003", "construction": true}"#,
+                "",
+            ],
+        ),
+    );
+    let text = f.text();
+    for (point, role) in [
+        ("pz000002", "end"),
+        ("pz000003", "end"),
+        ("pz000001", "centre"),
+    ] {
+        assert_eq!(
+            f.refused("sketch_remove", &remove_request(2, "s0000002", &[point])),
+            json!([error(
+                &format!("point {point} is used by arc az000001"),
+                Some("s0000002"),
+                &[point, "az000001"],
+                "members.0",
+                Some(&format!("a point that curves use is those curves' {role}")),
+                "remove the curves that use it with it, or unjoin it first",
+                &[]
+            )]),
+            "{point}"
+        );
+    }
+    assert_eq!((f.text(), f.revision()), (text, revision(2)));
+}
+
+#[test]
+fn a_removals_modified_and_removed_are_by_kind_then_by_id_whatever_the_requests_order() {
+    // Two lines whose ends their neighbours keep, each with a midpoint, the lower ID on the
+    // line named first, and a lone point between them in the request: each midpoint becomes
+    // a symmetric of its line's ends, in `modified` by ID; `removed` holds the point, then
+    // the lines, then the constraints naming them (ka000001 and ka000003, their horizontals,
+    // and ka000009, na000001's length), each kind by ID.
+    let f = opened(&bracket());
+    f.begin();
+    f.ran(
+        "sketch_add",
+        &add_request(
+            1,
+            "s0000001",
+            [
+                r#"{"id": "pa000007", "x": 30, "y": 0, "construction": false}, {"id": "pa000008", "x": 32.5, "y": 5, "construction": false}, {"id": "pa000009", "x": 20, "y": 20, "construction": true}"#,
+                "",
+                "",
+                "",
+                r#"{"id": "ka00000e", "type": "midpoint", "point": "pa000007", "line": "na000001"}, {"id": "ka00000d", "type": "midpoint", "point": "pa000008", "line": "na000003"}"#,
+            ],
+        ),
+    );
+    assert_eq!(
+        f.ran(
+            "sketch_remove",
+            &remove_request(2, "s0000001", &["na000003", "pa000009", "na000001"])
+        ),
+        json!({
+            "sketch": "s0000001",
+            "added": [],
+            "modified": ["ka00000d", "ka00000e"],
+            "removed": ["pa000009", "na000001", "na000003", "ka000001", "ka000003", "ka000009"],
+            "changed": true,
+            "commit": null
+        })
+    );
+}
+
+#[test]
+fn an_unknown_sketch_in_a_document_of_six_has_the_first_five_sketches_as_candidates() {
+    // The candidates are the document's first sketches in timeline order, at most five
+    // (`CANDIDATES`): of six, out of ID order, the sixth (s0000003) is left out.
+    let order = [
+        "s0000006", "s0000002", "s0000005", "s0000001", "s0000004", "s0000003",
+    ];
+    let sketches: Vec<String> = order
+        .iter()
+        .map(|id| {
+            format!(
+                r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}}"#
+            )
+        })
+        .collect();
+    let f = opened(&format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        sketches.join(", ")
+    ));
+    let want = json!([error(
+        "the document has no feature s0000009",
+        None,
+        &[],
+        "sketch",
+        None,
+        "name a sketch of the document, by its ID",
+        &order[..5]
+    )]);
+    assert_eq!(
+        f.refused("sketch_remove", &remove_request(1, "s0000009", &[])),
+        want
+    );
+    assert_eq!(
+        f.refused(
+            "sketch_add",
+            &add_request(1, "s0000009", ["", "", "", "", ""])
+        ),
+        want
     );
 }
 
