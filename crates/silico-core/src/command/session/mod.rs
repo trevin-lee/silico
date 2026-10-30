@@ -915,8 +915,18 @@ impl<P: Clients + 'static> Sessions<P> {
     /// without the client saying so. It never reads the file (decision 2), so a file gone or
     /// changed never keeps it open. It doesn't cancel the command ahead of it: commands run
     /// in the order they arrive, each to its end (the design's section 3), and stopping one
-    /// is said by naming it ([`cancel`](Self::cancel)).
+    /// is said by naming it ([`cancel`](Self::cancel)); but for a drag's release under way
+    /// (`drag_end`), which a close ends with no edit, its move and its solve stopped, outside
+    /// a transaction (which refuses the close).
     pub fn close(&self, session: &SessionId) -> Running<Closed> {
+        // A drag ends when its session closes (docs/design/m5.0-app.md, `drag_begin`): a
+        // release under way, ahead of the close in the queue, is stopped now, so the close
+        // never waits out its move. Not inside a transaction, which refuses the close.
+        if let Some(found) = self.find(session)
+            && found.held.read().transaction.is_none()
+        {
+            found.stop_release();
+        }
         let registry = Arc::downgrade(&self.registry);
         self.queued_with(
             session,

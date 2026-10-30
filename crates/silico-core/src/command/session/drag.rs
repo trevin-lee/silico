@@ -27,8 +27,8 @@ use std::sync::{Arc, Mutex, Weak};
 use super::cancel::{Interrupt, Ticket, Why, cancelled};
 use super::{
     DragBegun, DragEnded, DragFrame, DragGrab, DragOpen, FrameEnd, Gated, Problems, Response,
-    Revision, Running, Session, SessionCommand, SessionId, SessionInfo, Sessions, find_in,
-    not_open, reclaim, refused,
+    Revision, Running, Session, SessionCommand, SessionId, SessionInfo, Sessions, command_span,
+    find_in, not_open, reclaim, refused,
 };
 use crate::command::edit;
 use crate::document::FeatureId;
@@ -53,6 +53,9 @@ pub(super) struct DragSlot {
     open: Option<OpenDrag>,
     begins: usize,
     next: u64,
+    /// The stop of the drag a `drag_end` is ending now, taken out of `open`: so a close
+    /// stops its release's move and solve.
+    ending: Option<DragStop>,
 }
 
 /// A drag the session holds (A2): the core's drag, its sketch, what it grabbed (the core's
@@ -177,16 +180,30 @@ impl Frames {
 /// stopped while it solved (a cancel, or an Esc) `cancelled`; and a drag ended, or its
 /// worker failed, the error.
 fn drag_frame(outcome: Result<Frame, Error>) -> Result<DragFrame, Error> {
-    let frame = outcome?;
+    let frame = match outcome {
+        Ok(frame) => frame,
+        Err(error) => {
+            tracing::info!(
+                code = error.code().as_str(),
+                "the drag's move failed: {}",
+                error.message()
+            );
+            return Err(error);
+        }
+    };
     let end = match frame.kind {
         FrameKind::Solved => FrameEnd::Solved,
         FrameKind::Failed => {
-            if let Some(why) = &frame.why {
-                tracing::debug!(why = why.message(), "a drag's move the worker refused");
+            match &frame.why {
+                Some(why) => tracing::info!("the drag's move was refused: {}", why.message()),
+                None => tracing::info!("the drag's move didn't reach its cursor"),
             }
             FrameEnd::Failed
         }
-        FrameKind::Invalid => FrameEnd::Invalid,
+        FrameKind::Invalid => {
+            tracing::info!("the drag's move reached geometry that can't be built");
+            FrameEnd::Invalid
+        }
         FrameKind::Dropped => FrameEnd::Dropped,
         FrameKind::Cancelled => return Err(cancelled(SessionCommand::DragMove.as_str())),
     };
@@ -198,9 +215,10 @@ fn drag_frame(outcome: Result<Frame, Error>) -> Result<DragFrame, Error> {
     })
 }
 
-/// A move's stop, interrupting its session's drag as `cancel` of `drag_move` does: the move
-/// solving stopped by restarting the drag's worker, which ends the drag. Only the drag the
-/// move was sent to, by its number.
+/// A move's stop, interrupting its session's drag as `cancel` of `drag_move` does: the drag
+/// ended, the move solving stopped by restarting the drag's worker, and every move
+/// unanswered answered (the cancelled ones `cancelled`), so a cancel that's said to have
+/// stopped one always has. Only the drag the move was sent to, by its number.
 struct MoveStop<C: Kernel + 'static> {
     session: Weak<Session<C>>,
     number: u64,
@@ -211,9 +229,20 @@ impl<C: Kernel + 'static> Interrupt for MoveStop<C> {
         let Some(session) = self.session.upgrade() else {
             return;
         };
-        let slot = lock(&session.drags);
-        if let Some(open) = slot.open.as_ref().filter(|open| open.number == self.number) {
-            open.drag.cancel_move();
+        let ended = {
+            let mut slot = lock(&session.drags);
+            if slot
+                .open
+                .as_ref()
+                .is_some_and(|open| open.number == self.number)
+            {
+                slot.open.take()
+            } else {
+                None
+            }
+        };
+        if let Some(open) = ended {
+            open.end_quietly();
         }
     }
 }
@@ -326,8 +355,18 @@ impl<C: Kernel + 'static> Session<C> {
         }
     }
 
-    /// Ends the drag, if there's one: as the session closes.
+    /// Stops the release of a drag a `drag_end` is ending now, its move and its solve: as
+    /// the session closes.
+    pub(super) fn stop_release(&self) {
+        let ending = lock(&self.drags).ending.clone();
+        if let Some(stop) = ending {
+            stop.stop();
+        }
+    }
+
+    /// Ends the drag, if there's one, and stops a release under way: as the session closes.
     pub(super) fn end_drag(&self) {
+        self.stop_release();
         let open = lock(&self.drags).open.take();
         if let Some(open) = open {
             open.end_quietly();
@@ -351,10 +390,15 @@ impl<C: Kernel + 'static> Session<C> {
         };
         let replaced = {
             let mut slot = lock(&self.drags);
-            if let Some(open) = slot.open.as_ref().filter(|open| open.drag.is_open()) {
+            if let Some(open) = slot
+                .open
+                .as_ref()
+                .filter(|open| open.drag.is_open() && open.revision == revision)
+            {
                 return Err(Problems::from(already_open(self.id, open)));
             }
-            // A drag its worker ended, closed: this one takes its place.
+            // A drag its worker ended, closed, or one of a revision since left: this one
+            // takes its place.
             slot.open.take()
         };
         if let Some(replaced) = replaced {
@@ -493,10 +537,15 @@ impl<C: Kernel + 'static> Session<C> {
                 no_drag(self.id, queued)
             }));
         }
+        // Its move and its solve under the drag's stop, which the command's cancel and the
+        // session's close reach.
         let interrupt: Arc<dyn Interrupt> = Arc::new(StopDrag(drag.stop()));
+        lock(&self.drags).ending = Some(drag.stop());
         stop.interrupt_with(Arc::downgrade(&interrupt));
-        let ended = drag.end(to).map_err(Problems::from)?;
+        let ended = drag.end(to);
+        lock(&self.drags).ending = None;
         drop(interrupt);
+        let ended = ended.map_err(Problems::from)?;
         if let Some(why) = &ended.why {
             tracing::info!(why = why.message(), "the drag kept its begin state");
         }
@@ -574,10 +623,10 @@ impl<P: Clients + 'static> Sessions<P> {
     /// ended, with the worker's own error. A move past `DRAG_MOVE_TIMEOUT` is
     /// `worker_timeout`, and ends the drag.
     pub fn drag_move(&self, session: &SessionId, to: [f64; 2]) -> Running<DragFrame> {
-        let _span = tracing::debug_span!("drag_move", session = %session).entered();
         let Some(found) = find_in(&self.registry, session) else {
             return Running::answered(refused(not_open(*session)));
         };
+        let _span = command_span(&found.logs, found.id, "drag_move", None).entered();
         let info = found.info(false);
         let here = |error: Error| {
             Running::answered(Response {

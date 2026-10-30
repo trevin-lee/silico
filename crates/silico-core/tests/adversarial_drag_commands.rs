@@ -843,7 +843,8 @@ fn cursor() -> impl Strategy<Value = [f64; 2]> {
     (coordinate.clone(), coordinate).prop_map(|(x, y)| [x, y])
 }
 
-/// A press near the line it's on, or one the drag refuses.
+/// A press on the line it drags as it began (y = 5, x from 5 to 60), near it, or one the
+/// drag refuses.
 fn press() -> impl Strategy<Value = [f64; 2]> {
     let coordinate = prop_oneof![
         Just(5.0),
@@ -853,7 +854,18 @@ fn press() -> impl Strategy<Value = [f64; 2]> {
         Just(f64::NEG_INFINITY),
         -100.0..100.0f64,
     ];
-    (coordinate.clone(), coordinate).prop_map(|(x, y)| [x, y])
+    prop_oneof![
+        (5.0..=60.0f64).prop_map(|x| [x, 5.0]),
+        (coordinate.clone(), coordinate).prop_map(|(x, y)| [x, y]),
+    ]
+}
+
+/// How far `press` is from the segment from `a` to `b`: the foot of the perpendicular, or
+/// the nearer end.
+fn off_segment(press: [f64; 2], a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let t = (((press[0] - a.0) * dx + (press[1] - a.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+    (press[0] - (a.0 + t * dx)).hypot(press[1] - (a.1 + t * dy))
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -929,6 +941,19 @@ fn run(ops: &[Op]) -> String {
                         assert_eq!(the_error(&begun).parameter(), Some("session"), "{at}")
                     }
                     None if !reachable(*press) => {
+                        assert_eq!(the_error(&begun).parameter(), Some("press"), "{at}")
+                    }
+                    // Off the line as the document holds it now (the fake solves where
+                    // it's sent): refused, naming press.
+                    None if {
+                        let text = f.text();
+                        off_segment(
+                            *press,
+                            point_in(&text, "pa000003"),
+                            point_in(&text, "pa000004"),
+                        ) > 1e-7
+                    } =>
+                    {
                         assert_eq!(the_error(&begun).parameter(), Some("press"), "{at}")
                     }
                     None => {
@@ -1151,9 +1176,20 @@ fn circle_of(frame: &DragFrame) -> ([f64; 2], f64) {
 const CENTRED: &str = r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}, {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#;
 
 #[test]
-fn planegcs_a_circles_edge_pressed_at_its_centre_follows_the_cursor() {
+fn planegcs_a_circles_edge_pressed_at_its_centre_is_refused_and_pressed_on_it_follows_the_cursor() {
     let r = real(&circle_sketch(CENTRED));
-    r.edge("c0000001", [0.0, 0.0]).result.unwrap();
+    // Its centre isn't on its edge, 10 from it (the fix of the break: a press lands on its
+    // edge).
+    let refused = the_error(&r.edge("c0000001", [0.0, 0.0]));
+    assert_eq!(
+        (refused.code(), refused.parameter(), refused.message()),
+        (
+            ErrorCode::InvalidInput,
+            Some("press"),
+            "the drag's press at (0, 0) is 10 mm off the edge it drags: a press lands on its edge"
+        )
+    );
+    r.edge("c0000001", [10.0, 0.0]).result.unwrap();
     let frame = r.moved([5.0, 0.0]).result.unwrap();
     assert_eq!(frame.frame, FrameEnd::Solved, "{frame:?}");
     let (centre, radius) = circle_of(&frame);
@@ -1197,21 +1233,35 @@ fn planegcs_a_circles_edge_dragged_to_its_centre_is_never_saved_with_no_radius()
 }
 
 #[test]
-fn planegcs_a_release_at_an_off_curve_press_keeps_what_the_frame_there_showed() {
-    // An agent's press needn't be on the curve. A move to it puts the circle's edge there;
-    // a release at the same cursor should keep that, as a release at a newest frame's
-    // cursor takes its values.
+fn planegcs_a_press_off_its_curve_is_refused_and_a_release_at_a_frames_cursor_keeps_it() {
+    // A press off its curve would make a release at the press a click that drops what the
+    // frame there showed (the break found): refused, naming press. The circle's radius is
+    // 10, so (30, 40) is 40 off it.
     let r = real(&circle_sketch(CENTRED));
-    r.edge("c0000001", [30.0, 40.0]).result.unwrap();
+    let refused = the_error(&r.edge("c0000001", [30.0, 40.0]));
+    assert_eq!(
+        (refused.code(), refused.parameter(), refused.message()),
+        (
+            ErrorCode::InvalidInput,
+            Some("press"),
+            "the drag's press at (30, 40) is 40 mm off the edge it drags: a press lands on its edge"
+        )
+    );
+    assert_eq!(
+        refused.suggestion(),
+        Some(
+            "press a point of the edge, as a pick of it gives: a line's, or its circle's or arc's"
+        )
+    );
+    // Pressed on it, at (6, 8) (6² + 8² = 10²), and moved to (30, 40): the edge through the
+    // cursor, radius 50, which a release there keeps.
+    r.edge("c0000001", [6.0, 8.0]).result.unwrap();
     let frame = r.moved([30.0, 40.0]).result.unwrap();
     assert_eq!(frame.frame, FrameEnd::Solved, "{frame:?}");
     let (_, radius) = circle_of(&frame);
     // The edge through (30, 40): radius 50.
     assert!((radius - 50.0).abs() < 1e-6, "{frame:?}");
     let ended = r.ended(Some([30.0, 40.0])).result.unwrap();
-    // BREAKS (or a spec question: should a press off its curve be refused?): the release at the press is taken as a click (`to != origin`, the origin of
-    // an edge's drag being its press), so the begin state is kept, radius 10, though the
-    // newest frame, at that same cursor, showed radius 50.
     assert_eq!((ended.kept, ended.changed), (Kept::Cursor, true));
     let saved = r.file()["features"][0]["circles"][0]["radius"]
         .as_f64()
