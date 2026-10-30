@@ -56,6 +56,8 @@ A Fusion-style layout with browser tree, timeline bar, and property panel. A vie
 
 **Done when** the vertical slice works end to end in both the UI and MCP.
 
+The plan, its decisions taken: [docs/roadmap/m5-app.md](docs/roadmap/m5-app.md).
+
 ### FreeCAD file import
 Once M2, M3, refine, and the `import` feature (with a deterministic STEP writer) exist; it doesn't block the slice. Silico opens a FreeCAD `.FCStd` file and saves it as a Silico document, one way: features Silico has become Silico features, checked against the shapes FreeCAD stored, and the rest come in as shapes with no history or are left out, reported. Silico never writes `.FCStd`.
 

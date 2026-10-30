@@ -1,4 +1,5 @@
-# Checked by the gate (pixi run gate): cargo deny check bans licenses sources.
+# Checked by the gate (pixi run gate): cargo deny check bans licenses sources. Advisories
+# are checked daily on main instead ([advisories] below).
 
 [graph]
 # Optional features too, so a feature-gated dependency can't slip past.
@@ -17,10 +18,14 @@ deny = [
     { crate = "cxx", wrappers = ["silico-kernel", "silico-sketch"], reason = "C++ belongs in worker crates only" },
     { crate = "cxx-build", wrappers = ["silico-kernel", "silico-sketch"], reason = "C++ belongs in worker crates only" },
     { crate = "link-cplusplus", wrappers = ["cxx"], reason = "C++ belongs in worker crates only" },
-    # Until M5's viewport, only the render worker draws: a crate linking the renderer would
-    # load a GPU driver into its own process (docs/design/m4.6-render.md).
-    { crate = "re_renderer", wrappers = ["silico-render"], reason = "only the render worker draws until M5's viewport" },
-    { crate = "wgpu", wrappers = ["silico-render", "re_renderer"], reason = "only the render worker draws until M5's viewport" },
+    # Only the crates that draw: the render worker and the app (M5 decision 13a). A crate
+    # linking the renderer would load a GPU driver into its own process, so the core, the
+    # MCP server, and the CLI never do (docs/design/m4.6-render.md).
+    { crate = "re_renderer", wrappers = ["silico-render", "silico-app"], reason = "only the crates that draw: the render worker and the app" },
+    # eframe depends on wgpu itself only for wasm32, and egui_kittest through its wgpu
+    # feature (the app's tests'); the graph takes every target and feature, so both are
+    # wgpu's direct parents in the app's tree, as egui-wgpu is.
+    { crate = "wgpu", wrappers = ["silico-render", "re_renderer", "silico-app", "egui-wgpu", "eframe", "egui_kittest"], reason = "only the crates that draw: the render worker and the app" },
 ]
 
 [licenses]
@@ -50,7 +55,12 @@ unknown-registry = "deny"
 unknown-git = "deny"
 
 [advisories]
-# Not run by the gate yet (it needs the network); recorded for when it is.
+# Checked daily on main by .github/workflows/advisories.yml, not by the gate (it needs the
+# network; M5 decision 13c): a new advisory fails that run, and is fixed by a follow-up
+# that ignores it here with its reason, or replaces the crate.
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained, not vulnerable; it comes in through the rerun crate (silico-view only)" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained (as a crate of its own), reached only through eframe's Linux screen-reader bridge (accesskit_unix); not a vulnerability" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained (as a crate of its own), reached only through eframe's Linux screen-reader bridge (accesskit_unix); not a vulnerability" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained (as a crate of its own), reached only through eframe's Linux screen-reader bridge (accesskit_unix); not a vulnerability" },
 ]
