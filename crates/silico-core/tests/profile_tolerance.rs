@@ -221,7 +221,7 @@ fn open_ends_exactly_1e_7_apart_share_the_point_and_the_next_f64_is_open() {
         (d, p, n)
     };
     for gap in [LENGTH_TOLERANCE, 0.99e-7] {
-        let (d, p, n) = short(gap);
+        let (d, p, _) = short(gap);
         let errors = d.refused();
         assert_eq!(
             named(&errors),
@@ -230,9 +230,10 @@ fn open_ends_exactly_1e_7_apart_share_the_point_and_the_next_f64_is_open() {
                     "points {}, {} end curves within 1e-7 mm of each other, but aren't one point, so the profile is open there",
                     p[0], p[4]
                 ),
-                vec![p[0].clone(), p[4].clone(), n[0].clone(), n[3].clone()]
+                vec![p[0].clone(), p[4].clone()]
             )]
         );
+        assert_eq!(errors[0].elements_total(), 2);
         assert_eq!(
             errors[0].suggestion(),
             Some("share the point: end the curves at one point")

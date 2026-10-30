@@ -124,7 +124,8 @@ fn which_hundred_crossings_are_listed_doesnt_depend_on_where_the_curves_are() {
 #[test]
 fn open_ends_within_the_tolerance_across_x_share_the_point() {
     // open_ends_exactly_1e_7_apart_share_the_point's rectangle with its fourth side ending
-    // 5e-8 to the left of the corner instead of above it.
+    // 5e-8 to the left of the corner instead of above it: the two points named, not the
+    // lines ending at them.
     let mut d = Draw::new();
     let p = [
         d.point(0.0, 0.0),
@@ -133,12 +134,9 @@ fn open_ends_within_the_tolerance_across_x_share_the_point() {
         d.point(0.0, 3.0),
         d.point(-5e-8, 0.0),
     ];
-    let n = [
-        d.line(&p[0], &p[1]),
-        d.line(&p[1], &p[2]),
-        d.line(&p[2], &p[3]),
-        d.line(&p[3], &p[4]),
-    ];
+    for (from, to) in [(0, 1), (1, 2), (2, 3), (3, 4)] {
+        d.line(&p[from], &p[to]);
+    }
     assert_eq!(
         draw::named(&d.refused()),
         vec![(
@@ -146,7 +144,7 @@ fn open_ends_within_the_tolerance_across_x_share_the_point() {
                 "points {}, {} end curves within 1e-7 mm of each other, but aren't one point, so the profile is open there",
                 p[0], p[4]
             ),
-            vec![p[0].clone(), p[4].clone(), n[0].clone(), n[3].clone()]
+            vec![p[0].clone(), p[4].clone()]
         )]
     );
 }

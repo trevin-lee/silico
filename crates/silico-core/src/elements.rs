@@ -139,6 +139,17 @@ pub fn entries(
         .collect()
 }
 
+/// The name a stored reference to `element` writes: its own, if stable, or else its first
+/// stable alias, in the map's order; none if every name of it is unstable. Each name judged
+/// as an entry's `stable` and its aliases' are (`ElementMap::is_unstable`), so an element
+/// this names is one `query`'s `"stable": true` keeps (M4.1 section 2: "a reference then
+/// uses the stable alias").
+pub fn stable_name(map: &ElementMap, element: ElementRef) -> Option<Arc<Name>> {
+    map.names(element)
+        .into_iter()
+        .find(|name| !map.is_unstable(name))
+}
+
 /// An error in Silico itself, of the feature `id`'s solid: a fault, not the document's.
 pub(crate) fn fault(id: &FeatureId, cause: &str) -> Error {
     Error::new(

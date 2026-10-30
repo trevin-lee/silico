@@ -16,9 +16,11 @@
 //!   grows the tolerance of the vertex it joins an end to; FreeCAD's `SketchAnalysis` groups
 //!   only the ends near the first of a run sorted by position, each axis apart, without
 //!   chaining), and one warning, as `SketchAnalysis` reports a group, not pairs
-//!   (c036128aa0): its points, in ID order, then the curves ending at them, in ID order,
-//!   each once, the first 100 of the list named and all counted; its suggestion to lengthen
-//!   first a curve with both its ends in the cluster, as the profile's refusal says.
+//!   (c036128aa0): its points alone, in ID order (what isn't joined, FreeCAD's vertex pair;
+//!   the curves ending at them aren't named), the first 100 named and all counted; its
+//!   suggestion to lengthen first a curve with both its ends in the cluster, as the
+//!   profile's refusal says, then to make the curves that end at the points named end at
+//!   one of them.
 //! - FreeCAD's own tests, ported: `TestSketchValidateCoincidents.testSingleMissingCoincidentCase`
 //!   (a rectangle closing 3.552713678800501e-15 mm short: FreeCAD finds 1 missing
 //!   coincidence), and `TestSketcherSolver.testThreeLinesWithCoincidences_1`/`_2` (three
@@ -27,7 +29,8 @@
 //!   for a cluster of k, which Silico says as one warning naming the three.
 //! - `constraints_redundant` names the constraints the solver calls redundant, where each
 //!   holds on the solution (decision 5); one that doesn't is a problem, and so is a
-//!   conflict. Those it calls partially redundant are a warning of their own, which doesn't
+//!   conflict. Those it calls partially redundant are a warning of their own, under their
+//!   own code (`constraints_partially_redundant`, approved at M4's close), which doesn't
 //!   advise removing them: FreeCAD 1.1.3 calls the midpoint of the port review's sketch
 //!   partially redundant (`solve()` 0, `RedundantConstraints` [], `PartiallyRedundantConstraints`
 //!   [1], fully constrained), and removing it frees the point along the line.
@@ -41,8 +44,8 @@
 //!   stored (one that wrote a sketch's solve, so didn't publish), and still one for a
 //!   feature the file stores none for.
 //! - The first 100 are listed and all counted; the order is by timeline, then code
-//!   (`ends_not_joined`, `constraints_redundant`, `fingerprint_missing`), then, for ends, by
-//!   cluster, by its least point ID.
+//!   (`ends_not_joined`, `constraints_redundant`, `fingerprint_missing`,
+//!   `constraints_partially_redundant`), then, for ends, by cluster, by its least point ID.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -239,12 +242,13 @@ fn ends_closer_than_freecads_joining_distance_warn_and_others_dont() {
                     [(
                         WarningCode::EndsNotJoined,
                         "s0000001".to_owned(),
-                        strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
+                        strings(&["pa000002", "pa000003"]),
                         Some(apart(distance)),
                     )],
                     "{at:?}"
                 );
                 assert_eq!(checked.warnings.total(), 1);
+                assert_eq!(checked.warnings.listed()[0].elements_total(), 2, "{at:?}");
                 assert!(!checked.warnings.is_empty(), "{at:?}");
             }
             None => assert!(checked.warnings.is_empty(), "{at:?}: {:?}", said(&checked)),
@@ -277,7 +281,7 @@ fn ends_a_tenth_of_a_micron_apart_along_an_axis_away_from_the_origin_join_as_fre
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
+            strings(&["pa000002", "pa000003"]),
             Some(apart("9.99999993922529e-8")),
         )]
     );
@@ -392,7 +396,7 @@ fn only_profile_curves_ends_that_arent_one_point_warn() {
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            strings(&["pa000002", "pa000004", "aa000001", "nb000001"]),
+            strings(&["pa000002", "pa000004"]),
             Some(apart("4e-8")),
         )]
     );
@@ -470,9 +474,10 @@ fn agreeing_redundant_constraints_warn_naming_each_and_disagreeing_or_conflictin
          already fix, and agrees with them"
     );
 
-    // Partially redundant is a warning of its own, after the redundant one, under the same
-    // code, with no advice to remove them: FreeCAD shows them apart, and removing one frees
-    // what only it fixes.
+    // Partially redundant is a warning of its own, after the redundant one, under its own
+    // code, the list's fourth, with no advice to remove them: FreeCAD shows them apart, and
+    // removing one frees what only it fixes, so an agent switching on the code isn't told
+    // to remove them.
     let f = opened(&document(&[held_three_times(0.0)]));
     f.sketches.answer(|system| {
         let mut solved = FakeSketches::as_sent(system);
@@ -490,7 +495,9 @@ fn agreeing_redundant_constraints_warn_naming_each_and_disagreeing_or_conflictin
         full.message()
             .starts_with("a constraint of the sketch is redundant")
     );
-    assert_eq!(partly.code(), WarningCode::ConstraintsRedundant);
+    assert_eq!(full.code(), WarningCode::ConstraintsRedundant);
+    assert_eq!(partly.code(), WarningCode::ConstraintsPartiallyRedundant);
+    assert_eq!(partly.code().as_str(), "constraints_partially_redundant");
     assert_eq!(partly.feature(), Some("s0000001"));
     assert_eq!(partly.elements(), ["k0000001", "k0000003"]);
     assert_eq!(partly.elements_total(), 2);
@@ -683,24 +690,18 @@ fn clusters_past_the_hundredth_are_counted_and_the_hundred_listed_are_the_first_
         .map(|w| w.elements().to_vec())
         .collect();
     let expected: Vec<Vec<String>> = (0..100)
-        .map(|i| {
-            vec![
-                format!("pa{i:06}"),
-                format!("pb{i:06}"),
-                format!("na{i:06}"),
-                format!("nb{i:06}"),
-            ]
-        })
+        .map(|i| vec![format!("pa{i:06}"), format!("pb{i:06}")])
         .collect();
     assert_eq!(listed, expected);
 }
 
 #[test]
-fn a_clusters_points_come_first_then_its_curves_sorted_by_id() {
+fn a_clusters_elements_are_its_points_alone_in_id_order() {
     // Points pa000001 and pa000002, 4e-8 apart: the lesser point ends the curve of the
     // greater ID (nz000009), the greater the lesser (na000001), and a third curve
     // (nm000005) runs between them both's far ends, no part of it. Named: the points in ID
-    // order, then the curves in ID order, whatever point each ends at.
+    // order, which are what isn't joined, and none of the curves ending at them (the
+    // suggestion says them as the curves that end at the points named): 2 in all.
     let text = document(&[sketch(
         "s0000001",
         &[
@@ -723,12 +724,12 @@ fn a_clusters_points_come_first_then_its_curves_sorted_by_id() {
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            strings(&["pa000001", "pa000002", "na000001", "nz000009"]),
+            strings(&["pa000001", "pa000002"]),
             Some(apart("4e-8")),
         )]
     );
     let warning = &checked.warnings.listed()[0];
-    assert_eq!(warning.elements_total(), 4);
+    assert_eq!(warning.elements_total(), 2);
     assert_eq!(
         warning.message(),
         "2 points that end curves are at one place but aren't one point, so the profile is \
@@ -736,7 +737,7 @@ fn a_clusters_points_come_first_then_its_curves_sorted_by_id() {
     );
     assert_eq!(
         warning.suggestion(),
-        Some("share one point: make the curves named end at one of the points named")
+        Some("share one point: make the curves that end at the points named end at one of them")
     );
 }
 
@@ -776,12 +777,11 @@ fn ends_joined_through_each_other_are_one_cluster_its_cause_their_farthest() {
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            strings(&[
-                "pa000001", "pa000002", "pa000003", "na000001", "na000002", "na000003"
-            ]),
+            strings(&["pa000001", "pa000002", "pa000003"]),
             Some(at_most("1.2e-7")),
         )]
     );
+    assert_eq!(checked.warnings.listed()[0].elements_total(), 3);
     assert_eq!(
         checked.warnings.listed()[0].message(),
         "3 points that end curves are at one place but aren't one point, so the profile is \
@@ -790,14 +790,13 @@ fn ends_joined_through_each_other_are_one_cluster_its_cause_their_farthest() {
 }
 
 #[test]
-fn a_curve_with_both_ends_in_a_cluster_is_named_once_and_its_suggestion_is_to_lengthen_it_first() {
+fn a_curve_with_both_ends_in_a_cluster_is_named_in_the_suggestion_to_lengthen_it_first() {
     // Line na000001 from pa000001 at 0 to pa000002 at 1.5e-7 along x (longer than 1e-7, so
     // the gate takes it); line na000002 from pa000003 at 7.5e-8, 7.5e-8 from each (1.5e-7
     // halved, exactly, so both differences are 7.5e-8 exactly), to pz000001. One cluster of
-    // the three, its cause 1.5e-7 (1.5e-7 − 0), its curves na000001, once though both its
-    // ends are in it, and na000002: 5 named. Sharing one point would shrink na000001 to
-    // nothing, so the suggestion is first the profile's for those ends, "lengthen line
-    // na000001", then to share one point.
+    // the three, its cause 1.5e-7 (1.5e-7 − 0): its 3 points named, not the curves.
+    // Sharing one point would shrink na000001 to nothing, so the suggestion is first the
+    // profile's for those ends, "lengthen line na000001", then to share one point.
     let text = document(&[sketch(
         "s0000001",
         &[
@@ -820,17 +819,17 @@ fn a_curve_with_both_ends_in_a_cluster_is_named_once_and_its_suggestion_is_to_le
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            strings(&["pa000001", "pa000002", "pa000003", "na000001", "na000002"]),
+            strings(&["pa000001", "pa000002", "pa000003"]),
             Some(at_most("1.5e-7")),
         )]
     );
     let warning = &checked.warnings.listed()[0];
-    assert_eq!(warning.elements_total(), 5);
+    assert_eq!(warning.elements_total(), 3);
     assert_eq!(
         warning.suggestion(),
         Some(
-            "lengthen line na000001; then share one point: make the curves named end at one of \
-             the points named"
+            "lengthen line na000001; then share one point: make the curves that end at the \
+             points named end at one of them"
         )
     );
 }
@@ -867,15 +866,14 @@ fn every_curve_with_both_ends_in_a_cluster_is_to_be_lengthened_in_id_order() {
     };
     assert_eq!(
         warning.elements(),
-        strings(&[
-            "pa000001", "pa000002", "pa000003", "pa000004", "na000009", "nm000005", "nz000002"
-        ])
+        strings(&["pa000001", "pa000002", "pa000003", "pa000004"])
     );
+    assert_eq!(warning.elements_total(), 4);
     assert_eq!(
         warning.suggestion(),
         Some(
             "lengthen line na000009 and line nz000002; then share one point: make the curves \
-             named end at one of the points named"
+             that end at the points named end at one of them"
         )
     );
 }
@@ -911,7 +909,7 @@ fn a_near_full_arc_with_both_ends_in_a_cluster_is_given_the_gates_advice_for_an_
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            strings(&["pa000001", "pa000002", "pa000003", "na000001", "na000002"]),
+            strings(&["pa000001", "pa000002", "pa000003"]),
             Some(at_most("1.5e-7")),
         )]
     );
@@ -919,7 +917,7 @@ fn a_near_full_arc_with_both_ends_in_a_cluster_is_given_the_gates_advice_for_an_
         checked.warnings.listed()[0].suggestion(),
         Some(
             "for arc na000001, draw a circle instead, or open the arc; then share one point: \
-             make the curves named end at one of the points named"
+             make the curves that end at the points named end at one of them"
         )
     );
 }
@@ -940,7 +938,7 @@ fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_a_cluster_is_to_be_lengthen
     // 180°: the start at atan2(1e-6, 7.5e-8) ≈ 85.71°, the end at ≈ 94.29°, counter-clockwise.
     // The chord, 2r · sin(θ/2) = 2r · (7.5e-8 / r) = 1.5e-7, is more than 1e-7, so the gate
     // builds the arc and its ends don't join each other; each is 7.5e-8 from pa000003,
-    // less than 1e-7, so they join through it, a cluster of 3 points, 5 elements named.
+    // less than 1e-7, so they join through it, a cluster of 3 points, the 3 named.
     let arc = r#"{"id": "na000001", "center": "pz000002", "start": "pa000001", "end": "pa000002", "construction": false}"#;
     let text = document(&[sketch(
         "s0000001",
@@ -962,15 +960,15 @@ fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_a_cluster_is_to_be_lengthen
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            strings(&["pa000001", "pa000002", "pa000003", "na000001", "na000002"]),
+            strings(&["pa000001", "pa000002", "pa000003"]),
             Some(at_most("1.5e-7")),
         )]
     );
     assert_eq!(
         checked.warnings.listed()[0].suggestion(),
         Some(
-            "lengthen arc na000001; then share one point: make the curves named end at one of \
-             the points named"
+            "lengthen arc na000001; then share one point: make the curves that end at the \
+             points named end at one of them"
         )
     );
     // The whole warning, as the wire writes it, in the shape docs/design/m4.1-command-api.md
@@ -979,11 +977,11 @@ fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_a_cluster_is_to_be_lengthen
         write(&checked.warnings.listed()[0].to_wire(), Layout::Canonical).unwrap(),
         "{\"code\": \"ends_not_joined\", \"message\": \"3 points that end curves are at one \
          place but aren't one point, so the profile is open there\", \"feature\": \"s0000001\", \
-         \"elements\": [\"pa000001\", \"pa000002\", \"pa000003\", \"na000001\", \"na000002\"], \
-         \"elements_total\": 5, \"parameter\": null, \"cause\": \"the points are at most 1.5e-7 \
-         mm apart, each closer than FreeCAD's joining distance of 1e-7 mm to another of them\", \
-         \"suggestion\": \"lengthen arc na000001; then share one point: make the curves named \
-         end at one of the points named\", \"candidates\": []}"
+         \"elements\": [\"pa000001\", \"pa000002\", \"pa000003\"], \"elements_total\": 3, \
+         \"parameter\": null, \"cause\": \"the points are at most 1.5e-7 mm apart, each closer \
+         than FreeCAD's joining distance of 1e-7 mm to another of them\", \"suggestion\": \
+         \"lengthen arc na000001; then share one point: make the curves that end at the points \
+         named end at one of them\", \"candidates\": []}"
     );
 }
 
@@ -1022,16 +1020,15 @@ fn a_cluster_with_a_line_and_an_arc_both_collapsing_gives_each_its_advice_lines_
     };
     assert_eq!(
         warning.elements(),
-        strings(&[
-            "pa000001", "pa000002", "pa000003", "pa000004", "pa000005", "na000001", "na000002",
-            "na000009"
-        ])
+        strings(&["pa000001", "pa000002", "pa000003", "pa000004", "pa000005"])
     );
+    assert_eq!(warning.elements_total(), 5);
     assert_eq!(
         warning.suggestion(),
         Some(
             "lengthen line na000001; for arc na000009, draw a circle instead, or open the arc; \
-             then share one point: make the curves named end at one of the points named"
+             then share one point: make the curves that end at the points named end at one of \
+             them"
         )
     );
 }
@@ -1078,7 +1075,7 @@ fn freecads_three_lines_with_coincidences_warn_of_nothing_and_without_them_once(
     assert!(checked.warnings.is_empty(), "{:?}", said(&checked));
     // Silico's own case, not FreeCAD's tests': the same ends without the coincidences, for
     // which FreeCAD 1.1.3, run headless, finds 2 missing (k − 1 for k = 3); here the three
-    // points at one place are one cluster: one warning naming them, then the three curves.
+    // points at one place are one cluster: one warning naming them, and not the curves.
     let checked = opened(&three_lines(false)).check();
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
     assert_eq!(
@@ -1086,12 +1083,11 @@ fn freecads_three_lines_with_coincidences_warn_of_nothing_and_without_them_once(
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            strings(&[
-                "pa000002", "pa000004", "pa000005", "na000001", "na000002", "na000003"
-            ]),
+            strings(&["pa000002", "pa000004", "pa000005"]),
             Some(at_most("0")),
         )]
     );
+    assert_eq!(checked.warnings.listed()[0].elements_total(), 3);
 }
 
 /// testSingleMissingCoincidentCase's rectangle, closing one ulp short where it started.
@@ -1146,7 +1142,7 @@ fn freecads_single_missing_coincidence_is_one_warning() {
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            strings(&["pa000001", "pa000005", "na000001", "na000004"]),
+            strings(&["pa000001", "pa000005"]),
             Some(apart("3.552713678800501e-15")),
         )]
     );
@@ -1216,7 +1212,7 @@ fn ends_held_by_other_constraints_warn_and_merged_dont() {
         [(
             WarningCode::EndsNotJoined,
             "s0000001".to_owned(),
-            strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
+            strings(&["pa000002", "pa000003"]),
             Some(apart("4e-8")),
         )]
     );
@@ -1231,8 +1227,11 @@ fn ends_held_by_other_constraints_warn_and_merged_dont() {
 fn warnings_are_in_timeline_order_then_by_code_then_by_cluster() {
     // Sketch s0000001: two clusters of two points (a: pa000001 near pa000004, b: pa000002
     // near pa000003; by their least IDs, b (2) comes after a (1)), drawn with b's at the
-    // lesser x, and two redundant horizontals; then a box with no fingerprint; then sketch
-    // s0000003 with one cluster.
+    // lesser x, and two horizontals of one line, the solver calling the second redundant
+    // and the first partially redundant (as a fake: each holds on the line, so both warn);
+    // then a box with no fingerprint; then sketch s0000003 with one cluster. Within
+    // s0000001, by code in warning-codes.txt's order: its ends, then the redundant, then
+    // the partially redundant (the list's fourth code).
     let first = sketch(
         "s0000001",
         &[
@@ -1270,6 +1269,7 @@ fn warnings_are_in_timeline_order_then_by_code_then_by_cluster() {
         let mut solved = FakeSketches::as_sent(system);
         if !system.constraints.is_empty() {
             solved.redundant = vec![Tag(2)];
+            solved.partially_redundant = vec![Tag(1)];
         }
         Ok(solved)
     });
@@ -1281,13 +1281,13 @@ fn warnings_are_in_timeline_order_then_by_code_then_by_cluster() {
             (
                 WarningCode::EndsNotJoined,
                 "s0000001".to_owned(),
-                strings(&["pa000001", "pa000004", "na000001", "na000003"]),
+                strings(&["pa000001", "pa000004"]),
                 Some(apart("6e-8")),
             ),
             (
                 WarningCode::EndsNotJoined,
                 "s0000001".to_owned(),
-                strings(&["pa000002", "pa000003", "na000001", "na000002"]),
+                strings(&["pa000002", "pa000003"]),
                 Some(apart("3e-8")),
             ),
             (
@@ -1301,6 +1301,16 @@ fn warnings_are_in_timeline_order_then_by_code_then_by_cluster() {
                 ),
             ),
             (
+                WarningCode::ConstraintsPartiallyRedundant,
+                "s0000001".to_owned(),
+                strings(&["k0000001"]),
+                Some(
+                    "the solver solved the sketch without the equations of theirs that repeat \
+                     others, and each holds on the solution"
+                        .to_owned()
+                ),
+            ),
+            (
                 WarningCode::FingerprintMissing,
                 "k7f2qx3m".to_owned(),
                 vec![],
@@ -1309,7 +1319,7 @@ fn warnings_are_in_timeline_order_then_by_code_then_by_cluster() {
             (
                 WarningCode::EndsNotJoined,
                 "s0000003".to_owned(),
-                strings(&["pa000002", "pa000003", "na000001", "na000002"]),
+                strings(&["pa000002", "pa000003"]),
                 Some(apart("2e-8")),
             ),
         ]
@@ -1373,7 +1383,8 @@ fn freecads_partially_redundant_midpoint_is_warned_of_without_advice_to_remove_i
     let [warning] = checked.warnings.listed() else {
         panic!("{:?}", said(&checked));
     };
-    assert_eq!(warning.code(), WarningCode::ConstraintsRedundant);
+    assert_eq!(warning.code(), WarningCode::ConstraintsPartiallyRedundant);
+    assert_eq!(warning.code().as_str(), "constraints_partially_redundant");
     assert_eq!(warning.elements(), ["k0000001"]);
     assert_eq!(
         warning.message(),
