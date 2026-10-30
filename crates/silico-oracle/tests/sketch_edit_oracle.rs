@@ -1119,7 +1119,7 @@ fn a_split_off_the_curve_is_excused_only_where_freecads_pieces_meet_at_its_proje
         );
         // FreeCAD's pieces meeting at the position as given, not its projection; meeting
         // nowhere; one piece only; or pieces of another kind: each a difference.
-        let changes: [(&str, Doctoring); 7] = [
+        let changes: [(&str, Doctoring); 8] = [
             (
                 "the kept piece's start moved",
                 Box::new(|fc| {
@@ -1133,15 +1133,23 @@ fn a_split_off_the_curve_is_excused_only_where_freecads_pieces_meet_at_its_proje
                 }),
             ),
             (
-                "a piece about another centre, or of another radius",
+                "a piece about another centre",
                 Box::new(|fc| {
                     if let Some(c) = fc.edited[1].points.get_mut("3") {
                         c[0] += 1e-6;
+                    } else {
+                        // A line has none: move its start off the joint instead.
+                        fc.edited[1].points.get_mut("1").unwrap()[1] += 1e-6;
                     }
+                }),
+            ),
+            (
+                "a piece of another radius",
+                Box::new(|fc| {
                     if let Some(r) = &mut fc.edited[1].radius {
                         *r += 1e-6;
                     } else {
-                        // A line has neither: move its start off the joint instead.
+                        // A line has none: move its start off the joint instead.
                         fc.edited[1].points.get_mut("1").unwrap()[1] += 1e-6;
                     }
                 }),
@@ -2275,5 +2283,211 @@ fn a_merge_freecad_rolls_back_after_finding_constraints_conflicting_agrees() {
     for (what, change) in changes {
         let v = verdict(p, Some(&doctored(&theirs[0], change)));
         assert!(!v.refused && !v.how.is_empty(), "{what}: {v:?}");
+    }
+}
+
+/// A case of the sketch of `fields` (as [`sketch`] takes them) and `edit`.
+fn case_of(name: &str, fields: &str, edit: Edit) -> EditCase {
+    let text = format!(
+        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"features\": [{{\"id\": \"s0000001\", \"type\": \"sketch\", \"v\": 1, \"name\": \"S\", \"plane\": \"xy\", {fields}}}]}}"
+    );
+    let document = Checked::new(read(text.as_bytes()).unwrap())
+        .unwrap()
+        .document()
+        .clone();
+    EditCase {
+        name: name.to_owned(),
+        note: String::new(),
+        document,
+        feature: 0,
+        edit,
+    }
+}
+
+/// `p`'s FreeCAD geometry index, after the edit, of its element `element`.
+fn solved_index(p: &Prepared, fc: &FreecadEdited, element: &str) -> i32 {
+    let i = p.model.elements.iter().position(|e| e == element).unwrap();
+    let id = fc.ids_before[i];
+    i32::try_from(fc.geometry.iter().position(|g| g.id == id).unwrap()).unwrap()
+}
+
+#[test]
+fn freecad_keeping_what_silicos_removal_removed_is_a_difference() {
+    // remove_point_alone removes the lone point p0000001 at (2, 2); remove_middle_of_chain
+    // the line n0000006 from (5, 0) to (10, 0). FreeCAD keeping either: a difference that
+    // says so.
+    let (_, prepared, theirs) = both(&["remove_point_alone", "remove_middle_of_chain"]);
+    for ((p, fc), (member, kind, points)) in prepared.iter().zip(&theirs).zip([
+        ("p0000001", "point", vec![("1", [2.0, 2.0])]),
+        (
+            "n0000006",
+            "line",
+            vec![("1", [5.0, 0.0]), ("2", [10.0, 0.0])],
+        ),
+    ]) {
+        agrees(&verdict(p, fc.as_ref()));
+        let kept = doctored(fc, |fc| {
+            let i = p.model.elements.iter().position(|e| e == member).unwrap();
+            fc.geometry.push(FcGeometry {
+                id: fc.ids_before[i],
+                kind: kind.to_owned(),
+                points: points.iter().map(|(k, q)| ((*k).to_owned(), *q)).collect(),
+                radius: None,
+                construction: false,
+            });
+        });
+        let v = verdict(p, Some(&kept));
+        let want = format!("FreeCAD keeps {kind} {member}");
+        assert!(v.how.iter().any(|h| h.starts_with(&want)), "{want}: {v}");
+    }
+}
+
+#[test]
+fn freecad_joining_what_silico_has_apart_names_each_place_and_point() {
+    // remove_constraint leaves chain's lines, p0000001 at the origin, and its distance_x
+    // k0000008 from the origin to p0000002, 5. FreeCAD joining the origin (its geometry -1's
+    // start) with n0000005's start, which Silico has as p0000001, apart from the origin: a
+    // difference naming FreeCAD's -1 and both of Silico's points.
+    let (_, prepared, theirs) = both(&["remove_constraint", "remove_circle_sharing_centre"]);
+    let p = &prepared[0];
+    agrees(&verdict(p, theirs[0].as_ref()));
+    let joined = doctored(&theirs[0], |fc| {
+        let n5 = solved_index(p, fc, "n0000005");
+        fc.constraints.push(FcConstraint {
+            kind: "Coincident".to_owned(),
+            refs: vec![[-1, 1], [n5, 1]],
+            value: 0.0,
+            driving: true,
+            name: String::new(),
+        });
+    });
+    let v = verdict(p, Some(&joined));
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "FreeCAD joins FreeCAD's -1, n0000005's start, which are Silico's points origin, p0000001 apart"
+        )),
+        "{v}"
+    );
+    // FreeCAD's distance_x 5.001: the dimension's value differs.
+    let longer = doctored(&theirs[0], |fc| {
+        let c = fc
+            .constraints
+            .iter_mut()
+            .find(|c| c.kind == "DistanceX")
+            .unwrap();
+        c.value += 1e-3;
+    });
+    let v = verdict(p, Some(&longer));
+    assert!(
+        v.how
+            .iter()
+            .any(|h| h.contains("is 5 in Silico's (k0000008), 5.001 in FreeCAD's")),
+        "{v}"
+    );
+    // remove_circle_sharing_centre leaves the arcs a0000004 (about p0000001, from
+    // p0000002) and a0000007, about the same p0000001. FreeCAD joining a0000004's centre with
+    // its start: each place named by its role.
+    let p = &prepared[1];
+    agrees(&verdict(p, theirs[1].as_ref()));
+    let joined = doctored(&theirs[1], |fc| {
+        let a4 = solved_index(p, fc, "a0000004");
+        fc.constraints.push(FcConstraint {
+            kind: "Coincident".to_owned(),
+            refs: vec![[a4, 3], [a4, 1]],
+            value: 0.0,
+            driving: true,
+            name: String::new(),
+        });
+    });
+    let v = verdict(p, Some(&joined));
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "FreeCAD joins a0000004's start, a0000004's centre, a0000007's centre, which are Silico's points p0000001, p0000002 apart"
+        )),
+        "{v}"
+    );
+}
+
+#[test]
+fn a_redundancy_both_sides_find_agrees_and_one_only_freecads_is_named() {
+    // The line n0000003 along y = 0, held horizontal and both ends at y = 0: one constraint
+    // redundant, on both sides alike. Removing the lone point p0000008 leaves it so.
+    let case = case_of(
+        "redundancy_kept",
+        r#""points": [{"id": "p0000001", "x": 1, "y": 0, "construction": false}, {"id": "p0000002", "x": 10, "y": 0, "construction": false}, {"id": "p0000008", "x": 6, "y": 7, "construction": false}],
+        "lines": [{"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}], "circles": [], "arcs": [],
+        "constraints": [{"id": "k0000005", "type": "horizontal", "line": "n0000003"}, {"id": "k0000006", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}, {"id": "k0000007", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true}]"#,
+        Edit::Remove {
+            members: vec!["p0000008".to_owned()],
+        },
+    );
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let p = &prepared[0];
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("{:?}", p.silico);
+    };
+    assert_eq!(s.ours.redundant.len(), 1, "{:?}", s.ours);
+    let Some(Theirs::Edited(fc)) = &theirs[0] else {
+        panic!("{:?}", theirs[0]);
+    };
+    assert_eq!(fc.after.redundant.len(), 1, "{fc:?}");
+    agrees(&verdict(p, theirs[0].as_ref()));
+    // A constraint of FreeCAD's own, which Silico hasn't, redundant too: named as FreeCAD's.
+    let extra = doctored(&theirs[0], |fc| {
+        let n3 = solved_index(p, fc, "n0000003");
+        fc.constraints.push(FcConstraint {
+            kind: "DistanceX".to_owned(),
+            refs: vec![[-1, 1], [n3, 2]],
+            value: 10.0,
+            driving: true,
+            name: String::new(),
+        });
+        fc.after.redundant.push(fc.constraints.len());
+    });
+    let v = verdict(p, Some(&extra));
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "FreeCAD finds its DistanceX(origin, p0000002), which Silico hasn't, redundant"
+        )),
+        "{v}"
+    );
+}
+
+#[test]
+fn a_merge_from_apart_agrees_and_silicos_other_points_moved_before_the_solve_are_named() {
+    // p0000006 (3, 4), a lone point, merged into the line n0000003's end p0000002 (10, 0);
+    // the lone point p0000007 (6, 7) stays where it is.
+    let case = case_of(
+        "merge_lone_point_from_apart",
+        r#""points": [{"id": "p0000001", "x": 1, "y": 2, "construction": false}, {"id": "p0000002", "x": 10, "y": 3, "construction": false}, {"id": "p0000006", "x": 3, "y": 4, "construction": false}, {"id": "p0000007", "x": 6, "y": 7, "construction": false}],
+        "lines": [{"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}], "circles": [], "arcs": [], "constraints": []"#,
+        Edit::Merge {
+            points: vec!["p0000002".to_owned(), "p0000006".to_owned()],
+        },
+    );
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let p = &prepared[0];
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    agrees(&verdict(p, theirs[0].as_ref()));
+    // Silico's p0000007 moved before the solve, across or up: each named.
+    for (axis, by) in [(0, 1e-6), (1, -1e-6)] {
+        let moved = changed(&case, p, |sketch| {
+            let q = sketch
+                .points
+                .iter_mut()
+                .find(|q| q.id == id("p0000007"))
+                .unwrap();
+            let at = if axis == 0 { &mut q.x } else { &mut q.y };
+            *at = silico_core::document::Coordinate::new(at.mm() + by).unwrap();
+        });
+        let v = verdict(&moved, theirs[0].as_ref());
+        assert!(
+            v.how.iter().any(|h| h
+                .starts_with("after the edit, before the solve, Silico's point p0000007 is at")),
+            "{axis}: {v}"
+        );
     }
 }

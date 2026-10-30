@@ -1074,7 +1074,6 @@ pub fn without_known(
             Some(k) if matches!(k.shows, Shows::Difference(d) if d == v.how.join("; ")) => {
                 shown.push(format!("known: {v} -- {}", k.why));
             }
-            Some(_) if v.how.is_empty() => {}
             _ if v.how.is_empty() => {}
             _ => differ.push(v),
         }
@@ -1852,7 +1851,9 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
     }
 }
 
-/// The points a constraint names.
+/// The points a constraint names, where it can name two: a constraint that names one point
+/// (`on`, `midpoint`, a point's distance from a line, a tangency at a point) can't name two
+/// of a merge's.
 fn point_references(form: &Form) -> Vec<&Reference> {
     match form {
         Form::HorizontalPoints { a, b }
@@ -1861,10 +1862,6 @@ fn point_references(form: &Form) -> Vec<&Reference> {
         | Form::DistanceX { a, b, .. }
         | Form::DistanceY { a, b, .. } => vec![a, b],
         Form::Symmetric { a, b, about } => vec![a, b, about],
-        Form::PointLineDistance { point, .. }
-        | Form::On { point, .. }
-        | Form::Midpoint { point, .. } => vec![point],
-        Form::TangentOn { at, .. } | Form::TangentAt { at, .. } => vec![at],
         _ => Vec::new(),
     }
 }
@@ -1907,8 +1904,9 @@ fn near_end(shape: &Shape, curve: &str, end: &str, position: [f64; 2]) -> bool {
             let Some([r, from, to]) = arc_from_points(c, s, e) else {
                 return false;
             };
+            // Both angles are atan2's, in [-pi, pi]: a turn on is never short of `from`.
             let mut angle = libm::atan2(position[1] - c[1], position[0] - c[0]);
-            while angle < from {
+            if angle < from {
                 angle += TAU;
             }
             // Past the sweep is past an end; within it, by arc length from that end.
@@ -2124,11 +2122,8 @@ fn as_drawn(p: &Prepared, shape: &Shape, fc: &FreecadEdited, g: &FcGeometry) -> 
         return false;
     };
     let places = g.points.iter().all(|(pos, at)| {
-        let point = match (m.kind, pos.parse::<i32>()) {
-            ("point", Ok(1)) => Some(member),
-            (_, Ok(pos)) => m.at.get(&pos),
-            _ => None,
-        };
+        // A lone point's one place is itself ([`Shape::of`]).
+        let point = pos.parse::<i32>().ok().and_then(|pos| m.at.get(&pos));
         point
             .and_then(|q| shape.points.get(q))
             .is_some_and(|q| near(*q, *at))
@@ -3374,3 +3369,7 @@ fn compare_edited(
     }
     how
 }
+
+#[cfg(test)]
+#[path = "sketch_edit_tests.rs"]
+mod tests;
