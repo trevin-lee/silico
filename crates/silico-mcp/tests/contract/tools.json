@@ -8722,7 +8722,7 @@
                   },
                   "feature": {
                     "$ref": "#/$defs/Feature",
-                    "description": "The feature removed, as the document held it, its fingerprint too. To put it back,\ngive `add_feature` this feature without its `fingerprint`, `before` the feature that\nfollowed it (inside a transaction, the fingerprint `begin`'s document stored is\nkept, if it's added back as it was); then, with `set_field`, set `base` back on each\n`rewired` entry whose `to` is null. Or undo the removal whole: remove inside a\ntransaction (`begin`), and `rollback`."
+                    "description": "The feature removed, as the document held it, its fingerprint too. To put it back,\ngive `add_feature` this feature without its `fingerprint`, `before` the feature that\nfollowed it (inside a transaction, the fingerprint `begin`'s document stored is\nkept); then, with `set_field`, set `base` back on each\n`rewired` entry whose `to` is null. Or undo the removal whole: remove inside a\ntransaction (`begin`), and `rollback`."
                   },
                   "index": {
                     "description": "Its place in the timeline, from 0.",
