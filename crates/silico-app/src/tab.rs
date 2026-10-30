@@ -34,7 +34,8 @@ pub struct Edit {
 }
 
 /// What a tab asks of its session, in the order the person asked (section 3, *Bursts of
-/// edits*; #298's review): its edits, its saves, and its undos and redos, one at a time,
+/// edits*; #298's review): its edits, its saves, its reverts, and its undos and redos, one
+/// at a time,
 /// each sent once what's before it has answered, against the revision that gave. A newer
 /// edit of a field replaces one waiting for it only if nothing else waits between them, so
 /// an undo or a save never moves past an edit made after it.
@@ -42,6 +43,7 @@ pub struct Edit {
 enum Queued {
     Edit(Edit),
     Save { then_close: bool },
+    Revert { then_close: bool },
     Step { undo: bool },
 }
 
@@ -77,7 +79,7 @@ impl Edits {
                     return;
                 }
                 Queued::Edit(_) => {}
-                Queued::Save { .. } | Queued::Step { .. } => break,
+                Queued::Save { .. } | Queued::Revert { .. } | Queued::Step { .. } => break,
             }
         }
         self.queue.push_back(Queued::Edit(edit));
@@ -161,9 +163,12 @@ pub struct Tab {
     under: Vec<Under>,
     /// How many saves it has sent: what a test counts.
     pub saves: u64,
-    /// One more each time the document moved under the person's typing other than by the
-    /// typing (an undo, a redo, or a revert answered): the property panel's field then
-    /// shows the document's value again. An edit refused keeps what was typed.
+    /// One more each time the document moved other than by the person's typing, with none
+    /// of it waiting to be applied: an undo, a redo, or a revert done, or the session's own
+    /// reload of its file (a revision the tab didn't ask for, with nothing of its own under
+    /// way). The property panel's field then shows the document's value again. An edit
+    /// refused keeps what was typed, a conflict's too: the next edit sends it again against
+    /// the reloaded revision.
     pub resets: u64,
     /// A `begin` sent and not yet answered: the next edit begins none.
     beginning: bool,
@@ -264,6 +269,10 @@ impl Tab {
         let status = sessions.status(&self.id);
         // Answered at once, of the session as it is: its revision and transaction are now.
         if let Some(session) = &status.session {
+            // Moved with nothing of the tab's under way: the session's own reload.
+            if self.status.is_some() && session.revision != self.revision && self.quiet() {
+                self.resets += 1;
+            }
             self.revision = session.revision;
             self.transaction = session.transaction;
         }
@@ -382,7 +391,10 @@ impl Tab {
             } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
-                    self.resets += 1;
+                    // Typing queued after it is applied next: the field keeps it.
+                    if response.result.is_ok() && self.edits.idle() {
+                        self.resets += 1;
+                    }
                     self.ended(response.result.map(|_| ()), then_close, close);
                     None
                 }
@@ -394,9 +406,11 @@ impl Tab {
             Under::Step(running) => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
-                    self.resets += 1;
-                    if let Err(problems) = response.result {
-                        self.message = Some(said(&problems));
+                    match response.result {
+                        // Typing queued after it is applied next: the field keeps it.
+                        Ok(_) if self.edits.idle() => self.resets += 1,
+                        Ok(_) => {}
+                        Err(problems) => self.message = Some(said(&problems)),
                     }
                     None
                 }
@@ -439,15 +453,16 @@ impl Tab {
 
     /// The edit in flight polled, and, once nothing runs that what's queued waits behind
     /// (an edit, a save, a revert, a step), the first queued sent, against the revision the
-    /// last answer gave. An edit outside a transaction begins one (decision 1). A save that
-    /// comes up with no transaction open (the last save took every edit, or a revert ended
-    /// it) saves nothing: closes, if it was to close, or else is dropped.
+    /// last answer gave. An edit outside a transaction begins one (decision 1). A save or a
+    /// revert that comes up with no transaction open (a save before it took every edit, or a
+    /// revert ended it) has nothing to do: closes, if it was to close, or else is dropped.
     fn advance<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if let Some(running) = self.edits.in_flight.take() {
             match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
-                    // Said, the field keeping what the person typed (#298's review).
+                    // Said, the field keeping what the person typed (#298's review): a
+                    // conflict's too, whose next edit is sent against the reloaded revision.
                     if let Err(problems) = response.result {
                         self.message = Some(said(&problems));
                     }
@@ -483,6 +498,18 @@ impl Tab {
                         self.edits.queue.clear();
                     }
                 }
+                Queued::Revert { then_close } if !self.transaction && !self.beginning => {
+                    if then_close {
+                        self.under.push(Under::Close(sessions.close(&self.id)));
+                        self.edits.queue.clear();
+                    }
+                }
+                Queued::Revert { then_close } => {
+                    self.under.push(Under::Rollback {
+                        running: sessions.rollback(&self.id),
+                        then_close,
+                    });
+                }
                 Queued::Save { then_close } => {
                     self.saves += 1;
                     self.under.push(Under::Commit {
@@ -513,25 +540,47 @@ impl Tab {
             })
     }
 
+    /// Whether nothing of the tab's is under way: no edit in flight or queued, nothing
+    /// queued, no command running. A revision that moves then isn't the tab's.
+    fn quiet(&self) -> bool {
+        self.edits.in_flight.is_none()
+            && self.edits.queue.is_empty()
+            && self.under.is_empty()
+            && !self.beginning
+    }
+
+    /// Whether the property panel's field keeps what was typed whatever the document's
+    /// name shows: an edit, a save, a revert, or a step still to answer, or the timeline
+    /// not yet read of the revision they came to, so a name the document passes through on
+    /// the way (an undo's, before the edit typed after it) isn't a reason to show it.
+    pub fn applying(&self) -> bool {
+        !self.quiet()
+            || self
+                .timeline
+                .as_ref()
+                .is_none_or(|timeline| timeline.revision < self.revision)
+    }
+
     /// Whether it's closing: a save or a revert that closes it, or its close, queued or
     /// running. The property panel takes no edit then: it would be dropped.
     pub fn closing(&self) -> bool {
-        self.edits
-            .queue
-            .iter()
-            .any(|queued| matches!(queued, Queued::Save { then_close: true }))
-            || self.under.iter().any(|under| {
-                matches!(
-                    under,
-                    Under::Commit {
-                        then_close: true,
-                        ..
-                    } | Under::Rollback {
-                        then_close: true,
-                        ..
-                    } | Under::Close(_)
-                )
-            })
+        self.edits.queue.iter().any(|queued| {
+            matches!(
+                queued,
+                Queued::Save { then_close: true } | Queued::Revert { then_close: true }
+            )
+        }) || self.under.iter().any(|under| {
+            matches!(
+                under,
+                Under::Commit {
+                    then_close: true,
+                    ..
+                } | Under::Rollback {
+                    then_close: true,
+                    ..
+                } | Under::Close(_)
+            )
+        })
     }
 
     /// `edit` made by the person: inside the tab's transaction, begun first if none is open
@@ -552,37 +601,28 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// What's queued dropped, and, if a save queued was to close the tab, that said as a
-    /// close refused, so a quit waiting on it stops.
-    fn drop_queued(&mut self) {
-        let closing = self
+    /// Revert (`rollback`): the file's text, byte for byte; then, if `then_close`, close.
+    /// The edits and steps queued since the last save queued are dropped, and the revert
+    /// waits behind that save, which saves what was asked before it (#298's review): one in
+    /// flight answers first, and the rollback undoes it. Also how a file changed on disk is
+    /// reloaded with edits held: the session reloads it once the transaction has ended
+    /// (section 4).
+    pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
+        let kept = self
             .edits
             .queue
             .iter()
-            .any(|queued| matches!(queued, Queued::Save { then_close: true }));
-        self.edits.queue.clear();
-        if closing {
-            self.close_refused = true;
-            self.message = Some("the save that was to close it was dropped".to_owned());
-        }
-    }
-
-    /// Revert (`rollback`): the file's text, byte for byte; then, if `then_close`, close.
-    /// The edits waiting are dropped (one in flight answers first, and the rollback undoes
-    /// it). Also how a file changed on disk is reloaded with edits held: the session reloads
-    /// it once the transaction has ended (section 4).
-    pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
-        self.drop_queued();
-        self.under.push(Under::Rollback {
-            running: sessions.rollback(&self.id),
-            then_close,
-        });
+            .rposition(|queued| matches!(queued, Queued::Save { .. }))
+            .map_or(0, |save| save + 1);
+        self.edits.queue.truncate(kept);
+        self.edits.queue.push_back(Queued::Revert { then_close });
+        self.advance(sessions);
     }
 
     /// Close, its edits saved or dropped first (`close` is refused inside a transaction,
     /// decision 22); any waiting dropped.
     pub fn close<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        self.drop_queued();
+        self.edits.queue.clear();
         self.under.push(Under::Close(sessions.close(&self.id)));
     }
 

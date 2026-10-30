@@ -229,7 +229,7 @@ impl<P: Clients + 'static> App<P> {
             return false;
         };
         let sessions = &self.sessions;
-        if save && tab.transaction {
+        if save && tab.unsaved() {
             tab.save(sessions, false);
         }
         if undo && tab.transaction {
@@ -301,9 +301,8 @@ impl<P: Clients + 'static> App<P> {
                         }
                     });
                     let tab = self.active_place().and_then(|at| self.tabs.get_mut(at));
-                    if ui
-                        .add_enabled(transaction, egui::Button::new("Save"))
-                        .clicked()
+                    let unsaved = tab.as_ref().is_some_and(|tab| tab.unsaved());
+                    if ui.add_enabled(unsaved, egui::Button::new("Save")).clicked()
                         && let Some(tab) = tab
                     {
                         tab.save(&self.sessions, false);

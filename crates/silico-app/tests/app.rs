@@ -718,6 +718,29 @@ fn names_in(path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// [`step_until`], the Name field showing `shown` on every frame until then.
+fn step_until_showing(
+    h: &mut AppHarness,
+    what: &str,
+    shown: &str,
+    done: impl Fn(&AppHarness) -> bool,
+) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        step(h);
+        assert_eq!(
+            name_field(h).value().as_deref(),
+            Some(shown),
+            "the field, before {what}"
+        );
+        if done(h) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "never {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// The queue of the session of `h`'s tab `at` held behind a check whose rebuild the fake
 /// holds (every step built anew), until the hold is released: an edit sent now waits.
 fn hold_queue(f: &Fixture, h: &AppHarness, at: usize) -> (Hold, Running<CheckAnswer>) {
@@ -1539,6 +1562,7 @@ fn an_edit_typed_after_ctrl_z_comes_after_the_undo() {
     step_until(&mut h, "the transaction begun", |h| {
         h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
     });
+    let before = h.state().tabs()[0].revision.number();
     let (hold, check) = hold_queue(&f, &h, 0);
     type_name(&mut h, "1");
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
@@ -1547,12 +1571,15 @@ fn an_edit_typed_after_ctrl_z_comes_after_the_undo() {
     let second = name_field(&h).value().unwrap();
     hold.release();
     let _ = check.wait();
-    step_until(&mut h, "all answered", |h| {
+    step_until_showing(&mut h, "all answered", &second, |h| {
         h.state().tabs()[0].edits.idle() && shows(h, "Timeline", &second)
     });
     for _ in 0..20 {
         step(&mut h);
+        assert_eq!(name_field(&h).value().as_deref(), Some(second.as_str()));
     }
+    // E1, the undo, E2: three revisions, the undo among them.
+    assert_eq!(h.state().tabs()[0].revision.number(), before + 3);
     let id = h.state().tabs()[0].id;
     let text = f.sessions.text(&id, None).wait().result.unwrap().text;
     assert!(text.contains(&format!(r#""name": "{second}""#)), "{text}");
@@ -1657,6 +1684,7 @@ fn typing_while_an_undo_runs_comes_after_it() {
     step_until(&mut h, "the edit answered", |h| {
         h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
     });
+    let before = h.state().tabs()[0].revision.number();
     let (hold, check) = hold_queue(&f, &h, 0);
     h.get_by_role_and_label(Role::Button, "Undo").click();
     step(&mut h);
@@ -1665,9 +1693,15 @@ fn typing_while_an_undo_runs_comes_after_it() {
     let typed = name_field(&h).value().unwrap();
     hold.release();
     let _ = check.wait();
-    step_until(&mut h, "the typing applied", |h| {
+    step_until_showing(&mut h, "the typing applied", &typed, |h| {
         h.state().tabs()[0].edits.idle() && shows(h, "Timeline", &typed)
     });
+    for _ in 0..20 {
+        step(&mut h);
+        assert_eq!(name_field(&h).value().as_deref(), Some(typed.as_str()));
+    }
+    // The undo, then the typing: two revisions.
+    assert_eq!(h.state().tabs()[0].revision.number(), before + 2);
     let id = h.state().tabs()[0].id;
     let text = f.sessions.text(&id, None).wait().result.unwrap().text;
     assert!(text.contains(&format!(r#""name": "{typed}""#)), "{text}");
@@ -1695,20 +1729,27 @@ fn typing_while_a_revert_runs_comes_after_it_in_a_new_transaction() {
     let typed = name_field(&h).value().unwrap();
     hold.release();
     let _ = check.wait();
-    step_until(&mut h, "the typing applied", |h| {
+    step_until_showing(&mut h, "the typing applied", &typed, |h| {
         h.state().tabs()[0].edits.idle()
             && h.state().tabs()[0].transaction
             && shows(h, "Timeline", &typed)
     });
+    for _ in 0..20 {
+        step(&mut h);
+        assert_eq!(name_field(&h).value().as_deref(), Some(typed.as_str()));
+    }
     assert!(anywhere(&h, "example.silico *"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
-fn a_save_to_close_dropped_by_a_revert_stops_the_quit() {
+fn a_revert_after_a_quits_save_waits_behind_it_and_the_quit_closes() {
+    // The quit's save queued behind an edit in flight, then File > Revert: the save stays
+    // ahead of the revert, saves both edits and closes the tab, and the revert has nothing
+    // left to do.
     let f = fixture();
-    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     type_name(&mut h, "x");
@@ -1718,6 +1759,7 @@ fn a_save_to_close_dropped_by_a_revert_stops_the_quit() {
     let (hold, check) = hold_queue(&f, &h, 0);
     // An edit in flight, so the quit's save waits queued behind it.
     type_name(&mut h, "y");
+    let typed = name_field(&h).value().unwrap();
     close_window(&mut h);
     step_until(&mut h, "the question", |h| {
         h.query_by_label_contains("Save changes before quitting?")
@@ -1730,17 +1772,12 @@ fn a_save_to_close_dropped_by_a_revert_stops_the_quit() {
     h.get_by_label("File").click();
     step(&mut h);
     h.get_by_role_and_label(Role::Button, "Revert").click();
-    step_until(&mut h, "the quit stopped", |h| {
-        h.query_by_label_contains("Quit stopped: example.silico")
-            .is_some()
-    });
+    step(&mut h);
     hold.release();
     let _ = check.wait();
-    for _ in 0..30 {
-        step(&mut h);
-        assert!(!told(&h, true), "the window closed");
-    }
-    assert_eq!(h.state().tabs().len(), 1);
+    step_until(&mut h, "the window closing", |h| told(h, true));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(names_in(&path), ["Block", typed.as_str(), "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1840,5 +1877,134 @@ fn reload_to_a_name_the_field_typed_before_shows_that_name() {
     }
     assert_eq!(name_field(&h).value().as_deref(), Some("xPin"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_revert_after_a_queued_save_keeps_the_save_and_has_nothing_left_to_revert() {
+    // A save running (its rebuild held), then "b" typed and Ctrl+S again, both queued, then
+    // File > Revert: the save queued stays ahead of the revert and saves "b"; the revert
+    // comes up with no transaction open and is done, refusing nothing.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "a");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let hold = f.kernel.hold(|_| true);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    type_name(&mut h, "b");
+    let typed = name_field(&h).value().unwrap();
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step(&mut h);
+    h.get_by_label("File").click();
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Revert").click();
+    step(&mut h);
+    hold.release();
+    step_until(&mut h, "both saved", |h| {
+        h.state().tabs()[0].saves == 2 && !h.state().tabs()[0].unsaved()
+    });
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(names_in(&path), ["Block", typed.as_str(), "Hole"]);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert!(!anywhere(&h, "example.silico *"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn dont_save_on_a_quit_while_a_save_runs_closes_once_it_has_saved() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "q");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let hold = f.kernel.hold(|_| true);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step(&mut h);
+    hold.release();
+    step_until(&mut h, "the window closing", |h| told(h, true));
+    // The save asked before the quit stands.
+    assert_eq!(names_in(&path), ["Block", "qPin", "Hole"]);
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_sessions_own_reload_to_a_name_the_field_typed_before_shows_that_name() {
+    // Two saves, "xPin" then "yxPin", the field having typed both; then an agent writes
+    // "xPin" back with no transaction open: the session reloads it itself, and the field
+    // shows it, not the "yxPin" it last typed.
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    for (key, name, saves) in [("x", "xPin", 1), ("y", "yxPin", 2)] {
+        type_name(&mut h, key);
+        step_until(&mut h, name, |h| {
+            h.state().tabs()[0].edits.idle() && shows(h, "Timeline", name)
+        });
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+        step_until(&mut h, "saved", |h| {
+            h.state().tabs()[0].saves == saves && !h.state().tabs()[0].unsaved()
+        });
+    }
+    let theirs = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace(r#""name": "yxPin""#, r#""name": "xPin""#);
+    assert!(theirs.contains(r#""name": "xPin""#), "{theirs}");
+    std::fs::write(&path, &theirs).unwrap();
+    step_until(&mut h, "the agent's name shown", |h| {
+        shows(h, "Timeline", "xPin") && !shows(h, "Timeline", "yxPin")
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(name_field(&h).value().as_deref(), Some("xPin"));
+    assert!(!anywhere(&h, "example.silico *"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_s_right_after_the_first_keystroke_saves_it() {
+    // The first edit's `begin` held, so no transaction is open yet: Save is offered all the
+    // same (the tab is unsaved), and Ctrl+S saves the edit once it's made.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "s");
+    step(&mut h);
+    assert!(!h.state().tabs()[0].transaction);
+    assert!(
+        !h.get_by_role_and_label(Role::Button, "Save")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step(&mut h);
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "saved", |h| {
+        h.state().tabs()[0].saves == 1 && !h.state().tabs()[0].unsaved()
+    });
+    assert_eq!(names_in(&path), ["Block", "sPin", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }

@@ -32,12 +32,20 @@ pub struct NameField {
 impl NameField {
     /// Whether its text still stands for the feature `feature` of session `session`, whose
     /// name the document holds as `name`: the same feature, no reset since, and the name
-    /// unchanged or one this field typed.
-    fn keeps(&self, session: SessionId, feature: &FeatureId, name: &str, resets: u64) -> bool {
+    /// unchanged or one this field typed, or the tab still `applying` what was asked (a
+    /// name the document passes through on the way isn't the one it comes to).
+    fn keeps(
+        &self,
+        session: SessionId,
+        feature: &FeatureId,
+        name: &str,
+        resets: u64,
+        applying: bool,
+    ) -> bool {
         self.session == session
             && &self.feature == feature
             && self.resets == resets
-            && (self.base == name || self.typed.iter().any(|typed| typed == name))
+            && (applying || self.base == name || self.typed.iter().any(|typed| typed == name))
     }
 }
 
@@ -312,7 +320,11 @@ impl<P: Clients + 'static> Panes<'_, P> {
         // value again once that moves other than by this field's own edits (an undo, a
         // redo, a revert, a reload). A refusal keeps what was typed, the refusal said.
         let mut field = match self.name.take() {
-            Some(field) if field.keeps(tab.id, &entry.id, &entry.name, tab.resets) => field,
+            Some(field)
+                if field.keeps(tab.id, &entry.id, &entry.name, tab.resets, tab.applying()) =>
+            {
+                field
+            }
             _ => NameField {
                 session: tab.id,
                 feature: entry.id.clone(),
