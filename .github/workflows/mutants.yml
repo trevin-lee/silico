@@ -19,7 +19,7 @@ name: mutants
 # The ref, base, packages, files, and regex, so concurrent runs can be told apart
 # (review-tests finds its run by this title). A filler run's starts "filler a" or "filler
 # b<k>": the filler reads its own last runs back from these titles.
-run-name: "${{ inputs.filler && format('filler {0} ', inputs.filler) || '' }}mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}${{ inputs.long && ' (long)' || '' }}"
+run-name: "${{ inputs.filler && format('filler {0} ', inputs.filler) || '' }}mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}${{ inputs.tests && format(' tested by {0}', inputs.tests) || '' }}${{ inputs.long && ' (long)' || '' }}"
 
 on:
   workflow_dispatch:
@@ -39,11 +39,14 @@ on:
       re:
         description: "Only mutants whose names match this regex, cargo-mutants' --re, searched in each name (path:line:col: what was replaced, often ending ' in fn'); match a survivor by its description rather than its line, which moves; escape regex characters; no single quotes (write . for one) or newlines (empty: every mutant)"
         default: ""
+      tests:
+        description: "Only these packages' tests for each mutant, space-separated, each a --test-package (empty: every workspace test, as .cargo/mutants.toml has it). For a package no other package's tests reach, such as silico-oracle's sketch-edit comparison, its own tests are every test that can catch its mutants, at a fraction of the time"
+        default: ""
       shards:
         description: "The fewest shards to share the work (1 to 16; up to nine run at once, one a runner: seven for a long run). The plan adds shards, up to 16, so none holds more than 80 mutants, about 12 hours on a loaded VM; a filler run has exactly these"
         default: "1"
       long:
-        description: "Empty (the default) for a run that gates a merge: its shards take any of the thirteen runners labelled mutants-pr. Set (true) for a long one, a milestone's or a whole crate's, hours long: its shards take only the seven labelled mutants, so a run that gates a merge never waits behind it, on silico-5 to -8, -20, and -21"
+        description: "Empty (the default) for a run that gates a merge: its shards take any of the thirteen runners labelled mutants-pr. Set (true) for a long one, a milestone's or a whole crate's, hours long: its shards take only the seven labelled mutants, so a run that gates a merge never waits behind it, on silico-5 to -8, -20, and -21. A run without it whose plan needs more than six shards goes to the long lane anyway"
         default: ""
       filler:
         description: "Empty for a real run. Set only by the filler (filler.yml): a, the commits main gained since its last such run, or b<k>, the k-th slice of the source; such a run yields to real ones, stops after an hour, tests its mutants in random order, and fails only on misses not in .github/mutants-triaged.txt"
@@ -69,6 +72,7 @@ jobs:
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
       count: ${{ steps.plan.outputs.count }}
+      long: ${{ steps.plan.outputs.long }}
     steps:
       # Every commit, to list the ref's mutants as its shards will find them.
       - uses: actions/checkout@v5
@@ -86,6 +90,7 @@ jobs:
           RE: ${{ inputs.re }}
           FILLER: ${{ inputs.filler }}
           LONG: ${{ inputs.long }}
+          TESTS: ${{ inputs.tests }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
@@ -93,7 +98,7 @@ jobs:
           [1-9] | 1[0-6]) ;;
           *) echo "::error::shards must be 1 to 16, not '$SHARDS'"; exit 1 ;;
           esac
-          for package in $PACKAGES; do
+          for package in $PACKAGES $TESTS; do
             case $package in
             *[!a-z0-9_-]*) echo "::error::not a package name: '$package'"; exit 1 ;;
             esac
@@ -158,6 +163,17 @@ jobs:
             shards=$(( shards > 16 ? 16 : shards ))
             echo "$mutants mutants: $shards shards ($SHARDS asked for)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
+          # A run that gates a merge shares the thirteen mutants-pr runners with every other
+          # such run: one past six shards would hold most of them for hours (the oracle's 1,479
+          # mutants held nine for eight hours on 2026-10-30, and every PR's run queued behind
+          # them). Such a run goes to the long lane, as if it had asked for it, and says so.
+          long=$LONG
+          if [ -z "$FILLER" ] && [ -z "$long" ] && [ "$shards" -gt 6 ]; then
+            long=true
+            echo "$shards shards are more than a run that gates a merge may hold: on the long lane (silico-9 to -12, -15 to -17), as with long=true" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "::warning::$shards shards: run on the long lane, as with long=true; narrow it (base, files, tests) to keep it on the merge lane"
+          fi
+          echo "long=$long" >>"$GITHUB_OUTPUT"
           echo "count=$shards" >>"$GITHUB_OUTPUT"
           echo "shards=[$(seq -s, 0 $((shards - 1)))]" >>"$GITHUB_OUTPUT"
 
@@ -170,7 +186,7 @@ jobs:
     # those have and silico-5 to -8, -20 and -21 have alone: so a run that gates a merge never
     # waits for a long one to free the pool, but starts beside it, on those six at least (a
     # freed runner with both labels goes to whichever shard GitHub queued first).
-    runs-on: ${{ inputs.filler != '' && fromJSON('["self-hosted", "linux", "x64", "filler"]') || inputs.long != '' && fromJSON('["self-hosted", "linux", "x64", "mutants"]') || fromJSON('["self-hosted", "linux", "x64", "mutants-pr"]') }}
+    runs-on: ${{ inputs.filler != '' && fromJSON('["self-hosted", "linux", "x64", "filler"]') || needs.plan.outputs.long != '' && fromJSON('["self-hosted", "linux", "x64", "mutants"]') || fromJSON('["self-hosted", "linux", "x64", "mutants-pr"]') }}
     # The plan gives a shard about 12 hours of mutants, but no more than 16 shards: a run past
     # 1,280 mutants holds more, and a whole-workspace run (11,547 mutants on 2026-10-29,
     # silico-core 8,557) is cut off here even at 16, so narrow it by package, file, or base.
@@ -198,7 +214,7 @@ jobs:
       # free: see the shard's share below. A long run's at most seven at once, as many as its
       # lane has runners: the plan may give it up to 16, and none should wait in the runners'
       # queue through a sibling's whole run (GitHub cancels a job queued for 24 hours).
-      max-parallel: ${{ inputs.long != '' && 7 || 9 }}
+      max-parallel: ${{ needs.plan.outputs.long != '' && 7 || 9 }}
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
@@ -216,6 +232,7 @@ jobs:
           PACKAGES: ${{ inputs.packages }}
           FILES: ${{ inputs.files }}
           RE: ${{ inputs.re }}
+          TESTS: ${{ inputs.tests }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ needs.plan.outputs.count }}
           FILLER: ${{ inputs.filler }}
@@ -241,6 +258,7 @@ jobs:
           # One regex, as given: cargo-mutants matches it against each mutant's name.
           # (`--re=` so a regex beginning with `-` isn't read as an option.)
           if [ -n "$RE" ]; then args+=("--re=$RE"); fi
+          for package in $TESTS; do args+=(--test-package "$package"); done
           # A filler run is cut off after an hour: in random order (cargo-mutants shuffles each
           # shard's share after sharding), so each turn at a slice reaches different mutants.
           if [ -n "$FILLER" ]; then args+=(--shuffle); fi
