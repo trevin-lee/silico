@@ -860,16 +860,19 @@ const HANG: Duration = Duration::from_secs(60);
 const COSTING_HANG: Duration = Duration::from_secs(280);
 
 /// Recomputes `document` and gives the model it published, and the CPU time this process
-/// spent meanwhile: every thread's, the engine's and the fake kernel's, which is what the
-/// recompute costs, where a loaded machine's wall clock measures the machine. (Nextest
-/// runs each test in its own process; the probes' own CPU is taken out.) CPU time doesn't
-/// see a recompute that waits instead of working, so it must also finish within `wall`, what
-/// it takes a quiet machine with room to spare, plus what load adds: its `work` (about twice
-/// what it computes on a quiet machine) slowed as much as the machine slowed work handed
-/// from thread to thread meanwhile ([`Share`]), and ten times how late the machine woke
-/// threads ([`allowance`]). Only the work is scaled, so on a quiet machine the bound is
-/// `wall`'s, and a recompute that waits between its steps still misses it under load by
-/// what it waits. Fails if it wasn't published, or took longer.
+/// spent meanwhile over the machine's slowdown ([`Share`]): every thread's, the engine's
+/// and the fake kernel's, which is what the recompute costs, where a loaded machine's wall
+/// clock measures the machine; over the slowdown, as every bound on a cost here is (#253),
+/// since a loaded machine's CPU does less in a second too (a runner 1.54 times slower took
+/// a chain of 400 booleans 5.6 s of CPU, 3.6 s over it). (Nextest runs each test in its own
+/// process; the probes' own CPU is taken out.) CPU time doesn't see a recompute that waits
+/// instead of working, so it must also finish within `wall`, what it takes a quiet machine
+/// with room to spare, plus what load adds: its `work` (about twice what it computes on a
+/// quiet machine) slowed as much as the machine slowed work handed from thread to thread
+/// meanwhile ([`Share`]), and ten times how late the machine woke threads ([`allowance`]).
+/// Only the work is scaled, so on a quiet machine the bound is `wall`'s, and a recompute
+/// that waits between its steps still misses it under load by what it waits. Fails if it
+/// wasn't published, or took longer.
 fn published_costing(
     engine: &Recompute<FakeKernel>,
     document: Checked,
@@ -905,7 +908,7 @@ fn published_costing(
          times slower than a quiet one)",
         measured.slowdown
     );
-    (model, cost)
+    (model, cost.div_f64(measured.slowdown))
 }
 
 #[test]
