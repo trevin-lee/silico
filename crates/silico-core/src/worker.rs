@@ -1924,6 +1924,49 @@ fn beside(exe: &Path, env: &str, binary: &str, noun: &str, build: &str) -> Resul
 }
 
 #[cfg(test)]
+mod advice_words {
+    use super::Advice;
+
+    /// One advice of each kind, `TryAgain`'s two apart: every variant is matched, so a new
+    /// one is a compile error here until it's listed.
+    fn every_kind() -> Vec<Advice> {
+        let all = vec![
+            Advice::ChangeTheValues {
+                why: "w".to_owned(),
+            },
+            Advice::SimplifyOrWait,
+            Advice::TryAgain {
+                once_more: false,
+                why: "w".to_owned(),
+            },
+            Advice::TryAgain {
+                once_more: true,
+                why: "w".to_owned(),
+            },
+            Advice::Other("w".to_owned()),
+        ];
+        for advice in &all {
+            match advice {
+                Advice::ChangeTheValues { .. }
+                | Advice::SimplifyOrWait
+                | Advice::TryAgain { .. }
+                | Advice::Other(_) => {}
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn the_schemas_words_are_exactly_the_words_advice_gives_in_order() {
+        // `Advice::WORDS` (the schema's enum) is what `word` gives over every kind, each
+        // once, in the variants' order, and nothing besides; `Other` gives none.
+        let given: Vec<&str> = every_kind().iter().filter_map(Advice::word).collect();
+        assert_eq!(given, Advice::WORDS);
+        assert_eq!(Advice::Other("w".to_owned()).word(), None);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
     use std::os::unix::process::ExitStatusExt;
