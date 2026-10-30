@@ -257,3 +257,14 @@ crates/silico-core/src/document/undo.rs | Plan<K>::restored | replace Plan<K>::r
 # line its placement collapses nor a tangent_on: `>=` lets it through as named first, and
 # both checks after it still find no rule.
 crates/silico-oracle/src/sketch_edit.rs | rule | replace > with >= | #251
+# An extend's place or radius exactly at its tolerance from the other side's (1e-8 mm, or the
+# drag's band, 5e-7): FreeCAD's solves land there only where both coordinates make the
+# difference exact, which the tests pin where they can (a coordinate of 0); for the shared
+# end's neighbour (as distance or per axis), a dragged point's x, and a radius, none does,
+# and at the edge either answer is within what the note allows.
+crates/silico-oracle/src/sketch_edit.rs | compare_edited | replace > with >= | #271
+crates/silico-oracle/src/sketch_edit.rs | compare_edited | replace > with >= | #271
+crates/silico-oracle/src/sketch_edit.rs | compare_edited | replace > with >= | #271
+crates/silico-oracle/src/sketch_edit.rs | compare_edited | replace > with >= | #271
+crates/silico-oracle/src/sketch_edit.rs | compare_edited | replace > with >= | #271
+crates/silico-oracle/src/sketch_edit.rs | compare_edited | replace > with >= | #271

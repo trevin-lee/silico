@@ -10,10 +10,11 @@
 # report. A scheduled night cancels filler first. Started by hand with `sketch_edits: true`,
 # it runs the sketch-edit sweep instead (`pixi run oracle-sketch-edit-sweep`: 500 generated
 # sketches, each edited by Silico and by FreeCAD, docs/ports/sketch-edit.md's *The oracle*),
-# from the same seed, and nothing else. A run started by hand can name its `seed`, to repeat
+# then the sketch-extend sweep (`oracle-sketch-extend-sweep`, 500 extends), from the same
+# seed, and nothing else. A run started by hand can name its `seed`, to repeat
 # a sweep (either one) at it; the run's title names the seed it used.
 name: oracle-sweep
-run-name: "${{ inputs.filler && 'filler ' || '' }}oracle ${{ inputs.sketch_edits && 'sketch-edit ' || '' }}sweep, seed ${{ inputs.seed || github.run_number }}"
+run-name: "${{ inputs.filler && 'filler ' || '' }}oracle ${{ inputs.sketch_edits && 'sketch-edit and extend ' || '' }}sweep, seed ${{ inputs.seed || github.run_number }}"
 
 on:
   schedule:
@@ -25,7 +26,7 @@ on:
         type: boolean
         default: false
       sketch_edits:
-        description: "Run the sketch-edit sweep (pixi run oracle-sketch-edit-sweep) instead of the sweep and the corpus"
+        description: "Run the sketch-edit and sketch-extend sweeps (pixi run oracle-sketch-edit-sweep, oracle-sketch-extend-sweep) instead of the sweep and the corpus"
         type: boolean
         default: false
       seed:
@@ -91,9 +92,13 @@ jobs:
           SILICO_ORACLE_CASE_DEADLINE: ${{ inputs.filler && '1800' || '' }}
           # Through the environment, so the input is never read as the script's text.
           SEED: ${{ inputs.seed || github.run_number }}
+        # Then the extend sweep, with the same seed: each runs whatever the other finds.
         run: |
           echo "seed $SEED"
-          pixi run oracle-sketch-edit-sweep -- --seed "$SEED"
+          status=0
+          pixi run oracle-sketch-edit-sweep -- --seed "$SEED" || status=$?
+          pixi run oracle-sketch-extend-sweep -- --seed "$SEED" || status=$?
+          exit "$status"
 
   report:
     needs: sweep

@@ -325,12 +325,32 @@ pub fn sketch_edit_cases(
     seed: u64,
     count: usize,
 ) -> Result<Vec<crate::sketch_edit::EditCase>, String> {
+    sketch_cases(seed, count, "edit", Drawing::edit)
+}
+
+/// `count` extend cases from `seed`, named `extend_<seed>_<n>`: [`sketch_edit_cases`]'s
+/// random sketches, each with one of its lines or arcs extended at a random end, a line by a
+/// length from half its own back to half on, an arc by an angle from half its sweep back to
+/// 90 degrees on, now and then by 0.
+pub fn sketch_extend_cases(
+    seed: u64,
+    count: usize,
+) -> Result<Vec<crate::sketch_edit::EditCase>, String> {
+    sketch_cases(seed, count, "extend", Drawing::extend)
+}
+
+fn sketch_cases(
+    seed: u64,
+    count: usize,
+    prefix: &str,
+    edit: fn(&Drawing, &mut Random) -> crate::sketch_edit::Edit,
+) -> Result<Vec<crate::sketch_edit::EditCase>, String> {
     let mut random = Random(seed);
     (0..count)
         .map(|n| {
-            let name = format!("edit_{seed}_{n}");
+            let name = format!("{prefix}_{seed}_{n}");
             let drawing = Drawing::random(&mut random);
-            let edit = drawing.edit(&mut random);
+            let edit = edit(&drawing, &mut random);
             let text = drawing.document(&name);
             let document = silico_core::document::read(text.as_bytes())
                 .map_err(|e| format!("{name}: the generated sketch can't be read: {e}"))?;
@@ -726,6 +746,50 @@ impl Drawing {
                 let b = pick(random, &ids);
                 Edit::Merge { points: vec![a, b] }
             }
+        }
+    }
+
+    fn extend(&self, random: &mut Random) -> crate::sketch_edit::Edit {
+        use crate::sketch_edit::{Edit, ExtendBy, ExtendEnd};
+        let lines: Vec<&(String, String, String)> = self.lines.iter().collect();
+        let end = if random.coin() {
+            ExtendEnd::Start
+        } else {
+            ExtendEnd::End
+        };
+        let zero = random.below(12) == 0;
+        if self.arcs.is_empty() || random.below(3) != 0 {
+            let (id, from, to) = lines[random.below(lines.len())];
+            let (a, b) = (self.at(from), self.at(to));
+            let length = libm::hypot(b[0] - a[0], b[1] - a[1]);
+            // Far enough either way to flip the line, or take it to nothing, now and then, as
+            // the note's refusals need (:325, :332). `+ 0.0`: a thousandth rounded from just
+            // below 0 is -0, which an increment refuses as written.
+            let by = if zero {
+                0.0
+            } else {
+                random.between(-1.5 * length, 1.5 * length) + 0.0
+            };
+            return Edit::Extend {
+                curve: id.clone(),
+                end,
+                by: ExtendBy::Length(by),
+            };
+        }
+        let (id, center, start, stop) = &self.arcs[random.below(self.arcs.len())];
+        let sweep =
+            silico_protocol::arc_from_points(self.at(center), self.at(start), self.at(stop))
+                .map_or(90.0, |[_, from, to]| (to - from).to_degrees());
+        // Far enough to invert the arc or turn it a whole turn now and then (:325, :333).
+        let by = if zero {
+            0.0
+        } else {
+            random.between(-1.5 * sweep, 360.0) + 0.0
+        };
+        Edit::Extend {
+            curve: id.clone(),
+            end,
+            by: ExtendBy::Angle(by),
         }
     }
 

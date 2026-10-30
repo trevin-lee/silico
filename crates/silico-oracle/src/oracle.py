@@ -895,6 +895,12 @@ def sketch_edit_outcome(doc, job):
         return json.dumps({"harness": "%s: %s" % (type(e).__name__, e)})
 
 
+def edit_extend(s, e, applied):
+    # FreeCAD's own extend (SketchObject::extend): a line's end through moveGeometry's drag,
+    # an arc's range written by setRange, each then solved (sketch-edit.md section 7).
+    edit_call(s.extend, e["geometry"], e["increment"], e["position"])
+
+
 SKETCH_EDITS = {
     "delete": edit_delete,
     "unjoin": edit_unjoin,
@@ -902,6 +908,7 @@ SKETCH_EDITS = {
     "merge": edit_merge,
     "split": edit_split,
     "trim": edit_trim,
+    "extend": edit_extend,
 }
 
 

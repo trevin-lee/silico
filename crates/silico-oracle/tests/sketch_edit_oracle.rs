@@ -15,9 +15,9 @@ use silico_core::document::{
 use silico_core::sketch::{SketchWorker, Translation};
 use silico_oracle::sketch::freecad_sketch;
 use silico_oracle::sketch_edit::{
-    self, Edit, EditCase, FcConstraint, FcGeometry, FreecadEdit, FreecadEdited, KNOWN, Plan,
-    Prepared, Refusal, Rule, SilicoSide, Theirs, Verdict, freecad_outcomes, plan, prepare, rule,
-    silico_side, verdict, without_known,
+    self, Edit, EditCase, ExtendBy, FcConstraint, FcGeometry, FreecadEdit, FreecadEdited, KNOWN,
+    Plan, Prepared, Refusal, Rule, SilicoSide, Theirs, Verdict, freecad_outcomes, plan, prepare,
+    rule, silico_side, verdict, without_known,
 };
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
@@ -2682,4 +2682,1295 @@ fn a_merge_dropping_an_implied_on_is_excused_only_where_freecad_rolls_back_just_
     };
     let v = verdict(&kept, theirs[0].as_ref());
     assert!(!dropped(&v) && !v.how.is_empty(), "{v:?}");
+}
+
+// ---- extend (section 7) ----
+
+#[test]
+fn the_notes_extend_probe_slides_the_line_to_5_15_on_both_sides() {
+    // A horizontal 10 mm line with its length, its end extended by 5: the drag pulls the
+    // end toward (15, 0); the length holds 10 and horizontal holds y, so the start follows
+    // to (5, 0) (section 7's 1.1.3 probe).
+    let (_, prepared, theirs) = both(&["extend_probe_line_end_by_5"]);
+    let SilicoSide::Edited(s) = &prepared[0].silico else {
+        panic!("{:?}", prepared[0].silico);
+    };
+    let at = |name: &str| {
+        let p = s
+            .edited
+            .sketch
+            .points
+            .iter()
+            .find(|p| p.id == id(name))
+            .unwrap();
+        [p.x.mm(), p.y.mm()]
+    };
+    for (got, want) in [(at("p0000001"), [5.0, 0.0]), (at("p0000002"), [15.0, 0.0])] {
+        assert!(
+            (got[0] - want[0]).abs() <= 1e-9 && (got[1] - want[1]).abs() <= 1e-9,
+            "{got:?} against {want:?}"
+        );
+    }
+    let v = verdict(&prepared[0], theirs[0].as_ref());
+    agrees(&v);
+    assert!(v.excused.is_empty(), "{v:?}");
+}
+
+/// `p` with Silico's refusal changed by `change`.
+fn refused_otherwise(p: &Prepared, change: impl FnOnce(&mut Refusal)) -> Prepared {
+    let SilicoSide::Refused(r) = &p.silico else {
+        panic!("{}: Silico didn't refuse it: {:?}", p.name, p.silico);
+    };
+    let mut r = r.clone();
+    change(&mut r);
+    Prepared {
+        silico: SilicoSide::Refused(r),
+        ..p.clone()
+    }
+}
+
+/// A change to a refusal, named.
+type Change = Box<dyn Fn(&mut Refusal)>;
+
+fn reported(v: &Verdict, why: &str) {
+    assert!(!v.how.is_empty() && v.excused.is_empty(), "{why}: {v:?}");
+}
+
+#[test]
+fn an_extend_refused_for_another_reason_than_the_notes_is_a_difference() {
+    // Each extend refusal the note gives, as Silico makes it, with one thing about it changed:
+    // its code, its field, the curve it names, or its words. None is the note's any more.
+    let names = [
+        "extend_held_end",
+        "extend_probe_line_by_0",
+        "extend_free_line_flipped",
+        "extend_free_line_to_nothing",
+        "extend_arc_inverted",
+        "extend_arc_whole_turn",
+        "extend_arc_past_a_whole_turn",
+        "extend_arc_turn_too_small",
+        "extend_collapses_neighbour",
+        "extend_arc_collapses_neighbour",
+        "extend_circle",
+    ];
+    let (_, prepared, theirs) = both(&names);
+    for (p, fc) in prepared.iter().zip(&theirs) {
+        let v = verdict(p, fc.as_ref());
+        assert!(rule(p).is_some(), "{}: {:?}", p.name, p.silico);
+        agrees(&v);
+        let changes: [(&str, Change); 4] = [
+            ("its code", Box::new(|r| r.code = "internal".to_owned())),
+            (
+                "its field",
+                Box::new(|r| r.parameter = Some("elsewhere".to_owned())),
+            ),
+            (
+                "the curve",
+                Box::new(|r| r.elements[0] = "n0009999".to_owned()),
+            ),
+            (
+                "its words",
+                Box::new(|r| r.message = "an unrelated refusal".to_owned()),
+            ),
+        ];
+        for (what, change) in &changes {
+            let wrong = refused_otherwise(p, change);
+            assert!(rule(&wrong).is_none(), "{} by {what}", p.name);
+            reported(
+                &verdict(&wrong, fc.as_ref()),
+                &format!("{} by {what}", p.name),
+            );
+        }
+    }
+    // A held end or a frame that can't be built names the moving end: another point isn't.
+    for i in [0, 8] {
+        let wrong = refused_otherwise(&prepared[i], |r| r.elements[1] = "p0009999".to_owned());
+        assert!(rule(&wrong).is_none(), "{}", prepared[i].name);
+    }
+    // Within 1e-7 mm of the bounds, on the arc of radius 5: 1e-6 degrees short of a whole
+    // turn, 8.7e-8 mm, and 1e-6 degrees of sweep left, each still the note's.
+    for (i, by) in [
+        (5, ExtendBy::Angle(269.999999)),
+        (4, ExtendBy::Angle(-89.999999)),
+    ] {
+        let Edit::Extend { curve, end, .. } = &prepared[i].edit else {
+            panic!("{}", prepared[i].name);
+        };
+        let near = Prepared {
+            edit: Edit::Extend {
+                curve: curve.clone(),
+                end: *end,
+                by,
+            },
+            ..prepared[i].clone()
+        };
+        assert!(rule(&near).is_some(), "{} by {by:?}", prepared[i].name);
+    }
+    // Just outside: 1e-5 degrees short of a whole turn, 8.7e-7 mm, and 1e-5 degrees of sweep
+    // left: neither is the note's.
+    for (i, by) in [
+        (5, ExtendBy::Angle(269.99999)),
+        (4, ExtendBy::Angle(-89.99999)),
+    ] {
+        let Edit::Extend { curve, end, .. } = &prepared[i].edit else {
+            panic!("{}", prepared[i].name);
+        };
+        let outside = Prepared {
+            edit: Edit::Extend {
+                curve: curve.clone(),
+                end: *end,
+                by,
+            },
+            ..prepared[i].clone()
+        };
+        assert!(rule(&outside).is_none(), "{} by {by:?}", prepared[i].name);
+    }
+    // The increment: by 1, not 0; a turn of 1e-6 degrees on a radius of 1, 1.7e-8 mm, more
+    // than the 1e-9 the note's "too small" is; by -60 degrees, which leaves a 30 degree arc;
+    // by 200, a 290 degree one. Each refusal then isn't the note's.
+    for (i, by) in [
+        (1, ExtendBy::Length(1.0)),
+        (7, ExtendBy::Angle(1e-6)),
+        (4, ExtendBy::Angle(-60.0)),
+        (5, ExtendBy::Angle(200.0)),
+    ] {
+        let Edit::Extend { curve, end, .. } = &prepared[i].edit else {
+            panic!("{}", prepared[i].name);
+        };
+        let wrong = Prepared {
+            edit: Edit::Extend {
+                curve: curve.clone(),
+                end: *end,
+                by,
+            },
+            ..prepared[i].clone()
+        };
+        assert!(rule(&wrong).is_none(), "{} by {by:?}", prepared[i].name);
+    }
+}
+
+#[test]
+fn an_extend_excused_only_where_freecads_result_is_the_notes() {
+    let (_, prepared, theirs) = both(&[
+        "extend_held_end",
+        "extend_probe_line_by_0",
+        "extend_arc_turn_too_small",
+        "extend_free_line_flipped",
+        "extend_free_line_to_nothing",
+        "extend_collapses_neighbour",
+        "extend_arc_collapses_neighbour",
+    ]);
+    // The flipped line's and the line taken to nothing's refusals asked by -5, a target the
+    // request leaves 5 mm long: so a drag's result, not the request's own target, is what's
+    // refused (:325), and FreeCAD's result decides.
+    let by_minus_5 = |p: &Prepared| {
+        let Edit::Extend { curve, end, .. } = &p.edit else {
+            panic!("not an extend");
+        };
+        Prepared {
+            edit: Edit::Extend {
+                curve: curve.clone(),
+                end: *end,
+                by: ExtendBy::Length(-5.0),
+            },
+            ..p.clone()
+        }
+    };
+    let (flipped, to_nothing) = (by_minus_5(&prepared[3]), by_minus_5(&prepared[4]));
+    agrees(&verdict(&flipped, theirs[3].as_ref()));
+    agrees(&verdict(&to_nothing, theirs[4].as_ref()));
+    // "Nothing moved" and "leaves the sketch as it was" hold of the whole sketch: FreeCAD's
+    // line start, not the extended end, moved 1e-6 mm, and each is a difference.
+    for i in [0, 1, 4, 5] {
+        let p = if i == 4 { &to_nothing } else { &prepared[i] };
+        let moved = doctored(&theirs[i], |fc| {
+            let curve = match &p.edit {
+                Edit::Extend { curve, .. } => curve.clone(),
+                _ => unreachable!(),
+            };
+            let g = edited_geometry(p, fc, &curve);
+            g.points.get_mut("1").unwrap()[0] += 1e-6;
+        });
+        reported(&verdict(p, Some(&moved)), &p.name);
+    }
+    // The arc's turn too small, its radius changed by FreeCAD.
+    let p = &prepared[2];
+    let grown = doctored(&theirs[2], |fc| {
+        *edited_geometry(p, fc, "a0000004").radius.as_mut().unwrap() += 1e-6;
+    });
+    reported(&verdict(p, Some(&grown)), &p.name);
+    // The arc's turn too small, with its centre moved by FreeCAD.
+    let p = &prepared[2];
+    let moved = doctored(&theirs[2], |fc| {
+        edited_geometry(p, fc, "a0000004")
+            .points
+            .get_mut("3")
+            .unwrap()[1] += 1e-6;
+    });
+    reported(&verdict(p, Some(&moved)), &p.name);
+    // A sound target, FreeCAD's line left 1e-8 mm long (the note's), or 1e-6 (not).
+    for (left, excused) in [(1e-8, true), (1e-6, false)] {
+        let made = doctored(&theirs[4], |fc| {
+            let line = edited_geometry(&to_nothing, fc, "n0000003");
+            let start = line.points["1"];
+            *line.points.get_mut("2").unwrap() = [start[0] + left, start[1]];
+        });
+        let v = verdict(&to_nothing, Some(&made));
+        assert_eq!(v.how.is_empty(), excused, "{left} mm: {v:?}");
+    }
+    // A line FreeCAD left running the same way, 5 mm long, where the note's is flipped.
+    let p = &flipped;
+    let same_way = doctored(&theirs[3], |fc| {
+        *edited_geometry(p, fc, "n0000003")
+            .points
+            .get_mut("2")
+            .unwrap() = [5.0, 0.0];
+    });
+    reported(&verdict(p, Some(&same_way)), &p.name);
+    // A frame that can't be built: FreeCAD's drag leaving B 1e-6 mm long is no collapse (and
+    // moved the sketch), where B 1e-8 mm long is the note's.
+    let p = &prepared[5];
+    for (left, excused) in [(1e-6, false), (1e-8, true)] {
+        let made = doctored(&theirs[5], |fc| {
+            let b = edited_geometry(p, fc, "n0000005");
+            let start = b.points["1"];
+            *b.points.get_mut("2").unwrap() = [start[0] + left, start[1]];
+        });
+        let v = verdict(p, Some(&made));
+        assert_eq!(v.how.is_empty(), excused, "B {left} mm long: {v:?}");
+    }
+    // A gated arc's extend at a shared end names the shared point; one that doesn't isn't
+    // the note's. FreeCAD 1.1.3's solve there collapses the line in some runs and not in
+    // others, so its result is given the line as drawn, no curve 1e-7 mm or less, and only
+    // the refusal decides.
+    let p = &prepared[6];
+    let sound = doctored(&theirs[6], |fc| {
+        let i = p
+            .model
+            .elements
+            .iter()
+            .position(|e| e == "n0000006")
+            .unwrap();
+        let id = fc.ids_before[i];
+        let line = fc.geometry.iter_mut().find(|g| g.id == id).unwrap();
+        *line.points.get_mut("1").unwrap() = [0.0, 5.0];
+        *line.points.get_mut("2").unwrap() = [-5.0, 0.0];
+    });
+    agrees(&verdict(p, Some(&sound)));
+    let wrong = refused_otherwise(p, |r| r.elements.retain(|e| e != "p0000003"));
+    reported(&verdict(&wrong, Some(&sound)), &p.name);
+    // Nor one naming the shared point but not the neighbour that shares it.
+    let wrong = refused_otherwise(p, |r| r.elements.retain(|e| e != "n0000006"));
+    reported(&verdict(&wrong, Some(&sound)), &p.name);
+}
+
+#[test]
+fn a_request_whose_own_target_flips_the_line_is_refused_before_the_drag() {
+    // The probe's line, 10 long and held so, its end by -15: the request's own target flips
+    // it, so Silico refuses it before any drag (:325, :331, Worker 1's #270), where FreeCAD
+    // drags toward it and keeps what the constraints leave, unflipped.
+    let (_, prepared, theirs) = both(&["extend_probe_line_end_by_minus_15"]);
+    let v = verdict(&prepared[0], theirs[0].as_ref());
+    agrees(&v);
+    // FreeCAD's line slid to (-15, 0)-(-5, 0), unflipped.
+    let Some(Theirs::Edited(fc)) = &theirs[0] else {
+        panic!("FreeCAD didn't make the edit: {:?}", theirs[0]);
+    };
+    let mut fc = fc.clone();
+    let line = edited_geometry(&prepared[0], &mut fc, "n0000003");
+    for (pos, want) in [("1", [-15.0, 0.0]), ("2", [-5.0, 0.0])] {
+        let at = line.points[pos];
+        assert!(
+            libm::hypot(at[0] - want[0], at[1] - want[1]) <= 1e-8,
+            "{pos}: {at:?}"
+        );
+    }
+    assert!(
+        v.excused[0].starts_with("an extend whose own target leaves the line"),
+        "{v:?}"
+    );
+    // The same refusal of an increment of -5, whose target leaves 5 mm: not the note's.
+    let Edit::Extend { curve, end, .. } = &prepared[0].edit else {
+        panic!("not an extend");
+    };
+    let wrong = Prepared {
+        edit: Edit::Extend {
+            curve: curve.clone(),
+            end: *end,
+            by: ExtendBy::Length(-5.0),
+        },
+        ..prepared[0].clone()
+    };
+    reported(&verdict(&wrong, theirs[0].as_ref()), "by -5");
+}
+
+#[test]
+fn a_drag_a_reference_reaches_compares_all_it_can() {
+    // extend_line_with_reference_length: FreeCAD's drag settles otherwise each run, so no
+    // place before the solve, and after it only points neither solve moved, are compared; but
+    // everything else is.
+    let (cases, prepared, theirs) = both(&["extend_line_with_reference_length"]);
+    let v = verdict(&prepared[0], theirs[0].as_ref());
+    agrees(&v);
+    assert!(
+        v.excused
+            .iter()
+            .any(|e| e.starts_with("harness limit: FreeCAD 1.1.3's drag of line n0000003")),
+        "{v:?}"
+    );
+    // Silico's result without the horizontal: reported.
+    let p = changed(&cases[0], &prepared[0], |s| {
+        s.constraints.retain(|c| c.id != id("k0000004"));
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(
+        v.how
+            .iter()
+            .any(|h| h == "FreeCAD has Horizontal(n0000003) (from k0000004), Silico hasn't"),
+        "{v:?}"
+    );
+    // The lone point, which neither solve moves, elsewhere: reported after the solve.
+    let p = changed(&cases[0], &prepared[0], |s| {
+        let lone = s
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("p0000006"))
+            .unwrap();
+        lone.x = silico_core::document::Coordinate::new(21.0).unwrap();
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "after the solve, Silico's point p0000006, which neither solve moved, is at [21.0, 20.0]"
+        )),
+        "{v:?}"
+    );
+    // The dragged end elsewhere before the solve: FreeCAD's isn't reproducible there, so not
+    // compared.
+    let p = changed(&cases[0], &prepared[0], |s| {
+        let end = s
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("p0000002"))
+            .unwrap();
+        end.x = silico_core::document::Coordinate::new(14.5).unwrap();
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(
+        !v.how
+            .iter()
+            .any(|h| h.starts_with("after the edit, before the solve")),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn a_reference_that_doesnt_reach_the_line_leaves_its_drag_compared_in_full() {
+    // extend_line_beside_a_reference: the reference length is on another line, joined to
+    // the extended one by nothing; the drag is compared as any, its end before the solve.
+    let (cases, prepared, theirs) = both(&["extend_line_beside_a_reference"]);
+    let v = verdict(&prepared[0], theirs[0].as_ref());
+    agrees(&v);
+    assert!(v.excused.is_empty(), "{v:?}");
+    let p = changed(&cases[0], &prepared[0], |s| {
+        let end = s
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("p0000002"))
+            .unwrap();
+        end.x = silico_core::document::Coordinate::new(14.5).unwrap();
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "after the edit, before the solve, Silico's point p0000002 is at [14.5, 0.0]"
+        )),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn a_reference_reaching_the_line_through_a_shared_point_is_a_harness_limit() {
+    // extend_line_joined_to_a_reference: the reference length is on a line that shares the
+    // extended one's start, so it reaches it through that point.
+    let (_, prepared, theirs) = both(&["extend_line_joined_to_a_reference"]);
+    let v = verdict(&prepared[0], theirs[0].as_ref());
+    agrees(&v);
+    assert!(
+        v.excused
+            .iter()
+            .any(|e| e.starts_with("harness limit: FreeCAD 1.1.3's drag of line n0000003")),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn a_shared_arc_ends_places_are_checked_where_both_settle_them() {
+    // The note's arc-order probe (:323): the arc's end, which the line shares, turned 30
+    // degrees on. Silico's shared point is compared with FreeCAD's arc end before the solve,
+    // and FreeCAD's line end, which its setRange leaves, with where the case drew it.
+    let (cases, prepared, theirs) = both(&["extend_arc_order_probe"]);
+    let v = verdict(&prepared[0], theirs[0].as_ref());
+    agrees(&v);
+    // Silico's shared point elsewhere: reported.
+    let p = changed(&cases[0], &prepared[0], |s| {
+        let end = s
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("p0000003"))
+            .unwrap();
+        end.x = silico_core::document::Coordinate::new(-6.0).unwrap();
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(
+        v.how.iter().any(|h| h
+            .starts_with("after the edit, before the solve, Silico's point p0000003 is at [-6.0,")),
+        "{v:?}"
+    );
+    // The line's far end, which neither solve moves, elsewhere: reported after the solve.
+    let p = changed(&cases[0], &prepared[0], |s| {
+        let end = s
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("p0000005"))
+            .unwrap();
+        end.x = silico_core::document::Coordinate::new(-11.0).unwrap();
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "after the solve, Silico's point p0000005, which neither solve moved, is at [-11.0, 10.0]"
+        )),
+        "{v:?}"
+    );
+    // FreeCAD's solve failing there (-1): it solved in 10 of 10 runs, so not a case that
+    // varies (only extend_32_115 is), and a difference.
+    let v = verdict(
+        &prepared[0],
+        Some(&doctored(&theirs[0], |fc| fc.after.code = -1)),
+    );
+    assert!(!v.how.is_empty(), "{v:?}");
+    assert!(
+        !v.excused
+            .iter()
+            .any(|e| e.starts_with("harness limit: FreeCAD 1.1.3's solve after setRange")),
+        "{v:?}"
+    );
+    // But only the failure: a conflict FreeCAD finds (-3), or its degrees of freedom
+    // otherwise, each found before FreeCAD solves, is reported.
+    let changes: [(&str, Doctor); 3] = [
+        ("a conflict's code alone", |fc| fc.after.code = -3),
+        ("a conflict", |fc| {
+            fc.after.code = -3;
+            fc.after.conflicting = vec![1];
+        }),
+        ("another dof", |fc| {
+            fc.after.code = -1;
+            fc.after.dof += 1;
+        }),
+    ];
+    for (what, change) in changes {
+        let v = verdict(&prepared[0], Some(&doctored(&theirs[0], change)));
+        assert!(!v.how.is_empty(), "{what}: {v:?}");
+    }
+    // Nor where Silico's solve failed too: then FreeCAD's failure is no harness limit's.
+    let SilicoSide::Edited(edited) = &prepared[0].silico else {
+        panic!("Silico didn't extend it: {:?}", prepared[0].silico);
+    };
+    let mut edited = edited.clone();
+    edited.ours.outcome = Err(silico_core::Error::new(
+        silico_core::ErrorCode::SolveFailed,
+        "doctored",
+    ));
+    let both_failed = Prepared {
+        silico: SilicoSide::Edited(edited),
+        ..prepared[0].clone()
+    };
+    let v = verdict(
+        &both_failed,
+        Some(&doctored(&theirs[0], |fc| fc.after.code = -1)),
+    );
+    assert!(
+        !v.excused
+            .iter()
+            .any(|e| e.starts_with("harness limit: FreeCAD 1.1.3's solve after setRange")),
+        "{v:?}"
+    );
+    // FreeCAD's line end moved by its edit: not what setRange does, reported.
+    let moved = doctored(&theirs[0], |fc| {
+        edited_geometry(&prepared[0], fc, "n0000006")
+            .points
+            .get_mut("1")
+            .unwrap()[0] += 1e-3;
+    });
+    let v = verdict(&prepared[0], Some(&moved));
+    assert!(
+        v.how
+            .iter()
+            .any(|h| h.contains("not where the case drew it")),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn freecads_failed_solve_is_excused_only_at_a_shared_arc_end() {
+    // extend_arc_end_by_30 shares no end: FreeCAD's solve failing there is a difference.
+    let (_, prepared, theirs) = both(&["extend_arc_end_by_30"]);
+    let failed = doctored(&theirs[0], |fc| fc.after.code = -1);
+    reported(
+        &verdict(&prepared[0], Some(&failed)),
+        "extend_arc_end_by_30",
+    );
+}
+
+#[test]
+fn an_extended_arc_moved_elsewhere_by_silico_is_reported() {
+    // extend_arc_end_by_30: the end turned to 120 degrees, (-2.5, 4.330127); Silico's result
+    // with it at 125 instead is reported before and after the solve.
+    let (cases, prepared, theirs) = both(&["extend_arc_end_by_30"]);
+    agrees(&verdict(&prepared[0], theirs[0].as_ref()));
+    let p = changed(&cases[0], &prepared[0], |s| {
+        let a = 125f64.to_radians();
+        let end = s
+            .points
+            .iter_mut()
+            .find(|p| p.id == id("p0000003"))
+            .unwrap();
+        end.x = silico_core::document::Coordinate::new(5.0 * libm::cos(a)).unwrap();
+        end.y = silico_core::document::Coordinate::new(5.0 * libm::sin(a)).unwrap();
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "after the edit, before the solve, Silico's point p0000003 is at [-2.867882182, 4.095760221], FreeCAD's a0000004's end at [-2.5, 4.330127019]"
+        )),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn a_shared_arc_end_excuses_only_what_follows_from_it() {
+    // extend_arc_start_with_tangent: the arc a0000006's start, p0000001, is the line
+    // n0000003's end too. Excused by its pattern (:323): the line's end moving before the
+    // solve, and places after it that a solve moved.
+    let (cases, prepared, theirs) = both(&["extend_arc_start_with_tangent"]);
+    let v = verdict(&prepared[0], theirs[0].as_ref());
+    agrees(&v);
+    assert!(v.modulo.contains(&323), "{v:?}");
+    assert!(v.excused.iter().any(|e| e.contains(":323")), "{v:?}");
+    // Silico's result without the line's horizontal: another difference, reported.
+    let p = changed(&cases[0], &prepared[0], |s| {
+        s.constraints.retain(|c| c.id != id("k0000008"));
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(
+        v.how
+            .iter()
+            .any(|h| h == "FreeCAD has Horizontal(n0000003) (from k0000008), Silico hasn't"),
+        "{v:?}"
+    );
+    // And the arc's own end put elsewhere: reported before the solve.
+    let p = changed(&cases[0], &prepared[0], |s| {
+        let end = s
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("p0000005"))
+            .unwrap();
+        end.x = silico_core::document::Coordinate::new(4.0).unwrap();
+    });
+    let v = verdict(&p, theirs[0].as_ref());
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "after the edit, before the solve, Silico's point p0000005 is at [4.0, 3.0]"
+        )),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn a_whole_turn_is_excused_only_where_freecads_range_wraps() {
+    // extend_arc: its arc a0000004 extended at its end by 270 and by 300 degrees, a whole
+    // turn and past one, which Silico refuses (:333). FreeCAD's range wraps (:318): its arc
+    // after the edit sweeps the sweep plus the turn, less a whole turn, about the same centre
+    // with the same radius.
+    let (_, prepared, theirs) = both(&["extend_arc_whole_turn", "extend_arc_past_a_whole_turn"]);
+    for (p, fc) in prepared.iter().zip(&theirs) {
+        assert_eq!(rule(p), Some(Rule::ExtendWholeTurn), "{}", p.name);
+        let v = verdict(p, fc.as_ref());
+        agrees(&v);
+        assert_eq!(v.excused.len(), 1, "{}: {v:?}", p.name);
+        // FreeCAD's arc otherwise: its end 10 degrees on from the wrap, its centre moved, its
+        // radius another: each a difference.
+        let changes: [(&str, CaseDoctor); 4] = [
+            (
+                "the whole arc turned, its start, not extended, with it",
+                |p, fc| {
+                    let arc = edited_geometry(p, fc, "a0000004");
+                    let c = arc.points["3"];
+                    let (sin, cos) = (libm::sin(1e-6), libm::cos(1e-6));
+                    for k in ["1", "2"] {
+                        let q = arc.points.get_mut(k).unwrap();
+                        let (dx, dy) = (q[0] - c[0], q[1] - c[1]);
+                        *q = [c[0] + dx * cos - dy * sin, c[1] + dx * sin + dy * cos];
+                    }
+                },
+            ),
+            ("its end 10 degrees on", |p, fc| {
+                let arc = edited_geometry(p, fc, "a0000004");
+                let c = arc.points["3"];
+                let e = arc.points.get_mut("2").unwrap();
+                let (dx, dy) = (e[0] - c[0], e[1] - c[1]);
+                let (sin, cos) = (libm::sin(10f64.to_radians()), libm::cos(10f64.to_radians()));
+                *e = [c[0] + dx * cos - dy * sin, c[1] + dx * sin + dy * cos];
+            }),
+            ("its centre moved", |p, fc| {
+                let arc = edited_geometry(p, fc, "a0000004");
+                for q in arc.points.values_mut() {
+                    q[0] += 1e-6;
+                }
+            }),
+            ("its radius another", |p, fc| {
+                let arc = edited_geometry(p, fc, "a0000004");
+                arc.radius = arc.radius.map(|r| r + 1e-6);
+            }),
+        ];
+        for (what, change) in changes {
+            let made = doctored(fc, |fc| change(p, fc));
+            refused_against_freecads_edit(&verdict(p, Some(&made)), what);
+        }
+        // FreeCAD refusing it: the note gives it the edit, so a difference.
+        let v = verdict(p, Some(&Theirs::Failed("refused by hand".to_owned())));
+        assert!(!v.refused && v.excused.is_empty(), "{v:?}");
+        assert!(
+            v.how[0].starts_with("both refused, but the note has FreeCAD make the edit"),
+            "{v}"
+        );
+    }
+}
+
+#[test]
+fn a_failed_solve_at_a_shared_arc_end_is_excused_only_where_freecad_varies() {
+    // `sketch-extend-sweep --seed 32 --count 500`'s case 115: the arc a0000018's start,
+    // p0000013, is the line n0000014's end too. FreeCAD 1.1.3's solve after setRange failed in
+    // 5 of 10 runs (:323). Its failure (-1), its geometry where setRange left it: a harness
+    // limit, excused, and the points neither solve moved still compared after it.
+    let mut cases = silico_oracle::generate::sketch_extend_cases(32, 500).unwrap();
+    let case = cases.swap_remove(115);
+    assert_eq!(case.name, "extend_32_115");
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    let p = &prepared[0];
+    let failed = Some(doctored(&theirs[0], |fc| {
+        fc.after.code = -1;
+        fc.geometry = fc.edited.clone();
+    }));
+    let v = verdict(p, failed.as_ref());
+    agrees(&v);
+    assert!(
+        v.excused
+            .iter()
+            .any(|e| e.starts_with("harness limit: FreeCAD 1.1.3's solve after setRange")),
+        "{v:?}"
+    );
+    // The free line n0000027's start moved 1 mm in Silico's result: no solve moves it, so
+    // it's reported after the solve, FreeCAD's failed one included.
+    let p = changed(&case, p, |s| {
+        let start = s
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("p0000025"))
+            .unwrap();
+        start.x = silico_core::document::Coordinate::new(-21.777).unwrap();
+    });
+    let v = verdict(&p, failed.as_ref());
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "after the solve, Silico's point p0000025, which neither solve moved, is at [-21.777, -9.332]"
+        )),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn freecad_refusing_an_extend_the_note_has_it_make_is_a_difference() {
+    // Every extend of the case file Silico refuses: FreeCAD 1.1.3 makes each, reporting
+    // success (:318, :329-335), but for a kind 1.1 refuses (:319) and an arc turned to no
+    // sweep, which OCCT raises (:318), so its refusal of one isn't the note's; those two agree
+    // only with its raising.
+    let names = [
+        "extend_probe_line_by_0",
+        "extend_arc_by_0",
+        "extend_arc_turn_too_small",
+        "extend_held_end",
+        "extend_collapses_neighbour",
+        "extend_arc_collapses_neighbour",
+        "extend_free_line_flipped",
+        "extend_free_line_to_nothing",
+        "extend_probe_line_end_by_minus_15",
+        "extend_arc_to_nothing",
+        "extend_arc_inverted",
+        "extend_arc_whole_turn",
+        "extend_arc_past_a_whole_turn",
+        "extend_circle",
+        "extend_point",
+    ];
+    let (_, prepared, theirs) = both(&names);
+    let (_, _, made) = both(&["extend_arc_end_by_30"]);
+    let made = made.into_iter().next().flatten();
+    assert!(matches!(made, Some(Theirs::Edited(_))), "{made:?}");
+    let mut seen = std::collections::BTreeSet::new();
+    for (p, fc) in prepared.iter().zip(&theirs) {
+        let Some(r) = rule(p) else {
+            panic!("{}: not a rule's refusal: {:?}", p.name, p.silico);
+        };
+        agrees(&verdict(p, fc.as_ref()));
+        seen.insert(format!("{r:?}"));
+        let refused = verdict(p, Some(&Theirs::Failed("refused by hand".to_owned())));
+        if matches!(r, Rule::ExtendKind | Rule::ExtendArcToNothing) {
+            assert!(
+                matches!(r.pinned(), Some(sketch_edit::Pinned::Raises(_))),
+                "{}",
+                p.name
+            );
+            // Raising with another text than the note's: a difference.
+            assert!(
+                !refused.refused && refused.how.len() == 1,
+                "{}: {refused:?}",
+                p.name
+            );
+            // Its hanging instead: a difference.
+            assert!(
+                !verdict(
+                    p,
+                    Some(&Theirs::Lost(
+                        "FreeCAD took longer than 60 s building it".to_owned()
+                    ))
+                )
+                .how
+                .is_empty(),
+                "{}",
+                p.name
+            );
+            // Its making the edit instead (another case's edit, extend_arc_end_by_30's,
+            // standing in): a difference, never excused.
+            let v = verdict(p, made.as_ref());
+            assert!(!v.refused && v.excused.is_empty(), "{}: {v:?}", p.name);
+            assert_eq!(v.how.len(), 1, "{}: {v}", p.name);
+            assert!(
+                v.how[0].starts_with("Silico refused (")
+                    && v.how[0].contains("; FreeCAD made the edit ("),
+                "{}: {v}",
+                p.name
+            );
+        } else if matches!(r, Rule::ExtendFrame | Rule::ExtendShortOrFlipped) {
+            // Its drag failing as FreeCAD's `extend` raises it: the note's other outcome.
+            assert_eq!(
+                r.pinned(),
+                Some(sketch_edit::Pinned::EditsOrDragFails),
+                "{}",
+                p.name
+            );
+            let drag = Theirs::Failed(
+                "Not able to extend geometry with id : (0) for increment (-15) and point position (2)"
+                    .to_owned(),
+            );
+            let v = verdict(p, Some(&drag));
+            // A line's drag; an arc's extend never drags (:316), so its raising so differs.
+            let line = !p.name.contains("arc");
+            assert_eq!(v.refused && v.how.is_empty(), line, "{}: {v:?}", p.name);
+            assert!(
+                !refused.refused && refused.how.len() == 1,
+                "{}: {refused:?}",
+                p.name
+            );
+            assert!(
+                refused.how[0]
+                    .starts_with("both refused, but the note has FreeCAD make the edit, or raise"),
+                "{}: {refused}",
+                p.name
+            );
+        } else {
+            assert_eq!(r.pinned(), Some(sketch_edit::Pinned::Edits), "{}", p.name);
+            assert!(
+                !refused.refused && refused.excused.is_empty(),
+                "{}: {refused:?}",
+                p.name
+            );
+            assert_eq!(refused.how.len(), 1, "{}: {refused}", p.name);
+            assert!(
+                refused.how[0].starts_with("both refused, but the note has FreeCAD make the edit"),
+                "{}: {refused}",
+                p.name
+            );
+        }
+    }
+    // Every extend rule is among them.
+    for want in [
+        "ExtendKind",
+        "ExtendArcToNothing",
+        "ExtendZero",
+        "ExtendTurnTooSmall",
+        "ExtendHeld",
+        "ExtendFrame",
+        "ExtendShortOrFlipped",
+        "ExtendGated",
+        "ExtendWholeTurn",
+    ] {
+        assert!(seen.contains(want), "{want} not seen: {seen:?}");
+    }
+}
+
+#[test]
+fn an_extend_whose_solve_fails_from_the_written_end_is_refused_and_excused_where_freecads_solves() {
+    // `sketch-extend-sweep --seed 43 --count 500`'s case 212: the arc a0000020's start, which
+    // the line n0000016 shares and holds tangent and parallel to the horizontal n0000005,
+    // turned 130.869 degrees on. Silico's solve fails from the written end (:333), which
+    // refuses the extend; FreeCAD's solve succeeds, at a different place each run (KNOWN).
+    // A hand-built sketch of the kind (an arc's start a line shares, held tangent there and
+    // parallel to a fixed line, its centre held or free) solved at every turn tried, 3 to 179
+    // degrees, so the refusal is shown on the sweep's case.
+    let mut sweep = silico_oracle::generate::sketch_extend_cases(43, 500).unwrap();
+    let case = sweep.swap_remove(212);
+    assert_eq!(case.name, "extend_43_212");
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let p = &prepared[0];
+    assert_eq!(rule(p), Some(Rule::ExtendSolveFails), "{:?}", p.silico);
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    // FreeCAD's solve succeeding: excused; failing, or its edit raising: a difference.
+    let solved = doctored(&theirs[0], |fc| fc.after.code = 0);
+    let v = verdict(p, Some(&solved));
+    agrees(&v);
+    assert_eq!(v.excused.len(), 1, "{v:?}");
+    let failed = doctored(&theirs[0], |fc| fc.after.code = -1);
+    // FreeCAD's solve succeeding, but its arc's other end, the end a0000020's, turned instead
+    // of its start: not the request, a difference.
+    let wrong_end = doctored(&theirs[0], |fc| {
+        fc.after.code = 0;
+        let arc = edited_geometry(p, fc, "a0000020");
+        let (start, end) = (arc.points["1"], arc.points["2"]);
+        let drawn_start = p
+            .sketch
+            .points
+            .iter()
+            .find(|q| q.id == id("p0000015"))
+            .unwrap();
+        *arc.points.get_mut("1").unwrap() = [drawn_start.x.mm(), drawn_start.y.mm()];
+        *arc.points.get_mut("2").unwrap() = [end[0] + (start[0] - drawn_start.x.mm()), end[1]];
+    });
+    // FreeCAD's arc turned as requested, but its centre moved, or its radius changed, by
+    // 1e-6 (past the comparison's 1e-8): not the request, a difference.
+    let moved_centre = doctored(&theirs[0], |fc| {
+        fc.after.code = 0;
+        edited_geometry(p, fc, "a0000020")
+            .points
+            .get_mut("3")
+            .unwrap()[0] += 1e-6;
+    });
+    let changed_radius = doctored(&theirs[0], |fc| {
+        fc.after.code = 0;
+        let arc = edited_geometry(p, fc, "a0000020");
+        arc.radius = arc.radius.map(|r| r + 1e-6);
+    });
+    // Its start turned as requested, but its end moved 1e-6 too: not the request.
+    let end_moved = doctored(&theirs[0], |fc| {
+        fc.after.code = 0;
+        edited_geometry(p, fc, "a0000020")
+            .points
+            .get_mut("2")
+            .unwrap()[0] += 1e-6;
+    });
+    for other in [
+        failed,
+        wrong_end,
+        moved_centre,
+        changed_radius,
+        end_moved,
+        Theirs::Failed("refused by hand".to_owned()),
+    ] {
+        let v = verdict(p, Some(&other));
+        assert!(v.excused.is_empty() && !v.how.is_empty(), "{v:?}");
+    }
+    // The same refusal for the arc's end: FreeCAD's arc with its end turned on by the
+    // request's angle about the drawn centre, its start where it was drawn, is excused; its
+    // start turned instead (FreeCAD's own edit of the start) is a difference.
+    let mut at_end = p.clone();
+    let Edit::Extend { end, by, .. } = &mut at_end.edit else {
+        panic!("{:?}", at_end.edit)
+    };
+    *end = sketch_edit::ExtendEnd::End;
+    let ExtendBy::Angle(degrees) = *by else {
+        panic!("{by:?}")
+    };
+    let arc = p
+        .sketch
+        .arcs
+        .iter()
+        .find(|a| a.id == id("a0000020"))
+        .unwrap();
+    let place = |point: &ElementId| {
+        let q = p.sketch.points.iter().find(|q| q.id == *point).unwrap();
+        [q.x.mm(), q.y.mm()]
+    };
+    let (centre, start, end) = (place(&arc.center), place(&arc.start), place(&arc.end));
+    let radius = libm::hypot(start[0] - centre[0], start[1] - centre[1]);
+    let angle = libm::atan2(end[1] - centre[1], end[0] - centre[0]) + degrees.to_radians();
+    let end_turned = doctored(&theirs[0], |fc| {
+        fc.after.code = 0;
+        let g = edited_geometry(&at_end, fc, "a0000020");
+        *g.points.get_mut("1").unwrap() = start;
+        *g.points.get_mut("2").unwrap() = [
+            centre[0] + radius * libm::cos(angle),
+            centre[1] + radius * libm::sin(angle),
+        ];
+        *g.points.get_mut("3").unwrap() = centre;
+        g.radius = Some(radius);
+    });
+    let v = verdict(&at_end, Some(&end_turned));
+    agrees(&v);
+    assert_eq!(v.excused.len(), 1, "{v:?}");
+    // Its end turned as requested, but its start moved 1e-6 too: a difference.
+    let Theirs::Edited(start_moved) = &end_turned else {
+        unreachable!()
+    };
+    let mut start_moved = start_moved.clone();
+    edited_geometry(&at_end, &mut start_moved, "a0000020")
+        .points
+        .get_mut("1")
+        .unwrap()[1] += 1e-6;
+    let v = verdict(&at_end, Some(&Theirs::Edited(start_moved)));
+    assert!(v.excused.is_empty() && !v.how.is_empty(), "{v:?}");
+    let v = verdict(&at_end, Some(&solved));
+    assert!(v.excused.is_empty() && !v.how.is_empty(), "{v:?}");
+}
+
+#[test]
+fn an_arcs_shared_start_turned_a_few_degrees_is_written_at_the_turned_angle_and_solves() {
+    // The arc a0000009 about (10, 5), radius 5, from (10, 0) (270 degrees), the end of the
+    // line n0000003, which is held tangent there (tangent_at) and parallel to the fixed
+    // horizontal n0000006. Its start turned back 3 degrees is written at 267 degrees,
+    // (10 + 5 cos 267, 5 + 5 sin 267), by hand (9.738320218785281, 0.006852326227130945),
+    // and the solve succeeds, taking it back to the arc's bottom, where the line is level.
+    let s = sketch(
+        r#""points": [{"id": "p0000001", "x": 0, "y": 0, "construction": false}, {"id": "p0000002", "x": 10, "y": 0, "construction": false}, {"id": "p0000004", "x": 0, "y": -5, "construction": false}, {"id": "p0000005", "x": 10, "y": -5, "construction": false}, {"id": "p0000007", "x": 10, "y": 5, "construction": false}, {"id": "p0000008", "x": 15, "y": 5, "construction": false}],
+        "lines": [{"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}, {"id": "n0000006", "from": "p0000004", "to": "p0000005", "construction": false}],
+        "circles": [], "arcs": [{"id": "a0000009", "center": "p0000007", "start": "p0000002", "end": "p0000008", "construction": false}],
+        "constraints": [{"id": "k0000010", "type": "horizontal", "line": "n0000006"}, {"id": "k0000011", "type": "parallel", "a": "n0000003", "b": "n0000006"}, {"id": "k0000012", "type": "tangent_at", "a": "n0000003", "b": "a0000009", "at": "p0000002", "direction": "same"}, {"id": "k0000013", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}, {"id": "k0000014", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}, {"id": "k0000015", "type": "distance_x", "a": "origin", "b": "p0000007", "value": 10, "driving": true}, {"id": "k0000016", "type": "distance_y", "a": "origin", "b": "p0000007", "value": 5, "driving": true}]"#,
+    );
+    let mut worker = SketchWorker::start().unwrap();
+    let edit = Edit::Extend {
+        curve: "a0000009".to_owned(),
+        end: sketch_edit::ExtendEnd::Start,
+        by: ExtendBy::Angle(3.0),
+    };
+    let edited = sketch_edit::silico_edit(&s, &edit, &mut worker)
+        .unwrap()
+        .unwrap();
+    let start = edited
+        .sketch
+        .points
+        .iter()
+        .find(|q| q.id == id("p0000002"))
+        .unwrap();
+    let want = [9.738320218785281, 0.006852326227130945];
+    assert!(
+        (start.x.mm() - want[0]).abs() <= 1e-9 && (start.y.mm() - want[1]).abs() <= 1e-9,
+        "({}, {})",
+        start.x.mm(),
+        start.y.mm()
+    );
+    let case = silico_oracle::sketch::SketchCase {
+        name: "turned".into(),
+        note: String::new(),
+        sketch: edited.sketch.clone(),
+    };
+    let ours = silico_oracle::sketch::silico_solve(&case, &mut worker).unwrap();
+    let solved = ours.outcome.unwrap().points[&id("p0000002")];
+    assert!(
+        (solved[0].mm() - 10.0).abs() <= 1e-9 && solved[1].mm().abs() <= 1e-9,
+        "({}, {})",
+        solved[0].mm(),
+        solved[1].mm()
+    );
+}
+
+#[test]
+fn a_lines_drag_compares_the_points_it_moved_within_its_band_and_the_rest_exactly() {
+    // `sketch-extend-sweep --seed 43 --count 500`'s case 425: the line n0000005's end
+    // extended by 21.587 mm through the drag. FreeCAD's drag lands short of the target
+    // otherwise each run, up to 1.6e-7 mm from Silico's (sketcher.md:51): within the band
+    // (5e-7 mm) for the points the drag moved, the rest compared as ever.
+    let mut sweep = silico_oracle::generate::sketch_extend_cases(43, 500).unwrap();
+    let case = sweep.swap_remove(425);
+    assert_eq!(case.name, "extend_43_425");
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let p = &prepared[0];
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    agrees(&verdict(p, theirs[0].as_ref()));
+    // A line's extend whose solve failed is no ExtendSolveFails: that rule is an arc's,
+    // whose end is written, not dragged (:333).
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("{:?}", p.silico);
+    };
+    let mut failed = s.clone();
+    failed.ours.outcome = Err(silico_core::Error::new(
+        silico_core::ErrorCode::SolveFailed,
+        "doctored",
+    ));
+    let failed = Prepared {
+        silico: SilicoSide::Edited(failed),
+        ..p.clone()
+    };
+    assert_eq!(rule(&failed), None);
+    // Compared as the edit it is, not as the arc rule's refusal.
+    let v = verdict(&failed, theirs[0].as_ref());
+    assert!(
+        !v.how.is_empty() && !v.how.iter().any(|h| h.contains("extend's solve refused")),
+        "{v}"
+    );
+    // FreeCAD's dragged end (n0000005's end, p0000002) 1e-6 mm further short, before the
+    // solve and after: past the band, reported both times.
+    let short = doctored(&theirs[0], |fc| {
+        let g = &mut edited_geometry(p, fc, "n0000005").points;
+        g.get_mut("2").unwrap()[0] -= 1e-6;
+        let id = fc.ids_before[p
+            .model
+            .elements
+            .iter()
+            .position(|e| e == "n0000005")
+            .unwrap()];
+        let solved = fc.geometry.iter_mut().find(|g| g.id == id).unwrap();
+        solved.points.get_mut("2").unwrap()[0] -= 1e-6;
+    });
+    let v = verdict(p, Some(&short));
+    assert!(
+        v.how
+            .iter()
+            .any(|h| h.starts_with("after the edit, before the solve, Silico's point p0000002")),
+        "{v}"
+    );
+    assert!(
+        v.how.iter().any(
+            |h| h.starts_with("after the solve, Silico's point p0000002, which the drag moved")
+        ),
+        "{v}"
+    );
+    // A circle the drag doesn't move (c0000033, joined to nothing it moves) its radius 2e-8
+    // mm off in FreeCAD's: past the comparison's tolerance, reported.
+    let off = doctored(&theirs[0], |fc| {
+        let circle = edited_geometry(p, fc, "c0000033");
+        circle.radius = circle.radius.map(|r| r + 2e-8);
+    });
+    let v = verdict(p, Some(&off));
+    assert!(
+        v.how.iter().any(
+            |h| h.starts_with("after the edit, before the solve, Silico's c0000033 has radius")
+        ),
+        "{v}"
+    );
+    // A point the drag doesn't move (the upright line n0000020's start, p0000018, joined to
+    // nothing) 2e-8 mm off in FreeCAD's: past the comparison's tolerance, reported.
+    let off = doctored(&theirs[0], |fc| {
+        edited_geometry(p, fc, "n0000020")
+            .points
+            .get_mut("1")
+            .unwrap()[0] += 2e-8;
+    });
+    let v = verdict(p, Some(&off));
+    assert!(
+        v.how
+            .iter()
+            .any(|h| h.starts_with("after the edit, before the solve, Silico's point p0000018")),
+        "{v}"
+    );
+}
+
+#[test]
+fn a_lines_drag_that_moves_a_circles_centre_compares_its_solved_radius_and_misses_none() {
+    // The line n0000002 from (0, 0) to (10, 0), its end p0000003 the centre of the circle
+    // c0000004, radius 2: the line's end extended 5 mm drags the circle's centre to (15, 0),
+    // its radius 2 still. FreeCAD's solved radius 1e-6 mm off, past the drag's band, is
+    // reported after the solve, and 2e-7 off, within it, isn't; so is the circle, or the
+    // line's end, missing from FreeCAD's solve, or its end 1e-6 off across the line. The
+    // circle c0000005 about p0000006 (20, 20), radius 1, which the drag doesn't move, is
+    // compared exactly.
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "p0000001", "x": 0, "y": 0, "construction": false}, {"id": "p0000003", "x": 10, "y": 0, "construction": false}, {"id": "p0000006", "x": 20, "y": 20, "construction": false}], "lines": [{"id": "n0000002", "from": "p0000001", "to": "p0000003", "construction": false}], "circles": [{"id": "c0000004", "center": "p0000003", "radius": 2, "construction": false}, {"id": "c0000005", "center": "p0000006", "radius": 1, "construction": false}], "arcs": [], "constraints": []}]}"#;
+    let document = Checked::new(read(text.as_bytes()).unwrap())
+        .unwrap()
+        .document()
+        .clone();
+    let case = EditCase {
+        name: "extend_drags_a_circles_centre".to_owned(),
+        note: String::new(),
+        document,
+        feature: 0,
+        edit: Edit::Extend {
+            curve: "n0000002".to_owned(),
+            end: sketch_edit::ExtendEnd::End,
+            by: ExtendBy::Length(5.0),
+        },
+    };
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let p = &prepared[0];
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("{:?}", p.silico)
+    };
+    let centre = s
+        .edited
+        .sketch
+        .points
+        .iter()
+        .find(|q| q.id == id("p0000003"))
+        .unwrap();
+    assert_eq!([centre.x.mm(), centre.y.mm()], [15.0, 0.0]);
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    agrees(&verdict(p, theirs[0].as_ref()));
+    let solved = |fc: &mut FreecadEdited, element: &str| {
+        let i = p.model.elements.iter().position(|e| e == element).unwrap();
+        fc.ids_before[i]
+    };
+    let off = doctored(&theirs[0], |fc| {
+        let circle = solved(fc, "c0000004");
+        let g = fc.geometry.iter_mut().find(|g| g.id == circle).unwrap();
+        g.radius = g.radius.map(|r| r + 1e-6);
+    });
+    let v = verdict(p, Some(&off));
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "after the solve, Silico's c0000004, whose points the drag moved, has radius"
+        )),
+        "{v}"
+    );
+    let within = doctored(&theirs[0], |fc| {
+        let circle = solved(fc, "c0000004");
+        let g = fc.geometry.iter_mut().find(|g| g.id == circle).unwrap();
+        g.radius = g.radius.map(|r| r + 2e-7);
+    });
+    agrees(&verdict(p, Some(&within)));
+    let still = doctored(&theirs[0], |fc| {
+        let circle = solved(fc, "c0000005");
+        let g = fc.geometry.iter_mut().find(|g| g.id == circle).unwrap();
+        g.radius = g.radius.map(|r| r + 1e-6);
+    });
+    let v = verdict(p, Some(&still));
+    assert!(v.how.iter().any(|h| h.contains("c0000005")), "{v}");
+    // The dragged end, the line's end and the circle's centre, 1e-6 off across the line in
+    // FreeCAD's, before the solve and after.
+    let across = doctored(&theirs[0], |fc| {
+        let (line, circle) = (solved(fc, "n0000002"), solved(fc, "c0000004"));
+        for g in fc.edited.iter_mut().chain(fc.geometry.iter_mut()) {
+            if g.id == line {
+                g.points.get_mut("2").unwrap()[1] += 1e-6;
+            } else if g.id == circle {
+                g.points.get_mut("3").unwrap()[1] += 1e-6;
+            }
+        }
+    });
+    // FreeCAD's dragged end exactly the band (5e-7) across the line, before the solve or
+    // after it, and the undragged start p0000001 exactly 1e-8 across before it: within, so
+    // agreeing.
+    let edge = |change: fn(&mut FcGeometry, bool)| {
+        doctored(&theirs[0], |fc| {
+            let line = solved(fc, "n0000002");
+            let circle = solved(fc, "c0000004");
+            for g in &mut fc.edited {
+                if g.id == line || g.id == circle {
+                    change(g, false);
+                }
+            }
+            for g in &mut fc.geometry {
+                if g.id == line || g.id == circle {
+                    change(g, true);
+                }
+            }
+        })
+    };
+    let at_the_band = |after: bool| -> fn(&mut FcGeometry, bool) {
+        if after {
+            |g, solved| {
+                if solved {
+                    let k = if g.kind == "line" { "2" } else { "3" };
+                    g.points.get_mut(k).unwrap()[1] = 5e-7;
+                }
+            }
+        } else {
+            |g, solved| {
+                if !solved {
+                    let k = if g.kind == "line" { "2" } else { "3" };
+                    g.points.get_mut(k).unwrap()[1] = 5e-7;
+                }
+            }
+        }
+    };
+    for after in [false, true] {
+        agrees(&verdict(p, Some(&edge(at_the_band(after)))));
+    }
+    agrees(&verdict(
+        p,
+        Some(&edge(|g, solved| {
+            if !solved && g.kind == "line" {
+                g.points.get_mut("1").unwrap()[0] = 1e-8;
+            }
+        })),
+    ));
+    let v = verdict(p, Some(&across));
+    for want in [
+        "after the edit, before the solve, Silico's point p0000003 is at",
+        "after the solve, Silico's point p0000003, which the drag moved, is at",
+    ] {
+        assert!(v.how.iter().any(|h| h.starts_with(want)), "{want}: {v}");
+    }
+    let no_circle = doctored(&theirs[0], |fc| {
+        let circle = solved(fc, "c0000004");
+        fc.geometry.retain(|g| g.id != circle);
+    });
+    let v = verdict(p, Some(&no_circle));
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "after the solve, Silico's c0000004, whose points the drag moved, has no radius"
+        )),
+        "{v}"
+    );
+    // The line and the circle both missing, p0000003 has no place in FreeCAD's solve.
+    let no_end = doctored(&theirs[0], |fc| {
+        let (line, circle) = (solved(fc, "n0000002"), solved(fc, "c0000004"));
+        fc.geometry.retain(|g| g.id != line && g.id != circle);
+    });
+    let v = verdict(p, Some(&no_end));
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "after the solve, Silico's point p0000003, which the drag moved, has no place"
+        )),
+        "{v}"
+    );
+}
+
+#[test]
+fn a_lines_drag_that_moves_an_arc_compares_its_radius_within_the_band() {
+    // `sketch-extend-sweep --seed 45 --count 500`'s case 412: the drag moves the arc
+    // a0000017's points, and FreeCAD's leaves its radius up to 3e-7 mm from Silico's
+    // (sketcher.md:51): within the band, before the solve and after it. Its radius 1e-6 mm
+    // off in FreeCAD's, past the band, is reported.
+    let mut sweep = silico_oracle::generate::sketch_extend_cases(45, 500).unwrap();
+    let case = sweep.swap_remove(412);
+    assert_eq!(case.name, "extend_45_412");
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let p = &prepared[0];
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    agrees(&verdict(p, theirs[0].as_ref()));
+    let off = doctored(&theirs[0], |fc| {
+        let arc = edited_geometry(p, fc, "a0000017");
+        arc.radius = arc.radius.map(|r| r + 1e-6);
+    });
+    let v = verdict(p, Some(&off));
+    assert!(
+        v.how.iter().any(
+            |h| h.starts_with("after the edit, before the solve, Silico's a0000017 has radius")
+        ),
+        "{v}"
+    );
 }
