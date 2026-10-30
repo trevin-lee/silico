@@ -63,6 +63,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A finder and its consumer that each decide "on the carrier within the tolerance" their own way (a next crossing measured off an arc's circle from its start by √(dx² + dy²), then checked from the moving end by `hypot`; a line projected from one end, then from the other): points the finder offers 1e-7 off are refused an ulp past it, and an arc whose end isn't on its start's circle (the gate leaves that to the solve) has every offer refused; feed every answer to its consumer in a proptest biased to the tolerance
 - Near-tangent contacts reported at the perpendicular's foot: a line that joins an arc at a shared point within g of tangent has its foot √(2rg) from the joint (4.5 µm at g = 1e-12, r = 10), so "the next curve past the end" is the curve it already joins, microns on
 - Collinear neighbours as crossings: a line chained straight into another (a shared end) is offered the other's far end, an overlap no edit can take
+- A fixed reference (`origin`, an axis) where a rule reads only the sketch's own elements (`reference.element()` is none): an edit's rewrite "while the point stays" (a removed line's `midpoint` made a `symmetric` of its ends) skips the origin, which always stays, and drops the constraint; give each rewrite's every reference the origin and the axes in turn
 
 ## Sketch solver
 

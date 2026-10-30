@@ -127,6 +127,8 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "render",
         "export",
         "move_feature",
+        "sketch_add",
+        "sketch_remove",
     ];
     for tool in sent["tools"].as_array().unwrap() {
         let name = tool["name"].as_str().unwrap();
@@ -170,6 +172,8 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
     assert!(said("set_field", "Edit inside a transaction"));
     assert!(said("add_feature", "`model: \"current\"`"));
     assert!(said("query", "only as `elements` or `query` gives it"));
+    assert!(said("sketch_add", "Edit inside a transaction"));
+    assert!(said("sketch_remove", "`model: \"current\"`"));
     assert!(!said("version", "transaction"));
 }
 
@@ -345,8 +349,8 @@ fn every_example_holds_to_its_tools_schemas() {
     // export's 8 (#182), cache_clear's 2 (#183), STEP export's 4 (#186), check's
     // warning (#189), and read_logs' 3 and version's result (#194); M5.1's 11:
     // add_feature's 4 for `before`, remove_feature's result with `rewired`, move_feature's
-    // 4, and timeline's 2; and M5.10's sketch's 2.
-    assert_eq!(seen, 121);
+    // 4, and timeline's 2; and M5.10's 8: sketch's 2, sketch_add's 2, and sketch_remove's 4.
+    assert_eq!(seen, 127);
 }
 
 #[test]

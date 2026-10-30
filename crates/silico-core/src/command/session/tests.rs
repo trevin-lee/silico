@@ -3878,6 +3878,29 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             .into_iter()
             .map(|(read, start)| (SessionCommand::from(read), start)),
     );
+    // M5.0's sketch edits, after `timeline`, as the design lists them.
+    let empty = || crate::document::json::read(b"[]").unwrap();
+    queued.push((
+        SessionCommand::SketchAdd,
+        Box::new(move || {
+            erased(s.sketch_add(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                crate::command::NewMembers {
+                    points: empty(),
+                    lines: empty(),
+                    circles: empty(),
+                    arcs: empty(),
+                    constraints: empty(),
+                },
+            ))
+        }),
+    ));
+    queued.push((
+        SessionCommand::SketchRemove,
+        Box::new(move || erased(s.sketch_remove(at, Revision::OPENED, id("k7f2qx3m"), vec![]))),
+    ));
     // `cache_clear`, which reads no model, after `check`, as the design lists it.
     let after_check = queued
         .iter()

@@ -541,7 +541,7 @@ fn removing_nothing_changes_nothing() {
         "",
         "",
     );
-    let edited = remove(sketch_of(&before), &[]).unwrap();
+    let edited = remove::<ElementId>(sketch_of(&before), &[]).unwrap();
     assert_eq!(&edited.sketch, sketch_of(&before));
     assert!(edited.added.is_empty() && edited.modified.is_empty() && edited.removed.is_empty());
 }

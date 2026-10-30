@@ -76,8 +76,9 @@ impl Members {
 ///   whose members add to what's counted, where the gate names a list of its own for each
 ///   limit (the values' at `points`, though a batch of driving dimensions passed it).
 ///
-/// The add doesn't solve: the edit's command solves the sketch once, after the gate, and a
-/// conflict that solve finds refuses the edit as data (M3.3), where FreeCAD keeps a
+/// The add doesn't solve, and neither does its command (`sketch_add`): once the gate takes
+/// it, it's applied, and a conflict or a redundancy the rebuild's solve then finds is the
+/// sketch's state, never a refusal (docs/design/m5.0-app.md, SD7), as FreeCAD keeps a
 /// conflicting constraint and reports it (docs/ports/sketch-edit.md, §2).
 ///
 /// [`PROBLEMS_LISTED`]: crate::document::PROBLEMS_LISTED

@@ -44,7 +44,9 @@ pub use sketch::{
 };
 pub(crate) use sketch::{MemberPaths, member_id};
 pub use sketch_gate::{MAX_ANGLE_DEGREES, MAX_REFERENCE_LENGTH};
-pub(crate) use sketch_gate::{an_id_of_its_own, id_held, repeats, too_small};
+pub(crate) use sketch_gate::{
+    an_id_of_its_own, id_held, nearest_ids, repeats, too_small, with_candidates,
+};
 pub use validate::{Checked, Invalid, PROBLEMS_LISTED, validate};
 pub(crate) use write::sketch_elements;
 

@@ -94,6 +94,7 @@ mod edits;
 mod holding;
 mod rebuilds;
 mod registry;
+mod sketch_edits;
 mod threads;
 mod transaction;
 mod types;
@@ -138,9 +139,10 @@ pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
     Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
-    ModelChoice, ModelRead, Moved, Opened, OutlineAnswer, Progress, Published, Read, ReadClient,
-    Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, Status, Stepped, Stopper, TextAnswer, TimelineAnswer,
+    ModelChoice, ModelRead, Moved, NewMembers, Opened, OutlineAnswer, Progress, Published, Read,
+    ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
+    RolledBack, Running, SessionId, SessionInfo, SketchEdited, Status, Stepped, Stopper,
+    TextAnswer, TimelineAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 use waking::Waker;

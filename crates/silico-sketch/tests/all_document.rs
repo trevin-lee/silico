@@ -45,6 +45,8 @@ mod document_drag;
 mod drag;
 #[path = "extend.rs"]
 mod extend;
+#[path = "session_sketch_edits.rs"]
+mod session_sketch_edits;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
 #[path = "sketch_read.rs"]

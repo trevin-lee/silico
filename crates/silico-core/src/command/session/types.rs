@@ -17,8 +17,8 @@ use super::{Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::chain::Rewired;
-use crate::document::json::Plain;
-use crate::document::{Feature, FeatureId};
+use crate::document::json::{Node, Plain};
+use crate::document::{ElementId, Feature, FeatureId};
 use crate::recompute::{Model, StepCount};
 use crate::timeline::{Entry, Excepted, Timeline, timeline};
 use crate::warnings::Warnings;
@@ -864,6 +864,36 @@ pub struct Replaced {
     pub changed: bool,
     pub features: usize,
     pub before: Option<String>,
+    pub commit: Option<Committed>,
+}
+
+/// The members a `sketch_add` adds (docs/design/m5.0-app.md, section 7, `sketch_add`): each
+/// list as the request gives it, as the document writes a sketch's (each member with the ID
+/// it's to have), read by the document's own reader when the edit is made, as
+/// `add_feature`'s feature is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewMembers {
+    pub points: Node,
+    pub lines: Node,
+    pub circles: Node,
+    pub arcs: Node,
+    pub constraints: Node,
+}
+
+/// What a sketch edit did (`sketch_add`, `sketch_remove`: docs/design/m5.0-app.md, section
+/// 7, *What a result lists*): the sketch, as the request named it; the members it made, in
+/// the order it made them; those it changed in place, and those it removed, each by kind,
+/// then by ID; whether the document changed (not for an edit of nothing, an empty batch:
+/// then there's no new revision and nothing is written); and, outside a transaction, the
+/// commit's result, none inside one or if nothing changed. Never what the sketch's solve
+/// then finds: that's the sketch's state, for `sketch` and `check` to read (SD7).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchEdited {
+    pub sketch: FeatureId,
+    pub added: Vec<ElementId>,
+    pub modified: Vec<ElementId>,
+    pub removed: Vec<ElementId>,
+    pub changed: bool,
     pub commit: Option<Committed>,
 }
 

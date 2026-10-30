@@ -39,8 +39,9 @@ libm.workspace = true
 proptest.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-# The sketch read's tests (tests/sketch_read.rs): sessions on the fake kernel, their sketches
-# solved by this crate's worker.
+# The sketch read's and the sketch edits' tests (tests/sketch_read.rs,
+# tests/session_sketch_edits.rs): sessions on the fake kernel, their sketches solved by this
+# crate's worker.
 silico-core = { workspace = true, features = ["fake"] }
 silico-sketch = { path = ".", features = ["test_ops"] }
 tempfile.workspace = true

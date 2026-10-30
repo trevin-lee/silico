@@ -166,6 +166,8 @@
           "move_feature",
           "timeline",
           "sketch",
+          "sketch_add",
+          "sketch_remove",
           "reload"
         ],
         "type": "string"
