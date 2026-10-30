@@ -419,6 +419,7 @@ fn an_unstable_name_is_taken_as_a_measure_answers_once_and_stores_it_nowhere() {
             face_edges: face1(vec![vec![]; 5]),
             outer_edges: face1(vec![vec![]; 5]),
             edge_vertices: vec![vec![]; 12],
+            solid_faces: vec![(1..=6).collect()],
         },
     };
     let engine = Recompute::new(FakeKernel::new(2).unwrap());

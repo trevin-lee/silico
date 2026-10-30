@@ -455,6 +455,7 @@ mod tests {
                 face_edges: vec![vec![]],
                 outer_edges: vec![vec![]],
                 edge_vertices: vec![vec![]; edges.len()],
+                solid_faces: vec![vec![1]],
             },
         };
         history.validate(1).unwrap();
@@ -685,6 +686,7 @@ mod tests {
                 face_edges: vec![],
                 outer_edges: vec![],
                 edge_vertices: vec![vec![]],
+                solid_faces: vec![vec![]],
             },
         };
         history.validate(2).unwrap();

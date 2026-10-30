@@ -171,6 +171,10 @@ pub struct Topology {
     /// Each edge's vertices, in `TopExp::MapShapes(edge, VERTEX)` order (a closed edge's
     /// one vertex once).
     pub edge_vertices: Vec<Vec<u32>>,
+    /// Each solid's faces, sorted, the solids in `TopExp::MapShapes` order: which solid an
+    /// input's elements lie in, so the core can say which of a pattern's copies lie off its
+    /// base (docs/ports/patterns.md, decision 6).
+    pub solid_faces: Vec<Vec<u32>>,
 }
 
 /// An operation's history: one [`InputHistory`] per input shape, in the operation's order,
@@ -202,12 +206,12 @@ impl History {
     /// Checks that the history is for `inputs` input shapes, that every element it names is
     /// within the result's counts, and that it keeps its own promises: each `modified` is
     /// the input element's kind, every position is from 1, each list is sorted by element
-    /// without repeats, and the topology has a list for each face and edge, each without
-    /// repeats, a face's outer edges sorted and among its edges. Run it before using a
-    /// history that came from another process. Two things it can't check: how many
-    /// elements each input has (read fates with [`History::fate`]), and that `result`
-    /// counts the shape that came with it (the core can't count without OCCT, so look
-    /// result elements up with `get`).
+    /// without repeats, and the topology has a list for each face, edge, and solid, each
+    /// without repeats, a face's outer edges and a solid's faces sorted, the outer edges
+    /// among the face's. Run it before using a history that came from another process. Two
+    /// things it can't check: how many elements each input has (read fates with
+    /// [`History::fate`]), and that `result` counts the shape that came with it (the core
+    /// can't count without OCCT, so look result elements up with `get`).
     pub fn validate(&self, inputs: usize) -> Result<(), String> {
         if self.inputs.len() != inputs {
             return Err(format!(
@@ -298,6 +302,12 @@ impl Topology {
                 counts.edges,
                 counts.vertices,
             ),
+            (
+                "solids' faces",
+                &self.solid_faces,
+                counts.solids,
+                counts.faces,
+            ),
         ];
         for (what, lists, owners, elements) in lists {
             if lists.len() != owners as usize {
@@ -321,6 +331,11 @@ impl Topology {
                         n + 1
                     ));
                 }
+            }
+        }
+        for (n, faces) in self.solid_faces.iter().enumerate() {
+            if !faces.windows(2).all(|w| w[0] < w[1]) {
+                return Err(format!("Solid{}'s faces aren't sorted", n + 1));
             }
         }
         for (n, (outer, all)) in self.outer_edges.iter().zip(&self.face_edges).enumerate() {

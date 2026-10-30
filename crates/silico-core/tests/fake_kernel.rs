@@ -12,8 +12,9 @@ use std::time::Duration;
 use silico_core::ErrorCode;
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{
-    Blob, BooleanOp, BuiltData, ClientId, Clients, Curve, ElementCounts, ElementKind, FaceRegions,
-    Generation, Kernel, KernelRequest, Op, Primitive, Region, ShapeData, SketchPlane,
+    Axis, Blob, BooleanOp, BuiltData, ClientId, Clients, CopiesOp, Curve, ElementCounts,
+    ElementKind, FaceRegions, Generation, Kernel, KernelRequest, Op, Placement, Primitive, Region,
+    ShapeData, SketchPlane,
 };
 use silico_core::pool::Outcome;
 use silico_protocol::PointPlace;
@@ -1683,4 +1684,347 @@ fn a_fake_solid_is_meshed_a_triangle_a_face_with_the_kernels_floor_on_its_box() 
     };
     assert_eq!(refused.code(), ErrorCode::InvalidInput, "{refused:?}");
     assert_eq!(refused.parameter(), Some("deflection"), "{refused:?}");
+}
+
+#[test]
+fn copies_are_built_symbolically_their_inputs_numbered_one_after_another() {
+    // A 40 × 20 × 10 block, and a cylinder r 2.5, 12 tall, at (20, 10, −1): copied 10 along
+    // X, turned a quarter about Z, mirrored in YZ, and turned a half then moved 5 up. As the
+    // fake's boolean: every input's elements kept, the block's first (6 faces, 12 edges, 8
+    // vertices), then each copy's (3, 3, 2) after the one before it, one solid; the bytes
+    // say what made it, and read back as the same shape.
+    let kernel = FakeKernel::new(1).unwrap();
+    let block = run(
+        &kernel,
+        KernelRequest::make(block(40.0, 20.0, 10.0)).unwrap(),
+    );
+    let pin = run(
+        &kernel,
+        KernelRequest::make(Primitive::Cylinder {
+            radius: 2.5,
+            height: 12.0,
+        })
+        .unwrap(),
+    );
+    let pin = run(
+        &kernel,
+        KernelRequest::translate(&pin, [20.0, 10.0, -1.0]).unwrap(),
+    )
+    .shape;
+    let z = Axis {
+        origin: [0.0; 3],
+        direction: [0.0, 0.0, 1.0],
+    };
+    let placements = [
+        Placement::Translation {
+            offset: [10.0, 0.0, 0.0],
+        },
+        Placement::Rotation {
+            axis: z,
+            angle: std::f64::consts::FRAC_PI_2,
+        },
+        Placement::Mirror {
+            origin: [0.0; 3],
+            normal: [1.0, 0.0, 0.0],
+        },
+        Placement::TurnedAndMoved {
+            axis: z,
+            angle: std::f64::consts::PI,
+            offset: [0.0, 0.0, 5.0],
+        },
+    ];
+    let made = run(
+        &kernel,
+        KernelRequest::copies(CopiesOp::Cut, &block, &pin, &placements).unwrap(),
+    );
+    assert_eq!(
+        FakeKernel::describe(&made.shape).as_deref(),
+        Some(
+            "copies_cut(box(40, 20, 10), translate(cylinder(2.5, 12), 20, 10, -1), \
+             [t:10,0,0, r:0,0,0,0,0,1,1.5707963267948966, m:0,0,0,1,0,0, \
+             tm:0,0,0,0,0,1,3.141592653589793,0,0,5])"
+        )
+    );
+    let history = &made.history;
+    assert_eq!(history.inputs.len(), 5);
+    assert_eq!(history.result, counts(6 + 4 * 3, 12 + 4 * 3, 8 + 4 * 2, 1));
+    for (copy, input) in history.inputs.iter().enumerate().skip(1) {
+        let before = 6 + 3 * (copy as u32 - 1);
+        assert_eq!(input.faces[0].kept, Some(before + 1), "copy {copy}");
+        assert_eq!(input.faces[2].kept, Some(before + 3), "copy {copy}");
+    }
+    assert_eq!(
+        history.topology.solid_faces,
+        vec![(1..=18).collect::<Vec<u32>>()]
+    );
+    assert_eq!(history.validate(5), Ok(()));
+    assert_eq!(FakeKernel::counts(&made.shape), Some(history.result));
+    // Read back by another fake kernel, and copied again, as any shape.
+    let other = FakeKernel::new(1).unwrap();
+    let summary = run(&other, KernelRequest::summarize(&made.shape));
+    assert_eq!(
+        (summary.faces, summary.edges, summary.vertices),
+        (18, 24, 16)
+    );
+    let again = run(
+        &other,
+        KernelRequest::copies(CopiesOp::Fuse, &made.shape, &pin, &placements[..1]).unwrap(),
+    );
+    assert_eq!(
+        FakeKernel::counts(&again.shape),
+        Some(counts(21, 27, 18, 1))
+    );
+}
+
+#[test]
+fn the_fake_places_each_copys_measures_as_its_placement_says() {
+    // A 2 × 3 × 4 box at the origin (volume 24, centre (1, 1.5, 2)), fused with copies as
+    // if they didn't touch: moved 10 along X, its centre (11, 1.5, 2); turned a quarter about
+    // Z, (x, y) to (−y, x), (−1.5, 1, 2), its box x −3 to 0, y 0 to 2; mirrored in z = −1,
+    // (1, 1.5, −4), its box z −6 to −2. The volume four boxes', the centre their mean.
+    let kernel = FakeKernel::new(1).unwrap();
+    let b = run(&kernel, KernelRequest::make(block(2.0, 3.0, 4.0)).unwrap());
+    let quarter = Placement::Rotation {
+        axis: Axis {
+            origin: [0.0; 3],
+            direction: [0.0, 0.0, 1.0],
+        },
+        angle: std::f64::consts::FRAC_PI_2,
+    };
+    let placements = [
+        Placement::Translation {
+            offset: [10.0, 0.0, 0.0],
+        },
+        quarter,
+        Placement::Mirror {
+            origin: [0.0, 0.0, -1.0],
+            normal: [0.0, 0.0, 1.0],
+        },
+    ];
+    let made = run(
+        &kernel,
+        KernelRequest::copies(CopiesOp::Fuse, &b, &b, &placements).unwrap(),
+    );
+    let s = run(&kernel, KernelRequest::summarize(&made.shape));
+    assert_eq!(s.volume, 96.0);
+    let want = [
+        (1.0 + 11.0 - 1.5 + 1.0) / 4.0,
+        (1.5 + 1.5 + 1.0 + 1.5) / 4.0,
+        (2.0 + 2.0 + 2.0 - 4.0) / 4.0,
+    ];
+    for k in 0..3 {
+        assert!(
+            (s.center[k] - want[k]).abs() < 1e-12,
+            "{:?} against {want:?}",
+            s.center
+        );
+    }
+    let [low, high] = s.bounds.unwrap();
+    for (got, want) in low
+        .iter()
+        .chain(&high)
+        .zip([-3.0, 0.0, -6.0, 12.0, 3.0, 4.0])
+    {
+        assert!((got - want).abs() < 1e-12, "{low:?} {high:?}");
+    }
+    // Only one copy turned: its box alone.
+    let turned = run(
+        &kernel,
+        KernelRequest::copies(CopiesOp::Fuse, &b, &b, &[quarter]).unwrap(),
+    );
+    let [low, high] = run(&kernel, KernelRequest::summarize(&turned.shape))
+        .bounds
+        .unwrap();
+    for (got, want) in [
+        (low[0], -3.0),
+        (high[0], 2.0),
+        (low[1], 0.0),
+        (high[1], 3.0),
+    ] {
+        assert!((got - want).abs() < 1e-12, "{low:?} {high:?}");
+    }
+}
+
+#[test]
+fn the_fake_turns_copies_about_any_axis_and_turns_before_it_moves() {
+    // The 2 × 3 × 4 box (centre (1, 1.5, 2)) fused with one copy, so the centre is the two
+    // centres' mean and the box their union. By hand, right-handed:
+    // - a half turn about Z: (x, y, z) to (−x, −y, z), the copy's centre (−1, −1.5, 2), its
+    //   box x −2 to 0, y −3 to 0;
+    // - a quarter turn about X through (0, 0, 10): y − 0 to −(z − 10), z − 10 to y, so
+    //   (x, 10 − z, 10 + y): centre (1, 8, 11.5), box y 6 to 10, z 10 to 13;
+    // - a quarter turn about Y: z to x, x to −z, so (z, y, −x): centre (2, 1.5, −1), box x 0
+    //   to 4, z −2 to 0;
+    // - a quarter turn about Z then a move of 10 along X: (10 − y, x, z), centre (8.5, 1, 2),
+    //   box x 7 to 10, y 0 to 2 (moved first, then turned, it would be (−1.5, 11, 2)).
+    let kernel = FakeKernel::new(1).unwrap();
+    let b = run(&kernel, KernelRequest::make(block(2.0, 3.0, 4.0)).unwrap());
+    let axis = |origin: [f64; 3], direction: [f64; 3]| Axis { origin, direction };
+    let half = std::f64::consts::PI;
+    let quarter = std::f64::consts::FRAC_PI_2;
+    let cases = [
+        (
+            Placement::Rotation {
+                axis: axis([0.0; 3], [0.0, 0.0, 1.0]),
+                angle: half,
+            },
+            [-1.0, -1.5, 2.0],
+            [[-2.0, -3.0, 0.0], [0.0, 0.0, 4.0]],
+        ),
+        (
+            Placement::Rotation {
+                axis: axis([0.0, 0.0, 10.0], [1.0, 0.0, 0.0]),
+                angle: quarter,
+            },
+            [1.0, 8.0, 11.5],
+            [[0.0, 6.0, 10.0], [2.0, 10.0, 13.0]],
+        ),
+        (
+            Placement::Rotation {
+                axis: axis([0.0; 3], [0.0, 1.0, 0.0]),
+                angle: quarter,
+            },
+            [2.0, 1.5, -1.0],
+            [[0.0, 0.0, -2.0], [4.0, 3.0, 0.0]],
+        ),
+        (
+            Placement::TurnedAndMoved {
+                axis: axis([0.0; 3], [0.0, 0.0, 1.0]),
+                angle: quarter,
+                offset: [10.0, 0.0, 0.0],
+            },
+            [8.5, 1.0, 2.0],
+            [[7.0, 0.0, 0.0], [10.0, 2.0, 4.0]],
+        ),
+    ];
+    for (placement, centre, [copy_low, copy_high]) in cases {
+        let (copy_low, copy_high): ([f64; 3], [f64; 3]) = (copy_low, copy_high);
+        let made = run(
+            &kernel,
+            KernelRequest::copies(CopiesOp::Fuse, &b, &b, &[placement]).unwrap(),
+        );
+        let s = run(&kernel, KernelRequest::summarize(&made.shape));
+        assert_eq!(s.volume, 48.0, "{placement:?}");
+        let want = [
+            (1.0 + centre[0]) / 2.0,
+            (1.5 + centre[1]) / 2.0,
+            (2.0 + centre[2]) / 2.0,
+        ];
+        let [low, high] = s.bounds.unwrap();
+        let box_low = [0, 1, 2].map(|k| copy_low[k].min(0.0));
+        let box_high = [0, 1, 2].map(|k| copy_high[k].max([2.0, 3.0, 4.0][k]));
+        for k in 0..3 {
+            assert!(
+                (s.center[k] - want[k]).abs() < 1e-12,
+                "{placement:?}: {:?} against {want:?}",
+                s.center
+            );
+            assert!(
+                (low[k] - box_low[k]).abs() < 1e-12 && (high[k] - box_high[k]).abs() < 1e-12,
+                "{placement:?}: {low:?} {high:?} against {box_low:?} {box_high:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_fake_cuts_copies_of_a_swept_tool_and_adds_any_other_as_its_booleans_do() {
+    // A 40 × 20 × 10 block cut by copies of a 4 × 3 rectangle's prism through it (z 0 to
+    // 10, 120 mm³), moved 10 and 20 along X: each copy wholly inside the block, so 8000 −
+    // 2 · 120 = 7760 (the seed is the base's to cut, not the copies'). As the fake's boolean,
+    // a cut by a tool that isn't swept (a box) adds it, as if they didn't touch: 8000 + 2 · 24.
+    let kernel = FakeKernel::new(1).unwrap();
+    let base = run(
+        &kernel,
+        KernelRequest::make(block(40.0, 20.0, 10.0)).unwrap(),
+    );
+    let square = made_faces(
+        &kernel,
+        SketchPlane::Xy,
+        vec![(rectangle(4.0, 3.0), vec![])],
+    );
+    let prism = run(
+        &kernel,
+        KernelRequest::prism(&square.shape, [0.0, 0.0, 0.0], [0.0, 0.0, 10.0]).unwrap(),
+    )
+    .shape;
+    let along = [10.0, 20.0].map(|x| Placement::Translation {
+        offset: [x, 0.0, 0.0],
+    });
+    let cut = run(
+        &kernel,
+        KernelRequest::copies(CopiesOp::Cut, &base, &prism, &along).unwrap(),
+    );
+    assert_eq!(
+        run(&kernel, KernelRequest::summarize(&cut.shape)).volume,
+        7760.0
+    );
+    let b = run(&kernel, KernelRequest::make(block(2.0, 3.0, 4.0)).unwrap());
+    let added = run(
+        &kernel,
+        KernelRequest::copies(CopiesOp::Cut, &base, &b, &along).unwrap(),
+    );
+    assert_eq!(
+        run(&kernel, KernelRequest::summarize(&added.shape)).volume,
+        8048.0
+    );
+}
+
+#[test]
+fn each_solid_the_fake_makes_lists_its_faces() {
+    // A box's one solid, all six faces. A prism of a 4 × 3 rectangle and a circle beside it,
+    // by the fake's numbering (side faces 1–5, edge i's face i; starts 6 and 7; ends 8 and
+    // 9): the rectangle's solid its four sides, its start, its end; the circle's its side,
+    // start, and end. A fuse of the two prisms, one solid of every face, as the fake's
+    // booleans meet; a cut of the box by them, the box's one solid.
+    let kernel = FakeKernel::new(1).unwrap();
+    let b = run(&kernel, KernelRequest::make(block(2.0, 3.0, 4.0)).unwrap());
+    let fused_with_box = |shape: &ShapeData| {
+        run(&kernel, KernelRequest::boolean(BooleanOp::Fuse, shape, &b))
+            .history
+            .topology
+            .solid_faces
+    };
+    let faces = run(
+        &kernel,
+        KernelRequest::make_faces(&regions(
+            SketchPlane::Xy,
+            vec![
+                (rectangle(4.0, 3.0), vec![]),
+                (vec![circle([10.0, 1.0], 1.0)], vec![]),
+            ],
+        ))
+        .unwrap(),
+    );
+    assert!(faces.history.topology.solid_faces.is_empty());
+    let prisms = run(
+        &kernel,
+        KernelRequest::prism(&faces.shape, [0.0; 3], [0.0, 0.0, 2.0]).unwrap(),
+    );
+    assert_eq!(
+        prisms.history.topology.solid_faces,
+        vec![vec![1, 2, 3, 4, 6, 8], vec![5, 7, 9]]
+    );
+    // Fused with the box (6 faces after the prisms' 9): one solid, 15 faces.
+    assert_eq!(
+        fused_with_box(&prisms.shape),
+        vec![(1..=15).collect::<Vec<u32>>()]
+    );
+    let cut = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Cut, &b, &prisms.shape),
+    );
+    assert_eq!(
+        cut.history.topology.solid_faces,
+        vec![(1..=15).collect::<Vec<u32>>()]
+    );
+    // A cut of the two prisms by the box: theirs, two solids as they were.
+    let cut = run(
+        &kernel,
+        KernelRequest::boolean(BooleanOp::Cut, &prisms.shape, &b),
+    );
+    assert_eq!(
+        cut.history.topology.solid_faces,
+        vec![vec![1, 2, 3, 4, 6, 8], vec![5, 7, 9]]
+    );
 }

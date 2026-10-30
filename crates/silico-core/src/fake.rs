@@ -68,10 +68,10 @@ use silico_protocol::{
 };
 
 use crate::kernel::{
-    Axis, Blob, BooleanOp, BuiltData, ClientId, Clients, Curve, ElementCounts, ElementFate,
-    ElementKind, ElementRef, Ends, FaceRegions, Generation, History, InputHistory, Kernel,
-    KernelRequest, Op, Primitive, Region, Reported, ShapeData, SketchPlane, SweepKind, Topology,
-    cone_caps, primitive_counts,
+    Axis, Blob, BooleanOp, BuiltData, ClientId, Clients, CopiesOp, Curve, ElementCounts,
+    ElementFate, ElementKind, ElementRef, Ends, FaceRegions, Generation, History, InputHistory,
+    Kernel, KernelRequest, Op, Placement, Primitive, Region, Reported, ShapeData, SketchPlane,
+    SweepKind, Topology, cone_caps, primitive_counts,
 };
 use crate::pool::{ClientQueues, ClientTask, MAX_WORKERS, Outcome, Pending, deliver};
 use crate::sketch::{DragStarted, SketchSolver, SolveStopper};
@@ -731,6 +731,12 @@ fn answer(op: &Op) -> Result<Reply, Error> {
             let shape = made.shape();
             Ok(Reply::Built(BuiltData { shape, history }))
         }
+        Op::Copies {
+            base,
+            tool,
+            op,
+            placements,
+        } => copies(*op, base, tool, placements),
         Op::Fillet {
             shape,
             edges,
@@ -1437,8 +1443,54 @@ impl SweepNumbers {
         }
         let circle = |j: u32| if self.whole { vec![j] } else { vec![j, v + j] };
         topology.edge_vertices.extend((1..=v).map(circle));
+        // Face k's solid: its edges' side faces, and its start and end faces (a whole turn's
+        // none).
+        let f = self.faces;
+        for (k, edges) in (1u32..).zip(&input.face_edges) {
+            let mut faces = edges.clone();
+            if !self.whole {
+                faces.extend([e + k, e + f + k]);
+            }
+            topology.solid_faces.push(sorted(faces));
+        }
         topology
     }
+}
+
+/// The fake's copies of `tool` at `placements`, with `base`: every element of the base and
+/// of each copy kept, the base's numbered first, then each copy's after the copy before it,
+/// as the fake's boolean keeps its inputs'. Placements the protocol's rules refuse are
+/// refused, as the kernel refuses them.
+fn copies(
+    op: CopiesOp,
+    base: &ShapeData,
+    tool: &ShapeData,
+    placements: &[Placement],
+) -> Result<Reply, Error> {
+    if let Err(refused) = silico_protocol::check_copies(placements) {
+        return Err(Error::new(ErrorCode::InvalidInput, refused.message)
+            .with_parameter(refused.parameter)
+            .with_suggestion("change the value the message names"));
+    }
+    let (base, tool) = (Symbolic::read(base)?, Symbolic::read(tool)?);
+    let (a, b) = (base.counts(), tool.counts());
+    let mut inputs = vec![kept(a, ElementCounts::default())];
+    let mut before = a;
+    for _ in placements {
+        inputs.push(kept(b, before));
+        before = sum(before, b);
+    }
+    let made = Symbolic::copies(op, base, tool, placements);
+    let history = History {
+        inputs,
+        result: made.counts(),
+        ends: Ends::default(),
+        topology: made.topology(),
+    };
+    Ok(Reply::Built(BuiltData {
+        shape: made.shape(),
+        history,
+    }))
 }
 
 /// The fake's fillet or chamfer of `edges` of `shape`: every element kept, as numbered;
@@ -1505,8 +1557,33 @@ fn boolean_counts(op: BooleanOp, a: ElementCounts, b: ElementCounts) -> ElementC
     }
 }
 
+/// The counts of `n` copies of a tool of `b` with a base of `a`, as the fake models them: all
+/// their faces, edges, and vertices, and the solids of a boolean of them that met, as
+/// [`boolean_counts`] has them.
+fn copies_counts(op: CopiesOp, a: ElementCounts, b: ElementCounts, n: usize) -> ElementCounts {
+    let n = u32::try_from(n).unwrap_or(u32::MAX);
+    let copies = ElementCounts {
+        faces: b.faces.saturating_mul(n),
+        edges: b.edges.saturating_mul(n),
+        vertices: b.vertices.saturating_mul(n),
+        solids: b.solids.saturating_mul(n),
+    };
+    boolean_counts(op.boolean(), a, copies)
+}
+
+/// Each solid's faces in a shape of `counts` whose faces are all one solid's, if it has one
+/// solid: every face. Otherwise none, or, for several, `several`.
+fn one_solid(counts: ElementCounts, several: Vec<Vec<u32>>) -> Vec<Vec<u32>> {
+    match counts.solids {
+        0 => Vec::new(),
+        1 => vec![(1..=counts.faces).collect()],
+        _ => several,
+    }
+}
+
 /// How OCCT's primitive's elements bound each other, as the kernel reports it: each face's
-/// edges in OCCT's order, its outer wire's (sorted), and each edge's vertices.
+/// edges in OCCT's order, its outer wire's (sorted), each edge's vertices, and its one
+/// solid's faces.
 fn primitive_topology(primitive: &Primitive) -> Topology {
     let lists = |lists: &[&[u32]]| lists.iter().map(|l| l.to_vec()).collect::<Vec<_>>();
     type Lists = &'static [&'static [u32]];
@@ -1563,10 +1640,12 @@ fn primitive_topology(primitive: &Primitive) -> Topology {
         }
         Primitive::Torus { .. } => (&[&[1, 2]], &[&[1, 2]], &[&[1], &[1]]),
     };
+    let face_count = u32::try_from(faces.len()).unwrap_or(u32::MAX);
     Topology {
         face_edges: lists(faces),
         outer_edges: lists(outer),
         edge_vertices: lists(vertices),
+        solid_faces: vec![(1..=face_count).collect()],
     }
 }
 
@@ -1582,6 +1661,7 @@ fn shifted(topology: &Topology, before: ElementCounts) -> Topology {
         face_edges: shift(&topology.face_edges, before.edges),
         outer_edges: shift(&topology.outer_edges, before.edges),
         edge_vertices: shift(&topology.edge_vertices, before.vertices),
+        solid_faces: shift(&topology.solid_faces, before.faces),
     }
 }
 
@@ -1646,6 +1726,14 @@ enum Step {
         input: usize,
         sweep: Sweep,
     },
+    /// Copies of `tool` at `placements`, fused into or cut from `base`, as a boolean's
+    /// inputs are laid out: the base's steps, then the tool's, which end just before it.
+    Copies {
+        op: CopiesOp,
+        base: usize,
+        tool: usize,
+        placements: Vec<Placement>,
+    },
     /// The fake's fillet or chamfer of the step before it: of `edges`, by `size` (a
     /// fillet's radius, an equal chamfer's distance). Every element is kept, as numbered;
     /// its measures are its input's.
@@ -1706,6 +1794,21 @@ impl Symbolic {
     }
 
     fn boolean(op: BooleanOp, base: Symbolic, tool: Symbolic) -> Self {
+        Self::joined(base, tool, |base, tool| Step::Boolean { op, base, tool })
+    }
+
+    fn copies(op: CopiesOp, base: Symbolic, tool: Symbolic, placements: &[Placement]) -> Self {
+        Self::joined(base, tool, |base, tool| Step::Copies {
+            op,
+            base,
+            tool,
+            placements: placements.to_vec(),
+        })
+    }
+
+    /// `base`'s steps, then `tool`'s, then the step `made` makes of the two (by their
+    /// indices).
+    fn joined(base: Symbolic, tool: Symbolic, made: impl FnOnce(usize, usize) -> Step) -> Self {
         let Symbolic(mut steps) = base;
         let shift = steps.len();
         steps.extend(tool.0.into_iter().map(|step| match step {
@@ -1718,6 +1821,17 @@ impl Symbolic {
                 op,
                 base: base + shift,
                 tool: tool + shift,
+            },
+            Step::Copies {
+                op,
+                base,
+                tool,
+                placements,
+            } => Step::Copies {
+                op,
+                base: base + shift,
+                tool: tool + shift,
+                placements,
             },
             Step::Sweep { input, sweep } => Step::Sweep {
                 input: input + shift,
@@ -1736,11 +1850,7 @@ impl Symbolic {
             },
         }));
         let tool = steps.len() - 1;
-        steps.push(Step::Boolean {
-            op,
-            base: shift - 1,
-            tool,
-        });
+        steps.push(made(shift - 1, tool));
         Symbolic(steps)
     }
 
@@ -1761,6 +1871,18 @@ impl Symbolic {
                 } => text.push_str(&format!("translate {input} {x} {y} {z}")),
                 Step::Boolean { op, base, tool } => {
                     text.push_str(&format!("{} {base} {tool}", op.word()));
+                }
+                Step::Copies {
+                    op,
+                    base,
+                    tool,
+                    placements,
+                } => {
+                    text.push_str(&format!("copies {} {base} {tool}", op.boolean().word()));
+                    for placement in placements {
+                        text.push(' ');
+                        text.push_str(&placement_word(placement));
+                    }
                 }
                 Step::Sweep { input, sweep } => {
                     text.push_str(&format!("{} {input}", sweep.word()));
@@ -1819,7 +1941,8 @@ impl Symbolic {
                     && !matches!(steps.get(*input), Some(Step::Translate { .. })))
                 .then(|| sizes.get(*input).map(|s| s + 1))
                 .flatten(),
-                Step::Boolean { base, tool, .. } => (index > 0 && *tool == index - 1)
+                Step::Boolean { base, tool, .. } | Step::Copies { base, tool, .. } => (index > 0
+                    && *tool == index - 1)
                     .then(|| {
                         let tool_size = *sizes.get(*tool)?;
                         let base_size = *sizes.get(*base)?;
@@ -1914,13 +2037,38 @@ impl Symbolic {
                     }
                     _ => Default::default(),
                 },
-                Step::Boolean { base, tool, .. } => {
+                Step::Boolean { op, base, tool } => {
                     let ((mut topology, a), (tool, b)) = (of(*base), of(*tool));
+                    let counts = boolean_counts(*op, a, b);
+                    let several = std::mem::take(&mut topology.solid_faces);
                     let tool = shifted(&tool, a);
                     topology.face_edges.extend(tool.face_edges);
                     topology.outer_edges.extend(tool.outer_edges);
                     topology.edge_vertices.extend(tool.edge_vertices);
-                    (topology, sum(a, b))
+                    // One solid's faces all the faces, as if they met; a cut's or a common's
+                    // several solids its base's.
+                    topology.solid_faces = one_solid(counts, several);
+                    (topology, counts)
+                }
+                Step::Copies {
+                    op,
+                    base,
+                    tool,
+                    placements,
+                } => {
+                    let ((mut topology, a), (tool, b)) = (of(*base), of(*tool));
+                    let counts = copies_counts(*op, a, b, placements.len());
+                    let several = std::mem::take(&mut topology.solid_faces);
+                    let mut before = a;
+                    for _ in placements {
+                        let copy = shifted(&tool, before);
+                        topology.face_edges.extend(copy.face_edges);
+                        topology.outer_edges.extend(copy.outer_edges);
+                        topology.edge_vertices.extend(copy.edge_vertices);
+                        before = sum(before, b);
+                    }
+                    topology.solid_faces = one_solid(counts, several);
+                    (topology, counts)
                 }
             };
             made.push(next);
@@ -1943,6 +2091,22 @@ impl Symbolic {
                         BooleanOp::Cut if swept => of(*base).less(of(*tool)),
                         _ => of(*base).with(of(*tool)),
                     }
+                }
+                // Each copy as the boolean of it with what came before would be.
+                Step::Copies {
+                    op,
+                    base,
+                    tool,
+                    placements,
+                } => {
+                    let swept = matches!(self.0.get(*tool), Some(Step::Sweep { .. }));
+                    placements.iter().fold(of(*base), |made, placement| {
+                        let copy = of(*tool).placed(placement);
+                        match op {
+                            CopiesOp::Cut if swept => made.less(copy),
+                            _ => made.with(copy),
+                        }
+                    })
                 }
                 Step::Dress { input, .. } => of(*input),
                 Step::Sweep { input, sweep } => match self.0.get(*input) {
@@ -2001,6 +2165,19 @@ impl Symbolic {
                         parts.push(Part::Text(", ".to_owned()));
                         parts.push(Part::Step(*base));
                     }
+                    Some(Step::Copies {
+                        op,
+                        base,
+                        tool,
+                        placements,
+                    }) => {
+                        out.push_str(&format!("copies_{}(", op.boolean().word()));
+                        let placed: Vec<String> = placements.iter().map(placement_word).collect();
+                        parts.push(Part::Text(format!(", [{}])", placed.join(", "))));
+                        parts.push(Part::Step(*tool));
+                        parts.push(Part::Text(", ".to_owned()));
+                        parts.push(Part::Step(*base));
+                    }
                     Some(Step::Sweep { input, sweep }) => {
                         out.push_str(sweep.word());
                         out.push('(');
@@ -2035,6 +2212,12 @@ fn step_counts(steps: &[Step], step: &Step, of: impl Fn(usize) -> ElementCounts)
         Step::Faces(regions) => FacesLayout::of(regions).counts,
         Step::Translate { input, .. } | Step::Dress { input, .. } => of(*input),
         Step::Boolean { op, base, tool } => boolean_counts(*op, of(*base), of(*tool)),
+        Step::Copies {
+            op,
+            base,
+            tool,
+            placements,
+        } => copies_counts(*op, of(*base), of(*tool), placements.len()),
         Step::Sweep { input, sweep } => match steps.get(*input) {
             Some(Step::Faces(regions)) => {
                 SweepNumbers::of(&FacesLayout::of(regions), sweep.kind()).counts
@@ -2306,6 +2489,130 @@ impl Measured {
     }
 }
 
+/// A placement as an affine map, `p ↦ a·(p − origin) + origin + offset`: its matrix (rows),
+/// the point it turns or reflects about, and its move.
+fn affine(placement: &Placement) -> ([[f64; 3]; 3], [f64; 3], [f64; 3]) {
+    const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    // Rodrigues's rotation about the unit `k`, right-handed.
+    let turn = |k: [f64; 3], angle: f64| {
+        let (sin, cos) = (libm::sin(angle), libm::cos(angle));
+        let cross = [[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]];
+        [0, 1, 2].map(|i| {
+            [0, 1, 2].map(|j| cos * IDENTITY[i][j] + sin * cross[i][j] + (1.0 - cos) * k[i] * k[j])
+        })
+    };
+    match *placement {
+        Placement::Translation { offset } => (IDENTITY, [0.0; 3], offset),
+        Placement::Rotation { axis, angle } => (turn(axis.direction, angle), axis.origin, [0.0; 3]),
+        Placement::Mirror { origin, normal: n } => (
+            [0, 1, 2].map(|i| [0, 1, 2].map(|j| IDENTITY[i][j] - 2.0 * n[i] * n[j])),
+            origin,
+            [0.0; 3],
+        ),
+        Placement::TurnedAndMoved {
+            axis,
+            angle,
+            offset,
+        } => (turn(axis.direction, angle), axis.origin, offset),
+    }
+}
+
+impl Measured {
+    /// A shape's measures with the shape placed as `placement` says: its volume and area
+    /// its own, its center placed, and its box the box around its own box's corners placed.
+    fn placed(self, placement: &Placement) -> Self {
+        let (a, origin, offset) = affine(placement);
+        let place = |p: [f64; 3]| {
+            let d = sub(p, origin);
+            [0, 1, 2].map(|i| dot(a[i], d) + origin[i] + offset[i])
+        };
+        let [low, high] = self.bounds;
+        let corners = (0..8)
+            .map(|c| place([0, 1, 2].map(|k| if c >> k & 1 == 0 { low[k] } else { high[k] })));
+        let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+        for corner in corners {
+            for k in 0..3 {
+                bounds[0][k] = bounds[0][k].min(corner[k]);
+                bounds[1][k] = bounds[1][k].max(corner[k]);
+            }
+        }
+        let moment = if self.volume == 0.0 {
+            self.moment
+        } else {
+            place(self.moment.map(|m| m / self.volume)).map(|c| c * self.volume)
+        };
+        Measured {
+            moment,
+            bounds,
+            ..self
+        }
+    }
+}
+
+/// A placement as one word of a shape's bytes, its values as Rust writes them, which read
+/// back as the same numbers: `t:20,0,0` (a translation by its offset), `r:` (a rotation: the
+/// axis's point, its direction, the angle), `m:` (a mirror: the plane's point, its normal),
+/// `tm:` (a rotation's values, then the move's).
+fn placement_word(placement: &Placement) -> String {
+    let (tag, values): (&str, Vec<f64>) = match *placement {
+        Placement::Translation { offset } => ("t", offset.to_vec()),
+        Placement::Rotation { axis, angle } => (
+            "r",
+            axis.origin
+                .into_iter()
+                .chain(axis.direction)
+                .chain([angle])
+                .collect(),
+        ),
+        Placement::Mirror { origin, normal } => ("m", origin.into_iter().chain(normal).collect()),
+        Placement::TurnedAndMoved {
+            axis,
+            angle,
+            offset,
+        } => (
+            "tm",
+            axis.origin
+                .into_iter()
+                .chain(axis.direction)
+                .chain([angle])
+                .chain(offset)
+                .collect(),
+        ),
+    };
+    let values: Vec<String> = values.iter().map(f64::to_string).collect();
+    format!("{tag}:{}", values.join(","))
+}
+
+/// The placement a word of a shape's bytes says, if it's one ([`placement_word`]).
+fn parse_placement(word: &str) -> Option<Placement> {
+    let (tag, values) = word.split_once(':')?;
+    let v: Vec<f64> = values
+        .split(',')
+        .map(|w| w.parse::<f64>().ok().filter(|v| v.is_finite()))
+        .collect::<Option<_>>()?;
+    let axis = |v: &[f64]| Axis {
+        origin: [v[0], v[1], v[2]],
+        direction: [v[3], v[4], v[5]],
+    };
+    Some(match (tag, v.as_slice()) {
+        ("t", &[x, y, z]) => Placement::Translation { offset: [x, y, z] },
+        ("r", &[.., angle]) if v.len() == 7 => Placement::Rotation {
+            axis: axis(&v),
+            angle,
+        },
+        ("m", &[ox, oy, oz, nx, ny, nz]) => Placement::Mirror {
+            origin: [ox, oy, oz],
+            normal: [nx, ny, nz],
+        },
+        ("tm", &[.., angle, x, y, z]) if v.len() == 10 => Placement::TurnedAndMoved {
+            axis: axis(&v),
+            angle,
+            offset: [x, y, z],
+        },
+        _ => return None,
+    })
+}
+
 /// `value`, with a zero of either sign as 0: the kernel makes a primitive the same whatever
 /// the sign of a zero in its values.
 fn zeroed(value: f64) -> f64 {
@@ -2352,6 +2659,25 @@ fn parse_step(line: &str) -> Option<Step> {
     let index = |w: &str| w.parse::<usize>().ok();
     if name == "faces" {
         return parse_faces(&words).map(|regions| Step::Faces(Box::new(regions)));
+    }
+    if let ("copies", [op, base, tool, placements @ ..]) = (name, words.as_slice()) {
+        let op = match parse_boolean(op)? {
+            BooleanOp::Fuse => CopiesOp::Fuse,
+            BooleanOp::Cut => CopiesOp::Cut,
+            BooleanOp::Common => return None,
+        };
+        let placements: Vec<Placement> = placements
+            .iter()
+            .map(|w| parse_placement(w))
+            .collect::<Option<_>>()?;
+        // Only what a request could have asked.
+        silico_protocol::check_copies(&placements).ok()?;
+        return Some(Step::Copies {
+            op,
+            base: index(base)?,
+            tool: index(tool)?,
+            placements,
+        });
     }
     if let (Some(op), [base, tool]) = (parse_boolean(name), words.as_slice()) {
         return Some(Step::Boolean {
@@ -2615,6 +2941,73 @@ fn parse_faces(words: &[&str]) -> Option<FaceRegions> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copies_the_protocol_refuses_are_refused_as_the_kernel_refuses_them() {
+        // Sent by hand, past the request's own check: the fake checks again, as the worker
+        // does, naming the placement.
+        let b = Symbolic::primitive(Primitive::Box {
+            dx: 2.0,
+            dy: 3.0,
+            dz: 4.0,
+        })
+        .shape();
+        let op = Op::Copies {
+            base: b.clone(),
+            tool: b,
+            op: CopiesOp::Fuse,
+            placements: vec![
+                Placement::Translation {
+                    offset: [5.0, 0.0, 0.0],
+                },
+                Placement::Translation {
+                    offset: [0.0, 1e-9, 0.0],
+                },
+            ],
+        };
+        let e = answer(&op).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::InvalidInput);
+        assert_eq!(e.parameter(), Some("placements.1.offset"));
+    }
+
+    #[test]
+    fn a_copies_shape_reads_only_as_written_and_as_a_request_could_have_made_it() {
+        let text = |placements: &str| {
+            ShapeData::checked(
+                Blob::inline(
+                    format!("{HEADER}\nbox 2 3 4\nbox 1 1 1\ncopies fuse 0 1 {placements}\n")
+                        .into_bytes(),
+                ),
+                true,
+            )
+        };
+        let read = |placements: &str| Symbolic::read(&text(placements)).is_ok();
+        assert!(read(
+            "t:5,0,0 r:0,0,0,0,0,1,1 m:1,0,0,1,0,0 tm:0,0,0,0,0,1,-1,0,0,2"
+        ));
+        for refused in [
+            "",
+            "t:0,0,0",
+            "t:5,0",
+            "t:5.0,0,0",
+            "r:0,0,0,0,0,2,1",
+            "r:0,0,0,0,0,1,0",
+            "m:0,0,0,0,0,0",
+            "tm:0,0,0,0,0,1,1,0,0,0",
+            "q:1,2,3",
+            "t:NaN,0,0",
+        ] {
+            assert!(!read(refused), "{refused:?} was read");
+        }
+        // A common of copies is no copies.
+        let common = ShapeData::checked(
+            Blob::inline(
+                format!("{HEADER}\nbox 2 3 4\nbox 1 1 1\ncopies common 0 1 t:5,0,0\n").into_bytes(),
+            ),
+            true,
+        );
+        assert!(Symbolic::read(&common).is_err());
+    }
 
     #[test]
     fn a_deep_chain_of_booleans_is_read_and_described_without_overflowing_the_stack() {
