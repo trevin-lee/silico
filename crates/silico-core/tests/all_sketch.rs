@@ -60,6 +60,8 @@ mod adversarial_sketch_states;
 mod adversarial_sketch_trim;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
+#[path = "adversarial_suppression.rs"]
+mod adversarial_suppression;
 #[path = "adversarial_timeline_commands.rs"]
 mod adversarial_timeline_commands;
 #[path = "adversarial_warm.rs"]
