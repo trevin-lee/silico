@@ -1850,12 +1850,13 @@ fn a_sliver_loop_among_a_regions_holes_is_refused_as_a_loop() {
 }
 
 #[test]
-fn open_ends_grouped_with_both_ends_of_one_line_name_each_curve_once_and_say_lengthen_it() {
+fn open_ends_grouped_with_both_ends_of_one_line_name_the_points_alone_and_say_lengthen_it() {
     // L1 from p (0, 0) to q (1.5e-7, 0), longer than the tolerance; L2 from r (0.75e-7, 0)
     // to (5, 5). r is within 1e-7 of both p and q, so the three open ends are one group,
-    // though p and q aren't within it of each other. L1 has both its ends in the group:
-    // sharing one point would shrink it to nothing, so the advice is to lengthen it, then
-    // to end the curves at one point.
+    // though p and q aren't within it of each other: named, the three points alone (what
+    // isn't joined, as check's ends_not_joined names them), not L1 or L2. L1 has both its
+    // ends in the group: sharing one point would shrink it to nothing, so the advice names
+    // it, to lengthen it, then to end the curves at one point.
     let mut d = Draw::new();
     let p = d.point(0.0, 0.0);
     let r = d.point(0.75e-7, 0.0);
@@ -1871,7 +1872,7 @@ fn open_ends_grouped_with_both_ends_of_one_line_name_each_curve_once_and_say_len
                 format!(
                     "points {p}, {r}, {q} end curves within 1e-7 mm of each other, but aren't one point, so the profile is open there"
                 ),
-                vec![p.clone(), r.clone(), q.clone(), l1.clone(), l2.clone()]
+                vec![p.clone(), r.clone(), q.clone()]
             ),
             (
                 format!(
@@ -1881,7 +1882,7 @@ fn open_ends_grouped_with_both_ends_of_one_line_name_each_curve_once_and_say_len
             ),
         ]
     );
-    assert_eq!(errors[0].elements_total(), 5);
+    assert_eq!(errors[0].elements_total(), 3);
     assert_eq!(
         errors[0].suggestion(),
         Some(format!("lengthen line {l1}; then end the curves at one point").as_str())
@@ -1896,6 +1897,7 @@ fn an_arc_with_both_ends_in_an_open_group_is_given_the_gates_advice_for_an_arc_w
     // sharing one point would close it into a circle: the advice is the sketch gate's for an
     // arc whose ends are one place, "draw a circle instead, or open the arc" (sketch_gate.rs),
     // naming the arc; lengthening it would make it overlap itself (the port review, #189).
+    // The refusal's elements are the three points alone.
     let mut d = Draw::new();
     let o = d.point(0.0, 0.0);
     let delta: f64 = 1.5e-8;
@@ -1913,7 +1915,7 @@ fn an_arc_with_both_ends_in_an_open_group_is_given_the_gates_advice_for_an_arc_w
                 format!(
                     "points {s}, {e}, {r} end curves within 1e-7 mm of each other, but aren't one point, so the profile is open there"
                 ),
-                vec![s.clone(), e.clone(), r.clone(), a.clone(), l.clone()]
+                vec![s.clone(), e.clone(), r.clone()]
             ),
             (
                 format!(
@@ -1923,6 +1925,7 @@ fn an_arc_with_both_ends_in_an_open_group_is_given_the_gates_advice_for_an_arc_w
             ),
         ]
     );
+    assert_eq!(errors[0].elements_total(), 3);
     assert_eq!(
         errors[0].suggestion(),
         Some(
@@ -1940,7 +1943,8 @@ fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_an_open_group_is_to_be_leng
     // The three open ends are one group, both the arc's ends in it. The arc is short of a
     // half turn (the cross product of its ends from its centre is positive), so lengthening
     // it moves its ends apart: "lengthen arc a", as for a line, not the gate's advice for
-    // an arc whose ends are one place (the port review, #189).
+    // an arc whose ends are one place (the port review, #189). Named: the three points
+    // alone.
     let mut d = Draw::new();
     let o = d.point(0.0, 0.0);
     let s = d.point(7.5e-8, 1e-6);
@@ -1955,9 +1959,10 @@ fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_an_open_group_is_to_be_leng
     };
     let mut got = group.elements().to_vec();
     got.sort();
-    let mut expected = vec![s, e, r, a.clone(), l.clone()];
+    let mut expected = vec![s, e, r];
     expected.sort();
     assert_eq!(got, expected, "{group}");
+    assert_eq!(group.elements_total(), 3);
     assert_eq!(
         group.suggestion(),
         Some(format!("lengthen arc {a}; then end the curves at one point").as_str())
@@ -1969,8 +1974,9 @@ fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_an_open_group_is_to_be_leng
 fn two_lines_with_both_ends_in_one_open_group_are_both_to_be_lengthened() {
     // L1 from p (0, 0) to q (1.5e-7, 0), and L3 0.9e-7 above it, from a (0, 0.9e-7) to
     // b (1.5e-7, 0.9e-7); L2 from r (0.75e-7, 0.45e-7), within 1e-7 of all four, out to
-    // (−5, 5). The five ends are one group, and L1 and L3 each have both ends in it: both
-    // are named, once each. L1 and L3 are also too close.
+    // (−5, 5). The five ends are one group, named by its five points alone; L1 and L3 each
+    // have both ends in it: both are named in the advice, once each. L1 and L3 are also
+    // too close.
     let mut d = Draw::new();
     let p = d.point(0.0, 0.0);
     let q = d.point(1.5e-7, 0.0);
@@ -1989,16 +1995,7 @@ fn two_lines_with_both_ends_in_one_open_group_are_both_to_be_lengthened() {
                 format!(
                     "points {p}, {q}, {a}, {b}, {r} end curves within 1e-7 mm of each other, but aren't one point, so the profile is open there"
                 ),
-                vec![
-                    p.clone(),
-                    q.clone(),
-                    a.clone(),
-                    b.clone(),
-                    r.clone(),
-                    l1.clone(),
-                    l3.clone(),
-                    l2.clone()
-                ]
+                vec![p.clone(), q.clone(), a.clone(), b.clone(), r.clone()]
             ),
             (
                 format!(
@@ -2014,6 +2011,7 @@ fn two_lines_with_both_ends_in_one_open_group_are_both_to_be_lengthened() {
             ),
         ]
     );
+    assert_eq!(errors[0].elements_total(), 5);
     assert_eq!(
         errors[0].suggestion(),
         Some(

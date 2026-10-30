@@ -2,7 +2,8 @@
 //! Each name a document can hold is exported as a 10 × 20 × 30 box's product name (the
 //! core's encoding, `step_encoded`), and the file read back: by `Part.read`, whose volume
 //! must be the box's 6000 mm³, and by `Import.insert`, whose one object's label must be
-//! the name exactly (docs/ports/step-export.md, *Strings*: "every reader reads back as the
+//! the name exactly, or the product's id for a name of no ASCII graphic character
+//! ([`label_of`]) (docs/ports/step-export.md, *Strings*: "every reader reads back as the
 //! text it encodes"). Expected values are by hand: the box's volume and the name given.
 //! Needs the FreeCAD oracle (`pixi install -e oracle`) and the workers built.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -86,14 +87,15 @@ print("SILICO_ORACLE " + json.dumps(out))
         .collect()
 }
 
-/// The label FreeCAD gives the box named `name`: the name, but on Linux, where OCCT's STEP
-/// reader takes a product's name only if `TCollection_HAsciiString::UsefullLength` finds a
-/// byte `std::isgraph` accepts (STEPCAFControl_Reader.cxx, `ReadNames`) and glibc accepts no
-/// byte past ASCII, a name with no ASCII graphic character comes back as the product's id
+/// The label FreeCAD gives the box named `name`: the name, but where OCCT's STEP reader
+/// takes a product's name only if `TCollection_HAsciiString::UsefullLength` finds a byte
+/// `std::isgraph` accepts (STEPCAFControl_Reader.cxx, `ReadNames`): in the C locale the
+/// oracle runs FreeCAD in on every platform (`freecad.rs`), no byte past ASCII is graphic,
+/// so a name with no ASCII graphic character comes back as the product's id
 /// (docs/ports/step-export.md, *Round trips*). The file holds the name either way.
 fn label_of(name: &str) -> String {
     let readable = name.bytes().any(|b| b.is_ascii_graphic());
-    if cfg!(target_os = "linux") && !readable {
+    if !readable {
         "f0000001".to_owned()
     } else {
         name.to_owned()
@@ -124,8 +126,10 @@ fn a_name_longer_than_a_step_line_reads_back_as_itself() {
     // BREAKS: a long name whose encoding has no space is split inside a `\X2\` or `\X4\`
     // run, or between the two apostrophes of a doubled `'`, and FreeCAD reads it back as
     // something else; the export is `Ok`, so the file silently carries another name.
-    let umlauts = "ü".repeat(40);
-    let emoji = "\u{1F600}".repeat(12);
+    // Each with an ASCII graphic character, so OCCT's reader keeps it (label_of): `\X2\`
+    // and `\X4\` runs decoded back to the name.
+    let umlauts = format!("a{}", "ü".repeat(40));
+    let emoji = format!("a{}", "\u{1F600}".repeat(12));
     let apostrophes = "'".repeat(100);
     let mixed = format!("{}ü{}", "a".repeat(66), "b".repeat(20));
     let plain = "a".repeat(200);
@@ -139,6 +143,7 @@ fn a_name_longer_than_a_step_line_reads_back_as_itself() {
         (&plain, "part.silico"),
         (spaced.trim_end(), "part.silico"),
         (&underscored, "part.silico"),
+        ("Box \u{1F600}", "part.silico"),
     ]);
     assert!(wrong.is_empty(), "{wrong:#?}");
 }
@@ -174,14 +179,16 @@ fn a_document_file_name_that_is_hostile_still_gives_a_file_that_reads_back() {
 }
 
 #[test]
-fn a_name_of_no_ascii_at_all_is_written_exactly_and_read_as_the_platforms_reader_can() {
-    // Short names with no ASCII graphic character: written exactly (read_back checks the
-    // file), read back as themselves on macOS and as the product's id by OCCT's reader on
-    // Linux (label_of): OCCT's bug, followed and said, not worked around.
+fn a_name_of_no_ascii_at_all_is_written_exactly_and_read_back_as_the_products_id() {
+    // Names with no ASCII graphic character: written exactly (read_back checks the
+    // file), read back as the product's id by OCCT's reader in the oracle's C locale, on
+    // every platform (label_of): OCCT's bug, followed and said, not worked around.
     let wrong = misread(&[
         ("\u{652F}\u{67B6}", "part.silico"),
         ("\u{FC}", "part.silico"),
         ("\u{1F600}", "part.silico"),
+        (&"ü".repeat(40), "part.silico"),
+        (&"\u{1F600}".repeat(12), "part.silico"),
     ]);
     assert!(wrong.is_empty(), "{wrong:#?}");
 }

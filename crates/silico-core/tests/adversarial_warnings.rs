@@ -238,7 +238,7 @@ fn ends_just_under_1e_7_apart_warn_though_freecads_vertices_dont_join_them() {
     assert_eq!(
         ends_warnings(&checked),
         [(
-            strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
+            strings(&["pa000002", "pa000003"]),
             Some(apart("9.999999539545001e-8"))
         )]
     );
@@ -272,7 +272,7 @@ fn ends_a_kilometre_out_warn_by_their_doubles_spacing() {
         assert_eq!(
             ends_warnings(&checked),
             [(
-                strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
+                strings(&["pa000002", "pa000003"]),
                 Some(apart("5.995389074087143e-8"))
             )],
             "{b:?}"
@@ -325,7 +325,7 @@ fn ends_a_kilometre_apart_in_x_with_one_y_never_pair_and_a_column_of_ends_finds_
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
     let said = ends_warnings(&checked);
     assert_eq!(said.len(), 1, "{said:?}");
-    assert_eq!(said[0].0, ["pa000100", "pb000000", "na000100", "nb000000"]);
+    assert_eq!(said[0].0, ["pa000100", "pb000000"]);
     // 100.00000003 − 100 as doubles: 3e-8 · 2^46 = 2111062.3 spacings of 2^-46 at 100,
     // so 2111062 · 2^-46.
     assert_eq!(
@@ -342,8 +342,8 @@ fn ends_a_kilometre_apart_in_x_with_one_y_never_pair_and_a_column_of_ends_finds_
 fn a_cluster_of_256_ends_at_the_unknowns_limit_is_one_warning_naming_its_first_hundred() {
     // 256 lines, each from its own point at the origin to its own far point: 512 points,
     // 1,024 unknowns, the most a sketch may have. One cluster of 256 points: one warning, its
-    // 256 points then 256 curves, the first hundred (all points, pa000000 to pa000099)
-    // named, all 512 counted.
+    // 256 points (not the curves ending at them), the first hundred (pa000000 to pa000099)
+    // named, all 256 counted.
     let mut points = Vec::new();
     let mut lines = Vec::new();
     for i in (0..256).rev() {
@@ -368,7 +368,7 @@ fn a_cluster_of_256_ends_at_the_unknowns_limit_is_one_warning_naming_its_first_h
     let warning = &checked.warnings.listed()[0];
     let expected: Vec<String> = (0..100).map(|i| format!("pa{i:06}")).collect();
     assert_eq!(warning.elements(), expected);
-    assert_eq!(warning.elements_total(), 512);
+    assert_eq!(warning.elements_total(), 256);
     assert_eq!(warning.cause(), Some(at_most("0").as_str()));
     assert!(
         warning
@@ -384,18 +384,20 @@ fn a_cluster_of_256_ends_at_the_unknowns_limit_is_one_warning_naming_its_first_h
         value["warnings"][0]["elements"].as_array().unwrap().len(),
         100
     );
-    assert_eq!(value["warnings"][0]["elements_total"], 512);
+    assert_eq!(value["warnings"][0]["elements_total"], 256);
     assert_eq!(value["warnings_total"], 1);
 }
 
 #[test]
-fn a_hub_of_500_curves_near_another_point_lists_its_first_hundred_curves_all_counted() {
-    // BREAKS: hub pa000000 at the origin, hub pa000001 4e-8 from it, each with a line to
-    // each of 250 far points: one warning, about 2 points and 500 curves. `ends_not_joined`
+fn a_hub_of_500_curves_near_another_point_names_its_two_points_alone() {
+    // BREAKS (once): hub pa000000 at the origin, hub pa000001 4e-8 from it, each with a line
+    // to each of 250 far points: one warning, about 2 points and 500 curves. `ends_not_joined`
     // put all 500 in `elements`, where every other list of elements in the contract is its
     // first hundred with `elements_total` counting the rest (constraints_redundant's, the
     // profile's, a sweep's): a star of hubs (15 at one place, 7,000 lines) made 100
-    // warnings of ~1,000 elements each on the wire and on the CLI's stderr.
+    // warnings of ~1,000 elements each on the wire and on the CLI's stderr. Since M4's
+    // close a cluster's elements are its points alone, so the 500 curves aren't named or
+    // counted at all; a cluster of more than a hundred points is capped as above.
     let mut points = vec![point("pa000000", 0.0, 0.0), point("pa000001", 4e-8, 0.0)];
     let mut lines = Vec::new();
     for i in 0..250 {
@@ -409,15 +411,12 @@ fn a_hub_of_500_curves_near_another_point_lists_its_first_hundred_curves_all_cou
     }
     let checked = opened(&document(&[sketch("s0000001", &points, &lines, "")])).check();
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
-    // The far points are distinct (none of them pair): one warning, its two points, then
-    // the first 98 of the 500 curves by ID (na000000 to na000097), all 502 counted.
+    // The far points are distinct (none of them pair): one warning, its two points, 2
+    // counted.
     assert_eq!(checked.warnings.total(), 1, "{:?}", ends_warnings(&checked));
     let warning = &checked.warnings.listed()[0];
-    let mut expected = strings(&["pa000000", "pa000001"]);
-    expected.extend((0..98).map(|i| format!("na{i:06}")));
-    assert_eq!(warning.elements(), expected);
-    assert_eq!(warning.elements().len(), PROBLEMS_LISTED);
-    assert_eq!(warning.elements_total(), 502);
+    assert_eq!(warning.elements(), strings(&["pa000000", "pa000001"]));
+    assert_eq!(warning.elements_total(), 2);
 }
 
 #[test]
@@ -488,10 +487,7 @@ fn warnings_of_many_features_and_clusters_keep_timeline_order_past_the_hundredth
             .iter()
             .all(|w| w.code() == WarningCode::EndsNotJoined)
     );
-    assert_eq!(
-        listed[99].elements(),
-        ["pa000098", "pb000098", "na000098", "nb000098"]
-    );
+    assert_eq!(listed[99].elements(), ["pa000098", "pb000098"]);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -500,7 +496,8 @@ fn warnings_of_many_features_and_clusters_keep_timeline_order_past_the_hundredth
 #[test]
 fn a_pad_refused_for_ends_not_shared_and_its_sketch_warned_of_them() {
     // A triangle whose last side ends 4e-8 from where the first starts: the pad's profile is
-    // refused (a problem of the pad), and the sketch is warned of, both naming the ends.
+    // refused (a problem of the pad), and the sketch is warned of, both naming the two
+    // points alone, the one fault said one way.
     let text = document(&[
         sketch(
             "s0000001",
@@ -522,13 +519,14 @@ fn a_pad_refused_for_ends_not_shared_and_its_sketch_warned_of_them() {
     let checked = opened(&text).check();
     assert_eq!(checked.problems.total(), 1, "{:?}", checked.problems);
     assert_eq!(checked.problems.errors()[0].feature(), Some("p0000001"));
+    assert_eq!(
+        checked.problems.errors()[0].elements(),
+        strings(&["pa000000", "pd000000"])
+    );
     assert_eq!(checked.warnings.total(), 1);
     assert_eq!(
         ends_warnings(&checked),
-        [(
-            strings(&["pa000000", "pd000000", "na000000", "nc000000"]),
-            Some(apart("4e-8"))
-        )]
+        [(strings(&["pa000000", "pd000000"]), Some(apart("4e-8")))]
     );
 }
 
@@ -569,10 +567,7 @@ fn a_solve_that_moves_an_end_near_anothers_drifts_and_warns_from_where_it_solved
     );
     assert_eq!(
         ends_warnings(&checked),
-        [(
-            strings(&["pa000002", "pa000003", "na000001", "nb000001"]),
-            Some(apart("5e-8"))
-        )]
+        [(strings(&["pa000002", "pa000003"]), Some(apart("5e-8")))]
     );
 }
 
@@ -666,9 +661,9 @@ fn shown(d: f64) -> String {
 type End = (String, (f64, f64), String);
 
 /// What `ends_not_joined` should say of `ends`, worked out directly: every pair compared,
-/// clusters closed transitively by search, each warning its points then its curves (sorted,
-/// each once), the first 100 of them named and all counted, and the largest distance
-/// between two of its points; the clusters by their least point ID.
+/// clusters closed transitively by search, each warning its points alone (sorted), the
+/// first 100 of them named and all counted, and the largest distance between two of its
+/// points; the clusters by their least point ID.
 fn clusters_directly(ends: &[End]) -> Vec<(Vec<String>, u64, String)> {
     let n = ends.len();
     let mut cluster_of: Vec<Option<usize>> = vec![None; n];
@@ -697,9 +692,6 @@ fn clusters_directly(ends: &[End]) -> Vec<(Vec<String>, u64, String)> {
     for members in clusters.iter().filter(|m| m.len() >= 2) {
         let mut points: Vec<String> = members.iter().map(|&i| ends[i].0.clone()).collect();
         points.sort();
-        let mut curves: Vec<String> = members.iter().map(|&i| ends[i].2.clone()).collect();
-        curves.sort();
-        curves.dedup();
         let mut farthest = 0.0_f64;
         for &i in members {
             for &j in members {
@@ -713,9 +705,8 @@ fn clusters_directly(ends: &[End]) -> Vec<(Vec<String>, u64, String)> {
         } else {
             at_most(&shown(farthest))
         };
-        let total = (points.len() + curves.len()) as u64;
+        let total = points.len() as u64;
         let mut named = points;
-        named.extend(curves);
         named.truncate(PROBLEMS_LISTED);
         said.push((named, total, cause));
     }

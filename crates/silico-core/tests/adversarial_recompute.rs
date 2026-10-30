@@ -4,6 +4,7 @@
 //! recompute under test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::cpu_work;
 use super::example;
 use super::lateness;
 use super::model;
@@ -925,6 +926,7 @@ fn a_chain_of_four_hundred_booleans_finishes_promptly() {
         last = b;
     }
     let engine = engine(8);
+    let before = cpu_work::cost();
     let (model, took) = published_costing(
         &engine,
         document(&features),
@@ -933,7 +935,28 @@ fn a_chain_of_four_hundred_booleans_finishes_promptly() {
     );
     assert_eq!(model.bodies(), [id(&last)]);
     assert_eq!(made(&engine.kernel().calls()).len(), 1 + 2 * (n - 1));
-    assert!(took < Duration::from_secs(5), "took {took:?} of CPU");
+    // Once the engine is told to stop, so its threads wind down rather than work beside the
+    // probe.
+    drop(engine);
+    let after = cpu_work::cost();
+    // Its CPU over what a fixed piece of the same kind of work costs this machine now, the
+    // slower of before and after (cpu_work): a raw bound failed loaded runners (5.6 s of
+    // CPU against 5), and the slowdown `Share` measures is waiting, which costs no CPU. It
+    // read 7.6 to 8.7 on the Mac, quiet and loaded, and 8.6 to 11.3 on the Linux gate
+    // runners (ten runs, slowdown 1.1 to 1.7); re-keying the whole plan at each step makes it
+    // 35 to 37 on the Mac and 39 to 43 on Linux (slowdown up to 4.8): bounded at 20, near the
+    // middle of the worst honest reading and the best quadratic one, 1.8 times from each.
+    let probe = before.max(after);
+    let ratio = took.as_secs_f64() / probe.as_secs_f64();
+    let _ = writeln!(
+        std::io::stderr(),
+        "the chain took {took:?} of CPU, {ratio:.2} times the probe's {probe:?} \
+         (before {before:?}, after {after:?})"
+    );
+    assert!(
+        ratio < 20.0,
+        "the chain took {took:?} of CPU, {ratio:.2} times the probe's {probe:?}, past 20"
+    );
 }
 
 #[test]

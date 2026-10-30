@@ -397,6 +397,25 @@ fn a_step_output_is_written_as_step_each_objects_line_its_id_and_name() {
 }
 
 #[test]
+fn an_stp_output_in_either_case_is_written_as_step_writes_it() {
+    let dir = Scratch::new("stp");
+    std::fs::write(dir.0.join("part.silico"), BOX).unwrap();
+    let mut written = Vec::new();
+    for name in ["a.step", "b.stp", "C.STP"] {
+        let out = silico_export(&dir.0, &["part.silico", name]);
+        assert!(
+            out.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        written.push(std::fs::read(dir.0.join(name)).unwrap());
+    }
+    assert!(written[0].starts_with(b"ISO-10303-21;"));
+    assert_eq!(written[1], written[0]);
+    assert_eq!(written[2], written[0]);
+}
+
+#[test]
 fn a_tolerance_with_a_step_output_or_an_output_of_neither_format_is_a_usage_error() {
     let dir = Scratch::new("step-usage");
     std::fs::write(dir.0.join("part.silico"), BOX).unwrap();
@@ -407,9 +426,12 @@ fn a_tolerance_with_a_step_output_or_an_output_of_neither_format_is_a_usage_erro
         ),
         (
             &["part.silico", "part.stl"][..],
-            "must end in .3mf or .step",
+            "must end in .3mf, .step, or .stp",
         ),
-        (&["part.silico", "part"][..], "must end in .3mf or .step"),
+        (
+            &["part.silico", "part"][..],
+            "must end in .3mf, .step, or .stp",
+        ),
     ] {
         let out = silico_export(&dir.0, args);
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();

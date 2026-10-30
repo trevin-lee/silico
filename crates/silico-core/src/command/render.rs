@@ -285,7 +285,7 @@ pub fn render<K: Kernel>(
         tracing::info_span!("render", width = request.width, height = request.height).entered();
     let output = Output {
         field: "to",
-        extension: "png",
+        extensions: &["png"],
         writer: "a render",
         replace: request.replace,
         workspace: on.workspace,

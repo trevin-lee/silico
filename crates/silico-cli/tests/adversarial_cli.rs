@@ -1571,7 +1571,7 @@ fn check_says_a_hundred_warnings_then_how_many_more_and_exits_0() {
         ran.stderr
     );
     assert!(
-        lines[0].contains("(feature s0000001, elements pa000000, pb000000, na000000, nb000000)"),
+        lines[0].contains("(feature s0000001, elements pa000000, pb000000)"),
         "{}",
         lines[0]
     );

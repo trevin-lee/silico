@@ -1257,7 +1257,7 @@ fn a_directory_of_measure_cases_alone_is_run_and_its_differences_counted() {
     std::fs::write(
         measures.join(silico_oracle::measures::CASES),
         r#"[{"name": "cube_bottom_and_top", "note": "10 apart, said to be 11.", "elements": ["bxa00001.box.Face5", "bxa00001.box.Face6"],
-            "expected": {"distance": {"distance": 11, "center_distance": null, "normal_distance": 10}}}]"#,
+            "expected": {"distance": {"distance": 11, "center_distance": null, "normal_distance": 10, "center_to_element": null}}}]"#,
     )
     .unwrap();
     let cases = dir.join("cases");
@@ -1294,7 +1294,7 @@ fn a_run_of_measure_cases_prints_each_that_differs_and_counts_them_all() {
     let case = |name: &str| {
         format!(
             r#"{{"name": "{name}", "note": "", "elements": ["bxa00001.box.Face5", "bxa00001.box.Face6"],
-                "expected": {{"distance": {{"distance": 10, "center_distance": null, "normal_distance": 10}}}}}}"#
+                "expected": {{"distance": {{"distance": 10, "center_distance": null, "normal_distance": 10, "center_to_element": null}}}}}}"#
         )
     };
     std::fs::write(
@@ -1404,7 +1404,7 @@ fn freecad_killed_on_sphere_13(dir: &Path) -> PathBuf {
         &hook,
         r#"import json, os, signal
 import FreeCAD
-_cases = json.load(open(os.environ["SILICO_ORACLE_CASES"]))[int(os.environ["SILICO_ORACLE_FIRST"]):]
+_cases = json.load(open(os.environ["SILICO_ORACLE_CASES"], encoding="utf-8"))[int(os.environ["SILICO_ORACLE_FIRST"]):]
 _seen = [0]
 _new = FreeCAD.newDocument
 def _hooked(*a, **k):
@@ -1415,7 +1415,7 @@ def _hooked(*a, **k):
     return _new(*a, **k)
 FreeCAD.newDocument = _hooked
 _path = os.environ["BREAK_IT_ORACLE_SCRIPT"]
-exec(compile(open(_path).read(), _path, "exec"))
+exec(compile(open(_path, encoding="utf-8").read(), _path, "exec"))
 "#,
     )
     .unwrap();

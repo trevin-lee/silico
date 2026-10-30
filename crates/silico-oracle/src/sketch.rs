@@ -440,7 +440,7 @@ import json, math, os
 import FreeCAD as App, Part, Sketcher
 
 V = App.Vector
-cases = json.load(open(os.environ["SILICO_SKETCH_CASES"]))
+cases = json.load(open(os.environ["SILICO_SKETCH_CASES"], encoding="utf-8"))
 out = []
 for case in cases:
     doc = App.newDocument()

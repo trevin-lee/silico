@@ -3,3 +3,4 @@
 ends_not_joined
 constraints_redundant
 fingerprint_missing
+constraints_partially_redundant

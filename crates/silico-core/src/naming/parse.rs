@@ -64,12 +64,31 @@ impl Name {
         text: &str,
         operation_of: &dyn Fn(&FeatureId) -> Option<Maker>,
     ) -> Result<Name, NameError> {
+        Self::read(text, operation_of, false)
+    }
+
+    /// The name `text` writes, as [`parse`](Self::parse) reads it, of a model rather than of
+    /// a feature's place in a document (a selection's: it has no place in the timeline), so
+    /// a feature `operation_of` doesn't know is "no feature ... in the model".
+    pub(crate) fn parse_in_model(
+        text: &str,
+        operation_of: &dyn Fn(&FeatureId) -> Option<Maker>,
+    ) -> Result<Name, NameError> {
+        Self::read(text, operation_of, true)
+    }
+
+    fn read(
+        text: &str,
+        operation_of: &dyn Fn(&FeatureId) -> Option<Maker>,
+        in_model: bool,
+    ) -> Result<Name, NameError> {
         let mut reader = Reader {
             text: text.as_bytes(),
             at: 0,
             weight: 0,
             height: 0,
             operation_of,
+            in_model,
         };
         let name = reader.name(0)?;
         if reader.at != reader.text.len() {
@@ -150,6 +169,8 @@ struct Reader<'a> {
     /// each `~n` a level, as the builder counts a map's names.
     height: u32,
     operation_of: &'a dyn Fn(&FeatureId) -> Option<Maker>,
+    /// Whether the name is of a model (a selection's), not of a place in a document.
+    in_model: bool,
 }
 
 impl Reader<'_> {
@@ -334,7 +355,12 @@ impl Reader<'_> {
         let feature = self.feature()?;
         let Some(maker) = (self.operation_of)(&feature) else {
             self.at = start;
-            return Err(self.error(&format!("no feature {feature} before this one")));
+            let place = if self.in_model {
+                "in the model"
+            } else {
+                "before this one"
+            };
+            return Err(self.error(&format!("no feature {feature} {place}")));
         };
         // A sketch's elements are in no solid: a name that's one, whole, names nothing a
         // reference can take (S4).

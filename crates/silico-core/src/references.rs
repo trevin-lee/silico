@@ -98,11 +98,7 @@ pub(crate) fn resolve(
         let why = match &name {
             Err(error) => format!("isn't a name: {error}"),
             Ok(name) => match map.element(name) {
-                Some(element) if map.is_unstable(name) => format!(
-                    "names {}, whose name is unstable (it came about as another element did, or \
-                     is its number): an edit could make it another element",
-                    element.kind.a_word()
-                ),
+                Some(element) if map.is_unstable(name) => unstable(element.kind),
                 Some(element) if element.kind == ElementKind::Edge => {
                     if seen.insert(element.index) {
                         found.push(element.index);
@@ -135,23 +131,14 @@ pub(crate) fn resolve(
             Err(_) => Vec::new(),
         };
         broken.push(
-            Error::new(
-                ErrorCode::ReferenceBroken,
-                format!(
-                    "edges.{i}, {}, {why}",
-                    crate::document::json::shown(edge.as_str())
-                ),
+            refused(
+                &format!("edges.{i}"),
+                edge.as_str(),
+                &why,
+                ElementKind::Edge,
+                candidates,
             )
-            .with_feature(feature.as_str())
-            .with_parameter(format!("edges.{i}"))
-            // As written, cut short as the message is: a name can be long, and the
-            // parameter says where it is in full.
-            .with_element(cut_short(edge.as_str()))
-            .with_candidates(candidates)
-            .with_suggestion(
-                "name the edge as its feature now names it: the candidates are the likeliest, \
-                 none taken for it",
-            ),
+            .with_feature(feature.as_str()),
         );
     }
     if broken.is_empty() {
@@ -163,6 +150,43 @@ pub(crate) fn resolve(
             total,
         })
     }
+}
+
+/// Why a stored reference refuses a name that finds an element of `kind` but is unstable
+/// (N3, `ElementMap::is_unstable`): a fillet's or chamfer's edge, and a selection's element
+/// none of whose names is stable (`selection`), say it alike.
+pub(crate) fn unstable(kind: ElementKind) -> String {
+    format!(
+        "names {}, whose name is unstable (it came about as another element did, or is its \
+         number): an edit could make it another element",
+        kind.a_word()
+    )
+}
+
+/// A stored reference's refusal of the name `text`, at `parameter` (`edges.0`): a
+/// `reference_broken` error saying `why`, with `candidates` for it, none taken, and the
+/// advice to name the element, of `kind`, as its feature now names it.
+pub(crate) fn refused(
+    parameter: &str,
+    text: &str,
+    why: &str,
+    kind: ElementKind,
+    candidates: Vec<String>,
+) -> Error {
+    Error::new(
+        ErrorCode::ReferenceBroken,
+        format!("{parameter}, {}, {why}", crate::document::json::shown(text)),
+    )
+    .with_parameter(parameter)
+    // As written, cut short as the message is: a name can be long, and the parameter says
+    // where it is in full.
+    .with_element(cut_short(text))
+    .with_candidates(candidates)
+    .with_suggestion(format!(
+        "name the {} as its feature now names it: the candidates are the likeliest, none \
+         taken for it",
+        kind.word()
+    ))
 }
 
 /// Candidates for broken names, of the elements of one kind in some maps (a fillet's base,

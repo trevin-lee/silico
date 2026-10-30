@@ -9,6 +9,8 @@
 mod cache;
 #[path = "common/cache_format.rs"]
 mod cache_format;
+#[path = "common/cpu_work.rs"]
+mod cpu_work;
 #[path = "common/describing.rs"]
 mod describing;
 #[path = "common/example.rs"]
@@ -36,6 +38,8 @@ mod adversarial_entries;
 mod adversarial_measure_refusal;
 #[path = "adversarial_recompute.rs"]
 mod adversarial_recompute;
+#[path = "adversarial_selection.rs"]
+mod adversarial_selection;
 #[path = "adversarial_validate.rs"]
 mod adversarial_validate;
 #[path = "described.rs"]
