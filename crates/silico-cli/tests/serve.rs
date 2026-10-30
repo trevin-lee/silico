@@ -562,6 +562,60 @@ fn serve_with_only_a_kernel_worker_doesnt_start_and_names_each_missing_one() {
 }
 
 #[test]
+fn serve_missing_any_one_other_worker_alone_doesnt_start_and_names_it() {
+    // Each of the sketch, STEP, and render workers missing on its own, the other three
+    // there: exit 2 before the handshake, and only that worker said, where it was looked for.
+    let all = [
+        "silico-kernel-worker",
+        "silico-sketch-worker",
+        "silico-render-worker",
+        "silico-step-worker",
+    ];
+    for (missing, said) in [
+        (
+            "silico-sketch-worker",
+            "silico serve: there's no sketch worker, so no sketch can be solved: worker_unavailable: no sketch worker in",
+        ),
+        (
+            "silico-step-worker",
+            "silico serve: there's no STEP worker, so nothing can be exported as STEP: worker_unavailable: no STEP worker in",
+        ),
+        (
+            "silico-render-worker",
+            "silico serve: there's no render worker, so nothing can be rendered: worker_unavailable: no render worker in",
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let there: Vec<&str> = all.iter().copied().filter(|w| *w != missing).collect();
+        let bin = install(root.path(), &there);
+        let workspace = root.path().join("models");
+        std::fs::create_dir(&workspace).unwrap();
+        let (code, stdout, stderr) = refused_start(serve_command(&bin.join("silico"), &workspace));
+        assert_eq!(code, Some(2), "{missing}: {stderr}");
+        assert_eq!(stdout, "", "{missing}: no handshake");
+        let lines: Vec<&str> = stderr
+            .lines()
+            .filter(|line| line.starts_with("silico serve: "))
+            .collect();
+        assert_eq!(lines.len(), 1, "{missing}: {stderr}");
+        assert!(lines[0].starts_with(said), "{missing}: {}", lines[0]);
+        assert!(
+            lines[0].contains(&format!(
+                "Silico looks for {missing} beside its own executable"
+            )),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains(&bin.display().to_string()),
+            "{}",
+            lines[0]
+        );
+        assert!(listed(&workspace).is_empty());
+    }
+}
+
+#[test]
 fn serve_without_any_worker_names_all_four_kernel_first() {
     let root = tempfile::tempdir().unwrap();
     let bin = install(root.path(), &[]);
