@@ -37,7 +37,8 @@
 //! `move_feature`; [`reads`], for `text`, `outline`, `check`, and `timeline`; [`cache`], for `cache_clear`;
 //! [`elements`], for `elements` and `query`; [`schema`]; [`measure`], for `mass_properties`,
 //! `distance`, and `angle`; [`render`]; [`export`]; [`sketch`]; and [`sketch_edits`], for
-//! `sketch_add` and `sketch_remove`).
+//! `sketch_add`, `sketch_remove`, `sketch_split`, `sketch_trim`, `sketch_unjoin`, and
+//! `sketch_merge`).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -1756,6 +1757,30 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
             command_schema::<
                 sketch_edits::SketchRemoveRequestSchema,
                 sketch_edits::SketchEditResultSchema,
+            >
+        }
+        Command::SketchSplit => {
+            command_schema::<
+                sketch_edits::SketchSplitRequestSchema,
+                sketch_edits::SketchSplitResultSchema,
+            >
+        }
+        Command::SketchTrim => {
+            command_schema::<
+                sketch_edits::SketchTrimRequestSchema,
+                sketch_edits::SketchTrimResultSchema,
+            >
+        }
+        Command::SketchUnjoin => {
+            command_schema::<
+                sketch_edits::SketchUnjoinRequestSchema,
+                sketch_edits::SketchUnjoinResultSchema,
+            >
+        }
+        Command::SketchMerge => {
+            command_schema::<
+                sketch_edits::SketchMergeRequestSchema,
+                sketch_edits::SketchMergeResultSchema,
             >
         }
         Command::Undo => {

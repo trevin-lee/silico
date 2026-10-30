@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "merging pa000004 and pa000005 would give line na000004 one point at both ends", "feature": "s0000001", "elements": ["pa000004", "pa000005", "na000004"], "elements_total": 3, "parameter": "points", "cause": null, "suggestion": "merge points of different curves", "candidates": []}

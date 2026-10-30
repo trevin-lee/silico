@@ -635,7 +635,7 @@ fn a_merge_that_collapses_a_curve_directly_or_through_a_chain_is_refused() {
         let error = merge(sketch_of(&before), &ids(names)).unwrap_err();
         assert_eq!(
             error.message(),
-            "merging p0000000 and p0000001 would give line a0000000 one point twice"
+            "merging p0000000 and p0000001 would give line a0000000 one point at both ends"
         );
         assert_eq!(error.elements(), ["p0000000", "p0000001", "a0000000"]);
     }

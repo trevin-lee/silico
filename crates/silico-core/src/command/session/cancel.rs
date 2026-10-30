@@ -150,6 +150,12 @@ impl Ticket {
         self.state.load(Ordering::SeqCst) == CANCELLED
     }
 
+    /// Whether its session closed ([`close`](Self::close)): a command whose work it stopped
+    /// so answers `not_open`, never `cancelled`, since no client stopped it.
+    pub(super) fn closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
     /// `interrupt` told when the command is cancelled or its session closes: at once, if
     /// either has come. Added once, however often it's given, and those whose owners have
     /// gone let go. Each read of a model adds its kernel client here, so a cancel or a
@@ -164,7 +170,7 @@ impl Ticket {
         }
         let why = if self.cancelled() {
             Some(Why::Cancelled)
-        } else if self.closed.load(Ordering::SeqCst) {
+        } else if self.closed() {
             Some(Why::Closed)
         } else {
             None

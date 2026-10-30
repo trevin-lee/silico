@@ -20,9 +20,9 @@ mod add;
 mod split;
 mod trim;
 pub use add::{Members, add};
-pub use split::{Split, split};
+pub use split::{Split, split, split_with};
 pub(crate) use trim::{Geo, crossings, end_ids};
-pub use trim::{Trim, trim};
+pub use trim::{Trim, trim, trim_with};
 
 /// A sketch edited, and what changed (docs/design/m5.0-app.md, section 7, *The sketch
 /// edits*): `added` in the order the edit made them, by kind (points, lines, circles, arcs,
@@ -236,6 +236,22 @@ pub fn unjoin(
     curve: &ElementId,
     new_point: ElementId,
 ) -> Result<Edited, Error> {
+    unjoin_with(
+        sketch,
+        point,
+        curve,
+        NewIds::Given(std::slice::from_ref(&new_point)),
+    )
+}
+
+/// [`unjoin`], the new point's ID the request's (a list of one) or drawn ([`NewIds`]): drawn
+/// only once every other refusal has been found.
+pub fn unjoin_with(
+    sketch: &Sketch,
+    point: &ElementId,
+    curve: &ElementId,
+    ids: NewIds<'_>,
+) -> Result<Edited, Error> {
     let kinds = kinds_of(sketch);
     let Some(original) = sketch.points.iter().find(|p| &p.id == point) else {
         return Err(no_member(point, ElementKind::Point, "point"));
@@ -272,14 +288,15 @@ pub fn unjoin(
         .with_parameter("point")
         .with_suggestion("name a point two or more curves share"));
     }
-    if kinds.contains_key(&new_point) {
-        return Err(Error::new(
-            ErrorCode::InvalidInput,
-            format!("the sketch already has a member {new_point}"),
-        )
-        .with_parameter("ids.0")
-        .with_suggestion("give an ID no member of the sketch has"));
-    }
+    let [new_point] =
+        <[ElementId; 1]>::try_from(new_ids(&kinds, ids, 1, "the unjoin", "its new point")?)
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::Internal,
+                    "the unjoin was given other than one new ID",
+                )
+                .with_parameter("ids")
+            })?;
     let mut edited = sketch.clone();
     edited.points.push(SketchPoint {
         id: new_point.clone(),
@@ -338,7 +355,10 @@ pub fn unjoin(
 /// FreeCAD `cb2780e2fa`), a curve that would then use one point twice (a line's ends, an
 /// arc's centre and an end, or its two ends: `084379651a`, #20771), and a constraint that
 /// would then name one point twice (a `distance` or `horizontal_points` between merged
-/// points), and a merged sketch the gate refuses, naming the points and what it names.
+/// points), and a merged sketch the gate refuses, naming the points and what it names. An
+/// `on` the merge makes hold a line's or an arc's end on that curve is implied by then, and
+/// removed, listed in `removed` (docs/design/m5.0-app.md, open item 13b); any other
+/// constraint it puts on its own curve is refused ([`own_curve`]).
 ///
 /// An edge `tangent` between two curves that then share an end becomes a `tangent_at` at
 /// that point, keeping its ID, as FreeCAD's coincident command substitutes one
@@ -395,10 +415,23 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
                 .collect();
             let mut elements = merging.clone();
             elements.push(curve.to_string());
+            // What the one point would be to the curve: its two ends (a line's, an arc's),
+            // or an arc's centre and an end or both (the design's words, `sketch_merge`).
+            let merged = |p: &ElementId| p == kept || others.contains(p);
+            let how = match ends.as_slice() {
+                [center, start, end] if merged(center) => {
+                    if merged(start) && merged(end) {
+                        "as its centre and both its ends"
+                    } else {
+                        "as its centre and an end"
+                    }
+                }
+                _ => "at both ends",
+            };
             return Err(Error::new(
                 ErrorCode::InvalidInput,
                 format!(
-                    "merging {} would give {} {curve} one point twice",
+                    "merging {} would give {} {curve} one point {how}",
                     listed(&merging),
                     kind.noun()
                 ),
@@ -466,6 +499,8 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
         }
     }
     repointed.extend(tangents_at_shared_ends(&mut edited));
+    let implied = implied_ons(&mut edited);
+    repointed.retain(|id| !implied.contains(id));
     own_curve(&edited, "merging them", "points", "merge other points")?;
     modified.extend(repointed);
     edited.points.retain(|p| !others.contains(&p.id));
@@ -483,8 +518,41 @@ pub fn merge(sketch: &Sketch, points: &[ElementId]) -> Result<Edited, Error> {
         sketch: edited,
         added: Vec::new(),
         modified: ordered(&kinds, modified),
-        removed: ordered(&kinds, others.into_iter().cloned()),
+        removed: ordered(&kinds, others.into_iter().cloned().chain(implied)),
     })
+}
+
+/// Each `on` of `sketch` that holds a line's or an arc's end on that curve itself, removed
+/// as implied, as a merge leaves one where it made the `on`'s point the curve's end (a T
+/// drawn at a line's end, which `silico fmt --merge-touching` meets): the shared point is
+/// the end, so the `on` holds by construction, with no value changed and nothing moved
+/// (docs/design/m5.0-app.md, open item 13b, as trim drops one at a shared cut, sketch-edit
+/// decision 5). Only an end: an `on` of a circle's or arc's centre on it, which would
+/// conflict rather than repeat, is left for [`own_curve`] to refuse, as is any other
+/// constraint the merge puts on its own curve. FreeCAD keeps the `PointOnObject` and its
+/// solve flags it redundant; the gate refuses a curve's own point held on it, so Silico
+/// can't keep it. The IDs removed.
+fn implied_ons(sketch: &mut Sketch) -> BTreeSet<ElementId> {
+    let ends: BTreeMap<&ElementId, [&ElementId; 2]> = sketch
+        .lines
+        .iter()
+        .map(|l| (&l.id, [&l.from, &l.to]))
+        .chain(sketch.arcs.iter().map(|a| (&a.id, [&a.start, &a.end])))
+        .collect();
+    let implied: BTreeSet<ElementId> = sketch
+        .constraints
+        .iter()
+        .filter(|c| match &c.form {
+            Form::On { point, curve } => match (point.element(), curve.element()) {
+                (Some(point), Some(curve)) => ends.get(curve).is_some_and(|e| e.contains(&point)),
+                _ => false,
+            },
+            _ => false,
+        })
+        .map(|c| c.id.clone())
+        .collect();
+    sketch.constraints.retain(|c| !implied.contains(&c.id));
+    implied
 }
 
 /// Each edge `tangent` of `sketch` between two curves that share one end, made a
@@ -562,10 +630,10 @@ fn kept_side(side: TangentSide, end_to_start: bool) -> Direction {
 /// constraint. Before a merge these points were apart, and before a split the point wasn't
 /// the curve's, so the sketch it was given had none of them.
 ///
-/// Refused, not mended: an `on` that the merge makes hold an end on its own line is implied
-/// by then, and could be dropped, as trim drops one (sketch-edit decision 5), but the note's
-/// decision 10 says the merge makes no fix-up, and FreeCAD's coincidence command rolls back a
-/// worse result (`e38154474a`); which one the merge takes is for the M5.0 design to settle.
+/// A merge has removed an `on` that it makes hold an end on its own line or arc first, as
+/// implied ([`implied_ons`], open item 13b): one of a centre, a `midpoint`, a
+/// `point_line_distance`, or a mirrored `symmetric` would conflict, not repeat, and is
+/// refused here.
 fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Result<(), Error> {
     let points: BTreeMap<&ElementId, Vec<&ElementId>> = curves(sketch)
         .into_iter()
@@ -825,15 +893,41 @@ fn no_member(id: &ElementId, kind: ElementKind, parameter: &str) -> Error {
     .with_suggestion(format!("name a {what} of this sketch by its ID"))
 }
 
-/// Refuses `ids` unless they're `needed` IDs no member of the sketch has, each once: the new
-/// members' of `edit` ("the split"), `order` saying what they're for, in order.
+/// Where an edit's new members' IDs come from (docs/design/m5.0-app.md, section 7, *New
+/// IDs*; decision 20): the request's, in `added`'s order, or, for a request whose `ids` is
+/// `null`, drawn one at a time once the edit knows how many it needs, each by `draw`, told
+/// which IDs are taken (the sketch's, and those drawn before), as `add_feature` draws a
+/// feature's.
+pub enum NewIds<'a> {
+    Given(&'a [ElementId]),
+    Drawn(&'a mut Draw<'a>),
+}
+
+/// What draws a new member's ID ([`NewIds::Drawn`]), told which IDs are taken.
+pub type Draw<'a> = dyn FnMut(&dyn Fn(&ElementId) -> bool) -> Result<ElementId, Error> + 'a;
+
+/// The `needed` new IDs of `edit` ("the split"), `order` saying what they're for, in order:
+/// the request's, refused unless there are `needed` of them, none a member of the sketch
+/// has, each once; or `needed` drawn, none taken.
 fn new_ids(
     kinds: &BTreeMap<ElementId, ElementKind>,
-    ids: &[ElementId],
+    ids: NewIds<'_>,
     needed: usize,
     edit: &str,
     order: &str,
-) -> Result<(), Error> {
+) -> Result<Vec<ElementId>, Error> {
+    let ids = match ids {
+        NewIds::Given(ids) => ids,
+        NewIds::Drawn(draw) => {
+            let mut drawn: Vec<ElementId> = Vec::with_capacity(needed);
+            for _ in 0..needed {
+                let taken = |id: &ElementId| kinds.contains_key(id) || drawn.contains(id);
+                let id = draw(&taken)?;
+                drawn.push(id);
+            }
+            return Ok(drawn);
+        }
+    };
     if ids.len() != needed {
         return Err(Error::new(
             ErrorCode::InvalidInput,
@@ -841,7 +935,7 @@ fn new_ids(
         )
         .with_parameter("ids")
         .with_suggestion(format!(
-            "give one ID for each member {edit} adds, in order: {order}"
+            "give one ID for each member {edit} adds, in order: {order}; or null, for the core to make them"
         )));
     }
     for (place, id) in ids.iter().enumerate() {
@@ -856,7 +950,7 @@ fn new_ids(
             .with_parameter(format!("ids.{place}"))
             .with_suggestion("give IDs no member of the sketch has, each once"));
     }
-    Ok(())
+    Ok(ids.to_vec())
 }
 
 /// A merge of fewer than two points.

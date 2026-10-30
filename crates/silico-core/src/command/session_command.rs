@@ -36,13 +36,17 @@ pub enum SessionCommand {
     Sketch,
     SketchAdd,
     SketchRemove,
+    SketchSplit,
+    SketchTrim,
+    SketchUnjoin,
+    SketchMerge,
     Undo,
     Redo,
 }
 
 impl SessionCommand {
     /// Every command that runs in a session, in the design's order (M4.1's, then M5.0's).
-    pub const ALL: [SessionCommand; 27] = [
+    pub const ALL: [SessionCommand; 31] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -68,6 +72,10 @@ impl SessionCommand {
         SessionCommand::Sketch,
         SessionCommand::SketchAdd,
         SessionCommand::SketchRemove,
+        SessionCommand::SketchSplit,
+        SessionCommand::SketchTrim,
+        SessionCommand::SketchUnjoin,
+        SessionCommand::SketchMerge,
         SessionCommand::Undo,
         SessionCommand::Redo,
     ];
@@ -100,6 +108,10 @@ impl SessionCommand {
             SessionCommand::Sketch => Command::Sketch,
             SessionCommand::SketchAdd => Command::SketchAdd,
             SessionCommand::SketchRemove => Command::SketchRemove,
+            SessionCommand::SketchSplit => Command::SketchSplit,
+            SessionCommand::SketchTrim => Command::SketchTrim,
+            SessionCommand::SketchUnjoin => Command::SketchUnjoin,
+            SessionCommand::SketchMerge => Command::SketchMerge,
             SessionCommand::Undo => Command::Undo,
             SessionCommand::Redo => Command::Redo,
         }

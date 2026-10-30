@@ -18,6 +18,21 @@
   },
   "result": {
     "$defs": {
+      "BeginResult": {
+        "additionalProperties": false,
+        "description": "`begin`'s result.",
+        "properties": {
+          "base": {
+            "description": "The revision the transaction began from: the one `rollback` returns to.",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "base"
+        ],
+        "type": "object"
+      },
       "Disk": {
         "description": "What a comparison of a session's file on disk found, as `status` gives it.",
         "oneOf": [
@@ -153,55 +168,13 @@
           "sketch",
           "sketch_add",
           "sketch_remove",
-          "undo",
-          "redo",
+          "sketch_split",
+          "sketch_trim",
+          "sketch_unjoin",
+          "sketch_merge",
           "reload"
         ],
         "type": "string"
-      },
-      "Transaction": {
-        "additionalProperties": false,
-        "description": "The transaction open in a session, as `status` gives it.",
-        "properties": {
-          "base": {
-            "description": "The revision the transaction began from: the one `rollback` returns to.",
-            "minimum": 1,
-            "type": "integer"
-          },
-          "bytes": {
-            "description": "What its undo stack holds, in bytes, as its bound counts it: the file's bytes as it\nbegan, and each earlier state's texts beyond what they share.",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "changed": {
-            "description": "Whether its document differs from the one it began from, as a commit compares them:\nunsaved changes. False after undoing back to that one, or editing back to it, and a\ncommit then writes nothing.",
-            "type": "boolean"
-          },
-          "dropped": {
-            "description": "How many of its edits undo can no longer reach, the undo stack's bound (`version`'s\n`undo_bytes`) having dropped their states: 2 at the first drop (the edits before and\nafter the state dropped), one more at each after. `rollback` still returns to the\nstate it began from.",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "redo": {
-            "description": "How many `redo` can redo: the edits undone, until an edit drops them.",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "undo": {
-            "description": "How many of its edits `undo` can undo, one step each.",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "base",
-          "bytes",
-          "changed",
-          "dropped",
-          "redo",
-          "undo"
-        ],
-        "type": "object"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -255,13 +228,13 @@
       "transaction": {
         "anyOf": [
           {
-            "$ref": "#/$defs/Transaction"
+            "$ref": "#/$defs/BeginResult"
           },
           {
             "type": "null"
           }
         ],
-        "description": "The transaction open, its base as `begin` answered it, with its undo and redo: null\nif none is."
+        "description": "The transaction open, as `begin` answered it: null if none is."
       }
     },
     "required": [
