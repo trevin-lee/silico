@@ -292,7 +292,7 @@ fn a_known_tool_whose_arguments_the_core_refuses_is_a_result_with_the_cores_refu
     assert_eq!(result["isError"], true);
     assert_eq!(
         result["structuredContent"],
-        json!({"ok": false, "session": null, "model": null, "errors": [{"code": "invalid_input", "message": "session is missing", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": null, "suggestion": "give every field the request's shape has; null where it allows none", "candidates": []}], "total": 1})
+        json!({"ok": false, "session": null, "model": null, "errors": [{"code": "invalid_input", "message": "session is missing", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": null, "suggestion": "give every field the request's shape has; null where it allows none", "candidates": [], "advice": null}], "total": 1})
     );
 }
 

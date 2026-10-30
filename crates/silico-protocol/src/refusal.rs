@@ -94,8 +94,14 @@ pub enum Refusal {
     NotFinite { quantity: String, value: f64 },
     /// A description of the shape's elements that no shape has, finite but out of range (a
     /// direction that isn't a unit vector, a negative area, an edge of length 0 that isn't
-    /// degenerated): `problem`, naming the value (`Description::validate`).
-    DescriptionImpossible { problem: String },
+    /// degenerated): the element, its `kind` and 1-based `number` in the shape (OCCT's
+    /// `TopExp::MapShapes` order), as data, for the core to name; and `problem`, naming the
+    /// value (`Description::validate`).
+    DescriptionImpossible {
+        kind: ElementKind,
+        number: u32,
+        problem: String,
+    },
     /// Silico's bridge has no result check for an operation on this many shapes.
     ResultCheckMissing { inputs: u32 },
     /// Silico's bridge reported a history it shouldn't have.
@@ -376,6 +382,10 @@ impl Refusal {
                 .take(FACES_NAMED)
                 .map(|&face| ElementRef::face(face))
                 .collect(),
+            Refusal::DescriptionImpossible { kind, number, .. } => vec![ElementRef {
+                kind: *kind,
+                index: *number,
+            }],
             _ => Vec::new(),
         }
     }
@@ -593,7 +603,7 @@ impl Refusal {
             Refusal::NotFinite { quantity, value } => {
                 (format!("the shape's {quantity} isn't finite ({value})"), None)
             }
-            Refusal::DescriptionImpossible { problem } => (
+            Refusal::DescriptionImpossible { problem, .. } => (
                 format!("OCCT described an element as no element is: {problem}"),
                 None,
             ),
@@ -1083,6 +1093,8 @@ mod tests {
                 value: f64::INFINITY,
             },
             Refusal::DescriptionImpossible {
+                kind: ElementKind::Face,
+                number: 1,
                 problem: "the kernel's Face1's area is -1".to_owned(),
             },
             Refusal::ResultCheckMissing { inputs: 3 },
@@ -1235,6 +1247,37 @@ mod tests {
     }
 
     #[test]
+    fn an_impossible_description_names_its_element_as_data() {
+        // The element whose value no element has, by its kind and number in the shape: one
+        // element at fault, as the core names it; no parameter.
+        for (kind, number, element) in [
+            (ElementKind::Face, 7, ElementRef::face(7)),
+            (ElementKind::Edge, 1002, ElementRef::edge(1002)),
+            (
+                ElementKind::Vertex,
+                3,
+                ElementRef {
+                    kind: ElementKind::Vertex,
+                    index: 3,
+                },
+            ),
+        ] {
+            let refusal = Refusal::DescriptionImpossible {
+                kind,
+                number,
+                problem: "p".to_owned(),
+            };
+            assert_eq!(refusal.elements(), [element]);
+            assert_eq!(refusal.elements_total(), 1);
+            assert_eq!(refusal.parameter(), None);
+            assert_eq!(
+                refusal.describe(None, &|e| format!("<{e}>")).message,
+                "OCCT described an element as no element is: p"
+            );
+        }
+    }
+
+    #[test]
     fn the_elements_at_fault_are_named_only_as_the_namer_names_them() {
         // The core names elements (later, as the document does): every name in the words
         // comes from the namer it gives, and every element at fault is named. A value of a
@@ -1260,13 +1303,16 @@ mod tests {
                 }
             }
             // Every element at fault is named; but OCCT failing on edges names none in its
-            // words (the error lists it), and a profile's merged corners are named by their
-            // number in the request, as the request numbers them.
+            // words (the error lists it), a profile's merged corners are named by their
+            // number in the request, as the request numbers them, and an impossible
+            // description's words name its value by the kernel's number (the error lists the
+            // element, named by the core).
             let unnamed = matches!(
                 refusal,
                 Refusal::ResultInvalid { .. }
                     | Refusal::Occt { .. }
                     | Refusal::CornersMerged { .. }
+                    | Refusal::DescriptionImpossible { .. }
             );
             for element in refusal.elements() {
                 if !unnamed {

@@ -666,3 +666,60 @@ fn serve_with_a_kernel_worker_it_cant_read_doesnt_start() {
     );
     assert!(stderr.starts_with(&said), "{said}\nin {stderr}");
 }
+
+#[test]
+fn serve_gives_a_kernel_faults_advice_as_data_in_the_models_fault() {
+    // The contract lows' `advice`, from a real fault: a kernel worker that segfaults once
+    // the request reaches it (worker.rs's `crash_advice`: a fault signal with the request
+    // is the values', which would crash it again). `check`'s envelope gives the fault once,
+    // in `model.fault`, its advice `change_the_values` as data beside the session's words.
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("models");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(workspace.join("box.silico"), BOX).unwrap();
+    let kernel = root.path().join("segfaulting-kernel");
+    std::fs::write(
+        &kernel,
+        "#!/bin/sh\nprintf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\nkill -SEGV $$\nexec sleep 600\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&kernel, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silico"))
+        .args(["serve", "--workspace"])
+        .arg(&workspace)
+        .env("SILICO_KERNEL_WORKER", &kernel)
+        .env("XDG_CACHE_HOME", root.path().join("cache-home"))
+        .env_remove("SILICO_LOG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let lines = lines(&mut child);
+    ask(&mut stdin, &lines, INITIALIZE, "0");
+    let opened = ask(
+        &mut stdin,
+        &lines,
+        r#"{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "open", "arguments": {"path": "box.silico", "create": false}}}"#,
+        "1",
+    );
+    assert_eq!(
+        opened["result"]["structuredContent"]["ok"], true,
+        "{opened}"
+    );
+    let checked = ask(
+        &mut stdin,
+        &lines,
+        r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "check", "arguments": {"session": "s1", "model": "current", "fresh": true}}}"#,
+        "2",
+    );
+    let fault = &checked["result"]["structuredContent"]["model"]["fault"];
+    assert_eq!(fault["code"], "worker_crashed", "{checked}");
+    assert_eq!(fault["advice"], "change_the_values", "{checked}");
+    drop(stdin);
+    assert_eq!(exited(child).code(), Some(0));
+}

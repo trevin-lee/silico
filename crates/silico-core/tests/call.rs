@@ -528,7 +528,7 @@ fn refusal(message: &str, parameter: Option<&str>, suggestion: Option<&str>) -> 
     let quoted = |text: Option<&str>| text.map_or("null".to_owned(), |t| format!("\"{t}\""));
     let (parameter, suggestion) = (quoted(parameter), quoted(suggestion));
     format!(
-        r#"{{"ok": false, "session": null, "model": null, "errors": [{{"code": "invalid_input", "message": "{message}", "feature": null, "elements": [], "elements_total": 0, "parameter": {parameter}, "cause": null, "suggestion": {suggestion}, "candidates": []}}], "total": 1}}"#
+        r#"{{"ok": false, "session": null, "model": null, "errors": [{{"code": "invalid_input", "message": "{message}", "feature": null, "elements": [], "elements_total": 0, "parameter": {parameter}, "cause": null, "suggestion": {suggestion}, "candidates": [], "advice": null}}], "total": 1}}"#
     )
 }
 
@@ -586,6 +586,90 @@ fn a_request_the_reader_refuses_is_answered_with_the_cores_refused_envelope() {
         assert_eq!(answer.text, expected, "{arguments}");
         assert_eq!(answer.png, None);
     }
+}
+
+/// The refusal of a request that names `session`, open on `part.silico` (the box) at
+/// `revision`, with no transaction, for the one error `extra isn't a field of this request`
+/// (written out by hand).
+fn refusal_in(session: &str, revision: u64, transaction: bool) -> String {
+    format!(
+        r#"{{"ok": false, "session": {{"id": "{session}", "path": "part.silico", "revision": {revision}, "transaction": {transaction}, "reloaded": false}}, "model": null, "errors": [{{"code": "invalid_input", "message": "extra isn't a field of this request", "feature": null, "elements": [], "elements_total": 0, "parameter": "extra", "cause": null, "suggestion": "leave it out: a request has only the fields its shape gives", "candidates": [], "advice": null}}], "total": 1}}"#
+    )
+}
+
+#[test]
+fn a_request_refused_before_it_runs_carries_the_state_of_the_open_session_it_names() {
+    let f = fixture();
+    f.file("part.silico", BOX);
+    let extra = |session: &str| format!(r#"{{"session": {session}, "extra": 1}}"#);
+    // Called before s1 is open, waited on after: the session is found when it's waited on,
+    // as `status` is, never on the caller's thread.
+    let early = f.calling("outline", &extra(r#""s1""#));
+    assert!(early.waits_on_nothing());
+    assert!(f.open("part.silico", false).ok);
+    assert_eq!(answered(early).text, refusal_in("s1", 1, false));
+    // Every command that takes a session, refused by its reader for the same extra field:
+    // each carries s1's state, as any other refusal of it does.
+    for (name, _) in COMMANDS {
+        if ["version", "open", "schema"].contains(&name) {
+            continue;
+        }
+        let answer = f.call(name, &extra(r#""s1""#));
+        assert!(!answer.ok, "{name}");
+        let envelope = envelope(&answer);
+        assert_eq!(
+            envelope["session"],
+            serde_json::json!({"id": "s1", "path": "part.silico", "revision": 1, "transaction": false, "reloaded": false}),
+            "{name}: {}",
+            answer.text
+        );
+    }
+    // A transaction begun: the refusal says it, as s1 is now.
+    assert!(f.call("begin", r#"{"session": "s1"}"#).ok);
+    assert_eq!(
+        f.call("status", &extra(r#""s1""#)).text,
+        refusal_in("s1", 1, true)
+    );
+    // A session that isn't open, a field that isn't a session's ID, a command that takes no
+    // session, and a request that isn't read at all: null, as before.
+    assert_eq!(
+        f.call("status", &extra(r#""s2""#)).text,
+        refusal(
+            "extra isn't a field of this request",
+            Some("extra"),
+            Some("leave it out: a request has only the fields its shape gives"),
+        )
+    );
+    for session in [r#""S1""#, r#""s01""#, "1", "null", r#"["s1"]"#] {
+        let answer = f.call("status", &format!(r#"{{"session": {session}}}"#));
+        assert_eq!(
+            envelope(&answer)["session"],
+            serde_json::Value::Null,
+            "{session}"
+        );
+        assert_eq!(envelope(&answer)["errors"][0]["parameter"], "session");
+    }
+    for name in ["version", "schema"] {
+        let answer = f.call(name, r#"{"session": "s1"}"#);
+        assert!(!answer.ok, "{name}");
+        assert_eq!(
+            envelope(&answer)["session"],
+            serde_json::Value::Null,
+            "{name}"
+        );
+    }
+    let open = f.call(
+        "open",
+        r#"{"session": "s1", "path": "part.silico", "create": false}"#,
+    );
+    assert!(!open.ok);
+    assert_eq!(envelope(&open)["session"], serde_json::Value::Null);
+    let unread = f.call("status", r#"{"session": "s1", "session": "s1"}"#);
+    assert_eq!(envelope(&unread)["session"], serde_json::Value::Null);
+    // Nothing ran on s1: its revision and transaction are as they were.
+    let status = envelope(&f.call("status", r#"{"session": "s1"}"#));
+    assert_eq!(status["session"]["revision"], 1);
+    assert_eq!(status["result"]["running"], serde_json::Value::Null);
 }
 
 #[test]

@@ -367,3 +367,100 @@ fn a_description_that_hung_is_kept_for_the_session_and_asked_again_fresh_or_in_t
     assert_eq!(asked(next.kernel(), "Describe"), 3);
     assert!(model.description(&id("m3tq8v0z")).is_some());
 }
+
+/// The error an element read of `feature` in `document` gives when the kernel refuses every
+/// solid's description for its element `kind` `number` as impossible: checked to be the one
+/// error, of an invalid result, naming the feature and one element, the problem kept in the
+/// words; its `elements`.
+fn impossible_named(document: &str, feature: &str, kind: ElementKind, number: u32) -> Vec<String> {
+    let dir = Scratch::new("impossible-named");
+    let engine = session(&dir.0);
+    engine.kernel().refuse_as_worker(move |op| {
+        matches!(op, silico_core::kernel::Op::DescribeAll { .. }).then(|| {
+            silico_protocol::Failure::new(silico_protocol::Refusal::DescriptionImpossible {
+                kind,
+                number,
+                problem: "p".to_owned(),
+            })
+        })
+    });
+    let model = published(&engine, checked(document));
+    let problems = silico_core::command::elements::entries(&model, &id(feature)).unwrap_err();
+    assert_eq!(problems.total(), 1);
+    let error = &problems.errors()[0];
+    assert_eq!(error.code(), ErrorCode::InvalidResult);
+    assert_eq!(error.elements_total(), 1);
+    assert_eq!(error.feature(), Some(feature));
+    assert_eq!(
+        error.cause(),
+        Some("OCCT described an element as no element is: p")
+    );
+    error.elements().to_vec()
+}
+
+#[test]
+fn an_element_described_as_no_element_is_is_named_by_its_element_map() {
+    // The kernel refuses a solid's description for one element (an area of -1, say): the
+    // element comes as data, and the error the element read gives names it as the
+    // feature's element map does, never by the kernel's number alone. The box's map names
+    // each element after its number (`k7f2qx3m.box.Face3`, `...Edge5`, `...Vertex2`); the
+    // cut's doesn't: its Face1 is the box's, kept (`k7f2qx3m.box.Face1`), and its Face7, the
+    // fake's first face after the box's six, the pin's Face1 (`m3tq8v0z.cut.Face(I
+    // a91cw0de.cylinder.Face1)`, as adversarial_measures.rs names it). One the map names
+    // nothing for (a number past the box's 6 faces) is named as FreeCAD numbers it.
+    // Written out by hand.
+    for (feature, kind, number, named) in [
+        ("k7f2qx3m", ElementKind::Face, 3, "k7f2qx3m.box.Face3"),
+        ("k7f2qx3m", ElementKind::Edge, 5, "k7f2qx3m.box.Edge5"),
+        ("k7f2qx3m", ElementKind::Vertex, 2, "k7f2qx3m.box.Vertex2"),
+        ("k7f2qx3m", ElementKind::Face, 99, "Face99"),
+        ("m3tq8v0z", ElementKind::Face, 1, "k7f2qx3m.box.Face1"),
+        (
+            "m3tq8v0z",
+            ElementKind::Face,
+            7,
+            "m3tq8v0z.cut.Face(I a91cw0de.cylinder.Face1)",
+        ),
+    ] {
+        assert_eq!(
+            impossible_named(EXAMPLE, feature, kind, number),
+            [named],
+            "{feature} {kind:?} {number}"
+        );
+    }
+}
+
+#[test]
+fn an_impossible_elements_name_past_200_characters_is_cut_short_as_a_reference_is() {
+    // A pin cut from a box, that cut from another box, and so on, nine times: the pin's
+    // Face1 is named a level deeper by each cut (`c0000001.cut.Face(I
+    // a91cw0de.cylinder.Face1)`, then `c0000002.cut.Face(I c0000001.cut.Face(I ...))`), 212
+    // characters by the ninth, where it's the fake's face 6 × 9 + 1 = 55 (each box's six
+    // first). The error names it by its first 200 characters and `…`, as a broken
+    // reference's is (M4.1 section 2). Built by hand.
+    let mut features = vec![
+        r#"{"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [0, 0, -1], "radius": 1, "height": 12}"#.to_owned(),
+    ];
+    let mut tool = "a91cw0de".to_owned();
+    let mut name = "a91cw0de.cylinder.Face1".to_owned();
+    for k in 1..=9 {
+        features.push(format!(
+            r#"{{"id": "b000000{k}", "type": "box", "v": 1, "name": "Box{k}", "position": [-5, -5, 0], "length": 10, "width": 10, "height": 10}}"#
+        ));
+        features.push(format!(
+            r#"{{"id": "c000000{k}", "type": "cut", "v": 1, "name": "Cut{k}", "base": "b000000{k}", "tool": "{tool}"}}"#
+        ));
+        tool = format!("c000000{k}");
+        name = format!("c000000{k}.cut.Face(I {name})");
+    }
+    assert_eq!(name.chars().count(), 212);
+    let document = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    );
+    let shown: String = name.chars().take(200).collect::<String>() + "…";
+    assert_eq!(
+        impossible_named(&document, "c0000009", ElementKind::Face, 55),
+        [shown]
+    );
+}

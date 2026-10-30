@@ -366,10 +366,11 @@ fn every_example_holds_to_its_tools_schemas() {
     // export's 8 (#182), cache_clear's 2 (#183), STEP export's 4 (#186), check's
     // warning (#189), and read_logs' 3 and version's result (#194); M5.1's 11:
     // add_feature's 4 for `before`, remove_feature's result with `rewired`, move_feature's
-    // 4, and timeline's 2; M5.10's 8: sketch's 2, sketch_add's 2, and sketch_remove's 4; its
-    // geometry edits' 14: sketch_split's 4, sketch_trim's 3, sketch_unjoin's 3, and
-    // sketch_merge's 3; and M5.2's 10: undo's 6, and redo's 4.
-    assert_eq!(seen, 150);
+    // 4, and timeline's 2; M5.10's 8: sketch's 2, sketch_add's 2, and sketch_remove's 4;
+    // its geometry edits' 14: sketch_split's 4, sketch_trim's 3, sketch_unjoin's 3, and
+    // sketch_merge's 3; cache_clear's refusal of a cache that leads out of the workspace
+    // (the contract lows); and M5.2's 10: undo's 6, and redo's 4.
+    assert_eq!(seen, 151);
 }
 
 #[test]

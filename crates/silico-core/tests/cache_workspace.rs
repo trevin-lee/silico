@@ -18,7 +18,8 @@ use std::time::{Duration, SystemTime};
 use tracing::span::{Attributes, Id};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt as _};
 
-use silico_core::cache::Cache;
+use silico_core::ErrorCode;
+use silico_core::cache::{Cache, Cleared};
 use silico_core::command::{CheckModel, SessionId};
 use silico_core::fake::FakeKernel;
 use silico_core::file::Workspace;
@@ -84,13 +85,32 @@ fn a_rebuild_after_its_documents_directory_is_swapped_for_a_link_out_writes_noth
     });
     assert!(moved.join("part.silico").exists());
     assert!(!moved.join(".silico-cache").exists());
-    // And `cache_clear` says it removed nothing, the directory named as the session's path
-    // names it.
-    let cleared = answer(f.sessions.cache_clear(&s)).result.unwrap();
+    // And `cache_clear` removes nothing, refused, naming the link.
+    refused_out(&f, &s, "sub/part.silico", "sub");
+}
+
+/// `cache_clear` of `s`, open on `path`, refused for a cache that leads out of the workspace
+/// through `link` (from its root), as the design gives it (written out by hand).
+fn refused_out(f: &Fixture, s: &SessionId, path: &str, link: &str) {
+    let problems = answer(f.sessions.cache_clear(s)).result.unwrap_err();
+    assert_eq!(problems.total(), 1);
+    let error = &problems.errors()[0];
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
     assert_eq!(
-        (cleared.directory.as_str(), cleared.removed),
-        ("sub/.silico-cache", 0)
+        error.message(),
+        format!(
+            "the rebuild cache beside \"{path}\" leads out of the workspace, through a link, so it isn't cleared"
+        )
     );
+    assert_eq!(
+        error.cause(),
+        Some(format!("\"{link}\" is a link that leads out of the workspace").as_str())
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some("remove the link, or clear the cache from inside the workspace")
+    );
+    assert_eq!(error.parameter(), None);
 }
 
 #[test]
@@ -102,11 +122,7 @@ fn a_rebuild_after_a_directory_above_its_document_is_swapped_for_a_link_out_writ
     });
     assert!(moved.join("sub/part.silico").exists());
     assert!(!moved.join("sub/.silico-cache").exists());
-    let cleared = answer(f.sessions.cache_clear(&s)).result.unwrap();
-    assert_eq!(
-        (cleared.directory.as_str(), cleared.removed),
-        ("a/sub/.silico-cache", 0)
-    );
+    refused_out(&f, &s, "a/sub/part.silico", "a");
 }
 
 #[test]
@@ -118,11 +134,7 @@ fn a_rebuild_after_its_cache_directory_is_swapped_for_a_link_out_writes_nothing_
         std::os::unix::fs::symlink(&theirs, f.work.join("sub/.silico-cache")).unwrap();
     });
     assert_eq!(std::fs::read_dir(&theirs).unwrap().count(), 0);
-    let cleared = answer(f.sessions.cache_clear(&s)).result.unwrap();
-    assert_eq!(
-        (cleared.directory.as_str(), cleared.removed),
-        ("sub/.silico-cache", 0)
-    );
+    refused_out(&f, &s, "sub/part.silico", "sub/.silico-cache");
 }
 
 /// A scratch root (through its links), holding a workspace, `work`, with `work/sub` in it,
@@ -272,12 +284,23 @@ fn a_clear_after_its_directory_leads_out_removes_nothing_outside() {
     let planted = plant(&outside, b"theirs");
     let cache = scene.within();
     assert_eq!(cache.clear().unwrap(), 0);
+    // Said apart from an empty cache, for `cache_clear` to refuse.
+    assert_eq!(cache.clear_unless_out().unwrap(), Cleared::LeadsOut);
     for entry in &planted {
         assert_eq!(std::fs::read(entry).unwrap(), b"theirs", "{entry:?}");
     }
     std::fs::remove_file(scene.work.join("sub")).unwrap();
     std::fs::rename(scene.outside.join("sub"), scene.work.join("sub")).unwrap();
-    assert_eq!(cache.clear().unwrap(), 2);
+    // A link at the cache's own name to a directory inside the workspace leads nowhere out:
+    // followed nowhere, it holds no entry of the cache's, and is no refusal.
+    let cache_dir = scene.work.join("sub/.silico-cache");
+    let kept = scene.work.join("kept");
+    std::fs::rename(&cache_dir, &kept).unwrap();
+    std::os::unix::fs::symlink(&kept, &cache_dir).unwrap();
+    assert_eq!(cache.clear_unless_out().unwrap(), Cleared::Removed(0));
+    std::fs::remove_file(&cache_dir).unwrap();
+    std::fs::rename(&kept, &cache_dir).unwrap();
+    assert_eq!(cache.clear_unless_out().unwrap(), Cleared::Removed(2));
     assert!(entries(&scene.work.join("sub/.silico-cache")).is_empty());
 }
 

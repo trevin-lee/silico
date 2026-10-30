@@ -34,7 +34,8 @@ pub struct CacheClearRequestSchema {
 }
 
 /// `cache_clear`'s result. Only files the cache made as entries are removed: never another
-/// file in the directory, and nothing through a link.
+/// file in the directory, and nothing through a link. A cache that leads out of the
+/// workspace through a link isn't cleared: the command is refused, saying so.
 #[derive(JsonSchema)]
 #[schemars(rename = "CacheClearResult", transform = wire_shape)]
 pub struct CacheClearResultSchema {

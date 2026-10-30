@@ -231,7 +231,7 @@ fn a_dimension_that_over_defines_the_sketch_is_applied_and_its_conflict_reported
             "parameter": null,
             "cause": null,
             "suggestion": "remove or change one of the constraints named",
-            "candidates": []
+            "candidates": [], "advice": null
         })
     );
     // The one problem: what fails downstream is the pad, unbuilt, which a read of it says.
@@ -254,7 +254,7 @@ fn a_dimension_that_over_defines_the_sketch_is_applied_and_its_conflict_reported
             "parameter": "feature",
             "cause": null,
             "suggestion": "mend s0000001 first: `check` says why it failed",
-            "candidates": []
+            "candidates": [], "advice": null
         }]),
         "{pad}"
     );
