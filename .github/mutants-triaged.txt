@@ -227,3 +227,4 @@ crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > w
 crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > with == | #273
 crates/silico-core/src/command/session/edits.rs | Session<C>::hold | replace > with >= | #273
 crates/silico-core/src/document/sketch_gate.rs | check | replace < with <= | #277
+crates/silico-core/src/sketch_states.rs | driving_dimension | replace && with || | #282
