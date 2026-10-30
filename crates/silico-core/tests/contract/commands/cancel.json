@@ -25,7 +25,8 @@
           "render",
           "export",
           "move_feature",
-          "timeline"
+          "timeline",
+          "sketch"
         ],
         "type": "string"
       }
@@ -77,7 +78,8 @@
           "render",
           "export",
           "move_feature",
-          "timeline"
+          "timeline",
+          "sketch"
         ],
         "type": "string"
       }

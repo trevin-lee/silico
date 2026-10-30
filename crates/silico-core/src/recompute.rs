@@ -69,7 +69,9 @@ use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
 use crate::pool::{Outcome, Pending};
 use crate::profile::Profile;
 use crate::references::EdgeNames;
-use crate::sketch::{SketchSolution, SketchSolver, SketchWorker, SolveStopper};
+use crate::sketch::{
+    Diagnosed, SketchSolution, SketchSolver, SketchWorker, SolveStopper, Translation,
+};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 use silico_protocol::Description;
@@ -310,6 +312,9 @@ pub struct Model {
     live: OnceLock<Vec<Option<usize>>>,
     /// The engine's maps named so far.
     known: NamedMaps,
+    /// Each sketch's diagnosis, paired with its solve's outcome, by its ID, from the answer
+    /// its rebuild's solve read ([`Model::diagnosed`]); or why it has none.
+    diagnoses: Arc<BTreeMap<FeatureId, Result<Arc<Diagnosed>, Error>>>,
 }
 
 /// How many features [`Model::element_map`]'s reads have visited on this thread so far:
@@ -657,6 +662,17 @@ impl Model {
     /// The document it was built from.
     pub fn document(&self) -> &Document {
         self.source.document()
+    }
+
+    /// The sketch `id`'s diagnosis, paired with its solve's outcome, as its rebuild's solve
+    /// read them from one answer (the definition states are read from it,
+    /// [`crate::sketch_states::states`]); or why there's none: the solver failed, or its reply
+    /// couldn't be read, its error naming the sketch. None for a feature that isn't a sketch
+    /// this model solved.
+    pub fn diagnosed(&self, id: &FeatureId) -> Option<Result<&Diagnosed, &Error>> {
+        self.diagnoses
+            .get(id)
+            .map(|diagnosed| diagnosed.as_ref().map(AsRef::as_ref))
     }
 
     /// This model as `source`'s: the same steps and outcomes, its document `source`. For a
@@ -1448,9 +1464,29 @@ struct Solving {
 pub const SKETCH_STOP_AFTER: Duration = Duration::from_millis(10);
 
 type StepResult = Result<Arc<Built>, Error>;
-type SketchResult = Result<Arc<SketchSolution>, Error>;
 /// A recompute's sketches' results, by key.
 type SketchResults = BTreeMap<Key, SketchResult>;
+
+/// A sketch's solve, as a recompute keeps it: its result (its solution, or why it has
+/// none, naming the sketch, as `check` reports it), and the diagnosis read from the same
+/// answer, paired with its outcome ([`Diagnosed`]), which the sketch read's states are read
+/// from ([`Model::diagnosed`]), or why there's none (the solver failed before it diagnosed
+/// the sketch, or its reply couldn't be read).
+#[derive(Debug, Clone)]
+struct SketchResult {
+    result: Result<Arc<SketchSolution>, Error>,
+    diagnosed: Result<Arc<Diagnosed>, Error>,
+}
+
+impl SketchResult {
+    /// No solve: `error`, the solver's or a bug's, for both.
+    fn failed(error: Error) -> Self {
+        SketchResult {
+            result: Err(error.clone()),
+            diagnosed: Err(error),
+        }
+    }
+}
 
 /// A sketch's result in a recompute: its solve's, or the solver's failure, not the
 /// sketch's (a worker that couldn't start), which isn't kept, so the next recompute tries
@@ -1465,7 +1501,7 @@ impl SketchOutcome {
     fn result(self) -> SketchResult {
         match self {
             SketchOutcome::Solved(result) => result,
-            SketchOutcome::SolverFailed(error) => Err(error),
+            SketchOutcome::SolverFailed(error) => SketchResult::failed(error),
         }
     }
 }
@@ -3291,7 +3327,11 @@ impl<K: Kernel + 'static> Engine<K> {
         let mut swept_sketches = BTreeMap::new();
         let mut made = Vec::new();
         for (id, key) in &used {
-            let Some(Ok(solution)) = solutions.get(key) else {
+            let Some(SketchResult {
+                result: Ok(solution),
+                ..
+            }) = solutions.get(key)
+            else {
                 continue;
             };
             let profile = match profiles.get(key) {
@@ -3362,23 +3402,26 @@ impl<K: Kernel + 'static> Engine<K> {
     }
 
     /// Keeps a recompute's solves by key, as [`keep`](Self::keep) keeps steps' results: a
-    /// failure only if it follows from the sketch (it would fail again).
+    /// failure only if it follows from the sketch (it would fail again), and only with its
+    /// diagnosis (a solver that failed diagnosing a sketch the translation refuses may not
+    /// fail again).
     fn keep_solutions(&self, solved: &SketchRun) {
         let mut state = lock(&self.state);
         for (key, outcome) in solved {
             let SketchOutcome::Solved(result) = outcome else {
                 continue;
             };
-            let keep = match result {
-                Ok(_) => true,
-                Err(error) => matches!(
-                    error.code(),
-                    ErrorCode::InvalidInput
-                        | ErrorCode::InvalidResult
-                        | ErrorCode::OverConstrained
-                        | ErrorCode::SolveFailed
-                ),
-            };
+            let keep = result.diagnosed.is_ok()
+                && match &result.result {
+                    Ok(_) => true,
+                    Err(error) => matches!(
+                        error.code(),
+                        ErrorCode::InvalidInput
+                            | ErrorCode::InvalidResult
+                            | ErrorCode::OverConstrained
+                            | ErrorCode::SolveFailed
+                    ),
+                };
             if keep {
                 state.solutions.insert(*key, result.clone());
             }
@@ -3456,14 +3499,14 @@ impl<K: Kernel + 'static> Engine<K> {
                     stopper,
                 });
             }
-            let result = crate::sketch::solve(document, id, solver.as_mut());
+            let result = solve_diagnosed(document, id, solver.as_mut());
             let mut state = lock(&self.state);
             state.solving = None;
             if superseded(&state) {
                 return None;
             }
             drop(state);
-            solved.insert(*key, SketchOutcome::Solved(result.map(Arc::new)));
+            solved.insert(*key, SketchOutcome::Solved(result));
         }
         Some(solved)
     }
@@ -4014,6 +4057,7 @@ fn model(
 ) -> Model {
     let done = &schedule.done;
     let mut features: Vec<(FeatureId, FeatureOutcome)> = Vec::with_capacity(plan.features.len());
+    let mut diagnoses = BTreeMap::new();
     for planned in &plan.features {
         // A feature it uses that didn't build blocks it, on the failure at the root: its
         // base, then the sketch it sweeps.
@@ -4034,8 +4078,13 @@ fn model(
         let outcome = match (blocked, planned.sketch) {
             (Some(on), _) => FeatureOutcome::Blocked { on },
             (None, Some(key)) => match solutions.get(&key) {
-                Some(Ok(solution)) => FeatureOutcome::Sketch(Arc::clone(solution)),
-                Some(Err(error)) => FeatureOutcome::Failed(error.clone()),
+                Some(solved) => {
+                    diagnoses.insert(planned.id.clone(), solved.diagnosed.clone());
+                    match &solved.result {
+                        Ok(solution) => FeatureOutcome::Sketch(Arc::clone(solution)),
+                        Err(error) => FeatureOutcome::Failed(error.clone()),
+                    }
+                }
                 None => FeatureOutcome::Failed(
                     silico_bug("a sketch wasn't solved").with_feature(planned.id.as_str()),
                 ),
@@ -4100,6 +4149,60 @@ fn model(
         entries,
         live: OnceLock::new(),
         known,
+        diagnoses: Arc::new(diagnoses),
+    }
+}
+
+/// `feature`, a sketch of `document`, solved by `solver` as [`crate::sketch::solve`] solves
+/// it, its diagnosis kept with its result: the answer's, read from the same reply; or, for a
+/// sketch the translation refuses, whose constraints never reach the solver, the diagnosis
+/// of its geometry alone beside that refusal ([`Diagnosed::untranslated`]), one solve of no
+/// constraint. A solver that fails that diagnosis leaves the sketch's result the
+/// translation's refusal, and its diagnosis the solver's failure.
+fn solve_diagnosed(
+    document: &Checked,
+    feature: &FeatureId,
+    solver: &mut dyn SketchSolver,
+) -> SketchResult {
+    let named = |e: Error| e.with_feature(feature.as_str());
+    let sketch = match document.feature(feature) {
+        Ok(Feature {
+            operation: Operation::Sketch(sketch),
+            ..
+        }) => sketch,
+        Ok(_) => {
+            return SketchResult::failed(named(silico_bug(
+                "a feature that isn't a sketch was solved as one",
+            )));
+        }
+        Err(error) => return SketchResult::failed(error),
+    };
+    let _span = tracing::info_span!("solve sketch", feature = feature.as_str()).entered();
+    match Translation::new(sketch) {
+        Ok(translation) => match translation.solve(solver) {
+            Ok(answer) => match answer.diagnosed() {
+                Ok(diagnosed) => SketchResult {
+                    result: diagnosed
+                        .outcome()
+                        .map(|solution| Arc::new(solution.clone()))
+                        .map_err(|e| named(e.clone())),
+                    diagnosed: Ok(Arc::new(diagnosed.clone())),
+                },
+                Err(error) => SketchResult::failed(named(error.clone())),
+            },
+            Err(error) => SketchResult::failed(named(error)),
+        },
+        Err(refusal) => SketchResult {
+            result: Err(named(refusal)),
+            diagnosed: Diagnosed::untranslated(sketch, solver)
+                .and_then(|diagnosed| {
+                    diagnosed.ok_or_else(|| {
+                        silico_bug("a sketch the translation refused was translated")
+                    })
+                })
+                .map(Arc::new)
+                .map_err(named),
+        },
     }
 }
 

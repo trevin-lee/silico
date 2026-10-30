@@ -35,7 +35,7 @@
 //! [`edits`], for `add_feature`, `set_field`, `remove_feature`, `replace_text`, and
 //! `move_feature`; [`reads`], for `text`, `outline`, `check`, and `timeline`; [`cache`], for `cache_clear`;
 //! [`elements`], for `elements` and `query`; [`schema`]; [`measure`], for `mass_properties`,
-//! `distance`, and `angle`; [`render`]; and [`export`]).
+//! `distance`, and `angle`; [`render`]; [`export`]; and [`sketch`]).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -49,8 +49,8 @@ use super::{
 use crate::document::json::{Member, Node, Plain, Value};
 use crate::document::write::{self, Out, text};
 use crate::document::{
-    Angle, Coordinate, ElementName, Feature, FeatureId, Length, Measure, NumberError,
-    PROBLEMS_LISTED, Position,
+    Angle, Coordinate, ElementId, ElementKind, ElementName, Feature, FeatureId, Length, Measure,
+    NumberError, PROBLEMS_LISTED, Position, Sketch,
 };
 use crate::warnings::Warnings;
 use crate::{Error, ErrorCode, Said, Warning};
@@ -81,6 +81,11 @@ impl<'a> Json<'a> {
 
     /// A count, or a place counted from 0: a whole number.
     pub fn count(n: usize) -> Self {
+        Json(Out::Raw(n.to_string()))
+    }
+
+    /// An integer, of either sign (a sketch's degrees of freedom).
+    pub fn integer(n: i64) -> Self {
         Json(Out::Raw(n.to_string()))
     }
 
@@ -191,6 +196,29 @@ impl<'a> Json<'a> {
     /// A feature as the document's canonical form writes it, by the document's own writer.
     pub fn feature(feature: &'a Feature) -> Self {
         Json(write::feature(feature))
+    }
+
+    /// Each of `sketch`'s lists, by kind in the format's order (points, lines, circles,
+    /// arcs, constraints), as the document's own writer writes it (each by ID, each member's
+    /// fields in the file's order), and after each member's fields, `extra`'s for it: the
+    /// `sketch` read's members with their states.
+    pub fn sketch_lists(
+        sketch: &'a Sketch,
+        extra: impl Fn(ElementKind, &ElementId) -> Vec<(&'static str, Json<'a>)>,
+    ) -> [(ElementKind, Json<'a>); 5] {
+        write::sketch_members(sketch).map(|(kind, items)| {
+            let items = items
+                .into_iter()
+                .map(|(id, item)| match item {
+                    Out::Object(mut members) => {
+                        members.extend(extra(kind, id).into_iter().map(|(k, j)| (k, j.0)));
+                        Out::Object(members)
+                    }
+                    other => other,
+                })
+                .collect();
+            (kind, Json(Out::Array(items)))
+        })
     }
 }
 
@@ -1702,6 +1730,9 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         Command::Timeline => {
             command_schema::<reads::TimelineRequestSchema, reads::TimelineResultSchema>
         }
+        Command::Sketch => {
+            command_schema::<sketch::SketchRequestSchema, sketch::SketchResultSchema>
+        }
     }
 }
 
@@ -1800,6 +1831,7 @@ pub mod reads;
 pub mod render;
 pub mod schema;
 pub mod session;
+pub mod sketch;
 pub mod transaction;
 
 #[cfg(test)]

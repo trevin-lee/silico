@@ -68,7 +68,8 @@
           "distance",
           "angle",
           "render",
-          "timeline"
+          "timeline",
+          "sketch"
         ],
         "type": "string"
       },
@@ -164,6 +165,7 @@
           "export",
           "move_feature",
           "timeline",
+          "sketch",
           "reload"
         ],
         "type": "string"
