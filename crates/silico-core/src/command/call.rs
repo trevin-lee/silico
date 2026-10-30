@@ -669,16 +669,16 @@ impl<P: Clients + 'static> Sessions<P> {
             Command::SketchRemove => typed(named, SketchRemoveRequest::read(request), |r| {
                 self.sketch_remove(&r.session, r.revision, r.sketch, r.members)
             }),
-            Command::SketchSplit => typed(SketchSplitRequest::read(request), |r| {
+            Command::SketchSplit => typed(named, SketchSplitRequest::read(request), |r| {
                 self.sketch_split(&r.session, r.revision, r.sketch, r.curve, r.at, r.ids)
             }),
-            Command::SketchTrim => typed(SketchTrimRequest::read(request), |r| {
+            Command::SketchTrim => typed(named, SketchTrimRequest::read(request), |r| {
                 self.sketch_trim(&r.session, r.revision, r.sketch, r.curve, r.pick, r.ids)
             }),
-            Command::SketchUnjoin => typed(SketchUnjoinRequest::read(request), |r| {
+            Command::SketchUnjoin => typed(named, SketchUnjoinRequest::read(request), |r| {
                 self.sketch_unjoin(&r.session, r.revision, r.sketch, r.point, r.curve, r.ids)
             }),
-            Command::SketchMerge => typed(SketchMergeRequest::read(request), |r| {
+            Command::SketchMerge => typed(named, SketchMergeRequest::read(request), |r| {
                 self.sketch_merge(&r.session, r.revision, r.sketch, r.points)
             }),
         }

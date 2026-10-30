@@ -345,6 +345,7 @@ fn error(
         "cause": cause,
         "suggestion": suggestion,
         "candidates": [],
+        "advice": null,
     })
 }
 
@@ -1013,7 +1014,8 @@ fn an_edit_against_a_stale_revision_is_a_conflict() {
         "parameter": "revision",
         "cause": null,
         "suggestion": "read the document again (text or outline), then make the edit against revision 2",
-        "candidates": []
+        "candidates": [],
+        "advice": null
     }]);
     for (command, request) in [
         (
