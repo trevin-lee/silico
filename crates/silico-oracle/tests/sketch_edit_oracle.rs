@@ -350,86 +350,6 @@ fn only_a_split_construction_circles_pieces_are_excused_their_construction() {
 }
 
 #[test]
-fn a_split_sharing_an_end_with_an_edge_tangent_is_excused_naming_the_tangent() {
-    let (_, prepared, theirs) = both(&["split_line_at_tangent_on_end_with_edge_tangent"]);
-    // The line split at the arc's end, (7, 0), with an edge tangent k0000010 of the two:
-    // Silico refuses it, naming the tangent (:179); 1.1.3 splits.
-    let v = verdict(&prepared[0], theirs[0].as_ref());
-    agrees(&v);
-    assert_eq!(
-        v.excused,
-        [
-            "edge tangent k0000010 with a curve ending at the split point: Silico refuses the split (docs/ports/sketch-edit.md:179), where FreeCAD's split makes the pieces new ends and never shares the point"
-        ],
-        "{v:?}"
-    );
-    // The same refusal naming another constraint, the arc's other end (p0000007, at (5, 2),
-    // not where the split is asked for), or the line's start, isn't the note's.
-    let SilicoSide::Refused(r) = &prepared[0].silico else {
-        panic!("Silico made the split: {:?}", prepared[0].silico);
-    };
-    for (i, other) in [(0, "k0000009"), (3, "p0000007"), (3, "p0000001")] {
-        let mut elements = r.elements.clone();
-        elements[i] = other.to_owned();
-        let p = Prepared {
-            silico: SilicoSide::Refused(silico_oracle::sketch_edit::Refusal {
-                elements,
-                ..r.clone()
-            }),
-            ..prepared[0].clone()
-        };
-        let v = verdict(&p, theirs[0].as_ref());
-        assert!(v.excused.is_empty(), "{other}: {v:?}");
-        assert_eq!(v.how.len(), 1, "{other}: {v}");
-    }
-    // Asked for at the line's start, (0, 0), naming it: where the split is asked for, but no
-    // end of the arc.
-    let mut elements = r.elements.clone();
-    elements[3] = "p0000001".to_owned();
-    let p = Prepared {
-        edit: Edit::Split {
-            curve: "n0000003".to_owned(),
-            at: vec![[0.0, 0.0]],
-        },
-        silico: SilicoSide::Refused(silico_oracle::sketch_edit::Refusal {
-            elements,
-            ..r.clone()
-        }),
-        ..prepared[0].clone()
-    };
-    let v = verdict(&p, theirs[0].as_ref());
-    assert!(v.excused.is_empty(), "{v:?}");
-    // The tangency carried to the split's new piece, which the refusal names: still the
-    // note's, the piece the curve's.
-    let mut elements = r.elements.clone();
-    let at = elements.iter().position(|e| e == "n0000003").unwrap();
-    elements[at] = "n0000011".to_owned();
-    let p = Prepared {
-        silico: SilicoSide::Refused(silico_oracle::sketch_edit::Refusal {
-            elements,
-            ..r.clone()
-        }),
-        ..prepared[0].clone()
-    };
-    let v = verdict(&p, theirs[0].as_ref());
-    agrees(&v);
-    assert_eq!(v.excused.len(), 1, "{v:?}");
-    // A point of the sketch in a curve's place, the arc's end: no piece of the split, so not
-    // the curve's.
-    let mut elements = r.elements.clone();
-    elements[at] = "p0000006".to_owned();
-    let p = Prepared {
-        silico: SilicoSide::Refused(silico_oracle::sketch_edit::Refusal {
-            elements,
-            ..r.clone()
-        }),
-        ..prepared[0].clone()
-    };
-    let v = verdict(&p, theirs[0].as_ref());
-    assert!(v.excused.is_empty(), "{v:?}");
-}
-
-#[test]
 fn a_refusal_is_excused_only_where_the_note_gives_it() {
     let (_, prepared, theirs) = both(&[
         "split_line_at_freecads_position",
@@ -1143,39 +1063,6 @@ fn a_split_off_the_curve_is_excused_only_where_freecads_pieces_meet_at_its_proje
 }
 
 #[test]
-fn a_split_beside_an_edge_tangent_is_excused_only_where_freecad_splits_the_curve() {
-    // The line (0, 0)-(10, 0) split at (7, 0): FreeCAD's pieces (0, 0)-(7, 0), keeping the
-    // line's ID, and (7, 0)-(10, 0), new.
-    let (_, prepared, theirs) = both(&["split_line_at_tangent_on_end_with_edge_tangent"]);
-    let p = &prepared[0];
-    assert!(matches!(rule(p), Some(Rule::SplitEdgeTangent(_))));
-    agrees(&verdict(p, theirs[0].as_ref()));
-    let changes: [(&str, CaseDoctor); 2] = [
-        ("the line left whole", |p, fc| {
-            let (i, id) = made(fc);
-            fc.edited.remove(i);
-            fc.geometry.retain(|g| g.id != id);
-            *edited_geometry(p, fc, "n0000003")
-                .points
-                .get_mut("2")
-                .unwrap() = [10.0, 0.0];
-        }),
-        ("split at (6, 0)", |p, fc| {
-            let (i, _) = made(fc);
-            *fc.edited[i].points.get_mut("1").unwrap() = [6.0, 0.0];
-            *edited_geometry(p, fc, "n0000003")
-                .points
-                .get_mut("2")
-                .unwrap() = [6.0, 0.0];
-        }),
-    ];
-    for (what, change) in changes {
-        let made = doctored(&theirs[0], |fc| change(p, fc));
-        refused_against_freecads_edit(&verdict(p, Some(&made)), what);
-    }
-}
-
-#[test]
 fn a_trim_of_a_point_is_excused_only_where_freecad_deletes_it_and_nothing_else() {
     // point_alone: the point p0000001 and the line n0000004; FreeCAD 1.1.3 deletes the point
     // (:186).
@@ -1225,16 +1112,6 @@ fn a_trim_of_a_point_is_excused_only_where_freecad_deletes_it_and_nothing_else()
         let made = doctored(&theirs[0], |fc| change(fc));
         refused_against_freecads_edit(&verdict(p, Some(&made)), what);
     }
-}
-
-/// The index and ID of the one geometry FreeCAD's edit made.
-fn made(fc: &FreecadEdited) -> (usize, i64) {
-    let i = fc
-        .edited
-        .iter()
-        .position(|g| !fc.ids_before.contains(&g.id))
-        .unwrap();
-    (i, fc.edited[i].id)
 }
 
 /// FreeCAD's geometry ID, before the edit, of `member` of `p`'s sketch.
@@ -1407,7 +1284,6 @@ fn freecad_refusing_an_edit_the_note_has_it_make_is_a_difference() {
     let (_, prepared, _) = both(&[
         "split_circle_at_one_position",
         "split_line_at_freecads_position",
-        "split_line_at_tangent_on_end_with_edge_tangent",
         "trim_point",
         "trim_symmetric_about_line_into_two",
         "trim_arc_tangent_no_piece_touches",

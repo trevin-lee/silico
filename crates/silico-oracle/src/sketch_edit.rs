@@ -1391,9 +1391,6 @@ pub enum Rule {
     SplitOffCurve(f64),
     /// A split position at, past, or within 1e-7 mm of an end (:180).
     SplitAtEnd,
-    /// A split at the end of a curve held `tangent_on` the split one, with an edge `tangent`
-    /// between the two, which would then share that end (:179): the constraint.
-    SplitEdgeTangent(String),
     /// Trimming a point (:357).
     TrimPoint,
     /// A trim picked at a round's centre (:249).
@@ -1425,7 +1422,6 @@ impl Rule {
         match self {
             Rule::SplitNotCurve => vec![142, 180],
             Rule::SplitAtEnd => vec![180],
-            Rule::SplitEdgeTangent(_) => vec![179],
             Rule::SplitCircleAtOne => vec![525],
             Rule::SplitOffCurve(_) => vec![526],
             Rule::TrimPoint => vec![357],
@@ -1456,7 +1452,6 @@ impl Rule {
             Rule::UnjoinUnshared => Some(Pinned::Raises(VERTEX_DELETE_RAISES)),
             Rule::SplitCircleAtOne
             | Rule::SplitOffCurve(_)
-            | Rule::SplitEdgeTangent(_)
             | Rule::TrimPoint
             | Rule::NoPieceTakes(_) => Some(Pinned::Edits),
             Rule::MergeSolveUnbuildable => Some(Pinned::SolvesOrRollsBack),
@@ -1555,38 +1550,6 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
                 return Some(Rule::SplitCircleAtOne);
             }
             let position = *at.get(index("at.")?)?;
-            // The edge tangent, of the split curve and another that ends where the split is
-            // asked for: the pieces would share that end with it. A curve the sketch hasn't is
-            // a piece the split made, the tangency carried to it (:179), so the curve's.
-            let piece = |c: &String| {
-                let known = shape.members.contains_key(c)
-                    || shape.points.contains_key(c)
-                    || p.sketch.constraints.iter().any(|k| k.id.as_str() == c);
-                if known { c.clone() } else { curve.clone() }
-            };
-            if let [id, a, b, point] = &r.elements[..] {
-                let (a, b) = (piece(a), piece(b));
-                let tangent = p.sketch.constraints.iter().any(|k| {
-                    k.id.as_str() == id
-                        && matches!(&k.form, Form::Tangent { a: x, b: y, .. }
-                            if x.element().is_some_and(|x| x.as_str() == a)
-                                && y.element().is_some_and(|y| y.as_str() == b))
-                });
-                if tangent && (a == *curve || b == *curve) {
-                    let other = if a == *curve { b } else { a };
-                    let ends_there = shape.members.get(&other).is_some_and(|m| {
-                        m.kind != "point"
-                            && [1, 2]
-                                .iter()
-                                .filter_map(|pos| m.at.get(pos))
-                                .any(|q| q == point)
-                    });
-                    let at_point = shape.points.get(point).is_some_and(|q| {
-                        libm::hypot(q[0] - position[0], q[1] - position[1]) <= LENGTH_TOLERANCE
-                    });
-                    return (ends_there && at_point).then(|| Rule::SplitEdgeTangent(id.clone()));
-                }
-            }
             if names(&[curve]) && r.message.contains("farther than 1e-7 mm") {
                 let off = off_curve(&shape, curve, position)?;
                 return (off > LENGTH_TOLERANCE).then_some(Rule::SplitOffCurve(off));
@@ -1803,9 +1766,6 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
                 )
             })
         }
-        Rule::SplitEdgeTangent(id) => split_at_projections(p, fc, curve?).then(|| format!(
-            "edge tangent {id} with a curve ending at the split point: Silico refuses the split ({NOTE}:179), where FreeCAD's split makes the pieces new ends and never shares the point"
-        )),
         Rule::TrimPoint => deleted_alone(p, fc, curve?).then(|| format!(
             "a trim of a point: Silico refuses it ({NOTE}:357), FreeCAD 1.1.3 deletes it (:186)"
         )),
