@@ -9,7 +9,7 @@
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`format`'s request: save the document in canonical form with every feature's\nfingerprint as rebuilt, as `silico fmt` does, accepting the drift of the features named.",
+    "description": "`format`'s request: save the document in canonical form with every feature's\nfingerprint as rebuilt, as `silico fmt` does, accepting the drift of the features named.\nInside a transaction it writes no file: what it would write becomes the transaction's\ndocument, one edit `undo` can undo, which the transaction's `commit` saves.",
     "properties": {
       "features": {
         "description": "The features whose drift to accept, by ID, or null for every feature's. Any other\ndrifted feature keeps its stored fingerprint and is a problem.",
@@ -27,7 +27,7 @@
         "type": "string"
       },
       "write": {
-        "description": "Whether to write the file: false only says whether it would change (`silico fmt\n--check`).",
+        "description": "Whether to write the file (inside a transaction, its document): false only says\nwhether it would change (`silico fmt --check`), changing nothing.",
         "type": "boolean"
       }
     },
@@ -45,6 +45,20 @@
         "additionalProperties": false,
         "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
         "properties": {
+          "advice": {
+            "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+            "enum": [
+              "change_the_values",
+              "simplify_or_wait",
+              "try_again",
+              "try_once_more",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "candidates": {
             "description": "What might have been meant, such as the names nearest one that found nothing.",
             "items": {
@@ -61,6 +75,24 @@
           },
           "code": {
             "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "enum": [
+              "invalid_input",
+              "kernel_failed",
+              "worker_crashed",
+              "worker_timeout",
+              "protocol_error",
+              "internal",
+              "invalid_result",
+              "resource_exhausted",
+              "drift",
+              "io_failed",
+              "reference_broken",
+              "over_constrained",
+              "solve_failed",
+              "conflict",
+              "worker_unavailable",
+              "cancelled"
+            ],
             "type": "string"
           },
           "elements": {
@@ -102,6 +134,7 @@
           }
         },
         "required": [
+          "advice",
           "candidates",
           "cause",
           "code",
@@ -132,7 +165,7 @@
         "type": "array"
       },
       "changed": {
-        "description": "Whether the canonical text differs from the file.",
+        "description": "Whether the canonical text differs from the file; inside a transaction, whether the\ncanonical text differs from the transaction's.",
         "type": "boolean"
       },
       "path": {
@@ -167,7 +200,7 @@
         "type": "array"
       },
       "written": {
-        "description": "Whether the file was written.",
+        "description": "Whether the file was written: never inside a transaction.",
         "type": "boolean"
       }
     },

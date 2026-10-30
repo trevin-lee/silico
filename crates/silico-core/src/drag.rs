@@ -184,8 +184,9 @@ impl DragStop {
         }
     }
 
-    /// `solve` on `solver`, readied for it, stoppable by [`stop`](Self::stop).
-    fn run<T>(
+    /// `solve` on `solver`, readied for it, stoppable by [`stop`](Self::stop): a drag's whole
+    /// solves, and a sketch edit's (`command`'s), whose command's `cancel` stops it so.
+    pub(crate) fn run<T>(
         &self,
         solver: &mut dyn SketchSolver,
         solve: impl FnOnce(&mut dyn SketchSolver) -> Result<T, Error>,

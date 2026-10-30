@@ -196,7 +196,11 @@ fn a_file_name_that_isnt_utf8_is_refused_not_a_panic() {
     assert_eq!(line["file"], "caf\u{fffd} \u{fffd}.silico", "{line}");
     assert_eq!(line["error"]["code"], "invalid_input", "{line}");
     assert_eq!(line["error"]["parameter"], "path", "{line}");
-    assert!(line.get("problems").is_none(), "{line}");
+    // Nothing found beside it: the file was never read.
+    assert_eq!(line["problems"], serde_json::json!([]), "{line}");
+    assert_eq!(line["total"], 0, "{line}");
+    assert_eq!(line["warnings"], serde_json::json!([]), "{line}");
+    assert_eq!(line["warnings_total"], 0, "{line}");
     if made {
         assert_eq!(
             std::fs::read_to_string(scratch.0.join(&name)).unwrap(),
@@ -1373,7 +1377,8 @@ fn schema_with_odd_arguments_is_a_schema_a_refusal_or_usage_never_a_panic() {
                  begin, commit, rollback, format, add_feature, set_field, remove_feature, \
                  replace_text, text, outline, check, cache_clear, elements, query, schema, \
                  mass_properties, distance, angle, render, read_logs, export, move_feature, \
-                 suppress_feature, timeline.\n"
+                 suppress_feature, timeline, sketch, sketch_add, sketch_remove, sketch_split, \
+                 sketch_trim, sketch_unjoin, sketch_merge, undo, redo.\n"
             ),
             "{name:?}"
         );

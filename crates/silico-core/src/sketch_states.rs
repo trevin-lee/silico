@@ -44,6 +44,15 @@ pub enum SketchState {
 }
 
 impl SketchState {
+    /// Every state, in SolidWorks' order (docs/ux/solidworks.md, §2).
+    pub const ALL: [SketchState; 5] = [
+        SketchState::UnderDefined,
+        SketchState::FullyDefined,
+        SketchState::OverDefined,
+        SketchState::NoSolution,
+        SketchState::Invalid,
+    ];
+
     /// The state's word: `under_defined`, `fully_defined`, `over_defined`, `no_solution`,
     /// or `invalid`.
     pub fn as_str(self) -> &'static str {
@@ -70,6 +79,13 @@ pub enum MemberState {
 }
 
 impl MemberState {
+    /// Every state, in SolidWorks' order.
+    pub const ALL: [MemberState; 3] = [
+        MemberState::UnderDefined,
+        MemberState::FullyDefined,
+        MemberState::OverDefined,
+    ];
+
     /// The state's word: `under_defined`, `fully_defined`, or `over_defined`.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -98,6 +114,15 @@ pub enum ConstraintState {
 }
 
 impl ConstraintState {
+    /// Every state, satisfied first, then those flagged, then unsolved.
+    pub const ALL: [ConstraintState; 5] = [
+        ConstraintState::Satisfied,
+        ConstraintState::Conflicting,
+        ConstraintState::Redundant,
+        ConstraintState::PartiallyRedundant,
+        ConstraintState::Unsolved,
+    ];
+
     /// The state's word: `satisfied`, `conflicting`, `redundant`, `partially_redundant`, or
     /// `unsolved`.
     pub fn as_str(self) -> &'static str {
@@ -127,8 +152,13 @@ impl ConstraintState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SketchStates {
     pub state: SketchState,
-    /// Degrees of freedom left, as PlaneGCS counts them: negative when a conflict
-    /// over-determines the sketch. 0 for an empty sketch.
+    /// Degrees of freedom left, PlaneGCS's number as given: its unknowns less the rank of
+    /// its equations, so 0 or more while something is free, a conflict or not (two lengths
+    /// on one free line leave 3). Where nothing is free and a linear dependency among its
+    /// equations holds no constraint PlaneGCS found redundant (a conflict, or an arc's own
+    /// rules repeating each other), it counts the equations left in place of their rank, and
+    /// the number is negative: a 40 by 20 rectangle given a second width of 50 reads -1. 0
+    /// for an empty sketch.
     pub dofs: i32,
     pub points: BTreeMap<ElementId, MemberState>,
     pub lines: BTreeMap<ElementId, MemberState>,

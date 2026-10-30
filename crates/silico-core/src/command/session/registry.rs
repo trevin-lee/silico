@@ -18,6 +18,7 @@ use super::holding::Holding;
 use super::rebuilds::{Newest, Rebuilds};
 use super::threads::{Reads, Threads};
 use super::transaction::{Held, not_reloaded, of_file, put_back, too_long};
+use super::waking::Waker;
 use super::{
     Gated, Job, Opened, Problems, Response, Revision, Session, SessionId, Turn, closing, shown_path,
 };
@@ -66,6 +67,12 @@ pub(super) struct Registry<P: Clients + 'static> {
     /// The bound of each transaction's undo stack, in bytes as it counts them
     /// ([`UNDO_BYTES`](crate::document::undo::UNDO_BYTES), but in this crate's tests).
     pub(super) undo_bytes: usize,
+    /// How each session's file is read and the time taken for its comparisons on disk: the
+    /// session's own read and the system's clock, but in tests
+    /// ([`Sessions::watching_disk`](super::Sessions::watching_disk)).
+    pub(super) disk_stand_in: Option<(crate::disk::Reader, crate::disk::Clock)>,
+    /// The client's waker, every session's ([`Sessions::on_change`](super::Sessions::on_change)).
+    pub(super) waker: Arc<Waker>,
 }
 
 /// A file as the system knows it, whatever path reaches it: its device and inode.
@@ -119,6 +126,10 @@ pub(super) struct Book<C: Kernel + 'static> {
     pub(super) released: Threads,
     /// The sessions are being dropped: an open that finishes now doesn't open.
     pub(super) stopping: bool,
+    /// How many times the files sessions claim have changed hands (a session released, a
+    /// file claimed anew), never for a claim made again of what's held: a reload a claim
+    /// refused may be taken after a change, and only then.
+    pub(super) claims: u64,
 }
 
 impl<C: Kernel + 'static> Book<C> {
@@ -134,8 +145,21 @@ impl<C: Kernel + 'static> Book<C> {
             self.released.extend(watchers);
         }
         self.opening.remove(&id);
+        let (files, paths) = (self.files.len(), self.paths.len());
         self.files.retain(|_, (holder, _)| *holder != id);
         self.paths.retain(|_, holder| *holder != id);
+        if (files, paths) != (self.files.len(), self.paths.len()) {
+            self.claims = self.claims.wrapping_add(1);
+        }
+    }
+
+    /// The files session `id` claims, by what they are.
+    fn held_by(&self, id: SessionId) -> Vec<FileId> {
+        self.files
+            .iter()
+            .filter(|(_, (holder, _))| *holder == id)
+            .map(|(file, _)| *file)
+            .collect()
     }
 
     /// The threads that have ended, joined.
@@ -219,14 +243,33 @@ pub(super) fn start<P: Clients + 'static>(
         );
         // From here it opens, unless it was cancelled first (the file it made goes as above).
         ticket.settle()?;
-        // Against the bytes it read (or made), at the path they were read from.
-        let disk = DiskWatch::new(
-            held.resolved.clone(),
-            registry.workspace.clone(),
-            Arc::clone(&held.bytes),
-            registry.disk_interval,
-            None,
-        );
+        // Against the bytes it read (or made), at the path they were read from; the client
+        // woken as its finding changes.
+        // Held weakly: a comparison stuck on its read outlives the sessions, and mustn't
+        // keep the client's waker (and what it holds) alive past them.
+        let told = Arc::downgrade(&registry.waker);
+        let notify: crate::notify::Notify = Arc::new(move || {
+            if let Some(waker) = told.upgrade() {
+                waker.wake();
+            }
+        });
+        let disk = match &registry.disk_stand_in {
+            None => DiskWatch::new(
+                held.resolved.clone(),
+                registry.workspace.clone(),
+                Arc::clone(&held.bytes),
+                registry.disk_interval,
+                Some(notify),
+            ),
+            Some((read, now)) => DiskWatch::clocked(
+                held.resolved.clone(),
+                Arc::clone(&held.bytes),
+                registry.disk_interval,
+                Some(notify),
+                Arc::clone(read),
+                Arc::clone(now),
+            ),
+        };
         let session = Arc::new(Session {
             id,
             workspace: registry.workspace.clone(),
@@ -251,8 +294,12 @@ pub(super) fn start<P: Clients + 'static>(
             newest,
             logs,
             disk,
+            reloads: Mutex::default(),
+            waker: Arc::clone(&registry.waker),
             #[cfg(test)]
             gate: super::Gate::default(),
+            #[cfg(test)]
+            reloading: super::Gate::default(),
             #[cfg(test)]
             settled: super::Gate::default(),
             #[cfg(test)]
@@ -266,6 +313,12 @@ pub(super) fn start<P: Clients + 'static>(
             .remove(&id)
             .map(|opening| opening.reads)
             .unwrap_or_default();
+        // A change found on disk from here, with no transaction open, is reloaded on its
+        // own thread (A3).
+        session.disk.when_changed(super::reloader(
+            Arc::downgrade(&registry),
+            Arc::downgrade(&session),
+        ));
         book.sessions.insert(id, Arc::clone(&session));
         for read in reads {
             read(Turn::Run(&session));
@@ -282,6 +335,9 @@ pub(super) fn start<P: Clients + 'static>(
                 model: None,
                 result: Ok(opened),
             });
+            // Told after the published reads held while it opened were started (or, refused
+            // there, answered), under the book: once, with the book let go.
+            registry.waker.wake();
             Some(Started { session, jobs })
         }
         Err(problems) => {
@@ -303,13 +359,16 @@ pub(super) fn start<P: Clients + 'static>(
             ));
             // Then each command sent while it opened, refused as naming no session open, as
             // one sent from here is: the queue's last sender let go with its record, so none
-            // comes after these.
+            // comes after these. Its published reads answered first, and the client woken
+            // once for all, with no lock held; its queued commands each wake it as they
+            // answer.
             if let Some(Opening { queue, reads, .. }) = opening {
                 drop(queue);
                 for read in reads {
                     read(Turn::Closed(id));
                 }
             }
+            registry.waker.wake();
             while let Ok(job) = jobs.recv() {
                 job(Turn::Closed(id));
             }
@@ -525,9 +584,14 @@ pub(super) fn claim<P: Clients + 'static>(
     match holder {
         Some(holder) => Err(Unclaimed::Held(holder)),
         None => {
+            let had_path = book.paths.get(resolved) == Some(&id);
+            let moved = book.held_by(id) != [file];
             book.files.retain(|_, (holder, _)| *holder != id);
             book.files.insert(file, (id, opened));
             book.paths.insert(resolved.to_owned(), id);
+            if moved || !had_path {
+                book.claims = book.claims.wrapping_add(1);
+            }
             Ok(())
         }
     }
@@ -601,8 +665,12 @@ pub(super) fn reclaim<P: Clients + 'static>(
     match opened {
         Ok((file, opened)) => {
             let mut book = lock(&registry.book);
+            let moved = book.held_by(id) != [file];
             book.files.retain(|_, (holder, _)| *holder != id);
             book.files.insert(file, (id, opened));
+            if moved {
+                book.claims = book.claims.wrapping_add(1);
+            }
         }
         Err(error) => tracing::warn!(
             session = %id,

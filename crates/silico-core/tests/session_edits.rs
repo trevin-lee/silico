@@ -393,8 +393,22 @@ fn a_refused_commit_of_an_edit_outside_a_transaction_leaves_the_session_as_it_wa
         (ErrorCode::Conflict, Some("path"))
     );
     assert_eq!(f.file(), "edited elsewhere");
+    // Read without `status`, whose comparison would have the session reload the change
+    // itself (M5.0's A3) before the command below could.
     assert_eq!(
-        f.sessions.status(&f.id).session.unwrap().revision,
+        f.sessions
+            .read_logs(
+                &f.id,
+                &silico_core::command::logs::LogQuery {
+                    level: silico_core::command::logs::LogLevel::Error,
+                    feature: None,
+                    after: None,
+                    limit: 1,
+                },
+            )
+            .session
+            .unwrap()
+            .revision,
         Revision::OPENED
     );
     // And nothing of the edit is published: the session's published model is none yet
@@ -1835,4 +1849,88 @@ fn a_member_renamed_outside_a_transaction_comes_back_by_its_new_id_as_saved() {
     let file = f.file();
     assert!(file.contains(point), "{file}");
     assert!(!file.contains("pf000000"), "{file}");
+}
+
+impl Fixture {
+    /// Whether the open transaction's document differs from `begin`'s, as `status` says.
+    fn changed(&self) -> bool {
+        self.sessions
+            .status(&self.id)
+            .result
+            .unwrap()
+            .transaction
+            .unwrap()
+            .changed
+    }
+
+    /// One `undo` (`undo` true) or `redo` at the session's revision.
+    fn step(&self, undo: bool) {
+        let at = self.revision();
+        let stepped = if undo {
+            answer(self.sessions.undo(&self.id, at, None))
+        } else {
+            answer(self.sessions.redo(&self.id, at, None))
+        };
+        stepped.result.unwrap();
+    }
+}
+
+#[test]
+fn changed_compares_documents_as_a_commit_does_not_their_bytes() {
+    // The sketch's lists aren't in ID order, so its canonical text, which every edit holds,
+    // is other bytes than the file's. A rename and its name set back: the same document as
+    // `begin`'s, so unchanged, though the text differs from the file.
+    let f = opened(SKETCHED);
+    f.begin();
+    assert!(!f.changed());
+    assert!(
+        f.set("s0000001", "name", r#""Renamed""#)
+            .result
+            .unwrap()
+            .changed
+    );
+    assert!(f.changed());
+    assert!(
+        f.set("s0000001", "name", r#""Sketch""#)
+            .result
+            .unwrap()
+            .changed
+    );
+    assert_ne!(f.text(), SKETCHED);
+    assert_ne!(f.text(), f.file());
+    assert!(!f.changed());
+    // Undone to the rename, then to `begin`'s (the file's bytes); redone, both ways back.
+    f.step(true);
+    assert!(f.changed());
+    f.step(true);
+    assert_eq!(f.text(), SKETCHED);
+    assert!(!f.changed());
+    f.step(false);
+    assert!(f.changed());
+    f.step(false);
+    assert!(!f.changed());
+    // And a commit then writes nothing, as `changed` said.
+    assert!(!answer(f.sessions.commit(&f.id)).result.unwrap().written);
+    assert_eq!(f.file(), SKETCHED);
+}
+
+#[test]
+fn changed_compares_text_that_doesnt_read_byte_for_byte() {
+    // `begin` on text that isn't a document; mended by `replace_text`: changed. Undone, the
+    // text is `begin`'s again, byte for byte: unchanged. Redone: changed.
+    let f = opened("{}");
+    f.begin();
+    assert!(!f.changed());
+    let replaced = answer(
+        f.sessions
+            .replace_text(&f.id, f.revision(), EMPTY.to_owned()),
+    );
+    assert!(replaced.result.unwrap().changed);
+    assert!(f.changed());
+    f.step(true);
+    assert_eq!(f.text(), "{}");
+    assert!(!f.changed());
+    f.step(false);
+    assert_eq!(f.text(), EMPTY);
+    assert!(f.changed());
 }

@@ -19,12 +19,37 @@ impl<C: Kernel + 'static> Session<C> {
     /// section 4), starting no rebuild (decision 13), and pushed on the transaction's undo
     /// stack, which drops its redo states (M5.0's A3), as [`Held::hold`] keeps it. Only the
     /// stack's compare and copy of what changed runs under the lock: the features' texts
-    /// were written as the candidate was made. As the command `stop` stops.
+    /// were written as the candidate was made, and whether its document differs from
+    /// `begin`'s is compared before the lock is taken again. As the command `stop` stops.
     pub(super) fn hold(&self, stop: &Ticket, candidate: Candidate) -> Result<Revision, Problems> {
+        self.hold_then(stop, candidate, false, |_| {})
+    }
+
+    /// [`hold`](Self::hold), and `then` given what's held, under the same lock: the
+    /// transaction's record of what made the edit (`format`'s, which `formats` says, so
+    /// whether the transaction's document now differs from `begin`'s is compared as its
+    /// commit will compare it once `then` has run: by bytes after a `format`).
+    pub(super) fn hold_then(
+        &self,
+        stop: &Ticket,
+        candidate: Candidate,
+        formats: bool,
+        then: impl FnOnce(&mut super::transaction::Held),
+    ) -> Result<Revision, Problems> {
+        let begun = self
+            .held
+            .read()
+            .transaction
+            .as_ref()
+            .map(|open| open.begun.clone());
+        // With the held state's lock let go, so `status` never waits on the compare; nothing
+        // else changes what's held meanwhile, since only the session's thread changes it.
+        let (text, gated) = candidate.parts();
+        let changed = begun.is_none_or(|begun| begun.differs_after(text, gated, formats));
         let held = self.held.read();
         let next = held.next()?;
         let mut held = held.changing(stop)?;
-        if let Some(pushed) = held.hold(next, candidate)
+        if let Some(pushed) = held.hold(next, candidate, changed)
             && pushed.dropped > 0
         {
             tracing::info!(
@@ -34,6 +59,7 @@ impl<C: Kernel + 'static> Session<C> {
                 "the undo stack passed its bound: its oldest edits are out of undo's reach"
             );
         }
+        then(&mut held);
         Ok(next)
     }
 

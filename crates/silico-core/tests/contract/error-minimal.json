@@ -7,5 +7,6 @@
   "parameter": null,
   "cause": null,
   "suggestion": null,
-  "candidates": []
+  "candidates": [],
+  "advice": null
 }

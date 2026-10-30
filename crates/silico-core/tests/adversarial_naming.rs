@@ -221,12 +221,22 @@ fn topology(result: ElementCounts) -> impl Strategy<Value = Topology> {
         proptest::collection::vec(face, result.faces as usize),
         proptest::collection::vec(shuffled_subset(result.vertices, 2), result.edges as usize),
     )
-        .prop_map(|(faces, edge_vertices)| {
+        .prop_map(move |(faces, edge_vertices)| {
             let (face_edges, outer_edges) = faces.into_iter().unzip();
             Topology {
                 face_edges,
                 outer_edges,
                 edge_vertices,
+                // A solid for each the result counts, every face the first's.
+                solid_faces: (0..result.solids)
+                    .map(|n| {
+                        if n == 0 {
+                            (1..=result.faces).collect()
+                        } else {
+                            Vec::new()
+                        }
+                    })
+                    .collect(),
             }
         })
 }
@@ -405,6 +415,7 @@ fn renumbered(history: &History, order: &BTreeMap<ElementKind, Vec<u32>>) -> His
                 ElementKind::Vertex,
                 false,
             ),
+            solid_faces: relist(&t.solid_faces, ElementKind::Solid, ElementKind::Face, true),
         },
     }
 }
@@ -487,6 +498,7 @@ fn ambiguous() -> (History, ElementMap) {
             face_edges: vec![],
             outer_edges: vec![],
             edge_vertices: vec![vec![1, 2], vec![2, 1]],
+            solid_faces: Vec::new(),
         },
     };
     history.validate(1).unwrap();
@@ -526,6 +538,7 @@ fn an_ambiguous_name_kept_by_the_next_feature_is_still_marked_ambiguous() {
             face_edges: vec![],
             outer_edges: vec![],
             edge_vertices: vec![vec![1, 2], vec![2, 1]],
+            solid_faces: Vec::new(),
         },
     };
     history.validate(2).unwrap();
@@ -725,6 +738,7 @@ fn of_two_sources_freecad_writes_alike_the_bases_comes_first() {
             face_edges: vec![vec![1], vec![1]],
             outer_edges: vec![vec![1], vec![1]],
             edge_vertices: vec![vec![]],
+            solid_faces: vec![vec![1, 2]],
         },
     };
     let map = ElementMap::operation(id("ffffffff"), OpCode::Fuse, &[&base, &tool], &history);
@@ -835,6 +849,7 @@ fn drilled() -> History {
                 vec![8, 4],
                 vec![7, 3],
             ],
+            solid_faces: vec![(1..=box_counts.faces).collect()],
         },
     }
 }
@@ -1106,6 +1121,7 @@ fn a_name_reported_for_many_elements_is_written_once_promptly() {
             face_edges: vec![vec![]; r as usize],
             outer_edges: vec![vec![]; r as usize],
             edge_vertices: vec![],
+            solid_faces: vec![(1..=r).collect()],
         },
     };
     many.validate(2).unwrap();
@@ -1141,6 +1157,7 @@ fn a_history_naming_an_element_its_input_doesnt_have_gives_an_unstable_name() {
             face_edges: vec![vec![]; 7],
             outer_edges: vec![vec![]; 7],
             edge_vertices: vec![vec![]; 12],
+            solid_faces: vec![(1..=7).collect()],
         },
     };
     history.validate(2).unwrap();
@@ -1173,6 +1190,7 @@ fn a_maps_unstable_names_are_its_own_however_long_the_timeline() {
             face_edges: vec![vec![]; r as usize],
             outer_edges: vec![vec![]; r as usize],
             edge_vertices: vec![],
+            solid_faces: vec![(1..=r).collect()],
         },
     };
     history.validate(2).unwrap();
@@ -1222,6 +1240,7 @@ fn kept_fuse(a: ElementCounts, b: ElementCounts) -> History {
             face_edges: vec![vec![]; result.faces as usize],
             outer_edges: vec![vec![]; result.faces as usize],
             edge_vertices: vec![vec![]; result.edges as usize],
+            solid_faces: vec![(1..=result.faces).collect()],
         },
     }
 }
@@ -1301,6 +1320,7 @@ fn a_chain_of_commons_keeping_a_face_whole_is_bounded() {
             face_edges: vec![vec![]],
             outer_edges: vec![vec![]],
             edge_vertices: vec![],
+            solid_faces: vec![vec![1]],
         },
     };
     history.validate(2).unwrap();

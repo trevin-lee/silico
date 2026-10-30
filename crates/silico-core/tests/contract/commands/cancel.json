@@ -26,7 +26,16 @@
           "export",
           "move_feature",
           "suppress_feature",
-          "timeline"
+          "timeline",
+          "sketch",
+          "sketch_add",
+          "sketch_remove",
+          "sketch_split",
+          "sketch_trim",
+          "sketch_unjoin",
+          "sketch_merge",
+          "undo",
+          "redo"
         ],
         "type": "string"
       }
@@ -79,7 +88,16 @@
           "export",
           "move_feature",
           "suppress_feature",
-          "timeline"
+          "timeline",
+          "sketch",
+          "sketch_add",
+          "sketch_remove",
+          "sketch_split",
+          "sketch_trim",
+          "sketch_unjoin",
+          "sketch_merge",
+          "undo",
+          "redo"
         ],
         "type": "string"
       }

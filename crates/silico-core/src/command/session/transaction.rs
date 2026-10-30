@@ -6,7 +6,7 @@
 //! The order its locks are taken in is on [`Session`].
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
@@ -17,7 +17,7 @@ use super::registry::Unclaimed;
 use super::registry::claim;
 use super::{
     Begun, Committed, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted, Revision,
-    RolledBack, Session, SessionId, shown_path,
+    RolledBack, Session, SessionId, Transaction, shown_path,
 };
 use crate::command::edit::Candidate;
 use crate::document::json::MAX_INPUT_LEN;
@@ -69,6 +69,25 @@ pub(super) struct Held {
 pub(super) struct Open {
     pub(super) begun: Snapshot,
     pub(super) undo: UndoStack<Revision>,
+    /// Whether the session's document differs from the one `begin` saw, as a commit finds
+    /// it ([`Snapshot::differs`]): worked out off the lock as each edit is held and each
+    /// undo or redo restores a state, never by `status` (the design's section 6).
+    pub(super) changed: bool,
+}
+
+impl Open {
+    /// The transaction as `status` gives it: its base, whether its document changed, and
+    /// its undo stack's counts, each kept as the stack changes, so none is worked out here.
+    pub(super) fn status(&self) -> Transaction {
+        Transaction {
+            base: self.begun.revision,
+            changed: self.changed,
+            undo: self.undo.undo_left(),
+            redo: self.undo.redo_left(),
+            dropped: self.undo.dropped(),
+            bytes: self.undo.bytes(),
+        }
+    }
 }
 
 /// A transaction's mend ([`Snapshot::mend`]): the first state of its history that read as a
@@ -99,6 +118,44 @@ pub(super) struct Snapshot {
     /// but given up when an edit after an undo drops its state from the redo: then the next
     /// state that reads is the mend. Not part of what `rollback` restores.
     mend: Option<Mend>,
+    /// What `format` put into the transaction's document (M5.0's A6), which its commit
+    /// saves as `format` saves outside one ([`Formatted`]).
+    formatted: Arc<Formatted>,
+}
+
+/// What `format` put into a transaction's document: each feature it wrote another value
+/// for (a sketch's solve), as it wrote it, which reaches nothing while the feature still
+/// holds it, as `format` reaches nothing outside a transaction; and whether it wrote at all,
+/// after which a commit compares the document's bytes, so a file not in canonical form is
+/// written in it, as `format` writes it outside one.
+#[derive(Clone, Default)]
+pub(super) struct Formatted {
+    written: BTreeMap<FeatureId, document::Feature>,
+    layout: bool,
+}
+
+impl Snapshot {
+    /// Whether the document `text` holds, as the reader and the gate found it (`gated`),
+    /// differs from this one, `begin`'s, as a commit decides whether it writes: compared as
+    /// canonical form writes them, so a document read from a file whose sketch lists aren't
+    /// in ID order is the one its canonical text reads as; byte for byte where either text
+    /// doesn't read as a document, or once a `format` in the transaction has asked for
+    /// canonical form.
+    pub(super) fn differs(&self, text: &[u8], gated: &Gated) -> bool {
+        self.differs_after(text, gated, false)
+    }
+
+    /// [`differs`](Self::differs), as it will compare once an edit that `formats` (a
+    /// `format` inside the transaction, which asks for canonical form) is held: by bytes
+    /// from then on, as after one already.
+    pub(super) fn differs_after(&self, text: &[u8], gated: &Gated, formats: bool) -> bool {
+        match (self.gated.document(), gated.document()) {
+            (Ok(before), Ok(now)) if !(self.formatted.layout || formats) => {
+                !before.canonically_eq(now)
+            }
+            _ => self.text.as_slice() != text,
+        }
+    }
 }
 
 /// A state of the session's document a commit saves ([`Session::save_state`]): the path as
@@ -185,6 +242,7 @@ impl Held {
             carried: Arc::clone(&self.carried),
             quoted: Arc::new(OnceLock::new()),
             mend: None,
+            formatted: Arc::default(),
         }
     }
 
@@ -218,20 +276,29 @@ impl Held {
     /// features' canonical texts, which its text was assembled from ([`After::Canonical`]),
     /// so an undo writes it back byte for byte; and, if the push drops the mend's state, the
     /// mend given up first, so the edit's state, if it reads, is the mend from now on
-    /// ([`Snapshot::mend`]). Then the session's document changed to it, as
-    /// [`change`](Self::change) changes it, carrying what was carried. What the push said.
-    pub(super) fn hold(&mut self, revision: Revision, candidate: Candidate) -> Option<Pushed> {
+    /// ([`Snapshot::mend`]). `changed` is whether its document differs from `begin`'s
+    /// ([`Snapshot::differs`], worked out before the lock was taken). Then the session's
+    /// document changed to it, as [`change`](Self::change) changes it, carrying what was
+    /// carried. What the push said.
+    pub(super) fn hold(
+        &mut self,
+        revision: Revision,
+        candidate: Candidate,
+        changed: bool,
+    ) -> Option<Pushed> {
         let (text, gated, prepared) = candidate.into_parts();
         let after = After::Canonical(prepared);
-        let pushed = self.transaction.as_mut().map(|Open { begun, undo }| {
-            if begun
+        let pushed = self.transaction.as_mut().map(|open| {
+            if open
+                .begun
                 .mend
                 .as_ref()
-                .is_some_and(|mend| undo.redo_holds(mend.revision))
+                .is_some_and(|mend| open.undo.redo_holds(mend.revision))
             {
-                begun.mend = None;
+                open.begun.mend = None;
             }
-            undo.edit(after, revision)
+            open.changed = changed;
+            open.undo.edit(after, revision)
         });
         let carried = Arc::clone(&self.carried);
         self.change(revision, text, gated, carried);
@@ -287,7 +354,7 @@ impl Reaching {
             },
             (Err(_), _) => document::Before::Unread(unread()),
         };
-        document::net_reach(before, &self.carried, now)
+        document::net_reach_but(before, &self.carried, now, &begun.formatted.written)
     }
 }
 
@@ -525,6 +592,7 @@ impl<C: Kernel + 'static> Session<C> {
         held.transaction = Some(Open {
             begun: held.snapshot(),
             undo: UndoStack::new(Arc::clone(&held.text), revision, self.undo_bytes),
+            changed: false,
         });
         Ok(Begun { base: revision })
     }
@@ -733,11 +801,10 @@ impl<C: Kernel + 'static> Session<C> {
         });
         let reach = reached.get();
         // As canonical form writes them: a document read from a file whose sketch lists
-        // aren't in ID order is the one its canonical text reads as.
-        let unchanged = match (begun.gated.document(), gated.document()) {
-            (Ok(before), Ok(now)) => before.canonically_eq(now),
-            _ => begun.text == text,
-        };
+        // aren't in ID order is the one its canonical text reads as. After a `format` in
+        // the transaction, by bytes: it asked for canonical form, as outside one. The same
+        // compare as `status.transaction.changed`'s ([`Snapshot::differs`]).
+        let unchanged = !begun.differs(&text, &gated);
         // Found before the command, so before any rebuild for it. A commit that would write
         // nothing loses nothing, and ends as one does, without waiting for a rebuild: its
         // problems the gate's alone.
@@ -862,10 +929,14 @@ impl<C: Kernel + 'static> Session<C> {
     /// if `write` and it differs from the file as the session last read or wrote it (a
     /// change made outside the session before the command was reloaded, decision 2), the
     /// new file claimed with `claim`, the session then at a new revision, its saved
-    /// text. Refused, writing nothing, inside a transaction, for a document the gate
-    /// refused (its problems), for a feature in `accept` the document hasn't, and as a
-    /// commit is. A kernel fault is saved around, as a commit saves around it. As the command
-    /// `stop` stops.
+    /// text. Inside a transaction (docs/design/m5.0-app.md, A6; decision 8), no file is
+    /// written: if `write` and the formatted document isn't the transaction's (as canonical
+    /// form compares them), it's held as one edit, at a new revision, on the transaction's
+    /// undo stack, which its commit saves; `changed` says whether it differs, `written` is
+    /// false, and with `write` false nothing changes. Refused, writing nothing, for a
+    /// document the gate refused (its problems), for a feature in `accept` the document
+    /// hasn't, and as a commit is. A kernel fault is saved around, as a commit saves around
+    /// it. As the command `stop` stops.
     pub(super) fn format(
         self: &Arc<Self>,
         stop: &Ticket,
@@ -874,17 +945,16 @@ impl<C: Kernel + 'static> Session<C> {
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Reformatted, Problems> {
-        let (path, bytes, gated, revision, reaching) = {
+        let (path, bytes, text, gated, revision, reaching, transaction) = {
             let held = self.held.read();
-            if held.transaction.is_some() {
-                return Err(Problems::from(transaction_open(self.id, "format")));
-            }
             (
                 held.path.clone(),
                 Arc::clone(&held.bytes),
+                Arc::clone(&held.text),
                 Arc::clone(&held.gated),
                 held.revision,
                 held.reaching(),
+                held.transaction.is_some(),
             )
         };
         let reached = Reached::of(reaching);
@@ -933,6 +1003,55 @@ impl<C: Kernel + 'static> Session<C> {
             &drift,
         )?;
         let saved = formatted.text.into_bytes();
+        if transaction {
+            // Into the transaction's state, as an edit's candidate, the same document read
+            // back as `replace_text` reads one. Changed if its bytes are other than the
+            // transaction's, as outside one they'd be other than the file's: canonical form
+            // too, which its commit then writes.
+            let changed = saved != *text;
+            if write && changed {
+                let candidate = crate::command::edit::as_text(&saved).map_err(|refused| {
+                    Problems::from(
+                        Error::new(
+                            ErrorCode::Internal,
+                            "the formatted document doesn't read back as the transaction's",
+                        )
+                        .with_cause(format!("{:?}", refused.errors()))
+                        .with_suggestion(crate::worker::SILICO_BUG),
+                    )
+                })?;
+                // What it wrote other values for, as it wrote them: reaching nothing.
+                let written: BTreeMap<FeatureId, document::Feature> =
+                    match candidate.gated().document() {
+                        Ok(now) => document::changed_features(document, now)
+                            .into_iter()
+                            .filter_map(|id| {
+                                now.features
+                                    .iter()
+                                    .find(|feature| feature.id == id)
+                                    .map(|feature| (id, feature.clone()))
+                            })
+                            .collect(),
+                        Err(_) => BTreeMap::new(),
+                    };
+                self.hold_then(stop, candidate, true, |held| {
+                    if let Some(open) = &mut held.transaction {
+                        let formatted = Arc::make_mut(&mut open.begun.formatted);
+                        formatted.written.extend(written);
+                        formatted.layout = true;
+                    }
+                })?;
+            }
+            return Ok(Reformatted {
+                changed,
+                written: false,
+                path,
+                refingerprinted: formatted.refingerprinted,
+                resolved: formatted.resolved,
+                accepted,
+                problems: formatted.problems,
+            });
+        }
         let changed = saved != *bytes;
         let written = write && changed;
         if written {

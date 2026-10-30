@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "point pb000001 is used by no curve but circle cb000001, so there's nothing to unjoin", "feature": "s0000002", "elements": ["pb000001", "cb000001"], "elements_total": 2, "parameter": "point", "cause": null, "suggestion": "name a point two or more curves share", "candidates": [], "advice": null}

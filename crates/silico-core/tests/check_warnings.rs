@@ -52,6 +52,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use silico_core::cache::Cache;
+use silico_core::command::logs::{LogLevel, LogQuery};
 use silico_core::command::wire::{Layout, ToWire, write};
 use silico_core::command::{CheckAnswer, CheckModel, Revision, SessionId, Sessions};
 use silico_core::document::json::Node;
@@ -63,6 +64,24 @@ use silico_protocol::Tag;
 use tempfile::TempDir;
 
 use crate::sessions::{answer, id};
+
+/// s1's revision, read with no side effect: neither a disk comparison, whose change found
+/// the session would reload itself (M5.0's A3), nor a rebuild started.
+fn at(f: &Fixture) -> Revision {
+    f.sessions
+        .read_logs(
+            &s1(),
+            &LogQuery {
+                level: LogLevel::Error,
+                feature: None,
+                after: None,
+                limit: 1,
+            },
+        )
+        .session
+        .unwrap()
+        .revision
+}
 
 /// The cause of `ends_not_joined` for two points, with the distance as it's written.
 fn apart(distance: &str) -> String {
@@ -325,17 +344,29 @@ fn ends_not_joined_is_the_designs_example_word_for_word() {
         .unwrap(),
     )
     .unwrap();
-    // A warning is described by a definition of its own, its codes warning-codes.txt's.
+    // A warning is described by a definition of its own, its codes warning-codes.txt's,
+    // listed in the schema (an agent can't read the file), and its advice always null.
     assert_eq!(
         schema["result"]["properties"]["warnings"]["items"]["$ref"],
         "#/$defs/Warning"
     );
     let warning = &schema["result"]["$defs"]["Warning"];
+    let listed: Vec<serde_json::Value> = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/contract/warning-codes.txt"),
+    )
+    .unwrap()
+    .lines()
+    .filter(|l| !l.starts_with('#') && !l.is_empty())
+    .map(serde_json::Value::from)
+    .collect();
+    assert_eq!(
+        warning["properties"]["code"]["enum"],
+        serde_json::Value::Array(listed),
+        "{warning}"
+    );
+    assert_eq!(warning["properties"]["advice"]["type"], "null", "{warning}");
     assert!(
-        warning["properties"]["code"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("warning-codes.txt"),
+        warning["properties"]["advice"].get("enum").is_none(),
         "{warning}"
     );
     let result = write(&checked.to_wire(), Layout::Canonical).unwrap();
@@ -981,7 +1012,7 @@ fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_a_cluster_is_to_be_lengthen
          \"parameter\": null, \"cause\": \"the points are at most 1.5e-7 mm apart, each closer \
          than FreeCAD's joining distance of 1e-7 mm to another of them\", \"suggestion\": \
          \"lengthen arc na000001; then share one point: make the curves that end at the points \
-         named end at one of them\", \"candidates\": []}"
+         named end at one of them\", \"candidates\": [], \"advice\": null}"
     );
 }
 
@@ -1412,12 +1443,12 @@ fn a_feature_a_transactions_edits_reached_isnt_warned_of_for_its_fingerprint_its
     )];
     assert_eq!(said(&f.check()), only_k7);
     answer(f.sessions.begin(&s1())).result.unwrap();
-    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let revision = at(&f);
     let added: Node = silico_core::document::json::read(block("m0000002", 10).as_bytes()).unwrap();
     answer(f.sessions.add_feature(&s1(), revision, None, added))
         .result
         .unwrap();
-    let added_at = f.sessions.status(&s1()).session.unwrap().revision;
+    let added_at = at(&f);
     assert_ne!(added_at, revision);
     let checked = f.check();
     assert!(checked.problems.is_empty(), "{:?}", checked.problems);
@@ -1453,7 +1484,7 @@ fn carried_and_built() -> (Fixture, [Said; 2]) {
         None,
     );
     answer(f.sessions.begin(&s1())).result.unwrap();
-    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let revision = at(&f);
     let added = r#"{"id": "m0000002", "type": "box", "v": 1, "name": "Block", "position": [10, 0, 0], "length": 7, "width": 2, "height": 1}"#;
     let added: Node = silico_core::document::json::read(added.as_bytes()).unwrap();
     answer(f.sessions.add_feature(&s1(), revision, None, added))
@@ -1508,7 +1539,7 @@ fn a_carried_feature_isnt_warned_of_in_a_published_check_once_a_transaction_begi
     // check warns of m0000002 (the published one did, advising format).
     let (f, [k7, _]) = carried_and_built();
     answer(f.sessions.begin(&s1())).result.unwrap();
-    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let revision = at(&f);
     assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
     assert_eq!(
         said(&published_check(&f, revision)),
@@ -1525,9 +1556,9 @@ fn a_carried_feature_isnt_warned_of_in_a_published_check_of_an_older_model_while
     // now, so the commit writes the carried feature's record and format is refused: the
     // check spares m0000002 as the current one does.
     let (f, [k7, _]) = carried_and_built();
-    let before = f.sessions.status(&s1()).session.unwrap().revision;
+    let before = at(&f);
     answer(f.sessions.begin(&s1())).result.unwrap();
-    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let revision = at(&f);
     let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
     answer(f.sessions.add_feature(&s1(), revision, None, added))
         .result
@@ -1551,7 +1582,7 @@ fn a_carried_feature_is_warned_of_in_a_published_check_of_an_older_model_with_no
     // commit writes the carried feature's record and format can: the check warns of
     // m0000002, as the model's own check did (decision 28; `Reached::committing`).
     let (f, both) = carried_and_built();
-    let before = f.sessions.status(&s1()).session.unwrap().revision;
+    let before = at(&f);
     let _hold = f
         .kernel
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 9.0));
@@ -1576,20 +1607,20 @@ fn a_carried_feature_is_warned_of_in_a_published_check_after_a_commit_that_write
     // both checks warn of m0000002 (the published one didn't).
     let (f, [k7, m2]) = carried_and_built();
     answer(f.sessions.begin(&s1())).result.unwrap();
-    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let revision = at(&f);
     let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
     answer(f.sessions.add_feature(&s1(), revision, None, added))
         .result
         .unwrap();
     assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
-    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let revision = at(&f);
     answer(f.sessions.remove_feature(&s1(), revision, id("m0000003")))
         .result
         .unwrap();
     assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
     let committed = answer(f.sessions.commit(&s1())).result.unwrap();
     assert!(!committed.written, "{committed:?}");
-    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let revision = at(&f);
     let both = [k7, m2];
     assert_eq!(said(&f.check()), both);
     assert_eq!(said(&published_check(&f, revision)), both);
@@ -1626,13 +1657,13 @@ fn a_feature_a_transaction_added_isnt_warned_of_in_a_published_check_after_a_com
         "",
     );
     for added in [drawn, block("m0000002", 10)] {
-        let revision = f.sessions.status(&s1()).session.unwrap().revision;
+        let revision = at(&f);
         let added: Node = silico_core::document::json::read(added.as_bytes()).unwrap();
         answer(f.sessions.add_feature(&s1(), revision, None, added))
             .result
             .unwrap();
     }
-    let transactions = f.sessions.status(&s1()).session.unwrap().revision;
+    let transactions = at(&f);
     assert_eq!(said(&f.check()), only_k7);
     let committed = answer(f.sessions.commit(&s1())).result.unwrap();
     assert!(committed.written, "{committed:?}");
@@ -1682,7 +1713,7 @@ fn a_feature_format_fingerprinted_isnt_warned_of_in_a_published_check_after_a_fo
     // says what the file stores, doesn't warn of it, as the current check doesn't.
     let f = opened(&document(&[block("k7f2qx3m", 0), drawn()]));
     moving_pa000001(&f);
-    let opened_at = f.sessions.status(&s1()).session.unwrap().revision;
+    let opened_at = at(&f);
     let only_k7 = [(
         WarningCode::FingerprintMissing,
         "k7f2qx3m".to_owned(),
@@ -1730,7 +1761,7 @@ fn a_carried_feature_an_edits_commit_fingerprinted_isnt_warned_of_in_a_published
     // fingerprint now, so the published check spares it; k7f2qx3m, which the edit didn't
     // reach, still has none in the file, and is warned of, as the current check says.
     let (f, [k7, m2]) = carried_and_built();
-    let before = f.sessions.status(&s1()).session.unwrap().revision;
+    let before = at(&f);
     assert_eq!(said(&published_check(&f, before)), [k7.clone(), m2]);
     moving_pa000001(&f);
     let added: Node = silico_core::document::json::read(drawn().as_bytes()).unwrap();
@@ -1785,7 +1816,7 @@ fn fingerprint_missing_on_the_wire_names_its_parameter() {
          stores no fingerprint, so a change in what it builds isn't caught as drift\", \
          \"feature\": \"k7f2qx3m\", \"elements\": [], \"elements_total\": 0, \"parameter\": \
          \"fingerprint\", \"cause\": null, \"suggestion\": \"format the document to store \
-         it\", \"candidates\": []}"
+         it\", \"candidates\": [], \"advice\": null}"
     );
 }
 
@@ -1802,7 +1833,7 @@ fn a_refused_document_that_stores_a_fingerprint_still_spares_it_in_a_published_c
     let formatted = std::fs::read_to_string(g.path()).unwrap();
     assert!(formatted.contains("fingerprint"), "{formatted}");
     let f = opened(&document(&[block("k7f2qx3m", 0)]));
-    let before = f.sessions.status(&s1()).session.unwrap().revision;
+    let before = at(&f);
     let only_k7 = [(
         WarningCode::FingerprintMissing,
         "k7f2qx3m".to_owned(),
@@ -1833,20 +1864,20 @@ fn after_a_commit_that_wrote_nothing_and_a_reload_a_carried_feature_is_warned_of
     // model's revision was a transaction's.
     let (f, [k7, m2]) = carried_and_built();
     answer(f.sessions.begin(&s1())).result.unwrap();
-    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let revision = at(&f);
     let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
     answer(f.sessions.add_feature(&s1(), revision, None, added))
         .result
         .unwrap();
     assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
-    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let revision = at(&f);
     answer(f.sessions.remove_feature(&s1(), revision, id("m0000003")))
         .result
         .unwrap();
     assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
     let committed = answer(f.sessions.commit(&s1())).result.unwrap();
     assert!(!committed.written, "{committed:?}");
-    let kept = f.sessions.status(&s1()).session.unwrap().revision;
+    let kept = at(&f);
     let m2t = r#"{"id": "m0000002", "type": "box", "v": 1, "name": "Block", "position": [10, 0, 0], "length": 7, "width": 2, "height": 1}"#;
     let m3 = r#"{"id": "m0000003", "type": "box", "v": 1, "name": "Block", "position": [20, 0, 0], "length": 9, "width": 2, "height": 1}"#;
     let text = document(&[block("k7f2qx3m", 0), m2t.to_owned(), m3.to_owned()]);
@@ -1868,20 +1899,20 @@ fn after_a_commit_that_wrote_nothing_and_a_reload_of_a_file_that_doesnt_read_a_p
     // k7f2qx3m, which no edit reached, is warned of; m0000002 is spared.
     let (f, [k7, _]) = carried_and_built();
     answer(f.sessions.begin(&s1())).result.unwrap();
-    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let revision = at(&f);
     let added: Node = silico_core::document::json::read(block("m0000003", 20).as_bytes()).unwrap();
     answer(f.sessions.add_feature(&s1(), revision, None, added))
         .result
         .unwrap();
     assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
-    let revision = f.sessions.status(&s1()).session.unwrap().revision;
+    let revision = at(&f);
     answer(f.sessions.remove_feature(&s1(), revision, id("m0000003")))
         .result
         .unwrap();
     assert_eq!(said(&f.check()), std::slice::from_ref(&k7));
     let committed = answer(f.sessions.commit(&s1())).result.unwrap();
     assert!(!committed.written, "{committed:?}");
-    let kept = f.sessions.status(&s1()).session.unwrap().revision;
+    let kept = at(&f);
     std::fs::write(f.path(), "{\"silico\": 1,").unwrap();
     let read = answer(f.sessions.text(&s1(), None));
     let session = read.session.unwrap();

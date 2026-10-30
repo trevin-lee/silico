@@ -19,17 +19,21 @@
 //! session decides, with the revision and the transaction, what an edit's candidate
 //! becomes.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use super::{Gated, Problems};
+use super::{Gated, NewMembers, Problems};
 use crate::document::chain::{self, Rewired};
 use crate::document::json::{self, Member, Node, Plain, Value};
 use crate::document::suppression;
 use crate::document::undo::Prepared;
 use crate::document::{
     self, Checked, Document, ElementId, ElementKind, Feature, FeatureId, FeatureVersion,
-    ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Sketch,
+    ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Reference, Sketch,
+    sketch_edit,
 };
+use crate::naming::{Maker, Name};
+use crate::references::CANDIDATES;
 use crate::{Error, ErrorCode};
 
 /// The state an accepted edit gives a session's document: its canonical text, that text as
@@ -44,6 +48,16 @@ pub(super) struct Candidate {
 }
 
 impl Candidate {
+    /// Its text, and the gate's finding of it.
+    pub(super) fn parts(&self) -> (&[u8], &Gated) {
+        (&self.text, &self.gated)
+    }
+
+    /// The gate's finding of its text.
+    pub(super) fn gated(&self) -> &Gated {
+        &self.gated
+    }
+
     /// Its text, the gate's finding of it, and its features' canonical texts.
     pub(super) fn into_parts(self) -> (Arc<Vec<u8>>, Arc<Gated>, Prepared) {
         (self.text, self.gated, self.prepared)
@@ -917,6 +931,348 @@ pub(super) fn suppress_feature(
     Ok((done, Some(candidate)))
 }
 
+/// What a sketch edit changed, by member ID, as [`sketch_edit::Edited`] lists them.
+pub(super) struct SketchChanges {
+    pub(super) added: Vec<ElementId>,
+    pub(super) modified: Vec<ElementId>,
+    pub(super) removed: Vec<ElementId>,
+}
+
+/// `members` added to the sketch `id` of `document` (docs/design/m5.0-app.md, section 7,
+/// `sketch_add`): what it added, and the state it leads to, none for an empty batch, which
+/// changes nothing. Each list is read by the document's own reader as the sketch's lists are
+/// read (its members named by their ID paths, `circles.cb000003.radius`), then added by
+/// [`sketch_edit::add`], and the document with the sketch so edited put through the gate.
+/// Never solved: once the gate takes it, it's applied, whatever its solve then finds (SD7).
+/// Refused for a feature that isn't a sketch, naming `sketch`, and with every problem the
+/// reader, the add, or the gate finds, each naming the sketch.
+pub(super) fn sketch_add(
+    document: &Document,
+    id: &FeatureId,
+    members: NewMembers,
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let (index, feature, sketch) = sketch_of(document, id)?;
+    let members = read_members(index, feature, members)?;
+    let edited = sketch_edit::add(sketch, &members).map_err(|refused| of_sketch(id, refused))?;
+    sketch_edited(document, index, sketch, edited)
+}
+
+/// `members` removed from the sketch `id` of `document` (docs/design/m5.0-app.md, section
+/// 7, `sketch_remove`; sketch-edit decision 7): what it removed and changed, and the state it
+/// leads to, none for an empty list, which removes nothing. Removed by
+/// [`sketch_edit::remove`] (a curve with the points only it used, every constraint naming
+/// what goes, a point only if no curve uses it, duplicates taken once), and the document
+/// put through the gate. Never solved, as [`sketch_add`] isn't (SD7). Refused for a feature
+/// that isn't a sketch, naming `sketch`; and with every problem the removal finds (a member
+/// the sketch hasn't, a fixed reference, `origin`, `x_axis`, or `y_axis`, a point a curve
+/// still uses), all in one answer, each once at its first place, or the gate finds, each
+/// naming the sketch.
+pub(super) fn sketch_remove(
+    document: &Document,
+    id: &FeatureId,
+    members: &[Reference],
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let (index, _, sketch) = sketch_of(document, id)?;
+    let edited = sketch_edit::remove(sketch, members).map_err(|refused| of_sketch(id, refused))?;
+    sketch_edited(document, index, sketch, edited)
+}
+
+/// What a split or a trim did (docs/design/m5.0-app.md, section 7, `sketch_split` and
+/// `sketch_trim`): what it changed, the curve's pieces left (the start-side one first,
+/// which keeps the curve's ID), and the features that store a name its curve reaches, in
+/// timeline order (*What a result lists*).
+pub(super) struct Cut {
+    pub(super) changes: SketchChanges,
+    pub(super) pieces: Vec<ElementId>,
+    pub(super) references: Vec<FeatureId>,
+}
+
+/// `curve` of the sketch `id` of `document` split at `at` (docs/design/m5.0-app.md,
+/// section 7, `sketch_split`; sketch-edit 1 to 4, §3's table): what it changed, its two
+/// pieces, the features storing a name it reaches, and the state it leads to, by
+/// [`sketch_edit::split_with`], its new members' IDs `ids`, and the document put through
+/// the gate. Never solved here: the session's solve then judges it (SD7). Refused for a
+/// feature that isn't a sketch, naming `sketch`, and with what the split or the gate
+/// finds, naming the sketch.
+pub(super) fn sketch_split(
+    document: &Document,
+    id: &FeatureId,
+    curve: &ElementId,
+    at: &[[f64; 2]],
+    ids: sketch_edit::NewIds<'_>,
+) -> Result<(Cut, Option<Candidate>), Problems> {
+    let (index, _, sketch) = sketch_of(document, id)?;
+    let split = sketch_edit::split_with(sketch, curve, at, ids).map_err(|e| one(id, e))?;
+    let references = referencing(document, id, sketch, curve);
+    let (changes, candidate) = sketch_edited(document, index, sketch, split.edited)?;
+    Ok((
+        Cut {
+            changes,
+            pieces: split.pieces.to_vec(),
+            references,
+        },
+        candidate,
+    ))
+}
+
+/// `curve` of the sketch `id` of `document` trimmed back to the cuts either side of `pick`
+/// (docs/design/m5.0-app.md, section 7, `sketch_trim`; sketch-edit 2, 5, 6, 8, and §4): what
+/// it changed, the pieces left, the features storing a name it reaches, and the state it
+/// leads to, by [`sketch_edit::trim_with`], as [`sketch_split`] makes a split.
+pub(super) fn sketch_trim(
+    document: &Document,
+    id: &FeatureId,
+    curve: &ElementId,
+    pick: [f64; 2],
+    ids: sketch_edit::NewIds<'_>,
+) -> Result<(Cut, Option<Candidate>), Problems> {
+    let (index, _, sketch) = sketch_of(document, id)?;
+    let trim = sketch_edit::trim_with(sketch, curve, pick, ids).map_err(|e| one(id, e))?;
+    let references = referencing(document, id, sketch, curve);
+    let (changes, candidate) = sketch_edited(document, index, sketch, trim.edited)?;
+    Ok((
+        Cut {
+            changes,
+            pieces: trim.pieces,
+            references,
+        },
+        candidate,
+    ))
+}
+
+/// `curve`'s use of `point`, of the sketch `id` of `document`, pulled apart
+/// (docs/design/m5.0-app.md, section 7, `sketch_unjoin`; sketch-edit 9), by
+/// [`sketch_edit::unjoin_with`], its new point's ID `ids`, and the document put through the
+/// gate: what it changed, and the state it leads to. Refused as [`sketch_split`] is.
+pub(super) fn sketch_unjoin(
+    document: &Document,
+    id: &FeatureId,
+    point: &ElementId,
+    curve: &ElementId,
+    ids: sketch_edit::NewIds<'_>,
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let (index, _, sketch) = sketch_of(document, id)?;
+    let edited = sketch_edit::unjoin_with(sketch, point, curve, ids).map_err(|e| one(id, e))?;
+    sketch_edited(document, index, sketch, edited)
+}
+
+/// `points` of the sketch `id` of `document` made one, the first kept
+/// (docs/design/m5.0-app.md, section 7, `sketch_merge`; sketch-edit 10), by
+/// [`sketch_edit::merge`], and the document put through the gate: what it changed, and the
+/// state it leads to. Whether its solve is worse than the one before is the session's to
+/// judge. Refused as [`sketch_split`] is.
+pub(super) fn sketch_merge(
+    document: &Document,
+    id: &FeatureId,
+    points: &[ElementId],
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let (index, _, sketch) = sketch_of(document, id)?;
+    let edited = sketch_edit::merge(sketch, points).map_err(|e| one(id, e))?;
+    sketch_edited(document, index, sketch, edited)
+}
+
+/// A sketch edit's one refusal, naming the sketch `id` if it names no feature.
+fn one(id: &FeatureId, error: Error) -> Problems {
+    of_sketch(
+        id,
+        sketch_edit::Refused {
+            errors: vec![error],
+            total: 1,
+        },
+    )
+}
+
+/// The features of `document` after the sketch `id` (`sketch`) that store a name made from
+/// `curve`'s ID or one of its points' (`s0000001.sketch.Edge.na000001`, as a source anywhere
+/// in the name), in timeline order (docs/design/m5.0-app.md, section 7, *What a result
+/// lists*): each such name finds, after a split or a trim, what the start-side piece makes,
+/// only part of what it found (open item 11), so the edit says which to look at. A name that
+/// doesn't parse reaches nothing (the gate refuses it on its own).
+fn referencing(
+    document: &Document,
+    id: &FeatureId,
+    sketch: &Sketch,
+    curve: &ElementId,
+) -> Vec<FeatureId> {
+    let mut reached: BTreeSet<&ElementId> = BTreeSet::from([curve]);
+    for line in sketch.lines.iter().filter(|l| &l.id == curve) {
+        reached.extend([&line.from, &line.to]);
+    }
+    for circle in sketch.circles.iter().filter(|c| &c.id == curve) {
+        reached.insert(&circle.center);
+    }
+    for arc in sketch.arcs.iter().filter(|a| &a.id == curve) {
+        reached.extend([&arc.center, &arc.start, &arc.end]);
+    }
+    let features = &document.features;
+    features
+        .iter()
+        .enumerate()
+        .filter(|(index, feature)| {
+            let makers = |maker: &FeatureId| {
+                features[..*index]
+                    .iter()
+                    .find(|f| &f.id == maker)
+                    .map(|f| Maker::of(&f.operation))
+            };
+            feature.operation.edges().iter().any(|edge| {
+                Name::parse(edge.as_str(), &makers).is_ok_and(|name| reaches(&name, id, &reached))
+            })
+        })
+        .map(|(_, feature)| feature.id.clone())
+        .collect()
+}
+
+/// Whether `name`, or any name it's made of, is a sketch element of `sketch` named by one of
+/// `ids`.
+fn reaches(name: &Name, sketch: &FeatureId, ids: &BTreeSet<&ElementId>) -> bool {
+    match name {
+        Name::Sketch { feature, id, .. } => feature == sketch && ids.contains(id),
+        _ => name
+            .parts()
+            .into_iter()
+            .any(|part| reaches(part, sketch, ids)),
+    }
+}
+
+/// The sketch `id` of `document`, with its place in the timeline and its feature; or the
+/// refusal, naming `sketch`, of a feature the document hasn't or one that isn't a sketch,
+/// the document's first sketches the candidates (as the `sketch` read refuses them).
+fn sketch_of<'a>(
+    document: &'a Document,
+    id: &FeatureId,
+) -> Result<(usize, &'a Feature, &'a Sketch), Problems> {
+    let refused = |message: String| {
+        let sketches: Vec<String> = document
+            .features
+            .iter()
+            .filter(|f| matches!(f.operation, Operation::Sketch(_)))
+            .take(CANDIDATES)
+            .map(|f| f.id.as_str().to_owned())
+            .collect();
+        let suggestion = if sketches.is_empty() {
+            "the document has no sketch: add one, and edit it by its ID"
+        } else {
+            "name a sketch of the document, by its ID"
+        };
+        Problems::from(
+            Error::new(ErrorCode::InvalidInput, message)
+                .with_parameter("sketch")
+                .with_suggestion(suggestion)
+                .with_candidates(sketches),
+        )
+    };
+    let Some((index, feature)) = document
+        .features
+        .iter()
+        .enumerate()
+        .find(|(_, f)| f.id == *id)
+    else {
+        return Err(refused(format!("the document has no feature {id}")));
+    };
+    match &feature.operation {
+        Operation::Sketch(sketch) => Ok((index, feature, sketch)),
+        other => Err(refused(format!(
+            "{id} is a {}, not a sketch",
+            other.type_name()
+        ))),
+    }
+}
+
+/// `members`' lists, read by the document's reader as `feature`'s (a sketch at `index`)
+/// own lists are: its canonical tree with each list replaced by the request's, read whole,
+/// so a member is refused in the words and at the path (`circles.cb000003.radius`) a file's
+/// would be, naming the sketch.
+fn read_members(
+    index: usize,
+    feature: &Feature,
+    members: NewMembers,
+) -> Result<sketch_edit::Members, Problems> {
+    let (_, mut tree) = feature_tree(feature)?;
+    let NewMembers {
+        points,
+        lines,
+        circles,
+        arcs,
+        constraints,
+    } = members;
+    let given = [points, lines, circles, arcs, constraints];
+    if let Value::Object(fields) = &mut tree.value {
+        for (kind, mut list) in ElementKind::ALL.into_iter().zip(given) {
+            json::unplace(&mut list);
+            match fields.iter_mut().find(|m| m.key == kind.list()) {
+                Some(field) => field.value = list,
+                None => fields.push(Member {
+                    key: kind.list().to_owned(),
+                    at: json::At::UNPLACED,
+                    value: list,
+                }),
+            }
+        }
+    }
+    let read = document::read_feature(index, tree)?;
+    match read.operation {
+        Operation::Sketch(sketch) => Ok(sketch_edit::Members {
+            points: sketch.points,
+            lines: sketch.lines,
+            circles: sketch.circles,
+            arcs: sketch.arcs,
+            constraints: sketch.constraints,
+        }),
+        _ => Err(Problems::from(
+            Error::new(
+                ErrorCode::Internal,
+                "a sketch's lists, read as its own, didn't read as a sketch",
+            )
+            .with_suggestion(crate::worker::SILICO_BUG),
+        )),
+    }
+}
+
+/// A sketch edit's refusal, each problem naming the sketch `id`, all counted.
+fn of_sketch(id: &FeatureId, refused: sketch_edit::Refused) -> Problems {
+    let listed = u64::try_from(refused.errors.len()).unwrap_or(u64::MAX);
+    let errors = refused
+        .errors
+        .into_iter()
+        .map(|e| match e.feature() {
+            Some(_) => e,
+            None => e.with_feature(id.as_str()),
+        })
+        .collect();
+    Problems::with_unlisted(errors, refused.total.saturating_sub(listed))
+}
+
+/// What `edited`, the sketch at `index` of `document` (`sketch`, before) edited, changed,
+/// and the state the document with it leads to: none if the sketch is the same, through the
+/// gate otherwise.
+fn sketch_edited(
+    document: &Document,
+    index: usize,
+    sketch: &Sketch,
+    edited: sketch_edit::Edited,
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let sketch_edit::Edited {
+        sketch: after,
+        added,
+        modified,
+        removed,
+    } = edited;
+    let changes = SketchChanges {
+        added,
+        modified,
+        removed,
+    };
+    if after == *sketch {
+        return Ok((changes, None));
+    }
+    let mut edited = document.clone();
+    if let Some(feature) = edited.features.get_mut(index) {
+        feature.operation = Operation::Sketch(after);
+    }
+    Ok((changes, Some(candidate(&edited, "sketch")?)))
+}
+
 /// The document's text replaced by `text` (the design's `replace_text`), put through the
 /// reader and the gate as `silico check` puts a file through them: the new document's
 /// number of features, and the state it leads to, none if it's the document `before` holds
@@ -957,6 +1313,13 @@ pub(super) fn replace_text(
     Ok((features, (!unchanged).then_some(candidate)))
 }
 
+/// `text`, a document's canonical text (`format`'s, inside a transaction), as an edit's
+/// candidate, read as a file is and through the gate.
+pub(super) fn as_text(text: &[u8]) -> Result<Candidate, Problems> {
+    let read = document::read_tree(document::tree(text)?)?;
+    candidate(&read, "text")
+}
+
 /// Whether a document's tree is an object whose header has a `naming` (or isn't an object
 /// at all, which the reader refuses for itself).
 fn names_its_scheme(root: &Node) -> bool {
@@ -966,10 +1329,10 @@ fn names_its_scheme(root: &Node) -> bool {
     }
 }
 
-/// Where new feature IDs come from (M2.1, decision 20): the system's randomness, five bytes
-/// (as the cache's secret is read, [`crate::system_random`]) for the eight characters of an
-/// ID, or, in this crate's own tests only, bytes they give (never through the API, the
-/// Rust API, or a request).
+/// Where new feature IDs, and new sketch members' IDs, come from (M2.1, decision 20): the
+/// system's randomness, five bytes (as the cache's secret is read, [`crate::system_random`])
+/// for the eight characters of an ID, or, in this crate's own tests only, bytes they give
+/// (never through the API, the Rust API, or a request).
 pub(super) struct FeatureIds {
     #[cfg(test)]
     given: Option<std::collections::VecDeque<[u8; 5]>>,
@@ -998,8 +1361,8 @@ impl FeatureIds {
         }
     }
 
-    /// Five bytes of the source's.
-    fn bytes(&mut self) -> Result<[u8; 5], Error> {
+    /// Five bytes of the source's: for a feature's ID, or, `member`, a sketch member's.
+    fn bytes(&mut self, member: bool) -> Result<[u8; 5], Error> {
         #[cfg(test)]
         if let Some(given) = &mut self.given {
             return given
@@ -1007,19 +1370,32 @@ impl FeatureIds {
                 .ok_or_else(|| Error::new(ErrorCode::Internal, "the test gave no more ID bytes"));
         }
         crate::system_random().map_err(|e| {
+            let (what, parameter, suggestion) = if member {
+                (
+                    "a sketch member's ID",
+                    "ids",
+                    "give the edit's ids, or make it again",
+                )
+            } else {
+                (
+                    "a feature's ID",
+                    "feature.id",
+                    "give the feature an id, or add it again",
+                )
+            };
             Error::new(
                 ErrorCode::IoFailed,
-                format!("the system's randomness couldn't be read for a feature's ID: {e}"),
+                format!("the system's randomness couldn't be read for {what}: {e}"),
             )
-            .with_parameter("feature.id")
-            .with_suggestion("give the feature an id, or add it again")
+            .with_parameter(parameter)
+            .with_suggestion(suggestion)
         })
     }
 
     /// A new ID that no feature of `document` holds.
     pub(super) fn next_free(&mut self, document: &Document) -> Result<FeatureId, Error> {
         for _ in 0..ID_TRIES {
-            let id = id_of(self.bytes()?)?;
+            let id = id_of(self.bytes(false)?)?;
             if !document.features.iter().any(|feature| feature.id == id) {
                 return Ok(id);
             }
@@ -1027,6 +1403,34 @@ impl FeatureIds {
         Err(Error::new(
             ErrorCode::Internal,
             format!("{ID_TRIES} new feature IDs in a row were IDs the document holds"),
+        )
+        .with_suggestion(crate::worker::SILICO_BUG))
+    }
+
+    /// A new sketch member's ID (docs/design/m5.0-app.md, section 7, *New IDs*: a sketch
+    /// edit's `ids` given as `null`) that isn't `taken`: one of the sketch's, or one drawn
+    /// for the same edit before it. From the same source as a feature's, with the same
+    /// alphabet and length.
+    pub(super) fn next_member(
+        &mut self,
+        taken: &dyn Fn(&ElementId) -> bool,
+    ) -> Result<ElementId, Error> {
+        for _ in 0..ID_TRIES {
+            let id = id_of(self.bytes(true)?)?;
+            let id = ElementId::new(id.as_str()).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Internal,
+                    format!("{id}, made for a sketch member, isn't a member's ID"),
+                )
+                .with_suggestion(crate::worker::SILICO_BUG)
+            })?;
+            if !taken(&id) {
+                return Ok(id);
+            }
+        }
+        Err(Error::new(
+            ErrorCode::Internal,
+            format!("{ID_TRIES} new member IDs in a row were IDs the sketch holds"),
         )
         .with_suggestion(crate::worker::SILICO_BUG))
     }
@@ -1118,5 +1522,28 @@ mod tests {
             )
         );
         assert_eq!(ids.next_free(&document).unwrap().as_str(), "zzzzzzzz");
+    }
+
+    #[test]
+    fn a_new_members_id_is_never_one_taken_and_a_source_of_only_taken_ones_is_a_bug() {
+        // "00000000" taken (a member of the sketch, or drawn for the edit before): skipped,
+        // and "zzzzzzzz", the next, given.
+        let taken = |id: &ElementId| id.as_str() == "00000000";
+        let mut ids = FeatureIds::given([[0; 5], [0xff; 5]]);
+        assert_eq!(ids.next_member(&taken).unwrap().as_str(), "zzzzzzzz");
+        let mut ids =
+            FeatureIds::given(std::iter::repeat_n([0; 5], ID_TRIES - 1).chain([[0xff; 5]]));
+        assert_eq!(ids.next_member(&taken).unwrap().as_str(), "zzzzzzzz");
+        let mut ids = FeatureIds::given(std::iter::repeat_n([0; 5], ID_TRIES).chain([[0xff; 5]]));
+        let refused = ids.next_member(&taken).unwrap_err();
+        assert_eq!(
+            (refused.code(), refused.message(), refused.suggestion()),
+            (
+                ErrorCode::Internal,
+                "16 new member IDs in a row were IDs the sketch holds",
+                Some(crate::worker::SILICO_BUG)
+            )
+        );
+        assert_eq!(ids.next_member(&taken).unwrap().as_str(), "zzzzzzzz");
     }
 }

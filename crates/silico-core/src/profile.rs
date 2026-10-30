@@ -433,8 +433,8 @@ pub fn profile(
     of_sketch(feature, sketch, solution)
 }
 
-/// `sketch`'s profile ([`profile`]).
-fn of_sketch(
+/// `sketch`'s profile ([`profile`]), the sketch `feature` names.
+pub(crate) fn of_sketch(
     feature: &FeatureId,
     sketch: &Sketch,
     solution: &SketchSolution,

@@ -58,8 +58,10 @@ fn serve_initializes_lists_its_tools_makes_a_document_and_ends_with_its_input() 
         "2",
     );
     let tools = tools["result"]["tools"].as_array().unwrap();
-    // M4.1's 26 commands, and M5.1's move_feature, suppress_feature, and timeline.
-    assert_eq!(tools.len(), 29);
+    // M4.1's 26 commands, M5.1's move_feature, suppress_feature, and timeline, M5.10's
+    // sketch, sketch_add, sketch_remove, sketch_split, sketch_trim, sketch_unjoin, and
+    // sketch_merge, and M5.2's undo and redo.
+    assert_eq!(tools.len(), 38);
     assert_eq!(tools[1]["name"], "open");
     let opened = ask(
         &mut stdin,
@@ -89,7 +91,7 @@ fn serve_initializes_lists_its_tools_makes_a_document_and_ends_with_its_input() 
     drop(stdin);
     assert_eq!(exited(child).code(), Some(0));
     let stderr = logs.join().unwrap();
-    assert!(stderr.contains("SILICO_RENDER_WORKER names"), "{stderr}");
+    assert!(!stderr.contains("worker"), "{stderr}");
 }
 
 /// `silico ARGS`, run in `dir` with stdin empty: its exit code and stderr.
@@ -174,7 +176,6 @@ fn serve_exits_2_when_its_stdin_cant_be_read() {
     command
         .args(["serve", "--workspace"])
         .arg(dir.path())
-        .env("SILICO_RENDER_WORKER", dir.path().join("no-such-worker"))
         .stdin(std::fs::File::open(dir.path()).unwrap());
     let out = output(command);
     assert_eq!(out.status.code(), Some(2));
@@ -518,63 +519,37 @@ fn serve_with_a_kernel_worker_variable_naming_nothing_doesnt_start() {
 }
 
 #[test]
-fn serve_with_only_a_kernel_worker_warns_of_each_missing_one_and_serves() {
-    // Every command but those that need the missing workers still works: each is said at
-    // startup, and the server answers.
+fn serve_with_only_a_kernel_worker_doesnt_start_and_names_each_missing_one() {
+    // All four workers or none (M4's close, overturning #199): a missing sketch, STEP, or
+    // render worker is a broken install, said before the handshake, each in one message
+    // naming where it looked, rather than met at the command that first needs it.
     let root = tempfile::tempdir().unwrap();
     let bin = install(root.path(), &["silico-kernel-worker"]);
     let workspace = root.path().join("models");
     std::fs::create_dir(&workspace).unwrap();
-    std::fs::write(workspace.join("box.silico"), BOX).unwrap();
-    let mut child = serve_command(&bin.join("silico"), &workspace)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    // Stderr's lines as they come, so the warnings are checked while the server runs.
-    let (to, said) = mpsc::channel();
-    let stderr = BufReader::new(child.stderr.take().unwrap());
-    std::thread::spawn(move || {
-        for line in stderr.lines().map_while(Result::ok) {
-            let _ = to.send(line);
-        }
-    });
-    let mut stdin = child.stdin.take().unwrap();
-    let lines = lines(&mut child);
-    let init = ask(&mut stdin, &lines, INITIALIZE, "0");
-    assert_eq!(init["result"]["serverInfo"]["name"], "silico");
-    // Each missing worker said at startup: already said once the handshake is answered,
-    // while the server runs, never only as it ends.
-    let warnings = [
+    let (code, stdout, stderr) = refused_start(serve_command(&bin.join("silico"), &workspace));
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(stdout, "", "no handshake");
+    let said = [
         (
-            "sketches are refused: there's no sketch worker",
+            "silico serve: there's no sketch worker, so no sketch can be solved: worker_unavailable: no sketch worker in",
             "silico-sketch-worker",
         ),
         (
-            "STEP export is refused: there's no STEP worker",
+            "silico serve: there's no STEP worker, so nothing can be exported as STEP: worker_unavailable: no STEP worker in",
             "silico-step-worker",
         ),
         (
-            "render is refused: there's no render worker",
+            "silico serve: there's no render worker, so nothing can be rendered: worker_unavailable: no render worker in",
             "silico-render-worker",
         ),
     ];
-    let mut seen: Vec<String> = Vec::new();
-    while !warnings
-        .iter()
-        .all(|(warning, _)| seen.iter().any(|line| line.contains(warning)))
-    {
-        match said.recv_timeout(DEADLINE) {
-            Ok(line) => seen.push(line),
-            Err(_) => panic!(
-                "not every missing worker was said while serving:\n{}",
-                seen.join("\n")
-            ),
-        }
-    }
-    for (warning, worker) in warnings {
-        let line = seen.iter().find(|line| line.contains(warning)).unwrap();
+    let lines: Vec<&str> = stderr.lines().collect();
+    for (message, worker) in said {
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with(message))
+            .unwrap_or_else(|| panic!("{message}\nnot in {stderr}"));
         assert!(
             line.contains(&format!(
                 "Silico looks for {worker} beside its own executable"
@@ -583,32 +558,89 @@ fn serve_with_only_a_kernel_worker_warns_of_each_missing_one_and_serves() {
         );
         assert!(line.contains(&bin.display().to_string()), "{line}");
     }
-    // The box builds on the kernel worker there.
-    let opened = ask(
-        &mut stdin,
-        &lines,
-        r#"{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "open", "arguments": {"path": "box.silico", "create": false}}}"#,
-        "1",
-    );
+    // The kernel worker is there: nothing is said of it.
+    assert!(!stderr.contains("kernel worker"), "{stderr}");
+    assert!(listed(&workspace).is_empty());
+}
+
+#[test]
+fn serve_missing_any_one_other_worker_alone_doesnt_start_and_names_it() {
+    // Each of the sketch, STEP, and render workers missing on its own, the other three
+    // there: exit 2 before the handshake, and only that worker said, where it was looked for.
+    let all = [
+        "silico-kernel-worker",
+        "silico-sketch-worker",
+        "silico-render-worker",
+        "silico-step-worker",
+    ];
+    for (missing, said) in [
+        (
+            "silico-sketch-worker",
+            "silico serve: there's no sketch worker, so no sketch can be solved: worker_unavailable: no sketch worker in",
+        ),
+        (
+            "silico-step-worker",
+            "silico serve: there's no STEP worker, so nothing can be exported as STEP: worker_unavailable: no STEP worker in",
+        ),
+        (
+            "silico-render-worker",
+            "silico serve: there's no render worker, so nothing can be rendered: worker_unavailable: no render worker in",
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let there: Vec<&str> = all.iter().copied().filter(|w| *w != missing).collect();
+        let bin = install(root.path(), &there);
+        let workspace = root.path().join("models");
+        std::fs::create_dir(&workspace).unwrap();
+        let (code, stdout, stderr) = refused_start(serve_command(&bin.join("silico"), &workspace));
+        assert_eq!(code, Some(2), "{missing}: {stderr}");
+        assert_eq!(stdout, "", "{missing}: no handshake");
+        let lines: Vec<&str> = stderr
+            .lines()
+            .filter(|line| line.starts_with("silico serve: "))
+            .collect();
+        assert_eq!(lines.len(), 1, "{missing}: {stderr}");
+        assert!(lines[0].starts_with(said), "{missing}: {}", lines[0]);
+        assert!(
+            lines[0].contains(&format!(
+                "Silico looks for {missing} beside its own executable"
+            )),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains(&bin.display().to_string()),
+            "{}",
+            lines[0]
+        );
+        assert!(listed(&workspace).is_empty());
+    }
+}
+
+#[test]
+fn serve_without_any_worker_names_all_four_kernel_first() {
+    let root = tempfile::tempdir().unwrap();
+    let bin = install(root.path(), &[]);
+    let workspace = root.path().join("models");
+    std::fs::create_dir(&workspace).unwrap();
+    let (code, stdout, stderr) = refused_start(serve_command(&bin.join("silico"), &workspace));
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(stdout, "", "no handshake");
+    let firsts: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("silico serve: there's no "))
+        .map(|line| line.split(',').next().unwrap())
+        .collect();
     assert_eq!(
-        opened["result"]["structuredContent"]["ok"], true,
-        "{opened}"
+        firsts,
+        [
+            "silico serve: there's no kernel worker it can use",
+            "silico serve: there's no sketch worker",
+            "silico serve: there's no STEP worker",
+            "silico serve: there's no render worker",
+        ],
+        "{stderr}"
     );
-    let measured = ask(
-        &mut stdin,
-        &lines,
-        r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "mass_properties", "arguments": {"session": "s1", "model": "current", "feature": null}}}"#,
-        "2",
-    );
-    let envelope = &measured["result"]["structuredContent"];
-    assert_eq!(envelope["model"]["fault"], Value::Null, "{measured}");
-    // 40 × 20 × 10.
-    assert_eq!(
-        envelope["result"]["bodies"][0]["volume"], 8000,
-        "{measured}"
-    );
-    drop(stdin);
-    assert_eq!(exited(child).code(), Some(0));
 }
 
 #[test]
@@ -633,4 +665,61 @@ fn serve_with_a_kernel_worker_it_cant_read_doesnt_start() {
         worker.display()
     );
     assert!(stderr.starts_with(&said), "{said}\nin {stderr}");
+}
+
+#[test]
+fn serve_gives_a_kernel_faults_advice_as_data_in_the_models_fault() {
+    // The contract lows' `advice`, from a real fault: a kernel worker that segfaults once
+    // the request reaches it (worker.rs's `crash_advice`: a fault signal with the request
+    // is the values', which would crash it again). `check`'s envelope gives the fault once,
+    // in `model.fault`, its advice `change_the_values` as data beside the session's words.
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("models");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(workspace.join("box.silico"), BOX).unwrap();
+    let kernel = root.path().join("segfaulting-kernel");
+    std::fs::write(
+        &kernel,
+        "#!/bin/sh\nprintf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\nkill -SEGV $$\nexec sleep 600\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&kernel, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silico"))
+        .args(["serve", "--workspace"])
+        .arg(&workspace)
+        .env("SILICO_KERNEL_WORKER", &kernel)
+        .env("XDG_CACHE_HOME", root.path().join("cache-home"))
+        .env_remove("SILICO_LOG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let lines = lines(&mut child);
+    ask(&mut stdin, &lines, INITIALIZE, "0");
+    let opened = ask(
+        &mut stdin,
+        &lines,
+        r#"{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "open", "arguments": {"path": "box.silico", "create": false}}}"#,
+        "1",
+    );
+    assert_eq!(
+        opened["result"]["structuredContent"]["ok"], true,
+        "{opened}"
+    );
+    let checked = ask(
+        &mut stdin,
+        &lines,
+        r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "check", "arguments": {"session": "s1", "model": "current", "fresh": true}}}"#,
+        "2",
+    );
+    let fault = &checked["result"]["structuredContent"]["model"]["fault"];
+    assert_eq!(fault["code"], "worker_crashed", "{checked}");
+    assert_eq!(fault["advice"], "change_the_values", "{checked}");
+    drop(stdin);
+    assert_eq!(exited(child).code(), Some(0));
 }

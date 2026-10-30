@@ -69,7 +69,9 @@ use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
 use crate::pool::{Outcome, Pending};
 use crate::profile::Profile;
 use crate::references::EdgeNames;
-use crate::sketch::{SketchSolution, SketchSolver, SketchWorker, SolveStopper};
+use crate::sketch::{
+    Diagnosed, SketchSolution, SketchSolver, SketchWorker, SolveStopper, Translation,
+};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 use silico_protocol::Description;
@@ -316,6 +318,9 @@ pub struct Model {
     live: OnceLock<Vec<Option<usize>>>,
     /// The engine's maps named so far.
     known: NamedMaps,
+    /// Each sketch's diagnosis, paired with its solve's outcome, by its ID, from the answer
+    /// its rebuild's solve read ([`Model::diagnosed`]); or why it has none.
+    diagnoses: Arc<BTreeMap<FeatureId, Result<Arc<Diagnosed>, Error>>>,
 }
 
 /// How many features [`Model::element_map`]'s reads have visited on this thread so far:
@@ -667,6 +672,17 @@ impl Model {
         self.source.document()
     }
 
+    /// The sketch `id`'s diagnosis, paired with its solve's outcome, as its rebuild's solve
+    /// read them from one answer (the definition states are read from it,
+    /// [`crate::sketch_states::states`]); or why there's none: the solver failed, or its reply
+    /// couldn't be read, its error naming the sketch. None for a feature that isn't a sketch
+    /// this model solved.
+    pub fn diagnosed(&self, id: &FeatureId) -> Option<Result<&Diagnosed, &Error>> {
+        self.diagnoses
+            .get(id)
+            .map(|diagnosed| diagnosed.as_ref().map(AsRef::as_ref))
+    }
+
     /// This model as `source`'s: the same steps and outcomes, its document `source`. For a
     /// document that differs from the one it was built from only in what a save writes from
     /// it (its fingerprints, with no sketch's solve written), whose rebuild would take every
@@ -954,9 +970,11 @@ pub struct Run {
 /// done, its steps, and the step running, counted as its schedule runs them, under a lock
 /// of its own that's held only to count or to read the count, never across a step: so
 /// reading it never waits on the recompute's work. A diagnostic, not a result (section
-/// 10): which step finishes first depends on scheduling. Clones share the count.
+/// 10): which step finishes first depends on scheduling. Clones share the count. Each
+/// change is told to whoever waits for one ([`changed_since`](Self::changed_since)): the
+/// session's watcher of its rebuild, which wakes the client as each step settles.
 #[derive(Clone, Default)]
-pub struct StepCounter(Arc<Mutex<Counted>>);
+pub struct StepCounter(Arc<(Mutex<Counted>, Condvar)>);
 
 /// A recompute's count of its steps, as [`StepCounter::now`] reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -986,28 +1004,55 @@ struct Counted {
 impl StepCounter {
     /// The count now.
     pub fn now(&self) -> StepCount {
-        lock(&self.0).count.clone()
+        lock(&self.0.0).count.clone()
+    }
+
+    /// The count once its steps or those settled differ from `seen`'s, or it has ended:
+    /// waited for, each change being told ([`Condvar`]). Of a count that has ended, at once.
+    pub fn changed_since(&self, seen: &StepCount) -> StepCount {
+        let (counted, told) = &*self.0;
+        let mut counted = lock(counted);
+        while !counted.count.ended
+            && counted.count.done == seen.done
+            && counted.count.steps == seen.steps
+        {
+            counted = told.wait(counted).unwrap_or_else(PoisonError::into_inner);
+        }
+        counted.count.clone()
+    }
+
+    /// The count changed: told to whoever waits.
+    fn changed(&self) {
+        self.0.1.notify_all();
     }
 
     /// The plan made: `steps` steps, `done` of them settled already, each called as
     /// `labels` says.
     fn planned(&self, steps: usize, done: usize, labels: BTreeMap<Key, String>) {
-        let mut counted = lock(&self.0);
-        counted.count.steps = steps;
-        counted.count.done = done;
-        counted.labels = labels;
+        {
+            let mut counted = lock(&self.0.0);
+            counted.count.steps = steps;
+            counted.count.done = done;
+            counted.labels = labels;
+        }
+        self.changed();
     }
 
     /// The step `key` started.
     fn started(&self, key: Key) {
-        let mut counted = lock(&self.0);
+        let mut counted = lock(&self.0.0);
         counted.running.push(key);
         counted.count.running = counted.labels.get(&key).cloned();
     }
 
     /// The step `key` settled: run (it was [`started`](Self::started)) or never to be.
     fn settled(&self, key: Key, ran: bool) {
-        let mut counted = lock(&self.0);
+        self.settle(key, ran);
+        self.changed();
+    }
+
+    fn settle(&self, key: Key, ran: bool) {
+        let mut counted = lock(&self.0.0);
         let Counted {
             count,
             labels,
@@ -1020,16 +1065,33 @@ impl StepCounter {
         }
     }
 
-    /// The recompute ended: every step settled, if it finished.
+    /// The recompute ended: every step settled, if it finished. Of one that has ended, it
+    /// changes nothing.
     fn ended(&self, finished: bool) {
-        let mut counted = lock(&self.0);
-        counted.running.clear();
-        let count = &mut counted.count;
-        if finished {
-            count.done = count.steps;
+        {
+            let mut counted = lock(&self.0.0);
+            if counted.count.ended {
+                return;
+            }
+            counted.running.clear();
+            let count = &mut counted.count;
+            if finished {
+                count.done = count.steps;
+            }
+            count.running = None;
+            count.ended = true;
         }
-        count.running = None;
-        count.ended = true;
+        self.changed();
+    }
+}
+
+/// A recompute's count ended however its thread ends, a panic too, so no one waiting for
+/// its next change ([`StepCounter::changed_since`]) waits forever.
+struct EndsCount(StepCounter);
+
+impl Drop for EndsCount {
+    fn drop(&mut self) {
+        self.0.ended(false);
     }
 }
 
@@ -1419,9 +1481,29 @@ struct Solving {
 pub const SKETCH_STOP_AFTER: Duration = Duration::from_millis(10);
 
 type StepResult = Result<Arc<Built>, Error>;
-type SketchResult = Result<Arc<SketchSolution>, Error>;
 /// A recompute's sketches' results, by key.
 type SketchResults = BTreeMap<Key, SketchResult>;
+
+/// A sketch's solve, as a recompute keeps it: its result (its solution, or why it has
+/// none, naming the sketch, as `check` reports it), and the diagnosis read from the same
+/// answer, paired with its outcome ([`Diagnosed`]), which the sketch read's states are read
+/// from ([`Model::diagnosed`]), or why there's none (the solver failed before it diagnosed
+/// the sketch, or its reply couldn't be read).
+#[derive(Debug, Clone)]
+struct SketchResult {
+    result: Result<Arc<SketchSolution>, Error>,
+    diagnosed: Result<Arc<Diagnosed>, Error>,
+}
+
+impl SketchResult {
+    /// No solve: `error`, the solver's or a bug's, for both.
+    fn failed(error: Error) -> Self {
+        SketchResult {
+            result: Err(error.clone()),
+            diagnosed: Err(error),
+        }
+    }
+}
 
 /// A sketch's result in a recompute: its solve's, or the solver's failure, not the
 /// sketch's (a worker that couldn't start), which isn't kept, so the next recompute tries
@@ -1436,7 +1518,7 @@ impl SketchOutcome {
     fn result(self) -> SketchResult {
         match self {
             SketchOutcome::Solved(result) => result,
-            SketchOutcome::SolverFailed(error) => Err(error),
+            SketchOutcome::SolverFailed(error) => SketchResult::failed(error),
         }
     }
 }
@@ -1598,8 +1680,10 @@ impl<K: Kernel + 'static> Recompute<K> {
             .spawn(move || {
                 let _caller = caller.enter();
                 let _entered = span.enter();
+                let ends = EndsCount(counting.clone());
                 let outcome = engine.run(&document, generation, &counting, reads);
                 counting.ended(matches!(outcome, Ok(RunOutcome::Published(_))));
+                drop(ends);
                 let published = match &outcome {
                     Ok(RunOutcome::Published(model)) => Some(Arc::clone(model)),
                     _ => None,
@@ -3305,7 +3389,11 @@ impl<K: Kernel + 'static> Engine<K> {
         let mut swept_sketches = BTreeMap::new();
         let mut made = Vec::new();
         for (id, key) in &used {
-            let Some(Ok(solution)) = solutions.get(key) else {
+            let Some(SketchResult {
+                result: Ok(solution),
+                ..
+            }) = solutions.get(key)
+            else {
                 continue;
             };
             let profile = match profiles.get(key) {
@@ -3376,23 +3464,26 @@ impl<K: Kernel + 'static> Engine<K> {
     }
 
     /// Keeps a recompute's solves by key, as [`keep`](Self::keep) keeps steps' results: a
-    /// failure only if it follows from the sketch (it would fail again).
+    /// failure only if it follows from the sketch (it would fail again), and only with its
+    /// diagnosis (a solver that failed diagnosing a sketch the translation refuses may not
+    /// fail again).
     fn keep_solutions(&self, solved: &SketchRun) {
         let mut state = lock(&self.state);
         for (key, outcome) in solved {
             let SketchOutcome::Solved(result) = outcome else {
                 continue;
             };
-            let keep = match result {
-                Ok(_) => true,
-                Err(error) => matches!(
-                    error.code(),
-                    ErrorCode::InvalidInput
-                        | ErrorCode::InvalidResult
-                        | ErrorCode::OverConstrained
-                        | ErrorCode::SolveFailed
-                ),
-            };
+            let keep = result.diagnosed.is_ok()
+                && match &result.result {
+                    Ok(_) => true,
+                    Err(error) => matches!(
+                        error.code(),
+                        ErrorCode::InvalidInput
+                            | ErrorCode::InvalidResult
+                            | ErrorCode::OverConstrained
+                            | ErrorCode::SolveFailed
+                    ),
+                };
             if keep {
                 state.solutions.insert(*key, result.clone());
             }
@@ -3470,14 +3561,14 @@ impl<K: Kernel + 'static> Engine<K> {
                     stopper,
                 });
             }
-            let result = crate::sketch::solve(document, id, solver.as_mut());
+            let result = solve_diagnosed(document, id, solver.as_mut());
             let mut state = lock(&self.state);
             state.solving = None;
             if superseded(&state) {
                 return None;
             }
             drop(state);
-            solved.insert(*key, SketchOutcome::Solved(result.map(Arc::new)));
+            solved.insert(*key, SketchOutcome::Solved(result));
         }
         Some(solved)
     }
@@ -4028,6 +4119,7 @@ fn model(
 ) -> Model {
     let done = &schedule.done;
     let mut features: Vec<(FeatureId, FeatureOutcome)> = Vec::with_capacity(plan.features.len());
+    let mut diagnoses = BTreeMap::new();
     for planned in &plan.features {
         // A feature it uses that didn't build blocks it, on the failure at the root: its
         // base, then the sketch it sweeps.
@@ -4054,8 +4146,13 @@ fn model(
             _ if planned.suppressed => FeatureOutcome::Suppressed,
             (Some(on), _) => FeatureOutcome::Blocked { on },
             (None, Some(key)) => match solutions.get(&key) {
-                Some(Ok(solution)) => FeatureOutcome::Sketch(Arc::clone(solution)),
-                Some(Err(error)) => FeatureOutcome::Failed(error.clone()),
+                Some(solved) => {
+                    diagnoses.insert(planned.id.clone(), solved.diagnosed.clone());
+                    match &solved.result {
+                        Ok(solution) => FeatureOutcome::Sketch(Arc::clone(solution)),
+                        Err(error) => FeatureOutcome::Failed(error.clone()),
+                    }
+                }
                 None => FeatureOutcome::Failed(
                     silico_bug("a sketch wasn't solved").with_feature(planned.id.as_str()),
                 ),
@@ -4121,6 +4218,60 @@ fn model(
         entries,
         live: OnceLock::new(),
         known,
+        diagnoses: Arc::new(diagnoses),
+    }
+}
+
+/// `feature`, a sketch of `document`, solved by `solver` as [`crate::sketch::solve`] solves
+/// it, its diagnosis kept with its result: the answer's, read from the same reply; or, for a
+/// sketch the translation refuses, whose constraints never reach the solver, the diagnosis
+/// of its geometry alone beside that refusal ([`Diagnosed::untranslated`]), one solve of no
+/// constraint. A solver that fails that diagnosis leaves the sketch's result the
+/// translation's refusal, and its diagnosis the solver's failure.
+fn solve_diagnosed(
+    document: &Checked,
+    feature: &FeatureId,
+    solver: &mut dyn SketchSolver,
+) -> SketchResult {
+    let named = |e: Error| e.with_feature(feature.as_str());
+    let sketch = match document.feature(feature) {
+        Ok(Feature {
+            operation: Operation::Sketch(sketch),
+            ..
+        }) => sketch,
+        Ok(_) => {
+            return SketchResult::failed(named(silico_bug(
+                "a feature that isn't a sketch was solved as one",
+            )));
+        }
+        Err(error) => return SketchResult::failed(error),
+    };
+    let _span = tracing::info_span!("solve sketch", feature = feature.as_str()).entered();
+    match Translation::new(sketch) {
+        Ok(translation) => match translation.solve(solver) {
+            Ok(answer) => match answer.diagnosed() {
+                Ok(diagnosed) => SketchResult {
+                    result: diagnosed
+                        .outcome()
+                        .map(|solution| Arc::new(solution.clone()))
+                        .map_err(|e| named(e.clone())),
+                    diagnosed: Ok(Arc::new(diagnosed.clone())),
+                },
+                Err(error) => SketchResult::failed(named(error.clone())),
+            },
+            Err(error) => SketchResult::failed(named(error)),
+        },
+        Err(refusal) => SketchResult {
+            result: Err(named(refusal)),
+            diagnosed: Diagnosed::untranslated(sketch, solver)
+                .and_then(|diagnosed| {
+                    diagnosed.ok_or_else(|| {
+                        silico_bug("a sketch the translation refused was translated")
+                    })
+                })
+                .map(Arc::new)
+                .map_err(named),
+        },
     }
 }
 
@@ -4392,6 +4543,48 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_step_counts_change_is_waited_for_and_nothing_else_ends_the_wait() {
+        // `changed_since`: a waiter returns once `steps` or `done` moves, or the count
+        // ends; never while nothing changes (the watcher would spin, waking for nothing).
+        let counter = StepCounter::default();
+        let (said, answer) = mpsc::channel();
+        let waiting = counter.clone();
+        let waiter = std::thread::spawn(move || {
+            let mut seen = waiting.now();
+            for _ in 0..3 {
+                seen = waiting.changed_since(&seen);
+                let _ = said.send(seen.clone());
+            }
+        });
+        let quiet = Duration::from_millis(200);
+        let wait = Duration::from_secs(60);
+        assert!(
+            answer.recv_timeout(quiet).is_err(),
+            "returned with nothing changed"
+        );
+        counter.planned(2, 0, BTreeMap::new());
+        let planned = answer.recv_timeout(wait).unwrap();
+        assert_eq!((planned.done, planned.steps, planned.ended), (0, 2, false));
+        assert!(
+            answer.recv_timeout(quiet).is_err(),
+            "returned with nothing changed"
+        );
+        let key = Key([7; 32]);
+        counter.started(key);
+        assert!(
+            answer.recv_timeout(quiet).is_err(),
+            "a step's start moved neither count"
+        );
+        counter.settled(key, true);
+        let settled = answer.recv_timeout(wait).unwrap();
+        assert_eq!((settled.done, settled.steps), (1, 2));
+        counter.ended(true);
+        let ended = answer.recv_timeout(wait).unwrap();
+        assert_eq!((ended.done, ended.steps, ended.ended), (2, 2, true));
+        waiter.join().unwrap();
+    }
 
     #[test]
     fn a_describe_timed_out_before_its_worker_started_is_asked_again_and_one_after_is_kept() {

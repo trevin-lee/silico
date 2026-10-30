@@ -73,12 +73,14 @@ const POINTS: &str = r#"{"id": "p0000000", "x": 0, "y": 0, "construction": false
 // ------------------------------------------------------------------ merge
 
 #[test]
-fn merging_an_end_held_on_a_line_with_that_lines_own_end() {
+fn merging_an_end_held_on_a_line_with_that_lines_own_end_drops_the_on_as_implied() {
     // A T drawn at a's end: b starts at p9, held on a, and p9 touches a's end p1, so
     // ends_not_joined names {p1, p9} and --merge-touching merges them. After the merge the
-    // on holds a's own end on a, which the gate refuses ("part of a itself").
-    // Broke, before the fix: merge returns Ok with `on` k0000000 holding p1 on a0000000, its own end; the
-    // gate then refuses the sketch: "a on's point, p0000001, is part of a0000000 itself".
+    // shared point is a's end, so the on holds by construction: it's removed as implied
+    // (docs/design/m5.0-app.md, open item 13b, as taken), listed in `removed` after the
+    // point, by kind. Before 13b (#239's decision 10) it was refused ("hold p0000001, a point
+    // of a0000000, on a0000000 itself"). By hand: the kept point stays where it is; b, which
+    // started at the other, starts at it; nothing else changes.
     let lines = [
         line("a0000000", "p0000000", "p0000001"),
         line("b0000000", "p0000009", "q0000000"),
@@ -93,20 +95,43 @@ fn merging_an_end_held_on_a_line_with_that_lines_own_end() {
     );
     assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
     // Either point kept: the on holds it on a, whose end it is.
-    for kept in ["p0000001", "p0000009"] {
-        let other = if kept == "p0000001" {
-            "p0000009"
-        } else {
-            "p0000001"
-        };
-        refused_as(
-            merge(sketch_of(&before), &ids(&[kept, other])),
-            &format!(
-                "merging them would make constraint k0000000 hold {kept}, a point of a0000000, on a0000000 itself"
-            ),
-            &["k0000000", kept, "a0000000"],
-        );
+    for (kept, other, moved) in [
+        ("p0000001", "p0000009", "b0000000"),
+        ("p0000009", "p0000001", "a0000000"),
+    ] {
+        let edited = merge(sketch_of(&before), &ids(&[kept, other])).unwrap();
+        assert_eq!(edited.added, Vec::<ElementId>::new());
+        assert_eq!(edited.modified, ids(&[moved]), "{kept} kept");
+        assert_eq!(edited.removed, ids(&[other, "k0000000"]), "{kept} kept");
+        assert!(edited.sketch.constraints.is_empty());
+        assert!(edited.sketch.points.iter().all(|p| p.id.as_str() != other));
+        let a = &edited.sketch.lines[0];
+        let b = &edited.sketch.lines[1];
+        assert_eq!((a.from.as_str(), a.to.as_str()), ("p0000000", kept));
+        assert_eq!((b.from.as_str(), b.to.as_str()), (kept, "q0000000"));
+        assert_eq!(gate(&before, &edited.sketch), Vec::<String>::new());
     }
+}
+
+#[test]
+fn merging_an_arcs_end_with_a_point_held_on_that_arc_drops_the_on_as_implied() {
+    // 13b covers an arc's end as a line's: q2 (20, 10) ends arc r about q0 (10, 10), from
+    // p1 (10, 0) a quarter turn; a lone point z there is held on r. Merged with q2 kept, the
+    // on holds r's own end on r, implied, and goes.
+    let points = format!("{POINTS}, {}", point("z0000000", 20.0, 10.0));
+    let before = doc(
+        &points,
+        "",
+        "",
+        &arc("r0000000", "q0000000", "p0000001", "q0000002"),
+        r#"{"id": "k0000000", "type": "on", "point": "z0000000", "curve": "r0000000"}"#,
+    );
+    assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
+    let edited = merge(sketch_of(&before), &ids(&["q0000002", "z0000000"])).unwrap();
+    assert_eq!(edited.modified, Vec::<ElementId>::new());
+    assert_eq!(edited.removed, ids(&["z0000000", "k0000000"]));
+    assert!(edited.sketch.constraints.is_empty());
+    assert_eq!(gate(&before, &edited.sketch), Vec::<String>::new());
 }
 
 #[test]
@@ -350,12 +375,27 @@ fn merging_an_arcs_two_ends_is_refused_naming_the_points_merged() {
         "",
     );
     let error = merge(sketch_of(&before), &ids(&["p0000001", "q0000002"])).unwrap_err();
-    assert!(
-        error.message().contains("p0000001") && error.message().contains("q0000002"),
-        "{}",
-        error.message()
+    assert_eq!(
+        error.message(),
+        "merging p0000001 and q0000002 would give arc r0000000 one point at both ends"
     );
     assert_eq!(error.elements(), ["p0000001", "q0000002", "r0000000"]);
+    // Its centre and an end, and its centre and both: what the one point would be to it.
+    let error = merge(sketch_of(&before), &ids(&["q0000000", "q0000002"])).unwrap_err();
+    assert_eq!(
+        error.message(),
+        "merging q0000000 and q0000002 would give arc r0000000 one point as its centre and an end"
+    );
+    assert_eq!(error.elements(), ["q0000000", "q0000002", "r0000000"]);
+    let error = merge(
+        sketch_of(&before),
+        &ids(&["p0000001", "q0000000", "q0000002"]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.message(),
+        "merging q0000000, p0000001 and q0000002 would give arc r0000000 one point as its centre and both its ends"
+    );
 }
 
 #[test]
@@ -541,7 +581,7 @@ fn removing_nothing_changes_nothing() {
         "",
         "",
     );
-    let edited = remove(sketch_of(&before), &[]).unwrap();
+    let edited = remove::<ElementId>(sketch_of(&before), &[]).unwrap();
     assert_eq!(&edited.sketch, sketch_of(&before));
     assert!(edited.added.is_empty() && edited.modified.is_empty() && edited.removed.is_empty());
 }
@@ -1390,4 +1430,42 @@ proptest! {
             prop_assert_eq!(gate(&before, &edited.sketch), Vec::<String>::new());
         }
     }
+}
+
+#[test]
+fn merging_an_arcs_centre_with_a_point_held_on_that_arc_is_refused_not_dropped() {
+    // Open item 13b drops an `on` only where the merge makes its point an end of its curve;
+    // a centre on its own arc conflicts (a radius of nothing), and stays refused. Arc r about
+    // q0 (10, 10) from p1 (10, 0) to q2 (20, 10); z (0, 10), on r's circle, held on r; q0
+    // kept, merged with z.
+    let points = format!("{POINTS}, {}", point("z0000000", 0.0, 10.0));
+    let before = doc(
+        &points,
+        "",
+        "",
+        &arc("r0000000", "q0000000", "p0000001", "q0000002"),
+        r#"{"id": "k0000000", "type": "on", "point": "z0000000", "curve": "r0000000"}"#,
+    );
+    assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
+    refused_as(
+        merge(sketch_of(&before), &ids(&["q0000000", "z0000000"])),
+        "merging them would make constraint k0000000 hold q0000000, a point of r0000000, on r0000000 itself",
+        &["k0000000", "q0000000", "r0000000"],
+    );
+}
+
+#[test]
+fn merging_an_arcs_centre_with_its_start_is_said_as_its_centre_and_an_end() {
+    let before = doc(
+        POINTS,
+        "",
+        "",
+        &arc("r0000000", "q0000000", "p0000001", "q0000002"),
+        "",
+    );
+    refused_as(
+        merge(sketch_of(&before), &ids(&["q0000000", "p0000001"])),
+        "merging q0000000 and p0000001 would give arc r0000000 one point as its centre and an end",
+        &["q0000000", "p0000001", "r0000000"],
+    );
 }

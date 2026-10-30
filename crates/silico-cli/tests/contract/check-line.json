@@ -4,6 +4,7 @@
     "ok": false,
     "problems": [
       {
+        "advice": null,
         "candidates": [],
         "cause": null,
         "code": "invalid_input",
@@ -15,10 +16,13 @@
         "suggestion": "give the box a valid length"
       }
     ],
-    "total": 1
+    "total": 1,
+    "warnings": [],
+    "warnings_total": 0
   },
   "couldnt_check": {
     "error": {
+      "advice": null,
       "candidates": [],
       "cause": null,
       "code": "io_failed",
@@ -30,6 +34,10 @@
       "suggestion": "check the file's name, and that it's a regular file this user may read"
     },
     "file": "missing.silico",
-    "ok": false
+    "ok": false,
+    "problems": [],
+    "total": 0,
+    "warnings": [],
+    "warnings_total": 0
   }
 }

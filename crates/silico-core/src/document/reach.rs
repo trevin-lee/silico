@@ -112,7 +112,34 @@ pub fn net_reach(
     carried: &BTreeSet<FeatureId>,
     after: &Document,
 ) -> BTreeSet<FeatureId> {
+    net_reach_but(before, carried, after, &BTreeMap::new())
+}
+
+/// [`net_reach`], but a feature of `after` that holds exactly what `written` holds for it
+/// (a sketch whose solve `format` wrote inside a transaction, M5.0's A6) isn't one the edits
+/// changed, whatever `before` held: `format` accepts what it names, and reaches nothing,
+/// as it reaches nothing outside a transaction.
+pub fn net_reach_but(
+    before: Before<'_>,
+    carried: &BTreeSet<FeatureId>,
+    after: &Document,
+    written: &BTreeMap<FeatureId, Feature>,
+) -> BTreeSet<FeatureId> {
     let mut seeds = carried.clone();
+    let changed = |before: &Document, after: &Document| -> BTreeSet<FeatureId> {
+        changed(before, after)
+            .into_iter()
+            .filter(|id| {
+                !written.get(id).is_some_and(|written| {
+                    after
+                        .features
+                        .iter()
+                        .find(|feature| &feature.id == id)
+                        .is_some_and(|now| same_values(written, now))
+                })
+            })
+            .collect()
+    };
     match before {
         Before::Read(before) => seeds.extend(changed(before, after)),
         Before::Unread(ids) => seeds.extend(not_held(ids, after)),
@@ -153,7 +180,7 @@ fn not_held<'a>(
 /// added (one whose ID `before` hasn't). A removed feature is none of them: a feature that
 /// used it either changed what it uses, and is one, or is refused by the gate. What uses
 /// them is reached too ([`with_users`]), as [`net_reach`] adds.
-fn changed(before: &Document, after: &Document) -> BTreeSet<FeatureId> {
+pub(crate) fn changed(before: &Document, after: &Document) -> BTreeSet<FeatureId> {
     let mut was: BTreeMap<&FeatureId, &Feature> = BTreeMap::new();
     for feature in &before.features {
         // A document the gate refused may hold an ID twice: the first is the one compared.

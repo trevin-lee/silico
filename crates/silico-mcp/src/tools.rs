@@ -159,7 +159,8 @@ fn effect(command: Command) -> Effect {
         | Command::MassProperties
         | Command::Distance
         | Command::Angle
-        | Command::Timeline => Effect::Reads,
+        | Command::Timeline
+        | Command::Sketch => Effect::Reads,
         // An edit outside a transaction saves at once; commit and format save the file.
         Command::Commit
         | Command::Format
@@ -168,14 +169,25 @@ fn effect(command: Command) -> Effect {
         | Command::RemoveFeature
         | Command::ReplaceText
         | Command::MoveFeature
-        | Command::SuppressFeature => Effect::Changes { destructive: true },
+        | Command::SuppressFeature
+        | Command::SketchAdd
+        | Command::SketchRemove
+        | Command::SketchSplit
+        | Command::SketchTrim
+        | Command::SketchUnjoin
+        | Command::SketchMerge => Effect::Changes { destructive: true },
         // `replace: true` writes over a file at `to`, or at `path`.
         Command::Render | Command::Export => Effect::Changes { destructive: true },
         // A new document is only made where nothing is; the rest change what the server
-        // holds, never a file.
-        Command::Open | Command::Close | Command::Cancel | Command::Begin | Command::Rollback => {
-            Effect::Changes { destructive: false }
-        }
+        // holds, never a file. An undo or a redo can drop the stack's oldest states past
+        // its bound, but it never touches a file, and `rollback` still reaches `begin`'s.
+        Command::Open
+        | Command::Close
+        | Command::Cancel
+        | Command::Begin
+        | Command::Rollback
+        | Command::Undo
+        | Command::Redo => Effect::Changes { destructive: false },
         // Removes only the cache's own entries, each a miss the next rebuild makes again.
         Command::CacheClear => Effect::Changes { destructive: false },
     }
@@ -205,7 +217,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Status => (
             "Session status",
-            "What a session holds, answered at once even while another of its commands runs: its features, whether a transaction is open, what's running, and how far its rebuild has got.",
+            "What a session holds, answered at once even while another of its commands runs: its features; the transaction open, if one is, with whether its document differs from the one it began from (unsaved), and the edits `undo` and `redo` can step through; what's running; and how far its rebuild has got.",
         ),
         Command::ReadLogs => (
             "Read logs",
@@ -226,6 +238,14 @@ fn words(command: Command) -> (&'static str, String) {
         Command::Rollback => (
             "Roll back",
             "End the session's transaction, undoing every edit made in it. The file is never touched.",
+        ),
+        Command::Undo => (
+            "Undo",
+            "Inside a transaction, undo its last edit not undone, or with `to` (an earlier revision the session was at in it), every edit after that revision: its state restored byte for byte, at a new revision. Each edit is one step: to undo a run of edits as one, undo `to` the revision the run began at. The result says the edits left to undo and redo, and `dropped`, how many more edits the undo stack's bound (`version`'s `undo_bytes`) put out of reach; `rollback` still returns to the transaction's start. Outside a transaction each edit was saved as it was made, so there's nothing to undo. Give the revision the session's last answer says.",
+        ),
+        Command::Redo => (
+            "Redo",
+            "Inside a transaction, redo the last edit undone, or with `to` (a later revision the session was at in it), every edit undone up to that revision: its state restored byte for byte, at a new revision. An edit after an undo drops what was undone, which can't be redone. Give the revision the session's last answer says.",
         ),
         Command::Format => (
             "Format",
@@ -254,6 +274,30 @@ fn words(command: Command) -> (&'static str, String) {
         Command::ReplaceText => (
             "Replace the text",
             "Replace the document's whole text, read and checked as `silico check` reads a file; the text replaced is returned. Give the revision the edit was made against.",
+        ),
+        Command::SketchAdd => (
+            "Add to a sketch",
+            "Add points, lines, circles, arcs, and constraints to one sketch, each as the document writes it with a fresh random 8-character ID, never one the sketch holds or a removal freed (a name a feature stores of the removed member would find the new one); a new curve may end at a point the sketch holds, joining it there. The batch is checked whole, each problem at its member's path (`circles.cb000003.radius`). A constraint that over-defines the sketch is added all the same: `check` then reports the conflict, and the sketch's features fail until it's mended (make the dimension driven with `set_field`, or remove it). Give the revision the edit was made against.",
+        ),
+        Command::SketchRemove => (
+            "Remove from a sketch",
+            "Remove members of one sketch by ID: a constraint; a curve, with its points no other curve uses and every constraint on what goes; a point only if no curve uses it. A sketch left under or over defined, or unsolvable, isn't refused: `check` reports it. Give the revision the edit was made against.",
+        ),
+        Command::SketchSplit => (
+            "Split a sketch curve",
+            "Split one line or arc of a sketch at a position on it (within 1e-7 mm), or a circle at two, into pieces sharing a new point; the piece on the curve's start side keeps its ID, and `references` lists the features whose stored names the curve reached, which now find only that piece. Constraints on the curve follow the pieces (a length becomes a distance of the outer ends). `ids` gives the new members' IDs in `added`'s order, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
+        ),
+        Command::SketchTrim => (
+            "Trim a sketch curve",
+            "Trim one curve of a sketch back to the curves that cut it either side of `pick`, removing that part, or the whole curve where nothing cuts it there. A new end shares a cutter's end held on the curve, or gets a new point held on the cutter. `ids` gives the new members' IDs in `added`'s order, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
+        ),
+        Command::SketchUnjoin => (
+            "Unjoin a sketch point",
+            "Pull one curve off a point it shares with others: it gets a new point at the same place, keeping its own constraints; the others keep the point and its constraints. `check` then warns of the two points as `ends_not_joined` until something moves them. `ids` is the new point's ID, a list of one, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
+        ),
+        Command::SketchMerge => (
+            "Merge sketch points",
+            "Make two or more points of a sketch one: the first named survives at its own coordinates, and the others' curves and constraints move to it. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): name first the point the constraints hold. `silico fmt --merge-touching` merges every `ends_not_joined` cluster so. Give the revision the edit was made against.",
         ),
         Command::Text => (
             "Document text",
@@ -303,6 +347,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Export",
             "Write the current model's bodies, or the features named, to `path` in the workspace: as a printable 3MF, each solid meshed at the tolerance (FreeCAD's default is 0.1 mm), or as STEP, exact, with `tolerance: null`. A file already at `path` is replaced only with `replace: true`.",
         ),
+        Command::Sketch => (
+            "Read a sketch",
+            "A sketch as the model solved it: its plane in 3D, its state (under, fully, or over defined, no solution, or invalid) and degrees of freedom, each point, curve, and constraint as the document writes it, at its solved values, with its own state, the regions its profile makes or why it makes none, and why it wasn't solved.",
+        ),
         Command::Render => (
             "Render",
             "A PNG of the model's bodies from a named view or a camera, with elements highlighted, returned as an image beside the result, and written to `to` in the workspace if given.",
@@ -316,10 +364,20 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::RemoveFeature
         | Command::ReplaceText
         | Command::MoveFeature
-        | Command::SuppressFeature => &[IN_A_TRANSACTION, READ_CURRENT],
-        Command::Check | Command::MassProperties | Command::Render | Command::Timeline => {
-            &[READ_CURRENT]
-        }
+        | Command::SuppressFeature
+        | Command::SketchAdd
+        | Command::SketchRemove
+        | Command::SketchSplit
+        | Command::SketchTrim
+        | Command::SketchUnjoin
+        | Command::SketchMerge => &[IN_A_TRANSACTION, READ_CURRENT],
+        Command::Check
+        | Command::MassProperties
+        | Command::Render
+        | Command::Timeline
+        | Command::Sketch
+        | Command::Undo
+        | Command::Redo => &[READ_CURRENT],
         Command::Elements | Command::Query | Command::Distance | Command::Angle => {
             &[READ_CURRENT, NAMES_FROM_ELEMENTS]
         }

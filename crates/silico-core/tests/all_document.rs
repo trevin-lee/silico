@@ -8,6 +8,8 @@
 // Shared by the files below, each loaded once.
 #[path = "common/bound.rs"]
 mod bound;
+#[path = "common/bracket.rs"]
+mod bracket;
 #[path = "common/cache.rs"]
 mod cache;
 #[path = "common/cache_control.rs"]
@@ -82,10 +84,18 @@ mod adversarial_session_disk;
 mod adversarial_session_timeline;
 #[path = "adversarial_session_undo.rs"]
 mod adversarial_session_undo;
+#[path = "adversarial_sketch_edit_commands.rs"]
+mod adversarial_sketch_edit_commands;
+#[path = "adversarial_sketch_geometry_edits.rs"]
+mod adversarial_sketch_geometry_edits;
+#[path = "adversarial_sketch_read.rs"]
+mod adversarial_sketch_read;
 #[path = "adversarial_timeline.rs"]
 mod adversarial_timeline;
 #[path = "adversarial_type_words.rs"]
 mod adversarial_type_words;
+#[path = "adversarial_undo_commands.rs"]
+mod adversarial_undo_commands;
 #[path = "adversarial_warnings.rs"]
 mod adversarial_warnings;
 #[path = "adversarial_wire_commands.rs"]
@@ -144,6 +154,12 @@ mod session_rebuild;
 mod session_reload;
 #[path = "session_render.rs"]
 mod session_render;
+#[path = "session_sketch.rs"]
+mod session_sketch;
+#[path = "session_sketch_edits.rs"]
+mod session_sketch_edits;
+#[path = "session_sketch_geometry_edits.rs"]
+mod session_sketch_geometry_edits;
 #[path = "session_tracing.rs"]
 mod session_tracing;
 #[path = "session_transactions.rs"]
@@ -158,6 +174,8 @@ mod wire_commands;
 mod wire_session_commands;
 #[path = "wire_session_reads.rs"]
 mod wire_session_reads;
+#[path = "wire_undo_commands.rs"]
+mod wire_undo_commands;
 
 /// Every file in tests/ is built: this crate lists its test programs (`autotests = false`),
 /// so a new file must be added as a module of one, or as one, or it would never run.

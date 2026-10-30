@@ -628,11 +628,23 @@ impl Cache {
     /// leads. The names alone wouldn't keep it out: a SHA-256 git repository's loose objects
     /// are named as entries are.
     ///
-    /// How many entries it removed (not those another process removed first); or, if any
-    /// couldn't be removed, or a directory of the cache couldn't be read, each, with how many
-    /// it removed of the rest. Its next put scans the directory again, since what this cache
-    /// knew of its size is gone.
+    /// How many entries it removed (not those another process removed first; none in a
+    /// directory that leads out of its workspace); or, if any couldn't be removed, or a
+    /// directory of the cache couldn't be read, each, with how many it removed of the rest.
+    /// Its next put scans the directory again, since what this cache knew of its size is
+    /// gone.
     pub fn clear(&self) -> Result<u64, PartlyCleared> {
+        self.clear_unless_out().map(|cleared| match cleared {
+            Cleared::Removed(removed) => removed,
+            Cleared::LeadsOut => 0,
+        })
+    }
+
+    /// [`clear`](Self::clear), saying whether its directory led out of its workspace as the
+    /// clear opened it, through a link on its way (its own name, or a directory above it),
+    /// so it removed nothing: `cache_clear`'s, which refuses that (the contract lows,
+    /// 2026-10-29), apart from a directory that's empty, a link inside, or nothing.
+    pub fn clear_unless_out(&self) -> Result<Cleared, PartlyCleared> {
         let span = tracing::info_span!(
             "cache.clear",
             dir = %self.dir.display(),
@@ -641,8 +653,11 @@ impl Cache {
         );
         let _entered = span.enter();
         let mut clearing = PartlyCleared::default();
+        let mut out = false;
         // A directory that's a link (followed nowhere), one that leads out of the workspace
-        // as it's opened, a file, or nothing holds no entry of the cache's.
+        // as it's opened, a file, or nothing holds no entry of the cache's. One refused is
+        // told apart by its path, as it is now, if it leads out: nothing is removed either
+        // way, the handle having been refused.
         match self.root(false) {
             Ok(root) => walk(&root, &self.dir, |found| match found {
                 Walked::Entry(place, _) => clearing.remove(place),
@@ -650,16 +665,19 @@ impl Cache {
                 Walked::Unread(path, why) => clearing.failed(path, ClearStep::Read, why),
                 Walked::Unknown(path, why) => clearing.failed(path, ClearStep::Remove, why),
             }),
-            Err(Unopened::Missing | Unopened::Refused | Unopened::NotADirectory(_)) => {}
+            Err(Unopened::Refused) => out = self.leads_out(),
+            Err(Unopened::Missing | Unopened::NotADirectory(_)) => {}
             Err(Unopened::Failed(e)) => clearing.failed(&self.dir, ClearStep::Read, e),
         }
         // What it knew of the directory's size is gone: its next put scans it.
         self.usage().known = None;
         span.record("removed", clearing.removed);
         span.record("failed", clearing.total);
-        if clearing.total == 0 {
+        if out {
+            Ok(Cleared::LeadsOut)
+        } else if clearing.total == 0 {
             tracing::info!(removed = clearing.removed, "cleared the cache");
-            Ok(clearing.removed)
+            Ok(Cleared::Removed(clearing.removed))
         } else {
             tracing::warn!(
                 removed = clearing.removed,
@@ -852,6 +870,16 @@ fn entry_names(key: &EntryKey) -> (String, String) {
     let mut hex = crate::hex(&key.0);
     let name = hex.split_off(SUBDIRECTORY_DIGITS);
     (hex, name)
+}
+
+/// What [`Cache::clear_unless_out`] did, when it could do all it was asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cleared {
+    /// It removed this many entries.
+    Removed(u64),
+    /// Its directory led out of its workspace as the clear opened it, through a link on its
+    /// way: nothing was removed.
+    LeadsOut,
 }
 
 /// What [`Cache::clear`] did when it couldn't do all of it: how many entries it removed, and

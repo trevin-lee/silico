@@ -18,20 +18,30 @@
   },
   "result": {
     "$defs": {
-      "BeginResult": {
-        "additionalProperties": false,
-        "description": "`begin`'s result.",
-        "properties": {
-          "base": {
-            "description": "The revision the transaction began from: the one `rollback` returns to.",
-            "minimum": 1,
-            "type": "integer"
+      "Disk": {
+        "description": "What a comparison of a session's file on disk found, as `status` gives it.",
+        "oneOf": [
+          {
+            "const": "unchanged",
+            "description": "The bytes the session last read or wrote.",
+            "type": "string"
+          },
+          {
+            "const": "changed",
+            "description": "Other bytes. With no transaction open, the session reloads them itself (`reload`);\ninside one, its `commit` is refused as a `conflict` until it rolls back. A file this\nsession's own save left part written reads `changed` too, and isn't reloaded: the\nnext save says where its old text is.",
+            "type": "string"
+          },
+          {
+            "const": "gone",
+            "description": "No file at its path.",
+            "type": "string"
+          },
+          {
+            "const": "unreadable",
+            "description": "Not a regular file this user may read, or past what Silico reads of a document.",
+            "type": "string"
           }
-        },
-        "required": [
-          "base"
-        ],
-        "type": "object"
+        ]
       },
       "PublishedRead": {
         "description": "A command that reads the published model, by name, as a tool is named: what `status` lists among its reads, and `cancel` stops.",
@@ -43,7 +53,8 @@
           "distance",
           "angle",
           "render",
-          "timeline"
+          "timeline",
+          "sketch"
         ],
         "type": "string"
       },
@@ -114,8 +125,8 @@
           }
         ]
       },
-      "SessionCommand": {
-        "description": "A command that runs in a session, by name, as a tool is named: what `status` says is running, and `cancel` stops.",
+      "RunningCommand": {
+        "description": "What runs on a session's thread, by name: a command, as a tool is named, which `cancel` stops; or `reload`, the session's own reload of its file, found changed on disk with no transaction open, which nothing cancels.",
         "enum": [
           "close",
           "begin",
@@ -139,15 +150,80 @@
           "export",
           "move_feature",
           "suppress_feature",
-          "timeline"
+          "timeline",
+          "sketch",
+          "sketch_add",
+          "sketch_remove",
+          "sketch_split",
+          "sketch_trim",
+          "sketch_unjoin",
+          "sketch_merge",
+          "undo",
+          "redo",
+          "reload"
         ],
         "type": "string"
+      },
+      "Transaction": {
+        "additionalProperties": false,
+        "description": "The transaction open in a session, as `status` gives it.",
+        "properties": {
+          "base": {
+            "description": "The revision the transaction began from: the one `rollback` returns to.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "bytes": {
+            "description": "What its undo stack holds, in bytes, as its bound counts it: the file's bytes as it\nbegan, and each earlier state's texts beyond what they share.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "changed": {
+            "description": "Whether its document differs from the one it began from, as a commit compares them:\nunsaved changes. False after undoing back to that one, or editing back to it, and a\ncommit then writes nothing.",
+            "type": "boolean"
+          },
+          "dropped": {
+            "description": "How many of its edits undo can no longer reach, the undo stack's bound (`version`'s\n`undo_bytes`) having dropped their states: 2 at the first drop (the edits before and\nafter the state dropped), one more at each after. `rollback` still returns to the\nstate it began from.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "redo": {
+            "description": "How many `redo` can redo: the edits undone, until an edit drops them.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "undo": {
+            "description": "How many of its edits `undo` can undo, one step each.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "base",
+          "bytes",
+          "changed",
+          "dropped",
+          "redo",
+          "undo"
+        ],
+        "type": "object"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
     "description": "`status`'s result. What's running is a diagnostic, not a result: it depends on when it's\nasked.",
     "properties": {
+      "disk": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Disk"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "What the last comparison of the session's file on disk found, against the bytes the\nsession last read or wrote: a diagnostic, never a result, and it reloads nothing\nitself. `status` starts the next comparison, off its caller's thread, once the last\nended a second ago or more. Null before one has ended, while the session's own save\nruns, and after a save that failed until the next comparison ends."
+      },
       "features": {
         "description": "How many features the document has: null if its text doesn't read as a document.",
         "minimum": 0,
@@ -173,27 +249,28 @@
       "running": {
         "anyOf": [
           {
-            "$ref": "#/$defs/SessionCommand"
+            "$ref": "#/$defs/RunningCommand"
           },
           {
             "type": "null"
           }
         ],
-        "description": "The session's queued command running, which `cancel` can stop: null if none is."
+        "description": "What's running on the session's thread: a queued command, which `cancel` can stop,\nor `reload`, its own reload of a file changed on disk; null if nothing is."
       },
       "transaction": {
         "anyOf": [
           {
-            "$ref": "#/$defs/BeginResult"
+            "$ref": "#/$defs/Transaction"
           },
           {
             "type": "null"
           }
         ],
-        "description": "The transaction open, as `begin` answered it: null if none is."
+        "description": "The transaction open, its base as `begin` answered it, with its undo and redo: null\nif none is."
       }
     },
     "required": [
+      "disk",
       "features",
       "gated",
       "reads",

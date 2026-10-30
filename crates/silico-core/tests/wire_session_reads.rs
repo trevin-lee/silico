@@ -23,10 +23,11 @@ use silico_core::command::wire::session::{
 use silico_core::command::wire::transaction::SessionRequest;
 use silico_core::command::wire::{Layout, ToWire, response, response_text, snapshot_value, write};
 use silico_core::command::{
-    Begun, Cancelled, CheckModel, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer,
-    Problems, Progress, ReadCommand, Rebuild, RebuildState, Response, Revision, SessionCommand,
-    SessionId, Sessions, Status, TextAnswer, VERSION, Version,
+    Cancelled, CheckModel, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer, Problems,
+    Progress, ReadCommand, Rebuild, RebuildState, Response, Revision, RunningCommand,
+    SessionCommand, SessionId, Sessions, Status, TextAnswer, Transaction, VERSION, Version,
 };
+use silico_core::disk::Disk;
 use silico_core::document::json::{Node, read};
 use silico_core::fake::{FakeKernel, FakeSketches, Hold};
 use silico_core::kernel::{Op, Primitive};
@@ -630,11 +631,12 @@ fn version_is_answered_with_every_limit_as_the_design_gives_them_and_no_session(
             export_bytes: 32,
             kernel_seconds: 21,
             sketch_seconds: 22,
+            undo_bytes: 33,
         },
     };
     assert_eq!(
         one_line(&other),
-        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "highlight": 23, "render_side": 24, "render_seconds": 25, "log_read_events": 26, "log_read_bytes": 27, "log_events": 28, "log_bytes": 29, "export_tolerance": [0.000001, 30], "export_triangles": 31, "export_bytes": 32, "kernel_seconds": 21, "sketch_seconds": 22}}"#
+        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "highlight": 23, "render_side": 24, "render_seconds": 25, "log_read_events": 26, "log_read_bytes": 27, "log_events": 28, "log_bytes": 29, "export_tolerance": [0.000001, 30], "export_triangles": 31, "export_bytes": 32, "kernel_seconds": 21, "sketch_seconds": 22, "undo_bytes": 33}}"#
     );
     holds(&schema_of("version", "result"), &written(&other), "another");
 }
@@ -751,12 +753,20 @@ fn close_answers_and_refuses_as_the_design_gives_it() {
 
 #[test]
 fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
-    // The design's: a check running, a published read, a transaction begun at 4.
+    // The design's: a check running, a published read, a transaction begun at 4 with three
+    // edits to undo (M5.0's section 6).
     let status = Status {
         features: Some(7),
         gated: true,
-        transaction: Some(Begun { base: revision(4) }),
-        running: Some(SessionCommand::Check),
+        transaction: Some(Transaction {
+            base: revision(4),
+            changed: true,
+            undo: 3,
+            redo: 0,
+            dropped: 0,
+            bytes: 61530,
+        }),
+        running: Some(RunningCommand::Command(SessionCommand::Check)),
         reads: vec![ReadCommand::Distance],
         rebuild: Rebuild {
             revision: revision(6),
@@ -767,13 +777,14 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
                 running: Some("f0000001 fillet".to_owned()),
             }),
         },
+        disk: Some(Disk::Unchanged),
     };
     // By hand: the design's result, its rebuild 3 steps of 9 in; the step running, which
     // the design's `status` doesn't give, isn't written.
     let text = written(&status);
     assert_eq!(
         text,
-        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\", \"done\": 3, \"steps\": 9}\n}\n"
+        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4, \"changed\": true, \"undo\": 3, \"redo\": 0, \"dropped\": 0, \"bytes\": 61530},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\", \"done\": 3, \"steps\": 9},\n  \"disk\": \"unchanged\"\n}\n"
     );
     // Its read, `distance`, a read of the published model (M4.5's): it holds.
     holds(&schema_of("status", "result"), &text, "the design's");
@@ -787,13 +798,14 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     ] {
         fails(&schema_of("status", "result"), &text.replace(from, to), to);
     }
-    // A session's own, on the fake kernel: a box, nothing running, nothing rebuilt.
+    // A session's own, on the fake kernel: a box, nothing running, nothing rebuilt, and no
+    // comparison of its file ended before this first status, which starts one.
     let f = opened(BOX);
     let request = SessionRequest::read(&parsed(&example("status/request"))).unwrap();
     let text = written(f.sessions.status(&request.session).result.as_ref().unwrap());
     assert_eq!(
         text,
-        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\", \"done\": null, \"steps\": null}\n}\n"
+        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\", \"done\": null, \"steps\": null},\n  \"disk\": null\n}\n"
     );
     holds(&schema_of("status", "result"), &text, "a box's");
     // A document the reader refuses: no features, not gated.
@@ -808,12 +820,50 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
             state: RebuildState::Idle,
             progress: None,
         },
+        disk: None,
     };
     assert_eq!(
         one_line(&other),
-        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none", "done": null, "steps": null}}"#
+        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none", "done": null, "steps": null}, "disk": null}"#
     );
     holds(&schema_of("status", "result"), &written(&other), "unread");
+    // The session's own reload (M5.0's A3), and each finding on disk, each the word the
+    // design gives it (section 6), and each one the schema holds.
+    for (disk, word) in [
+        (Disk::Unchanged, "unchanged"),
+        (Disk::Changed, "changed"),
+        (Disk::Gone, "gone"),
+        (Disk::Unreadable, "unreadable"),
+    ] {
+        let reloading = Status {
+            running: Some(RunningCommand::Reload),
+            disk: Some(disk),
+            ..other.clone()
+        };
+        let line = one_line(&reloading);
+        assert!(
+            line.contains(r#""running": "reload""#)
+                && line.ends_with(&format!(r#""disk": "{word}"}}"#)),
+            "{line}"
+        );
+        holds(&schema_of("status", "result"), &written(&reloading), word);
+    }
+    // A word that's neither a command nor `reload`, or a finding not among the four, isn't.
+    let reloading = written(&Status {
+        running: Some(RunningCommand::Reload),
+        disk: Some(Disk::Changed),
+        ..other.clone()
+    });
+    fails(
+        &schema_of("status", "result"),
+        &reloading.replace("\"reload\"", "\"reloading\""),
+        "reloading",
+    );
+    fails(
+        &schema_of("status", "result"),
+        &reloading.replace("\"changed\"", "\"stale\""),
+        "stale",
+    );
     // Every state, as the schema lists them, each the session's own word.
     let states = [
         RebuildState::Idle,
@@ -991,11 +1041,12 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
             &[],
             "StatusResult",
             &[
-                "BeginResult",
+                "Disk",
                 "PublishedRead",
                 "Rebuild",
                 "RebuildState",
-                "SessionCommand",
+                "RunningCommand",
+                "Transaction",
             ],
         ),
         (
@@ -1053,9 +1104,11 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
     );
     let command = serde_json::json!({"$ref": "#/$defs/SessionCommand"});
     let status = schema_of("status", "result");
+    // What runs on the session's thread: a command, or its own reload (M5.0's A3), a type of
+    // its own, so `cancel`'s `command` never takes `reload`.
     assert_eq!(
         status["properties"]["running"]["anyOf"],
-        serde_json::json!([command, {"type": "null"}])
+        serde_json::json!([{"$ref": "#/$defs/RunningCommand"}, {"type": "null"}])
     );
     assert_eq!(
         status["properties"]["reads"]["items"],
@@ -1065,20 +1118,30 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
         status["$defs"]["PublishedRead"]["enum"],
         serde_json::json!(PUBLISHED_READS)
     );
+    let running: Vec<&str> = SESSION_COMMANDS.iter().copied().chain(["reload"]).collect();
     assert_eq!(
-        status["$defs"]["SessionCommand"]["enum"],
-        serde_json::json!(SESSION_COMMANDS)
+        status["$defs"]["RunningCommand"]["enum"],
+        serde_json::json!(running)
     );
     for part in ["request", "result"] {
         let cancel = schema_of("cancel", part);
         assert_eq!(cancel["properties"]["command"]["$ref"], command["$ref"]);
+        assert_eq!(
+            cancel["$defs"]["SessionCommand"]["enum"],
+            serde_json::json!(SESSION_COMMANDS)
+        );
     }
     let base = |running: &str, reads: &str| {
         format!(
-            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none", "done": null, "steps": null}}}}"#
+            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none", "done": null, "steps": null}}, "disk": null}}"#
         )
     };
     holds(&status, &base(r#""check""#, ""), "check running");
+    holds(
+        &status,
+        &base(r#""reload""#, ""),
+        "the session's own reload running",
+    );
     holds(&status, &base("null", ""), "nothing running");
     for never in [r#""status""#, r#""version""#, r#""probe""#, "1"] {
         fails(&status, &base(never, ""), never);

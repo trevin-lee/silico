@@ -246,3 +246,10 @@ crates/silico-render/src/lib.rs | all_adapters | delete field flags from struct 
 # The compiled-in ICD path is the build's own pixi file: empty or there, both forms agree; they
 # differ only when it was removed after the build, which no test can arrange.
 crates/silico-render/src/lavapipe.rs | environment | replace && with || | #275
+# EndsCount ends a recompute's step count only when its thread unwinds past the explicit
+# `counting.ended(..)`: every panic a test (or any input) can reach inside a recompute, a
+# step's, a sketch's solve's, a fake rule's, is caught inside `Engine::run`, which then
+# returns and ends the count itself. The guard covers a bug outside those, which nothing
+# can cause on purpose; without it a watcher would wait for a change that never comes.
+crates/silico-core/src/recompute.rs | <impl Drop for EndsCount>::drop | replace <impl Drop for EndsCount>::drop with () | #297
+crates/silico-core/src/document/undo.rs | Plan<K>::restored | replace Plan<K>::restored -> Option<K> with None | #300

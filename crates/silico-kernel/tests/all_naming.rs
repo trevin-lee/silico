@@ -39,6 +39,8 @@ mod name_collisions;
 mod naming;
 #[path = "references.rs"]
 mod references;
+#[path = "sketch_edit_references.rs"]
+mod sketch_edit_references;
 #[path = "sketch_feature_names.rs"]
 mod sketch_feature_names;
 #[path = "sweep_faces.rs"]

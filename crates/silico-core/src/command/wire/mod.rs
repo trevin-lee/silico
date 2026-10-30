@@ -31,11 +31,14 @@
 //! so not by itself what MCP's `outputSchema` checks `structuredContent`, the envelope,
 //! against (that is M4.9's to build from these and the envelope's). Each is added with the
 //! command's wire types ([`COMMANDS`]: [`session`], for `version`, `open`, `close`,
-//! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, and `format`;
+//! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, `format`,
+//! `undo`, and `redo`;
 //! [`edits`], for `add_feature`, `set_field`, `remove_feature`, `replace_text`, and
 //! `move_feature`; [`reads`], for `text`, `outline`, `check`, and `timeline`; [`cache`], for `cache_clear`;
 //! [`elements`], for `elements` and `query`; [`schema`]; [`measure`], for `mass_properties`,
-//! `distance`, and `angle`; [`render`]; and [`export`]).
+//! `distance`, and `angle`; [`render`]; [`export`]; [`sketch`]; and [`sketch_edits`], for
+//! `sketch_add`, `sketch_remove`, `sketch_split`, `sketch_trim`, `sketch_unjoin`, and
+//! `sketch_merge`).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -49,11 +52,11 @@ use super::{
 use crate::document::json::{Member, Node, Plain, Value};
 use crate::document::write::{self, Out, text};
 use crate::document::{
-    Angle, Coordinate, ElementName, Feature, FeatureId, Length, Measure, NumberError,
-    PROBLEMS_LISTED, Position,
+    Angle, Coordinate, ElementId, ElementKind, ElementName, Feature, FeatureId, Length, Measure,
+    NumberError, PROBLEMS_LISTED, Position, Sketch,
 };
 use crate::warnings::Warnings;
-use crate::{Error, ErrorCode, Said, Warning};
+use crate::{Error, ErrorCode, Said, Warning, WarningCode};
 
 pub use crate::document::write::{Layout, TooLong};
 
@@ -81,6 +84,11 @@ impl<'a> Json<'a> {
 
     /// A count, or a place counted from 0: a whole number.
     pub fn count(n: usize) -> Self {
+        Json(Out::Raw(n.to_string()))
+    }
+
+    /// An integer, of either sign (a sketch's degrees of freedom).
+    pub fn integer(n: i64) -> Self {
         Json(Out::Raw(n.to_string()))
     }
 
@@ -191,6 +199,29 @@ impl<'a> Json<'a> {
     /// A feature as the document's canonical form writes it, by the document's own writer.
     pub fn feature(feature: &'a Feature) -> Self {
         Json(write::feature(feature))
+    }
+
+    /// Each of `sketch`'s lists, by kind in the format's order (points, lines, circles,
+    /// arcs, constraints), as the document's own writer writes it (each by ID, each member's
+    /// fields in the file's order), and after each member's fields, `extra`'s for it: the
+    /// `sketch` read's members with their states.
+    pub fn sketch_lists(
+        sketch: &'a Sketch,
+        extra: impl Fn(ElementKind, &ElementId) -> Vec<(&'static str, Json<'a>)>,
+    ) -> [(ElementKind, Json<'a>); 5] {
+        write::sketch_members(sketch).map(|(kind, items)| {
+            let items = items
+                .into_iter()
+                .map(|(id, item)| match item {
+                    Out::Object(mut members) => {
+                        members.extend(extra(kind, id).into_iter().map(|(k, j)| (k, j.0)));
+                        Out::Object(members)
+                    }
+                    other => other,
+                })
+                .collect();
+            (kind, Json(Out::Array(items)))
+        })
     }
 }
 
@@ -408,6 +439,7 @@ fn said_as<'a>(said: Said<'a>, suggestion: Json<'a>) -> Json<'a> {
         cause,
         suggestion: _,
         candidates,
+        advice,
     } = said;
     Json::object([
         ("code", Json::str(code)),
@@ -425,6 +457,7 @@ fn said_as<'a>(said: Said<'a>, suggestion: Json<'a>) -> Json<'a> {
             "candidates",
             Json::array(candidates.iter().map(|c| Json::str(c))),
         ),
+        ("advice", Json::or_null(advice, Json::str)),
     ])
 }
 
@@ -841,6 +874,17 @@ impl<'a> RequestFields<'a> {
     pub fn revision(&mut self, key: &str) -> Option<Revision> {
         self.whole_in(key, 1, u64::MAX)
             .and_then(Revision::from_number)
+    }
+
+    /// A session's revision, or `null`.
+    pub fn nullable_revision(&mut self, key: &str) -> Option<Option<Revision>> {
+        match self.take_nullable(key)? {
+            None => Some(None),
+            Some(node) => self
+                .whole_of(key, node, 1, u64::MAX, " or null")
+                .and_then(Revision::from_number)
+                .map(Some),
+        }
     }
 
     /// A length, in millimetres: read exactly from its digits, and refused as a
@@ -1465,6 +1509,28 @@ fn close(schema: &mut serde_json::Map<String, serde_json::Value>) {
     }
 }
 
+/// An error's `code`: one of Silico's error codes, every one, in their order
+/// ([`ErrorCode::ALL`], which `error-codes.txt` is checked against), so an agent finds them in
+/// the schema it reads, and a code appended there is in the schema with it.
+fn error_code_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    codes(ErrorCode::ALL.iter().map(|code| code.as_str()))
+}
+
+/// A warning's `code`: one of Silico's warning codes, every one, in their order
+/// ([`WarningCode::ALL`], which `warning-codes.txt` is checked against).
+fn warning_code_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    codes(WarningCode::ALL.iter().map(|code| code.as_str()))
+}
+
+/// A string schema of one of `codes`, in order.
+fn codes(codes: impl IntoIterator<Item = &'static str>) -> schemars::Schema {
+    let codes: Vec<&str> = codes.into_iter().collect();
+    schemars::json_schema!({
+        "type": "string",
+        "enum": codes,
+    })
+}
+
 /// Why a command was refused, or a problem it found, in Silico's error contract: a code, a
 /// message, and, where they apply, the feature, the elements at fault (the first of them, and
 /// how many in all), the request's field at fault, the cause, what to do, and the names that
@@ -1474,6 +1540,7 @@ fn close(schema: &mut serde_json::Map<String, serde_json::Value>) {
 #[schemars(rename = "Error", transform = wire_shape)]
 pub struct ErrorSchema {
     /// What kind of error it is: one of Silico's error codes, such as `invalid_input`.
+    #[schemars(schema_with = "error_code_schema")]
     pub code: String,
     /// What went wrong, in a sentence.
     pub message: String,
@@ -1491,6 +1558,34 @@ pub struct ErrorSchema {
     pub suggestion: Option<String>,
     /// What might have been meant, such as the names nearest one that found nothing.
     pub candidates: Vec<String>,
+    /// What the suggestion advises, as data, for a kernel fault whose worker said:
+    /// `change_the_values` (the request's values crashed the worker, and would again: change
+    /// them, never retry as is), `simplify_or_wait` (it ran past its time: simplify the
+    /// operation, or try again), `try_again` (it wasn't the values: try the request again),
+    /// or `try_once_more` (only once more: the worker may have been stopped for the memory
+    /// the request used). Null for any other error, and a fault whose advice is in its
+    /// suggestion's words alone.
+    #[schemars(schema_with = "advice_schema")]
+    pub advice: Option<String>,
+}
+
+/// An error's or a warning's `advice`: one of the worker's advice's words, in their order
+/// (`AdviceWord::ALL`), or null.
+fn advice_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let mut words: Vec<serde_json::Value> = crate::worker::AdviceWord::ALL
+        .iter()
+        .map(|word| serde_json::Value::from(word.as_str()))
+        .collect();
+    words.push(serde_json::Value::Null);
+    schemars::json_schema!({
+        "type": ["string", "null"],
+        "enum": words,
+    })
+}
+
+/// A warning's `advice`: always null.
+fn no_advice_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type": "null"})
 }
 
 /// Something `check` found that fails nothing: it never refuses a command, blocks a save, or
@@ -1501,8 +1596,8 @@ pub struct ErrorSchema {
 #[derive(JsonSchema)]
 #[schemars(rename = "Warning", transform = wire_shape)]
 pub struct WarningSchema {
-    /// What kind of warning it is: one of Silico's warning codes, listed in
-    /// `warning-codes.txt`, such as `ends_not_joined`.
+    /// What kind of warning it is: one of Silico's warning codes, such as `ends_not_joined`.
+    #[schemars(schema_with = "warning_code_schema")]
     pub code: String,
     /// What was found, in a sentence.
     pub message: String,
@@ -1520,6 +1615,10 @@ pub struct WarningSchema {
     pub suggestion: Option<String>,
     /// What might have been meant, if anything.
     pub candidates: Vec<String>,
+    /// Null: a warning is never a worker's fault, so it advises nothing as data, where an
+    /// error's `advice` may.
+    #[schemars(schema_with = "no_advice_schema")]
+    pub advice: Option<String>,
 }
 
 /// The session as the command left it.
@@ -1582,8 +1681,9 @@ pub struct RanSchema {
 pub struct RefusedSchema {
     #[schemars(extend("const" = false))]
     pub ok: bool,
-    /// The session as the command left it: null for a command that takes no session, or a
-    /// session that isn't open.
+    /// The session as the command left it: null for a command that takes no session, a
+    /// session that isn't open, a request whose session can't be read, or a call the server
+    /// refused before the core read it.
     pub session: Option<SessionSchema>,
     /// The model the command read: null if it read none.
     pub model: Option<ModelSchema>,
@@ -1705,6 +1805,51 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         Command::Timeline => {
             command_schema::<reads::TimelineRequestSchema, reads::TimelineResultSchema>
         }
+        Command::Sketch => {
+            command_schema::<sketch::SketchRequestSchema, sketch::SketchResultSchema>
+        }
+        Command::SketchAdd => {
+            command_schema::<
+                sketch_edits::SketchAddRequestSchema,
+                sketch_edits::SketchEditResultSchema,
+            >
+        }
+        Command::SketchRemove => {
+            command_schema::<
+                sketch_edits::SketchRemoveRequestSchema,
+                sketch_edits::SketchEditResultSchema,
+            >
+        }
+        Command::SketchSplit => {
+            command_schema::<
+                sketch_edits::SketchSplitRequestSchema,
+                sketch_edits::SketchSplitResultSchema,
+            >
+        }
+        Command::SketchTrim => {
+            command_schema::<
+                sketch_edits::SketchTrimRequestSchema,
+                sketch_edits::SketchTrimResultSchema,
+            >
+        }
+        Command::SketchUnjoin => {
+            command_schema::<
+                sketch_edits::SketchUnjoinRequestSchema,
+                sketch_edits::SketchUnjoinResultSchema,
+            >
+        }
+        Command::SketchMerge => {
+            command_schema::<
+                sketch_edits::SketchMergeRequestSchema,
+                sketch_edits::SketchMergeResultSchema,
+            >
+        }
+        Command::Undo => {
+            command_schema::<transaction::UndoRequestSchema, transaction::UndoResultSchema>
+        }
+        Command::Redo => {
+            command_schema::<transaction::RedoRequestSchema, transaction::RedoResultSchema>
+        }
     }
 }
 
@@ -1803,6 +1948,8 @@ pub mod reads;
 pub mod render;
 pub mod schema;
 pub mod session;
+pub mod sketch;
+pub mod sketch_edits;
 pub mod transaction;
 
 #[cfg(test)]

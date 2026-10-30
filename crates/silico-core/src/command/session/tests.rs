@@ -75,9 +75,12 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             Duration::ZERO,
             None,
         ),
+        reloads: Mutex::default(),
+        waker: Arc::default(),
         gate: Gate::default(),
         settled: Gate::default(),
         writing: Gate::default(),
+        reloading: Gate::default(),
     });
     (session, jobs)
 }
@@ -3793,6 +3796,10 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
                 ReadCommand::Timeline,
                 Box::new(move || erased(s.timeline(at, model))),
             ),
+            (
+                ReadCommand::Sketch,
+                Box::new(move || erased(s.sketch(at, model, id("k7f2qx3m")))),
+            ),
         ]
     };
     let mut queued: Vec<(SessionCommand, Start<'_>)> = vec![
@@ -3834,10 +3841,11 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         (SessionCommand::Text, Box::new(|| erased(s.text(at, None)))),
         (SessionCommand::Outline, Box::new(|| erased(s.outline(at)))),
     ];
-    // The reads M4.1 lists; `timeline`, M5.0's, after `export` and `move_feature`.
+    // The reads M4.1 lists; `timeline` and `sketch`, M5.0's, after `export` and
+    // `move_feature`.
     let (m4_reads, m5_reads): (Vec<_>, Vec<_>) = reads(ModelChoice::Current)
         .into_iter()
-        .partition(|(read, _)| *read != ReadCommand::Timeline);
+        .partition(|(read, _)| !matches!(read, ReadCommand::Timeline | ReadCommand::Sketch));
     queued.extend(
         m4_reads
             .into_iter()
@@ -3874,6 +3882,89 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             .into_iter()
             .map(|(read, start)| (SessionCommand::from(read), start)),
     );
+    // M5.0's sketch edits, after `timeline`, as the design lists them.
+    let empty = || crate::document::json::read(b"[]").unwrap();
+    queued.push((
+        SessionCommand::SketchAdd,
+        Box::new(move || {
+            erased(s.sketch_add(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                crate::command::NewMembers {
+                    points: empty(),
+                    lines: empty(),
+                    circles: empty(),
+                    arcs: empty(),
+                    constraints: empty(),
+                },
+            ))
+        }),
+    ));
+    queued.push((
+        SessionCommand::SketchRemove,
+        Box::new(move || erased(s.sketch_remove(at, Revision::OPENED, id("k7f2qx3m"), vec![]))),
+    ));
+    let member = |text: &str| crate::document::ElementId::new(text).unwrap();
+    queued.push((
+        SessionCommand::SketchSplit,
+        Box::new(move || {
+            erased(s.sketch_split(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                member("na000001"),
+                vec![[0.0, 0.0]],
+                None,
+            ))
+        }),
+    ));
+    queued.push((
+        SessionCommand::SketchTrim,
+        Box::new(move || {
+            erased(s.sketch_trim(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                member("na000001"),
+                [0.0, 0.0],
+                None,
+            ))
+        }),
+    ));
+    queued.push((
+        SessionCommand::SketchUnjoin,
+        Box::new(move || {
+            erased(s.sketch_unjoin(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                member("pa000001"),
+                member("na000001"),
+                None,
+            ))
+        }),
+    ));
+    queued.push((
+        SessionCommand::SketchMerge,
+        Box::new(move || {
+            erased(s.sketch_merge(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                vec![member("pa000001"), member("pa000002")],
+            ))
+        }),
+    ));
+    // M5.2's, after the sketch edits.
+    queued.push((
+        SessionCommand::Undo,
+        Box::new(|| erased(s.undo(at, Revision::OPENED, None))),
+    ));
+    queued.push((
+        SessionCommand::Redo,
+        Box::new(|| erased(s.redo(at, Revision::OPENED, None))),
+    ));
     // `cache_clear`, which reads no model, after `check`, as the design lists it.
     let after_check = queued
         .iter()
@@ -3922,7 +4013,12 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         assert_eq!((status.running, status.reads), (None, vec![]), "{command}");
     };
     for (command, start) in &queued {
-        stops(*command, start, Some(*command), vec![]);
+        stops(
+            *command,
+            start,
+            Some(RunningCommand::Command(*command)),
+            vec![],
+        );
     }
     for (read, start) in &reads(ModelChoice::Published) {
         stops(SessionCommand::from(*read), start, None, vec![*read]);
@@ -3998,6 +4094,8 @@ fn disk_reaches(f: &Fixture, want: Disk) {
 fn a_sessions_file_is_unchanged_as_it_opened_it_and_changed_or_gone_as_another_leaves_it() {
     let f = opened(BOX);
     disk_reaches(&f, Disk::Unchanged);
+    // Inside a transaction, where nothing's reloaded, so each finding stays to be read.
+    f.begin();
     std::fs::write(&f.path, SPHERE).unwrap();
     disk_reaches(&f, Disk::Changed);
     std::fs::remove_file(&f.path).unwrap();
@@ -4017,7 +4115,9 @@ fn a_sessions_own_commit_is_what_its_file_is_compared_with_from_then_on() {
     assert_ne!(saved, STORED);
     // At once: what it wrote is what it holds.
     assert_eq!(f.sessions.disk(&f.id).unwrap(), Some(Disk::Unchanged));
-    // The text it opened, written back by another, is a change; what it saved isn't.
+    // The text it opened, written back by another, is a change; what it saved isn't. (In a
+    // transaction again, where the change isn't reloaded.)
+    f.begin();
     std::fs::write(&f.path, STORED).unwrap();
     disk_reaches(&f, Disk::Changed);
     std::fs::write(&f.path, &saved).unwrap();
@@ -4028,18 +4128,20 @@ fn a_sessions_own_commit_is_what_its_file_is_compared_with_from_then_on() {
 fn a_reload_is_what_the_sessions_file_is_compared_with_from_then_on() {
     let f = opened(BOX);
     disk_reaches(&f, Disk::Unchanged);
+    // Held behind a command, so the change is found before the session reloads it.
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    f.session().gate.shut(started, wait);
+    let text = f.sessions.text(&f.id, None);
+    was_started.recv_timeout(WAIT).unwrap();
     std::fs::write(&f.path, SPHERE).unwrap();
     disk_reaches(&f, Disk::Changed);
-    assert!(
-        f.sessions
-            .text(&f.id, None)
-            .wait()
-            .session
-            .unwrap()
-            .reloaded
-    );
+    *lock(&f.session().gate.0) = None;
+    through.send(()).unwrap();
+    assert!(text.wait().session.unwrap().reloaded);
     // At once, though the comparisons before it found the file changed.
     assert_eq!(f.sessions.disk(&f.id).unwrap(), Some(Disk::Unchanged));
+    f.begin();
     std::fs::write(&f.path, BOX).unwrap();
     disk_reaches(&f, Disk::Changed);
     std::fs::write(&f.path, SPHERE).unwrap();
@@ -4131,6 +4233,8 @@ fn a_session_opened_through_a_link_watches_the_file_it_read_not_where_the_link_l
     )
     .checking_disk_every(Duration::ZERO);
     let id = sessions.open(&link, false).wait().session.unwrap().id;
+    // Inside a transaction, where nothing's reloaded, so a's change stays to be found.
+    sessions.begin(&id).wait().result.unwrap();
     // The link leads to b, as the session first read a; a changed. Read where the session
     // reads and saves, a, it's changed; where the link leads now, b, it would be unchanged.
     std::fs::remove_file(&link).unwrap();
@@ -4153,6 +4257,7 @@ fn each_sessions_disk_is_its_own_files() {
     std::fs::write(&other, SPHERE).unwrap();
     let second = f.sessions.open(&other, false).wait().session.unwrap().id;
     disk_reaches(&f, Disk::Unchanged);
+    f.begin();
     std::fs::write(&f.path, SPHERE).unwrap();
     disk_reaches(&f, Disk::Changed);
     let deadline = std::time::Instant::now() + WAIT;
@@ -4232,6 +4337,8 @@ fn asked_without_pause_through_many_commits_the_sessions_own_saves_never_read_as
     disk_reaches(&f, Disk::Unchanged);
 }
 
+mod disk_reload;
 mod timeline;
 mod undo;
 mod undo_adversarial;
+mod undo_status;

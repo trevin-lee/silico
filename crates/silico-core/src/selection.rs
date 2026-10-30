@@ -669,6 +669,7 @@ mod tests {
                 face_edges: face1(vec![vec![]; 5]),
                 outer_edges: face1(vec![vec![]; 5]),
                 edge_vertices: vec![vec![]; 12],
+                solid_faces: vec![(1..=6).collect()],
             },
         };
         history.validate(2).unwrap();
@@ -789,6 +790,7 @@ mod tests {
                 face_edges: vec![vec![]; 6],
                 outer_edges: vec![vec![]; 6],
                 edge_vertices: vec![vec![]; 12],
+                solid_faces: vec![(1..=6).collect()],
             },
         };
         history.validate(2).unwrap();
@@ -894,6 +896,7 @@ mod tests {
                 face_edges: vec![vec![]; 6],
                 outer_edges: vec![vec![]; 6],
                 edge_vertices: vec![vec![]; 12],
+                solid_faces: vec![(1..=6).collect()],
             },
         };
         history.validate(2).unwrap();

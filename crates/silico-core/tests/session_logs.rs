@@ -652,3 +652,33 @@ fn an_export_waiting_for_another_exports_mesh_logs_its_wait_and_its_turn_naming_
         logs.events
     );
 }
+
+#[test]
+fn the_sessions_own_reload_is_filed_under_reload_in_its_logs() {
+    // M5.0's A3: the reload no command asked for is named `reload` wherever a command's
+    // name is shown, the logs' spans among them.
+    keep_logs();
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = sessions(Arc::new(FakeKernel::new(1).unwrap()), &dir);
+    let box_text = rounded("f0000001");
+    let s1 = opened(&sessions, &dir, "part.silico", &box_text);
+    std::fs::write(
+        dir.path().join("part.silico"),
+        box_text.replace(r#""radius": 2"#, r#""radius": 3"#),
+    )
+    .unwrap();
+    // `status` starts the comparison that finds it; the session reloads it itself.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while sessions.status(&s1).session.unwrap().revision.number() < 2 {
+        assert!(std::time::Instant::now() < deadline, "never reloaded");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let logs = every(&sessions, &s1);
+    let reloaded: Vec<&LogEvent> = logs
+        .events
+        .iter()
+        .filter(|e| e.message.contains("reloaded"))
+        .collect();
+    assert_eq!(reloaded.len(), 1, "{:?}", logs.events);
+    assert_eq!(reloaded[0].spans[0], "reload", "{:?}", reloaded[0].spans);
+}

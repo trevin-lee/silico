@@ -66,6 +66,7 @@ fn two_elements_that_come_about_alike_are_numbered_and_marked() {
             face_edges: vec![],
             outer_edges: vec![],
             edge_vertices: vec![vec![1, 2], vec![2, 1]],
+            solid_faces: Vec::new(),
         },
     };
     history.validate(1).unwrap();
@@ -115,6 +116,7 @@ fn three_elements_that_come_about_alike_are_each_numbered_on_the_one_name() {
             face_edges: vec![],
             outer_edges: vec![],
             edge_vertices: vec![vec![1, 2], vec![2, 1], vec![1, 2]],
+            solid_faces: Vec::new(),
         },
     };
     history.validate(1).unwrap();
@@ -175,6 +177,7 @@ fn one_input(
             face_edges,
             outer_edges,
             edge_vertices: vec![vec![]; result.1 as usize],
+            solid_faces: vec![(1..=result.0).collect()],
         },
     };
     history.validate(1).unwrap();
@@ -379,6 +382,7 @@ fn a_face_kept_and_modified_too_is_a_duplicate_and_both_are_marked() {
             face_edges: vec![vec![], vec![]],
             outer_edges: vec![vec![], vec![]],
             edge_vertices: vec![],
+            solid_faces: vec![vec![1, 2]],
         },
     };
     history.validate(1).unwrap();
@@ -429,6 +433,7 @@ fn an_element_named_from_above_is_named_by_every_named_element_it_bounds() {
             face_edges: vec![vec![1, 3], vec![3, 2]],
             outer_edges: vec![vec![1, 3], vec![2, 3]],
             edge_vertices: vec![vec![], vec![], vec![]],
+            solid_faces: vec![vec![1, 2]],
         },
     };
     history.validate(1).unwrap();
@@ -471,6 +476,7 @@ fn an_element_with_no_name_from_history_or_neighbours_is_named_by_its_number() {
             face_edges: vec![vec![]],
             outer_edges: vec![vec![]],
             edge_vertices: vec![],
+            solid_faces: vec![vec![1]],
         },
     };
     let input = ElementMap::by_number(id("aaaaaaaa"), OpCode::Fuse, BOX);
@@ -664,6 +670,7 @@ fn a_name_lists_at_most_five_sources() {
             face_edges: vec![vec![]],
             outer_edges: vec![vec![]],
             edge_vertices: vec![],
+            solid_faces: vec![vec![1]],
         },
     };
     history.validate(1).unwrap();
@@ -696,6 +703,7 @@ fn a_face_named_from_below_lists_at_most_five_edges() {
             face_edges: vec![vec![1, 2, 3, 4, 5, 6]],
             outer_edges: vec![vec![1, 2, 3, 4, 5, 6]],
             edge_vertices: vec![vec![]; 6],
+            solid_faces: vec![vec![1]],
         },
     };
     history.validate(1).unwrap();
@@ -715,6 +723,7 @@ fn a_name_derived_from_an_ambiguous_name_is_ambiguous() {
         face_edges: vec![],
         outer_edges: vec![],
         edge_vertices: vec![vec![1, 2], vec![2, 1]],
+        solid_faces: Vec::new(),
     };
     let counts = ElementCounts {
         faces: 0,
@@ -1077,6 +1086,7 @@ fn edges_or_vertices_bounding_the_same_named_elements_are_ranked_by_freecads_cou
             face_edges: vec![vec![1, 2], vec![2, 1, 3]],
             outer_edges: vec![vec![1, 2], vec![1, 2, 3]],
             edge_vertices: vec![vec![1, 2], vec![1, 2], vec![]],
+            solid_faces: vec![vec![1, 2]],
         },
     };
     history.validate(1).unwrap();
@@ -1150,6 +1160,7 @@ fn a_vertex_ending_six_named_edges_is_named_by_the_first_five() {
             face_edges: vec![],
             outer_edges: vec![],
             edge_vertices: vec![vec![1]; 6],
+            solid_faces: vec![vec![]],
         },
     };
     history.validate(1).unwrap();
@@ -1211,6 +1222,7 @@ fn a_names_hash_is_its_identitys() {
             face_edges: vec![],
             outer_edges: vec![],
             edge_vertices: vec![vec![], vec![]],
+            solid_faces: vec![vec![]],
         },
     };
     history.validate(1).unwrap();
@@ -1268,6 +1280,7 @@ fn a_modified_names_hash_is_its_sources() {
             face_edges: vec![vec![]],
             outer_edges: vec![vec![]],
             edge_vertices: vec![],
+            solid_faces: vec![vec![1]],
         },
     };
     history.validate(1).unwrap();
@@ -1373,6 +1386,7 @@ fn an_element_modified_one_from_one_keeps_its_name_only_where_it_is_bitten() {
                 face_edges: vec![vec![]],
                 outer_edges: vec![vec![]],
                 edge_vertices: vec![],
+                solid_faces: vec![vec![1]],
             },
         };
         history.validate(2).unwrap();
@@ -1435,6 +1449,7 @@ fn an_element_kept_whole_keeps_its_name_only_where_it_is_bitten() {
                 face_edges: vec![vec![]],
                 outer_edges: vec![vec![]],
                 edge_vertices: vec![],
+                solid_faces: vec![vec![1]],
             },
         };
         history.validate(2).unwrap();
@@ -1497,6 +1512,7 @@ fn a_source_the_operation_keeps_inside_is_written_i_beside_one_it_generated_from
                 face_edges: vec![],
                 outer_edges: vec![],
                 edge_vertices: vec![vec![]],
+                solid_faces: vec![vec![]],
             },
         };
         history.validate(2).unwrap();
@@ -1546,6 +1562,7 @@ fn an_edge_modified_from_both_operands_says_m_for_a_bitten_one_and_i_for_the_oth
                 face_edges: vec![],
                 outer_edges: vec![],
                 edge_vertices: vec![vec![]],
+                solid_faces: vec![vec![]],
             },
         };
         history.validate(2).unwrap();

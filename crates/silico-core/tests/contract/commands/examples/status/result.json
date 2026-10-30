@@ -1,8 +1,9 @@
 {
   "features": 7,
   "gated": true,
-  "transaction": {"base": 4},
+  "transaction": {"base": 4, "changed": true, "undo": 3, "redo": 0, "dropped": 0, "bytes": 61530},
   "running": "check",
   "reads": ["distance"],
-  "rebuild": {"revision": 6, "state": "running", "done": 3, "steps": 9}
+  "rebuild": {"revision": 6, "state": "running", "done": 3, "steps": 9},
+  "disk": "unchanged"
 }

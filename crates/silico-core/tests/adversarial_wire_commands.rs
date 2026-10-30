@@ -1035,7 +1035,16 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "export",
                 "move_feature",
                 "suppress_feature",
-                "timeline"
+                "timeline",
+                "sketch",
+                "sketch_add",
+                "sketch_remove",
+                "sketch_split",
+                "sketch_trim",
+                "sketch_unjoin",
+                "sketch_merge",
+                "undo",
+                "redo"
             ]
         );
         assert!(printable(error.message()), "{of:?}: {:?}", error.message());

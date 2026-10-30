@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use super::{Problems, Response, SessionInfo};
-use crate::command::SessionCommand;
+use crate::command::{RunningCommand, SessionCommand};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -44,9 +44,10 @@ const CANCELLED: u8 = 2;
 /// first decides, so a command stopped never leaves a trace, and one that left one is never
 /// said to be stopped.
 pub(super) struct Ticket {
-    /// The command it stops: none for `open`'s, its handle's alone, which runs before its
-    /// session is there for `cancel` to name it.
-    command: Option<SessionCommand>,
+    /// What it stops: `open`'s, its handle's alone, which runs before its session is there
+    /// for `cancel` to name it; a command, which `cancel` names; or the session's own
+    /// reload, which nothing names to stop.
+    of: Of,
     state: AtomicU8,
     /// Whether its session closed ([`close`](Self::close)): kept, so what's interrupted
     /// after is interrupted at once.
@@ -57,34 +58,65 @@ pub(super) struct Ticket {
     interrupts: Mutex<Vec<Weak<dyn Interrupt>>>,
 }
 
+/// What a [`Ticket`] stops.
+#[derive(Clone, Copy)]
+enum Of {
+    Open,
+    Command(SessionCommand),
+    Reload,
+}
+
 impl Ticket {
     /// The ticket of `command`, which `cancel` names.
     pub(super) fn new(command: SessionCommand) -> Arc<Self> {
-        Self::of(Some(command))
+        Self::of(Of::Command(command))
     }
 
     /// The ticket of `open`, which only its handle stops.
     pub(super) fn opening() -> Arc<Self> {
-        Self::of(None)
+        Self::of(Of::Open)
     }
 
-    fn of(command: Option<SessionCommand>) -> Arc<Self> {
+    /// The ticket of the session's own reload (docs/design/m5.0-app.md, A3): `status` names
+    /// it `reload`, and nothing stops it but its session's close.
+    pub(super) fn reloading() -> Arc<Self> {
+        Self::of(Of::Reload)
+    }
+
+    fn of(of: Of) -> Arc<Self> {
         Arc::new(Ticket {
-            command,
+            of,
             state: AtomicU8::new(PENDING),
             closed: AtomicBool::new(false),
             interrupts: Mutex::new(Vec::new()),
         })
     }
 
-    /// The command it stops, none for `open`'s.
+    /// The command it stops, which `cancel` names: none for `open`'s or a reload's.
     pub(super) fn command(&self) -> Option<SessionCommand> {
-        self.command
+        match self.of {
+            Of::Command(command) => Some(command),
+            Of::Open | Of::Reload => None,
+        }
     }
 
-    /// The command's name, as requests name it.
+    /// What it stops, as `status` says it's running: none for `open`'s, which runs before
+    /// its session is there to ask.
+    pub(super) fn running(&self) -> Option<RunningCommand> {
+        match self.of {
+            Of::Command(command) => Some(RunningCommand::Command(command)),
+            Of::Reload => Some(RunningCommand::Reload),
+            Of::Open => None,
+        }
+    }
+
+    /// The command's name, as requests name it (`reload` for the session's own).
     pub(super) fn name(&self) -> &'static str {
-        self.command.map_or("open", SessionCommand::as_str)
+        match self.of {
+            Of::Open => "open",
+            Of::Command(command) => command.as_str(),
+            Of::Reload => RunningCommand::Reload.as_str(),
+        }
     }
 
     /// Stops the command unless it has settled, interrupting what it waits on: whether it
@@ -118,6 +150,12 @@ impl Ticket {
         self.state.load(Ordering::SeqCst) == CANCELLED
     }
 
+    /// Whether its session closed ([`close`](Self::close)): a command whose work it stopped
+    /// so answers `not_open`, never `cancelled`, since no client stopped it.
+    pub(super) fn closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
     /// `interrupt` told when the command is cancelled or its session closes: at once, if
     /// either has come. Added once, however often it's given, and those whose owners have
     /// gone let go. Each read of a model adds its kernel client here, so a cancel or a
@@ -132,7 +170,7 @@ impl Ticket {
         }
         let why = if self.cancelled() {
             Some(Why::Cancelled)
-        } else if self.closed.load(Ordering::SeqCst) {
+        } else if self.closed() {
             Some(Why::Closed)
         } else {
             None

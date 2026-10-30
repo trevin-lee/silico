@@ -1,0 +1,313 @@
+{
+  "request": {
+    "$defs": {
+      "Coordinate": {
+        "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+        "type": "number"
+      },
+      "ElementId": {
+        "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`sketch_trim`'s request: trim one curve of a sketch back to its neighbours where it was\npicked.",
+    "properties": {
+      "curve": {
+        "$ref": "#/$defs/ElementId",
+        "description": "The line, arc, or circle to trim, by ID. Every other curve cuts it, construction\ntoo, where they cross, touch, or one's end lies on it; the first piece left keeps\nthe ID."
+      },
+      "ids": {
+        "description": "The new members' IDs, in the order the result's `added` lists them (its new points\nalong the curve from its start, its new piece, the constraints copied to it, then\nits new ends' ons), each a fresh random 8-character ID; or null for the core to make\nthem. A list of the wrong length is refused, saying how many the trim needs.",
+        "items": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "pick": {
+        "description": "Where the part to trim away was picked, in the sketch's coordinates: the piece\nbetween the cuts either side of its projection onto the curve is removed, or the\ncurve whole where nothing cuts it on a side.",
+        "items": {
+          "$ref": "#/$defs/Coordinate"
+        },
+        "maxItems": 2,
+        "minItems": 2,
+        "type": "array"
+      },
+      "revision": {
+        "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      },
+      "sketch": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The sketch, by its feature's ID."
+      }
+    },
+    "required": [
+      "curve",
+      "ids",
+      "pick",
+      "revision",
+      "session",
+      "sketch"
+    ],
+    "title": "SketchTrimRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "CommitResult": {
+        "additionalProperties": false,
+        "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+        "properties": {
+          "path": {
+            "description": "The document's path, as `open` was given it.",
+            "type": "string"
+          },
+          "problems": {
+            "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+            "items": {
+              "$ref": "#/$defs/Error"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "problems_total": {
+            "description": "How many problems there are, listed or not.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refingerprinted": {
+            "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": "array"
+          },
+          "resolved": {
+            "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": "array"
+          },
+          "written": {
+            "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "problems",
+          "problems_total",
+          "refingerprinted",
+          "resolved",
+          "written"
+        ],
+        "type": "object"
+      },
+      "ElementId": {
+        "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "Error": {
+        "additionalProperties": false,
+        "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+        "properties": {
+          "advice": {
+            "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+            "enum": [
+              "change_the_values",
+              "simplify_or_wait",
+              "try_again",
+              "try_once_more",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidates": {
+            "description": "What might have been meant, such as the names nearest one that found nothing.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cause": {
+            "description": "What lay under it, such as the kernel's own failure, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "enum": [
+              "invalid_input",
+              "kernel_failed",
+              "worker_crashed",
+              "worker_timeout",
+              "protocol_error",
+              "internal",
+              "invalid_result",
+              "resource_exhausted",
+              "drift",
+              "io_failed",
+              "reference_broken",
+              "over_constrained",
+              "solve_failed",
+              "conflict",
+              "worker_unavailable",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          "elements": {
+            "description": "The elements at fault, by name: the first of them, if there are many.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "elements_total": {
+            "description": "How many elements are at fault, listed or not.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feature": {
+            "description": "The ID of the feature at fault, if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "What went wrong, in a sentence.",
+            "type": "string"
+          },
+          "parameter": {
+            "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggestion": {
+            "description": "What to do about it, if Silico can say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "advice",
+          "candidates",
+          "cause",
+          "code",
+          "elements",
+          "elements_total",
+          "feature",
+          "message",
+          "parameter",
+          "suggestion"
+        ],
+        "type": "object"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`sketch_trim`'s result.",
+    "properties": {
+      "added": {
+        "description": "The members added, in the order the trim made them: by kind (points, lines,\ncircles, arcs, constraints), the new points along the curve from its start.",
+        "items": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "type": "array"
+      },
+      "changed": {
+        "description": "Whether the document changed: always, for a trim it makes.",
+        "type": "boolean"
+      },
+      "commit": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/CommitResult"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Outside a transaction, the commit that saved the edit; null inside one."
+      },
+      "modified": {
+        "description": "The members changed in place (the curve, now its first piece; a constraint moved to\na piece or retyped under its ID), by kind, then by ID.",
+        "items": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "type": "array"
+      },
+      "pieces": {
+        "description": "The pieces left, the first keeping the curve's ID: none when the trim removes the\ncurve whole, one when it shortens it or opens a circle, two when it takes out its\nmiddle.",
+        "items": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "type": "array"
+      },
+      "references": {
+        "description": "The features that store a name made from the curve's ID or its points' IDs, in\ntimeline order: each such name now finds only what the first piece makes, or\nnothing, where the curve is removed whole.",
+        "items": {
+          "$ref": "#/$defs/FeatureId"
+        },
+        "type": "array"
+      },
+      "removed": {
+        "description": "The members removed (the part trimmed away, its points no other curve uses, and the\nconstraints that go with it), by kind, then by ID.",
+        "items": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "type": "array"
+      },
+      "sketch": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The sketch, as the request named it."
+      }
+    },
+    "required": [
+      "added",
+      "changed",
+      "commit",
+      "modified",
+      "pieces",
+      "references",
+      "removed",
+      "sketch"
+    ],
+    "title": "SketchTrimResult",
+    "type": "object"
+  }
+}

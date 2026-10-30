@@ -7,7 +7,10 @@
 //! document is (a key given twice, a number with more digits than its quantity holds, a
 //! nesting past 64, or more than 64 MiB, all refused, never rounded or half-read), then by
 //! its command's `*Request::read`, and the method called. A request either reader refuses is
-//! answered with the core's refused envelope, as any refusal is.
+//! answered with the core's refused envelope, as any refusal is: carrying the state of the
+//! session its `session` field names, if that reads as an open session's ID (the field read
+//! alone, before the rest, and only to find the session: nothing runs on it), as any other
+//! refusal of the command would, and `null` otherwise.
 //!
 //! The names are one enum, [`Command`], matched whole, from which `wire::COMMANDS` (the
 //! snapshots, MCP's tools) is made, so no command is listed and not run, or run and not
@@ -37,10 +40,17 @@ use super::wire::reads::{CheckRequest, TextRequest, TimelineRequest};
 use super::wire::render::RenderRequest;
 use super::wire::schema::SchemaRequest;
 use super::wire::session::{CancelRequest, OpenRequest, VersionRequest};
-use super::wire::transaction::{FormatRequest, SessionRequest};
+use super::wire::sketch::SketchRequest;
+use super::wire::sketch_edits::{
+    SketchAddRequest, SketchMergeRequest, SketchRemoveRequest, SketchSplitRequest,
+    SketchTrimRequest, SketchUnjoinRequest,
+};
+use super::wire::transaction::{FormatRequest, SessionRequest, StepRequest};
 use super::wire::{self, Json, Layout, ToWire};
-use super::{Problems, Progress, Response, Running, Sessions, Stopper, VERSION};
-use crate::document::json::{self, Cause, MAX_INPUT_LEN, Node, SyntaxError};
+use super::{
+    Problems, Progress, Response, Running, SessionId, SessionInfo, Sessions, Stopper, VERSION,
+};
+use crate::document::json::{self, Cause, MAX_INPUT_LEN, Node, SyntaxError, Value};
 use crate::kernel::Clients;
 use crate::{Error, ErrorCode};
 
@@ -77,12 +87,21 @@ pub enum Command {
     MoveFeature,
     SuppressFeature,
     Timeline,
+    Sketch,
+    SketchAdd,
+    SketchRemove,
+    SketchSplit,
+    SketchTrim,
+    SketchUnjoin,
+    SketchMerge,
+    Undo,
+    Redo,
 }
 
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
     /// 7).
-    pub const ALL: [Command; 29] = [
+    pub const ALL: [Command; 38] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -112,6 +131,15 @@ impl Command {
         Command::MoveFeature,
         Command::SuppressFeature,
         Command::Timeline,
+        Command::Sketch,
+        Command::SketchAdd,
+        Command::SketchRemove,
+        Command::SketchSplit,
+        Command::SketchTrim,
+        Command::SketchUnjoin,
+        Command::SketchMerge,
+        Command::Undo,
+        Command::Redo,
     ];
 
     /// The command's name, as requests and tools give it.
@@ -146,6 +174,15 @@ impl Command {
             Command::MoveFeature => "move_feature",
             Command::SuppressFeature => "suppress_feature",
             Command::Timeline => "timeline",
+            Command::Sketch => "sketch",
+            Command::SketchAdd => "sketch_add",
+            Command::SketchRemove => "sketch_remove",
+            Command::SketchSplit => "sketch_split",
+            Command::SketchTrim => "sketch_trim",
+            Command::SketchUnjoin => "sketch_unjoin",
+            Command::SketchMerge => "sketch_merge",
+            Command::Undo => "undo",
+            Command::Redo => "redo",
         }
     }
 
@@ -191,7 +228,16 @@ impl Command {
             | Command::Export
             | Command::MoveFeature
             | Command::SuppressFeature
-            | Command::Timeline => false,
+            | Command::Timeline
+            | Command::Sketch
+            | Command::SketchAdd
+            | Command::SketchRemove
+            | Command::SketchSplit
+            | Command::SketchTrim
+            | Command::SketchUnjoin
+            | Command::SketchMerge
+            | Command::Undo
+            | Command::Redo => false,
         }
     }
 }
@@ -222,10 +268,11 @@ pub struct Calling {
 /// How a [`Calling`] comes to its answer.
 enum Pending {
     /// A command running off the caller's thread (queued on its session, or a read of the
-    /// published model on its own thread), or one refused before it ran.
+    /// published model on its own thread).
     Waiting(Box<dyn Waiting>),
     /// A command answered when it's waited on, on the waiting thread: `status`, `cancel`,
-    /// `version`, and `schema`, which take no place in a session's queue.
+    /// `read_logs`, `version`, and `schema`, which take no place in a session's queue, and a
+    /// request refused before it ran, which finds the session it names then.
     Later(Box<dyn FnOnce() -> Answered + Send>),
 }
 
@@ -331,12 +378,18 @@ impl Calling {
         }
     }
 
-    /// A request refused before it ran, for every reason in `problems`.
-    fn refused(problems: Problems) -> Self {
-        let answered = Answered::refused(problems);
-        Calling::later(move || answered)
+    /// A request refused before it ran, for every reason in `problems`, carrying the state
+    /// of the session it names, found when it's waited on.
+    fn refused(named: Named, problems: Problems) -> Self {
+        Calling::later(move || Answered::refused_in(named.and_then(|info| info()), problems))
     }
 }
+
+/// The session a request names in its `session` field, read alone: what finds its state
+/// when the request's refusal is waited on, on the waiting thread, as `status` reads it
+/// (never on the caller's, which never waits on a session), none if it isn't open then.
+/// None for a command that takes no session, or a field that isn't a session's ID.
+type Named = Option<Box<dyn FnOnce() -> Option<SessionInfo> + Send>>;
 
 /// A command's answer, as a transport sends it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -355,8 +408,14 @@ impl Answered {
     /// core's refused envelope, with no session and no model, on one line, as every
     /// refusal is written (a transport's own refusal of a call, or its error's `data`).
     pub fn refused(problems: Problems) -> Answered {
+        Answered::refused_in(None, problems)
+    }
+
+    /// The answer of a request refused before it ran, for every reason in `problems`,
+    /// carrying `session`, the state of the open session it names.
+    fn refused_in(session: Option<SessionInfo>, problems: Problems) -> Answered {
         answered(Response::<Unread> {
-            session: None,
+            session,
             model: None,
             result: Err(problems),
         })
@@ -432,25 +491,42 @@ fn unread(e: SyntaxError) -> Error {
 /// The command `request` asks for, started by `run`, its answer written as its result is;
 /// or, if the command's reader refused the request, its refusal.
 fn typed<R, T: ToWire + Send + 'static>(
+    named: Named,
     request: Result<R, Problems>,
     run: impl FnOnce(R) -> Running<T>,
 ) -> Calling {
     match request {
         Ok(request) => Calling::waiting(run(request), answered),
-        Err(problems) => Calling::refused(problems),
+        Err(problems) => Calling::refused(named, problems),
     }
 }
 
 /// The command `request` asks for, answered by `answer` when it's waited on; or, if the
 /// command's reader refused the request, its refusal.
 fn later<R: Send + 'static, T: ToWire>(
+    named: Named,
     request: Result<R, Problems>,
     answer: impl FnOnce(R) -> Response<T> + Send + 'static,
 ) -> Calling {
     match request {
         Ok(request) => Calling::later(move || answered(answer(request))),
-        Err(problems) => Calling::refused(problems),
+        Err(problems) => Calling::refused(named, problems),
     }
+}
+
+/// The session `request`'s `session` field names, read alone: its ID, if the request is an
+/// object holding the field and it's a string that reads as one; none otherwise.
+fn session_named(request: &Node) -> Option<SessionId> {
+    let Value::Object(members) = &request.value else {
+        return None;
+    };
+    members
+        .iter()
+        .find(|member| member.key == "session")
+        .and_then(|member| match &member.value.value {
+            Value::String(text) => SessionId::parse(text),
+            _ => None,
+        })
 }
 
 impl<P: Clients + 'static> Sessions<P> {
@@ -476,103 +552,155 @@ impl<P: Clients + 'static> Sessions<P> {
         let _span = tracing::info_span!("call", command = command.as_str()).entered();
         match json::read(arguments.as_bytes()) {
             Ok(request) => self.dispatch(command, &request),
-            Err(e) => Calling::refused(Problems::from(unread(e))),
+            Err(e) => Calling::refused(None, Problems::from(unread(e))),
         }
+    }
+
+    /// What finds the state of the session `request` names, for its refusal: none for a
+    /// command that takes no session (`version`, `open`, `schema`), whose refusals never
+    /// carry one.
+    fn named(&self, command: Command, request: &Node) -> Named {
+        if matches!(command, Command::Version | Command::Open | Command::Schema) {
+            return None;
+        }
+        let session = session_named(request)?;
+        let sessions: WeakSessions<P> = self.weak();
+        Some(Box::new(move || sessions.info(&session)))
     }
 
     /// `command` run on `request`, through its typed method.
     fn dispatch(&self, command: Command, request: &Node) -> Calling {
+        let named = self.named(command, request);
         match command {
-            Command::Version => later(VersionRequest::read(request), |VersionRequest| Response {
-                session: None,
-                model: None,
-                result: Ok(VERSION),
+            Command::Version => later(named, VersionRequest::read(request), |VersionRequest| {
+                Response {
+                    session: None,
+                    model: None,
+                    result: Ok(VERSION),
+                }
             }),
-            Command::Open => typed(OpenRequest::read(request), |r| self.open(r.path, r.create)),
-            Command::Close => typed(SessionRequest::read(request), |r| self.close(&r.session)),
+            Command::Open => typed(named, OpenRequest::read(request), |r| {
+                self.open(r.path, r.create)
+            }),
+            Command::Close => typed(named, SessionRequest::read(request), |r| {
+                self.close(&r.session)
+            }),
             Command::Status => {
                 let sessions: WeakSessions<P> = self.weak();
-                later(SessionRequest::read(request), move |r| {
+                later(named, SessionRequest::read(request), move |r| {
                     sessions.status(&r.session)
                 })
             }
             Command::Cancel => {
                 let sessions: WeakSessions<P> = self.weak();
-                later(CancelRequest::read(request), move |r| {
+                later(named, CancelRequest::read(request), move |r| {
                     sessions.cancel(&r.session, r.command)
                 })
             }
-            Command::Begin => typed(SessionRequest::read(request), |r| self.begin(&r.session)),
-            Command::Commit => typed(SessionRequest::read(request), |r| self.commit(&r.session)),
-            Command::Rollback => {
-                typed(SessionRequest::read(request), |r| self.rollback(&r.session))
-            }
-            Command::Format => typed(FormatRequest::read(request), |r| {
+            Command::Begin => typed(named, SessionRequest::read(request), |r| {
+                self.begin(&r.session)
+            }),
+            Command::Commit => typed(named, SessionRequest::read(request), |r| {
+                self.commit(&r.session)
+            }),
+            Command::Rollback => typed(named, SessionRequest::read(request), |r| {
+                self.rollback(&r.session)
+            }),
+            Command::Format => typed(named, FormatRequest::read(request), |r| {
                 self.format(&r.session, r.features, r.write)
             }),
-            Command::AddFeature => typed(AddFeatureRequest::read(request), |r| {
+            Command::AddFeature => typed(named, AddFeatureRequest::read(request), |r| {
                 self.add_feature(&r.session, r.revision, r.before, r.feature)
             }),
-            Command::SetField => typed(SetFieldRequest::read(request), |r| {
+            Command::SetField => typed(named, SetFieldRequest::read(request), |r| {
                 self.set_field(&r.session, r.revision, r.feature, r.field, r.value)
             }),
-            Command::RemoveFeature => typed(RemoveFeatureRequest::read(request), |r| {
+            Command::RemoveFeature => typed(named, RemoveFeatureRequest::read(request), |r| {
                 self.remove_feature(&r.session, r.revision, r.feature)
             }),
-            Command::ReplaceText => typed(ReplaceTextRequest::read(request), |r| {
+            Command::ReplaceText => typed(named, ReplaceTextRequest::read(request), |r| {
                 self.replace_text(&r.session, r.revision, r.text)
             }),
-            Command::Text => typed(TextRequest::read(request), |r| {
+            Command::Text => typed(named, TextRequest::read(request), |r| {
                 self.text(&r.session, r.feature)
             }),
-            Command::Outline => typed(SessionRequest::read(request), |r| self.outline(&r.session)),
-            Command::Check => typed(CheckRequest::read(request), |r| {
+            Command::Outline => typed(named, SessionRequest::read(request), |r| {
+                self.outline(&r.session)
+            }),
+            Command::Check => typed(named, CheckRequest::read(request), |r| {
                 self.check(&r.session, r.model)
             }),
-            Command::CacheClear => typed(SessionRequest::read(request), |r| {
+            Command::CacheClear => typed(named, SessionRequest::read(request), |r| {
                 self.cache_clear(&r.session)
             }),
-            Command::Elements => typed(ElementsRequest::read(request), |r| {
+            Command::Elements => typed(named, ElementsRequest::read(request), |r| {
                 self.elements(&r.session, r.model, r.feature, r.after, r.limit)
             }),
-            Command::Query => typed(QueryRequest::read(request), |r| {
+            Command::Query => typed(named, QueryRequest::read(request), |r| {
                 self.query(&r.session, r.model, r.query)
             }),
-            Command::Schema => later(SchemaRequest::read(request), |r| Response {
+            Command::Schema => later(named, SchemaRequest::read(request), |r| Response {
                 session: None,
                 model: None,
                 result: super::schema::schema(&r.of),
             }),
-            Command::MassProperties => typed(MassPropertiesRequest::read(request), |r| {
+            Command::MassProperties => typed(named, MassPropertiesRequest::read(request), |r| {
                 self.mass_properties(&r.session, r.model, r.feature)
             }),
-            Command::Distance => typed(PairRequest::read(request), |r| {
+            Command::Distance => typed(named, PairRequest::read(request), |r| {
                 self.distance(&r.session, r.model, r.elements, r.feature)
             }),
-            Command::Angle => typed(PairRequest::read(request), |r| {
+            Command::Angle => typed(named, PairRequest::read(request), |r| {
                 self.angle(&r.session, r.model, r.elements, r.feature)
             }),
             Command::Render => match RenderRequest::read(request) {
                 Ok(r) => Calling::waiting(self.render(&r.session, r.model, r.render), rendered),
-                Err(problems) => Calling::refused(problems),
+                Err(problems) => Calling::refused(named, problems),
             },
             Command::ReadLogs => {
                 let sessions: WeakSessions<P> = self.weak();
-                later(ReadLogsRequest::read(request), move |r| {
+                later(named, ReadLogsRequest::read(request), move |r| {
                     sessions.read_logs(&r.session, &r.query)
                 })
             }
-            Command::Export => typed(ExportRequest::read(request), |r| {
+            Command::Export => typed(named, ExportRequest::read(request), |r| {
                 self.export(&r.session, r.export)
             }),
-            Command::MoveFeature => typed(MoveFeatureRequest::read(request), |r| {
+            Command::MoveFeature => typed(named, MoveFeatureRequest::read(request), |r| {
                 self.move_feature(&r.session, r.revision, r.feature, r.before)
             }),
-            Command::SuppressFeature => typed(SuppressFeatureRequest::read(request), |r| {
+            Command::SuppressFeature => typed(named, SuppressFeatureRequest::read(request), |r| {
                 self.suppress_feature(&r.session, r.revision, r.feature, r.suppressed)
             }),
-            Command::Timeline => typed(TimelineRequest::read(request), |r| {
+            Command::Timeline => typed(named, TimelineRequest::read(request), |r| {
                 self.timeline(&r.session, r.model)
+            }),
+            Command::Sketch => typed(named, SketchRequest::read(request), |r| {
+                self.sketch(&r.session, r.model, r.sketch)
+            }),
+            Command::SketchAdd => typed(named, SketchAddRequest::read(request), |r| {
+                self.sketch_add(&r.session, r.revision, r.sketch, r.members)
+            }),
+            Command::SketchRemove => typed(named, SketchRemoveRequest::read(request), |r| {
+                self.sketch_remove(&r.session, r.revision, r.sketch, r.members)
+            }),
+            Command::SketchSplit => typed(named, SketchSplitRequest::read(request), |r| {
+                self.sketch_split(&r.session, r.revision, r.sketch, r.curve, r.at, r.ids)
+            }),
+            Command::SketchTrim => typed(named, SketchTrimRequest::read(request), |r| {
+                self.sketch_trim(&r.session, r.revision, r.sketch, r.curve, r.pick, r.ids)
+            }),
+            Command::SketchUnjoin => typed(named, SketchUnjoinRequest::read(request), |r| {
+                self.sketch_unjoin(&r.session, r.revision, r.sketch, r.point, r.curve, r.ids)
+            }),
+            Command::SketchMerge => typed(named, SketchMergeRequest::read(request), |r| {
+                self.sketch_merge(&r.session, r.revision, r.sketch, r.points)
+            }),
+            Command::Undo => typed(named, StepRequest::read(request), |r| {
+                self.undo(&r.session, r.revision, r.to)
+            }),
+            Command::Redo => typed(named, StepRequest::read(request), |r| {
+                self.redo(&r.session, r.revision, r.to)
             }),
         }
     }

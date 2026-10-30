@@ -13,12 +13,12 @@ use super::cancel::Ticket;
 use super::rebuilds::met_fault;
 use super::rebuilds::{Label, Newest};
 use super::transaction::{Checking, Reached};
-use super::{Gated, Problems, ReadCommand, SessionCommand};
+use super::{Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::chain::Rewired;
-use crate::document::json::Plain;
-use crate::document::{Feature, FeatureId};
+use crate::document::json::{Node, Plain};
+use crate::document::{ElementId, Feature, FeatureId};
 use crate::recompute::{Model, StepCount};
 use crate::timeline::{Entry, Excepted, Timeline, timeline};
 use crate::warnings::Warnings;
@@ -108,7 +108,7 @@ pub struct SessionInfo {
 }
 
 /// A command's answer: the session as the command left it (none for an `open` that failed,
-/// or a session that isn't open), the model it read, if it read one, and the command's
+/// a session that isn't open, or a request whose session can't be read), the model it read, if it read one, and the command's
 /// result, or every reason it was refused, in the order found, the first
 /// [`document::PROBLEMS_LISTED`] listed and all counted.
 #[derive(Debug, Clone, PartialEq)]
@@ -720,6 +720,22 @@ pub struct Begun {
     pub base: Revision,
 }
 
+/// A transaction open in a session, as `status` gives it (docs/design/m5.0-app.md, section
+/// 6): the revision it began from, which `rollback` returns to; whether its document
+/// differs from that revision's, as a commit finds it (a commit of one that doesn't writes
+/// nothing), worked out as each edit and each step of its undo stack is held; and its undo
+/// stack's counts, each kept as the stack changes: the edits it can undo and redo, those its
+/// bound has put out of undo's reach, and what it holds, as the bound counts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transaction {
+    pub base: Revision,
+    pub changed: bool,
+    pub undo: usize,
+    pub redo: usize,
+    pub dropped: usize,
+    pub bytes: usize,
+}
+
 /// What `commit` did (the design's section 7): whether it wrote the file (not if the
 /// document is the one `begin` saw), its path as `open` was given it, the features the
 /// transaction's edits reached whose fingerprints it wrote anew and the reached sketches
@@ -882,19 +898,70 @@ pub struct Replaced {
     pub commit: Option<Committed>,
 }
 
+/// The members a `sketch_add` adds (docs/design/m5.0-app.md, section 7, `sketch_add`): each
+/// list as the request gives it, as the document writes a sketch's (each member with the ID
+/// it's to have), read by the document's own reader when the edit is made, as
+/// `add_feature`'s feature is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewMembers {
+    pub points: Node,
+    pub lines: Node,
+    pub circles: Node,
+    pub arcs: Node,
+    pub constraints: Node,
+}
+
+/// What a sketch edit did (`sketch_add`, `sketch_remove`: docs/design/m5.0-app.md, section
+/// 7, *What a result lists*): the sketch, as the request named it; the members it made, in
+/// the order it made them; those it changed in place, and those it removed, each by kind,
+/// then by ID; whether the document changed (not for an edit of nothing, an empty batch:
+/// then there's no new revision and nothing is written); and, outside a transaction, the
+/// commit's result, none inside one or if nothing changed. Never what the sketch's solve
+/// then finds: that's the sketch's state, for `sketch` and `check` to read (SD7).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchEdited {
+    pub sketch: FeatureId,
+    pub added: Vec<ElementId>,
+    pub modified: Vec<ElementId>,
+    pub removed: Vec<ElementId>,
+    pub changed: bool,
+    pub commit: Option<Committed>,
+}
+
+/// What a split or a trim did (`sketch_split`, `sketch_trim`: docs/design/m5.0-app.md,
+/// section 7): as [`SketchEdited`] says it, with the curve's pieces left, the start-side one
+/// first, which keeps the curve's ID (none when a trim removes the curve whole), and the
+/// features that store a name made from the curve's ID or its points' IDs, in timeline
+/// order, each of which now finds what the start-side piece makes (open item 11).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchCut {
+    pub sketch: FeatureId,
+    pub pieces: Vec<ElementId>,
+    pub added: Vec<ElementId>,
+    pub modified: Vec<ElementId>,
+    pub removed: Vec<ElementId>,
+    pub references: Vec<FeatureId>,
+    pub changed: bool,
+    pub commit: Option<Committed>,
+}
+
 /// What `status` says of a session, from what it holds: how many features its document has
 /// (none if its text doesn't read as one), whether the gate took it, the transaction open,
-/// if one is (the revision it began from, which `rollback` returns to), the queued command
-/// running, if one is, the published reads running, in the order they started, and its
-/// current revision's rebuild.
+/// if one is (the revision it began from, which `rollback` returns to, and its undo stack's
+/// counts), what's running on its thread, if anything is (a queued command, or its own
+/// reload), the published reads running, in the order they started, its current revision's
+/// rebuild, and what the last comparison of its file on disk found (docs/design/m5.0-app.md,
+/// section 6): none before one has ended, while its own save runs, and after a save that
+/// failed until the next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub features: Option<usize>,
     pub gated: bool,
-    pub transaction: Option<Begun>,
-    pub running: Option<SessionCommand>,
+    pub transaction: Option<Transaction>,
+    pub running: Option<RunningCommand>,
     pub reads: Vec<ReadCommand>,
     pub rebuild: Rebuild,
+    pub disk: Option<crate::disk::Disk>,
 }
 
 /// A session's current revision's rebuild, as `status` gives it: the revision, what's
