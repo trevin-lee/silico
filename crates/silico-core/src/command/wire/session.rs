@@ -167,6 +167,7 @@ impl ToWire for Limits {
             ("kernel_seconds", Json::whole(self.kernel_seconds)),
             ("sketch_seconds", Json::whole(self.sketch_seconds)),
             ("undo_bytes", Json::count(self.undo_bytes)),
+            ("disk_check_ms", Json::whole(self.disk_check_ms)),
         ])
     }
 }
@@ -417,6 +418,10 @@ pub struct LimitsSchema {
     /// transaction began from are dropped and counted (`transaction.dropped`), and undo then
     /// stops at the oldest kept; `rollback` still returns to the start.
     pub undo_bytes: u64,
+    /// The least time between two comparisons of a session's file on disk, in
+    /// milliseconds: `status`'s `disk` is at most this old (and the time a comparison takes)
+    /// when the session is asked again after it.
+    pub disk_check_ms: u64,
 }
 
 /// `version`'s result.

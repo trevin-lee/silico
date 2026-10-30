@@ -16,6 +16,11 @@
         "additionalProperties": false,
         "description": "The limits every command holds to (the design's section 6), each the value the commands\nuse. A request past one is refused, as `invalid_input`, unless its description says\notherwise.",
         "properties": {
+          "disk_check_ms": {
+            "description": "The least time between two comparisons of a session's file on disk, in\nmilliseconds: `status`'s `disk` is at most this old (and the time a comparison takes)\nwhen the session is asked again after it.",
+            "minimum": 0,
+            "type": "integer"
+          },
           "document_bytes": {
             "description": "The most bytes a document's canonical text may be: past it, an edit, a commit, or an\n`open` is refused.",
             "minimum": 0,
@@ -137,6 +142,7 @@
           }
         },
         "required": [
+          "disk_check_ms",
           "document_bytes",
           "elements",
           "export_bytes",
