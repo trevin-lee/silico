@@ -1596,3 +1596,52 @@ fn format_inside_a_transaction_naming_the_sketch_keeps_the_pads_stored_print() {
             .contains(r#""y": 7"#)
     );
 }
+
+#[test]
+fn an_edit_of_a_sketch_after_a_format_in_the_transaction_reaches_its_pad() {
+    // What format wrote reaches nothing only while the sketch holds it: edited after, the
+    // sketch is the edits', and so is its pad, which the commit refingerprints. The solver
+    // gives back what it's sent from then on; the rectangle's top corners raised to y = 3
+    // make it 4 × 3 from (20, 0): area 12, perimeter 14, so the pad, 10 high, measures 120,
+    // area 2·12 + 14·10 = 164, from (20, 0, 0) to (24, 3, 10), 6 faces, 12 edges, 8 vertices.
+    let (f, sketches, _) = sketch_and_stale_pad();
+    f.begin();
+    let formatted = answer(f.sessions.format(&f.id, Some(vec![id("s0000001")]), true))
+        .result
+        .unwrap();
+    assert!(formatted.changed);
+    sketches.answer(|system| Ok(silico_core::fake::FakeSketches::as_sent(system)));
+    for point in ["pa000003", "pa000004"] {
+        let three = silico_core::document::json::read(b"3").unwrap();
+        answer(f.sessions.set_field(
+            &f.id,
+            f.revision(),
+            id("s0000001"),
+            format!("points.{point}.y"),
+            three,
+        ))
+        .result
+        .unwrap();
+    }
+    let committed = answer(f.sessions.commit(&f.id)).result.unwrap();
+    assert!(committed.written);
+    assert!(
+        committed.refingerprinted.contains(&id("p0000001")),
+        "{:?}",
+        committed.refingerprinted
+    );
+    assert!(
+        !committed
+            .problems
+            .errors()
+            .iter()
+            .any(|e| e.code() == ErrorCode::Drift),
+        "{:?}",
+        committed.problems.errors()
+    );
+    let pad = pad_line(&f);
+    assert!(
+        pad.contains(r#""fingerprint": {"volume": 120, "area": 164, "bbox": [20, 0, 0, 24, 3, 10], "faces": 6, "edges": 12, "vertices": 8}"#),
+        "{pad}"
+    );
+}
