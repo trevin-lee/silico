@@ -1239,8 +1239,9 @@ mod tests {
 pub struct Output<'a> {
     /// The request's field the path came in (`to`, `path`), which every refusal names.
     pub field: &'a str,
-    /// The format's extension, without its dot (`png`, `3mf`).
-    pub extension: &'a str,
+    /// The format's extensions, without their dots (`png`; `step`, `stp`): a path must end
+    /// in one, any case.
+    pub extensions: &'a [&'a str],
     /// What writes it, as a refusal says it (`an export`, `a render`).
     pub writer: &'a str,
     /// Whether a file already at the path may be replaced.
@@ -1289,11 +1290,18 @@ fn output_target(
         .with_parameter(rules.field)
         .with_suggestion(suggestion)
     };
-    let has = |p: &Path, ext: &str| {
+    let has = |p: &Path, exts: &[&str]| {
         p.extension()
             .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+            .is_some_and(|e| exts.iter().any(|ext| e.eq_ignore_ascii_case(ext)))
     };
+    // ".png"; ".step or .stp".
+    let ends = rules
+        .extensions
+        .iter()
+        .map(|ext| format!(".{ext}"))
+        .collect::<Vec<_>>()
+        .join(" or ");
     // A document, however it's reached: never written over, each said alike.
     let a_document = |what: &str, suggestion: String| {
         Error::new(
@@ -1307,16 +1315,16 @@ fn output_target(
         .with_parameter(rules.field)
         .with_suggestion(suggestion)
     };
-    if has(path, "silico") {
+    if has(path, &["silico"]) {
         return Err(a_document(
             "is a document",
-            format!("give a path ending in .{}", rules.extension),
+            format!("give a path ending in {ends}"),
         ));
     }
-    if !has(path, rules.extension) {
+    if !has(path, rules.extensions) {
         return Err(refuse(
-            format!("doesn't end in .{}", rules.extension),
-            &format!("give a path ending in .{}", rules.extension),
+            format!("doesn't end in {ends}"),
+            &format!("give a path ending in {ends}"),
         ));
     }
     let name = path.file_name().ok_or_else(|| {
@@ -1367,7 +1375,7 @@ fn output_target(
             "write it outside the .silico-cache directory",
         ));
     }
-    if has(&target, "silico") {
+    if has(&target, &["silico"]) {
         return Err(a_document(
             "is a link to a document",
             "write it to a path that isn't a document's".to_owned(),
@@ -1375,9 +1383,9 @@ fn output_target(
     }
     // A link to a file of another format (a clone's `view.png` linked to its README) would
     // be replaced by this one's bytes.
-    if !has(&target, rules.extension) {
+    if !has(&target, rules.extensions) {
         return Err(refuse(
-            format!("is a link to a file that isn't a .{}", rules.extension),
+            format!("is a link to a file that isn't a {ends}"),
             "write it to a path that isn't a link to another kind of file",
         ));
     }

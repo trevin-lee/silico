@@ -291,7 +291,7 @@ fn png_rules<'a>(
 ) -> silico_core::file::Output<'a> {
     silico_core::file::Output {
         field: "to",
-        extension: "png",
+        extensions: &["png"],
         writer: "a render",
         replace,
         workspace,
@@ -695,6 +695,44 @@ fn a_png_link_to_a_file_of_another_kind_is_refused_and_the_file_kept() {
     )
     .unwrap();
     assert_eq!(std::fs::read(&real).unwrap(), b"new");
+}
+
+#[test]
+fn a_link_to_either_spelling_of_a_format_with_two_is_written_through_and_any_other_refused() {
+    // STEP's two spellings: out.step linked to real.stp is a STEP file written through;
+    // out2.stp linked to a README is refused naming both, the README kept.
+    let dir = Scratch::new("output-link-two-spellings");
+    let workspace = silico_core::file::Workspace::new(&dir.0).unwrap();
+    let rules = silico_core::file::Output {
+        field: "to",
+        extensions: &["step", "stp"],
+        writer: "an export",
+        replace: true,
+        workspace: Some(&workspace),
+        held: &[],
+    };
+    let real = dir.0.join("real.stp");
+    std::fs::write(&real, b"old").unwrap();
+    let out = dir.0.join("out.step");
+    std::os::unix::fs::symlink(&real, &out).unwrap();
+    silico_core::file::write_output(&out, b"new", &rules).unwrap();
+    assert_eq!(std::fs::read(&real).unwrap(), b"new");
+    let readme = dir.0.join("README.md");
+    std::fs::write(&readme, b"keep me").unwrap();
+    let out2 = dir.0.join("out2.stp");
+    std::os::unix::fs::symlink(&readme, &out2).unwrap();
+    refused_output(
+        &out2,
+        &rules,
+        "is a link to a file that isn't a .step or .stp",
+    );
+    assert_eq!(std::fs::read(&readme).unwrap(), b"keep me");
+    // Not a link: a path of neither spelling names both.
+    refused_output(
+        &dir.0.join("out.stl"),
+        &rules,
+        "doesn't end in .step or .stp",
+    );
 }
 
 /// The `n`th name a file a command writes is first written to, beside `name`, in this
