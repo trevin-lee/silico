@@ -1059,7 +1059,7 @@ fn schema_prints_the_documents_or_a_commands_as_committed() {
          format, add_feature, set_field, remove_feature, replace_text, text, outline, check, \
          cache_clear, elements, query, schema, mass_properties, distance, angle, render, \
          read_logs, export, move_feature, timeline, sketch, sketch_add, \
-         sketch_remove.\n"
+         sketch_remove, sketch_split, sketch_trim, sketch_unjoin, sketch_merge.\n"
     );
     // Two names: a usage error.
     let out = schema(&["query", "elements"]);
@@ -1879,4 +1879,117 @@ fn each_crash_says_the_designs_words_once_and_a_values_crash_only_to_change_them
         }
     }
     assert!(!out.exists());
+}
+
+/// The bracket's L profile (M4.9's) with two corners drawn as touching ends that aren't one
+/// point (`ends_not_joined`'s clusters, each under 1e-7 mm apart, each constraint already
+/// met exactly so nothing drifts): `pa000008` 3e-8 mm right of `pa000003`, starting the
+/// upright's top, and `pa000007` 4e-8 mm above `pa000004`, starting its inside; its pad; and
+/// a sketch whose touching ends `qa000002` and `qa000003` a `vertical_points` names, so
+/// merging them would name one point twice, which the merge refuses.
+const TOUCHING: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [
+{"id": "s0000001", "type": "sketch", "v": 1, "name": "Bracket profile", "plane": "xz", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 60, "y": 0, "construction": false}, {"id": "pa000003", "x": 60, "y": 5, "construction": false}, {"id": "pa000004", "x": 5, "y": 5, "construction": false}, {"id": "pa000005", "x": 5, "y": 50, "construction": false}, {"id": "pa000006", "x": 0, "y": 50, "construction": false}, {"id": "pa000007", "x": 5, "y": 5.00000004, "construction": false}, {"id": "pa000008", "x": 60.00000003, "y": 5, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000008", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000007", "to": "pa000005", "construction": false}, {"id": "na000005", "from": "pa000005", "to": "pa000006", "construction": false}, {"id": "na000006", "from": "pa000006", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}, {"id": "ka000005", "type": "horizontal", "line": "na000005"}, {"id": "ka000006", "type": "vertical", "line": "na000006"}, {"id": "ka000007", "type": "distance_x", "a": "origin", "b": "pa000001", "value": 0, "driving": true}, {"id": "ka000008", "type": "distance_y", "a": "origin", "b": "pa000001", "value": 0, "driving": true}, {"id": "ka000009", "type": "length", "line": "na000001", "value": 60, "driving": true}, {"id": "ka00000a", "type": "length", "line": "na000002", "value": 5, "driving": true}, {"id": "ka00000b", "type": "length", "line": "na000005", "value": 5, "driving": true}, {"id": "ka00000c", "type": "length", "line": "na000006", "value": 50, "driving": true}]},
+{"id": "p0000001", "type": "pad", "v": 1, "name": "Legs", "sketch": "s0000001", "extent": {"type": "one_side", "length": 40, "reversed": true}},
+{"id": "s0000002", "type": "sketch", "v": 1, "name": "Corner", "plane": "xy", "points": [{"id": "qa000001", "x": 0, "y": 0, "construction": false}, {"id": "qa000002", "x": 10, "y": 0, "construction": false}, {"id": "qa000003", "x": 10, "y": 0.00000004, "construction": false}, {"id": "qa000004", "x": 10, "y": 10, "construction": false}], "lines": [{"id": "nq000001", "from": "qa000001", "to": "qa000002", "construction": false}, {"id": "nq000002", "from": "qa000003", "to": "qa000004", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "kq000001", "type": "vertical_points", "a": "qa000002", "b": "qa000003"}]}
+]}
+"#;
+
+/// The `ends_not_joined` warnings `silico check` says of `file`, each line as said, its exit
+/// `code`: 1 while the pad sweeps the open profile, 0 once it's closed.
+fn ends_not_joined(scratch: &Scratch, file: &Path, code: i32) -> Vec<String> {
+    let out = silico(scratch, &["check"], file);
+    assert_eq!(out.status.code(), Some(code), "{}", stderr(&out));
+    stderr(&out)
+        .lines()
+        .filter(|line| line.contains("warning: ends_not_joined"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn fmt_merge_touching_merges_each_cluster_keeping_its_least_id_and_says_one_it_couldnt() {
+    let scratch = Scratch::new("fmt-merge-touching");
+    let file = scratch.file(TOUCHING);
+    let warned = ends_not_joined(&scratch, &file, 1);
+    assert_eq!(warned.len(), 3, "{warned:?}");
+    let out = silico(&scratch, &["fmt", "--merge-touching"], &file);
+    let said = stderr(&out);
+    // The refused cluster makes the document's problem (exit 1); the others merged, and
+    // the file written.
+    assert_eq!(out.status.code(), Some(1), "{said}");
+    let merged: Vec<&str> = said
+        .lines()
+        .filter(|line| line.contains("merged points") || line.contains("couldn't merge"))
+        .collect();
+    assert_eq!(merged.len(), 3, "{said}");
+    assert!(
+        merged[0]
+            .ends_with(": merged points pa000003, pa000008 of sketch s0000001, keeping pa000003"),
+        "{said}"
+    );
+    assert!(
+        merged[1]
+            .ends_with(": merged points pa000004, pa000007 of sketch s0000001, keeping pa000004"),
+        "{said}"
+    );
+    assert!(
+        merged[2].ends_with(": couldn't merge points qa000002, qa000003 of sketch s0000002:"),
+        "{said}"
+    );
+    assert!(
+        said.contains("merging them would make constraint kq000001 name point qa000002 twice"),
+        "{said}"
+    );
+    // The profile's points are shared: the bracket's L, its corners pa000003 and pa000004
+    // ends of both lines that meet there, the two others gone.
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.contains(
+            r#"{"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}"#
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            r#"{"id": "na000004", "from": "pa000004", "to": "pa000005", "construction": false}"#
+        ),
+        "{text}"
+    );
+    assert!(
+        !text.contains("pa000007") && !text.contains("pa000008"),
+        "{text}"
+    );
+    // The pad builds on the closed profile, its fingerprint written: 21,000 mm³ by hand
+    // (Fable's chain decision: the bracket's pad).
+    assert!(
+        text.contains(r#""fingerprint": {"volume": 21000,"#),
+        "{text}"
+    );
+    // The warnings of the merged clusters are gone; the refused one's stays.
+    let warned = ends_not_joined(&scratch, &file, 0);
+    assert_eq!(warned.len(), 1, "{warned:?}");
+    assert!(warned[0].contains("qa000002, qa000003"), "{warned:?}");
+    // A second run writes the same file, byte for byte, and says the same refusal.
+    let out = silico(&scratch, &["fmt", "--merge-touching"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("merged points"), "{}", stderr(&out));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}
+
+#[test]
+fn fmt_check_merge_touching_writes_nothing_and_says_what_it_would_merge() {
+    let scratch = Scratch::new("fmt-check-merge-touching");
+    let file = scratch.file(TOUCHING);
+    let out = silico(&scratch, &["fmt", "--check", "--merge-touching"], &file);
+    let said = stderr(&out);
+    assert_eq!(out.status.code(), Some(1), "{said}");
+    assert!(
+        said.contains(
+            ": would merge points pa000003, pa000008 of sketch s0000001, keeping pa000003"
+        ),
+        "{said}"
+    );
+    assert!(said.contains("`silico fmt` would rewrite it"), "{said}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), TOUCHING);
+    assert_eq!(ends_not_joined(&scratch, &file, 1).len(), 3);
 }

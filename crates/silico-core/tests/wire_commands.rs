@@ -793,7 +793,11 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "timeline",
                 "sketch",
                 "sketch_add",
-                "sketch_remove"
+                "sketch_remove",
+                "sketch_split",
+                "sketch_trim",
+                "sketch_unjoin",
+                "sketch_merge"
             ]
         );
     }

@@ -297,3 +297,61 @@ fn a_line_re_added_with_a_removed_ones_id_is_that_line_to_the_name_as_a_replace_
     }
     assert_eq!(f.fillet(&a), f.fillet(&b));
 }
+
+/// The pad's element the fillet's name finds, in the current model: its start and its end.
+fn named_edge(f: &Fixture, session: &str) -> ([f64; 3], [f64; 3]) {
+    let listed = f.ran(
+        "elements",
+        &json!({"session": session, "model": "current", "feature": "p0000001", "after": null, "limit": 1000}).to_string(),
+    );
+    assert_eq!(listed["next"], Value::Null, "{listed}");
+    let found: Vec<&Value> = listed["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["name"] == NAME || e["aliases"].as_array().unwrap().iter().any(|a| a == NAME))
+        .collect();
+    let [edge] = found.as_slice() else {
+        panic!("{NAME}: {found:?}")
+    };
+    assert_eq!(edge["kind"], "edge", "{edge}");
+    let point = |key: &str| {
+        let at = |i: usize| edge[key][i].as_f64().unwrap();
+        [at(0), at(1), at(2)]
+    };
+    (point("start"), point("end"))
+}
+
+#[test]
+fn a_split_lists_the_fillet_whose_name_its_line_reaches_and_the_name_then_finds_the_start_side_piece()
+ {
+    // docs/design/m5.0-app.md, open item 11: na000001, from (-30, -15) to (30, -15), split
+    // at (0, -15): the start-side piece keeps its ID, so the name made from it finds the
+    // edge that piece sweeps, from x = -30 to 0, half of what it found; the split's
+    // `references` lists the fillet, and the name stored is as it was (never re-pointed).
+    let f = fixture();
+    let s = f.open("plate.silico", &golden());
+    let (start, end) = named_edge(&f, &s);
+    let mut xs = [start[0], end[0]];
+    xs.sort_by(f64::total_cmp);
+    assert_eq!(xs, [-30.0, 30.0], "{start:?} {end:?}");
+    f.ran("begin", &json!({"session": s}).to_string());
+    let split = f.ran(
+        "sketch_split",
+        &json!({"session": s, "revision": 1, "sketch": "s0000001", "curve": "na000001", "at": [[0, -15]], "ids": ["pa000005", "na000005", "ka000001"]}).to_string(),
+    );
+    assert_eq!(
+        split,
+        json!({"sketch": "s0000001", "pieces": ["na000001", "na000005"], "added": ["pa000005", "na000005", "ka000001"], "modified": ["na000001"], "removed": [], "references": ["f0000001"], "changed": true, "commit": null})
+    );
+    assert_eq!(f.problems(&s), Vec::<Value>::new());
+    let (start, end) = named_edge(&f, &s);
+    let mut xs = [start[0], end[0]];
+    xs.sort_by(f64::total_cmp);
+    assert_eq!(xs, [-30.0, 0.0], "{start:?} {end:?}");
+    assert_eq!((start[1], end[1]), (-15.0, -15.0));
+    assert_eq!(start[2], end[2]);
+    f.ran("commit", &json!({"session": s}).to_string());
+    let saved = std::fs::read_to_string(f.path("plate.silico")).unwrap();
+    assert_eq!(stored_edges(&saved), json!([NAME]));
+}
