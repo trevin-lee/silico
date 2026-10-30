@@ -1515,6 +1515,8 @@ impl<C: Kernel + 'static> Session<C> {
         stop.settle()?;
         let target = to.target(self.workspace.as_ref(), own)?;
         (to.reserve)(&target).map_err(|holder| held_elsewhere(&to.given, holder))?;
+        #[cfg(test)]
+        self.writing.pass();
         // Written only where it was checked and claimed: a link put on its way since is
         // refused, so it never writes over another session's file.
         let written = file::write_output_at(

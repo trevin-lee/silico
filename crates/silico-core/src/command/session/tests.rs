@@ -2275,6 +2275,70 @@ fn a_save_as_from_a_file_left_part_written_writes_and_says_where_its_old_text_is
     assert_eq!(f.session().held.read().part_written, None);
 }
 
+/// `f`'s Save As to `to` started and held just before it writes, `meanwhile` done, then
+/// let through: its answer.
+fn save_as_held(
+    f: &Fixture,
+    to: &Path,
+    replace: bool,
+    meanwhile: impl FnOnce(),
+) -> Response<Committed> {
+    f.sessions.begin(&f.id).wait().result.unwrap();
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    f.session().writing.shut(started, wait);
+    let saving = f.sessions.save_as(&f.id, to, replace);
+    was_started.recv_timeout(WAIT).unwrap();
+    meanwhile();
+    through.send(()).unwrap();
+    saving.wait()
+}
+
+#[test]
+fn a_save_as_whose_path_a_link_is_put_on_after_its_check_writes_nothing() {
+    let f = opened(STORED);
+    let (to, elsewhere) = (
+        f.path.with_file_name("b.silico"),
+        f.path.with_file_name("c.silico"),
+    );
+    std::fs::write(&elsewhere, "another file").unwrap();
+    let response = save_as_held(&f, &to, true, || {
+        std::os::unix::fs::symlink(&elsewhere, &to).unwrap();
+    });
+    let problems = response.result.unwrap_err();
+    assert_eq!(problems.errors()[0].code(), ErrorCode::Conflict);
+    assert_eq!(problems.errors()[0].parameter(), Some("path"));
+    assert_eq!(
+        problems.errors()[0].suggestion(),
+        Some("nothing was written: commit again")
+    );
+    assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "another file");
+    assert_eq!(f.session().held.read().path, f.path.to_str().unwrap());
+}
+
+#[test]
+fn a_save_as_whose_path_becomes_another_sessions_document_after_its_check_writes_nothing() {
+    let f = opened(STORED);
+    let theirs = f.path.with_file_name("theirs.silico");
+    std::fs::write(&theirs, BOX).unwrap();
+    f.sessions.open(&theirs, false).wait().result.unwrap();
+    let to = f.path.with_file_name("b.silico");
+    let response = save_as_held(&f, &to, true, || {
+        std::fs::hard_link(&theirs, &to).unwrap();
+    });
+    let problems = response.result.unwrap_err();
+    assert_eq!(problems.errors()[0].code(), ErrorCode::InvalidInput);
+    assert!(
+        problems.errors()[0]
+            .message()
+            .ends_with("is a document a session holds: a commit never writes over one"),
+        "{:?}",
+        problems.errors()[0]
+    );
+    assert_eq!(std::fs::read_to_string(&to).unwrap(), BOX);
+    assert_eq!(f.session().held.read().path, f.path.to_str().unwrap());
+}
+
 #[test]
 fn a_file_this_sessions_own_save_left_part_written_isnt_reloaded() {
     let f = opened(STORED);
