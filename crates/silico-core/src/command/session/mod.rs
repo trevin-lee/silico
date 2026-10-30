@@ -551,11 +551,6 @@ impl<P: Clients + 'static> Sessions<P> {
         Arc::clone(&self.registry.export_turns)
     }
 
-    /// The sketch solvers every session's engine shares, which a sketch read solves on.
-    pub(crate) fn sketch_solvers(&self) -> SketchSolvers {
-        self.registry.sketches.clone()
-    }
-
     /// The renderer `render` draws with, and the meshes it keeps.
     pub(crate) fn render_on(
         &self,

@@ -1,16 +1,17 @@
 //! `Sessions::sketch` (docs/design/m5.0-app.md, section 7, *`sketch` (M5.10)*) on the fake
 //! sketch solver, where the solve itself isn't the point (silico-sketch's
-//! tests/sketch_read.rs reads sketches PlaneGCS solves): the read's solve stopped by a cancel
-//! and its solver given back, a published read among the session's reads, and a solver that
-//! fails or can't start refusing the read with its own error, naming the sketch.
+//! tests/sketch_read.rs reads sketches PlaneGCS solves): the read asks no solver anything,
+//! its model holding each sketch's diagnosis (M5.0's A8: "`sketch` ... need[s] none"); and a
+//! rebuild whose solver failed, or couldn't start, refuses the read with the rebuild's own
+//! error, as `check` reports it.
 
-use crate::sessions::{HANG, answer, id};
+use crate::sessions::{answer, id};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use silico_core::cache::Cache;
-use silico_core::command::{Cancelled, ModelChoice, ReadCommand, SessionCommand, Sessions};
+use silico_core::command::{ModelChoice, Sessions};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::sketch::SketchSolver;
 use silico_core::{Error, ErrorCode};
@@ -46,11 +47,10 @@ fn s1() -> silico_core::command::SessionId {
 }
 
 #[test]
-fn a_cancelled_sketch_read_stops_its_solve_and_gives_its_solver_back() {
-    // Held mid-solve, a published read is among the session's reads by its name; cancelled,
-    // its solve is stopped (the fake counts the stop), it answers cancelled, and the
-    // solver goes back to the sessions' solvers: the next read, released, answers, solved
-    // on it (no other was started).
+fn a_sketch_read_asks_no_solver_anything_current_or_published() {
+    // The rebuild's solve is the only one: reads of either model, with the solver held so
+    // any solve would hang, answer from the model, the solver asked nothing more and none
+    // started (the design's bound on sketch workers, section 6, holds).
     let dir = tempfile::tempdir().unwrap();
     let sketches = FakeSketches::new();
     let solver = sketches.clone();
@@ -60,59 +60,26 @@ fn a_cancelled_sketch_read_stops_its_solve_and_gives_its_solver_back() {
         started.fetch_add(1, Ordering::SeqCst);
         Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
     });
-    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    let asked = sketches.requests().len();
+    assert_eq!((starts.load(Ordering::SeqCst), asked), (1, 1));
     sketches.hold();
-    let read = sessions.sketch(&s1(), ModelChoice::Published, id("k7f2qx3m"));
-    assert!(sketches.wait_held(HANG));
-    let status = sessions.status(&s1()).result.unwrap();
-    assert_eq!(status.reads, [ReadCommand::Sketch]);
-    assert_eq!(
-        sessions
-            .cancel(&s1(), SessionCommand::Sketch)
-            .result
-            .unwrap(),
-        Cancelled {
-            command: SessionCommand::Sketch,
-            stopped: true
-        }
-    );
-    let cancelled = answer(read);
-    let errors = cancelled.result.unwrap_err();
-    assert_eq!(errors.errors()[0].code(), ErrorCode::Cancelled);
-    assert_eq!(sketches.stops(), 1);
-    sketches.release();
-    let again = answer(sessions.sketch(&s1(), ModelChoice::Current, id("k7f2qx3m")));
-    let read = again.result.unwrap();
-    assert_eq!(
-        read.states.dofs, 0,
-        "the fake's dofs, as it answers every solve"
-    );
+    for model in [ModelChoice::Current, ModelChoice::Published] {
+        let read = answer(sessions.sketch(&s1(), model, id("k7f2qx3m")));
+        let read = read.result.unwrap();
+        assert_eq!(read.members.points.len(), 2, "{model:?}");
+    }
+    assert_eq!(sketches.requests().len(), asked);
     assert_eq!(starts.load(Ordering::SeqCst), 1);
-    // A stop the read let go of stops nothing once its solve is over: a cancel now finds
-    // nothing running, and no solve after it is stopped.
-    assert!(
-        sessions
-            .cancel(&s1(), SessionCommand::Sketch)
-            .result
-            .is_err()
-    );
-    answer(sessions.sketch(&s1(), ModelChoice::Current, id("k7f2qx3m")))
-        .result
-        .unwrap();
-    assert_eq!(sketches.stops(), 1);
+    sketches.release();
 }
 
 #[test]
-fn a_solver_that_fails_refuses_the_read_with_its_error_naming_the_sketch_and_isnt_lost() {
-    // The worker's own failure says nothing of the sketch's state: the read is refused with
-    // it (`sketch_states::states`), naming the sketch, and the solver given back serves the
-    // next read once it answers again.
+fn a_rebuild_whose_solver_failed_refuses_the_read_with_its_error_as_check_reports_it() {
+    // The worker's own failure under the rebuild says nothing of the sketch's state: the
+    // read is refused with the model's error for the sketch, naming it, the error `check`
+    // of the same model reports; the read solves nothing again (the solver now answers).
     let dir = tempfile::tempdir().unwrap();
     let sketches = FakeSketches::new();
-    let solver = sketches.clone();
-    let sessions = opened(&dir, move || {
-        Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
-    });
     let failing = Arc::new(AtomicBool::new(true));
     let fails = Arc::clone(&failing);
     sketches.answer(move |system| {
@@ -125,6 +92,11 @@ fn a_solver_that_fails_refuses_the_read_with_its_error_naming_the_sketch_and_isn
             Ok(FakeSketches::as_sent(system))
         }
     });
+    let solver = sketches.clone();
+    let sessions = opened(&dir, move || {
+        Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
+    });
+    failing.store(false, Ordering::SeqCst);
     let refused = answer(sessions.sketch(&s1(), ModelChoice::Current, id("k7f2qx3m")));
     let problems = refused.result.unwrap_err();
     assert_eq!(problems.total(), 1);
@@ -137,15 +109,19 @@ fn a_solver_that_fails_refuses_the_read_with_its_error_naming_the_sketch_and_isn
             Some("k7f2qx3m")
         )
     );
-    failing.store(false, Ordering::SeqCst);
-    let read = answer(sessions.sketch(&s1(), ModelChoice::Current, id("k7f2qx3m")))
-        .result
-        .unwrap();
-    assert_eq!(read.members.points.len(), 2);
+    // Worded as every read words the fault its model kept: how to try again.
+    assert_eq!(
+        error.suggestion(),
+        Some(
+            "check with fresh to try it again; if the same feature crashes the worker again, \
+             report it with the document"
+        )
+    );
+    assert_eq!(refused.model.unwrap().fault.unwrap().code(), error.code());
 }
 
 #[test]
-fn a_solver_that_cant_start_refuses_the_read_with_its_error_naming_the_sketch() {
+fn a_solver_that_couldnt_start_refuses_the_read_with_the_rebuilds_error() {
     let dir = tempfile::tempdir().unwrap();
     let sessions = opened(&dir, || {
         Err(Error::new(
@@ -156,35 +132,15 @@ fn a_solver_that_cant_start_refuses_the_read_with_its_error_naming_the_sketch() 
     let refused = answer(sessions.sketch(&s1(), ModelChoice::Current, id("k7f2qx3m")));
     let problems = refused.result.unwrap_err();
     let error = &problems.errors()[0];
+    // A worker that couldn't be had says nothing of the feature that asked (as every read
+    // words a model's fault).
     assert_eq!(
         (error.code(), error.message(), error.feature()),
         (
             ErrorCode::WorkerUnavailable,
             "no sketch worker at /nowhere",
-            Some("k7f2qx3m")
+            None
         )
     );
     assert_eq!(problems.total(), 1);
-}
-
-#[test]
-fn a_session_closed_under_a_published_sketch_read_stops_its_solve() {
-    // The session's close interrupts its published reads: the read held mid-solve is
-    // stopped, and answers as of a session that closed, never cancelled (no client stopped
-    // it).
-    let dir = tempfile::tempdir().unwrap();
-    let sketches = FakeSketches::new();
-    let solver = sketches.clone();
-    let sessions = opened(&dir, move || {
-        Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
-    });
-    sketches.hold();
-    let read = sessions.sketch(&s1(), ModelChoice::Published, id("k7f2qx3m"));
-    assert!(sketches.wait_held(HANG));
-    assert!(answer(sessions.close(&s1())).result.is_ok());
-    let closed = answer(read);
-    let problems = closed.result.unwrap_err();
-    assert_ne!(problems.errors()[0].code(), ErrorCode::Cancelled);
-    assert_eq!(sketches.stops(), 1);
-    sketches.release();
 }

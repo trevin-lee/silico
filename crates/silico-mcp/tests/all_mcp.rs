@@ -6,6 +6,7 @@
 mod client;
 
 mod adversarial_server;
+mod adversarial_sketch_read;
 mod calls;
 mod contract;
 mod errors;

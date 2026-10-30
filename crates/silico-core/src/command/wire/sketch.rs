@@ -133,9 +133,8 @@ pub struct SketchRequestSchema {
     pub sketch: FeatureId,
 }
 
-/// `sketch`'s result: the sketch as the model's solve left it, for sketch mode to draw and
-/// colour. The model's sketch is solved again from the coordinates its document holds, as
-/// the rebuild solved it, so the read gives what the rebuild found.
+/// `sketch`'s result: the sketch as the model's rebuild solved it, for sketch mode to draw
+/// and colour.
 #[derive(JsonSchema)]
 #[schemars(rename = "SketchResult", transform = wire_shape)]
 pub struct SketchResultSchema {

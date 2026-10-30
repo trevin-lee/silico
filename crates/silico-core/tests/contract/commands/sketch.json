@@ -1111,7 +1111,7 @@
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`sketch`'s result: the sketch as the model's solve left it, for sketch mode to draw and\ncolour. The model's sketch is solved again from the coordinates its document holds, as\nthe rebuild solved it, so the read gives what the rebuild found.",
+    "description": "`sketch`'s result: the sketch as the model's rebuild solved it, for sketch mode to draw\nand colour.",
     "properties": {
       "arcs": {
         "description": "Each arc, by ID, as the document writes it.",
