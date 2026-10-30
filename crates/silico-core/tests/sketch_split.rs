@@ -955,7 +955,8 @@ fn an_edge_tangent_with_a_curve_ending_at_the_split_point_is_refused_naming_it()
     // (k0, c's centre left of a). Split at s0, the pieces share it, so c and the start-side
     // piece, which holds the contact, share an end: there an edge tangency is a tangent_at.
     // The split refuses it, where a merge that makes curves share an end converts one (open
-    // item 13 of docs/design/m5.0-app.md).
+    // item 13 of docs/design/m5.0-app.md). The gate refuses this sketch since #258 (the edge
+    // tangent beside the tangent_on), so only a sketch never checked reaches the split so.
     let points = r#"{"id": "s0000000", "x": 10, "y": 0, "construction": false}, {"id": "z0000000", "x": 10, "y": 10, "construction": false}, {"id": "z0000001", "x": 20, "y": 10, "construction": false}"#;
     let before = a_line(
         points,

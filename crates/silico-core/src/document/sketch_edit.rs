@@ -569,8 +569,9 @@ fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Res
                 // Curves that share an end: where they meet, a tangency is a tangent_at. A
                 // merge's is made one (`tangents_at_shared_ends`), but not where the two share
                 // both ends. A split meets one only at a curve's end held tangent on it,
-                // whose tangent_on becomes that tangent_at (the gate refuses an edge tangency
-                // beside an `on` of an end), so it's refused, repeating it.
+                // whose tangent_on becomes that tangent_at, so it's refused, repeating it:
+                // never from a checked sketch, since the gate refuses an edge tangency beside
+                // an `on` or a `tangent_on` of an end (#258).
                 let shared = match (a.element(), b.element()) {
                     (Some(a), Some(b)) => ends
                         .get(a)
