@@ -482,10 +482,15 @@ pub struct JobConstraint {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FreecadEdit {
-    /// `delConstraints` of those named, then `delGeometries`.
+    /// `delConstraints` of those named, a `Coincident` between each pair of `rejoin`, then
+    /// `delGeometries`.
     Delete {
         geometries: Vec<i32>,
         constraints: Vec<String>,
+        /// The ends an end-to-end tangency removed held together, alone: Silico's removal of
+        /// a `tangent_at` leaves its point shared (:96), where FreeCAD's endpoint `Tangent`,
+        /// which joins the ends in place of a `Coincident`, leaves them apart when deleted.
+        rejoin: Vec<[i32; 4]>,
     },
     /// The vertex Delete: `delConstraintOnPoint(geometry, position)`.
     Unjoin { geometry: i32, position: i32 },
@@ -631,9 +636,36 @@ pub fn plan(sketch: &Sketch, model: &FreecadSketch, edit: &Edit) -> Plan {
             // Coincidences listed first, so 1.1.3's delete doesn't depend on their order
             // (:118): Silico's constraints have none.
             modulo.push(118);
+            // An end-to-end tangency removed whose ends nothing else joins, neither curve
+            // removed: Silico's point stays shared (:96), so FreeCAD's ends are joined again.
+            let ends = |c: &JobConstraint| match (c.kind, &c.ints[..]) {
+                ("Coincident" | "Tangent" | "Perpendicular", &[ga, pa, gb, pb])
+                    if pa != 0 && pb != 0 =>
+                {
+                    Some(((ga, pa), (gb, pb)))
+                }
+                _ => None,
+            };
+            let gone = |c: &JobConstraint| c.name.as_ref().is_some_and(|n| named.contains(n));
+            let kept =
+                Joins::of_constraints(constraints.iter().filter(|c| !gone(c)).filter_map(ends));
+            let rejoin: Vec<[i32; 4]> = constraints
+                .iter()
+                .filter(|c| gone(c))
+                .filter_map(ends)
+                .filter(|&((ga, _), (gb, _))| {
+                    !geometries.contains(&ga) && !geometries.contains(&gb)
+                })
+                .filter(|&(a, b)| !kept.joined(a, b))
+                .map(|((ga, pa), (gb, pb))| [ga, pa, gb, pb])
+                .collect();
+            if !rejoin.is_empty() {
+                modulo.push(96);
+            }
             FreecadEdit::Delete {
                 geometries,
                 constraints: named,
+                rejoin,
             }
         }
         Edit::Unjoin { point, curve } => {
@@ -916,7 +948,8 @@ pub struct Known {
 pub enum Shows {
     /// This report ([`Verdict::how`], joined by "; "), exactly.
     Difference(&'static str),
-    /// Whatever it shows, where Silico's side is still this rule's refusal: FreeCAD 1.1.3
+    /// Whatever it shows, where Silico's side is still a refusal by this rule (its kind;
+    /// what it names isn't compared): FreeCAD 1.1.3
     /// doesn't answer the case the same every run, so its answer is no oracle, and the case
     /// is shown as known, its report with it, never as an agreement or a difference. Silico's
     /// side otherwise is compared, and the known case a problem.
@@ -927,35 +960,23 @@ pub enum Shows {
 /// and the sweep's, by the name a seed gives them, where one is pending a decision.
 pub const KNOWN: &[Known] = &[
     Known {
-        case: "merge_holds_own_point_on_line",
-        shows: Shows::Difference(
-            "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000005 hold p0000004, a point of n0000003, on n0000003 itself (elements k0000005, p0000004, n0000003, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:66): solve -2 with conflicting [], redundant [1], malformed []",
-        ),
-        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which the note gives only generally, as the gate's (:31, :303); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
-    },
-    // `sketch-edit-sweep --seed 32 --count 500`'s case 490.
-    Known {
-        case: "edit_32_490",
-        shows: Shows::Difference(
-            "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000028 hold p0000027, a point of n0000005, on n0000005 itself (elements k0000028, p0000027, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:66): solve -2 with conflicting [], redundant [12], malformed []",
-        ),
-        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which the note gives only generally, as the gate's (:31, :303); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
-    },
-    // `sketch-edit-sweep --seed 32 --count 500`'s case 413: a decision-13b merge, as case 490
-    // is; first seen in sweep 40851790630, after #251's rebase.
-    Known {
-        case: "edit_32_413",
-        shows: Shows::Difference(
-            "both refused, but Silico's refusal isn't one the note gives (its edit refused: invalid_input: merging them would make constraint k0000022 hold p0000001, a point of n0000005, on n0000005 itself (elements k0000022, p0000001, n0000005, parameter points). Suggestion: remove the constraint first, or merge other points.); FreeCAD's: FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:66): solve -2 with conflicting [], redundant [13], malformed []",
-        ),
-        why: "pending decision 13b (#222), not a fix: Silico's merge refuses one after which a constraint would hold a curve's own point on that curve (#239's own-curve refusal, the gate's rule, :31, applied to the edit's result up front, :34), which the note gives only generally, as the gate's (:31, :303); FreeCAD 1.1.3 makes the merge, its solve finding the `on` redundant, which main's Coincident command (emulated) rolls back. Whether the merge refuses it or drops the `on` as implied is decision 13b of docs/design/m5.0-app.md (#222, not on this base), which the maintainer hasn't answered",
-    },
-    Known {
         case: "merge_two_locked_ends",
         shows: Shows::Difference(
             "FreeCAD refused (FreeCAD's Coincident command rolls back a worse solve (docs/ports/sketch-edit.md:66): solve -2 with conflicting [], redundant [3, 4], malformed []); Silico made the edit",
         ),
         why: "the two locks agree once the points are one, so Silico's solve keeps them as redundant (M3.3's decision 5) and the merge stands (as the note's own merge tests have a lock merge, :504); FreeCAD's Coincident command rolls back a solve that finds new redundancy (:66); the note says only that a conflict refuses the merge (:304)",
+    },
+    // `sketch-edit-sweep --seed 43 --count 500`'s case 6.
+    Known {
+        case: "edit_43_6",
+        shows: Shows::Varies(Rule::MergeHoldsOwn(String::new())),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which a symmetric would mirror an end of n0000005 about n0000005 itself, which Silico refuses (:31, :303); FreeCAD's merge finds 14 constraints redundant (-2) on macOS, 10 of 10 runs, its solved geometry different in each, and on Linux (CI) one conflicting as well (-3). Either way its Coincident command rolls it back (:66), but an answer that varies is no oracle",
+    },
+    // `sketch-edit-sweep --seed 43 --count 500`'s case 229.
+    Known {
+        case: "edit_43_229",
+        shows: Shows::Varies(Rule::MergeSolveConflicts),
+        why: "FreeCAD 1.1.3 isn't the same run to run here, and its success isn't one: points merged from apart, p0000003 kept, its place 33 mm from where p0000001's distance_x and distance_y hold it. FreeCAD's merge solve reports success (0, 10 of 10 runs) with its geometry different in each run, and in one read here its merged places still 33 mm apart. Silico's merge solve starts from the kept point's place (:297) and fails (solve_failed, every solver converging short of the constraints), where started near the lock it solves to the sketch FreeCAD's coincidence should give, 21 degrees of freedom. Whether the merge starts its solve elsewhere is pending a decision",
     },
     // `sketch-edit-sweep --seed 32 --count 500`'s case 154.
     Known {
@@ -964,6 +985,12 @@ pub const KNOWN: &[Known] = &[
         why: "FreeCAD 1.1.3 isn't the same run to run here (:305): points merged from apart, whose solve shortens a line to nothing, which Silico refuses (:307); FreeCAD's solve mostly succeeds, its line 5e-13 mm long, and now and then (about 4 of 36 runs) fails (-1), which its Coincident command rolls back; alone in a script, it failed 3 of 20 runs and its 17 solves landed in three different places. Either outcome is the note's, but an answer that varies is no oracle",
     },
 ];
+
+/// Whether Silico's refusal was by a rule of `want`'s kind, whatever it names (a constraint's
+/// ID, which a constant can't hold).
+fn same_kind(rule: Option<&Rule>, want: &Rule) -> bool {
+    rule.is_some_and(|r| std::mem::discriminant(r) == std::mem::discriminant(want))
+}
 
 /// `verdicts` less the [`KNOWN`] differences that showed: the cases that differ, a line for
 /// each known one that showed, and a problem for each known one of these cases that didn't.
@@ -978,7 +1005,7 @@ pub fn without_known(
         };
         let difference = match &k.shows {
             Shows::Difference(difference) => *difference,
-            Shows::Varies(rule) if v.rule.as_ref() == Some(rule) => continue,
+            Shows::Varies(rule) if same_kind(v.rule.as_ref(), rule) => continue,
             Shows::Varies(rule) => {
                 missing.push(format!(
                     "{}: FreeCAD varies run to run here, but Silico's side is no longer the note's rule {rule:?} ({}); it now reads: {}",
@@ -1008,7 +1035,8 @@ pub fn without_known(
     }
     for v in verdicts {
         match known.iter().find(|k| k.case == v.case) {
-            Some(k) if matches!(&k.shows, Shows::Varies(rule) if v.rule.as_ref() == Some(rule)) => {
+            Some(k) if matches!(&k.shows, Shows::Varies(rule) if same_kind(v.rule.as_ref(), rule)) =>
+            {
                 let report = if v.how.is_empty() {
                     "agreed this run".to_owned()
                 } else {
@@ -1268,6 +1296,7 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                     // A merge FreeCAD's solve fails, which its Coincident command rolls back:
                     // one of the two outcomes the note gives it (:305).
                     Some(Pinned::SolvesOrRollsBack) => rolled_back(p, theirs),
+                    Some(Pinned::RollsBack) => rolled_back_worse(p, theirs),
                     Some(Pinned::Raises(text)) => raised(text),
                     // 1.1.3's vertex Delete raises only on an end with no coincidence (:261).
                     Some(Pinned::UnjoinsVertex) => raised(VERTEX_DELETE_RAISES) && !vertex_shared(p),
@@ -1412,6 +1441,10 @@ pub enum Rule {
     /// A merge whose sketch the gate refuses, its curve left 1e-7 mm or less where Silico
     /// places the merged point (:303): the curve.
     MergeGated(String),
+    /// A merge after which a constraint would hold a curve's own point on that curve, mirror
+    /// an end of a line about it, or hold an end tangent on its own curve: the gate's rule
+    /// (:31) for the merged sketch (:303), said up front: the constraint.
+    MergeHoldsOwn(String),
     /// Removing a point curves still use (decision 7, :136).
     RemovePointInUse,
 }
@@ -1434,6 +1467,7 @@ impl Rule {
             Rule::MergeSolveConflicts => vec![304],
             Rule::MergeSolveUnbuildable => vec![305, 306, 307],
             Rule::MergeGated(_) => vec![303],
+            Rule::MergeHoldsOwn(_) => vec![31, 303],
             Rule::RemovePointInUse => vec![134, 136],
         }
     }
@@ -1455,6 +1489,7 @@ impl Rule {
             | Rule::TrimPoint
             | Rule::NoPieceTakes(_) => Some(Pinned::Edits),
             Rule::MergeSolveUnbuildable => Some(Pinned::SolvesOrRollsBack),
+            Rule::MergeHoldsOwn(_) => Some(Pinned::RollsBack),
             Rule::RemovePointInUse => Some(Pinned::UnjoinsVertex),
             _ => None,
         }
@@ -1480,6 +1515,9 @@ pub enum Pinned {
     /// (-1), which its Coincident command rolls back, the sketch as it was before
     /// ([`rolled_back`]): FreeCAD 1.1.3 isn't the same every run here (:305).
     SolvesOrRollsBack,
+    /// Its Coincident command rolls the merge back as a worse solve (:66), nothing else of the
+    /// sketch changed ([`rolled_back_worse`]).
+    RollsBack,
     /// Its Delete on the vertex (one curve's end at the point) deletes no curve: it unjoins
     /// that end (:132-134), which the excusal checks, or, on an end with no coincidence,
     /// 1.1.3 raises (:261).
@@ -1491,6 +1529,9 @@ impl Pinned {
         match self {
             Pinned::Crashes => "crash, by a segmentation fault",
             Pinned::Raises(_) => "raise as the note gives it",
+            Pinned::RollsBack => {
+                "make the merge, its solve worse, which the Coincident command rolls back to the sketch before it"
+            }
             Pinned::UnjoinsVertex => {
                 "unjoin the vertex its Delete is on, deleting no curve, or raise only where the end has no coincidence"
             }
@@ -1633,6 +1674,52 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
                         .then(|| last.clone())
                 });
                 return collapsed.filter(|_| named_first).map(Rule::MergeGated);
+            }
+            // A constraint the merge would make hold a curve's own point on it, mirror an end
+            // of a line about it, or hold an end tangent on its own curve: what the gate
+            // refuses of the merged sketch (:31, :303), said up front, naming the constraint.
+            if r.message.contains("would make constraint")
+                && let Some(id) = r.elements.first()
+                && let Some(k) = constraint(id)
+            {
+                let as_merged = |reference: &Reference| {
+                    reference.element().map(|e| {
+                        if merged.contains(e.as_str()) {
+                            points[0].clone()
+                        } else {
+                            e.as_str().to_owned()
+                        }
+                    })
+                };
+                let of = |point: &Reference, curve: &Reference| {
+                    let (Some(point), Some(curve)) = (as_merged(point), curve.element()) else {
+                        return false;
+                    };
+                    shape.members.get(curve.as_str()).is_some_and(|m| {
+                        m.kind != "point"
+                            && m.at.values().any(|q| {
+                                let q = if merged.contains(q.as_str()) {
+                                    &points[0]
+                                } else {
+                                    q
+                                };
+                                *q == point
+                            })
+                    })
+                };
+                let holds = match &k.form {
+                    Form::On { point, curve }
+                    | Form::Midpoint { point, line: curve }
+                    | Form::PointLineDistance {
+                        point, line: curve, ..
+                    } => of(point, curve),
+                    Form::Symmetric { a, b, about } => of(a, about) || of(b, about),
+                    Form::TangentOn { at, b, .. } => of(at, b),
+                    _ => false,
+                };
+                if holds {
+                    return Some(Rule::MergeHoldsOwn(id.clone()));
+                }
             }
             // A curve using two of the merged points, named last.
             if let Some(last) = r.elements.last()
@@ -1814,22 +1901,48 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
 /// was given them, and the merge's coincidences, which the rollback takes off. Anything else
 /// (a partial merge, a solve that moved something, another failure) isn't the rollback.
 pub fn rolled_back(p: &Prepared, theirs: Option<&Theirs>) -> bool {
+    matches!(theirs, Some(Theirs::Edited(fc)) if fc.before.code == 0 && fc.after.code == -1)
+        && restored(p, theirs, true)
+}
+
+/// Whether FreeCAD's merge of `p` made a solve worse than the one before it (a code other
+/// than 0, or a constraint redundant, conflicting, or malformed that wasn't), which its
+/// Coincident command rolls back (:66), with nothing else of the sketch changed: every curve
+/// and point kept and none made, and the constraints the case's and the merge's coincidences
+/// ([`restored`]). Its places aren't checked: a solve that finds a constraint redundant
+/// (-2) can still move the geometry, which the command's rollback then puts back, and the
+/// harness doesn't run the command, only FreeCAD's merge and solve.
+pub fn rolled_back_worse(p: &Prepared, theirs: Option<&Theirs>) -> bool {
+    let Some(Theirs::Edited(fc)) = theirs else {
+        return false;
+    };
+    let new = |after: &[usize], before: &[usize]| after.iter().any(|i| !before.contains(i));
+    let (b, a) = (&fc.before, &fc.after);
+    let worse = b.code == 0
+        && (a.code != 0
+            || new(&a.conflicting, &b.conflicting)
+            || new(&a.redundant, &b.redundant)
+            || new(&a.malformed, &b.malformed));
+    worse && restored(p, theirs, false)
+}
+
+/// Whether FreeCAD's merge of `p`, rolled back, gives back just the sketch as it was: each
+/// curve and point kept and none made, and, if `places`, each place, radius, and
+/// construction as drawn; and its constraints the case's, as FreeCAD was given them, with
+/// their values, and the merge's coincidences, which the rollback takes off.
+fn restored(p: &Prepared, theirs: Option<&Theirs>, places: bool) -> bool {
     let (Some(Theirs::Edited(fc)), Plan::Run { job, .. }) = (theirs, &p.plan) else {
         return false;
     };
     let FreecadEdit::Merge { coincidences } = &job.edit else {
         return false;
     };
-    if fc.before.code != 0 || fc.after.code != -1 {
-        return false;
-    }
     let shape = Shape::of(&p.sketch);
     let drawn = |g: &FcGeometry| as_drawn(p, &shape, fc, g);
     let ids = |list: &[FcGeometry]| list.iter().map(|g| g.id).collect::<Vec<_>>();
     if ids(&fc.geometry) != fc.ids_before
         || ids(&fc.edited) != fc.ids_before
-        || !fc.geometry.iter().all(drawn)
-        || !fc.edited.iter().all(drawn)
+        || (places && !(fc.geometry.iter().all(drawn) && fc.edited.iter().all(drawn)))
     {
         return false;
     }

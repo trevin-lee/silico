@@ -104,19 +104,128 @@ fn every_case_agrees_with_freecad_modulo_the_note_or_is_a_reported_difference() 
 }
 
 #[test]
-fn the_sweeps_known_case_still_differs_as_known() {
-    // `sketch-edit-sweep --seed 32 --count 500`'s case 490: a merge Silico refuses, pending
-    // decision 13b (#222), that FreeCAD makes.
-    let mut cases = silico_oracle::generate::sketch_edit_cases(32, 500).unwrap();
-    let case = cases.swap_remove(490);
-    assert_eq!(case.name, "edit_32_490");
-    let verdicts = sketch_edit::run(&[case]).unwrap();
-    let (differ, shown, stale) = without_known(verdicts, KNOWN);
+fn a_merge_that_would_make_a_constraint_hold_its_own_curve_agrees_with_freecads_rollback() {
+    // merge_holds_own_point_on_line, and `sketch-edit-sweep --seed 32 --count 500`'s case 490:
+    // a merge after which an `on` would hold a line's own end on the line, which Silico
+    // refuses as the gate's rule for the merged sketch (:31, :303). FreeCAD 1.1.3 makes the
+    // merge, its solve finding the `on` redundant (-2, 10 of 10 runs), which its Coincident
+    // command rolls back (:66): both refuse.
+    let mut cases = cases(&["merge_holds_own_point_on_line"]);
+    let mut sweep = silico_oracle::generate::sketch_edit_cases(32, 500).unwrap();
+    cases.push(sweep.swap_remove(490));
+    // `--seed 43`'s case 6, a symmetric that would mirror an end of its line about it: the
+    // rule too, though FreeCAD's answer there varies run to run (KNOWN).
+    let mut sweep = silico_oracle::generate::sketch_edit_cases(43, 500).unwrap();
+    cases.push(sweep.swap_remove(6));
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared: Vec<Prepared> = cases
+        .iter()
+        .map(|c| prepare(c, &mut worker).unwrap())
+        .collect();
     assert!(
-        differ.is_empty() && stale.is_empty(),
-        "{differ:?} {stale:?}"
+        matches!(rule(&prepared[2]), Some(Rule::MergeHoldsOwn(id)) if id == "k0000032"),
+        "{:?}",
+        prepared[2].silico
     );
-    assert_eq!(shown.len(), 1);
+    let prepared = &prepared[..2];
+    // A merge that would make a constraint name a point twice is its own rule, not this one.
+    let (_, twice, _) = both(&["merge_with_constraint_between"]);
+    assert!(
+        matches!(rule(&twice[0]), Some(Rule::MergeNamesTwice(_))),
+        "{:?}",
+        twice[0].silico
+    );
+    let theirs = freecad_outcomes(prepared).unwrap();
+    for (p, fc) in prepared.iter().zip(&theirs) {
+        assert!(
+            matches!(rule(p), Some(Rule::MergeHoldsOwn(_))),
+            "{}: {:?}",
+            p.name,
+            p.silico
+        );
+        assert!(
+            sketch_edit::rolled_back_worse(p, fc.as_ref()),
+            "{}: {fc:?}",
+            p.name
+        );
+        let v = verdict(p, fc.as_ref());
+        agrees(&v);
+        assert!(
+            v.refused && v.modulo.contains(&31) && v.modulo.contains(&303),
+            "{v:?}"
+        );
+        // FreeCAD otherwise: its solve no worse than before, its edit raising, a constraint
+        // of the case's changed, its merge's coincidence missing, a geometry made: a
+        // difference each.
+        let changes: Vec<(&str, Doctoring)> = vec![
+            (
+                "its solve no worse",
+                Box::new(|fc| fc.after = fc.before.clone()),
+            ),
+            (
+                "a constraint of the case's made a reference",
+                Box::new(|fc| {
+                    let named = fc
+                        .constraints
+                        .iter_mut()
+                        .find(|c| !c.name.is_empty())
+                        .unwrap();
+                    named.driving = false;
+                }),
+            ),
+            (
+                "the merge's coincidence missing",
+                Box::new(|fc| {
+                    fc.constraints.pop();
+                }),
+            ),
+            (
+                "a geometry made",
+                Box::new(|fc| {
+                    let mut made = fc.geometry[0].clone();
+                    made.id = 999;
+                    fc.geometry.push(made.clone());
+                    fc.edited.push(made);
+                }),
+            ),
+        ];
+        for (what, change) in changes {
+            let made = doctored(fc, |fc| change(fc));
+            assert!(
+                !sketch_edit::rolled_back_worse(p, Some(&made)),
+                "{}: {what}",
+                p.name
+            );
+            let v = verdict(p, Some(&made));
+            assert!(!v.refused && !v.how.is_empty(), "{}: {what}: {v:?}", p.name);
+        }
+        let v = verdict(p, Some(&Theirs::Failed("refused by hand".to_owned())));
+        assert!(!v.refused && v.how.len() == 1, "{}: {v:?}", p.name);
+        // The same refusal naming a constraint that holds nothing of its own curve: not the
+        // rule.
+        let SilicoSide::Refused(r) = &p.silico else {
+            panic!("{}: {:?}", p.name, p.silico);
+        };
+        let mut r = r.clone();
+        r.elements[0] = "k0099999".to_owned();
+        let none = Prepared {
+            silico: SilicoSide::Refused(r.clone()),
+            ..p.clone()
+        };
+        assert!(rule(&none).is_none(), "{}", p.name);
+        // Naming a constraint of the sketch that holds nothing of its own curve (490's
+        // horizontal, k0000009): not the rule.
+        if let Some(other) = p.sketch.constraints.iter().find(|k| k.id == id("k0000009")) {
+            r.elements[0] = other.id.to_string();
+            let wrong = Prepared {
+                silico: SilicoSide::Refused(r),
+                ..p.clone()
+            };
+            assert!(rule(&wrong).is_none(), "{}", p.name);
+        } else {
+            assert_eq!(p.name, "merge_holds_own_point_on_line");
+        }
+    }
 }
 
 #[test]
@@ -546,7 +655,8 @@ fn edits_freecad_has_no_counterpart_for_still_run_freecad() {
         job.edit,
         FreecadEdit::Delete {
             geometries: vec![1],
-            constraints: Vec::new()
+            constraints: Vec::new(),
+            rejoin: Vec::new()
         }
     );
 }
@@ -1677,4 +1787,99 @@ fn a_case_freecad_was_run_on_and_gave_no_outcome_is_a_difference() {
             p.name
         );
     }
+}
+
+#[test]
+fn a_removed_tangent_at_leaves_its_point_shared_where_freecads_delete_unjoins_it() {
+    // `sketch-edit-sweep --seed 42 --count 500`'s case 214: the tangent_at k0000016 of the
+    // line n0000012 and the arc a0000015 at their shared point p0000011, removed. FreeCAD's
+    // endpoint Tangent is all that joins the two ends, so its delete leaves them apart (10 of
+    // 10 runs); Silico's point stays shared (:96), so FreeCAD's ends are joined again.
+    let mut sweep = silico_oracle::generate::sketch_edit_cases(42, 500).unwrap();
+    let case = sweep.swap_remove(214);
+    assert_eq!(case.name, "edit_42_214");
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let p = &prepared[0];
+    let Plan::Run { job, modulo } = &p.plan else {
+        panic!("FreeCAD isn't run");
+    };
+    let FreecadEdit::Delete { rejoin, .. } = &job.edit else {
+        panic!("{:?}", job.edit);
+    };
+    let at = |member: &str, pos: i32| {
+        let g = p.model.elements.iter().position(|e| e == member).unwrap();
+        (i32::try_from(g).unwrap(), pos)
+    };
+    let ((g1, p1), (g2, p2)) = (at("n0000012", 2), at("a0000015", 1));
+    assert!(
+        rejoin == &vec![[g1, p1, g2, p2]] || rejoin == &vec![[g2, p2, g1, p1]],
+        "{rejoin:?}"
+    );
+    assert!(modulo.contains(&96), "{modulo:?}");
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    let v = verdict(p, theirs[0].as_ref());
+    agrees(&v);
+    // FreeCAD's ends left apart (the rejoining coincidence taken off): a difference, the
+    // point Silico keeps shared reported.
+    let apart = doctored(&theirs[0], |fc| {
+        fc.constraints.retain(|c| {
+            !(c.kind == "Coincident"
+                && (c.refs == [[g1, p1], [g2, p2]] || c.refs == [[g2, p2], [g1, p1]]))
+        });
+    });
+    let v = verdict(p, Some(&apart));
+    assert!(
+        v.how
+            .iter()
+            .any(|h| h.starts_with("Silico's point p0000011 is one point, which FreeCAD has apart")),
+        "{v}"
+    );
+}
+
+#[test]
+fn a_removed_tangent_at_is_rejoined_in_freecads_job_only_where_nothing_else_joins_its_ends() {
+    // Three lines at p0000002, n0000001's end, n0000002's start and n0000003's start. In
+    // FreeCAD's model a tangent_at there is the endpoint Tangent that joins its two ends in
+    // place of a Coincident, the third end joined by a Coincident: its removal joins the two
+    // again (:96), either pair. None removed, nothing is added.
+    let three = |a: &str, b: &str| {
+        sketch(&format!(
+            r#""points": [{{"id": "p0000001", "x": 0, "y": 0, "construction": false}}, {{"id": "p0000002", "x": 5, "y": 0, "construction": false}}, {{"id": "p0000003", "x": 5, "y": 5, "construction": false}}, {{"id": "p0000004", "x": 10, "y": 0, "construction": false}}],
+        "lines": [{{"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}}, {{"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false}}, {{"id": "n0000003", "from": "p0000002", "to": "p0000004", "construction": false}}],
+        "circles": [], "arcs": [],
+        "constraints": [{{"id": "k0000001", "type": "tangent_at", "a": "{a}", "b": "{b}", "at": "p0000002", "direction": "same"}}]"#
+        ))
+    };
+    let removed = || Edit::Remove {
+        members: vec!["k0000001".to_owned()],
+    };
+    for (a, b, want) in [
+        ("n0000001", "n0000003", vec![[0, 2, 2, 1]]),
+        ("n0000002", "n0000003", vec![[1, 1, 2, 1]]),
+    ] {
+        let Plan::Run { job, modulo } = planned(&three(a, b), removed()) else {
+            panic!("FreeCAD isn't run");
+        };
+        let FreecadEdit::Delete { rejoin, .. } = &job.edit else {
+            panic!("{:?}", job.edit);
+        };
+        assert_eq!(rejoin, &want, "{a}, {b}: {:?}", job.constraints);
+        assert!(modulo.contains(&96), "{modulo:?}");
+    }
+    let Plan::Run { job, modulo } = planned(
+        &three("n0000001", "n0000003"),
+        Edit::Remove {
+            members: vec!["n0000002".to_owned()],
+        },
+    ) else {
+        panic!("FreeCAD isn't run");
+    };
+    let FreecadEdit::Delete { rejoin, .. } = &job.edit else {
+        panic!("{:?}", job.edit);
+    };
+    assert!(
+        rejoin.is_empty() && !modulo.contains(&96),
+        "{rejoin:?} {modulo:?}"
+    );
 }

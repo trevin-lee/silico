@@ -553,9 +553,15 @@ def edit_call(call, *args):
 
 
 def edit_delete(s, e, applied):
+    import Sketcher
+
     gone = [i for i, c in enumerate(s.Constraints) if c.Name in set(e["constraints"])]
     if gone:
         edit_call(s.delConstraints, sorted(set(gone)))
+    # An end-to-end tangency deleted whose ends nothing else joins: Silico's removal leaves
+    # the point shared (sketch-edit.md:96), so the ends are joined again, a note form.
+    for g1, p1, g2, p2 in e["rejoin"]:
+        s.addConstraint(Sketcher.Constraint("Coincident", g1, p1, g2, p2))
     if e["geometries"]:
         edit_call(s.delGeometries, sorted(e["geometries"]))
     # 1.1.3 moves an endpoint-to-edge Tangent on a deleted end onto its neighbour as a
