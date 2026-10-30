@@ -358,7 +358,7 @@ def measure(s):
     }
 
 
-with open(os.environ["SILICO_ORACLE_CASES"]) as f:
+with open(os.environ["SILICO_ORACLE_CASES"], encoding="utf-8") as f:
     cases = json.load(f)[int(os.environ["SILICO_ORACLE_FIRST"]):]
 # Each line begins on a line of its own: FreeCAD's recompute progress ends without one.
 print("\nSILICO_ORACLE_READY", flush=True)

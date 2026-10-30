@@ -1404,7 +1404,7 @@ fn freecad_killed_on_sphere_13(dir: &Path) -> PathBuf {
         &hook,
         r#"import json, os, signal
 import FreeCAD
-_cases = json.load(open(os.environ["SILICO_ORACLE_CASES"]))[int(os.environ["SILICO_ORACLE_FIRST"]):]
+_cases = json.load(open(os.environ["SILICO_ORACLE_CASES"], encoding="utf-8"))[int(os.environ["SILICO_ORACLE_FIRST"]):]
 _seen = [0]
 _new = FreeCAD.newDocument
 def _hooked(*a, **k):
@@ -1415,7 +1415,7 @@ def _hooked(*a, **k):
     return _new(*a, **k)
 FreeCAD.newDocument = _hooked
 _path = os.environ["BREAK_IT_ORACLE_SCRIPT"]
-exec(compile(open(_path).read(), _path, "exec"))
+exec(compile(open(_path, encoding="utf-8").read(), _path, "exec"))
 "#,
     )
     .unwrap();
