@@ -325,7 +325,7 @@ fn calls_back_to_back_on_one_session_run_in_the_order_sent() {
         (11, "set_field", r#"{"session": "s1", "revision": 1, "feature": "k7f2qx3m", "field": "length", "value": 41}"#.to_owned()),
         (12, "set_field", r#"{"session": "s1", "revision": 2, "feature": "k7f2qx3m", "field": "length", "value": 42}"#.to_owned()),
         (13, "text", r#"{"session": "s1", "feature": "k7f2qx3m"}"#.to_owned()),
-        (14, "commit", r#"{"session": "s1"}"#.to_owned()),
+        (14, "commit", r#"{"session": "s1", "path": null, "replace": false}"#.to_owned()),
     ];
     for (id, name, arguments) in &calls {
         c.send_call(*id, name, arguments);

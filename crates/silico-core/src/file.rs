@@ -1402,9 +1402,12 @@ mod tests {
     }
 }
 
-/// The rules a file a command writes besides the document is held to (decision 35:
-/// `render`'s `to`, `export`'s `path`; docs/design/m4.1-command-api.md, *Files a command
-/// writes*).
+/// The rules a file a command writes is held to (decision 35: `render`'s `to`,
+/// `export`'s `path`; docs/design/m4.1-command-api.md, *Files a command writes*), and a
+/// document a commit saves elsewhere (Save As, M5.4: `commit`'s `path`, [`document`]
+/// true).
+///
+/// [`document`]: Self::document
 #[derive(Debug, Clone, Copy)]
 pub struct Output<'a> {
     /// The request's field the path came in (`to`, `path`), which every refusal names.
@@ -1421,6 +1424,9 @@ pub struct Output<'a> {
     pub workspace: Option<&'a Workspace>,
     /// The documents the sessions hold, which it may never be.
     pub held: &'a [PathBuf],
+    /// Whether what's written is a document (a Save As), whose extension is `.silico`:
+    /// otherwise a path that is a document, or links to one, is refused.
+    pub document: bool,
 }
 
 /// Writes `bytes` to `path` as `rules` allow, and gives where it wrote (the path through
@@ -1485,7 +1491,7 @@ fn output_target(
         .with_parameter(rules.field)
         .with_suggestion(suggestion)
     };
-    if has(path, &["silico"]) {
+    if !rules.document && has(path, &["silico"]) {
         return Err(a_document(
             "is a document",
             format!("give a path ending in {ends}"),
@@ -1545,7 +1551,7 @@ fn output_target(
             "write it outside the .silico-cache directory",
         ));
     }
-    if has(&target, &["silico"]) {
+    if !rules.document && has(&target, &["silico"]) {
         return Err(a_document(
             "is a link to a document",
             "write it to a path that isn't a document's".to_owned(),
@@ -1583,18 +1589,22 @@ fn output_target(
                 "give the path of a file to write",
             ));
         }
-        Ok(_) if !rules.replace => {
-            return Err(Error::new(
-                ErrorCode::InvalidInput,
-                format!("{} exists", shown_path(given)),
-            )
-            .with_parameter(rules.field)
-            .with_suggestion(REPLACE_ADVICE));
-        }
+        Ok(_) if !rules.replace => return Err(exists(given, rules.field)),
         Ok(meta) => Some(meta),
         Err(_) => None,
     };
     Ok((target, replaced))
+}
+
+/// The refusal of a path a command writes, given in `field`, where a file is already there
+/// and the request didn't say to replace it.
+pub(crate) fn exists(given: &Path, field: &str) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("{} exists", shown_path(given)),
+    )
+    .with_parameter(field)
+    .with_suggestion(REPLACE_ADVICE)
 }
 
 /// What a file already at a path a command writes, without `replace`, suggests: a

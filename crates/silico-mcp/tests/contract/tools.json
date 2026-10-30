@@ -2491,8 +2491,19 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "`commit`'s request: end the session's transaction, saving its document.",
+        "description": "`commit`'s request: end the session's transaction, saving its document to its own\nfile, or, given a path, to the file there (Save As), which the session then holds.",
         "properties": {
+          "path": {
+            "description": "null to save to the session's own file. A path (relative to the workspace's root\nunder `silico serve`) to save to that file instead, written even if nothing changed:\nit must end in .silico, can't be the session's own file or one another session\nholds, and the session holds it from then on, letting its old file go.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replace": {
+            "description": "Whether to replace a file already at `path`. Must be false when `path` is null.",
+            "type": "boolean"
+          },
           "session": {
             "description": "The session's ID, as `open` gave it.",
             "pattern": "^s[1-9][0-9]*$",
@@ -2500,6 +2511,8 @@
           }
         },
         "required": [
+          "path",
+          "replace",
           "session"
         ],
         "title": "CommitRequest",
@@ -2773,7 +2786,7 @@
                 "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
                 "properties": {
                   "path": {
-                    "description": "The document's path, as `open` was given it.",
+                    "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                     "type": "string"
                   },
                   "problems": {
@@ -5078,7 +5091,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -6979,7 +6992,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -7434,7 +7447,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -9315,7 +9328,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -16055,7 +16068,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {

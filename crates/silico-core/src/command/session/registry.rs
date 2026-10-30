@@ -681,6 +681,86 @@ pub(super) fn reclaim<P: Clients + 'static>(
     }
 }
 
+/// The path `target`, where session `id`'s Save As is about to write (M5.4), claimed for
+/// it before the write, so no session opens what it writes as it's written: refused,
+/// naming the session, if another holds or is opening the file there (by any path to it)
+/// or the path. The claim on the session's own file stands until [`moved`] lets it go;
+/// [`unreserve`] takes this one back if the write fails.
+pub(super) fn reserve<P: Clients + 'static>(
+    registry: &Registry<P>,
+    id: SessionId,
+    target: &Path,
+) -> Result<(), SessionId> {
+    // Opened without waiting, as a read is: a pipe put at the path wouldn't block it.
+    let there = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(target)
+        .ok()
+        .and_then(|opened| FileId::of(&opened).ok());
+    let mut book = lock(&registry.book);
+    let holder = there
+        .and_then(|file| book.files.get(&file).map(|(holder, _)| *holder))
+        .into_iter()
+        .chain(book.paths.get(target).copied())
+        .find(|holder| *holder != id);
+    match holder {
+        Some(holder) => Err(holder),
+        None => {
+            book.paths.insert(target.to_owned(), id);
+            Ok(())
+        }
+    }
+}
+
+/// The claim [`reserve`] made on `target` for session `id` taken back: its Save As wrote
+/// nothing there.
+pub(super) fn unreserve<P: Clients + 'static>(
+    registry: &Registry<P>,
+    id: SessionId,
+    target: &Path,
+) {
+    let mut book = lock(&registry.book);
+    if book.paths.get(target) == Some(&id) {
+        book.paths.remove(target);
+    }
+}
+
+/// Session `id`'s claims moved to the file its Save As wrote at `resolved` (M5.4): that
+/// path and that file the session's, kept open as [`claim`] keeps one, and every path and
+/// file it claimed before let go, so another session may open its old file. If the new
+/// file can't be opened (removed since the save), its path alone claims it, said in the
+/// log.
+pub(super) fn moved<P: Clients + 'static>(
+    registry: &Weak<Registry<P>>,
+    id: SessionId,
+    resolved: &Path,
+) {
+    let Some(registry) = registry.upgrade() else {
+        return;
+    };
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(resolved)
+        .map_err(file::unreadable)
+        .and_then(|opened| Ok((FileId::of(&opened)?, opened)));
+    let mut book = lock(&registry.book);
+    book.paths.retain(|_, holder| *holder != id);
+    book.paths.insert(resolved.to_owned(), id);
+    book.files.retain(|_, (holder, _)| *holder != id);
+    match opened {
+        Ok((file, opened)) => {
+            book.files.insert(file, (id, opened));
+        }
+        Err(error) => tracing::warn!(
+            session = %id,
+            "the file a Save As wrote couldn't be claimed, so its path alone claims it: {error}"
+        ),
+    }
+    book.claims = book.claims.wrapping_add(1);
+}
+
 impl<P: Clients + 'static> Registry<P> {
     /// A new session's engine: on its own client of the kernel, keeping its steps in
     /// `cache`, and solving sketches with the registry's solvers, which every session

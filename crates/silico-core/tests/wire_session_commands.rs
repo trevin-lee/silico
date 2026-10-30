@@ -32,7 +32,7 @@ use silico_core::command::wire::edits::{
 };
 use silico_core::command::wire::reads::{CheckRequest, TextRequest};
 use silico_core::command::wire::session::CancelRequest;
-use silico_core::command::wire::transaction::{FormatRequest, SessionRequest};
+use silico_core::command::wire::transaction::{CommitRequest, FormatRequest, SessionRequest};
 use silico_core::command::wire::{Layout, ToWire, snapshot_value, write};
 use silico_core::command::{Problems, Response, Revision, SessionId, Sessions};
 use silico_core::document::json::{Node, Plain, Value, read};
@@ -283,6 +283,9 @@ fn the_examples_are_the_designs_own_text() {
                 Some("refused-no-transaction"),
                 Some("refused-conflict"),
                 None,
+                Some("request-save-as"),
+                Some("result-save-as"),
+                Some("refused-exists"),
             ],
         ),
         (
@@ -485,13 +488,32 @@ const LEFT_OUT: [(&str, &str, &str, &str); 2] = [
 
 #[test]
 fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_schemas() {
-    // `begin`, `commit`, `rollback`, and `cache_clear` take one shape: the session alone.
-    for of in ["begin", "commit", "rollback", "cache_clear"] {
+    // `begin`, `rollback`, and `cache_clear` take one shape: the session alone.
+    for of in ["begin", "rollback", "cache_clear"] {
         let text = example(&format!("{of}/request"));
         let request = SessionRequest::read(&parsed(&text)).unwrap();
         assert_eq!(request, SessionRequest { session: s1() });
         assert_eq!(written(&request), text, "{of}");
         holds(&schema_of(of, "request"), &text, of);
+    }
+
+    // `commit`'s: to its own file, and Save As's (M5.4), to another.
+    for (of, path, replace) in [
+        ("commit/request", None, false),
+        ("commit/request-save-as", Some("bracket-v2.silico"), false),
+    ] {
+        let text = example(of);
+        let request = CommitRequest::read(&parsed(&text)).unwrap();
+        assert_eq!(
+            request,
+            CommitRequest {
+                session: s1(),
+                path: path.map(str::to_owned),
+                replace,
+            }
+        );
+        assert_eq!(written(&request), text, "{of}");
+        holds(&schema_of("commit", "request"), &text, of);
     }
 
     let text = example("format/request");
@@ -596,7 +618,8 @@ fn said(problems: &Problems) -> Vec<(String, String)> {
 /// Each command's request reader, by name, giving only whether it read.
 fn reader(of: &str) -> fn(&Node) -> Result<(), Problems> {
     match of {
-        "begin" | "commit" | "rollback" => |n| SessionRequest::read(n).map(drop),
+        "begin" | "rollback" => |n| SessionRequest::read(n).map(drop),
+        "commit" => |n| CommitRequest::read(n).map(drop),
         "format" => |n| FormatRequest::read(n).map(drop),
         "add_feature" => |n| AddFeatureRequest::read(n).map(drop),
         "set_field" => |n| SetFieldRequest::read(n).map(drop),
@@ -616,7 +639,7 @@ const REQUESTS: [(&str, &[&str]); 15] = [
     ("status", &["session"]),
     ("cancel", &["session", "command"]),
     ("begin", &["session"]),
-    ("commit", &["session"]),
+    ("commit", &["session", "path", "replace"]),
     ("rollback", &["session"]),
     ("format", &["session", "features", "write"]),
     ("add_feature", &["session", "revision", "before", "feature"]),
@@ -1185,7 +1208,7 @@ fn the_designs_refusals_are_the_sessions_own_and_hold_to_the_error_contract() {
 
     // `commit` with no transaction open.
     let f = opened(BRACKET);
-    let request = SessionRequest::read(&parsed(&example("commit/request"))).unwrap();
+    let request = CommitRequest::read(&parsed(&example("commit/request"))).unwrap();
     let commit = answer(f.sessions.commit(&request.session));
     check("commit/refused-no-transaction", the_refusal(&commit));
     // `rollback` with none, as for `commit`.
@@ -1266,6 +1289,17 @@ fn the_designs_refusals_are_the_sessions_own_and_hold_to_the_error_contract() {
             .transaction
             .is_some()
     );
+
+    // `commit` with a path (Save As, M5.4) where a file is, with no `replace`.
+    let f = opened(BRACKET);
+    f.begin();
+    let there = f.dir.path().join("bracket-v2.silico");
+    std::fs::write(&there, "an older copy").unwrap();
+    let request = CommitRequest::read(&parsed(&example("commit/request-save-as"))).unwrap();
+    let to = f.dir.path().join(request.path.unwrap());
+    let exists = answer(f.sessions.save_as(&f.id, to, request.replace));
+    check("commit/refused-exists", f.here(&the_refusal(&exists)));
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), "an older copy");
 
     // `set_field` of the design's sketch member: its diameter to 0.
     let f = opened(HOLES);

@@ -592,7 +592,11 @@ fn a_stop_mid_commit_leaves_the_document_as_it_was_and_no_partial_file() {
     assert_eq!(set["ok"], true, "{set}");
     let hold = c.kernel.hold(is_box);
     // The commit waits on the edit's rebuild, held: it's saved nothing yet.
-    c.send_call(4, "commit", r#"{"session": "s1"}"#);
+    c.send_call(
+        4,
+        "commit",
+        r#"{"session": "s1", "path": null, "replace": false}"#,
+    );
     running(&c.kernel, 1);
     c.stop.stop();
     assert_eq!(c.ended(), Ended::Stopped);
@@ -616,7 +620,11 @@ fn a_stop_racing_a_commit_leaves_the_document_whole_either_way() {
     );
     assert_eq!(set["ok"], true, "{set}");
     let hold = c.kernel.hold(is_box);
-    c.send_call(4, "commit", r#"{"session": "s1"}"#);
+    c.send_call(
+        4,
+        "commit",
+        r#"{"session": "s1", "path": null, "replace": false}"#,
+    );
     running(&c.kernel, 1);
     // Let go as the server's told to stop: whichever wins, the file is the old document or
     // the committed one, whole, and nothing is left beside it.

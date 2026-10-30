@@ -45,7 +45,7 @@ use super::wire::sketch_edits::{
     SketchAddRequest, SketchMergeRequest, SketchRemoveRequest, SketchSplitRequest,
     SketchTrimRequest, SketchUnjoinRequest,
 };
-use super::wire::transaction::{FormatRequest, SessionRequest, StepRequest};
+use super::wire::transaction::{CommitRequest, FormatRequest, SessionRequest, StepRequest};
 use super::wire::{self, Json, Layout, ToWire};
 use super::{
     Problems, Progress, Response, Running, SessionId, SessionInfo, Sessions, Stopper, VERSION,
@@ -596,8 +596,9 @@ impl<P: Clients + 'static> Sessions<P> {
             Command::Begin => typed(named, SessionRequest::read(request), |r| {
                 self.begin(&r.session)
             }),
-            Command::Commit => typed(named, SessionRequest::read(request), |r| {
-                self.commit(&r.session)
+            Command::Commit => typed(named, CommitRequest::read(request), |r| match r.path {
+                None => self.commit(&r.session),
+                Some(path) => self.save_as(&r.session, path, r.replace),
             }),
             Command::Rollback => typed(named, SessionRequest::read(request), |r| {
                 self.rollback(&r.session)
