@@ -40,13 +40,13 @@ on:
         description: "Only mutants whose names match this regex, cargo-mutants' --re, searched in each name (path:line:col: what was replaced, often ending ' in fn'); match a survivor by its description rather than its line, which moves; escape regex characters; no single quotes (write . for one) or newlines (empty: every mutant)"
         default: ""
       tests:
-        description: "Only these packages' tests for each mutant, space-separated, each a --test-package (empty: every workspace test, as .cargo/mutants.toml has it). For a package no other package's tests reach, such as silico-oracle's sketch-edit comparison, its own tests are every test that can catch its mutants, at a fraction of the time"
+        description: "Only these packages' tests for each mutant, space-separated, each a --test-package (empty: every workspace test, as .cargo/mutants.toml has it). For a package no other package's tests reach, such as silico-oracle's sketch-edit comparison, its own tests are every test that can catch its mutants, at a fraction of the time. Sound only where the mutated code is in those packages or the libraries they build: a worker binary another package builds isn't rebuilt for their tests, so its mutants would read as missed"
         default: ""
       shards:
         description: "The fewest shards to share the work (1 to 16; up to nine run at once, one a runner: seven for a long run). The plan adds shards, up to 16, so none holds more than 80 mutants, about 12 hours on a loaded VM; a filler run has exactly these"
         default: "1"
       long:
-        description: "Empty (the default) for a run that gates a merge: its shards take any of the thirteen runners labelled mutants-pr. Set (true) for a long one, a milestone's or a whole crate's, hours long: its shards take only the seven labelled mutants, so a run that gates a merge never waits behind it, on silico-5 to -8, -20, and -21. A run without it whose plan needs more than six shards goes to the long lane anyway"
+        description: "Empty (the default) for a run that gates a merge: its shards take any of the thirteen runners labelled mutants-pr. Set (true) for a long one, a milestone's or a whole crate's, hours long: its shards take only the seven labelled mutants, so a run that gates a merge never waits behind it, on silico-5 to -8, -20, and -21. A run without it whose plan needs more than six shards is refused at the plan, saying so"
         default: ""
       filler:
         description: "Empty for a real run. Set only by the filler (filler.yml): a, the commits main gained since its last such run, or b<k>, the k-th slice of the source; such a run yields to real ones, stops after an hour, tests its mutants in random order, and fails only on misses not in .github/mutants-triaged.txt"
@@ -72,7 +72,6 @@ jobs:
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
       count: ${{ steps.plan.outputs.count }}
-      long: ${{ steps.plan.outputs.long }}
     steps:
       # Every commit, to list the ref's mutants as its shards will find them.
       - uses: actions/checkout@v5
@@ -146,6 +145,12 @@ jobs:
             mkdir "$tree"
             git archive -o "$RUNNER_TEMP/tree.tar" "$commit"
             tar -xf "$RUNNER_TEMP/tree.tar" -C "$tree"
+            # Each package `tests` names is one of the tree's, so a misspelt one fails here, not
+            # at each shard's baseline after its setup.
+            members=$(cargo metadata --no-deps --format-version 1 --manifest-path "$tree/Cargo.toml" | jq -r '.packages[].name')
+            for package in $TESTS; do
+              grep -qxF "$package" <<<"$members" || { echo "::error::tests names no package of the tree: '$package'"; exit 1; }
+            done
             args=(--list --dir "$tree")
             if [ -n "$BASE" ]; then
               # On its own line, so a base that doesn't resolve stops the plan.
@@ -164,16 +169,15 @@ jobs:
             echo "$mutants mutants: $shards shards ($SHARDS asked for)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
           # A run that gates a merge shares the thirteen mutants-pr runners with every other
-          # such run: one past six shards would hold most of them for hours (the oracle's 1,479
-          # mutants held nine for eight hours on 2026-10-30, and every PR's run queued behind
-          # them). Such a run goes to the long lane, as if it had asked for it, and says so.
-          long=$LONG
-          if [ -z "$FILLER" ] && [ -z "$long" ] && [ "$shards" -gt 6 ]; then
-            long=true
-            echo "$shards shards are more than a run that gates a merge may hold: on the long lane (silico-9 to -12, -15 to -17), as with long=true" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "::warning::$shards shards: run on the long lane, as with long=true; narrow it (base, files, tests) to keep it on the merge lane"
+          # such run: one that needs more than six shards would hold most of them for a day
+          # (the oracle's 1,479 mutants held nine for eight hours on 2026-10-30, and every PR's
+          # run queued behind them). It's refused here, in a minute, rather than moved: the long
+          # lane's label is taken off runners while merge-lane runs back up, and two runs there
+          # queue for the same seven. Counted by what it needs, not the shards asked for.
+          if [ -z "$FILLER" ] && [ -z "$LONG" ] && [ "${needed:-0}" -gt 6 ]; then
+            echo "::error::$mutants mutants need $needed shards, more than a run that gates a merge may hold (6): dispatch it with long=true, or narrow it (base, files, re, tests)"
+            exit 1
           fi
-          echo "long=$long" >>"$GITHUB_OUTPUT"
           echo "count=$shards" >>"$GITHUB_OUTPUT"
           echo "shards=[$(seq -s, 0 $((shards - 1)))]" >>"$GITHUB_OUTPUT"
 
@@ -186,7 +190,7 @@ jobs:
     # those have and silico-5 to -8, -20 and -21 have alone: so a run that gates a merge never
     # waits for a long one to free the pool, but starts beside it, on those six at least (a
     # freed runner with both labels goes to whichever shard GitHub queued first).
-    runs-on: ${{ inputs.filler != '' && fromJSON('["self-hosted", "linux", "x64", "filler"]') || needs.plan.outputs.long != '' && fromJSON('["self-hosted", "linux", "x64", "mutants"]') || fromJSON('["self-hosted", "linux", "x64", "mutants-pr"]') }}
+    runs-on: ${{ inputs.filler != '' && fromJSON('["self-hosted", "linux", "x64", "filler"]') || inputs.long != '' && fromJSON('["self-hosted", "linux", "x64", "mutants"]') || fromJSON('["self-hosted", "linux", "x64", "mutants-pr"]') }}
     # The plan gives a shard about 12 hours of mutants, but no more than 16 shards: a run past
     # 1,280 mutants holds more, and a whole-workspace run (11,547 mutants on 2026-10-29,
     # silico-core 8,557) is cut off here even at 16, so narrow it by package, file, or base.
@@ -214,7 +218,7 @@ jobs:
       # free: see the shard's share below. A long run's at most seven at once, as many as its
       # lane has runners: the plan may give it up to 16, and none should wait in the runners'
       # queue through a sibling's whole run (GitHub cancels a job queued for 24 hours).
-      max-parallel: ${{ needs.plan.outputs.long != '' && 7 || 9 }}
+      max-parallel: ${{ inputs.long != '' && 7 || 9 }}
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
@@ -396,6 +400,7 @@ jobs:
           PACKAGES: ${{ inputs.packages }}
           FILES: ${{ inputs.files }}
           RE: ${{ inputs.re }}
+          TESTS: ${{ inputs.tests }}
           FILLER: ${{ inputs.filler }}
         run: |
           mkdir -p all
@@ -447,7 +452,7 @@ jobs:
           ' .github/mutants-triaged.txt all/missed.txt all/timeout.txt >all/new.txt
           sort -o all/new.txt all/new.txt
           {
-            echo "## Mutants${FILLER:+ (filler $FILLER)}: $REF${BASE:+ since $BASE}${PACKAGES:+ ($PACKAGES)}${FILES:+ in $FILES}${RE:+ matching \`$RE\`}"
+            echo "## Mutants${FILLER:+ (filler $FILLER)}: $REF${BASE:+ since $BASE}${PACKAGES:+ ($PACKAGES)}${FILES:+ in $FILES}${RE:+ matching \`$RE\`}${TESTS:+, tested by $TESTS only}"
             echo
             echo "| Caught | Missed | Timed out | Unviable | New misses | Shards reported |"
             echo "|---|---|---|---|---|---|"
