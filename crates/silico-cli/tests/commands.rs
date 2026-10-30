@@ -1872,30 +1872,41 @@ fn each_crash_says_the_designs_words_once_and_a_values_crash_only_to_change_them
         )
     };
     let terminated = outside("check");
-    // Each worker's end, and its suggestion: how it starts and ends (the whole of it where
-    // the two are the same).
+    // Each worker's end, its suggestion (how it starts and ends, the whole of it where the
+    // two are the same), and its advice as data, as worker.rs's `crash_advice` gives it: a
+    // fault signal with the request, the values; SIGTERM, no fault signal, try again;
+    // SIGKILL with the request, once more; an exit of its own, words alone (null).
     let cases = [
-        ("segfault", "kill -SEGV $$", values, values),
+        (
+            "segfault",
+            "kill -SEGV $$",
+            values,
+            values,
+            Some("change_the_values"),
+        ),
         (
             "terminated",
             "kill -TERM $$",
             terminated.as_str(),
             terminated.as_str(),
+            Some("try_again"),
         ),
         (
             "killed",
             "kill -KILL $$",
             "run `silico check` to try it once more: the kernel worker was killed",
             "the request needs too much memory: simplify it",
+            Some("try_once_more"),
         ),
         (
             "exited",
             "exit 1",
             "check Silico's install: ",
             "; then run `silico check` to try it again",
+            None,
         ),
     ];
-    for (name, end, opening, ending) in cases {
+    for (name, end, opening, ending, advice) in cases {
         let kernel = worker_that_ends(&scratch, name, end);
         let out = silico_on_kernel(&scratch, &["check", "--json"], &file, &kernel);
         assert_eq!(out.status.code(), Some(2), "{name}: {}", stderr(&out));
@@ -1903,6 +1914,12 @@ fn each_crash_says_the_designs_words_once_and_a_values_crash_only_to_change_them
             serde_json::from_slice(out.stdout.split(|&b| b == b'\n').next().unwrap()).unwrap();
         assert_eq!(line["ok"], false, "{name}: {line}");
         assert_eq!(line["error"]["code"], "worker_crashed", "{name}: {line}");
+        // The advice kept as the CLI words the suggestion its own way.
+        assert_eq!(
+            line["error"]["advice"],
+            advice.map_or(serde_json::Value::Null, serde_json::Value::from),
+            "{name}: {line}"
+        );
         let suggestion = line["error"]["suggestion"].as_str().unwrap();
         assert!(suggestion.starts_with(opening), "{name}: {suggestion:?}");
         assert!(suggestion.ends_with(ending), "{name}: {suggestion:?}");

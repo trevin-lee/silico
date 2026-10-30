@@ -600,6 +600,46 @@ fn refused_by_name(f: &Fixture, s: &str, path: &str, link: &str) {
     );
 }
 
+#[test]
+fn cache_clears_refusal_names_the_link_that_leads_out_past_one_that_stays_inside() {
+    // `real/sub/part.silico` opened; then `real` swapped for a link to `other`, inside the
+    // workspace, whose `sub` is a link out: the first link on the cache's way stays in, so
+    // the refusal's cause names the second, `real/sub`, where the way leads out.
+    let f = fixture();
+    f.file("real/sub/part.silico", BOX);
+    assert!(f.open("real/sub/part.silico", false).ok);
+    std::fs::create_dir_all(f.outside.join("sub")).unwrap();
+    std::fs::rename(f.work.join("real"), f.outside.join("real-was")).unwrap();
+    std::fs::create_dir(f.work.join("other")).unwrap();
+    std::os::unix::fs::symlink(f.outside.join("sub"), f.work.join("other/sub")).unwrap();
+    std::os::unix::fs::symlink(f.work.join("other"), f.work.join("real")).unwrap();
+    refused_by_name(&f, "s1", "real/sub/part.silico", "real/sub");
+}
+
+#[test]
+fn cache_clears_refusal_of_a_workspace_swapped_out_under_it_names_no_link_below_its_root() {
+    // The workspace's root itself swapped for a link out after `part.silico` opened: the
+    // cache leads out, but no link below the root does, so the cause can name none and
+    // says only that a link on the way leads out.
+    let f = fixture();
+    f.file("part.silico", BOX);
+    assert!(f.open("part.silico", false).ok);
+    std::fs::rename(&f.work, f.root.join("work-was")).unwrap();
+    std::os::unix::fs::symlink(&f.outside, &f.work).unwrap();
+    let cleared = f.call("cache_clear", r#"{"session": "s1"}"#);
+    assert!(!cleared.ok, "{}", cleared.text);
+    let error = &crate::calls::envelope(&cleared)["errors"][0];
+    assert_eq!(
+        error["message"],
+        "the rebuild cache beside \"part.silico\" leads out of the workspace, through a link, so it isn't cleared"
+    );
+    assert_eq!(
+        error["cause"],
+        "a link on its way leads out of the workspace"
+    );
+    assert_eq!(error["parameter"], serde_json::Value::Null);
+}
+
 /// The entry-named files at `cache`: `ab/` and `cd/`, each holding one named by 62 hex
 /// digits, as the cache names its entries.
 fn plant_entries(cache: &Path) -> Vec<PathBuf> {

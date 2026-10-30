@@ -370,31 +370,41 @@ fn a_description_that_hung_is_kept_for_the_session_and_asked_again_fresh_or_in_t
 
 #[test]
 fn an_element_described_as_no_element_is_is_named_by_its_element_map() {
-    // The kernel refuses the box's description for its third face (an area of -1, say): the
+    // The kernel refuses the box's description for one element (an area of -1, say): the
     // element comes as data, and the error the element read gives names it as the box's
-    // element map does, `k7f2qx3m.box.Face3`, never by the kernel's number alone; one
-    // element at fault, and the problem kept in the words (written out by hand).
-    let dir = Scratch::new("impossible-named");
-    let engine = session(&dir.0);
-    engine.kernel().refuse_as_worker(|op| {
-        matches!(op, silico_core::kernel::Op::DescribeAll { .. }).then(|| {
-            silico_protocol::Failure::new(silico_protocol::Refusal::DescriptionImpossible {
-                kind: ElementKind::Face,
-                number: 3,
-                problem: "the kernel's Face3's area is -1".to_owned(),
+    // element map does (`k7f2qx3m.box.Face3`, `...Edge5`, `...Vertex2`), never by the
+    // kernel's number alone; one element at fault, and the problem kept in the words. One
+    // the map names nothing for (a number past the box's 6 faces) is named as FreeCAD
+    // numbers it. Written out by hand.
+    for (kind, number, named) in [
+        (ElementKind::Face, 3, "k7f2qx3m.box.Face3"),
+        (ElementKind::Edge, 5, "k7f2qx3m.box.Edge5"),
+        (ElementKind::Vertex, 2, "k7f2qx3m.box.Vertex2"),
+        (ElementKind::Face, 99, "Face99"),
+    ] {
+        let dir = Scratch::new("impossible-named");
+        let engine = session(&dir.0);
+        engine.kernel().refuse_as_worker(move |op| {
+            matches!(op, silico_core::kernel::Op::DescribeAll { .. }).then(|| {
+                silico_protocol::Failure::new(silico_protocol::Refusal::DescriptionImpossible {
+                    kind,
+                    number,
+                    problem: "p".to_owned(),
+                })
             })
-        })
-    });
-    let model = published(&engine, checked(EXAMPLE));
-    let problems = silico_core::command::elements::entries(&model, &id("k7f2qx3m")).unwrap_err();
-    assert_eq!(problems.total(), 1);
-    let error = &problems.errors()[0];
-    assert_eq!(error.code(), ErrorCode::InvalidResult);
-    assert_eq!(error.elements(), ["k7f2qx3m.box.Face3"]);
-    assert_eq!(error.elements_total(), 1);
-    assert_eq!(error.feature(), Some("k7f2qx3m"));
-    assert_eq!(
-        error.cause(),
-        Some("OCCT described an element as no element is: the kernel's Face3's area is -1")
-    );
+        });
+        let model = published(&engine, checked(EXAMPLE));
+        let problems =
+            silico_core::command::elements::entries(&model, &id("k7f2qx3m")).unwrap_err();
+        assert_eq!(problems.total(), 1);
+        let error = &problems.errors()[0];
+        assert_eq!(error.code(), ErrorCode::InvalidResult);
+        assert_eq!(error.elements(), [named], "{kind:?} {number}");
+        assert_eq!(error.elements_total(), 1);
+        assert_eq!(error.feature(), Some("k7f2qx3m"));
+        assert_eq!(
+            error.cause(),
+            Some("OCCT described an element as no element is: p")
+        );
+    }
 }

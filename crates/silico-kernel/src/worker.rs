@@ -468,6 +468,79 @@ mod tests {
     }
 
     #[test]
+    fn an_impossible_element_past_a_batchs_first_is_named_by_its_kind_and_number() {
+        // A batch from 7: its second face is the kernel's Face8, its second edge Edge8, its
+        // third Edge9. Each refused as impossible names that element as data, by kind and
+        // number in the solid, never the batch's first. A vertex holds only its point, so
+        // the only thing wrong with one is a value that isn't finite, refused as such
+        // (`NotFinite`), never as impossible.
+        use super::{Refusal, described};
+        use silico_protocol::{
+            Description, EdgeCurve, EdgeDescription, ElementKind, FaceDescription, Surface,
+        };
+        let face = |area| FaceDescription {
+            surface: Surface::Plane {
+                normal: [0.0, 0.0, 1.0],
+            },
+            area,
+            centroid: [0.0; 3],
+        };
+        let line = |length| EdgeDescription {
+            curve: EdgeCurve::Line,
+            length,
+            start: [0.0; 3],
+            end: [length, 0.0, 0.0],
+            middle: [length / 2.0, 0.0, 0.0],
+        };
+        let only = |faces, edges, vertices| Description {
+            faces,
+            edges,
+            vertices,
+        };
+        let mut degenerated = line(0.0);
+        degenerated.curve = EdgeCurve::Degenerated;
+        degenerated.end = [1.0, 0.0, 0.0];
+        for (description, kind, number, said) in [
+            (
+                only(vec![face(1.0), face(-1.0)], Vec::new(), Vec::new()),
+                ElementKind::Face,
+                8,
+                "the kernel's Face8's area is -1",
+            ),
+            (
+                only(Vec::new(), vec![line(1.0), line(0.0)], Vec::new()),
+                ElementKind::Edge,
+                8,
+                "the kernel's Edge8's length is 0",
+            ),
+            (
+                only(
+                    Vec::new(),
+                    vec![line(1.0), line(2.0), degenerated],
+                    Vec::new(),
+                ),
+                ElementKind::Edge,
+                9,
+                "the kernel's Edge9's end isn't its start, though the edge is degenerated",
+            ),
+        ] {
+            assert_eq!(
+                described(7, 9, description).unwrap_err().refusal,
+                Refusal::DescriptionImpossible {
+                    kind,
+                    number,
+                    problem: said.to_owned(),
+                }
+            );
+        }
+        let vertex = only(Vec::new(), Vec::new(), vec![[0.0; 3], [f64::NAN, 0.0, 0.0]]);
+        assert!(matches!(
+            described(7, 8, vertex).unwrap_err().refusal,
+            Refusal::NotFinite { quantity, .. } if quantity == "the kernel's Vertex8's point"
+        ));
+    }
+
+    #[test]
     fn a_kernel_error_reaches_the_app_as_its_refusal_and_occts_words_only() {
         use silico_protocol::{DressingKind, EdgeTrouble, Operation, Refusal, Trouble};
 
