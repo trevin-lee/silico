@@ -15,7 +15,7 @@ use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::sketch::{Region, SketchRead};
 use crate::command::{ModelChoice, Problems, SessionId};
 use crate::document::json::Node;
-use crate::document::{Coordinate, ElementId, ElementKind, FeatureId, Form};
+use crate::document::{Coordinate, ElementId, ElementKind, FeatureId, Form, PROBLEMS_LISTED};
 use crate::sketch_states::{ConstraintState, MemberState, SketchState};
 
 /// A `sketch` request: the session, the model it reads, and the sketch.
@@ -110,6 +110,10 @@ impl ToWire for SketchRead {
                 Json::array(self.profile_problems.iter().map(ToWire::to_wire)),
             ),
             (
+                "profile_problems_total",
+                Json::whole(self.profile_problems_total),
+            ),
+            (
                 "solve_problem",
                 Json::or_null(states.solve_problem.as_ref(), ToWire::to_wire),
             ),
@@ -183,8 +187,10 @@ pub struct SketchResultSchema {
     /// Why the solved sketch makes no profile, each as an error (the first 100, in the
     /// order they're checked): none if it makes one, or wasn't solved (`solve_problem` says
     /// why).
-    #[schemars(length(max = 100))]
+    #[schemars(length(max = PROBLEMS_LISTED))]
     pub profile_problems: Vec<ErrorSchema>,
+    /// How many reasons there are, listed or not.
+    pub profile_problems_total: u64,
     /// Why the sketch wasn't solved, as `check` reports it: a conflict (`over_constrained`),
     /// no solution (`solve_failed`), or geometry that can't be held (`invalid_result`,
     /// `invalid_input`). Null when it solved.

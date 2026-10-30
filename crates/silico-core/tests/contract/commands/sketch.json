@@ -1180,6 +1180,11 @@
         "maxItems": 100,
         "type": "array"
       },
+      "profile_problems_total": {
+        "description": "How many reasons there are, listed or not.",
+        "minimum": 0,
+        "type": "integer"
+      },
       "regions": {
         "description": "The profile's regions, as the profile finds them from the solved curves that aren't\nconstruction geometry (each a face a pad, pocket, revolve, or groove of the sketch\nsweeps), by their outer loops' smallest curve IDs: none if the sketch makes no\nprofile, or wasn't solved.",
         "items": {
@@ -1216,6 +1221,7 @@
       "plane",
       "points",
       "profile_problems",
+      "profile_problems_total",
       "regions",
       "sketch",
       "solve_problem",

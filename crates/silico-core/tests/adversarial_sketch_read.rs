@@ -256,3 +256,87 @@ fn a_sketch_read_of_a_document_the_gate_refuses_gives_the_gates_problems() {
     }
     assert!(sketches.requests().is_empty(), "no solve asked");
 }
+
+/// A sketch `k7f2qx3m` on xy of `n` lines apart, each from (10i, 0) to (10i, 5), none
+/// joined: each line's two ends open, so 2n open-end refusals (M3.5's third check), in
+/// point order.
+fn lines_apart(n: usize) -> String {
+    let points: Vec<String> = (0..n)
+        .flat_map(|i| {
+            [
+                format!(
+                    r#"{{"id": "p{:07}", "x": {}, "y": 0, "construction": false}}"#,
+                    2 * i + 1,
+                    10 * i
+                ),
+                format!(
+                    r#"{{"id": "p{:07}", "x": {}, "y": 5, "construction": false}}"#,
+                    2 * i + 2,
+                    10 * i
+                ),
+            ]
+        })
+        .collect();
+    let lines: Vec<String> = (0..n)
+        .map(|i| {
+            format!(
+                r#"{{"id": "n{:07}", "from": "p{:07}", "to": "p{:07}", "construction": false}}"#,
+                i + 1,
+                2 * i + 1,
+                2 * i + 2
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
+        points.join(", "),
+        lines.join(", ")
+    )
+}
+
+#[test]
+fn two_hundred_and_two_profile_refusals_list_a_hundred_and_count_every_one_as_check_does() {
+    // Found by break-it: the read copied the profile's first hundred refusals and said
+    // nothing of the rest, though `check` counts them. 101 lines apart: 202 open ends, each
+    // refused (M3.5, by hand: two ends a line, none shared). The read lists the first 100
+    // (invariant 9), the first p0000001's, the last p0000100's, in point order, and counts
+    // 202; `check` of a pad sweeping the sketch counts the same 202 in its words.
+    let dir = tempfile::tempdir().unwrap();
+    let sketches = FakeSketches::new();
+    let solver = sketches.clone();
+    let pad = r#"{"id": "d0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "k7f2qx3m", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+    let sessions = opened(&dir, &document(&[&lines_apart(101), pad]), move || {
+        Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
+    });
+    let read = call(
+        &sessions,
+        "sketch",
+        r#"{"session": "s1", "model": "current", "sketch": "k7f2qx3m"}"#,
+    );
+    assert_eq!(read["ok"], true, "{read}");
+    let result = &read["result"];
+    let listed = result["profile_problems"].as_array().unwrap();
+    assert_eq!(listed.len(), 100);
+    assert_eq!(result["profile_problems_total"], 202);
+    assert_eq!(listed[0]["elements"], json!(["p0000001", "n0000001"]));
+    assert_eq!(listed[99]["elements"], json!(["p0000100", "n0000050"]));
+    assert_eq!(result["regions"], json!([]));
+    let checked = call(
+        &sessions,
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": false}"#,
+    );
+    // `check` words the pad's one failure with the count, and its cause's tail the rest.
+    let problem = &checked["result"]["problems"][0];
+    assert_eq!(
+        problem["message"],
+        "pad d0000001 sweeps sketch k7f2qx3m, which makes no profile (202 refusals)",
+        "{checked}"
+    );
+    assert!(
+        problem["cause"]
+            .as_str()
+            .is_some_and(|c| c.ends_with("; and 102 more")),
+        "{checked}"
+    );
+}

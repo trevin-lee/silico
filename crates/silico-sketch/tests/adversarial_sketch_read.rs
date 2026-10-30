@@ -214,6 +214,7 @@ fn every_refused_solve_reads_as_check_reports_it_on_the_same_model() {
                 assert_eq!(result["state"], refused_state(code), "{name}");
                 assert_eq!(result["regions"], json!([]), "{name}");
                 assert_eq!(result["profile_problems"], json!([]), "{name}");
+                assert_eq!(result["profile_problems_total"], 0, "{name}");
             }
         }
         // Every member has a state (the schema's: none is null).

@@ -69,6 +69,9 @@ pub struct SketchRead {
     /// the first [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED): none if it makes one,
     /// or wasn't solved (`solve_problem` says why).
     pub profile_problems: Vec<Error>,
+    /// How many refusals there are, listed or not (M3.5's count, as `check` gives it for a
+    /// feature that sweeps the sketch).
+    pub profile_problems_total: u64,
 }
 
 /// One region of a sketch's profile, by its curves' IDs.
@@ -99,15 +102,19 @@ fn read_sketch(model: &Model, id: &FeatureId) -> Result<SketchRead, Problems> {
     states.solve_problem = states
         .solve_problem
         .map(|problem| problem.with_feature(id.as_str()));
-    let (members, regions, profile_problems) = match diagnosed.outcome() {
+    let (members, regions, (profile_problems, profile_problems_total)) = match diagnosed.outcome() {
         Ok(solution) => {
             let members = solution.written(sketch);
             match profile::of_sketch(id, sketch, solution) {
-                Ok(profile) => (members, regions(&profile), Vec::new()),
-                Err(refused) => (members, Vec::new(), refused.errors().to_vec()),
+                Ok(profile) => (members, regions(&profile), (Vec::new(), 0)),
+                Err(refused) => (
+                    members,
+                    Vec::new(),
+                    (refused.errors().to_vec(), refused.total()),
+                ),
             }
         }
-        Err(_) => (sketch.clone(), Vec::new(), Vec::new()),
+        Err(_) => (sketch.clone(), Vec::new(), (Vec::new(), 0)),
     };
     Ok(SketchRead {
         sketch: id.clone(),
@@ -116,6 +123,7 @@ fn read_sketch(model: &Model, id: &FeatureId) -> Result<SketchRead, Problems> {
         states,
         regions,
         profile_problems,
+        profile_problems_total,
     })
 }
 

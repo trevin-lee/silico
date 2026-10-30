@@ -266,6 +266,7 @@ fn a_free_line_is_under_defined_by_four_degrees_and_open_at_both_ends() {
             "regions": [],
             "dependencies": [],
             "profile_problems": [open_end("p0000001", "n0000001"), open_end("p0000002", "n0000001")],
+            "profile_problems_total": 2,
             "solve_problem": null,
         })
     );
@@ -315,6 +316,7 @@ fn two_driving_lengths_that_differ_over_define_the_line_given_as_stored() {
             "regions": [],
             "dependencies": [["k0000001", "k0000002"]],
             "profile_problems": [],
+            "profile_problems_total": 0,
             "solve_problem": conflict,
         })
     );
@@ -554,6 +556,7 @@ fn an_empty_sketch_is_fully_defined_with_no_degrees_of_freedom_and_no_curves_for
                 &[],
                 "draw a closed outline of lines, arcs, or circles that aren't construction geometry",
             )],
+            "profile_problems_total": 1,
             "solve_problem": null,
         })
     );
