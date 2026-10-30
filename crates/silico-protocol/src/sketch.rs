@@ -474,9 +474,11 @@ pub enum SolveStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Solved {
     /// Degrees of freedom left, PlaneGCS's `dofsNumber`: its unknowns less the rank of its
-    /// rows, which a conflict needn't make negative; negative where PlaneGCS counts the rows
-    /// in place of their rank, as when an arc's rules alone repeat each other (the unknowns
-    /// less the rows), a case no document reaches.
+    /// rows, never negative while something is free, a conflict or not. Where nothing is free
+    /// and a dependency among the rows holds no constraint the redundancy solve found
+    /// redundant (a conflict, or an arc's own rules repeating each other), PlaneGCS gives its
+    /// unknowns less the rows left instead (`nonredundantconstrNum`), which is negative: a
+    /// rectangle given two widths that disagree reads -1.
     pub dofs: i32,
     /// Constraints in conflict, by tag, in increasing order.
     pub conflicting: Vec<Tag>,

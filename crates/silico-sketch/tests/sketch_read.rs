@@ -514,6 +514,43 @@ fn a_redundant_relation_leaves_the_rectangle_fully_defined_and_a_redundant_dimen
 }
 
 #[test]
+fn the_rectangle_given_a_second_width_that_disagrees_reads_negative_degrees_of_freedom() {
+    // The rectangle's bottom given a second driving length, 50 against its 40: the two
+    // lengths conflict, and nothing in the rectangle is free. PlaneGCS then counts the
+    // equations left in place of their rank, none of them redundant: 8 unknowns less 9
+    // equations, -1 (silico-sketch's tests/solve.rs, two widths that disagree). Over
+    // defined, the problem the two lengths' conflict, both conflicting.
+    const SECOND: &str =
+        r#"{"id": "zz000003", "type": "length", "line": "6t7v8w9x", "value": 50, "driving": true}"#;
+    let f = fixture();
+    f.open("widths.silico", &document(&[&rectangle(&[SECOND], "")]));
+    let read = f.result("k7f2qx3m");
+    assert_eq!(
+        (&read["state"], &read["dofs"]),
+        (&json!("over_defined"), &json!(-1)),
+        "{read}"
+    );
+    assert_eq!(
+        read["solve_problem"],
+        error(
+            "over_constrained",
+            "the sketch's constraints conflict: these 2 can't all hold",
+            &["g4h5j6k7", "zz000003"],
+            "remove or change one of the constraints named",
+        )
+    );
+    let constraints = states(&read, "constraints");
+    for (id, state) in &constraints {
+        let want = if id == "g4h5j6k7" || id == "zz000003" {
+            "conflicting"
+        } else {
+            "unsolved"
+        };
+        assert_eq!(state, want, "{id}: {constraints:?}");
+    }
+}
+
+#[test]
 fn a_circle_inside_the_rectangle_is_its_regions_hole() {
     // The rectangle, and a free circle of radius 5 about (20, 10) inside it: one region,
     // the rectangle's outline with the circle a hole (M3.5's nesting). The circle's centre

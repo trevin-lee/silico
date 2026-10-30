@@ -62,7 +62,7 @@ impl ToWire for SketchRead {
         let frame = silico_protocol::SketchPlane::from(self.plane);
         let states = &self.states;
         // Every member has one: a read whose member had none was refused as a bug
-        // (`command::sketch`'s `unstated`), so none is ever written null.
+        // (`command::sketch`'s `every_member_stated`), so none is ever written null.
         let state = |kind: ElementKind, id: &ElementId| {
             state_word(states, kind, id)
                 .map(|word| ("state", Json::str(word)))
@@ -157,10 +157,13 @@ pub struct SketchResultSchema {
     pub sketch: FeatureId,
     pub plane: SketchFrameSchema,
     pub state: SketchStateSchema,
-    /// The degrees of freedom left, PlaneGCS's number as given: 0 when nothing is free. A
-    /// conflict needn't make it negative (two lengths on one free line leave 3); PlaneGCS
-    /// gives a negative number where it counts its equations' rows in place of their rank,
-    /// as for an arc whose rules alone repeat each other. 0 for an empty sketch.
+    /// The degrees of freedom left, PlaneGCS's number as given: its unknowns less the rank
+    /// of its equations, so 0 or more while something is free, a conflict or not (two
+    /// lengths on one free line leave 3). Where nothing is free and a dependency among the
+    /// equations holds no constraint PlaneGCS found redundant (a conflict, or an arc's own
+    /// rules repeating each other), PlaneGCS counts the equations left in place of their
+    /// rank, and the number is negative: a 40 by 20 rectangle given a second width of 50
+    /// reads -1. 0 for an empty sketch.
     pub dofs: i32,
     /// Each point, by ID, as the document writes it, at its solved place.
     pub points: Vec<SketchPointReadSchema>,
@@ -282,6 +285,7 @@ pub struct SketchDependencySchema {
     #[schemars(length(min = 1, max = DEPENDENCY_IDS_LISTED))]
     pub constraints: Vec<ElementId>,
     /// How many constraints the group has, listed or not.
+    #[schemars(range(min = 1))]
     pub constraints_total: u64,
 }
 

@@ -963,7 +963,7 @@
           },
           "constraints_total": {
             "description": "How many constraints the group has, listed or not.",
-            "minimum": 0,
+            "minimum": 1,
             "type": "integer"
           }
         },
@@ -1173,7 +1173,7 @@
         "type": "integer"
       },
       "dofs": {
-        "description": "The degrees of freedom left, PlaneGCS's number as given: 0 when nothing is free. A\nconflict needn't make it negative (two lengths on one free line leave 3); PlaneGCS\ngives a negative number where it counts its equations' rows in place of their rank,\nas for an arc whose rules alone repeat each other. 0 for an empty sketch.",
+        "description": "The degrees of freedom left, PlaneGCS's number as given: its unknowns less the rank\nof its equations, so 0 or more while something is free, a conflict or not (two\nlengths on one free line leave 3). Where nothing is free and a dependency among the\nequations holds no constraint PlaneGCS found redundant (a conflict, or an arc's own\nrules repeating each other), PlaneGCS counts the equations left in place of their\nrank, and the number is negative: a 40 by 20 rectangle given a second width of 50\nreads -1. 0 for an empty sketch.",
         "type": "integer"
       },
       "lines": {
