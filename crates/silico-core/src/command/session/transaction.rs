@@ -73,9 +73,27 @@ pub(super) struct Open {
     /// it ([`Snapshot::differs`]): worked out off the lock as each edit is held and each
     /// undo or redo restores a state, never by `status` (the design's section 6).
     pub(super) changed: bool,
+    /// What `format` had put into the document at each state the stack holds, by the
+    /// revision the state was made at (`begin`'s, none): so an undo or a redo of a `format`
+    /// takes back or gives back what it put in ([`Formatted`]), as it does the text.
+    formats: BTreeMap<Revision, Arc<Formatted>>,
 }
 
 impl Open {
+    /// What `format` had put into the document at the state made at `revision`.
+    pub(super) fn formatted_at(&self, revision: Option<Revision>) -> Arc<Formatted> {
+        revision
+            .and_then(|revision| self.formats.get(&revision))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The state made at `revision` holds what `format` has put into the document now.
+    fn keep_formatted(&mut self, revision: Revision) {
+        self.formats
+            .insert(revision, Arc::clone(&self.begun.formatted));
+    }
+
     /// The transaction as `status` gives it: its base, whether its document changed, and
     /// its undo stack's counts, each kept as the stack changes, so none is worked out here.
     pub(super) fn status(&self) -> Transaction {
@@ -135,6 +153,12 @@ pub(super) struct Formatted {
 }
 
 impl Snapshot {
+    /// What `format` has put into the transaction's document: `formatted` (an undo or a
+    /// redo restoring a state's).
+    pub(super) fn set_formatted(&mut self, formatted: Arc<Formatted>) {
+        self.formatted = formatted;
+    }
+
     /// Whether the document `text` holds, as the reader and the gate found it (`gated`),
     /// differs from this one, `begin`'s, as a commit decides whether it writes: compared as
     /// canonical form writes them, so a document read from a file whose sketch lists aren't
@@ -403,7 +427,9 @@ impl Held {
                 open.begun.mend = None;
             }
             open.changed = changed;
-            open.undo.edit(after, revision)
+            let pushed = open.undo.edit(after, revision);
+            open.keep_formatted(revision);
+            pushed
         });
         let carried = Arc::clone(&self.carried);
         self.change(revision, text, gated, carried);
@@ -698,6 +724,7 @@ impl<C: Kernel + 'static> Session<C> {
             begun: held.snapshot(),
             undo: UndoStack::new(Arc::clone(&held.text), revision, self.undo_bytes),
             changed: false,
+            formats: BTreeMap::new(),
         });
         Ok(Begun { base: revision })
     }
@@ -1191,10 +1218,13 @@ impl<C: Kernel + 'static> Session<C> {
                         Err(_) => BTreeMap::new(),
                     };
                 self.hold_then(stop, candidate, true, |held| {
+                    let revision = held.revision;
                     if let Some(open) = &mut held.transaction {
                         let formatted = Arc::make_mut(&mut open.begun.formatted);
                         formatted.written.extend(written);
                         formatted.layout = true;
+                        // The format's own state holds it, for an undo past it to take back.
+                        open.keep_formatted(revision);
                     }
                 })?;
             }

@@ -1305,3 +1305,67 @@ fn without_disk(text: &str) -> serde_json::Value {
     }
     value
 }
+
+// ---------------------------------------------------------------------------------------
+// A `format` undone and redone: what it put into the document goes and comes back with it.
+
+impl Fixture {
+    fn set_length(&self, length: &str) {
+        answer(self.sessions.set_field(
+            &self.id,
+            self.revision(),
+            id("k7f2qx3m"),
+            "length".to_owned(),
+            number(length),
+        ))
+        .result
+        .unwrap();
+    }
+
+    fn file(&self) -> String {
+        std::fs::read_to_string(&self.path).unwrap()
+    }
+}
+
+#[test]
+fn a_format_undone_then_edited_back_leaves_nothing_changed_and_the_commit_writes_nothing() {
+    // W3's example (#300's follow-up): a file not in canonical form, formatted inside the
+    // transaction (from then on compared byte for byte), the format undone, then the
+    // length set to 41 and back to 40. The document is the file's again: unchanged, as
+    // the oracle says, and the commit writes nothing.
+    let f = opened(&block(40));
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    let formatted = answer(f.sessions.format(&f.id, None, true)).result.unwrap();
+    assert!(formatted.changed);
+    assert!(f.transaction().changed);
+    assert!(f.undo(None).result.is_ok());
+    assert_eq!(f.text(), block(40));
+    assert!(!f.transaction().changed);
+    f.set_length("41");
+    assert!(f.transaction().changed);
+    f.set_length("40");
+    assert!(!differs(&block(40), &f.text()));
+    assert!(!f.transaction().changed);
+    let committed = answer(f.sessions.commit(&f.id)).result.unwrap();
+    assert!(!committed.written);
+    assert_eq!(f.file(), block(40));
+}
+
+#[test]
+fn a_format_undone_then_redone_is_changed_again_and_the_commit_writes_its_text() {
+    let f = opened(&block(40));
+    answer(f.sessions.begin(&f.id)).result.unwrap();
+    answer(f.sessions.format(&f.id, None, true)).result.unwrap();
+    let canonical = f.text();
+    // The same document, laid out otherwise: a change only a format's byte compare sees.
+    assert_ne!(canonical, block(40));
+    assert!(!differs(&block(40), &canonical));
+    assert!(f.undo(None).result.is_ok());
+    assert!(!f.transaction().changed);
+    assert!(f.redo(None).result.is_ok());
+    assert_eq!(f.text(), canonical);
+    assert!(f.transaction().changed);
+    let committed = answer(f.sessions.commit(&f.id)).result.unwrap();
+    assert!(committed.written);
+    assert_eq!(f.file(), canonical);
+}
