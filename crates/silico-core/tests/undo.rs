@@ -1314,3 +1314,24 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn a_plan_made_before_the_stack_moved_restores_nothing() {
+    // Two plans of the same undo, from one state: the first applied moves the stack, and the
+    // second, made where the stack no longer is, is refused, the stack as the first left it.
+    let states = run();
+    let mut stack = pushed(&states, UNDO_BYTES);
+    let first = stack.plan_undo(None).unwrap();
+    let stale = stack.plan_undo(None).unwrap();
+    let last = 10 + states.len() as u64;
+    stack.apply(first, last).unwrap();
+    let (undo, redo, bytes) = (stack.undo_left(), stack.redo_left(), stack.bytes());
+    assert_eq!(
+        stack.apply(stale, last + 1).unwrap_err(),
+        Refusal::NothingToUndo
+    );
+    assert_eq!(
+        (stack.undo_left(), stack.redo_left(), stack.bytes()),
+        (undo, redo, bytes)
+    );
+}
