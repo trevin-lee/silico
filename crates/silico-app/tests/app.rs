@@ -741,6 +741,17 @@ fn step_until_showing(
     }
 }
 
+/// Frames stepped until `done` holds, however long that takes: for a test that waits on
+/// an event (the window's close, a save's bytes), never on the wall clock, so a loaded
+/// machine only slows it, and one where the event never comes fails at nextest's own
+/// timeout (.config/nextest.toml).
+fn step_until_event(h: &mut AppHarness, done: impl Fn(&AppHarness) -> bool) {
+    while !done(h) {
+        step(h);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// The queue of the session of `h`'s tab `at` held behind a check whose rebuild the fake
 /// holds (every step built anew), until the hold is released: an edit sent now waits.
 fn hold_queue(f: &Fixture, h: &AppHarness, at: usize) -> (Hold, Running<CheckAnswer>) {
@@ -1406,8 +1417,8 @@ fn an_edit_made_while_a_save_runs_is_sent_after_it_in_a_new_transaction() {
     step_until(&mut h, "the edit answered", |h| {
         h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
     });
-    // The save's rebuild held, a keystroke made while it runs.
-    let hold = f.kernel.hold(|_| true);
+    // The save held behind the session's queue, a keystroke made while it waits.
+    let (hold, check) = hold_queue(&f, &h, 0);
     h.get_by_role_and_label(Role::Button, "Save").click();
     step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
     type_name(&mut h, "b");
@@ -1416,6 +1427,7 @@ fn an_edit_made_while_a_save_runs_is_sent_after_it_in_a_new_transaction() {
         step(&mut h);
     }
     hold.release();
+    let _ = check.wait();
     step_until(&mut h, "the keystroke applied", |h| {
         h.state().tabs()[0].edits.idle() && shows(h, "Timeline", &typed)
     });
@@ -1532,7 +1544,7 @@ fn a_second_ctrl_s_while_a_save_runs_is_ignored() {
     step_until(&mut h, "unsaved", |h| {
         h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
     });
-    let hold = f.kernel.hold(|_| true);
+    let (hold, check) = hold_queue(&f, &h, 0);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
@@ -1540,6 +1552,7 @@ fn a_second_ctrl_s_while_a_save_runs_is_ignored() {
         step(&mut h);
     }
     hold.release();
+    let _ = check.wait();
     step_until(&mut h, "saved", |h| !anywhere(h, "example.silico *"));
     for _ in 0..20 {
         step(&mut h);
@@ -1590,17 +1603,17 @@ fn an_edit_typed_after_ctrl_z_comes_after_the_undo() {
 fn a_quit_while_a_save_runs_closes_once_it_has_saved() {
     let f = fixture();
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
-    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    step_until_event(&mut h, |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     type_name(&mut h, "q");
-    step_until(&mut h, "unsaved", |h| {
+    step_until_event(&mut h, |h| {
         h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
     });
-    let hold = f.kernel.hold(|_| true);
+    let (hold, check) = hold_queue(&f, &h, 0);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
-    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    step_until_event(&mut h, |h| h.state().tabs()[0].saves == 1);
     close_window(&mut h);
-    step_until(&mut h, "the question", |h| {
+    step_until_event(&mut h, |h| {
         h.query_by_label_contains("Save changes before quitting?")
             .is_some()
     });
@@ -1608,7 +1621,8 @@ fn a_quit_while_a_save_runs_closes_once_it_has_saved() {
         .click_accesskit();
     step(&mut h);
     hold.release();
-    step_until(&mut h, "the window closing", |h| told(h, true));
+    let _ = check.wait();
+    step_until_event(&mut h, |h| told(h, true));
     assert_eq!(names_in(&path), ["Block", "qPin", "Hole"]);
     assert!(h.state().tabs().is_empty());
     assert_eq!(never_waits::waits(), 0);
@@ -1624,7 +1638,7 @@ fn a_second_save_after_new_typing_saves_it() {
     step_until(&mut h, "unsaved", |h| {
         h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
     });
-    let hold = f.kernel.hold(|_| true);
+    let (hold, check) = hold_queue(&f, &h, 0);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
     type_name(&mut h, "b");
@@ -1632,6 +1646,7 @@ fn a_second_save_after_new_typing_saves_it() {
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step(&mut h);
     hold.release();
+    let _ = check.wait();
     step_until(&mut h, "both saved", |h| {
         h.state().tabs()[0].saves == 2
             && h.state().tabs()[0].edits.idle()
@@ -1651,7 +1666,7 @@ fn the_name_field_is_off_while_its_tab_closes() {
     step_until(&mut h, "unsaved", |h| {
         h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
     });
-    let hold = f.kernel.hold(|_| true);
+    let (hold, check) = hold_queue(&f, &h, 0);
     h.get_by_label("Close example.silico").click();
     step_until(&mut h, "the question", |h| {
         anywhere(h, "Save changes to example.silico before closing?")
@@ -1669,6 +1684,7 @@ fn the_name_field_is_off_while_its_tab_closes() {
     step(&mut h);
     assert_eq!(name_field(&h).value(), before);
     hold.release();
+    let _ = check.wait();
     step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
     assert_eq!(names_in(&path), ["Block", "cPin", "Hole"]);
     assert_eq!(never_waits::waits(), 0);
