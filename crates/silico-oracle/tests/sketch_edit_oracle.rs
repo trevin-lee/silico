@@ -3974,3 +3974,141 @@ fn a_lines_drag_that_moves_an_arc_compares_its_radius_within_the_band() {
         "{v}"
     );
 }
+
+#[test]
+fn an_extends_band_and_tolerances_hold_at_their_edges_exactly() {
+    // The line n0000002 from (-10, 0) to (-5, 0), its end p0000003 the centre of c0000004,
+    // radius 1e-6; the lone point p0000005 at (0, 7). The end extended 5 mm lands at (0, 0)
+    // exactly. Each difference below is exactly its tolerance in f64 (from 0, or 1e-6 less
+    // 5e-7): within it, so agreeing.
+    let case = case_of(
+        "extend_to_the_origin",
+        r#""points": [{"id": "p0000001", "x": -10, "y": 0, "construction": false}, {"id": "p0000003", "x": -5, "y": 0, "construction": false}, {"id": "p0000005", "x": 0, "y": 7, "construction": false}],
+        "lines": [{"id": "n0000002", "from": "p0000001", "to": "p0000003", "construction": false}], "circles": [{"id": "c0000004", "center": "p0000003", "radius": 0.000001, "construction": false}], "arcs": [], "constraints": []"#,
+        Edit::Extend {
+            curve: "n0000002".to_owned(),
+            end: sketch_edit::ExtendEnd::End,
+            by: ExtendBy::Length(5.0),
+        },
+    );
+    assert_eq!(1e-6 - 5e-7, 5e-7);
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let p = &prepared[0];
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("{:?}", p.silico)
+    };
+    let end = s
+        .edited
+        .sketch
+        .points
+        .iter()
+        .find(|q| q.id == id("p0000003"))
+        .unwrap();
+    assert_eq!([end.x.mm(), end.y.mm()], [0.0, 0.0]);
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    agrees(&verdict(p, theirs[0].as_ref()));
+    let index = |fc: &FreecadEdited, element: &str| {
+        let i = p.model.elements.iter().position(|e| e == element).unwrap();
+        fc.ids_before[i]
+    };
+    // FreeCAD's dragged end 5e-7 across after the solve; its dragged circle's radius 5e-7,
+    // before the solve or after it.
+    let end_across = doctored(&theirs[0], |fc| {
+        let (line, circle) = (index(fc, "n0000002"), index(fc, "c0000004"));
+        for g in &mut fc.geometry {
+            if g.id == line {
+                g.points.get_mut("2").unwrap()[0] = 5e-7;
+            } else if g.id == circle {
+                g.points.get_mut("3").unwrap()[0] = 5e-7;
+            }
+        }
+    });
+    agrees(&verdict(p, Some(&end_across)));
+    for solved in [false, true] {
+        let smaller = doctored(&theirs[0], |fc| {
+            let circle = index(fc, "c0000004");
+            let list = if solved {
+                &mut fc.geometry
+            } else {
+                &mut fc.edited
+            };
+            list.iter_mut().find(|g| g.id == circle).unwrap().radius = Some(5e-7);
+        });
+        agrees(&verdict(p, Some(&smaller)));
+    }
+    // Silico's lone p0000005, or the line's start, moved by exactly 1e-8 (from 0): not moved
+    // by the drag, so FreeCAD's 2e-7 there, before the solve, is past the comparison's 1e-8.
+    for (point, axis) in [("p0000005", 0), ("p0000001", 1)] {
+        let moved = changed(&case, p, |sketch| {
+            let q = sketch
+                .points
+                .iter_mut()
+                .find(|q| q.id == id(point))
+                .unwrap();
+            let at = if axis == 0 { &mut q.x } else { &mut q.y };
+            *at = silico_core::document::Coordinate::new(1e-8).unwrap();
+        });
+        let theirs_moved = doctored(&theirs[0], |fc| {
+            let (member, k) = if point == "p0000005" {
+                ("p0000005", "1")
+            } else {
+                ("n0000002", "1")
+            };
+            let id = index(fc, member);
+            fc.edited
+                .iter_mut()
+                .find(|g| g.id == id)
+                .unwrap()
+                .points
+                .get_mut(k)
+                .unwrap()[axis] = 2e-7;
+        });
+        let v = verdict(&moved, Some(&theirs_moved));
+        let want = format!("after the edit, before the solve, Silico's point {point} is at");
+        assert!(v.how.iter().any(|h| h.starts_with(&want)), "{want}: {v}");
+    }
+}
+
+#[test]
+fn a_shared_arc_ends_neighbour_is_where_the_case_drew_it_within_1e_8_exactly() {
+    // The arc a0000003 about (0, 5) from p0000001 (0, 0) to (5, 5), the line n0000006 from
+    // (-10, 0) ending at p0000001; the arc's start turned 10 degrees back. FreeCAD's
+    // setRange leaves the line's end where the case drew it; 1e-8 off it (exactly, from 0) is
+    // within the comparison, 2e-8 isn't.
+    let case = case_of(
+        "extend_shared_start",
+        r#""points": [{"id": "p0000001", "x": 0, "y": 0, "construction": false}, {"id": "p0000002", "x": 0, "y": 5, "construction": false}, {"id": "p0000004", "x": 5, "y": 5, "construction": false}, {"id": "p0000005", "x": -10, "y": 0, "construction": false}],
+        "lines": [{"id": "n0000006", "from": "p0000005", "to": "p0000001", "construction": false}], "circles": [], "arcs": [{"id": "a0000003", "center": "p0000002", "start": "p0000001", "end": "p0000004", "construction": false}], "constraints": []"#,
+        Edit::Extend {
+            curve: "a0000003".to_owned(),
+            end: sketch_edit::ExtendEnd::Start,
+            by: ExtendBy::Angle(10.0),
+        },
+    );
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&case, &mut worker).unwrap()];
+    let p = &prepared[0];
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    let neighbour = |x: f64| {
+        doctored(&theirs[0], |fc| {
+            let i = p
+                .model
+                .elements
+                .iter()
+                .position(|e| e == "n0000006")
+                .unwrap();
+            let id = fc.ids_before[i];
+            let g = fc.edited.iter_mut().find(|g| g.id == id).unwrap();
+            *g.points.get_mut("2").unwrap() = [x, 0.0];
+        })
+    };
+    let drawn = |v: &Verdict| {
+        v.how
+            .iter()
+            .any(|h| h.contains("not where the case drew it"))
+    };
+    assert!(!drawn(&verdict(p, theirs[0].as_ref())));
+    assert!(!drawn(&verdict(p, Some(&neighbour(1e-8)))));
+    assert!(drawn(&verdict(p, Some(&neighbour(2e-8)))));
+}

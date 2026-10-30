@@ -1103,6 +1103,8 @@ fn a_gap_of_exactly_1e_12_from_tangent_is_tangent_as_drawn_not_in_the_band() {
         refusal("x", &[], "pick"),
     );
     assert!(contact_band(&trim).is_none(), "{:?}", contact_band(&trim));
+}
+
 /// FreeCAD's geometry as `p`'s model gives it, IDs from 1, edited and solved alike, with
 /// none of its constraints, and both solves clean.
 fn as_modelled(p: &Prepared) -> FreecadEdited {
