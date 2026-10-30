@@ -347,7 +347,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -698,7 +698,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -1060,7 +1060,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -1497,7 +1497,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -1957,7 +1957,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -2322,7 +2322,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -2653,7 +2653,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -3014,7 +3014,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -3368,7 +3368,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -5993,7 +5993,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -7172,7 +7172,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -8349,7 +8349,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -9505,7 +9505,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -9874,7 +9874,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -10198,7 +10198,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -10548,7 +10548,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -10605,18 +10605,8 @@
             "description": "Something `check` found that fails nothing: it never refuses a command, blocks a save, or\nsets an exit code. In the error contract's shape, each field as an error's: a code, a\nmessage, and, where they apply, the feature, the elements it's of (the first of them,\nand how many in all), the field it's of, the cause, what to do, and the names that might\nhave been meant. Every field is always present: null, or empty, where it doesn't apply.",
             "properties": {
               "advice": {
-                "description": "Null: a warning is never a worker's fault, so it advises nothing as data (an error's\n`advice`, in the same shape).",
-                "enum": [
-                  "change_the_values",
-                  "simplify_or_wait",
-                  "try_again",
-                  "try_once_more",
-                  null
-                ],
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "description": "Null: a warning is never a worker's fault, so it advises nothing as data, where an\nerror's `advice` may.",
+                "type": "null"
               },
               "candidates": {
                 "description": "What might have been meant, if anything.",
@@ -10633,7 +10623,7 @@
                 ]
               },
               "code": {
-                "description": "What kind of warning it is: one of Silico's warning codes, listed in\n`warning-codes.txt`, such as `ends_not_joined`.",
+                "description": "What kind of warning it is: one of Silico's warning codes, such as `ends_not_joined`.",
                 "enum": [
                   "ends_not_joined",
                   "constraints_redundant",
@@ -10992,7 +10982,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -11782,7 +11772,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -12714,7 +12704,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -13079,7 +13069,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -13489,7 +13479,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -13868,7 +13858,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -14300,7 +14290,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -14900,7 +14890,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -15369,7 +15359,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -15831,7 +15821,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",

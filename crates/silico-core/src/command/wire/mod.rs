@@ -1571,6 +1571,11 @@ fn advice_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     })
 }
 
+/// A warning's `advice`: always null.
+fn no_advice_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type": "null"})
+}
+
 /// Something `check` found that fails nothing: it never refuses a command, blocks a save, or
 /// sets an exit code. In the error contract's shape, each field as an error's: a code, a
 /// message, and, where they apply, the feature, the elements it's of (the first of them,
@@ -1579,8 +1584,7 @@ fn advice_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 #[derive(JsonSchema)]
 #[schemars(rename = "Warning", transform = wire_shape)]
 pub struct WarningSchema {
-    /// What kind of warning it is: one of Silico's warning codes, listed in
-    /// `warning-codes.txt`, such as `ends_not_joined`.
+    /// What kind of warning it is: one of Silico's warning codes, such as `ends_not_joined`.
     #[schemars(schema_with = "warning_code_schema")]
     pub code: String,
     /// What was found, in a sentence.
@@ -1599,9 +1603,9 @@ pub struct WarningSchema {
     pub suggestion: Option<String>,
     /// What might have been meant, if anything.
     pub candidates: Vec<String>,
-    /// Null: a warning is never a worker's fault, so it advises nothing as data (an error's
-    /// `advice`, in the same shape).
-    #[schemars(schema_with = "advice_schema")]
+    /// Null: a warning is never a worker's fault, so it advises nothing as data, where an
+    /// error's `advice` may.
+    #[schemars(schema_with = "no_advice_schema")]
     pub advice: Option<String>,
 }
 
@@ -1666,7 +1670,8 @@ pub struct RefusedSchema {
     #[schemars(extend("const" = false))]
     pub ok: bool,
     /// The session as the command left it: null for a command that takes no session, a
-    /// session that isn't open, or a request whose session can't be read.
+    /// session that isn't open, a request whose session can't be read, or a call the server
+    /// refused before the core read it.
     pub session: Option<SessionSchema>,
     /// The model the command read: null if it read none.
     pub model: Option<ModelSchema>,

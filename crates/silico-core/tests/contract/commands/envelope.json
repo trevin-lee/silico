@@ -223,7 +223,7 @@
               "type": "null"
             }
           ],
-          "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, or a request whose session can't be read."
+          "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
         },
         "total": {
           "description": "How many reasons there are, listed or not.",
