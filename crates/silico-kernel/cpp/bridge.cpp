@@ -849,18 +849,28 @@ Kind kind_of(TopAbs_ShapeEnum type) {
 // (0 when the result doesn't have it) with its position in OCCT's list. Facts only; Rust
 // decides what to keep. For each element the Kept entry comes first: Rust relies on it.
 // OCCT's IsDeleted isn't asked: it's wrong for fillets (docs/ports/history.md).
-void capture_history(BRepBuilderAPI_MakeShape &maker, uint32_t input,
-                     const TopoDS_Shape &source, const TopoDS_Shape &result,
-                     rust::Vec<HistoryEntry> &history) {
+//
+// `results` is the result's elements, mapped once for the operation however many inputs it
+// has: a copies boolean has up to a thousand, and mapping its result for each was most of
+// its time.
+struct ResultMaps {
   // Indexed by Kind's values, which lib.rs fixes at Vertex 0, Edge 1, Face 2, Solid 3.
   static_assert(static_cast<uint8_t>(Kind::Vertex) == 0 && static_cast<uint8_t>(Kind::Edge) == 1 &&
                     static_cast<uint8_t>(Kind::Face) == 2 && static_cast<uint8_t>(Kind::Solid) == 3,
-                "results[] is indexed by Kind");
-  ShapeMap results[4];
-  TopExp::MapShapes(result, TopAbs_VERTEX, results[0]);
-  TopExp::MapShapes(result, TopAbs_EDGE, results[1]);
-  TopExp::MapShapes(result, TopAbs_FACE, results[2]);
-  TopExp::MapShapes(result, TopAbs_SOLID, results[3]);
+                "kinds[] is indexed by Kind");
+  ShapeMap kinds[4];
+  explicit ResultMaps(const TopoDS_Shape &result) {
+    TopExp::MapShapes(result, TopAbs_VERTEX, kinds[0]);
+    TopExp::MapShapes(result, TopAbs_EDGE, kinds[1]);
+    TopExp::MapShapes(result, TopAbs_FACE, kinds[2]);
+    TopExp::MapShapes(result, TopAbs_SOLID, kinds[3]);
+  }
+};
+
+void capture_history(BRepBuilderAPI_MakeShape &maker, uint32_t input,
+                     const TopoDS_Shape &source, const ResultMaps &maps,
+                     rust::Vec<HistoryEntry> &history) {
+  const ShapeMap *results = maps.kinds;
   for (TopAbs_ShapeEnum type : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX}) {
     const Kind input_kind = kind_of(type);
     ShapeMap inputs;
@@ -1053,7 +1063,7 @@ std::unique_ptr<Shape> Dressing::build(rust::Vec<HistoryEntry> &history) {
                                                     : "the chamfer couldn't be built");
   }
   const TopoDS_Shape result = maker.Shape();
-  capture_history(maker, 0, impl_->shape, result, history);
+  capture_history(maker, 0, impl_->shape, ResultMaps(result), history);
   return std::make_unique<Shape>(Shape{result});
 }
 
@@ -1376,7 +1386,7 @@ std::unique_ptr<Shape> extrude(const Shape &face, double dx, double dy, double d
     throw Standard_Failure("the extrusion couldn't be built");
   }
   const TopoDS_Shape result = prism.Shape();
-  capture_history(prism, 0, face.shape, result, history);
+  capture_history(prism, 0, face.shape, ResultMaps(result), history);
   record_ends(prism.FirstShape(), result, start);
   record_ends(prism.LastShape(), result, end);
   return std::make_unique<Shape>(Shape{result});
@@ -1392,7 +1402,7 @@ std::unique_ptr<Shape> revolve(const Shape &face, Point3 origin, Point3 directio
     throw Standard_Failure("the revolve couldn't be built");
   }
   const TopoDS_Shape result = revolution.Shape();
-  capture_history(revolution, 0, face.shape, result, history);
+  capture_history(revolution, 0, face.shape, ResultMaps(result), history);
   record_ends(revolution.FirstShape(), result, start);
   record_ends(revolution.LastShape(), result, end);
   return std::make_unique<Shape>(Shape{result});
@@ -1704,8 +1714,9 @@ std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &too
   }
   run_boolean(*maker, arguments, tools, {&base.shape, &tool.shape}, warnings, skipped);
   const TopoDS_Shape result = maker->Shape();
-  capture_history(*maker, 0, base.shape, result, history);
-  capture_history(*maker, 1, tool.shape, result, history);
+  const ResultMaps maps(result);
+  capture_history(*maker, 0, base.shape, maps, history);
+  capture_history(*maker, 1, tool.shape, maps, history);
   return std::make_unique<Shape>(Shape{result});
 }
 
@@ -1750,14 +1761,24 @@ std::unique_ptr<Shape> make_copies(const Shape &tool, rust::Slice<const CopyPlac
   TopoDS_Compound copies;
   BRep_Builder builder;
   builder.MakeCompound(copies);
+  const TopAbs_ShapeEnum types[3] = {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX};
+  ShapeMap tools[3];
+  for (int t = 0; t < 3; ++t) {
+    TopExp::MapShapes(tool.shape, types[t], tools[t]);
+  }
+  size_t n = 0;
   for (const CopyPlacement &placement : placements) {
+    // A copy that can't be made names its placement, from 0.
+    const auto failed = [n](const char *why) {
+      return Standard_Failure(("placements." + std::to_string(n) + ": " + why).c_str());
+    };
     const gp_Trsf trsf = placement_trsf(placement);
     TopoDS_Shape copy;
     std::unique_ptr<BRepBuilderAPI_Transform> rebuilt;
     if (placement.kind == PlacementKind::Mirror) {
       rebuilt = std::make_unique<BRepBuilderAPI_Transform>(tool.shape, trsf, Standard_True);
       if (!rebuilt->IsDone()) {
-        throw Standard_Failure("the mirrored copy couldn't be built");
+        throw failed("the mirrored copy couldn't be built");
       }
       copy = rebuilt->Shape();
     } else {
@@ -1765,12 +1786,12 @@ std::unique_ptr<Shape> make_copies(const Shape &tool, rust::Slice<const CopyPlac
     }
     // The copy's element n is the tool's element n: the same sub-shape moved (a location),
     // or the one the transform rebuilt from it. Checked rather than assumed.
-    for (TopAbs_ShapeEnum type : {TopAbs_FACE, TopAbs_EDGE, TopAbs_VERTEX}) {
-      ShapeMap inputs, outputs;
-      TopExp::MapShapes(tool.shape, type, inputs);
-      TopExp::MapShapes(copy, type, outputs);
+    for (int t = 0; t < 3; ++t) {
+      const ShapeMap &inputs = tools[t];
+      ShapeMap outputs;
+      TopExp::MapShapes(copy, types[t], outputs);
       if (inputs.Extent() != outputs.Extent()) {
-        throw Standard_Failure("a copy doesn't have the tool's elements");
+        throw failed("the copy doesn't have the tool's elements");
       }
       for (int i = 1; i <= inputs.Extent(); ++i) {
         const bool same =
@@ -1778,11 +1799,12 @@ std::unique_ptr<Shape> make_copies(const Shape &tool, rust::Slice<const CopyPlac
                     : inputs(i).IsPartner(outputs(i)) &&
                           inputs(i).Orientation() == outputs(i).Orientation();
         if (!same) {
-          throw Standard_Failure("a copy's elements aren't the tool's, in order");
+          throw failed("the copy's elements aren't the tool's, in order");
         }
       }
     }
     builder.Add(copies, copy);
+    ++n;
   }
   return std::make_unique<Shape>(Shape{copies});
 }
@@ -1811,9 +1833,10 @@ std::unique_ptr<Shape> copies_boolean(BooleanOp op, const Shape &base, const Sha
   }
   run_boolean(*maker, arguments, tools, inputs, warnings, skipped);
   const TopoDS_Shape result = maker->Shape();
-  capture_history(*maker, 0, base.shape, result, history);
+  const ResultMaps maps(result);
+  capture_history(*maker, 0, base.shape, maps, history);
   for (size_t k = 0; k < each.size(); ++k) {
-    capture_history(*maker, static_cast<uint32_t>(k + 1), each[k], result, history);
+    capture_history(*maker, static_cast<uint32_t>(k + 1), each[k], maps, history);
   }
   return std::make_unique<Shape>(Shape{result});
 }

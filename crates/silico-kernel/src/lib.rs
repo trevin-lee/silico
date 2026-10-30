@@ -2044,10 +2044,17 @@ fn history_of(
             solids: c.solids,
         })
     };
-    let input_counts = inputs
-        .iter()
-        .map(|input| counts(input))
-        .collect::<Result<Vec<_>, _>>()?;
+    // A copies operation's inputs after its base are its tool again and again: counted once.
+    let mut input_counts: Vec<ElementCounts> = Vec::with_capacity(inputs.len());
+    let mut previous: Option<(&ffi::Shape, ElementCounts)> = None;
+    for &input in inputs {
+        let count = match previous {
+            Some((shape, count)) if std::ptr::eq(shape, input) => count,
+            _ => counts(input)?,
+        };
+        previous = Some((input, count));
+        input_counts.push(count);
+    }
     let result_counts = counts(result)?;
     let mut history = assemble_history(&input_counts, result_counts, entries)?;
     history.topology = topology(&ffi::topology(result)?, result_counts)?;

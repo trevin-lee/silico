@@ -489,9 +489,10 @@ impl KernelRequest<BuiltData> {
         if let Err(refused) = silico_protocol::check_copies(placements) {
             return Err(Error::new(ErrorCode::InvalidInput, refused.message)
                 .with_parameter(refused.parameter)
-                .with_suggestion(
-                    "place each copy somewhere other than the tool, by finite values within a kilometre, and at most 999 of them",
-                ));
+                .with_suggestion(format!(
+                    "place each copy somewhere other than the tool, by finite values within a kilometre and directions of length 1, and at most {} of them",
+                    silico_protocol::MAX_COPIES
+                )));
         }
         let op = Op::Copies {
             base: base.clone(),

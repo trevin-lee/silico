@@ -169,6 +169,94 @@ fn four_cubes_turned_a_quarter_about_z_meet_at_the_axis_in_one_solid_of_4000() {
 }
 
 #[test]
+fn four_cubes_turned_about_x_and_about_y_fill_the_block_about_that_axis() {
+    // FreeCAD's TestPolarPattern about each origin axis: the 10 mm cube turned 4 times
+    // over 360° about X, then about Y, 4000 mm³ and the Z case's 16/32/18 by symmetry, the
+    // block about the axis. And one quarter turn alone, right-handed, by hand: about X it
+    // takes y to z, so the cube's copy lies at y from -10 to 0; about Y it takes z to x, so
+    // the copy lies at z from -10 to 0 (the other way round, each would lie at +y or +z's
+    // opposite).
+    let mut k = kernel();
+    let c = k.make(cube(10.0)).unwrap();
+    let about = |direction: [f64; 3], degrees: f64| Placement::Rotation {
+        axis: Axis {
+            origin: [0.0; 3],
+            direction,
+        },
+        angle: radians(degrees),
+    };
+    for (direction, centre, low, high, quarter_low, quarter_high) in [
+        (
+            [1.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [0.0, -10.0, -10.0],
+            [10.0, 10.0, 10.0],
+            [0.0, -10.0, 0.0],
+            [10.0, 10.0, 10.0],
+        ),
+        (
+            [0.0, 1.0, 0.0],
+            [0.0, 5.0, 0.0],
+            [-10.0, 0.0, -10.0],
+            [10.0, 10.0, 10.0],
+            [0.0, 0.0, -10.0],
+            [10.0, 10.0, 10.0],
+        ),
+    ] {
+        let turns = [90.0, 180.0, 270.0].map(|d| about(direction, d));
+        let made = built(&mut k, CopiesOp::Fuse, &c, &c, &turns);
+        let s = k.summarize(&made.shape).unwrap();
+        assert_close("volume", s.volume, 4000.0, PRECISE);
+        assert_eq!(
+            (s.faces, s.edges, s.vertices),
+            (16, 32, 18),
+            "{direction:?}"
+        );
+        assert_near("centre", s.center, centre);
+        let [l, h] = s.bounds.unwrap();
+        assert_near("lowest corner", l, low);
+        assert_near("highest corner", h, high);
+        assert_eq!(made.history.result.solids, 1);
+        let made = built(&mut k, CopiesOp::Fuse, &c, &c, &[about(direction, 90.0)]);
+        let s = k.summarize(&made.shape).unwrap();
+        assert_close("quarter volume", s.volume, 2000.0, PRECISE);
+        let [l, h] = s.bounds.unwrap();
+        assert_near("quarter's lowest corner", l, quarter_low);
+        assert_near("quarter's highest corner", h, quarter_high);
+    }
+}
+
+#[test]
+fn a_turn_about_a_skew_axis_lands_the_copy_where_the_turn_takes_it() {
+    // A third of a turn about (1, 1, 1)/√3 through the origin, right-handed, takes x to y,
+    // y to z, and z to x, so (x, y, z) to (z, x, y): a unit cube at x from 20 to 21 lands at
+    // y from 20 to 21 (the other way round it would land at z from 20 to 21). Apart from the
+    // tool, so two solids of 1 mm³.
+    let mut k = kernel();
+    let c = at(&mut k, cube(1.0), [20.0, 0.0, 0.0]);
+    let third = 1.0 / 3.0_f64.sqrt();
+    let made = built(
+        &mut k,
+        CopiesOp::Fuse,
+        &c,
+        &c,
+        &[Placement::Rotation {
+            axis: Axis {
+                origin: [0.0; 3],
+                direction: [third, third, third],
+            },
+            angle: radians(120.0),
+        }],
+    );
+    let s = k.summarize(&made.shape).unwrap();
+    assert_close("volume", s.volume, 2.0, PRECISE);
+    assert_eq!(made.history.result.solids, 2);
+    let [low, high] = s.bounds.unwrap();
+    assert_near("lowest corner", low, [0.0, 0.0, 0.0]);
+    assert_near("highest corner", high, [21.0, 21.0, 1.0]);
+}
+
+#[test]
 fn a_cube_mirrored_in_the_plane_it_stands_on_doubles_into_one_solid() {
     // FreeCAD's testMirroredPrimitiveCase and testMirroredSketchCase: a unit cube mirrored
     // in the plane of one of its faces, 2 mm³. And a 10 mm cube in XY: 2000 mm³, one solid,

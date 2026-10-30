@@ -253,9 +253,9 @@ fn a_mirror_plane_through_the_tool_overlaps_it_by_what_it_shares() {
 #[test]
 fn a_grid_of_overlapping_copies_fuses_into_their_union_and_cuts_it_out() {
     // 2 mm cubes 1 apart in a 3 × 3 grid: each overlapping its neighbours, together the
-    // 4 × 4 square, 2 tall: 32 mm³ as a fuse, and as a cut from a 10 × 10 × 2 plate,
-    // 200 − 32. Each copy a tool of its own (one compound of overlapping tools OCCT
-    // cuts wrongly).
+    // 4 × 4 square, 2 tall: 32 mm³ as a fuse; and as a cut from a 10 × 10 × 2 plate, the
+    // copies but not the seed (below). Each copy a tool of its own (one compound of
+    // overlapping tools OCCT cuts wrongly).
     let mut k = kernel();
     let cube = k.make(block(2.0, 2.0, 2.0)).unwrap();
     let grid: Vec<Placement> = (0..3)
@@ -269,8 +269,10 @@ fn a_grid_of_overlapping_copies_fuses_into_their_union_and_cuts_it_out() {
     let plate = k.make(block(10.0, 10.0, 2.0)).unwrap();
     let made = copied(&mut k, CopiesOp::Cut, &plate, &cube, &grid).unwrap();
     // The seed isn't in the plate here, so the eight copies alone: the 4 × 4 square less
-    // the seed's corner cell [0, 1]², 15 × 2.
+    // the seed's corner cell [0, 1]², 15 × 2. That cell is cut off on every side but the
+    // plate's own, so it's a solid of its own: two solids (FreeCAD 1.1.3: 170, 2 solids).
     assert_close("cut", volume(&mut k, &made.shape), 200.0 - 30.0, PRECISE);
+    assert_eq!(made.history.result.solids, 2);
     // Polar copies of a long bar about its own middle, every 10° of a half turn, all
     // overlapping in the middle: a 1 × 1 × 20 bar centred on the Z axis turned 17 times.
     // Valid and one solid, its volume between one bar's and eighteen's.
