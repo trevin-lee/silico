@@ -3043,14 +3043,13 @@ mod tests {
 /// wouldn't stop.
 pub mod never_waits {
     use std::cell::Cell;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     thread_local! {
         static MARKED: Cell<bool> = const { Cell::new(false) };
+        /// Waits called on this thread while it was marked: each thread its own count, so
+        /// tests in one process never see one another's.
+        static WAITED: Cell<usize> = const { Cell::new(0) };
     }
-
-    /// Waits called on a marked thread, by this process.
-    static WAITED: AtomicUsize = AtomicUsize::new(0);
 
     /// Marks the calling thread until the guard is dropped: a wait called on it meanwhile
     /// is counted.
@@ -3069,15 +3068,15 @@ pub mod never_waits {
         }
     }
 
-    /// How many waits marked threads have called, in this process.
+    /// How many waits the calling thread called while it was marked.
     pub fn waits() -> usize {
-        WAITED.load(Ordering::SeqCst)
+        WAITED.with(Cell::get)
     }
 
     /// A wait was called: counted, if on a marked thread.
     pub(crate) fn waited() {
         if MARKED.with(Cell::get) {
-            WAITED.fetch_add(1, Ordering::SeqCst);
+            WAITED.with(|waited| waited.set(waited.get() + 1));
         }
     }
 }
