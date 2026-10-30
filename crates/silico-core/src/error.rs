@@ -136,6 +136,12 @@ codes! {
         /// A feature built, but its file stores no fingerprint, so a change in what it builds
         /// isn't caught as drift (the maintainer, 2026-10-26).
         FingerprintMissing = "fingerprint_missing",
+        /// Constraints of a sketch only part of whose equations repeat what its others already
+        /// fix, and that part agrees with them (docs/design/m3.3-solving.md, decision 5): the
+        /// sketch solves, where FreeCAD calls them partially redundant constraints. Apart from
+        /// `constraints_redundant`, whose advice is to remove them: removing one of these frees
+        /// what only it fixes (approved at M4's close, 2026-10-29).
+        ConstraintsPartiallyRedundant = "constraints_partially_redundant",
     }
 }
 

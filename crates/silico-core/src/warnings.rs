@@ -3,7 +3,7 @@
 //! its own ([`WarningCode`]). A warning never refuses a command, blocks a save, or sets an
 //! exit code.
 //!
-//! Three codes, each from the model alone, so a gate's refusal (no model) has none:
+//! Four codes, each from the model alone, so a gate's refusal (no model) has none:
 //! - `ends_not_joined` (M3.2's D2): ends of a sketch's profile curves (lines and arcs that
 //!   aren't construction geometry) that are separate points FreeCAD would join, on the sketch
 //!   as it solved: points strictly closer than FreeCAD's joining distance, 1e-7 mm, grouped
@@ -14,12 +14,13 @@
 //!   points (a cluster), not one a pair, as FreeCAD's missing-coincidence analysis reports
 //!   a group (k − 1 missing for a group of k: `SketchAnalysis`, c036128aa0, its tests
 //!   6e4c61881b), though that analysis groups only the ends near the first of a run sorted
-//!   by position, each axis apart, without chaining. Naming its points, then the curves
-//!   ending at them; its cause the largest distance between two of its points; its
-//!   suggestion to share one point, after, for each curve with both its ends in the
-//!   cluster, which sharing one would collapse, the advice to lengthen it (a line, or an
-//!   arc short of a half turn) or the sketch gate's for an arc whose ends are one place (an
-//!   arc past a half turn), as the profile's refusal of the same ends says
+//!   by position, each axis apart, without chaining. Naming its points alone, which are
+//!   what isn't joined (FreeCAD's vertex pair); its cause the largest distance between two
+//!   of its points; its suggestion to share one point, the curves ending at the points
+//!   named ending at one of them, after, for each curve with both its ends in the cluster,
+//!   which sharing one would collapse, the advice to lengthen it (a line, or an arc short
+//!   of a half turn) or the sketch gate's for an arc whose ends are one place (an arc past
+//!   a half turn), as the profile's refusal of the same ends says
 //!   (`profile::collapsing_advice`). The grouping is the profile's ([`crate::profile`]'s
 //!   open ends that should be one point), each with its own comparison.
 //!
@@ -36,10 +37,13 @@
 //!   gap a feature sweeps is M3.5's profile refusal.
 //! - `constraints_redundant` (M3.3): a solved sketch's redundant constraints, each agreeing
 //!   with the rest (decision 5; one that disagrees is a problem, `over_constrained`, and the
-//!   sketch doesn't solve). One warning a sketch for those all of whose equations repeat
-//!   others' (FreeCAD's "redundant constraints", which it advises removing), and another for
-//!   those only part of whose equations do (FreeCAD's "partially redundant", which it doesn't:
-//!   removing one frees what only it fixes), each naming them all.
+//!   sketch doesn't solve), all of whose equations repeat others' (FreeCAD's "redundant
+//!   constraints", which it advises removing): one warning a sketch, naming them all.
+//! - `constraints_partially_redundant` (M3.3, its code approved at M4's close): a solved
+//!   sketch's constraints only part of whose equations repeat others', agreeing with the
+//!   rest (FreeCAD's "partially redundant", which it doesn't advise removing: removing one
+//!   frees what only it fixes): one warning a sketch, naming them all, its own code since
+//!   its advice is the opposite.
 //! - `fingerprint_missing` (the maintainer, 2026-10-26): a feature that built, whose file
 //!   stores no fingerprint, so a change in what it builds isn't caught as drift. Only where a
 //!   save would store one: a feature that failed, was blocked, couldn't be measured, or
@@ -55,11 +59,10 @@
 //!
 //! **Order:** by timeline (the document's features, in order), then by code, in
 //! [`WarningCode`]'s order (`ends_not_joined`, `constraints_redundant`,
-//! `fingerprint_missing`), then, for a sketch's `ends_not_joined`, by cluster, by its least
-//! point ID, and for its `constraints_redundant`, the redundant before the partially
-//! redundant. The first [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED) are listed,
-//! all counted, as problems are. Nothing depends on the order the file lists a sketch's
-//! members in.
+//! `fingerprint_missing`, `constraints_partially_redundant`), then, for a sketch's
+//! `ends_not_joined`, by cluster, by its least point ID. The first
+//! [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED) are listed, all counted, as
+//! problems are. Nothing depends on the order the file lists a sketch's members in.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -288,12 +291,12 @@ fn ends_not_joined(
     }
 }
 
-/// The warning of `cluster`, indices into `ends` in ID order: its points, then the curves
-/// ending at them in ID order, each once (the first [`PROBLEMS_LISTED`] of them, all
-/// counted); its cause the largest distance between two of its points. A curve (of
-/// `profile`, the sketch's) with both its ends in the cluster would collapse if they were one
-/// point, so its suggestion is first the advice for it, as the profile's refusal of the same
-/// ends says ([`collapsing_advice`]).
+/// The warning of `cluster`, indices into `ends` in ID order: its points (the first
+/// [`PROBLEMS_LISTED`] of them, all counted), which are what isn't joined; its cause the
+/// largest distance between two of its points. A curve (of `profile`, the sketch's) with
+/// both its ends in the cluster would collapse if they were one point, so its suggestion is
+/// first the advice for it, as the profile's refusal of the same ends says
+/// ([`collapsing_advice`]).
 fn cluster_warning(
     id: &FeatureId,
     ends: &[End<'_>],
@@ -301,6 +304,8 @@ fn cluster_warning(
     cluster: &[usize],
 ) -> Warning {
     let points: Vec<&ElementId> = cluster.iter().map(|&i| ends[i].point).collect();
+    // The curves ending at the points, each once, by ID: not named, only looked through for
+    // those the suggestion advises on.
     let mut curves: Vec<&ElementId> = cluster
         .iter()
         .flat_map(|&i| ends[i].curves.iter().copied())
@@ -340,7 +345,6 @@ fn cluster_warning(
             format_number(FREECAD_WIRE_JOIN)
         )
     };
-    let named = points.iter().chain(&curves);
     Warning::new(
         WarningCode::EndsNotJoined,
         format!(
@@ -349,8 +353,8 @@ fn cluster_warning(
         ),
     )
     .with_feature(id.as_str())
-    .with_elements(named.clone().take(PROBLEMS_LISTED).map(|e| e.as_str()))
-    .with_elements_total((n + curves.len()) as u64)
+    .with_elements(points.iter().take(PROBLEMS_LISTED).map(|e| e.as_str()))
+    .with_elements_total(n as u64)
     .with_cause(cause)
     .with_suggestion(if both_ends.is_empty() {
         SHARE_ONE_POINT.to_owned()
@@ -362,11 +366,12 @@ fn cluster_warning(
 /// `ends_not_joined`'s suggestion: alone, or, after the advice for each curve with both its
 /// ends in the cluster, after "then " ([`collapsing_advice`]).
 const SHARE_ONE_POINT: &str =
-    "share one point: make the curves named end at one of the points named";
+    "share one point: make the curves that end at the points named end at one of them";
 
 /// A solved sketch's redundant constraints, which agree with the rest: one warning naming
-/// those all of whose equations repeat others', then one naming those only part of whose
-/// equations do (the first hundred of each, all counted), in ID order.
+/// those all of whose equations repeat others' (`constraints_redundant`), then one naming
+/// those only part of whose equations do (`constraints_partially_redundant`), the first
+/// hundred of each, all counted, in ID order.
 fn constraints_redundant(id: &FeatureId, solution: &SketchSolution, warnings: &mut Warnings) {
     let redundant = &solution.redundant;
     let n = redundant.len();
@@ -415,7 +420,7 @@ fn constraints_redundant(id: &FeatureId, solution: &SketchSolution, warnings: &m
                      fixes is repeated by its other constraints, and that part agrees with them"
                 )
             };
-            Warning::new(WarningCode::ConstraintsRedundant, message)
+            Warning::new(WarningCode::ConstraintsPartiallyRedundant, message)
                 .with_feature(id.as_str())
                 .with_elements(partly.keys().take(PROBLEMS_LISTED).map(|c| c.as_str()))
                 .with_elements_total(n as u64)
