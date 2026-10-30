@@ -935,7 +935,8 @@ fn a_chain_of_four_hundred_booleans_finishes_promptly() {
     );
     assert_eq!(model.bodies(), [id(&last)]);
     assert_eq!(made(&engine.kernel().calls()).len(), 1 + 2 * (n - 1));
-    // Once the engine is gone, so nothing of the recompute's competes with the probe.
+    // Once the engine is told to stop, so its threads wind down rather than work beside the
+    // probe.
     drop(engine);
     let after = cpu_work::cost();
     // Its CPU over what a fixed piece of the same kind of work costs this machine now, the
