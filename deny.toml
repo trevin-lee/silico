@@ -25,6 +25,11 @@ deny = [
     # eframe depends on wgpu itself only for wasm32, and egui_kittest through its wgpu
     # feature (the app's tests'); the graph takes every target and feature, so both are
     # wgpu's direct parents in the app's tree, as egui-wgpu is.
+    # The window's crates belong to the app alone, and egui-wgpu to the window crates that
+    # draw with it, so no other crate links a windowing or GPU stack in unseen.
+    { crate = "eframe", wrappers = ["silico-app"], reason = "only the app opens a window" },
+    { crate = "egui_kittest", wrappers = ["silico-app"], reason = "only the app's tests drive a window" },
+    { crate = "egui-wgpu", wrappers = ["eframe", "egui_kittest"], reason = "only the window crates draw with wgpu" },
     { crate = "wgpu", wrappers = ["silico-render", "re_renderer", "silico-app", "egui-wgpu", "eframe", "egui_kittest"], reason = "only the crates that draw: the render worker and the app" },
 ]
 
