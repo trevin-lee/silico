@@ -9,6 +9,8 @@
 mod cache;
 #[path = "common/cache_format.rs"]
 mod cache_format;
+#[path = "common/cpu_work.rs"]
+mod cpu_work;
 #[path = "common/describing.rs"]
 mod describing;
 #[path = "common/example.rs"]

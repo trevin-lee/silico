@@ -4,6 +4,7 @@
 //! recompute under test.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::cpu_work;
 use super::example;
 use super::lateness;
 use super::model;
@@ -860,19 +861,16 @@ const HANG: Duration = Duration::from_secs(60);
 const COSTING_HANG: Duration = Duration::from_secs(280);
 
 /// Recomputes `document` and gives the model it published, and the CPU time this process
-/// spent meanwhile over the machine's slowdown ([`Share`]): every thread's, the engine's
-/// and the fake kernel's, which is what the recompute costs, where a loaded machine's wall
-/// clock measures the machine; over the slowdown, as every bound on a cost here is (#253),
-/// since a loaded machine's CPU does less in a second too (a runner 1.54 times slower took
-/// a chain of 400 booleans 5.6 s of CPU, 3.6 s over it). (Nextest runs each test in its own
-/// process; the probes' own CPU is taken out.) CPU time doesn't see a recompute that waits
-/// instead of working, so it must also finish within `wall`, what it takes a quiet machine
-/// with room to spare, plus what load adds: its `work` (about twice what it computes on a
-/// quiet machine) slowed as much as the machine slowed work handed from thread to thread
-/// meanwhile ([`Share`]), and ten times how late the machine woke threads ([`allowance`]).
-/// Only the work is scaled, so on a quiet machine the bound is `wall`'s, and a recompute
-/// that waits between its steps still misses it under load by what it waits. Fails if it
-/// wasn't published, or took longer.
+/// spent meanwhile: every thread's, the engine's and the fake kernel's, which is what the
+/// recompute costs, where a loaded machine's wall clock measures the machine. (Nextest
+/// runs each test in its own process; the probes' own CPU is taken out.) CPU time doesn't
+/// see a recompute that waits instead of working, so it must also finish within `wall`, what
+/// it takes a quiet machine with room to spare, plus what load adds: its `work` (about twice
+/// what it computes on a quiet machine) slowed as much as the machine slowed work handed
+/// from thread to thread meanwhile ([`Share`]), and ten times how late the machine woke
+/// threads ([`allowance`]). Only the work is scaled, so on a quiet machine the bound is
+/// `wall`'s, and a recompute that waits between its steps still misses it under load by
+/// what it waits. Fails if it wasn't published, or took longer.
 fn published_costing(
     engine: &Recompute<FakeKernel>,
     document: Checked,
@@ -908,7 +906,7 @@ fn published_costing(
          times slower than a quiet one)",
         measured.slowdown
     );
-    (model, cost.div_f64(measured.slowdown))
+    (model, cost)
 }
 
 #[test]
@@ -928,15 +926,32 @@ fn a_chain_of_four_hundred_booleans_finishes_promptly() {
         last = b;
     }
     let engine = engine(8);
+    let before = cpu_work::cost();
     let (model, took) = published_costing(
         &engine,
         document(&features),
         Duration::from_secs(5),
         Duration::from_secs(1),
     );
+    let after = cpu_work::cost();
     assert_eq!(model.bodies(), [id(&last)]);
     assert_eq!(made(&engine.kernel().calls()).len(), 1 + 2 * (n - 1));
-    assert!(took < Duration::from_secs(5), "took {took:?} of CPU");
+    // Its CPU over what a fixed piece of the same kind of work costs this machine now, the
+    // slower of before and after (cpu_work): a raw bound failed loaded runners (5.6 s of
+    // CPU against 5), and the slowdown `Share` measures is waiting, which costs no CPU. On
+    // the Mac it's 7.6 to 8.0 quiet and 8.0 to 8.7 under load; re-keying the whole plan at
+    // each step makes it 35 to 37 either way (4.6 times): bounded at 16, between the two.
+    let probe = before.max(after);
+    let ratio = took.as_secs_f64() / probe.as_secs_f64();
+    let _ = writeln!(
+        std::io::stderr(),
+        "the chain took {took:?} of CPU, {ratio:.2} times the probe's {probe:?} \
+         (before {before:?}, after {after:?})"
+    );
+    assert!(
+        ratio < 16.0,
+        "the chain took {took:?} of CPU, {ratio:.2} times the probe's {probe:?}, past 16"
+    );
 }
 
 #[test]
