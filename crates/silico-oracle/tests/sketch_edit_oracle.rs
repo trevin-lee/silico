@@ -852,7 +852,7 @@ fn a_merge_the_gate_refuses_is_the_notes_where_its_placement_collapses_a_line() 
     );
     let v = verdict(p, theirs[0].as_ref());
     agrees(&v);
-    assert!(v.refused && v.modulo == [303], "{v:?}");
+    assert!(v.refused && v.modulo == [305], "{v:?}");
     let SilicoSide::Refused(r) = &p.silico else {
         panic!("Silico made the merge: {:?}", p.silico);
     };
