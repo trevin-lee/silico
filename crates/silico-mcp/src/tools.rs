@@ -278,7 +278,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::DragEnd => (
             "End a drag",
-            "End the open drag: with `to`, the sketch moved there from where the drag began and solved as a whole, its points saved as one edit (`kept: cursor`); with `to: null`, or if the move or the solve fails, the sketch is left as it began (`kept: begin`), with no edit. Refused, the sketch as it was, if its solve is then worse than before the drag (a new conflict or redundancy): a problem the sketch had already isn't the drag's.",
+            "End the open drag: with `to`, the sketch moved there from where the drag began and solved as a whole, its points saved as one edit (`kept: cursor`); with `to: null`, or if the move or the solve fails, the sketch is left as it began (`kept: begin`), with no edit. Refused, the sketch as it was, if its solve then flags a redundant constraint the solve before the drag didn't: a problem the sketch had already isn't the drag's.",
         ),
         Command::SketchSplit => (
             "Split a sketch curve",

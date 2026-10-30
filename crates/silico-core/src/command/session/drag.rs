@@ -711,13 +711,22 @@ impl<P: Clients + 'static> Sessions<P> {
         });
         stop.interrupt_with(Arc::downgrade(&interrupt));
         let (reply, answer) = mpsc::sync_channel(1);
-        lock(&frames.pending).push(PendingFrame {
-            ticket,
-            reply,
-            info,
-            stop: Arc::clone(&stop),
-            _interrupt: interrupt,
-        });
+        {
+            let mut pending = lock(&frames.pending);
+            pending.push(PendingFrame {
+                ticket,
+                reply,
+                info,
+                stop: Arc::clone(&stop),
+                _interrupt: interrupt,
+            });
+            // A close that took the drag's moves before this one was kept told it nothing: it
+            // learns here, under the lock its answer is given under, so it answers `not_open`
+            // too, never `cancelled` (the close takes the queue before it takes the moves).
+            if found.closed() {
+                stop.close();
+            }
+        }
         // Its frame may have come before it was kept.
         if frames.answer() {
             found.waker.wake();
@@ -738,9 +747,10 @@ impl<P: Clients + 'static> Sessions<P> {
     /// edit); a drag its worker ended, given a cursor, with the worker's error; the gate's
     /// errors for the sketch, the drag ended with no edit; and, as every edit that writes
     /// geometry is, a sketch whose solve as written is worse than its solve before the drag
-    /// (a redundancy or a conflict it hadn't, or a result the file can't hold: "after the
-    /// drag, ..."), the drag ended with no edit, though a problem the sketch had already
-    /// isn't the drag's.
+    /// ("after the drag, ..."), the drag ended with no edit, though a problem the sketch had
+    /// already isn't the drag's: a redundancy it adds, the one way a drag's can be worse,
+    /// since the drag's own solve keeps the begin state for a conflict, a failure, or a
+    /// result the file can't hold, and its file solves as that solve did (M3.4).
     pub fn drag_end(&self, session: &SessionId, to: Option<[f64; 2]>) -> Running<DragEnded> {
         let registry = Arc::downgrade(&self.registry);
         let solvers = self.registry.sketches.clone();

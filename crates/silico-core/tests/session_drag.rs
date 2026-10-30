@@ -1841,6 +1841,70 @@ fn a_begin_or_an_end_whose_solve_its_sessions_close_stops_answers_not_open_never
 }
 
 #[test]
+fn a_move_the_close_missed_as_it_was_being_kept_answers_not_open_never_cancelled() {
+    // A move that replaces one waiting wakes the client before it's kept among the
+    // drag's moves (the waker runs once the drag's lock is let go). A close that ends the
+    // drag in that window tells the moves it finds, not this one: the move must learn the
+    // session closed as it's kept, and answer as a command of a session that isn't open
+    // does (the design's `close`; the robustness review of #307): not with a frame of the
+    // drag the close ended (unfixed, it answered `dropped`), nor `cancelled`.
+    let f = opened(&freed_profile());
+    f.begin_point("pa000003").result.unwrap();
+    f.sketches.hold();
+    let solving = f.sessions.drag_move(&s1(), [62.5, 7.0]);
+    assert!(f.sketches.wait_held(HANG));
+    // Waiting behind the move solving: the one the next replaces.
+    let first = f.sessions.drag_move(&s1(), [66.0, 7.0]);
+    let mover = Arc::new(std::sync::Mutex::new(None::<std::thread::ThreadId>));
+    let (let_go, gate) = std::sync::mpsc::channel::<()>();
+    let gate = std::sync::Mutex::new(gate);
+    let (held, in_waker) = std::sync::mpsc::channel::<()>();
+    let held = std::sync::Mutex::new(held);
+    {
+        let mover = Arc::clone(&mover);
+        f.sessions.on_change(move || {
+            // Only the replacing move's own wake, on its own thread, and only once.
+            let mut mover = mover.lock().unwrap();
+            if mover.as_ref() == Some(&std::thread::current().id()) {
+                *mover = None;
+                drop(mover);
+                let _ = held.lock().unwrap().send(());
+                let _ = gate.lock().unwrap().recv();
+            }
+        });
+    }
+    let sessions = &f.sessions;
+    let second = std::thread::scope(|scope| {
+        let moving = scope.spawn(|| {
+            *mover.lock().unwrap() = Some(std::thread::current().id());
+            sessions.drag_move(&s1(), [70.0, 7.0])
+        });
+        // The replacing move, in its wake, not yet kept: the session closes now.
+        in_waker
+            .recv_timeout(HANG)
+            .expect("the replacing move didn't wake the client before it was kept");
+        answer(sessions.close(&s1())).result.unwrap();
+        let_go.send(()).unwrap();
+        moving.join().unwrap()
+    });
+    f.sketches.release();
+    assert_eq!(
+        answer(first).result.unwrap().frame,
+        FrameEnd::Dropped,
+        "the replaced move"
+    );
+    // The move solving was told by the close itself.
+    assert_eq!(
+        the_error(&answer(solving)).message(),
+        "no session s1 is open"
+    );
+    let error = the_error(&answer(second));
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error:?}");
+    assert_eq!(error.message(), "no session s1 is open");
+    assert_eq!(error.parameter(), Some("session"));
+}
+
+#[test]
 fn after_a_cancelled_move_a_release_with_a_cursor_is_told_no_drag_is_open() {
     let f = opened(&freed_profile());
     f.begin_point("pa000003").result.unwrap();
