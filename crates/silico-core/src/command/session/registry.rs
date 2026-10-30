@@ -691,26 +691,53 @@ pub(super) fn reserve<P: Clients + 'static>(
     id: SessionId,
     target: &Path,
 ) -> Result<(), SessionId> {
-    // Opened without waiting, as a read is: a pipe put at the path wouldn't block it.
-    let there = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(target)
-        .ok()
-        .and_then(|opened| FileId::of(&opened).ok());
+    let there = file_at(target);
     let mut book = lock(&registry.book);
-    let holder = there
-        .and_then(|file| book.files.get(&file).map(|(holder, _)| *holder))
-        .into_iter()
-        .chain(book.paths.get(target).copied())
-        .find(|holder| *holder != id);
-    match holder {
+    match held_in(&book, there, target, id) {
         Some(holder) => Err(holder),
         None => {
             book.paths.insert(target.to_owned(), id);
             Ok(())
         }
     }
+}
+
+/// The session other than `id` that holds or is opening the file at `target` (by any path
+/// to it) or the path, if one: what [`reserve`] refuses, looked up without claiming
+/// anything (a Save As's check before its rebuild).
+pub(super) fn holder<P: Clients + 'static>(
+    registry: &Registry<P>,
+    id: SessionId,
+    target: &Path,
+) -> Option<SessionId> {
+    let there = file_at(target);
+    held_in(&lock(&registry.book), there, target, id)
+}
+
+/// The file at `target`, if one can be opened there, opened without waiting, as a read is:
+/// a pipe put at the path wouldn't block it.
+fn file_at(target: &Path) -> Option<FileId> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(target)
+        .ok()
+        .and_then(|opened| FileId::of(&opened).ok())
+}
+
+/// The session other than `id` that `book` says holds the file `there` or the path
+/// `target`.
+fn held_in<C: Kernel + 'static>(
+    book: &Book<C>,
+    there: Option<FileId>,
+    target: &Path,
+    id: SessionId,
+) -> Option<SessionId> {
+    there
+        .and_then(|file| book.files.get(&file).map(|(holder, _)| *holder))
+        .into_iter()
+        .chain(book.paths.get(target).copied())
+        .find(|holder| *holder != id)
 }
 
 /// The claim [`reserve`] made on `target` for session `id` taken back: its Save As wrote

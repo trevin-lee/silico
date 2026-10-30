@@ -185,11 +185,15 @@ struct Save<'a> {
 
 /// Where a Save As writes (M5.4, `commit`'s `path`; docs/design/m5.0-app.md, open item
 /// 22): the path as the request gave it (in a workspace, relative to its root), whether a
-/// file there may be replaced, and the claim on the path the session takes before it
-/// writes and gives back if it writes nothing (`registry::reserve`, `registry::unreserve`).
+/// file there may be replaced, the documents the other sessions hold (by their paths),
+/// which session holds a file, looked up (`registry::holder`), and the claim on the path
+/// the session takes before it writes and gives back if it writes nothing
+/// (`registry::reserve`, `registry::unreserve`).
 pub(super) struct SaveTo<'a> {
     pub(super) given: String,
     pub(super) replace: bool,
+    pub(super) held: Vec<PathBuf>,
+    pub(super) holder: &'a dyn Fn(&Path) -> Option<SessionId>,
     pub(super) reserve: &'a dyn Fn(&Path) -> Result<(), SessionId>,
     pub(super) unreserve: &'a dyn Fn(&Path),
 }
@@ -197,26 +201,33 @@ pub(super) struct SaveTo<'a> {
 impl SaveTo<'_> {
     /// The rules its path is held to (decision 35, as a document): ending in `.silico`,
     /// inside `workspace`, never through a link out of it, never in a `.silico-cache/`
-    /// directory, a file if anything's there, and replaced only as `replace` says.
-    fn rules<'w>(&'w self, workspace: Option<&'w Workspace>, replace: bool) -> file::Output<'w> {
+    /// directory, a file if anything's there, and replaced only as `replace` says; and, as
+    /// it's written, never another session's document (before, [`target`](Self::target)
+    /// names the session).
+    fn rules<'w>(
+        &'w self,
+        workspace: Option<&'w Workspace>,
+        replace: bool,
+        writing: bool,
+    ) -> file::Output<'w> {
         file::Output {
             field: "path",
             extensions: &["silico"],
             writer: "a commit",
             replace,
             workspace,
-            held: &[],
+            held: if writing { &self.held } else { &[] },
             document: true,
         }
     }
 
     /// Where it writes, through any links, or why it's refused, writing nothing: as
-    /// [`rules`](Self::rules) refuse it, or if it's the session's own file, `own` (by any
-    /// path to it), which a commit with no path saves.
+    /// [`rules`](Self::rules) refuse it, if it's the session's own file, `own` (by any path
+    /// to it), which a commit with no path saves, or if another session holds it.
     fn target(&self, workspace: Option<&Workspace>, own: &Path) -> Result<PathBuf, Error> {
         let given = Path::new(&self.given);
         // Whether it's the session's own file is said before whether it's there.
-        let target = file::check_output(given, &self.rules(workspace, true))?;
+        let target = file::check_output(given, &self.rules(workspace, true, false))?;
         let same = |a: &std::fs::Metadata, b: &std::fs::Metadata| {
             use std::os::unix::fs::MetadataExt as _;
             a.dev() == b.dev() && a.ino() == b.ino()
@@ -234,11 +245,32 @@ impl SaveTo<'_> {
             .with_parameter("path")
             .with_suggestion("give path null to save to it, or another path"));
         }
+        if let Some(holder) = (self.holder)(&target) {
+            return Err(held_elsewhere(&self.given, holder));
+        }
         if there.is_ok() && !self.replace {
             return Err(file::exists(given, "path"));
         }
         Ok(target)
     }
+}
+
+/// The problem a Save As gives of the session's old file at `path` (as `open` was given
+/// it), left part written by an earlier save that couldn't put its text back, its text
+/// before in `old`: the session holds another file now, so nothing will say it again.
+fn left_part_written(path: &str, old: &Path) -> Error {
+    Error::new(
+        ErrorCode::IoFailed,
+        format!(
+            "{} was left part written by this session's own save, which couldn't put its text back: its text before is in {}",
+            shown_path(Path::new(path)),
+            shown_path(old)
+        ),
+    )
+    .with_parameter("path")
+    .with_suggestion(
+        "the session holds the new file now: put the old text back in the old file by hand if it's still wanted",
+    )
 }
 
 /// The refusal of a Save As to `given`, a file session `holder` holds or is opening.
@@ -813,11 +845,12 @@ impl<C: Kernel + 'static> Session<C> {
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Committed, Problems> {
-        let state = {
+        // Taken under the lock, and the path checked with it let go: the check reads the
+        // file system, which may stall, and `status` reads the held state.
+        let (state, own, part_written) = {
             let held = self.held.read();
             let begun = self.transaction(&held)?;
-            to.target(self.workspace.as_ref(), &held.resolved)?;
-            Saving {
+            let state = Saving {
                 path: held.path.clone(),
                 text: Arc::clone(&held.text),
                 gated: Arc::clone(&held.gated),
@@ -825,10 +858,18 @@ impl<C: Kernel + 'static> Session<C> {
                 carried: Arc::clone(&held.carried),
                 begun,
                 changed_outside: None,
-            }
+            };
+            (state, held.resolved.clone(), held.part_written.clone())
         };
-        self.save_state(stop, state, Through::Transaction, read, claim, Some(to))
-            .map(|(committed, _)| committed)
+        to.target(self.workspace.as_ref(), &own)?;
+        let path = state.path.clone();
+        let (mut committed, _) =
+            self.save_state(stop, state, Through::Transaction, read, claim, Some(to))?;
+        // The old file's mark, let go with it: said, so where its old text is isn't lost.
+        if let Some(old) = part_written {
+            committed.problems.push(left_part_written(&path, &old));
+        }
+        Ok(committed)
     }
 
     /// An edit's `candidate`, made outside a transaction, committed as its own transaction
@@ -1474,15 +1515,22 @@ impl<C: Kernel + 'static> Session<C> {
         stop.settle()?;
         let target = to.target(self.workspace.as_ref(), own)?;
         (to.reserve)(&target).map_err(|holder| held_elsewhere(&to.given, holder))?;
-        let written = file::write_output(
+        // Written only where it was checked and claimed: a link put on its way since is
+        // refused, so it never writes over another session's file.
+        let written = file::write_output_at(
             Path::new(&to.given),
             text,
-            &to.rules(self.workspace.as_ref(), to.replace),
+            &to.rules(self.workspace.as_ref(), to.replace, true),
+            &target,
         );
-        if !matches!(&written, Ok(written) if *written == target) {
+        if written.is_err() {
             (to.unreserve)(&target);
         }
-        Ok(written?)
+        // A write that failed names the path, as a commit's own does.
+        Ok(written.map_err(|error| match error.parameter() {
+            Some(_) => error,
+            None => error.with_parameter("path"),
+        })?)
     }
 
     /// The refusal of a save of the document at `path` (as `open` was given it) that failed,
@@ -1537,7 +1585,7 @@ impl Saver {
                     base.number()
                 ))
                 .with_suggestion(
-                    "nothing was written: roll back, then begin again from the file as it is now",
+                    "nothing was written: roll back, then begin again from the file as it is now; or save elsewhere with path",
                 ),
             Saver::Edit => error.with_suggestion(
                 "nothing was written: read it again and make the edit against the new revision",

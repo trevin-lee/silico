@@ -369,3 +369,132 @@ fn a_path_refused_is_refused_before_the_rebuild_is_waited_for() {
     hold.release();
     assert_eq!(f.read("copy.silico"), "an old copy");
 }
+
+#[test]
+fn a_path_in_a_cache_directory_is_refused_saying_so() {
+    let f = fixture();
+    f.lengthened(50);
+    std::fs::create_dir_all(f.work.join("x/.silico-cache")).unwrap();
+    let refused = f.commit(r#""x/.silico-cache/copy.silico""#, false);
+    assert_eq!(
+        f.refused(&refused),
+        (
+            "invalid_input".to_owned(),
+            "path \"x/.silico-cache/copy.silico\": lies in a .silico-cache directory, which holds a document's cache".to_owned(),
+            "path".to_owned(),
+            "write it outside the .silico-cache directory".to_owned()
+        )
+    );
+    assert!(!f.work.join("x/.silico-cache/copy.silico").exists());
+}
+
+#[test]
+fn a_link_to_the_sessions_own_file_or_another_sessions_is_refused() {
+    let f = fixture();
+    f.file("other.silico", BOX);
+    f.lengthened(50);
+    let other = f.open("other.silico", false);
+    assert!(other.ok, "{}", other.text);
+    std::os::unix::fs::symlink("part.silico", f.work.join("mine.silico")).unwrap();
+    std::os::unix::fs::symlink("other.silico", f.work.join("theirs.silico")).unwrap();
+    let own = f.commit(r#""mine.silico""#, true);
+    assert_eq!(
+        f.refused(&own).1,
+        "\"mine.silico\" is this session's own file"
+    );
+    let theirs = f.commit(r#""theirs.silico""#, true);
+    assert_eq!(
+        f.refused(&theirs).1,
+        "\"theirs.silico\" is open in session s2"
+    );
+    assert_eq!(f.read("part.silico"), BOX);
+    assert_eq!(f.read("other.silico"), BOX);
+}
+
+#[test]
+fn another_sessions_file_is_refused_before_the_rebuild_is_waited_for() {
+    // Every rebuild held: the other session's claim is looked up with the path's first
+    // check, so the refusal doesn't wait.
+    let f = fixture();
+    f.file("other.silico", BOX);
+    let hold = f.kernel.hold(|_| true);
+    f.lengthened(50);
+    let other = f.open("other.silico", false);
+    assert!(other.ok, "{}", other.text);
+    let calling = f.calling(
+        "commit",
+        r#"{"session": "s1", "path": "other.silico", "replace": true}"#,
+    );
+    let Ok(answered) = calling.wait_timeout(std::time::Duration::from_secs(10)) else {
+        panic!("the refusal waited for the rebuild");
+    };
+    let answer = envelope(&answered);
+    assert_eq!(
+        answer["errors"][0]["message"], "\"other.silico\" is open in session s2",
+        "{answer}"
+    );
+    hold.release();
+    assert_eq!(f.read("other.silico"), BOX);
+}
+
+#[test]
+fn a_case_folded_name_of_another_sessions_file_is_refused() {
+    // On a file system that folds case (macOS's, by default), "OTHER.silico" is
+    // "other.silico": the same file, refused as another session's.
+    let f = fixture();
+    f.file("other.silico", BOX);
+    if !f.work.join("OTHER.silico").exists() {
+        return;
+    }
+    f.lengthened(50);
+    let other = f.open("other.silico", false);
+    assert!(other.ok, "{}", other.text);
+    let folded = f.commit(r#""OTHER.silico""#, true);
+    assert_eq!(
+        f.refused(&folded).1,
+        "\"OTHER.silico\" is open in session s2"
+    );
+    assert_eq!(f.read("other.silico"), BOX);
+}
+
+#[test]
+fn a_write_that_fails_leaves_the_session_at_its_file_and_its_claim_given_back() {
+    let f = fixture();
+    f.lengthened(50);
+    let locked = f.work.join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = f.commit(r#""locked/copy.silico""#, false);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (code, _, parameter, _) = f.refused(&failed);
+    assert_eq!(
+        (code.as_str(), parameter.as_str()),
+        ("io_failed", "path"),
+        "{failed}"
+    );
+    assert!(!locked.join("copy.silico").exists());
+    // The path claimed for the write is given back: another session may make it.
+    let made = f.open("locked/copy.silico", true);
+    assert!(made.ok, "{}", made.text);
+    assert_eq!(f.read("part.silico"), BOX);
+}
+
+#[test]
+fn a_document_the_gate_refuses_is_refused_by_save_as_even_unchanged() {
+    // A commit of it unchanged writes nothing, so loses nothing; a Save As would have to
+    // write it, and canonical form writes only a document the gate took.
+    let f = fixture();
+    f.file(
+        "part.silico",
+        &BOX.replace(r#""length": 40"#, r#""length": 0"#),
+    );
+    let open = f.open("part.silico", false);
+    assert!(open.ok, "{}", open.text);
+    let begin = f.call("begin", r#"{"session": "s1"}"#);
+    assert!(begin.ok, "{}", begin.text);
+    let refused = f.commit(r#""copy.silico""#, false);
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["errors"][0]["parameter"], "length", "{refused}");
+    assert_eq!(f.status_of(S1)["session"]["path"], "part.silico");
+    assert!(!f.work.join("copy.silico").exists());
+}

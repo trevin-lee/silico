@@ -1050,7 +1050,9 @@ fn a_commit_over_a_file_changed_outside_is_a_conflict_writing_nothing_and_leavin
     // The design's words (section 7's commit example).
     assert_eq!(
         conflict.suggestion(),
-        Some("nothing was written: roll back, then begin again from the file as it is now")
+        Some(
+            "nothing was written: roll back, then begin again from the file as it is now; or save elsewhere with path"
+        )
     );
     // Found before the command, so the commit rebuilt nothing.
     assert!(f.kernel.calls().is_empty(), "{:?}", f.kernel.calls());

@@ -130,8 +130,8 @@ use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
 pub use rebuilds::{TryAgainBy, fault_suggestion};
 pub(super) use rebuilds::{kept_fault, retried};
 use registry::{
-    Book, CacheOpener, Opening, Registry, Release, Started, claim, moved, reclaim, reserve, serve,
-    start, unreserve,
+    Book, CacheOpener, Opening, Registry, Release, Started, claim, holder, moved, reclaim, reserve,
+    serve, start, unreserve,
 };
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
@@ -1459,9 +1459,22 @@ impl<P: Clients + 'static> Sessions<P> {
                         unreserve(&registry, id, target);
                     }
                 };
+                let holder =
+                    |target: &Path| registry.upgrade().and_then(|r| holder(&r, id, target));
+                // The other sessions' documents, which it never writes over.
+                let held = registry.upgrade().map_or_else(Vec::new, |registry| {
+                    lock(&registry.book)
+                        .paths
+                        .iter()
+                        .filter(|(_, holder)| **holder != id)
+                        .map(|(path, _)| path.clone())
+                        .collect()
+                });
                 let to = SaveTo {
                     given,
                     replace,
+                    held,
+                    holder: &holder,
                     reserve: &reserve,
                     unreserve: &unreserve,
                 };

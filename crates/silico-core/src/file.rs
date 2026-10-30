@@ -1442,6 +1442,32 @@ pub fn write_output(path: &Path, bytes: &[u8], rules: &Output) -> Result<PathBuf
     Ok(target)
 }
 
+/// [`write_output`], refused, writing nothing, if `path` no longer leads to `at`, where a
+/// check before found it would write (a link put on its way since, say): so what's written
+/// is what was checked and claimed (a Save As's path, claimed for its session first).
+pub fn write_output_at(
+    path: &Path,
+    bytes: &[u8],
+    rules: &Output,
+    at: &Path,
+) -> Result<PathBuf, Error> {
+    let (target, replaced) = output_target(path, rules)?;
+    if target != at {
+        return Err(Error::new(
+            ErrorCode::Conflict,
+            format!(
+                "{} changed while it was being saved: it leads to {} now",
+                shown_path(path),
+                shown_path(&target)
+            ),
+        )
+        .with_parameter(rules.field)
+        .with_suggestion("nothing was written: commit again"));
+    }
+    write_beside(&target, replaced.as_ref(), bytes)?;
+    Ok(target)
+}
+
 /// Where [`write_output`] would write `path`, refused as it refuses, writing nothing: for a
 /// command to refuse a path before the work whose result it writes (a render). The path is
 /// checked again as it's written, as what's there may change between.
