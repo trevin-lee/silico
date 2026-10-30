@@ -178,6 +178,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Per-feature views of a model (a timeline's health and counts) beside the document-wide `check`: compare them under an open transaction (drift `check` excepts), with a kernel fault on only a feature's measure, and for a feature blocked by both a fault and a real failure, in each operand order
 - A read answered of the session's newest document while an older published model is the one read (a published read after a change the gate refuses, or before the new revision's rebuild): the response's model block (its revision, its fault) can name a model the answer doesn't mark by, and `check` of the same published model counts other problems; read both models first and last after every edit, change on disk, undo, and rollback, and compare each answer's own revision and model with the response's
 - Functions over a document that take `&Document`, not the gate's `Checked`: a feature that is its own base is its own consumer, and a walk down the chain from it starts past the end of the timeline without it
+- Timeline edits that rewire a chain committed one at a time, then the saved file reopened in a fresh session and rebuilt: a feature whose `base` field didn't change but whose base was rebuilt otherwise (a fillet after a reordered pocket) must have its fingerprint written too, or the file drifts
+- Edits that change nothing (a move to where a feature is, a move before the next feature) made against a stale revision, and on a document the gate refused: the empty-edit shortcut mustn't skip the revision check or the refused-document refusal
+- Inserts, moves, and removals near the top of a long document inside a transaction (more features than one undo chunk holds): every later feature shifts across the chunks' bounds; undo and redo each state and compare the text byte for byte
 
 ## Files
 
