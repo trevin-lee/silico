@@ -534,3 +534,83 @@ fn a_published_read_never_waits_on_the_scan_of_a_large_begun_text_that_didnt_rea
         "a published read took {slowest:?}, past {most:?}"
     );
 }
+
+#[test]
+fn format_inside_a_transaction_of_a_file_not_in_canonical_form_commits_canonical_form() {
+    // Outside a transaction, format writes canonical form however it's laid out; inside
+    // one, the same: changed, and its commit writes it (#297's review).
+    let f = fixture();
+    let text = stored("8000").replace(
+        r#""length": 10, "width": 10, "height": 10}"#,
+        &format!(r#""length": 10, "width": 10, "height": 10, {LUG}}}"#),
+    );
+    assert_ne!(text, canonical(FINGERPRINT, Some(LUG)));
+    let (s1, path) = f.open(&text);
+    answer(f.sessions.begin(&s1)).result.unwrap();
+    let formatted = answer(f.sessions.format(&s1, None, true)).result.unwrap();
+    assert!(formatted.changed);
+    assert!(formatted.refingerprinted.is_empty(), "{formatted:?}");
+    assert!(formatted.accepted.is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    let committed = answer(f.sessions.commit(&s1)).result.unwrap();
+    assert!(committed.written);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        canonical(FINGERPRINT, Some(LUG))
+    );
+}
+
+#[test]
+fn a_second_format_inside_a_transaction_changes_nothing() {
+    // The first format's text is the transaction's: a second has nothing to change, though
+    // the file still differs from it.
+    let f = fixture();
+    let (s1, _path) = f.open(&stored("8000.000001"));
+    answer(f.sessions.begin(&s1)).result.unwrap();
+    let first = answer(f.sessions.format(&s1, None, true));
+    let at = first.session.unwrap().revision;
+    assert!(first.result.unwrap().changed);
+    let second = answer(f.sessions.format(&s1, None, true));
+    assert_eq!(second.session.unwrap().revision, at);
+    assert!(!second.result.unwrap().changed);
+}
+
+#[test]
+fn format_after_an_edit_in_a_transaction_on_a_hand_written_file_writes_what_the_edit_reached() {
+    // A hand-written file (one line a feature, the block's print stale, the lug's missing);
+    // the lug lengthened to 12 in the transaction, then formatted: the block's drift
+    // accepted (8000, by formula), the lug's print as rebuilt, 12 × 10 × 10 = 1200, area
+    // 2(120 + 120 + 100) = 680, from x = 100 to 112. Formatted again, nothing changes.
+    let f = fixture();
+    let (s1, path) = f.open(&stored("8000.000001"));
+    answer(f.sessions.begin(&s1)).result.unwrap();
+    let node = silico_core::document::json::read(b"12").unwrap();
+    answer(f.sessions.set_field(
+        &s1,
+        Revision::OPENED,
+        id("b0000001"),
+        "length".to_owned(),
+        node,
+    ))
+    .result
+    .unwrap();
+    let formatted = answer(f.sessions.format(&s1, None, true)).result.unwrap();
+    assert!(formatted.changed);
+    assert_eq!(formatted.accepted, [id("k7f2qx3m")]);
+    let again = answer(f.sessions.format(&s1, None, true)).result.unwrap();
+    assert!(!again.changed);
+    let committed = answer(f.sessions.commit(&s1)).result.unwrap();
+    assert!(committed.written);
+    let lug = r#""fingerprint": {"volume": 1200, "area": 680, "bbox": [100, 0, 0, 112, 10, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
+    let want = canonical(FINGERPRINT, Some(lug)).replace(
+        r#""length": 10,
+      "width": 10,
+      "height": 10,
+      "fingerprint": {"volume": 1200"#,
+        r#""length": 12,
+      "width": 10,
+      "height": 10,
+      "fingerprint": {"volume": 1200"#,
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
+}

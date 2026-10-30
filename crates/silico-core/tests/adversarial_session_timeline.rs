@@ -1507,3 +1507,92 @@ fn a_current_timeline_cancelled_while_a_close_waits_behind_it_lets_the_close_thr
         );
     }
 }
+
+// ---- `format` naming a sketch, inside and outside a transaction (#297's review) ----
+
+/// A rectangle sketch and its pad, the pad's stored fingerprint not what it builds (a
+/// volume of 1), opened with a solver that solves the rectangle's last corner's y to 7, so
+/// the sketch is solved otherwise than its file (drift) and the pad builds otherwise than
+/// its stored print (drift).
+fn sketch_and_stale_pad() -> (Fixture, silico_core::fake::FakeSketches, String) {
+    const STALE: &str = r#", "fingerprint": {"volume": 1, "area": 1, "bbox": [0, 0, 0, 1, 1, 1], "faces": 6, "edges": 12, "vertices": 8}}"#;
+    let pad = crate::sweeps::pad("p0000001", None, "s0000001", crate::sweeps::TEN);
+    let pad = format!("{}{STALE}", pad.strip_suffix('}').unwrap());
+    let text = document(&[
+        crate::sweeps::rectangle("s0000001", "xy", [20.0, 0.0], 4.0, 2.0),
+        pad,
+    ]);
+    let (f, sketches) = opened_sketched(&text);
+    sketches.answer(|system| {
+        let mut solved = silico_core::fake::FakeSketches::as_sent(system);
+        let n = solved.values.len();
+        solved.values[n - 1] = 7.0;
+        Ok(solved)
+    });
+    (f, sketches, STALE.trim_start_matches(", ").to_owned())
+}
+
+/// The pad's line, as the file holds it now.
+fn pad_line(f: &Fixture) -> String {
+    let file = std::fs::read_to_string(&f.path).unwrap();
+    let at = file.find(r#""id": "p0000001""#).unwrap();
+    file[at..].lines().take(20).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn format_outside_a_transaction_naming_the_sketch_keeps_the_pads_stored_print() {
+    let (f, _sketches, stale) = sketch_and_stale_pad();
+    let formatted = answer(f.sessions.format(&f.id, Some(vec![id("s0000001")]), true))
+        .result
+        .unwrap();
+    assert_eq!(formatted.accepted, [id("s0000001")]);
+    assert_eq!(formatted.resolved, [id("s0000001")]);
+    assert!(!formatted.refingerprinted.contains(&id("p0000001")));
+    // Its drift isn't accepted: a problem, and its stored print kept.
+    assert!(
+        formatted
+            .problems
+            .errors()
+            .iter()
+            .any(|e| { e.feature() == Some("p0000001") && e.code() == ErrorCode::Drift })
+    );
+    let pad = pad_line(&f);
+    assert!(pad.contains(r#""volume": 1,"#), "{pad} (was {stale})");
+}
+
+#[test]
+fn format_inside_a_transaction_naming_the_sketch_keeps_the_pads_stored_print() {
+    // As outside (the twin above): the sketch's solve, written by the format, is no edit of
+    // it, so its pad isn't reached, and the commit keeps the pad's print, its drift a
+    // problem, never accepted silently.
+    let (f, _sketches, stale) = sketch_and_stale_pad();
+    f.begin();
+    let formatted = answer(f.sessions.format(&f.id, Some(vec![id("s0000001")]), true))
+        .result
+        .unwrap();
+    assert!(formatted.changed);
+    assert_eq!(formatted.accepted, [id("s0000001")]);
+    assert!(!formatted.refingerprinted.contains(&id("p0000001")));
+    let committed = answer(f.sessions.commit(&f.id)).result.unwrap();
+    assert!(committed.written);
+    assert!(
+        !committed.refingerprinted.contains(&id("p0000001")),
+        "{:?}",
+        committed.refingerprinted
+    );
+    assert!(
+        committed
+            .problems
+            .errors()
+            .iter()
+            .any(|e| { e.feature() == Some("p0000001") && e.code() == ErrorCode::Drift })
+    );
+    let pad = pad_line(&f);
+    assert!(pad.contains(r#""volume": 1,"#), "{pad} (was {stale})");
+    // The sketch's solve is the file's now.
+    assert!(
+        std::fs::read_to_string(&f.path)
+            .unwrap()
+            .contains(r#""y": 7"#)
+    );
+}
