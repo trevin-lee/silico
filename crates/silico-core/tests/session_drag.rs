@@ -1240,6 +1240,9 @@ fn a_begin_takes_the_published_models_solve_when_it_solved_the_sketch() {
     assert_eq!(requests.len(), solves + 1);
 }
 
+/// A typed method's call, and what it answers, as `call` must.
+type Typed<'a> = Box<dyn Fn() -> Answered + 'a>;
+
 /// What `call` must answer for the typed method's `response`: its envelope on one line,
 /// and whether it ran, the session's directory `from` written as `to`.
 fn as_written<T: ToWire>(response: &Response<T>, from: &str, to: &str) -> Answered {
@@ -1262,7 +1265,7 @@ fn call_by_name_answers_as_each_typed_method_does() {
     let from = typed.dir.path().to_str().unwrap().to_owned();
     let to = named.dir.path().to_str().unwrap().to_owned();
     let begin_text = example("drag_begin/request");
-    let pairs: Vec<(&str, String, Box<dyn Fn() -> Answered + '_>)> = vec![
+    let pairs: Vec<(&str, String, Typed<'_>)> = vec![
         (
             "drag_begin",
             begin_text.clone(),
@@ -1407,5 +1410,27 @@ fn each_drag_snapshot_has_the_names_an_agent_reads() {
     assert_eq!(
         schema_of("drag_end", "result")["$defs"]["Kept"]["enum"],
         json!(["cursor", "begin"])
+    );
+}
+
+#[test]
+fn a_session_closed_ends_its_drag_and_gives_its_worker_back() {
+    let f = opened(&document(&[&S0000001.replace(
+        r#"{"id": "ka00000a", "type": "length", "line": "na000002", "value": 5, "driving": true}, "#,
+        "",
+    )]));
+    f.begin_point("pa000003").result.unwrap();
+    f.sketches.hold();
+    let moving = f.sessions.drag_move(&s1(), [62.5, 7.0]);
+    assert!(f.sketches.wait_held(HANG));
+    answer(f.sessions.close(&s1())).result.unwrap();
+    // The move solving was stopped, and the worker's drag ended with it.
+    assert_eq!(the_error(&answer(moving)).code(), ErrorCode::Cancelled);
+    assert_eq!(f.sketches.stops(), 1);
+    f.sketches.release();
+    // Closed: the session's commands are refused as of no session.
+    assert_eq!(
+        the_error(&f.moved([1.0, 1.0])).message(),
+        "no session s1 is open"
     );
 }
