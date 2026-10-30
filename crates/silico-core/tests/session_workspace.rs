@@ -617,6 +617,25 @@ fn cache_clears_refusal_names_the_link_that_leads_out_past_one_that_stays_inside
 }
 
 #[test]
+fn cache_clears_refusal_names_the_first_link_out_where_two_on_its_way_lead_out() {
+    // `sub/part.silico` opened; then `sub` moved out and a link put in its place, and the
+    // cache's own name there a link out too: both lead out, and the cause names the first,
+    // `sub`, where the way leaves the workspace.
+    let f = fixture();
+    f.file("sub/part.silico", BOX);
+    assert!(f.open("sub/part.silico", false).ok);
+    let moved = f.outside.join("sub");
+    std::fs::rename(f.work.join("sub"), &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, f.work.join("sub")).unwrap();
+    let theirs = f.outside.join("cache");
+    std::fs::create_dir(&theirs).unwrap();
+    // Whatever the rebuild kept there, if anything, gone first.
+    let _ = std::fs::remove_dir_all(moved.join(".silico-cache"));
+    std::os::unix::fs::symlink(&theirs, moved.join(".silico-cache")).unwrap();
+    refused_by_name(&f, "s1", "sub/part.silico", "sub");
+}
+
+#[test]
 fn cache_clears_refusal_of_a_workspace_swapped_out_under_it_names_no_link_below_its_root() {
     // The workspace's root itself swapped for a link out after `part.silico` opened: the
     // cache leads out, but no link below the root does, so the cause can name none and
@@ -629,6 +648,7 @@ fn cache_clears_refusal_of_a_workspace_swapped_out_under_it_names_no_link_below_
     let cleared = f.call("cache_clear", r#"{"session": "s1"}"#);
     assert!(!cleared.ok, "{}", cleared.text);
     let error = &crate::calls::envelope(&cleared)["errors"][0];
+    assert_eq!(error["code"], "invalid_input");
     assert_eq!(
         error["message"],
         "the rebuild cache beside \"part.silico\" leads out of the workspace, through a link, so it isn't cleared"
