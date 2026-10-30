@@ -202,6 +202,15 @@ mod tests {
                 axis: Z,
                 angle: PI / 2.0,
             },
+            // Just past the tolerance from none, either way.
+            Placement::Rotation {
+                axis: Z,
+                angle: 2e-12,
+            },
+            Placement::Rotation {
+                axis: Z,
+                angle: -2e-12,
+            },
             // A turn less a nanodegree, either way: 2π − 1.745e-11, more than 1e-12 short.
             Placement::Rotation {
                 axis: Z,
