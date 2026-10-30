@@ -383,13 +383,25 @@ fn off_the_edge(
         SketchGeometry::Line { start, end } => {
             let (a, b) = (point(*start)?, point(*end)?);
             let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-            let length = dx * dx + dy * dy;
-            let t = if length > 0.0 {
-                (((press[0] - a[0]) * dx + (press[1] - a[1]) * dy) / length).clamp(0.0, 1.0)
+            let (px, py) = (press[0] - a[0], press[1] - a[1]);
+            let squared = dx * dx + dy * dy;
+            let t = if squared > 0.0 {
+                (px * dx + py * dy) / squared
             } else {
                 0.0
             };
-            Some(distance(press, [a[0] + t * dx, a[1] + t * dy]))
+            // Beside the line, its distance from it measured across the line's unit direction,
+            // never by a foot rounded along the line (which put a press exactly the tolerance
+            // off a horizontal line a hair past it): exact for a line along an axis, whose
+            // direction is (±1, 0) or (0, ±1). Past an end, from that end.
+            Some(if t <= 0.0 {
+                distance(press, a)
+            } else if t >= 1.0 {
+                distance(press, b)
+            } else {
+                let length = libm::hypot(dx, dy);
+                ((dx / length) * py - (dy / length) * px).abs()
+            })
         }
         SketchGeometry::Circle { center, radius } => {
             Some((distance(press, point(*center)?) - at(*radius)?).abs())
