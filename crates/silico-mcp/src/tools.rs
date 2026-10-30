@@ -158,7 +158,8 @@ fn effect(command: Command) -> Effect {
         | Command::Schema
         | Command::MassProperties
         | Command::Distance
-        | Command::Angle => Effect::Reads,
+        | Command::Angle
+        | Command::Sketch => Effect::Reads,
         // An edit outside a transaction saves at once; commit and format save the file.
         Command::Commit
         | Command::Format
@@ -288,6 +289,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Export",
             "Write the current model's bodies, or the features named, to `path` in the workspace: as a printable 3MF, each solid meshed at the tolerance (FreeCAD's default is 0.1 mm), or as STEP, exact, with `tolerance: null`. A file already at `path` is replaced only with `replace: true`.",
         ),
+        Command::Sketch => (
+            "Read a sketch",
+            "A sketch as the model solved it: its plane in 3D, its state (under, fully, or over defined, no solution, or invalid) and degrees of freedom, each point, curve, and constraint as the document writes it, at its solved values, with its own state, the regions its profile makes or why it makes none, and why it wasn't solved.",
+        ),
         Command::Render => (
             "Render",
             "A PNG of the model's bodies from a named view or a camera, with elements highlighted, returned as an image beside the result, and written to `to` in the workspace if given.",
@@ -300,7 +305,9 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::SetField
         | Command::RemoveFeature
         | Command::ReplaceText => &[IN_A_TRANSACTION, READ_CURRENT],
-        Command::Check | Command::MassProperties | Command::Render => &[READ_CURRENT],
+        Command::Check | Command::MassProperties | Command::Render | Command::Sketch => {
+            &[READ_CURRENT]
+        }
         Command::Elements | Command::Query | Command::Distance | Command::Angle => {
             &[READ_CURRENT, NAMES_FROM_ELEMENTS]
         }

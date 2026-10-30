@@ -82,6 +82,8 @@ mod adversarial_session_disk;
 mod adversarial_session_timeline;
 #[path = "adversarial_session_undo.rs"]
 mod adversarial_session_undo;
+#[path = "adversarial_sketch_read.rs"]
+mod adversarial_sketch_read;
 #[path = "adversarial_timeline.rs"]
 mod adversarial_timeline;
 #[path = "adversarial_type_words.rs"]
@@ -144,6 +146,8 @@ mod session_rebuild;
 mod session_reload;
 #[path = "session_render.rs"]
 mod session_render;
+#[path = "session_sketch.rs"]
+mod session_sketch;
 #[path = "session_tracing.rs"]
 mod session_tracing;
 #[path = "session_transactions.rs"]

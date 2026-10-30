@@ -1231,7 +1231,8 @@
               "mass_properties",
               "distance",
               "angle",
-              "render"
+              "render",
+              "sketch"
             ],
             "type": "string"
           },
@@ -1412,7 +1413,8 @@
               "distance",
               "angle",
               "render",
-              "export"
+              "export",
+              "sketch"
             ],
             "type": "string"
           }
@@ -1557,7 +1559,8 @@
               "distance",
               "angle",
               "render",
-              "export"
+              "export",
+              "sketch"
             ],
             "type": "string"
           }
@@ -1808,7 +1811,8 @@
               "distance",
               "angle",
               "render",
-              "export"
+              "export",
+              "sketch"
             ],
             "type": "string"
           }
@@ -14880,6 +14884,1402 @@
         "type": "object"
       },
       "title": "Export"
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Read a sketch"
+      },
+      "description": "A sketch as the model solved it: its plane in 3D, its state (under, fully, or over defined, no solution, or invalid) and degrees of freedom, each point, curve, and constraint as the document writes it, at its solved values, with its own state, the regions its profile makes or why it makes none, and why it wasn't solved. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "ModelChoice": {
+            "description": "Which model to read: the current one, or the newest published.",
+            "oneOf": [
+              {
+                "const": "current",
+                "description": "The session's current revision's model, rebuilt if it isn't yet: what an agent that\njust edited reads.",
+                "type": "string"
+              },
+              {
+                "const": "published",
+                "description": "The newest model published, which may be an older revision's, read at once: what a\nUI reads while a rebuild runs.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`sketch`'s request: a sketch as the model named solved it.",
+        "properties": {
+          "model": {
+            "$ref": "#/$defs/ModelChoice"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "model",
+          "session",
+          "sketch"
+        ],
+        "title": "SketchRequest",
+        "type": "object"
+      },
+      "name": "sketch",
+      "outputSchema": {
+        "$defs": {
+          "Angle": {
+            "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
+          "ConstraintState": {
+            "description": "A constraint's state: conflicting (in conflict with others, so the sketch isn't solved); redundant (its equations repeat others': removing it, or one of those it repeats, resolves it); partially_redundant (some of them do); satisfied (on a solved sketch, independent of the others and met, a reference dimension always); or unsolved (on a sketch that wasn't solved, any not flagged).",
+            "enum": [
+              "satisfied",
+              "conflicting",
+              "redundant",
+              "partially_redundant",
+              "unsolved"
+            ],
+            "type": "string"
+          },
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          },
+          "Direction": {
+            "description": "How two curves meeting at a point run there: on in the `same` direction (a smooth\njoin), or back the `opposite` way (a cusp).",
+            "enum": [
+              "same",
+              "opposite"
+            ],
+            "type": "string"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Length": {
+            "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
+          "LineSide": {
+            "description": "Which side of a line, facing from its start (`from`) to its end (`to`); for an axis,\nfacing along it (+x, +y).",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "MemberState": {
+            "description": "A point's or a curve's state: over_defined when a constraint that over-defines governs it (a point when such a constraint reads its x or y; a curve when one names it, not taking its points' state); otherwise under_defined when any of its values (a curve's own, or its points') is free; otherwise fully_defined.",
+            "enum": [
+              "under_defined",
+              "fully_defined",
+              "over_defined"
+            ],
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          },
+          "SketchArcRead": {
+            "additionalProperties": false,
+            "description": "An arc, as the document writes it, with its state.",
+            "properties": {
+              "center": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "construction": {
+                "type": "boolean"
+              },
+              "end": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "start": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "state": {
+                "$ref": "#/$defs/MemberState"
+              }
+            },
+            "required": [
+              "center",
+              "construction",
+              "end",
+              "id",
+              "start",
+              "state"
+            ],
+            "type": "object"
+          },
+          "SketchCircleRead": {
+            "additionalProperties": false,
+            "description": "A circle, as the document writes it, at its solved radius, with its state.",
+            "properties": {
+              "center": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "construction": {
+                "type": "boolean"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "radius": {
+                "$ref": "#/$defs/Coordinate",
+                "description": "Its radius, as solved (as stored, if the sketch wasn't solved)."
+              },
+              "state": {
+                "$ref": "#/$defs/MemberState"
+              }
+            },
+            "required": [
+              "center",
+              "construction",
+              "id",
+              "radius",
+              "state"
+            ],
+            "type": "object"
+          },
+          "SketchConstraintRead": {
+            "description": "A constraint, as the document writes it (its ID, its type, and its form's fields, a reference dimension's value as the solve measured it), with its state.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "The line parallel to x.",
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "horizontal",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "line",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The line parallel to y.",
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "vertical",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "line",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The two points level.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "horizontal_points",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "One point above the other.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "vertical_points",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The line's length.",
+                "properties": {
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "length",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "driving",
+                  "id",
+                  "line",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The distance between two points.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "distance",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "x(b) − x(a), signed.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "distance_x",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "y(b) − y(a), signed.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "distance_y",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The point's distance from the line (extended), on the given side of it.",
+                "properties": {
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "point": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "side": {
+                    "$ref": "#/$defs/LineSide"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "point_line_distance",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "driving",
+                  "id",
+                  "line",
+                  "point",
+                  "side",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The point on the curve: a line extended, or an arc's whole circle, as FreeCAD's.",
+                "properties": {
+                  "curve": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "point": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "on",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "curve",
+                  "id",
+                  "point",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "parallel",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "perpendicular",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The angle from `a`'s direction to `b`'s, counter-clockwise, signed.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "angle",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Angle"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A circle's or arc's radius.",
+                "properties": {
+                  "curve": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "radius",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "curve",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A circle's or arc's diameter.",
+                "properties": {
+                  "curve": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "driving": {
+                    "type": "boolean"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "diameter",
+                    "type": "string"
+                  },
+                  "value": {
+                    "$ref": "#/$defs/Length"
+                  }
+                },
+                "required": [
+                  "curve",
+                  "driving",
+                  "id",
+                  "state",
+                  "type",
+                  "value"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Two lines of equal length, or two circles or arcs of equal radius.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "equal",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Tangent along their edges: a line and a circle or arc, or two circles or arcs.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "side": {
+                    "$ref": "#/$defs/TangentSide"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "tangent",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "b",
+                  "id",
+                  "side",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Tangent where `a` ends on `b`: the point `at`, an end of `a`, lies on `b`, and `a`\nruns there along `b`, its direction leaving `at` the `same` as `b`'s or `opposite`\n(FreeCAD's endpoint-to-edge `Tangent`).",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "at": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "direction": {
+                    "$ref": "#/$defs/Direction"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "tangent_on",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "at",
+                  "b",
+                  "direction",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "Tangent where two curves meet, at the point `at` they share.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "at": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "direction": {
+                    "$ref": "#/$defs/Direction"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "tangent_at",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "at",
+                  "b",
+                  "direction",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "`a` and `b` mirror each other about a line or a point.",
+                "properties": {
+                  "a": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "about": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "symmetric",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "a",
+                  "about",
+                  "b",
+                  "id",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The point midway along the line.",
+                "properties": {
+                  "id": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "line": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "point": {
+                    "$ref": "#/$defs/SketchReference"
+                  },
+                  "state": {
+                    "$ref": "#/$defs/ConstraintState"
+                  },
+                  "type": {
+                    "const": "midpoint",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "id",
+                  "line",
+                  "point",
+                  "state",
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "SketchFrame": {
+            "additionalProperties": false,
+            "description": "The sketch's plane in global coordinates: its origin, and the directions of its x, its y,\nand its normal (x × y, about which counter-clockwise turns), each a unit vector.",
+            "properties": {
+              "normal": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "origin": {
+                "description": "The sketch's (0, 0), in global coordinates (mm).",
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "x": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "y": {
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              }
+            },
+            "required": [
+              "normal",
+              "origin",
+              "x",
+              "y"
+            ],
+            "type": "object"
+          },
+          "SketchLineRead": {
+            "additionalProperties": false,
+            "description": "A line, as the document writes it, with its state.",
+            "properties": {
+              "construction": {
+                "type": "boolean"
+              },
+              "from": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "state": {
+                "$ref": "#/$defs/MemberState"
+              },
+              "to": {
+                "$ref": "#/$defs/ElementId"
+              }
+            },
+            "required": [
+              "construction",
+              "from",
+              "id",
+              "state",
+              "to"
+            ],
+            "type": "object"
+          },
+          "SketchPointRead": {
+            "additionalProperties": false,
+            "description": "A point, as the document writes it, at its solved place, with its state.",
+            "properties": {
+              "construction": {
+                "type": "boolean"
+              },
+              "id": {
+                "$ref": "#/$defs/ElementId"
+              },
+              "state": {
+                "$ref": "#/$defs/MemberState"
+              },
+              "x": {
+                "$ref": "#/$defs/Coordinate",
+                "description": "Its x, as solved (as stored, if the sketch wasn't solved)."
+              },
+              "y": {
+                "$ref": "#/$defs/Coordinate",
+                "description": "Its y, as solved (as stored, if the sketch wasn't solved)."
+              }
+            },
+            "required": [
+              "construction",
+              "id",
+              "state",
+              "x",
+              "y"
+            ],
+            "type": "object"
+          },
+          "SketchReference": {
+            "description": "An element of this sketch, by its ID, or one of the fixed references every sketch has: origin, x_axis (from the origin along +x), y_axis (from the origin along +y).",
+            "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|origin|x_axis|y_axis)$",
+            "type": "string"
+          },
+          "SketchRegion": {
+            "additionalProperties": false,
+            "description": "A region of the profile: its outer loop's curves and each hole's, by ID.",
+            "properties": {
+              "holes": {
+                "description": "Each hole's curves, in the order it walks them, clockwise; the holes by their\nsmallest curve IDs.",
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "outer": {
+                "description": "The outer loop's curves, in the order it walks them, counter-clockwise.",
+                "items": {
+                  "$ref": "#/$defs/ElementId"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "holes",
+              "outer"
+            ],
+            "type": "object"
+          },
+          "SketchState": {
+            "description": "The sketch's state, as SolidWorks names it: under_defined (solved, something free), fully_defined (solved, nothing free; or empty), over_defined (constraints in conflict, so not solved; or solved, with a driving dimension whose value the others fix), no_solution (no algorithm placed it), or invalid (solved only to geometry that can't be built or held).",
+            "enum": [
+              "under_defined",
+              "fully_defined",
+              "over_defined",
+              "no_solution",
+              "invalid"
+            ],
+            "type": "string"
+          },
+          "TangentSide": {
+            "description": "Where a tangent curve lies: for a line and a circle or arc, the side of the line the\ncurve is on (facing from its start to its end); for two circles or arcs, each outside\nthe other, or one inside the other.",
+            "enum": [
+              "left",
+              "right",
+              "outside",
+              "inside"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`sketch`'s result: the sketch as the model's rebuild solved it, for sketch mode to draw\nand colour.",
+                "properties": {
+                  "arcs": {
+                    "description": "Each arc, by ID, as the document writes it.",
+                    "items": {
+                      "$ref": "#/$defs/SketchArcRead"
+                    },
+                    "type": "array"
+                  },
+                  "circles": {
+                    "description": "Each circle, by ID, as the document writes it, at its solved radius.",
+                    "items": {
+                      "$ref": "#/$defs/SketchCircleRead"
+                    },
+                    "type": "array"
+                  },
+                  "constraints": {
+                    "description": "Each constraint, by ID, as the document writes it, a reference dimension's value as\nthe solve measured it.",
+                    "items": {
+                      "$ref": "#/$defs/SketchConstraintRead"
+                    },
+                    "type": "array"
+                  },
+                  "dofs": {
+                    "description": "The degrees of freedom left, PlaneGCS's number as given: its unknowns less the rank\nof its equations, so 0 or more while something is free, a conflict or not (two\nlengths on one free line leave 3). Where nothing is free and a linear dependency\namong the equations holds no constraint PlaneGCS found redundant (a conflict, or an\narc's own rules repeating each other), PlaneGCS counts the equations left in place of\ntheir rank, and the number is negative: a 40 by 20 rectangle given a second width of\n50 reads -1. 0 for an empty sketch.",
+                    "type": "integer"
+                  },
+                  "lines": {
+                    "description": "Each line, by ID, as the document writes it.",
+                    "items": {
+                      "$ref": "#/$defs/SketchLineRead"
+                    },
+                    "type": "array"
+                  },
+                  "plane": {
+                    "$ref": "#/$defs/SketchFrame"
+                  },
+                  "points": {
+                    "description": "Each point, by ID, as the document writes it, at its solved place.",
+                    "items": {
+                      "$ref": "#/$defs/SketchPointRead"
+                    },
+                    "type": "array"
+                  },
+                  "profile_problems": {
+                    "description": "Why the solved sketch makes no profile, each as an error (the first 100, in the\norder they're checked): none if it makes one, or wasn't solved (`solve_problem` says\nwhy).",
+                    "items": {
+                      "$ref": "#/$defs/Error"
+                    },
+                    "maxItems": 100,
+                    "type": "array"
+                  },
+                  "profile_problems_total": {
+                    "description": "How many reasons there are, listed or not.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "regions": {
+                    "description": "The profile's regions, as the profile finds them from the solved curves that aren't\nconstruction geometry (each a face a pad, pocket, revolve, or groove of the sketch\nsweeps), by their outer loops' smallest curve IDs: none if the sketch makes no\nprofile, or wasn't solved.",
+                    "items": {
+                      "$ref": "#/$defs/SketchRegion"
+                    },
+                    "type": "array"
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch, by its feature's ID."
+                  },
+                  "solve_problem": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/Error"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Why the sketch wasn't solved, as `check` reports it: a conflict (`over_constrained`),\nno solution (`solve_failed`), or geometry that can't be held (`invalid_result`,\n`invalid_input`). Null when it solved."
+                  },
+                  "state": {
+                    "$ref": "#/$defs/SketchState"
+                  }
+                },
+                "required": [
+                  "arcs",
+                  "circles",
+                  "constraints",
+                  "dofs",
+                  "lines",
+                  "plane",
+                  "points",
+                  "profile_problems",
+                  "profile_problems_total",
+                  "regions",
+                  "sketch",
+                  "solve_problem",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Read a sketch"
     }
   ]
 }

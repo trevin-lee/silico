@@ -32,6 +32,7 @@ pub mod render;
 pub mod schema;
 mod session;
 mod session_command;
+pub mod sketch;
 pub mod wire;
 
 pub use call::{Answered, Call, Calling, Command};

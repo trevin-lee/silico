@@ -3789,6 +3789,10 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
                 ReadCommand::Render,
                 Box::new(move || erased(s.render(at, model, front()))),
             ),
+            (
+                ReadCommand::Sketch,
+                Box::new(move || erased(s.sketch(at, model, id("k7f2qx3m")))),
+            ),
         ]
     };
     let mut queued: Vec<(SessionCommand, Start<'_>)> = vec![
@@ -3836,23 +3840,31 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             .map(|(read, start)| (SessionCommand::from(read), start)),
     );
     // Stopped before it meshes anything, so its path is never written.
+    // Before `sketch`, M5.0's, as the design lists them.
     let never = std::env::temp_dir().join(format!("silico-never-{}.3mf", std::process::id()));
-    queued.push((
-        SessionCommand::Export,
-        Box::new(move || {
-            erased(s.export(
-                at,
-                crate::command::export::Export {
-                    format: crate::command::export::ExportFormat::ThreeMf {
-                        tolerance: crate::document::Length::from_nm(100_000),
+    let before_sketch = queued
+        .iter()
+        .position(|(command, _)| *command == SessionCommand::Sketch)
+        .unwrap();
+    queued.insert(
+        before_sketch,
+        (
+            SessionCommand::Export,
+            Box::new(move || {
+                erased(s.export(
+                    at,
+                    crate::command::export::Export {
+                        format: crate::command::export::ExportFormat::ThreeMf {
+                            tolerance: crate::document::Length::from_nm(100_000),
+                        },
+                        path: never.clone(),
+                        replace: false,
+                        features: None,
                     },
-                    path: never.clone(),
-                    replace: false,
-                    features: None,
-                },
-            ))
-        }),
-    ));
+                ))
+            }),
+        ),
+    );
     // `cache_clear`, which reads no model, after `check`, as the design lists it.
     let after_check = queued
         .iter()

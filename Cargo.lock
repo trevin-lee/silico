@@ -5273,11 +5273,13 @@ dependencies = [
  "cxx-build",
  "libm",
  "proptest",
+ "serde_json",
  "sha2",
  "silico-core",
  "silico-protocol",
  "silico-sketch",
  "silico-worker",
+ "tempfile",
 ]
 
 [[package]]
