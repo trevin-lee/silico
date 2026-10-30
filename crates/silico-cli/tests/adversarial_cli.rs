@@ -1378,7 +1378,7 @@ fn schema_with_odd_arguments_is_a_schema_a_refusal_or_usage_never_a_panic() {
                  replace_text, text, outline, check, cache_clear, elements, query, schema, \
                  mass_properties, distance, angle, render, read_logs, export, move_feature, \
                  timeline, sketch, sketch_add, sketch_remove, sketch_split, sketch_trim, \
-                 sketch_unjoin, sketch_merge.\n"
+                 sketch_unjoin, sketch_merge, undo, redo.\n"
             ),
             "{name:?}"
         );

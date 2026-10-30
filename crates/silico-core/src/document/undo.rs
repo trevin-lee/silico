@@ -156,6 +156,55 @@ pub struct Restored<K> {
     pub dropped: usize,
 }
 
+/// What [`UndoStack::plan_undo`] or [`UndoStack::plan_redo`] found to restore, the stack
+/// not moved: the state, the revision it was made at, and its text as the stack holds it,
+/// shared, so writing it out ([`Plan::text`]) can happen with the stack's lock let go.
+#[derive(Debug, Clone)]
+pub struct Plan<K> {
+    target: usize,
+    /// The session's state when it was made: an [`UndoStack::apply`] of a stack moved since
+    /// restores nothing.
+    at: usize,
+    restored: Option<K>,
+    text: Text,
+}
+
+impl<K: Copy> Plan<K> {
+    /// The revision whose state it restores: the one that state was made at.
+    pub fn restored(&self) -> Option<K> {
+        self.restored
+    }
+
+    /// The text it restores, as the session held it, byte for byte: written from its
+    /// features' chunks, or its bytes as they were.
+    pub fn text(&self) -> Arc<Vec<u8>> {
+        written(&self.text)
+    }
+}
+
+/// What [`UndoStack::apply`] did: the revision whose state it restored, what's left to undo
+/// and redo, and how many more edits the bound left out of undo's reach as it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Applied<K> {
+    pub restored: K,
+    pub undo: usize,
+    pub redo: usize,
+    pub dropped: usize,
+}
+
+impl<K> Applied<K> {
+    /// As a [`Restored`], with its text.
+    fn with_text(self, text: Arc<Vec<u8>>) -> Restored<K> {
+        Restored {
+            restored: self.restored,
+            text,
+            undo: self.undo,
+            redo: self.redo,
+            dropped: self.dropped,
+        }
+    }
+}
+
 /// Why [`UndoStack::undo`] or [`UndoStack::redo`] restored nothing, for the command layer to
 /// word (section 7's errors).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,8 +216,9 @@ pub enum Refusal<K> {
     NothingToRedo,
     /// `to` isn't a revision any state undo or redo can reach was the session's state at:
     /// the bound dropped it, or it's from before the transaction, or an edit dropped it
-    /// from redo. `held` is every revision such a state was, in order, for the refusal to
-    /// name.
+    /// from redo. `held` is every revision a state the same command can restore was (for
+    /// undo, those before the session's state that undo reaches; for redo, those after it),
+    /// in order, for the refusal to name: each one a `to` the command takes.
     NotHeld { to: K, held: Vec<K> },
     /// `to` is the session's state now, or a revision on the other side of it (an undo to
     /// a later state, a redo to an earlier one).
@@ -246,32 +296,88 @@ impl<K: Copy + Ord> UndoStack<K> {
     }
 
     /// The state before the session's, or with `to`, the state at that revision; the
-    /// session's state now held for redo, at `revision`, a new one.
+    /// session's state now held for redo, at `revision`, a new one: [`plan_undo`] and
+    /// [`apply`] at once.
+    ///
+    /// [`plan_undo`]: Self::plan_undo
+    /// [`apply`]: Self::apply
     pub fn undo(&mut self, to: Option<K>, revision: K) -> Result<Restored<K>, Refusal<K>> {
+        let plan = self.plan_undo(to)?;
+        let text = plan.text();
+        self.apply(plan, revision)
+            .map(|applied| applied.with_text(text))
+    }
+
+    /// The state after the session's, or with `to`, the state at that revision:
+    /// [`plan_redo`](Self::plan_redo) and [`apply`](Self::apply) at once.
+    pub fn redo(&mut self, to: Option<K>, revision: K) -> Result<Restored<K>, Refusal<K>> {
+        let plan = self.plan_redo(to)?;
+        let text = plan.text();
+        self.apply(plan, revision)
+            .map(|applied| applied.with_text(text))
+    }
+
+    /// What [`undo`](Self::undo) would restore, the stack left as it is: the state before
+    /// the session's, or with `to`, the state at that revision. Refused as `undo` is.
+    pub fn plan_undo(&self, to: Option<K>) -> Result<Plan<K>, Refusal<K>> {
         let target = match to {
             None if self.at <= self.lowest() => return Err(Refusal::NothingToUndo),
             None => self.at - 1,
             Some(to) => match self.find(to) {
                 Some(found) if found < self.at => found,
                 Some(_) => return Err(Refusal::WrongSide { to }),
-                None => return Err(self.not_held(to)),
+                None => return Err(self.not_held(to, self.lowest().min(self.at)..self.at)),
             },
         };
-        Ok(self.restore(target, revision))
+        self.plan(target)
     }
 
-    /// The state after the session's, or with `to`, the state at that revision.
-    pub fn redo(&mut self, to: Option<K>, revision: K) -> Result<Restored<K>, Refusal<K>> {
+    /// What [`redo`](Self::redo) would restore, the stack left as it is: the state after
+    /// the session's, or with `to`, the state at that revision. Refused as `redo` is.
+    pub fn plan_redo(&self, to: Option<K>) -> Result<Plan<K>, Refusal<K>> {
         let target = match to {
             None if self.at + 1 >= self.states.len() => return Err(Refusal::NothingToRedo),
             None => self.at + 1,
             Some(to) => match self.find(to) {
                 Some(found) if found > self.at => found,
                 Some(_) => return Err(Refusal::WrongSide { to }),
-                None => return Err(self.not_held(to)),
+                None => return Err(self.not_held(to, self.at + 1..self.states.len())),
             },
         };
-        Ok(self.restore(target, revision))
+        self.plan(target)
+    }
+
+    /// The plan of restoring the state at `target`, one the stack holds.
+    fn plan(&self, target: usize) -> Result<Plan<K>, Refusal<K>> {
+        match self.states.get(target) {
+            Some(state) => Ok(Plan {
+                target,
+                at: self.at,
+                restored: state.revisions.first().copied(),
+                text: state.text.clone(),
+            }),
+            // Never: `target` is one of the stack's states.
+            None => Err(Refusal::NothingToUndo),
+        }
+    }
+
+    /// `plan`'s state made the session's, at `revision`, a new one: the state it was before
+    /// held from now, and the plan's no longer; then, past the bound, the oldest states
+    /// after `begin`'s dropped, but never the session's. The plan must be of the stack as
+    /// it is now: one made since it last moved (its caller moves it alone, so nothing can
+    /// in between); one of a stack moved since restores nothing, saying so as an undo with
+    /// nothing to undo does.
+    pub fn apply(&mut self, plan: Plan<K>, revision: K) -> Result<Applied<K>, Refusal<K>> {
+        if plan.at != self.at || plan.target >= self.states.len() {
+            return Err(Refusal::NothingToUndo);
+        }
+        let restored = self.restore(plan.target, revision);
+        Ok(Applied {
+            restored: plan.restored.unwrap_or(restored.restored),
+            undo: restored.undo,
+            redo: restored.redo,
+            dropped: restored.dropped,
+        })
     }
 
     /// Whether a state after the session's, one [`UndoStack::redo`] can restore, was the
@@ -322,11 +428,13 @@ impl<K: Copy + Ord> UndoStack<K> {
             .filter(|&found| found >= lowest)
     }
 
-    fn not_held(&self, to: K) -> Refusal<K> {
+    /// The refusal of `to`, a revision no state the command can restore was: the revisions
+    /// of the states at `side` (those the command can restore), in order.
+    fn not_held(&self, to: K, side: std::ops::Range<usize>) -> Refusal<K> {
+        let end = side.end.min(self.states.len());
         let mut held: Vec<K> = self
             .states
-            .iter()
-            .skip(self.lowest())
+            .range(side.start.min(end)..end)
             .flat_map(|state| state.revisions.iter().copied())
             .collect();
         held.sort_unstable();
@@ -336,8 +444,9 @@ impl<K: Copy + Ord> UndoStack<K> {
 
     /// The state at `target` made the session's, at `revision`: the one it was before held
     /// from now, and `target`'s no longer; then, past the bound, the oldest states after
-    /// `begin`'s dropped, but never the session's.
-    fn restore(&mut self, target: usize, revision: K) -> Restored<K> {
+    /// `begin`'s dropped, but never the session's. Its text isn't written here: a plan
+    /// writes it, off whatever lock the stack is under.
+    fn restore(&mut self, target: usize, revision: K) -> Applied<K> {
         self.hold_at(self.at);
         if target > 0
             && let Some(then) = self.states.get(target).map(|s| s.text.clone())
@@ -346,19 +455,15 @@ impl<K: Copy + Ord> UndoStack<K> {
         }
         self.at = target;
         let dropped = self.drop_past_bound(2);
-        let (restored, text) = match self.states.get_mut(self.at) {
+        let restored = match self.states.get_mut(self.at) {
             Some(state) => {
                 state.revisions.push(revision);
-                (
-                    state.revisions.first().copied().unwrap_or(revision),
-                    written(&state.text),
-                )
+                state.revisions.first().copied().unwrap_or(revision)
             }
-            None => (revision, Arc::new(Vec::new())),
+            None => revision,
         };
-        Restored {
+        Applied {
             restored,
-            text,
             undo: self.undo_left(),
             redo: self.redo_left(),
             dropped,

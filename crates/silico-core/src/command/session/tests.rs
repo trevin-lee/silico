@@ -3952,6 +3952,15 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             ))
         }),
     ));
+    // M5.2's, after the sketch edits.
+    queued.push((
+        SessionCommand::Undo,
+        Box::new(|| erased(s.undo(at, Revision::OPENED, None))),
+    ));
+    queued.push((
+        SessionCommand::Redo,
+        Box::new(|| erased(s.redo(at, Revision::OPENED, None))),
+    ));
     // `cache_clear`, which reads no model, after `check`, as the design lists it.
     let after_check = queued
         .iter()
@@ -4328,3 +4337,4 @@ mod disk_reload;
 mod timeline;
 mod undo;
 mod undo_adversarial;
+mod undo_status;

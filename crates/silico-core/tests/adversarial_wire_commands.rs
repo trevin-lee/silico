@@ -1041,7 +1041,9 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "sketch_split",
                 "sketch_trim",
                 "sketch_unjoin",
-                "sketch_merge"
+                "sketch_merge",
+                "undo",
+                "redo"
             ]
         );
         assert!(printable(error.message()), "{of:?}: {:?}", error.message());

@@ -107,6 +107,14 @@ fn requests(session: &str) -> Vec<(&'static str, String)> {
             "timeline",
             format!(r#"{{"session": "{s}", "model": "current"}}"#),
         ),
+        (
+            "undo",
+            format!(r#"{{"session": "{s}", "revision": 1, "to": null}}"#),
+        ),
+        (
+            "redo",
+            format!(r#"{{"session": "{s}", "revision": 1, "to": null}}"#),
+        ),
     ]
 }
 

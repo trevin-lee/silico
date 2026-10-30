@@ -134,7 +134,7 @@ use registry::{
 };
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
-use transaction::{Claim, Held, Reload, Rereads, transaction_open};
+use transaction::{Claim, Held, Open, Reload, Rereads, transaction_open};
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
@@ -142,7 +142,7 @@ pub use types::{
     ModelChoice, ModelRead, Moved, NewMembers, Opened, OutlineAnswer, Progress, Published, Read,
     ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
     RolledBack, Running, SessionId, SessionInfo, SketchCut, SketchEdited, Status, Stepped, Stopper,
-    TextAnswer, TimelineAnswer,
+    TextAnswer, TimelineAnswer, Transaction,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 use waking::Waker;
@@ -2013,9 +2013,7 @@ fn status_in<P: Clients + 'static>(
         result: Ok(Status {
             features: held.gated.document().ok().map(|d| d.features.len()),
             gated,
-            transaction: held.transaction.as_ref().map(|open| Begun {
-                base: open.begun.revision,
-            }),
+            transaction: held.transaction.as_ref().map(Open::status),
             running,
             reads,
             rebuild,

@@ -17,7 +17,7 @@ use super::registry::Unclaimed;
 use super::registry::claim;
 use super::{
     Begun, Committed, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted, Revision,
-    RolledBack, Session, SessionId, shown_path,
+    RolledBack, Session, SessionId, Transaction, shown_path,
 };
 use crate::command::edit::Candidate;
 use crate::document::json::MAX_INPUT_LEN;
@@ -69,6 +69,25 @@ pub(super) struct Held {
 pub(super) struct Open {
     pub(super) begun: Snapshot,
     pub(super) undo: UndoStack<Revision>,
+    /// Whether the session's document differs from the one `begin` saw, as a commit finds
+    /// it ([`Snapshot::differs`]): worked out off the lock as each edit is held and each
+    /// undo or redo restores a state, never by `status` (the design's section 6).
+    pub(super) changed: bool,
+}
+
+impl Open {
+    /// The transaction as `status` gives it: its base, whether its document changed, and
+    /// its undo stack's counts, each kept as the stack changes, so none is worked out here.
+    pub(super) fn status(&self) -> Transaction {
+        Transaction {
+            base: self.begun.revision,
+            changed: self.changed,
+            undo: self.undo.undo_left(),
+            redo: self.undo.redo_left(),
+            dropped: self.undo.dropped(),
+            bytes: self.undo.bytes(),
+        }
+    }
 }
 
 /// A transaction's mend ([`Snapshot::mend`]): the first state of its history that read as a
@@ -113,6 +132,30 @@ pub(super) struct Snapshot {
 pub(super) struct Formatted {
     written: BTreeMap<FeatureId, document::Feature>,
     layout: bool,
+}
+
+impl Snapshot {
+    /// Whether the document `text` holds, as the reader and the gate found it (`gated`),
+    /// differs from this one, `begin`'s, as a commit decides whether it writes: compared as
+    /// canonical form writes them, so a document read from a file whose sketch lists aren't
+    /// in ID order is the one its canonical text reads as; byte for byte where either text
+    /// doesn't read as a document, or once a `format` in the transaction has asked for
+    /// canonical form.
+    pub(super) fn differs(&self, text: &[u8], gated: &Gated) -> bool {
+        self.differs_after(text, gated, false)
+    }
+
+    /// [`differs`](Self::differs), as it will compare once an edit that `formats` (a
+    /// `format` inside the transaction, which asks for canonical form) is held: by bytes
+    /// from then on, as after one already.
+    pub(super) fn differs_after(&self, text: &[u8], gated: &Gated, formats: bool) -> bool {
+        match (self.gated.document(), gated.document()) {
+            (Ok(before), Ok(now)) if !(self.formatted.layout || formats) => {
+                !before.canonically_eq(now)
+            }
+            _ => self.text.as_slice() != text,
+        }
+    }
 }
 
 /// A state of the session's document a commit saves ([`Session::save_state`]): the path as
@@ -233,20 +276,29 @@ impl Held {
     /// features' canonical texts, which its text was assembled from ([`After::Canonical`]),
     /// so an undo writes it back byte for byte; and, if the push drops the mend's state, the
     /// mend given up first, so the edit's state, if it reads, is the mend from now on
-    /// ([`Snapshot::mend`]). Then the session's document changed to it, as
-    /// [`change`](Self::change) changes it, carrying what was carried. What the push said.
-    pub(super) fn hold(&mut self, revision: Revision, candidate: Candidate) -> Option<Pushed> {
+    /// ([`Snapshot::mend`]). `changed` is whether its document differs from `begin`'s
+    /// ([`Snapshot::differs`], worked out before the lock was taken). Then the session's
+    /// document changed to it, as [`change`](Self::change) changes it, carrying what was
+    /// carried. What the push said.
+    pub(super) fn hold(
+        &mut self,
+        revision: Revision,
+        candidate: Candidate,
+        changed: bool,
+    ) -> Option<Pushed> {
         let (text, gated, prepared) = candidate.into_parts();
         let after = After::Canonical(prepared);
-        let pushed = self.transaction.as_mut().map(|Open { begun, undo }| {
-            if begun
+        let pushed = self.transaction.as_mut().map(|open| {
+            if open
+                .begun
                 .mend
                 .as_ref()
-                .is_some_and(|mend| undo.redo_holds(mend.revision))
+                .is_some_and(|mend| open.undo.redo_holds(mend.revision))
             {
-                begun.mend = None;
+                open.begun.mend = None;
             }
-            undo.edit(after, revision)
+            open.changed = changed;
+            open.undo.edit(after, revision)
         });
         let carried = Arc::clone(&self.carried);
         self.change(revision, text, gated, carried);
@@ -540,6 +592,7 @@ impl<C: Kernel + 'static> Session<C> {
         held.transaction = Some(Open {
             begun: held.snapshot(),
             undo: UndoStack::new(Arc::clone(&held.text), revision, self.undo_bytes),
+            changed: false,
         });
         Ok(Begun { base: revision })
     }
@@ -749,11 +802,9 @@ impl<C: Kernel + 'static> Session<C> {
         let reach = reached.get();
         // As canonical form writes them: a document read from a file whose sketch lists
         // aren't in ID order is the one its canonical text reads as. After a `format` in
-        // the transaction, by bytes: it asked for canonical form, as outside one.
-        let unchanged = match (begun.gated.document(), gated.document()) {
-            (Ok(before), Ok(now)) if !begun.formatted.layout => before.canonically_eq(now),
-            _ => begun.text == text,
-        };
+        // the transaction, by bytes: it asked for canonical form, as outside one. The same
+        // compare as `status.transaction.changed`'s ([`Snapshot::differs`]).
+        let unchanged = !begun.differs(&text, &gated);
         // Found before the command, so before any rebuild for it. A commit that would write
         // nothing loses nothing, and ends as one does, without waiting for a rebuild: its
         // problems the gate's alone.
@@ -983,7 +1034,7 @@ impl<C: Kernel + 'static> Session<C> {
                             .collect(),
                         Err(_) => BTreeMap::new(),
                     };
-                self.hold_then(stop, candidate, |held| {
+                self.hold_then(stop, candidate, true, |held| {
                     if let Some(open) = &mut held.transaction {
                         let formatted = Arc::make_mut(&mut open.begun.formatted);
                         formatted.written.extend(written);

@@ -47,6 +47,11 @@ pub(super) struct Candidate {
 }
 
 impl Candidate {
+    /// Its text, and the gate's finding of it.
+    pub(super) fn parts(&self) -> (&[u8], &Gated) {
+        (&self.text, &self.gated)
+    }
+
     /// The gate's finding of its text.
     pub(super) fn gated(&self) -> &Gated {
         &self.gated

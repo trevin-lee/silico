@@ -94,6 +94,8 @@ mod adversarial_sketch_read;
 mod adversarial_timeline;
 #[path = "adversarial_type_words.rs"]
 mod adversarial_type_words;
+#[path = "adversarial_undo_commands.rs"]
+mod adversarial_undo_commands;
 #[path = "adversarial_warnings.rs"]
 mod adversarial_warnings;
 #[path = "adversarial_wire_commands.rs"]
@@ -172,6 +174,8 @@ mod wire_commands;
 mod wire_session_commands;
 #[path = "wire_session_reads.rs"]
 mod wire_session_reads;
+#[path = "wire_undo_commands.rs"]
+mod wire_undo_commands;
 
 /// Every file in tests/ is built: this crate lists its test programs (`autotests = false`),
 /// so a new file must be added as a module of one, or as one, or it would never run.

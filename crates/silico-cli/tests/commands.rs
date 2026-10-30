@@ -1133,7 +1133,7 @@ fn schema_prints_the_documents_or_a_commands_as_committed() {
          format, add_feature, set_field, remove_feature, replace_text, text, outline, check, \
          cache_clear, elements, query, schema, mass_properties, distance, angle, render, \
          read_logs, export, move_feature, timeline, sketch, sketch_add, \
-         sketch_remove, sketch_split, sketch_trim, sketch_unjoin, sketch_merge.\n"
+         sketch_remove, sketch_split, sketch_trim, sketch_unjoin, sketch_merge, undo, redo.\n"
     );
     // Two names: a usage error.
     let out = schema(&["query", "elements"]);

@@ -42,7 +42,7 @@ pub use session::{
     Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
     Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
     SessionInfo, Sessions, SketchCut, SketchEdited, Status, Stepped, Stopper, TOO_LONG, TextAnswer,
-    TimelineAnswer, TryAgainBy, fault_suggestion,
+    TimelineAnswer, Transaction, TryAgainBy, fault_suggestion,
 };
 pub use session_command::{ReadCommand, RunningCommand, SessionCommand};
 
@@ -110,6 +110,8 @@ pub struct Limits {
     pub kernel_seconds: u64,
     /// A sketch solve's time, in seconds.
     pub sketch_seconds: u64,
+    /// What a transaction's undo stack holds, in bytes, as its bound counts them.
+    pub undo_bytes: usize,
 }
 
 /// What `version` answers.
@@ -140,6 +142,7 @@ pub const VERSION: Version = Version {
         export_bytes: crate::export::MAX_ARCHIVE,
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
+        undo_bytes: document::undo::UNDO_BYTES,
     },
 };
 

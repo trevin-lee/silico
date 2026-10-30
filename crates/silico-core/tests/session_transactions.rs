@@ -210,6 +210,50 @@ fn format_inside_a_transaction_accepts_drift_into_its_state_and_writes_no_file_u
 }
 
 #[test]
+fn a_format_that_only_lays_out_the_transactions_document_is_a_change_its_commit_writes() {
+    // The document format writes, laid out otherwise: the same document, other bytes. A
+    // format in the transaction asks for canonical form, so from then on its commit compares
+    // by bytes (#297), and `status.transaction.changed` says what that commit will do.
+    let f = fixture();
+    let written = canonical(FINGERPRINT, Some(LUG));
+    let text = written.replace('\n', "\n ");
+    assert_ne!(text, written);
+    let (s1, path) = f.open(&text);
+    answer(f.sessions.begin(&s1)).result.unwrap();
+    let changed = || {
+        f.sessions
+            .status(&s1)
+            .result
+            .unwrap()
+            .transaction
+            .unwrap()
+            .changed
+    };
+    assert!(!changed());
+    let response = answer(f.sessions.format(&s1, None, true));
+    let formatted_at = response.session.unwrap().revision;
+    let formatted = response.result.unwrap();
+    assert!(formatted.changed);
+    assert!(formatted.accepted.is_empty());
+    assert!(
+        changed(),
+        "the format's layout is a change its commit writes"
+    );
+    // Undone, the file's own bytes: unchanged.
+    let undone = answer(f.sessions.undo(&s1, formatted_at, None));
+    let undone_at = undone.session.unwrap().revision;
+    assert!(!changed());
+    // Redone, changed again; and its commit writes the canonical text.
+    answer(f.sessions.redo(&s1, undone_at, None))
+        .result
+        .unwrap();
+    assert!(changed());
+    let committed = answer(f.sessions.commit(&s1)).result.unwrap();
+    assert!(committed.written);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+}
+
+#[test]
 fn format_inside_a_transaction_without_write_makes_no_revision_and_no_undo_step() {
     let f = fixture();
     let text = stored("8000.000001");

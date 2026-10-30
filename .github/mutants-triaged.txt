@@ -252,3 +252,4 @@ crates/silico-render/src/lavapipe.rs | environment | replace && with || | #275
 # returns and ends the count itself. The guard covers a bug outside those, which nothing
 # can cause on purpose; without it a watcher would wait for a change that never comes.
 crates/silico-core/src/recompute.rs | <impl Drop for EndsCount>::drop | replace <impl Drop for EndsCount>::drop with () | #297
+crates/silico-core/src/document/undo.rs | Plan<K>::restored | replace Plan<K>::restored -> Option<K> with None | #300

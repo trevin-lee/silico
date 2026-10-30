@@ -45,7 +45,7 @@ use super::wire::sketch_edits::{
     SketchAddRequest, SketchMergeRequest, SketchRemoveRequest, SketchSplitRequest,
     SketchTrimRequest, SketchUnjoinRequest,
 };
-use super::wire::transaction::{FormatRequest, SessionRequest};
+use super::wire::transaction::{FormatRequest, SessionRequest, StepRequest};
 use super::wire::{self, Json, Layout, ToWire};
 use super::{
     Problems, Progress, Response, Running, SessionId, SessionInfo, Sessions, Stopper, VERSION,
@@ -93,12 +93,14 @@ pub enum Command {
     SketchTrim,
     SketchUnjoin,
     SketchMerge,
+    Undo,
+    Redo,
 }
 
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
     /// 7).
-    pub const ALL: [Command; 35] = [
+    pub const ALL: [Command; 37] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -134,6 +136,8 @@ impl Command {
         Command::SketchTrim,
         Command::SketchUnjoin,
         Command::SketchMerge,
+        Command::Undo,
+        Command::Redo,
     ];
 
     /// The command's name, as requests and tools give it.
@@ -174,6 +178,8 @@ impl Command {
             Command::SketchTrim => "sketch_trim",
             Command::SketchUnjoin => "sketch_unjoin",
             Command::SketchMerge => "sketch_merge",
+            Command::Undo => "undo",
+            Command::Redo => "redo",
         }
     }
 
@@ -225,7 +231,9 @@ impl Command {
             | Command::SketchSplit
             | Command::SketchTrim
             | Command::SketchUnjoin
-            | Command::SketchMerge => false,
+            | Command::SketchMerge
+            | Command::Undo
+            | Command::Redo => false,
         }
     }
 }
@@ -680,6 +688,12 @@ impl<P: Clients + 'static> Sessions<P> {
             }),
             Command::SketchMerge => typed(named, SketchMergeRequest::read(request), |r| {
                 self.sketch_merge(&r.session, r.revision, r.sketch, r.points)
+            }),
+            Command::Undo => typed(named, StepRequest::read(request), |r| {
+                self.undo(&r.session, r.revision, r.to)
+            }),
+            Command::Redo => typed(named, StepRequest::read(request), |r| {
+                self.redo(&r.session, r.revision, r.to)
             }),
         }
     }

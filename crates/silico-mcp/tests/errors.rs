@@ -161,7 +161,7 @@ fn an_unknown_method_is_method_not_found_naming_the_methods() {
 }
 
 /// Every tool's name, in the list's order, written out by hand.
-pub const TOOLS: [&str; 35] = [
+pub const TOOLS: [&str; 37] = [
     "version",
     "open",
     "close",
@@ -197,6 +197,8 @@ pub const TOOLS: [&str; 35] = [
     "sketch_trim",
     "sketch_unjoin",
     "sketch_merge",
+    "undo",
+    "redo",
 ];
 
 #[test]
