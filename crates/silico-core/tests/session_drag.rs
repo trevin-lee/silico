@@ -1424,9 +1424,12 @@ fn a_session_closed_ends_its_drag_and_gives_its_worker_back() {
     let moving = f.sessions.drag_move(&s1(), [62.5, 7.0]);
     assert!(f.sketches.wait_held(HANG));
     answer(f.sessions.close(&s1())).result.unwrap();
-    // The move solving was stopped, and the worker's drag ended with it.
-    assert_eq!(the_error(&answer(moving)).code(), ErrorCode::Cancelled);
+    // By the time the close has answered, the move solving was stopped and has answered,
+    // the worker's drag ended with it: the close ends the drag, not the session's last
+    // reference going some time after.
     assert_eq!(f.sketches.stops(), 1);
+    let moved = moving.try_take().unwrap_or_else(|_| panic!("the move hadn't answered"));
+    assert_eq!(the_error(&moved).code(), ErrorCode::Cancelled);
     f.sketches.release();
     // Closed: the session's commands are refused as of no session.
     assert_eq!(
