@@ -18,6 +18,7 @@ use super::holding::Holding;
 use super::rebuilds::{Newest, Rebuilds};
 use super::threads::{Reads, Threads};
 use super::transaction::{Held, not_reloaded, of_file, put_back, too_long};
+use super::waking::Waker;
 use super::{
     Gated, Job, Opened, Problems, Response, Revision, Session, SessionId, Turn, closing, shown_path,
 };
@@ -66,6 +67,12 @@ pub(super) struct Registry<P: Clients + 'static> {
     /// The bound of each transaction's undo stack, in bytes as it counts them
     /// ([`UNDO_BYTES`](crate::document::undo::UNDO_BYTES), but in this crate's tests).
     pub(super) undo_bytes: usize,
+    /// How each session's file is read and the time taken for its comparisons on disk: the
+    /// session's own read and the system's clock, but in tests
+    /// ([`Sessions::watching_disk`](super::Sessions::watching_disk)).
+    pub(super) disk_stand_in: Option<(crate::disk::Reader, crate::disk::Clock)>,
+    /// The client's waker, every session's ([`Sessions::on_change`](super::Sessions::on_change)).
+    pub(super) waker: Arc<Waker>,
 }
 
 /// A file as the system knows it, whatever path reaches it: its device and inode.
@@ -219,14 +226,27 @@ pub(super) fn start<P: Clients + 'static>(
         );
         // From here it opens, unless it was cancelled first (the file it made goes as above).
         ticket.settle()?;
-        // Against the bytes it read (or made), at the path they were read from.
-        let disk = DiskWatch::new(
-            held.resolved.clone(),
-            registry.workspace.clone(),
-            Arc::clone(&held.bytes),
-            registry.disk_interval,
-            None,
-        );
+        // Against the bytes it read (or made), at the path they were read from; the client
+        // woken as its finding changes.
+        let told = Arc::clone(&registry.waker);
+        let notify: crate::notify::Notify = Arc::new(move || told.wake());
+        let disk = match &registry.disk_stand_in {
+            None => DiskWatch::new(
+                held.resolved.clone(),
+                registry.workspace.clone(),
+                Arc::clone(&held.bytes),
+                registry.disk_interval,
+                Some(notify),
+            ),
+            Some((read, now)) => DiskWatch::clocked(
+                held.resolved.clone(),
+                Arc::clone(&held.bytes),
+                registry.disk_interval,
+                Some(notify),
+                Arc::clone(read),
+                Arc::clone(now),
+            ),
+        };
         let session = Arc::new(Session {
             id,
             workspace: registry.workspace.clone(),
@@ -251,8 +271,12 @@ pub(super) fn start<P: Clients + 'static>(
             newest,
             logs,
             disk,
+            reloads: Mutex::default(),
+            waker: Arc::clone(&registry.waker),
             #[cfg(test)]
             gate: super::Gate::default(),
+            #[cfg(test)]
+            reloading: super::Gate::default(),
             #[cfg(test)]
             settled: super::Gate::default(),
             #[cfg(test)]
@@ -266,6 +290,12 @@ pub(super) fn start<P: Clients + 'static>(
             .remove(&id)
             .map(|opening| opening.reads)
             .unwrap_or_default();
+        // A change found on disk from here, with no transaction open, is reloaded on its
+        // own thread (A3).
+        session.disk.when_changed(super::reloader(
+            Arc::downgrade(&registry),
+            Arc::downgrade(&session),
+        ));
         book.sessions.insert(id, Arc::clone(&session));
         for read in reads {
             read(Turn::Run(&session));
@@ -282,6 +312,7 @@ pub(super) fn start<P: Clients + 'static>(
                 model: None,
                 result: Ok(opened),
             });
+            registry.waker.wake();
             Some(Started { session, jobs })
         }
         Err(problems) => {
@@ -301,6 +332,7 @@ pub(super) fn start<P: Clients + 'static>(
                     result: Err(problems),
                 },
             ));
+            registry.waker.wake();
             // Then each command sent while it opened, refused as naming no session open, as
             // one sent from here is: the queue's last sender let go with its record, so none
             // comes after these.

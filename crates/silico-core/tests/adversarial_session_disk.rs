@@ -101,6 +101,23 @@ impl Fixture {
         std::fs::read(&self.path).unwrap()
     }
 
+    /// Once the session has reloaded its file itself (M5.0's A3), with no command sent:
+    /// its revision past `from` and the file unchanged, within [`WAIT`]. Its new revision.
+    #[track_caller]
+    fn reloads_itself(&self, from: Revision) -> Revision {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            // `status` starts the comparison that finds the change, as the app's frames do.
+            let status = self.sessions.status(&self.id);
+            let revision = status.session.unwrap().revision;
+            if revision > from && status.result.unwrap().disk == Some(Disk::Unchanged) {
+                return revision;
+            }
+            assert!(Instant::now() < deadline, "never reloaded past {from:?}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     fn set_length(
         &self,
         revision: Revision,
@@ -237,7 +254,9 @@ fn saves_back_to_the_text_the_session_wrote_before_are_unchanged_and_others_text
     assert_eq!(f.file(), canonical);
     assert_eq!(f.disk(), Some(Disk::Unchanged));
     f.stays(TWO_COMPARISONS, unchanged);
-    // B again, by another: a change, though the session wrote it once.
+    // B again, by another: a change, though the session wrote it once. Inside a
+    // transaction, which reloads nothing, so the change stays for the watch to find.
+    answer(f.sessions.begin(&f.id)).result.unwrap();
     std::fs::write(&f.path, &longer).unwrap();
     f.reaches(Disk::Changed);
 }
@@ -295,25 +314,34 @@ fn a_commit_refused_as_a_conflict_leaves_the_file_changed_and_a_rollback_and_rel
         found.is_none() || found == Some(Disk::Changed)
     });
     f.reaches(Disk::Changed);
-    answer(f.sessions.rollback(&f.id)).result.unwrap();
-    // Rolled back, the file isn't read: still a change until a command reloads it.
-    f.reaches(Disk::Changed);
+    let rolled = answer(f.sessions.rollback(&f.id));
+    rolled.result.unwrap();
+    // Rolled back, the file isn't read by the rollback; with no transaction open, the next
+    // comparison's change is the session's own reload, which no command asks for.
+    let reloaded = f.reloads_itself(rolled.session.unwrap().revision);
     let text = answer(f.sessions.text(&f.id, None));
-    assert!(text.session.unwrap().reloaded);
-    assert_eq!(f.disk(), Some(Disk::Unchanged));
+    let session = text.session.unwrap();
+    assert!(!session.reloaded);
+    assert_eq!(session.revision, reloaded);
+    assert_eq!(text.result.unwrap().text, theirs);
     f.stays(TWO_COMPARISONS, unchanged);
 }
 
 #[test]
-fn a_commit_over_a_changed_file_that_writes_nothing_leaves_it_changed() {
+fn a_commit_over_a_changed_file_that_writes_nothing_leaves_it_for_the_sessions_own_reload() {
     let f = opened(BLOCK);
     f.reaches(Disk::Unchanged);
     answer(f.sessions.begin(&f.id)).result.unwrap();
-    std::fs::write(&f.path, BLOCK.replace("Block", "Other")).unwrap();
+    let theirs = BLOCK.replace("Block", "Other");
+    std::fs::write(&f.path, &theirs).unwrap();
     f.reaches(Disk::Changed);
     let commit = answer(f.sessions.commit(&f.id));
+    let at = commit.session.unwrap().revision;
     assert!(!commit.result.unwrap().written);
-    f.stays(TWO_COMPARISONS, |found| found == Some(Disk::Changed));
+    // Their text, never written over: the transaction ended, the session reloads it.
+    f.reloads_itself(at);
+    assert_eq!(f.file(), theirs.as_bytes());
+    f.stays(TWO_COMPARISONS, unchanged);
 }
 
 #[test]
@@ -322,9 +350,12 @@ fn a_reload_of_text_the_gate_refuses_is_unchanged_at_once() {
         let f = opened(BLOCK);
         f.reaches(Disk::Unchanged);
         std::fs::write(&f.path, text).unwrap();
-        f.reaches(Disk::Changed);
+        // The session's own reload holds it, its problems with it (decision 21).
+        f.reloads_itself(Revision::OPENED);
         let read = answer(f.sessions.text(&f.id, None));
-        assert!(read.session.unwrap().reloaded, "{text:?}");
+        assert!(!read.session.unwrap().reloaded, "{text:?}");
+        let status = f.sessions.status(&f.id).result.unwrap();
+        assert!(!status.gated, "{text:?}");
         assert_eq!(f.disk(), Some(Disk::Unchanged), "{text:?}");
         f.stays(TWO_COMPARISONS, unchanged);
     }
@@ -365,11 +396,17 @@ fn a_file_past_the_limit_is_unreadable_and_the_refused_reload_leaves_it_so() {
 fn a_file_at_the_limit_is_a_change_and_its_reload_unchanged() {
     let f = opened(BLOCK);
     f.reaches(Disk::Unchanged);
+    // Inside a transaction first, which reloads nothing: at the limit it's a change, never
+    // unreadable.
+    answer(f.sessions.begin(&f.id)).result.unwrap();
     std::fs::write(&f.path, vec![b' '; MAX_INPUT_LEN]).unwrap();
     f.reaches(Disk::Changed);
+    let rolled = answer(f.sessions.rollback(&f.id));
+    // Then, rolled back, the session reloads it itself, a file it may hold whole.
+    f.reloads_itself(rolled.session.unwrap().revision);
     let text = answer(f.sessions.text(&f.id, None));
-    assert!(text.session.unwrap().reloaded);
-    assert_eq!(f.disk(), Some(Disk::Unchanged));
+    assert!(!text.session.unwrap().reloaded);
+    assert_eq!(text.result.unwrap().text.len(), MAX_INPUT_LEN);
     f.stays(TWO_COMPARISONS, unchanged);
 }
 
@@ -504,13 +541,16 @@ fn disk_answers_at_once_while_a_command_waits_on_its_rebuild_and_finds_a_change_
     f.reaches(Disk::Changed);
     hold.release();
     let set = answer(running);
+    let at = set.session.unwrap().revision;
     assert_eq!(
         set.result.unwrap_err().errors()[0].code(),
         ErrorCode::Conflict
     );
-    f.stays(TWO_COMPARISONS, |found| {
-        found.is_none() || found == Some(Disk::Changed)
-    });
+    // Their change, never written over, and reloaded by the session itself, queued behind
+    // the edit as the comparison found it.
+    f.reloads_itself(at);
+    assert_eq!(f.file(), theirs.as_bytes());
+    f.stays(TWO_COMPARISONS, unchanged);
 }
 
 #[test]
@@ -564,6 +604,8 @@ fn many_sessions_watch_their_own_files_each() {
     };
     for (session, _) in &opened {
         reach(session, Disk::Unchanged);
+        // Inside a transaction, which reloads nothing, so each change stays to be found.
+        answer(sessions.begin(session)).result.unwrap();
     }
     // Every other file changed: only theirs read as changed.
     for (_, path) in opened.iter().step_by(2) {

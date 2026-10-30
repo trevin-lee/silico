@@ -74,9 +74,19 @@
 //! handle it opened, [`Cache::within`]). Without one (the CLI's), `open` reads any file
 //! this user may read.
 //!
+//! A session also watches its file on disk (docs/design/m5.0-app.md, section 4): `status`
+//! starts a comparison off the caller's thread at most once each [`DISK_CHECK_INTERVAL`],
+//! and says what the last found (`disk`). One that finds the file changed with no
+//! transaction open queues the session's own reload on its thread, at most one at a time
+//! (A3): a new revision no command asked for, named `reload` in `status.running`, which
+//! nothing cancels. A client that polls is woken as things it draws change
+//! ([`Sessions::on_change`]).
+//!
 //! What it doesn't bound: the caches, one kept for each directory a session has opened a
-//! document in, for the process's life; and each session's queue, which holds every command
-//! queued and not yet run.
+//! document in, for the process's life; each session's queue, which holds every command
+//! queued and not yet run; and a comparison stuck reading its file (a stalled network
+//! mount), whose thread ends with the read, after its session has closed if it closes
+//! first, holding the session's bytes until then.
 
 mod cancel;
 mod clearing;
@@ -88,6 +98,7 @@ mod threads;
 mod transaction;
 mod types;
 mod undo;
+mod waking;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -96,7 +107,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::edit::{self, FeatureIds};
 use super::logs::{LogBuffer, LogQuery, Logs};
-use super::{Gated, Problems, ReadCommand, SessionCommand};
+use super::{Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
 use crate::cache::Cache;
 use crate::disk::{DISK_CHECK_INTERVAL, Disk, DiskWatch};
 use crate::document::json::Node;
@@ -132,6 +143,7 @@ pub use types::{
     SessionId, SessionInfo, Status, Stepped, Stopper, TextAnswer, TimelineAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
+use waking::Waker;
 
 /// The most sessions one process holds open at once (decision 18): each may start a sketch
 /// worker and keep its models' B-reps, so the limit is what bounds their memory.
@@ -186,6 +198,12 @@ struct Session<C: Kernel + 'static> {
     /// Whether its file changed on disk ([`Sessions::disk`]): told what the session reads
     /// and writes of it, by its reloads and its saves.
     disk: DiskWatch,
+    /// Its own reload of its file, found changed on disk (A3): whether one is queued, and
+    /// the bytes a reload last refused, so the same refusal isn't queued at each comparison.
+    /// Taken alone.
+    reloads: Mutex<Reloads>,
+    /// The client's waker, the sessions' ([`Sessions::on_change`]).
+    waker: Arc<Waker>,
     /// Where its commands wait as each starts, in this crate's tests only.
     #[cfg(test)]
     gate: Gate,
@@ -196,6 +214,16 @@ struct Session<C: Kernel + 'static> {
     /// Where a save waits before it writes its file, in this crate's tests only.
     #[cfg(test)]
     writing: Gate,
+    /// Where the session's own reload waits as it starts, in this crate's tests only.
+    #[cfg(test)]
+    reloading: Gate,
+}
+
+/// A session's own reloads (A3): one queued, and the bytes the last refused, if one was.
+#[derive(Default)]
+struct Reloads {
+    queued: bool,
+    refused: Option<Vec<u8>>,
 }
 
 /// Where a file a command writes may go ([`Sessions::write_rules`]).
@@ -365,6 +393,121 @@ impl<C: Kernel + 'static> Session<C> {
     }
 }
 
+impl<C: Kernel + 'static> Session<C> {
+    /// Whether a comparison that found the file changed, as `found`, should queue the
+    /// session's own reload (A3): not inside a transaction (only `commit` reads the file
+    /// there), nor while its own save has left the file part written (the next save says
+    /// where its old text is), nor while one is queued, nor for the bytes a reload refused
+    /// last (a file another session holds, say), which would be refused again. If it should,
+    /// it's marked queued.
+    fn reload_wanted(&self, found: &[u8]) -> bool {
+        {
+            let held = self.held.read();
+            if held.transaction.is_some() || held.part_written.is_some() {
+                return false;
+            }
+        }
+        let mut reloads = lock(&self.reloads);
+        if reloads.queued || reloads.refused.as_deref() == Some(found) {
+            return false;
+        }
+        reloads.queued = true;
+        true
+    }
+
+    /// What the session's own reload came to, queued for a file found as `found`
+    /// ([`Session::reload`] as `commit` reads the file, inside a transaction too): reloaded
+    /// at a new revision; the file found as the session holds it (a `begin` or another
+    /// command ahead of it reloaded it first), the finding then `unchanged`; inside a
+    /// transaction and changed, nothing, the finding left `changed`; or refused, `found`
+    /// kept so the same bytes aren't queued again. Whether the client should be woken.
+    fn reloaded_itself(&self, reloaded: Result<Reload, Problems>, found: Vec<u8>) -> bool {
+        let (woken, refused) = match reloaded {
+            Ok(Reload::Reloaded) => (true, None),
+            Ok(Reload::AsHeld) => {
+                let held = self.held.read();
+                if held.part_written.is_none() {
+                    // The file as the session holds it: the finding was stale.
+                    self.disk.held(Arc::clone(&held.bytes));
+                }
+                (true, None)
+            }
+            Ok(Reload::Outside(_)) => (false, None),
+            Err(problems) => {
+                tracing::warn!(
+                    session = %self.id,
+                    "the file changed on disk, and the session couldn't reload it: {:?}",
+                    problems.errors()
+                );
+                (false, Some(found))
+            }
+        };
+        let mut reloads = lock(&self.reloads);
+        reloads.queued = false;
+        if refused.is_some() {
+            reloads.refused = refused;
+        }
+        woken
+    }
+}
+
+/// What a session's disk watch tells it when a comparison finds its file changed: the
+/// session's own reload queued on its thread, behind its commands, if one is wanted
+/// ([`Session::reload_wanted`]), as the next command would reload it (A3). Holds both
+/// weakly, so the watch keeps neither alive.
+fn reloader<P: Clients + 'static>(
+    registry: Weak<Registry<P>>,
+    session: Weak<Session<P::Client>>,
+) -> crate::disk::Changed {
+    Arc::new(move |found: &[u8]| {
+        let Some(session) = session.upgrade() else {
+            return;
+        };
+        if session.reload_wanted(found) {
+            session.queue(reload_job(Weak::clone(&registry), found.to_vec()));
+        }
+    })
+}
+
+/// The session's own reload, a job on its queue (A3): the file read as `commit` reads it
+/// (claimed as every command's read is, outside a transaction reloaded at a new revision),
+/// named `reload` in `status.running` and the session's logs while it runs, and the client
+/// woken by what it changed. A session closed first never runs it.
+fn reload_job<P: Clients + 'static>(registry: Weak<Registry<P>>, found: Vec<u8>) -> Job<P::Client> {
+    Box::new(move |turn| {
+        let Turn::Run(session) = turn else {
+            return;
+        };
+        let stop = Ticket::reloading();
+        *lock(&session.command) = Some(Arc::clone(&stop));
+        let woken = {
+            let _span = command_span(
+                &session.logs,
+                session.id,
+                RunningCommand::Reload.as_str(),
+                None,
+            )
+            .entered();
+            #[cfg(test)]
+            session.reloading.pass();
+            let id = session.id;
+            let claimed = |found: Claim<'_>| match registry.upgrade() {
+                Some(registry) => {
+                    claim(&registry, found.opened, found.resolved, found.found_at, id)
+                }
+                // The sessions are being dropped: no claim is kept.
+                None => Ok(()),
+            };
+            let reloaded = session.reload(Rereads::Always, &claimed);
+            session.reloaded_itself(reloaded, found)
+        };
+        lock(&session.command).take();
+        if woken {
+            session.waker.wake();
+        }
+    })
+}
+
 impl<P: Clients + 'static> Sessions<P> {
     /// Sessions on `kernel`, keeping each directory's results in its `.silico-cache/`
     /// ([`Cache::open`]).
@@ -448,8 +591,51 @@ impl<P: Clients + 'static> Sessions<P> {
                 workspace: None,
                 disk_interval: DISK_CHECK_INTERVAL,
                 undo_bytes: crate::document::undo::UNDO_BYTES,
+                disk_stand_in: None,
+                waker: Arc::default(),
             }),
         }
+    }
+
+    /// The client's waker (docs/design/m5.0-app.md, section 3, *Waking without input*):
+    /// from now on, `waker` is called when something the client draws may have changed, so
+    /// a client that polls (the app, once a frame) draws a frame then: as a command's answer
+    /// can be taken ([`Running::try_take`] gives it); as a rebuild's step settles and as the
+    /// rebuild ends (its model published, or its end recorded); as a disk comparison's
+    /// finding changes; and as the session reloads its file itself. A command answered as
+    /// it's asked for (refused before it's queued) wakes nothing: its caller has the answer.
+    /// It's called off the caller's thread, with no lock of the core's held, so it may ask
+    /// the sessions anything; it should only ask for a frame, never draw. Given again, the
+    /// new one replaces the old.
+    pub fn on_change(&self, waker: impl Fn() + Send + Sync + 'static) {
+        self.registry.waker.set(Arc::new(waker));
+    }
+
+    /// The same sessions, each comparing its file on disk at most once each `interval`,
+    /// reading it with `read` and taking the time from `now` (a test's stand-ins, to hold a
+    /// comparison and to say when the next is due without waiting for it), as they're made:
+    /// refused once a document has been asked to open.
+    #[cfg(any(test, feature = "fake"))]
+    pub fn watching_disk(
+        mut self,
+        interval: std::time::Duration,
+        read: crate::disk::Reader,
+        now: crate::disk::Clock,
+    ) -> Result<Self, Error> {
+        let opened = Error::new(
+            ErrorCode::InvalidInput,
+            "these sessions can't be given a disk watch's stand-ins now",
+        )
+        .with_suggestion("give them as the sessions are made, before any document opens");
+        let Some(registry) = Arc::get_mut(&mut self.registry) else {
+            return Err(opened);
+        };
+        if !registry.book.get_mut().is_ok_and(|book| book.next == 1) {
+            return Err(opened);
+        }
+        registry.disk_interval = interval;
+        registry.disk_stand_in = Some((read, now));
+        Ok(self)
     }
 
     /// The same sessions, each comparing its file on disk at most once each `interval`,
@@ -1031,6 +1217,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     return Running::answered(refused(too_many_reads(*session)));
                 }
                 let stop = Arc::clone(&ticket);
+                let waker = Arc::clone(&self.registry.waker);
                 opening.reads.push(Box::new(move |turn| {
                     let refusal = match turn {
                         Turn::Run(found) => {
@@ -1051,6 +1238,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     };
                     // Never run: cancelled, if it was first, or refused, and either way settled.
                     let _ = reply.send(stop.answer(|| None, || refusal));
+                    waker.wake();
                 }));
                 Running::new(answer, READ_STOPPED, Some(ticket), None)
             }
@@ -1219,9 +1407,11 @@ impl<P: Clients + 'static> Sessions<P> {
     /// and how drift is accepted, by name): with `features`, only those features' drift is
     /// accepted, and every other drifted feature keeps what's stored with it and is a
     /// problem. Written through `file::save_over` only if `write` and the text differs from
-    /// the file; with `write` false, says whether it would be. Refused inside a transaction
-    /// (commit or roll back first), for a document the gate refuses, and for a feature in
-    /// `features` the document hasn't; and, writing, as a commit is.
+    /// the file; with `write` false, says whether it would be. Inside a transaction
+    /// (docs/design/m5.0-app.md, A6), nothing is written: what it would write is held as the
+    /// transaction's document, one undoable edit at a new revision, if it differs and
+    /// `write`, for the commit to save. Refused for a document the gate refuses, and for a
+    /// feature in `features` the document hasn't; and, writing, as a commit is.
     pub fn format(
         &self,
         session: &SessionId,
@@ -1552,6 +1742,7 @@ impl<P: Clients + 'static> Sessions<P> {
         let registry = Arc::downgrade(&self.registry);
         let ticket = Ticket::new(command);
         let stop = Arc::clone(&ticket);
+        let waker = Arc::clone(&self.registry.waker);
         let job: Job<P::Client> = Box::new(move |turn| {
             let response = match turn {
                 Turn::Run(session) => {
@@ -1609,6 +1800,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 Turn::Closed(id) => stop.answer(|| None, || refused(not_open(id))),
             };
             let _ = reply.send(response);
+            waker.wake();
         });
         let newest = match self.queue_on(session, job) {
             Some(newest) => newest,
@@ -1726,6 +1918,7 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
             );
             drop(counted);
             let _ = reply.send(response);
+            session.waker.wake();
         });
     match started {
         Ok(thread) => {
@@ -1756,8 +1949,10 @@ fn status_in<P: Clients + 'static>(
     let Some(found) = find_in(registry, session) else {
         return refused(not_open(*session));
     };
+    // First, alone: the watch's lock is taken last of the session's.
+    let disk = found.disk.finding();
     let reads = found.reads_running();
-    let running = found.running().and_then(|ticket| ticket.command());
+    let running = found.running().and_then(|ticket| ticket.running());
     let held = found.held.read();
     let gated = matches!(*held.gated, Gated::Checked(_));
     let rebuild = if gated {
@@ -1785,6 +1980,7 @@ fn status_in<P: Clients + 'static>(
             running,
             reads,
             rebuild,
+            disk,
         }),
     }
 }

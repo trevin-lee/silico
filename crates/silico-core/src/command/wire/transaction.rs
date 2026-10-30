@@ -200,6 +200,8 @@ pub struct RollbackResultSchema {
 
 /// `format`'s request: save the document in canonical form with every feature's
 /// fingerprint as rebuilt, as `silico fmt` does, accepting the drift of the features named.
+/// Inside a transaction it writes no file: what it would write becomes the transaction's
+/// document, one edit `undo` can undo, which the transaction's `commit` saves.
 #[derive(JsonSchema)]
 #[schemars(rename = "FormatRequest", transform = wire_shape)]
 pub struct FormatRequestSchema {
@@ -209,8 +211,8 @@ pub struct FormatRequestSchema {
     /// The features whose drift to accept, by ID, or null for every feature's. Any other
     /// drifted feature keeps its stored fingerprint and is a problem.
     pub features: Option<Vec<FeatureId>>,
-    /// Whether to write the file: false only says whether it would change (`silico fmt
-    /// --check`).
+    /// Whether to write the file (inside a transaction, its document): false only says
+    /// whether it would change (`silico fmt --check`), changing nothing.
     pub write: bool,
 }
 
@@ -218,9 +220,10 @@ pub struct FormatRequestSchema {
 #[derive(JsonSchema)]
 #[schemars(rename = "FormatResult", transform = wire_shape)]
 pub struct FormatResultSchema {
-    /// Whether the canonical text differs from the file.
+    /// Whether the canonical text differs from the file; inside a transaction, whether the
+    /// transaction's document differs.
     pub changed: bool,
-    /// Whether the file was written.
+    /// Whether the file was written: never inside a transaction.
     pub written: bool,
     /// The document's path, as `open` was given it.
     pub path: String,

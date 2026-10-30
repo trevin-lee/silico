@@ -862,10 +862,14 @@ impl<C: Kernel + 'static> Session<C> {
     /// if `write` and it differs from the file as the session last read or wrote it (a
     /// change made outside the session before the command was reloaded, decision 2), the
     /// new file claimed with `claim`, the session then at a new revision, its saved
-    /// text. Refused, writing nothing, inside a transaction, for a document the gate
-    /// refused (its problems), for a feature in `accept` the document hasn't, and as a
-    /// commit is. A kernel fault is saved around, as a commit saves around it. As the command
-    /// `stop` stops.
+    /// text. Inside a transaction (docs/design/m5.0-app.md, A6; decision 8), no file is
+    /// written: if `write` and the formatted document isn't the transaction's (as canonical
+    /// form compares them), it's held as one edit, at a new revision, on the transaction's
+    /// undo stack, which its commit saves; `changed` says whether it differs, `written` is
+    /// false, and with `write` false nothing changes. Refused, writing nothing, for a
+    /// document the gate refused (its problems), for a feature in `accept` the document
+    /// hasn't, and as a commit is. A kernel fault is saved around, as a commit saves around
+    /// it. As the command `stop` stops.
     pub(super) fn format(
         self: &Arc<Self>,
         stop: &Ticket,
@@ -874,17 +878,16 @@ impl<C: Kernel + 'static> Session<C> {
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Reformatted, Problems> {
-        let (path, bytes, gated, revision, reaching) = {
+        let (path, bytes, text, gated, revision, reaching, transaction) = {
             let held = self.held.read();
-            if held.transaction.is_some() {
-                return Err(Problems::from(transaction_open(self.id, "format")));
-            }
             (
                 held.path.clone(),
                 Arc::clone(&held.bytes),
+                Arc::clone(&held.text),
                 Arc::clone(&held.gated),
                 held.revision,
                 held.reaching(),
+                held.transaction.is_some(),
             )
         };
         let reached = Reached::of(reaching);
@@ -933,6 +936,34 @@ impl<C: Kernel + 'static> Session<C> {
             &drift,
         )?;
         let saved = formatted.text.into_bytes();
+        if transaction {
+            // Into the transaction's state, as an edit's candidate, the same document read
+            // back as `replace_text` reads one: none if it's the transaction's already.
+            let (_, candidate) = crate::command::edit::replace_text(&gated, &text, &saved)
+                .map_err(|refused| {
+                    Problems::from(
+                        Error::new(
+                            ErrorCode::Internal,
+                            "the formatted document doesn't read back as the transaction's",
+                        )
+                        .with_cause(format!("{:?}", refused.errors()))
+                        .with_suggestion(crate::worker::SILICO_BUG),
+                    )
+                })?;
+            let changed = candidate.is_some();
+            if write && let Some(candidate) = candidate {
+                self.hold(stop, candidate)?;
+            }
+            return Ok(Reformatted {
+                changed,
+                written: false,
+                path,
+                refingerprinted: formatted.refingerprinted,
+                resolved: formatted.resolved,
+                accepted,
+                problems: formatted.problems,
+            });
+        }
         let changed = saved != *bytes;
         let written = write && changed;
         if written {

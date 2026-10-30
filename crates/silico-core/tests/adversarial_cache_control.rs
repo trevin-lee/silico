@@ -302,7 +302,8 @@ fn a_clear_during_a_rebuild_of_the_same_session_leaves_only_sound_entries() {
 fn a_clear_of_a_session_whose_file_has_gone_or_changed_clears_and_reads_nothing() {
     // `cache_clear` needs nothing of the document, so it never reads the file (decision 2,
     // as `close`): gone, the clear runs all the same, and the session stays at its
-    // revision, not reloaded.
+    // revision, not reloaded. (Its revision read without `status`, whose comparison of the
+    // file on disk would have the session reload a change itself, M5.0's A3.)
     let f = fixture();
     let a = f.open("a.silico", EXAMPLE);
     assert!(
@@ -312,7 +313,7 @@ fn a_clear_of_a_session_whose_file_has_gone_or_changed_clears_and_reads_nothing(
             .problems
             .is_empty()
     );
-    let revision = f.sessions.status(&a).session.unwrap().revision;
+    let revision = f.sessions.published(&a).session.unwrap().revision;
     std::fs::remove_file(f.docs().join("a.silico")).unwrap();
     let cleared = f.clear(&a);
     assert_eq!(cleared.result.unwrap().removed, 4);
@@ -320,7 +321,7 @@ fn a_clear_of_a_session_whose_file_has_gone_or_changed_clears_and_reads_nothing(
     assert_eq!(session.revision, revision);
     assert!(!session.reloaded);
     assert!(f.entries().is_empty());
-    assert_eq!(f.sessions.status(&a).session.unwrap().revision, revision);
+    assert_eq!(f.sessions.published(&a).session.unwrap().revision, revision);
     // Changed outside the session: not reloaded either.
     let b = f.open("b.silico", EXAMPLE);
     assert!(
@@ -330,7 +331,7 @@ fn a_clear_of_a_session_whose_file_has_gone_or_changed_clears_and_reads_nothing(
             .problems
             .is_empty()
     );
-    let revision = f.sessions.status(&b).session.unwrap().revision;
+    let revision = f.sessions.published(&b).session.unwrap().revision;
     let changed = EXAMPLE.replace(r#""radius": 2.5"#, r#""radius": 3"#);
     assert_ne!(changed, EXAMPLE);
     std::fs::write(f.docs().join("b.silico"), &changed).unwrap();
@@ -339,5 +340,5 @@ fn a_clear_of_a_session_whose_file_has_gone_or_changed_clears_and_reads_nothing(
     let session = cleared.session.unwrap();
     assert_eq!(session.revision, revision);
     assert!(!session.reloaded);
-    assert_eq!(f.sessions.status(&b).session.unwrap().revision, revision);
+    assert_eq!(f.sessions.published(&b).session.unwrap().revision, revision);
 }

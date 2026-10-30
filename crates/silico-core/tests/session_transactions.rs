@@ -1,7 +1,8 @@
 //! M4.2's transactions and `format` (docs/design/m4.1-command-api.md, sections 4 and 7,
 //! decisions 1, 22, 28 and 31), as far as a client reaches them before edits come: one
-//! transaction at a time, `close` and `format` refused inside one, a commit of nothing
-//! changed writing nothing, and `format` accepting only the drift it names. Expected values
+//! transaction at a time, `close` refused inside one and `format` putting what it would
+//! write into one (M5.0's A6), a commit of nothing changed writing nothing, and `format`
+//! accepting only the drift it names. Expected values
 //! are the design's messages, the box's analytic fingerprint (40 × 20 × 10: volume 8000,
 //! area 2800), and the files' bytes, written by hand.
 
@@ -164,19 +165,90 @@ fn close_is_refused_while_a_transaction_is_open_and_then_closes() {
 }
 
 #[test]
-fn format_is_refused_inside_a_transaction() {
+fn format_inside_a_transaction_accepts_drift_into_its_state_and_writes_no_file_until_commit() {
+    // M5.0's A6 (decision 8): the drift accepted, and the lug's missing fingerprint stored,
+    // as outside one, but into the transaction's document, one undoable edit.
     let f = fixture();
-    let text = stored("8000");
+    let text = stored("8000.000001");
     let (s1, path) = f.open(&text);
     answer(f.sessions.begin(&s1)).result.unwrap();
+    let response = answer(f.sessions.format(&s1, None, true));
+    let session = response.session.unwrap();
+    let formatted = response.result.unwrap();
+    assert!(formatted.changed);
+    assert!(!formatted.written);
+    assert_eq!(formatted.path, path.to_str().unwrap());
+    assert_eq!(formatted.accepted, [id("k7f2qx3m")]);
+    assert_eq!(formatted.refingerprinted, [id("k7f2qx3m"), id("b0000001")]);
+    assert!(formatted.problems.is_empty(), "{:?}", formatted.problems);
+    // A new revision, inside the transaction; the file as it was.
+    assert!(session.transaction);
+    let formatted_at = session.revision;
+    assert!(formatted_at > Revision::OPENED);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    let held = |revision| {
+        let read = answer(f.sessions.text(&s1, None));
+        assert_eq!(read.session.unwrap().revision, revision);
+        read.result.unwrap().text
+    };
+    let accepted = canonical(FINGERPRINT, Some(LUG));
+    assert_eq!(held(formatted_at), accepted);
+    // One undoable edit: undone, the text `begin` saw, byte for byte; redone, the format's.
+    let undone = answer(f.sessions.undo(&s1, formatted_at, None));
+    let undone_at = undone.session.unwrap().revision;
+    assert_eq!(undone.result.unwrap().restored, Revision::OPENED);
+    assert_eq!(held(undone_at), text);
+    let redone = answer(f.sessions.redo(&s1, undone_at, None));
+    let redone_at = redone.session.unwrap().revision;
+    assert_eq!(redone.result.unwrap().restored, formatted_at);
+    assert_eq!(held(redone_at), accepted);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    // Its commit saves it.
+    let committed = answer(f.sessions.commit(&s1)).result.unwrap();
+    assert!(committed.written);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), accepted);
+}
+
+#[test]
+fn format_inside_a_transaction_without_write_makes_no_revision_and_no_undo_step() {
+    let f = fixture();
+    let text = stored("8000.000001");
+    let (s1, path) = f.open(&text);
+    answer(f.sessions.begin(&s1)).result.unwrap();
+    let response = answer(f.sessions.format(&s1, None, false));
+    assert_eq!(response.session.unwrap().revision, Revision::OPENED);
+    let formatted = response.result.unwrap();
+    // It says it would change, and changes nothing.
+    assert!(formatted.changed);
+    assert!(!formatted.written);
+    assert_eq!(formatted.accepted, [id("k7f2qx3m")]);
     assert_eq!(
-        refusal(&answer(f.sessions.format(&s1, None, true))),
-        (
-            ErrorCode::InvalidInput,
-            "a transaction is open in session s1".to_owned(),
-            Some("session".to_owned()),
-            Some("commit or roll back the transaction, then format".to_owned())
-        )
+        answer(f.sessions.text(&s1, None)).result.unwrap().text,
+        text
+    );
+    assert_eq!(
+        refusal(&answer(f.sessions.undo(&s1, Revision::OPENED, None))).1,
+        "nothing to undo in session s1's transaction"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+}
+
+#[test]
+fn format_inside_a_transaction_that_accepts_nothing_makes_no_revision_and_no_undo_step() {
+    // Already as format writes it: nothing to accept, nothing to store.
+    let f = fixture();
+    let text = canonical(FINGERPRINT, Some(LUG));
+    let (s1, path) = f.open(&text);
+    answer(f.sessions.begin(&s1)).result.unwrap();
+    let response = answer(f.sessions.format(&s1, None, true));
+    assert_eq!(response.session.unwrap().revision, Revision::OPENED);
+    let formatted = response.result.unwrap();
+    assert!(!formatted.changed);
+    assert!(!formatted.written);
+    assert!(formatted.accepted.is_empty());
+    assert_eq!(
+        refusal(&answer(f.sessions.undo(&s1, Revision::OPENED, None))).1,
+        "nothing to undo in session s1's transaction"
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 }
