@@ -238,10 +238,10 @@ impl<P: Clients + 'static> App<P> {
         if save && tab.unsaved() {
             tab.save(sessions, false);
         }
-        if undo && tab.transaction {
+        if undo && tab.undoable() {
             tab.step(sessions, true);
         }
-        if redo && tab.transaction {
+        if redo && tab.redoable() {
             tab.step(sessions, false);
         }
         if stop {
@@ -320,10 +320,14 @@ impl<P: Clients + 'static> App<P> {
                         tab.save(&self.sessions, false);
                         *started = true;
                     }
-                    for (undo, word) in [(true, "Undo"), (false, "Redo")] {
-                        if ui
-                            .add_enabled(transaction, egui::Button::new(word))
-                            .clicked()
+                    let (undoable, redoable) = self
+                        .active_place()
+                        .and_then(|at| self.tabs.get(at))
+                        .map_or((false, false), |tab| (tab.undoable(), tab.redoable()));
+                    for (undo, word, enabled) in
+                        [(true, "Undo", undoable), (false, "Redo", redoable)]
+                    {
+                        if ui.add_enabled(enabled, egui::Button::new(word)).clicked()
                             && let Some(tab) =
                                 self.active_place().and_then(|at| self.tabs.get_mut(at))
                         {

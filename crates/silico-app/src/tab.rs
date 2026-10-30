@@ -139,8 +139,9 @@ pub struct Tab {
     /// moved back by an answer that comes after a newer one.
     pub revision: Revision,
     pub transaction: bool,
-    /// The newest `status`.
+    /// The newest `status`, and the revision it was of.
     pub status: Option<Status>,
+    status_revision: Revision,
     /// The revision of the newest model published, if there's one.
     pub published: Option<Revision>,
     /// The newest `timeline`, and the browser's rows worked out from it.
@@ -207,6 +208,7 @@ impl Tab {
             revision: Revision::OPENED,
             transaction: false,
             status: None,
+            status_revision: Revision::OPENED,
             published: None,
             timeline: None,
             browser: Browser::default(),
@@ -246,11 +248,42 @@ impl Tab {
             .unwrap_or(&self.path)
     }
 
-    /// Whether the document differs from the file: a transaction open (decision 1: begun at
-    /// the first edit). Once `status.transaction.changed` is on the wire (#300), it's that,
-    /// false again once undone back to what `begin` saw: this one line.
+    /// Whether the document differs from the file: `status.transaction.changed` (#300),
+    /// false again once undone or edited back to what `begin` saw. Until a status of the
+    /// tab's own newest revision is read (an answer came after the last), whether a
+    /// transaction is open, so an edit just answered is never taken for none.
     fn changed(&self) -> bool {
+        if self.revision != self.status_revision {
+            return self.transaction;
+        }
+        self.transaction()
+            .is_some_and(|transaction| transaction.changed)
+    }
+
+    /// The transaction open, as the newest `status` gives it: its counts of steps.
+    pub fn transaction(&self) -> Option<&silico_core::command::Transaction> {
+        self.status
+            .as_ref()
+            .and_then(|status| status.transaction.as_ref())
+    }
+
+    /// Whether Undo can step: an edit to undo, or one still to answer (the undo waits
+    /// behind it).
+    pub fn undoable(&self) -> bool {
         self.transaction
+            && (!self.edits.idle()
+                || self
+                    .transaction()
+                    .is_some_and(|transaction| transaction.undo > 0))
+    }
+
+    /// Whether Redo can step: an edit undone, and none made since.
+    pub fn redoable(&self) -> bool {
+        self.transaction
+            && self.edits.idle()
+            && self
+                .transaction()
+                .is_some_and(|transaction| transaction.redo > 0)
     }
 
     /// Whether it holds unsaved edits: the document changed, or an edit under way.
@@ -275,6 +308,7 @@ impl Tab {
             }
             self.revision = session.revision;
             self.transaction = session.transaction;
+            self.status_revision = session.revision;
         }
         match status.result {
             Ok(status) => self.status = Some(status),
@@ -630,6 +664,12 @@ impl Tab {
     /// Close, its edits saved or dropped first (`close` is refused inside a transaction,
     /// decision 22); any waiting dropped.
     pub fn close<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        // A transaction open with nothing changed (undone back to what `begin` saw): rolled
+        // back, then closed, as `close` is refused inside one, losing nothing.
+        if self.transaction || self.beginning {
+            self.revert(sessions, true);
+            return;
+        }
         self.edits.queue.clear();
         self.under.push(Under::Close(sessions.close(&self.id)));
     }

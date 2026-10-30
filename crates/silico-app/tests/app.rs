@@ -2108,3 +2108,48 @@ fn reload_is_off_while_the_tab_closes() {
     step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn the_asterisk_follows_whether_the_transaction_changed_and_undo_and_redo_its_counts() {
+    // status.transaction.changed (#300): an edit undone back to what `begin` saw leaves a
+    // transaction open but nothing unsaved, so no asterisk, and the tab closes without
+    // asking, nothing written. Undo and Redo are offered by the transaction's counts.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let offered = |h: &AppHarness, word: &str| {
+        !h.get_by_role_and_label(Role::Button, word)
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(!offered(&h, "Undo") && !offered(&h, "Redo"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the edit shown unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    step_until(&mut h, "Undo offered", |h| offered(h, "Undo"));
+    assert!(!offered(&h, "Redo"));
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step_until(&mut h, "the undo shown saved", |h| {
+        !anywhere(h, "example.silico *") && offered(h, "Redo")
+    });
+    assert!(h.state().tabs()[0].transaction);
+    assert!(!offered(&h, "Undo"));
+    h.get_by_role_and_label(Role::Button, "Redo").click();
+    step_until(&mut h, "the redo shown unsaved", |h| {
+        anywhere(h, "example.silico *") && offered(h, "Undo") && !offered(h, "Redo")
+    });
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step_until(&mut h, "undone again", |h| !anywhere(h, "example.silico *"));
+    // Closed with no question: rolled back, then closed.
+    h.get_by_label("Close example.silico").click();
+    step(&mut h);
+    assert!(!anywhere(
+        &h,
+        "Save changes to example.silico before closing?"
+    ));
+    step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
