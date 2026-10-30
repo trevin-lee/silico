@@ -1837,3 +1837,58 @@ fn a_press_the_length_tolerance_off_its_line_is_taken_and_one_past_it_refused() 
     );
     assert_eq!(f.drag(), None);
 }
+
+#[test]
+fn a_cancel_of_drag_move_returns_without_waiting_on_the_drags_thread() {
+    // The drag's thread held in the client's waker as it answers the stopped move: a cancel
+    // that waited for that thread (to join it) would never return, since the test lets the
+    // waker go only once the cancel has.
+    let f = opened(&freed_profile());
+    f.begin_point("pa000003").result.unwrap();
+    f.sketches.hold();
+    let moving = f.sessions.drag_move(&s1(), [62.5, 7.0]);
+    assert!(f.sketches.wait_held(HANG));
+    let armed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (let_go, gate) = std::sync::mpsc::channel::<()>();
+    let gate = Arc::new(std::sync::Mutex::new(gate));
+    let (held, in_waker) = std::sync::mpsc::channel::<()>();
+    let held = std::sync::Mutex::new(held);
+    {
+        let armed = Arc::clone(&armed);
+        f.sessions.on_change(move || {
+            if armed.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = held.lock().unwrap().send(());
+                let _ = gate.lock().unwrap().recv();
+            }
+        });
+    }
+    // On a thread of its own, so a cancel that waits fails the test rather than hanging it.
+    let sessions = &f.sessions;
+    let cancelled = std::thread::scope(|scope| {
+        let cancel = scope.spawn(|| sessions.cancel(&s1(), SessionCommand::DragMove));
+        // The drag's thread reaches the waker, answering the stopped move.
+        in_waker.recv_timeout(HANG).unwrap();
+        let (returned, cancelled) = std::sync::mpsc::channel();
+        scope.spawn(move || {
+            let _ = returned.send(cancel.join().unwrap());
+        });
+        // The cancel returns while the drag's thread is still held in the waker.
+        let answer = cancelled.recv_timeout(HANG);
+        armed.store(false, std::sync::atomic::Ordering::SeqCst);
+        let_go.send(()).unwrap();
+        answer.expect("the cancel waited on the drag's thread")
+    });
+    assert_eq!(
+        cancelled.result.unwrap(),
+        Cancelled {
+            command: SessionCommand::DragMove,
+            stopped: true,
+        }
+    );
+    assert_eq!(the_error(&answer(moving)).code(), ErrorCode::Cancelled);
+    f.sketches.release();
+    assert_eq!(f.drag(), None);
+    // The closed drag is joined by what comes next: a new begin works.
+    f.begin_point("pa000003").result.unwrap();
+    assert!(f.drag().is_some());
+}

@@ -461,6 +461,27 @@ impl DragSession {
         }
     }
 
+    /// Ends the drag with nothing kept, as [`end`](Self::end) with no cursor does, but
+    /// without waiting: a move solving now is stopped by restarting the worker, and the
+    /// drag's thread ends its worker's session and closes the drag on its own. Its own
+    /// [`end`](Self::end) (or its drop) then answers with nothing kept, joining the thread.
+    /// What a cancel from a thread that mustn't wait (an app's) calls.
+    pub fn abandon(&self) {
+        let mut state = lock(&self.shared.state);
+        if state.end.is_none() && state.ended.is_none() && state.closed.is_none() {
+            state.end = Some(None);
+            state.whole = true;
+            if let Some((_, Some(stopper))) = state.running.clone() {
+                state.cancelling = true;
+                stopper.stop();
+            }
+        }
+        drop(state);
+        // The drag's thread woken; the notifier is told by that thread as the moves settle,
+        // never on this one.
+        self.shared.changed.notify_all();
+    }
+
     /// Whether the drag is still open: no end, no failure, no cancel yet.
     pub fn is_open(&self) -> bool {
         let state = lock(&self.shared.state);

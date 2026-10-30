@@ -496,26 +496,31 @@ fn a_cancel_of_drag_end_while_its_whole_solve_is_held_answers_cancelled_with_not
 }
 
 #[test]
-fn a_close_while_a_release_moves_answers_and_ends_the_drag() {
+fn a_close_queued_behind_a_release_waits_for_it_and_the_release_is_saved() {
+    // Commands run in the order they arrive (decision 18): a close queued while a release
+    // moves waits for that release, bounded by its move's time, and doesn't stop it, so
+    // whether the edit is saved never depends on when the close came.
     let f = opened(&profile());
     f.begin_point("pa000003").result.unwrap();
     f.sketches.hold();
     let release = f.sessions.drag_end(&s1(), Some([62.5, 7.0]));
     assert!(f.sketches.wait_held(HANG));
-    // BREAKS: the close waits on the release's move: its stop reaches only the end's whole
-    // solve, as a cancel's does (session/drag.rs `end_drag_with`), so the close answers only
-    // once the move does (up to DRAG_MOVE_TIMEOUT on a real worker; the fake holds it until
-    // released).
     let close = f.sessions.close(&s1());
-    let closed = close.wait_timeout(Duration::from_secs(20));
-    let released = release.wait_timeout(Duration::from_secs(20));
+    // The release's move still held: the close hasn't run.
+    let close = match close.try_take() {
+        Ok(early) => panic!("the close ran before the release: {:?}", early.result),
+        Err(close) => close,
+    };
     f.sketches.release();
-    let closed = closed.unwrap_or_else(|_| panic!("the close waited on the release's move"));
-    closed.result.unwrap();
-    let released =
-        released.unwrap_or_else(|_| panic!("the release didn't answer its session's close"));
-    assert!(released.result.is_err(), "{:?}", released.result);
-    assert_eq!(f.file(), profile());
+    let released = answer(release).result.unwrap();
+    assert_eq!((released.kept, released.changed), (Kept::Cursor, true));
+    answer(close).result.unwrap();
+    // The release's edit is in the file: pa000003 where the fake's move put it, the cursor
+    // nudged by a thousandth of (60, 5).
+    assert_eq!(
+        point_in(&f.file(), "pa000003"),
+        (62.5 + 60.0 / 1000.0, 7.0 + 5.0 / 1000.0)
+    );
 }
 
 #[test]
@@ -904,10 +909,11 @@ fn run(ops: &[Op]) -> String {
     // The model: the drag open, and where its point began; the edits not undone.
     let mut open: Option<[f64; 2]> = None;
     let mut undoable = 0usize;
-    let starts = |id: &str| match id {
-        "pa000003" => [60.0, 5.0],
-        "pa000004" => [5.0, 5.0],
-        _ => [0.0, 0.0],
+    // Where a point begins a drag: where the document holds it now, since releases before
+    // moved it (the fake solves where it's sent).
+    let starts = |id: &str| {
+        let (x, y) = point_in(&f.text(), id);
+        [x, y]
     };
     for (at, op) in ops.iter().enumerate() {
         let before = f.revision();

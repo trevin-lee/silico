@@ -216,9 +216,9 @@ fn drag_frame(outcome: Result<Frame, Error>) -> Result<DragFrame, Error> {
 }
 
 /// A move's stop, interrupting its session's drag as `cancel` of `drag_move` does: the drag
-/// ended, the move solving stopped by restarting the drag's worker, and every move
-/// unanswered answered (the cancelled ones `cancelled`), so a cancel that's said to have
-/// stopped one always has. Only the drag the move was sent to, by its number.
+/// ended, never waited for, the move solving stopped by restarting the drag's worker, and
+/// every move unanswered answered (the cancelled ones `cancelled`), so a cancel that's said
+/// to have stopped one always has. Only the drag the move was sent to, by its number.
 struct MoveStop<C: Kernel + 'static> {
     session: Weak<Session<C>>,
     number: u64,
@@ -229,20 +229,12 @@ impl<C: Kernel + 'static> Interrupt for MoveStop<C> {
         let Some(session) = self.session.upgrade() else {
             return;
         };
-        let ended = {
-            let mut slot = lock(&session.drags);
-            if slot
-                .open
-                .as_ref()
-                .is_some_and(|open| open.number == self.number)
-            {
-                slot.open.take()
-            } else {
-                None
-            }
-        };
-        if let Some(open) = ended {
-            open.end_quietly();
+        // Ended without waiting, on whichever thread cancels (an app's Esc, MCP's reader):
+        // its move killed, the drag closed, and left in the slot, closed, for the session's
+        // own thread to join (the next begin, release, new revision, or close).
+        let slot = lock(&session.drags);
+        if let Some(open) = slot.open.as_ref().filter(|open| open.number == self.number) {
+            open.drag.abandon();
         }
     }
 }
@@ -522,23 +514,20 @@ impl<C: Kernel + 'static> Session<C> {
             }
             return Err(Problems::from(no_drag(self.id, queued)));
         }
-        if to.is_some()
-            && !drag.is_open()
-            && let Some(closed) = drag.closed()
-        {
-            // A worker's failure is said with its own code; any other end (a cancel) as no
-            // drag being open.
+        if to.is_some() && !drag.is_open() {
+            // A worker's failure is said with its own code; any other end (a cancel, its
+            // thread perhaps still closing) as no drag being open.
+            let closed = drag.closed();
             if let Err(why) = drag.end(None) {
                 tracing::warn!(error = ?why, "a closed drag didn't end");
             }
-            return Err(Problems::from(if closed.code().is_kernel_fault() {
-                closed
-            } else {
-                no_drag(self.id, queued)
+            return Err(Problems::from(match closed {
+                Some(closed) if closed.code().is_kernel_fault() => closed,
+                _ => no_drag(self.id, queued),
             }));
         }
-        // Its move and its solve under the drag's stop, which the command's cancel and the
-        // session's close reach.
+        // Its move and its solve under the drag's stop, which the command's cancel reaches,
+        // and the session's close as the sessions are dropped.
         let interrupt: Arc<dyn Interrupt> = Arc::new(StopDrag(drag.stop()));
         lock(&self.drags).ending = Some(drag.stop());
         stop.interrupt_with(Arc::downgrade(&interrupt));
@@ -588,7 +577,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// file draws it (open item 15). Refused: a drag open in the session already (naming
     /// `session`); a document the gate refused; a feature that isn't a sketch (naming
     /// `sketch`); a point or curve the sketch hasn't (naming `point` or `curve`); a press
-    /// that isn't finite or is out of reach (naming `press`); a part of more than
+    /// that isn't finite, is out of reach, or is more than `LENGTH_TOLERANCE` off its curve's
+    /// edge as the begin state draws it (naming `press`: the app projects its pick, which lies
+    /// on a tessellation, onto the exact curve); a part of more than
     /// `MAX_DRAG_UNKNOWNS` unknowns (naming `point`, or `curve`); a sketch whose constraints
     /// conflict (`over_constrained`, naming them); and a worker that failed (its error).
     pub fn drag_begin(

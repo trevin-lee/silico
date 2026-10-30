@@ -461,6 +461,11 @@ impl SketchDrag {
         self.session.cancel_move()
     }
 
+    /// Ends the drag without waiting, as [`DragSession::abandon`] does.
+    pub fn abandon(&self) {
+        self.session.abandon();
+    }
+
     /// Whether the drag is still open.
     pub fn is_open(&self) -> bool {
         self.session.is_open()
