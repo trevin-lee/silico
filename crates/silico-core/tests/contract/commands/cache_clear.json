@@ -19,7 +19,7 @@
   "result": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`cache_clear`'s result. Only files the cache made as entries are removed: never another\nfile in the directory, and nothing through a link.",
+    "description": "`cache_clear`'s result. Only files the cache made as entries are removed: never another\nfile in the directory, and nothing through a link. A cache that leads out of the\nworkspace through a link isn't cleared: the command is refused, saying so.",
     "properties": {
       "directory": {
         "description": "The cache's directory (`.silico-cache` beside the document), named as the session's\npath names the document's.",

@@ -1,1 +1,1 @@
-{"code": "invalid_input", "message": "facing.direction must be a direction, got [0, 0, 0]", "feature": null, "elements": [], "elements_total": 0, "parameter": "facing.direction", "cause": null, "suggestion": "give a direction that isn't zero", "candidates": []}
+{"code": "invalid_input", "message": "facing.direction must be a direction, got [0, 0, 0]", "feature": null, "elements": [], "elements_total": 0, "parameter": "facing.direction", "cause": null, "suggestion": "give a direction that isn't zero", "candidates": [], "advice": null}

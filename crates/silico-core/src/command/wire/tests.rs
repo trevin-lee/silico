@@ -1022,7 +1022,7 @@ fn a_response_past_its_limit_is_answered_with_a_refusal_saying_so() {
     assert_eq!(
         response_text_within(&answer, Layout::OneLine, limit),
         format!(
-            r#"{{"ok": false, "session": {{"id": "s1", "path": "bracket.silico", "revision": 4, "transaction": false, "reloaded": false}}, "model": {{"revision": 3, "of": "current", "fault": null}}, "errors": [{{"code": "invalid_input", "message": "the response would be more than the {limit} bytes a response may be", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": "a command that changes the document may have done its work before its answer was written: read the session's revision before asking again", "suggestion": "ask for less at once", "candidates": []}}], "total": 1}}"#
+            r#"{{"ok": false, "session": {{"id": "s1", "path": "bracket.silico", "revision": 4, "transaction": false, "reloaded": false}}, "model": {{"revision": 3, "of": "current", "fault": null}}, "errors": [{{"code": "invalid_input", "message": "the response would be more than the {limit} bytes a response may be", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": "a command that changes the document may have done its work before its answer was written: read the session's revision before asking again", "suggestion": "ask for less at once", "candidates": [], "advice": null}}], "total": 1}}"#
         )
     );
     // A refusal too long itself is written without its session and model.
@@ -1213,4 +1213,126 @@ fn only_a_ref_reaches_a_definition_not_a_string_that_reads_like_one() {
         .map(String::as_str)
         .collect();
     assert_eq!(kept, ["Used"]);
+}
+
+#[test]
+fn an_errors_advice_is_one_word_for_each_kind_of_the_workers_advice_and_null_otherwise() {
+    // The contract lows' item 4: `advice`, last in the error contract, always present,
+    // mirroring the worker's `Advice` one word a variant, nothing merged, `TryAgain`'s two
+    // apart; null for an error that isn't a worker's fault and for advice in words alone.
+    // Each word written out here, and the faults as the worker client advises them
+    // (`crash_advice`, `timeout_advice`).
+    use crate::worker::{Advice, Reached, WorkerKind, crash_advice, timeout_advice};
+    use std::os::unix::process::ExitStatusExt as _;
+    let fault = || Error::new(ErrorCode::WorkerCrashed, "m");
+    let signalled = |signal| Some(std::process::ExitStatus::from_raw(signal));
+    let cases: [(Error, Option<&str>); 9] = [
+        // A SIGSEGV once the request reached the worker: its values, which would again.
+        (
+            fault().with_advice(crash_advice(
+                WorkerKind::Kernel,
+                signalled(libc::SIGSEGV),
+                Reached::Request,
+            )),
+            Some("change_the_values"),
+        ),
+        // A timeout once the worker had started.
+        (
+            fault().with_advice(timeout_advice(WorkerKind::Kernel, true)),
+            Some("simplify_or_wait"),
+        ),
+        // A timeout before it started, and a worker stopped from outside: try again.
+        (
+            fault().with_advice(timeout_advice(WorkerKind::Kernel, false)),
+            Some("try_again"),
+        ),
+        (
+            fault().with_advice(crash_advice(
+                WorkerKind::Kernel,
+                signalled(libc::SIGTERM),
+                Reached::Request,
+            )),
+            Some("try_again"),
+        ),
+        // Killed with the request, most likely for its memory: once more only.
+        (
+            fault().with_advice(crash_advice(
+                WorkerKind::Kernel,
+                signalled(libc::SIGKILL),
+                Reached::Request,
+            )),
+            Some("try_once_more"),
+        ),
+        // A worker that exited on its own: advice in words alone.
+        (
+            fault().with_advice(crash_advice(
+                WorkerKind::Kernel,
+                Some(std::process::ExitStatus::from_raw(3 << 8)),
+                Reached::Request,
+            )),
+            None,
+        ),
+        (fault().with_advice(Advice::Other("w".to_owned())), None),
+        // No advice: an error of the document's, and a fault given a suggestion of its own,
+        // which drops the advice its words no longer say.
+        (Error::new(ErrorCode::InvalidInput, "m"), None),
+        (
+            fault()
+                .with_advice(Advice::SimplifyOrWait)
+                .with_suggestion("s"),
+            None,
+        ),
+    ];
+    for (error, word) in cases {
+        let written = write(&error.to_wire(), Layout::OneLine).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let expected = word.map_or(serde_json::Value::Null, serde_json::Value::from);
+        assert_eq!(value["advice"], expected, "{written}");
+        // Last, as the contract's files have it.
+        assert_eq!(
+            value
+                .as_object()
+                .unwrap()
+                .keys()
+                .next_back()
+                .map(String::as_str),
+            Some("advice"),
+            "{written}"
+        );
+        // The error's own JSON says the same.
+        let serialized: serde_json::Value = serde_json::to_value(&error).unwrap();
+        assert_eq!(serialized["advice"], expected, "{error:?}");
+    }
+    // Worded again from its advice (a session's kept fault), the advice stands.
+    let kept = fault()
+        .with_advice(Advice::SimplifyOrWait)
+        .reworded("simplify the operation, or check with fresh to try it again");
+    let written = write(&kept.to_wire(), Layout::OneLine).unwrap();
+    assert!(
+        written.ends_with(r#", "advice": "simplify_or_wait"}"#),
+        "{written}"
+    );
+    // Two faults alike but for their advice aren't equal: they say different things.
+    assert_ne!(
+        fault().with_advice(Advice::TryAgain {
+            once_more: false,
+            why: "w".to_owned(),
+        }),
+        fault().with_advice(Advice::TryAgain {
+            once_more: true,
+            why: "w".to_owned(),
+        }),
+    );
+    // The envelope's schema lists the four words and null, in that order, and nothing else.
+    let envelope = snapshot_value("envelope").unwrap();
+    assert_eq!(
+        envelope["$defs"]["Error"]["properties"]["advice"]["enum"],
+        serde_json::json!([
+            "change_the_values",
+            "simplify_or_wait",
+            "try_again",
+            "try_once_more",
+            null
+        ])
+    );
 }

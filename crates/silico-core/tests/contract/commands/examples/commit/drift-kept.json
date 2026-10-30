@@ -4,7 +4,7 @@
   "refingerprinted": ["p0000001"],
   "resolved": [],
   "problems": [
-    {"code": "drift", "message": "feature k7f2qx3m rebuilt to other measures than its fingerprint: volume 8000 → 8000.000002", "feature": "k7f2qx3m", "elements": [], "elements_total": 0, "parameter": "fingerprint.volume", "cause": null, "suggestion": "if this feature or one it uses was edited by hand or in a merge since it was saved, run format (or silico fmt) to accept its new fingerprint; if not, this is a determinism bug or a change in the kernel: find which before accepting it", "candidates": []}
+    {"code": "drift", "message": "feature k7f2qx3m rebuilt to other measures than its fingerprint: volume 8000 → 8000.000002", "feature": "k7f2qx3m", "elements": [], "elements_total": 0, "parameter": "fingerprint.volume", "cause": null, "suggestion": "if this feature or one it uses was edited by hand or in a merge since it was saved, run format (or silico fmt) to accept its new fingerprint; if not, this is a determinism bug or a change in the kernel: find which before accepting it", "candidates": [], "advice": null}
   ],
   "problems_total": 1
 }

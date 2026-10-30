@@ -410,9 +410,12 @@ fn a_mesh_the_kernel_refuses_names_its_feature_and_writes_nothing() {
 }
 
 #[test]
-fn a_mesh_past_a_kernel_requests_time_suggests_a_coarser_tolerance() {
-    // M4.1's `export`: a tolerance so fine the mesh takes past a kernel request's 60 s is
-    // `worker_timeout`, naming the request, with the design's suggestion.
+fn a_mesh_past_a_kernel_requests_time_with_no_advice_is_said_as_the_worker_said_it() {
+    // M4.1's `export`: a mesh past a kernel request's 60 s is `worker_timeout`, naming the
+    // request and the feature. The design's suggestion of a coarser tolerance is given only
+    // where the worker advised simplifying (`simplify_or_wait`, which only the worker client
+    // gives: `command::export`'s own test, `timeouts`); a timeout with no such advice keeps
+    // the worker's words.
     let bench = Bench::of(EXAMPLE);
     bench.kernel.refuse(|op| {
         matches!(op, Op::ExportMesh { .. }).then(|| {
@@ -431,9 +434,7 @@ fn a_mesh_past_a_kernel_requests_time_suggests_a_coarser_tolerance() {
         (
             ErrorCode::WorkerTimeout,
             Some("m3tq8v0z"),
-            Some(
-                "export with a coarser tolerance: a finer one makes a larger mesh, which takes longer"
-            )
+            Some("the worker's own")
         ),
         "{e:?}"
     );
@@ -1602,7 +1603,10 @@ fn a_two_part_step_file_the_writer_refuses_names_no_feature() {
 }
 
 #[test]
-fn a_step_file_past_a_requests_time_suggests_exporting_fewer_features() {
+fn a_step_file_past_a_requests_time_with_no_advice_is_said_as_the_worker_said_it() {
+    // The design's "export fewer features at once" is given only where the worker advised
+    // simplifying (`simplify_or_wait`: `command::export`'s own test, `timeouts`); a timeout
+    // with no such advice keeps the worker's words, naming the one part.
     let bench = Bench::with(EXAMPLE, |kernel| {
         kernel.refuse(|op| {
             matches!(op, Op::ExportStep(_)).then(|| {
@@ -1622,7 +1626,7 @@ fn a_step_file_past_a_requests_time_suggests_exporting_fewer_features() {
         (
             ErrorCode::WorkerTimeout,
             Some("m3tq8v0z"),
-            Some("export fewer features at once: the STEP writer writes every body in one request")
+            Some("the worker's own")
         ),
         "{e:?}"
     );

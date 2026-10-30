@@ -670,7 +670,7 @@ impl KernelRequest<Description> {
         Self::new(op, move |name, reply| match reply {
             Reply::DescribedAll(description) => match description.validate(1) {
                 Ok(()) => Ok(description),
-                Err(problem) => Err(description_error(problem)),
+                Err(impossible) => Err(description_error(impossible.problem)),
             },
             other => Err(unexpected(name, &other)),
         })
@@ -877,8 +877,8 @@ fn batch_problem(
     total: u32,
     description: &Description,
 ) -> Option<String> {
-    if let Err(problem) = description.validate(first) {
-        return Some(problem);
+    if let Err(impossible) = description.validate(first) {
+        return Some(impossible.problem);
     }
     let (faces, edges, vertices) = (
         description.faces.len(),

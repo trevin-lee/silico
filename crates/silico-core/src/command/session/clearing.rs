@@ -1,11 +1,12 @@
 //! `cache_clear`'s words (the design's section 7, decision 25): the cache's directory as the
-//! session's path names it, and what a clear couldn't do, as the errors it's refused with.
+//! session's path names it, and what a clear couldn't do, or wouldn't (a cache that leads out
+//! of the workspace), as the errors it's refused with.
 
 use std::path::Path;
 
 use super::Problems;
 use crate::cache::{ClearFailure, ClearStep, PartlyCleared};
-use crate::file::{self, Workspace, shown_path};
+use crate::file::{self, Unresolved, Workspace, shown_path};
 use crate::{Error, ErrorCode};
 
 /// The rebuild cache's directory, `cache_dir` (where it is, through links), as the session's
@@ -32,6 +33,52 @@ pub(super) fn shown_cache_directory(
             .to_string_lossy()
             .into_owned(),
     }
+}
+
+/// The refusal of a clear of the cache in `cache_dir`, beside the session's document, `path`
+/// as `open` was given it, that led out of the `workspace` as the clear opened it, through a
+/// link (the contract lows, 2026-10-29): `invalid_input`, naming no parameter (the request's
+/// `session` is fine; the cache's way isn't), so `ok: false` says it didn't do what it was
+/// asked, never `removed: 0` as an empty cache's. Its cause names the link, from the
+/// workspace's root: the first on the cache's way that leads out now.
+pub(super) fn leads_out(workspace: Option<&Workspace>, path: &str, cache_dir: &Path) -> Error {
+    let error = Error::new(
+        ErrorCode::InvalidInput,
+        format!(
+            "the rebuild cache beside {} leads out of the workspace, through a link, so it \
+             isn't cleared",
+            shown_path(Path::new(path))
+        ),
+    )
+    .with_suggestion("remove the link, or clear the cache from inside the workspace");
+    let link = workspace.and_then(|workspace| link_out(workspace, cache_dir));
+    match link {
+        Some(link) => error.with_cause(format!(
+            "{} is a link that leads out of the workspace",
+            shown_path(&link)
+        )),
+        None => error.with_cause("a link on its way leads out of the workspace"),
+    }
+}
+
+/// The first link on `cache_dir`'s way, below `workspace`'s root, that leads out of it now,
+/// from the root: none if none does (put back since the clear looked).
+fn link_out(workspace: &Workspace, cache_dir: &Path) -> Option<std::path::PathBuf> {
+    let inside = cache_dir.strip_prefix(workspace.root()).ok()?;
+    let mut at = workspace.root().to_owned();
+    for name in inside.components() {
+        at.push(name);
+        let linked = std::fs::symlink_metadata(&at).is_ok_and(|meta| meta.is_symlink());
+        if linked
+            && matches!(
+                file::resolve(Some(workspace), &at),
+                Err(Unresolved::Outside)
+            )
+        {
+            return at.strip_prefix(workspace.root()).ok().map(Path::to_owned);
+        }
+    }
+    None
 }
 
 /// What a clear of the cache in `cache_dir`, shown as `directory`, couldn't do: an

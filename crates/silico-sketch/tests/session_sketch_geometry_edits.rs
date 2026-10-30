@@ -286,7 +286,8 @@ fn a_merge_that_takes_a_conflicting_sketch_past_its_last_freedom_is_refused_as_m
             "parameter": null,
             "cause": WORSE,
             "suggestion": "remove or change one of the constraints named",
-            "candidates": []
+            "candidates": [],
+            "advice": null
         }])
     );
     assert_eq!((f.revision(), f.text()), (3, text));
@@ -427,7 +428,8 @@ fn a_merge_of_two_locked_ends_makes_a_lock_redundant_and_is_refused_as_main_roll
             "parameter": null,
             "cause": WORSE,
             "suggestion": "remove the constraints named, then make the merge again",
-            "candidates": []
+            "candidates": [],
+            "advice": null
         })
     );
     assert_eq!((f.revision(), f.text()), (1, text));

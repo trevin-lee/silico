@@ -76,25 +76,26 @@ Every tool answers with its command's envelope, as `structuredContent` and as th
 
 ```json
 {"ok": false, "session": {"id": "s1", "path": "part.silico", "revision": 1, "transaction": true, "reloaded": false}, "model": null,
- "errors": [{"code": "invalid_input", "message": "a transaction is already open in this session", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": null, "suggestion": "commit or roll back the open transaction, then begin again", "candidates": []}],
+ "errors": [{"code": "invalid_input", "message": "a transaction is already open in this session", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": null, "suggestion": "commit or roll back the open transaction, then begin again", "candidates": [], "advice": null}],
  "total": 1}
 ```
 
 Each error says:
 
-- `code`: one of [the codes](../crates/silico-core/tests/contract/error-codes.txt), never renamed;
+- `code`: one of [the codes](../crates/silico-core/tests/contract/error-codes.txt), never renamed, which every tool's output schema lists (`enum`), as `check`'s lists the warnings' codes;
 - `message`;
 - the `feature` and the `elements` at fault (the first 100, with `elements_total`);
 - the request's `parameter` at fault;
 - the underlying `cause`;
 - a `suggestion` of what to do;
-- for a name that finds nothing, `candidates`: the likeliest names now, none of them taken for it.
+- for a name that finds nothing, `candidates`: the likeliest names now, none of them taken for it;
+- for a kernel fault, `advice`, what its suggestion advises, as data: `change_the_values` (the request's values crashed the worker and would again: edit them, never retry as is), `simplify_or_wait` (it ran past its time: simplify the operation, or try again), `try_again`, or `try_once_more`; `null` for any other error, and a fault whose advice is in its words alone.
 
 ```json
-{"code": "reference_broken", "message": "elements.1, \"k7f2qx3m.box.Face7\", names no element of the live solids", "feature": null, "elements": ["k7f2qx3m.box.Face7"], "elements_total": 1, "parameter": "elements.1", "cause": null, "suggestion": "name the element as the model now names it: the candidates are the likeliest, none taken for it", "candidates": ["k7f2qx3m.box.Face6"]}
+{"code": "reference_broken", "message": "elements.1, \"k7f2qx3m.box.Face7\", names no element of the live solids", "feature": null, "elements": ["k7f2qx3m.box.Face7"], "elements_total": 1, "parameter": "elements.1", "cause": null, "suggestion": "name the element as the model now names it: the candidates are the likeliest, none taken for it", "candidates": ["k7f2qx3m.box.Face6"], "advice": null}
 ```
 
-A document's problems are not a refusal: a `check` that finds a failed fillet has `ok: true`, with the problems and warnings in its result. `worker_crashed`, `worker_timeout`, `worker_unavailable`, `protocol_error`, `resource_exhausted`, and `internal` are kernel faults, not the document's. A rebuild that met one says so once, in `model.fault`, and its revision keeps it, so reading again returns the same fault. Follow the suggestion, which is usually `check` with `fresh: true` to try it again.
+A document's problems are not a refusal: a `check` that finds a failed fillet has `ok: true`, with the problems and warnings in its result. `worker_crashed`, `worker_timeout`, `worker_unavailable`, `protocol_error`, `resource_exhausted`, and `internal` are kernel faults, not the document's. A rebuild that met one says so once, in `model.fault`, and its revision keeps it, so reading again returns the same fault. Follow the suggestion, which is usually `check` with `fresh: true` to try it again; `advice` says as data whether trying again can help.
 
 A tool that doesn't exist, or arguments that aren't an object, is a JSON-RPC error (`-32602`) rather than a result, its `data` the same refused envelope. An unknown tool's lists the tools as candidates.
 

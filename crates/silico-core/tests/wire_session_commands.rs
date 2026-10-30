@@ -371,7 +371,7 @@ fn the_examples_are_the_designs_own_text() {
             "### `cache_clear` (M4.3)",
             "### `elements` (M4.4)",
             "cache_clear",
-            &[Some("request"), Some("result")],
+            &[Some("request"), Some("result"), Some("refused-leads-out")],
         ),
     ];
     let mut left_out = Vec::new();
@@ -1114,7 +1114,7 @@ fn begin_and_rollback_answer_as_the_design_gives_them() {
     let again = answer(f.sessions.begin(&f.id));
     assert_eq!(
         the_refusal(&again),
-        r#"{"code": "invalid_input", "message": "a transaction is already open in this session", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": null, "suggestion": "commit or roll back the open transaction, then begin again", "candidates": []}
+        r#"{"code": "invalid_input", "message": "a transaction is already open in this session", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": null, "suggestion": "commit or roll back the open transaction, then begin again", "candidates": [], "advice": null}
 "#
     );
 }
