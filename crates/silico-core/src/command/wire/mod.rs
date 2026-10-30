@@ -1558,11 +1558,11 @@ pub struct ErrorSchema {
 }
 
 /// An error's or a warning's `advice`: one of the worker's advice's words, in their order
-/// (`Advice::WORDS`), or null.
+/// (`AdviceWord::ALL`), or null.
 fn advice_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-    let mut words: Vec<serde_json::Value> = crate::worker::Advice::WORDS
+    let mut words: Vec<serde_json::Value> = crate::worker::AdviceWord::ALL
         .iter()
-        .map(|&word| serde_json::Value::from(word))
+        .map(|word| serde_json::Value::from(word.as_str()))
         .collect();
     words.push(serde_json::Value::Null);
     schemars::json_schema!({

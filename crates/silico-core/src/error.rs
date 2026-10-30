@@ -22,7 +22,8 @@ use crate::worker::Advice;
 
 /// Declares a list of codes, so the enum, its `ALL`, and the string forms (which are also
 /// the serialized forms) can't drift apart: the error codes ([`ErrorCode`]) and the warning
-/// codes ([`WarningCode`]), each a list of its own.
+/// codes ([`WarningCode`]), each a list of its own, and the words of a worker's advice
+/// (`worker::AdviceWord`).
 macro_rules! codes {
     ($(#[$enum_doc:meta])* $name:ident { $($(#[$doc:meta])* $variant:ident = $string:literal,)* }) => {
         $(#[$enum_doc])*
@@ -44,19 +45,20 @@ macro_rules! codes {
             }
         }
 
-        impl Serialize for $name {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        impl ::serde::Serialize for $name {
+            fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 serializer.serialize_str(self.as_str())
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl ::std::fmt::Display for $name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 f.write_str(self.as_str())
             }
         }
     };
 }
+pub(crate) use codes;
 
 codes! {
     /// What kind of failure this is. Agents match on the string form, so a code is never
