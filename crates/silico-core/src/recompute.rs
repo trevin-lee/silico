@@ -256,18 +256,24 @@ pub enum FeatureOutcome {
     Blocked { on: FeatureId },
     /// A sketch, solved: it makes no solid. One that didn't solve is `Failed`, with why.
     Sketch(Arc<SketchSolution>),
+    /// Suppressed (the M5.0 design's `suppress_feature`): not built, nor a sketch solved. A
+    /// feature that consumes it builds on what stands for it, the nearest unsuppressed
+    /// feature up its chain.
+    Suppressed,
 }
 
 impl FeatureOutcome {
     /// Why it failed, each error naming the feature: its failure, or its broken references
-    /// (the first hundred); none if it built, is blocked on another, or is a sketch.
+    /// (the first hundred); none if it built, is blocked on another, is a sketch, or is
+    /// suppressed.
     pub fn errors(&self) -> &[Error] {
         match self {
             FeatureOutcome::Failed(error) => std::slice::from_ref(error),
             FeatureOutcome::Broken { errors, .. } => errors,
             FeatureOutcome::Built { .. }
             | FeatureOutcome::Blocked { .. }
-            | FeatureOutcome::Sketch(_) => &[],
+            | FeatureOutcome::Sketch(_)
+            | FeatureOutcome::Suppressed => &[],
         }
     }
 }
@@ -402,7 +408,8 @@ impl Model {
                 FeatureOutcome::Built { .. }
                 | FeatureOutcome::Failed(_)
                 | FeatureOutcome::Blocked { .. }
-                | FeatureOutcome::Sketch(_) => 0,
+                | FeatureOutcome::Sketch(_)
+                | FeatureOutcome::Suppressed => 0,
             })
             .sum()
     }
@@ -496,7 +503,8 @@ impl Model {
             FeatureOutcome::Failed(_)
             | FeatureOutcome::Broken { .. }
             | FeatureOutcome::Blocked { .. }
-            | FeatureOutcome::Sketch(_) => None,
+            | FeatureOutcome::Sketch(_)
+            | FeatureOutcome::Suppressed => None,
         }
     }
 
@@ -679,7 +687,8 @@ impl Model {
             FeatureOutcome::Failed(_)
             | FeatureOutcome::Broken { .. }
             | FeatureOutcome::Blocked { .. }
-            | FeatureOutcome::Sketch(_) => None,
+            | FeatureOutcome::Sketch(_)
+            | FeatureOutcome::Suppressed => None,
         }
     }
 
@@ -815,8 +824,8 @@ impl Model {
         errors
     }
 
-    /// Its document as `silico fmt` writes it: each feature's fingerprint as it rebuilt,
-    /// and each sketch as it solved (its points, circles' radii, and reference dimensions'
+    /// Its document as `silico fmt` writes it: each feature's fingerprint as it rebuilt (none
+    /// for a suppressed one), and each sketch as it solved (its points, circles' radii, and reference dimensions'
     /// values: [`SketchSolution::written`]). A feature that didn't rebuild or solve, or whose
     /// solid couldn't be measured or written, keeps what's stored with it: there's nothing to
     /// put in its place, and a failure that passes (a worker that hung, say) mustn't lose the
@@ -834,8 +843,9 @@ impl Model {
         self.outcome(id).and_then(Record::of).is_some()
     }
 
-    /// Its document as a save writes it, each feature as `how` says ([`Save`]): the one
-    /// place the rule is held. A session's commit saves the features its edits reached as
+    /// Its document as a save writes it, each feature as `how` says ([`Save`]), but a
+    /// suppressed one, saved with no fingerprint whatever `how` says: the one place the rule
+    /// is held. A session's commit saves the features its edits reached as
     /// rebuilt and every other as stored (decision 28); its `format` saves the reached ones
     /// as rebuilt, those whose drift it isn't told to accept as stored, and the rest as
     /// recorded (decision 31); [`saved`](Self::saved), every feature as recorded.
@@ -843,6 +853,13 @@ impl Model {
         let mut document = self.document().clone();
         // The model's features are its document's, in order.
         for (feature, (_, outcome)) in document.features.iter_mut().zip(&self.features) {
+            // A suppressed feature carries no fingerprint, however it came to be suppressed
+            // (by command, by hand, by a merge), so what it holds is the text's alone
+            // (M5.0's A10); and a suppressed sketch keeps its coordinates, unsolved.
+            if feature.suppressed {
+                feature.fingerprint = None;
+                continue;
+            }
             let how = how(&feature.id);
             if how == Save::Stored {
                 continue;
@@ -904,7 +921,8 @@ impl<'a> Record<'a> {
             FeatureOutcome::Sketch(solution) => Some(Record::Solve(solution)),
             FeatureOutcome::Failed(_)
             | FeatureOutcome::Broken { .. }
-            | FeatureOutcome::Blocked { .. } => None,
+            | FeatureOutcome::Blocked { .. }
+            | FeatureOutcome::Suppressed => None,
         }
     }
 }
@@ -2004,6 +2022,8 @@ struct Planned {
     refused: Option<Error>,
     /// What its result is checked for, once built ([`Check`]).
     check: Option<Check>,
+    /// Whether it's suppressed: then it has nothing else, and its outcome is that.
+    suppressed: bool,
 }
 
 /// What a sweep feature's plan came to.
@@ -2201,15 +2221,42 @@ impl Planned {
     fn key(&self) -> Option<Key> {
         self.steps.last().copied()
     }
+
+    /// A suppressed feature's plan: no steps, nothing used, nothing named.
+    fn suppressed(id: FeatureId) -> Self {
+        Planned {
+            id,
+            steps: Vec::new(),
+            uses: Vec::new(),
+            naming: None,
+            naming_key: None,
+            sketch: None,
+            sweeps: None,
+            refused: None,
+            check: None,
+            suppressed: true,
+        }
+    }
+}
+
+/// The place of the feature whose solid stands for a feature's `base`, of its inputs as it
+/// builds on them (`document::suppression::effective_inputs`).
+fn base_of(inputs: &[(&'static str, Option<usize>)]) -> Option<usize> {
+    inputs
+        .iter()
+        .find(|(field, _)| *field == "base")
+        .and_then(|(_, stands)| *stands)
 }
 
 impl Plan {
     /// Each sketch's solve's key, in timeline order, and which of them a pad, pocket,
     /// revolve, or groove sweeps: those are solved before the plan is made (design S3).
+    /// A suppressed sketch isn't solved, and a suppressed feature sweeps nothing.
     fn sketches_of(document: &Checked) -> (Vec<(FeatureId, Key)>, BTreeSet<FeatureId>) {
         let features = &document.document().features;
         let sketches = features
             .iter()
+            .filter(|f| !f.suppressed)
             .filter_map(|f| match &f.operation {
                 Operation::Sketch(sketch) => Some((f.id.clone(), sketch_key(&f.id, sketch))),
                 _ => None,
@@ -2217,15 +2264,21 @@ impl Plan {
             .collect();
         let swept = features
             .iter()
+            .filter(|f| !f.suppressed)
             .filter_map(|f| f.operation.sketch().cloned())
             .collect();
         (sketches, swept)
     }
 
     /// `document`'s steps, every sketch a feature sweeps solved and profiled in `swept`
-    /// (one that didn't solve is missing).
+    /// (one that didn't solve is missing). A suppressed feature has none, and a feature
+    /// whose `base` or `tool` names one builds on that input's effective base, the nearest
+    /// unsuppressed feature up its chain (`document::suppression`): its steps take that
+    /// feature's solid, and its names that feature's names.
     fn of(document: &Arc<Checked>, swept: &BTreeMap<FeatureId, Swept>) -> Plan {
         let features = &document.document().features;
+        let place = |id: &FeatureId| document.place(id);
+        let standing = crate::document::suppression::standing(features, &place);
         let mut plan = Plan {
             steps: BTreeMap::new(),
             order: Vec::new(),
@@ -2240,7 +2293,17 @@ impl Plan {
             judged_by: BTreeMap::new(),
             dependants: Vec::new(),
         };
-        for feature in features {
+        for (at, feature) in features.iter().enumerate() {
+            if feature.suppressed {
+                // Nothing to build, solve, or name: what consumes it builds on what stands
+                // for it.
+                plan.features.push(Planned::suppressed(feature.id.clone()));
+                plan.dependants.push(Vec::new());
+                continue;
+            }
+            // Its inputs, each at the feature whose solid stands for it.
+            let stands =
+                crate::document::suppression::effective_inputs(features, &standing, &place, at);
             let mut own = Vec::new();
             let mut uses = Vec::new();
             let mut refused = None;
@@ -2265,16 +2328,14 @@ impl Plan {
                     Some(Naming::Primitive(primitive))
                 }
                 Made::Boolean(op) => {
-                    // The gate has checked that both are earlier features, so both are
-                    // planned.
-                    if let [(_, base), (_, tool)] = feature.operation.inputs().as_slice() {
-                        let input = |id: &FeatureId| document.place(id);
-                        if let (Some(b), Some(t)) = (input(base), input(tool)) {
-                            uses = vec![b, t];
-                            let key = |i: usize| plan.features.get(i).and_then(Planned::key);
-                            if let (Some(base), Some(tool)) = (key(b), key(t)) {
-                                own.push(plan.add(Step::Boolean { op, base, tool }, &feature.id));
-                            }
+                    // The gate has checked that both are earlier features, and that neither
+                    // input has its whole chain suppressed, so both are planned.
+                    if let [(_, Some(b)), (_, Some(t))] = stands.as_slice() {
+                        let (b, t) = (*b, *t);
+                        uses = vec![b, t];
+                        let key = |i: usize| plan.features.get(i).and_then(Planned::key);
+                        if let (Some(base), Some(tool)) = (key(b), key(t)) {
+                            own.push(plan.add(Step::Boolean { op, base, tool }, &feature.id));
                         }
                     }
                     Some(Naming::Operation(op.into()))
@@ -2283,21 +2344,18 @@ impl Plan {
                 Made::Sketch => None,
                 Made::Fillet { radius } => {
                     let dressing = Dressing::Fillet { radius };
-                    (own, uses) = plan.dress(document, feature, dressing);
+                    (own, uses) = plan.dress(feature, base_of(&stands), dressing);
                     Some(Naming::Operation(OpCode::Fillet))
                 }
                 Made::Chamfer { distance } => {
                     let dressing = Dressing::Chamfer { distance };
-                    (own, uses) = plan.dress(document, feature, dressing);
+                    (own, uses) = plan.dress(feature, base_of(&stands), dressing);
                     Some(Naming::Operation(OpCode::Chamfer))
                 }
                 Made::Sweep(kind) => {
-                    uses = feature
-                        .operation
-                        .inputs()
-                        .iter()
-                        .filter_map(|(_, base)| document.place(base))
-                        .collect();
+                    // A pad's or revolve's base whose whole chain is suppressed stands for
+                    // nothing: it builds alone, as one with no base does.
+                    uses = stands.iter().filter_map(|(_, stand)| *stand).collect();
                     sweeps = feature
                         .operation
                         .sketch()
@@ -2346,16 +2404,23 @@ impl Plan {
                 sweeps,
                 refused,
                 check: match feature.operation.made() {
-                    Made::Boolean(op) => match feature.operation.inputs().as_slice() {
-                        [(_, base), (_, tool)] => Some(Check::Boolean {
-                            op,
-                            base: (*base).clone(),
-                            tool: (*tool).clone(),
-                        }),
+                    // Its inputs as it builds on them, so its refusal names those.
+                    Made::Boolean(op) => match stands.as_slice() {
+                        [(_, Some(b)), (_, Some(t))] => {
+                            match (features.get(*b), features.get(*t)) {
+                                (Some(base), Some(tool)) => Some(Check::Boolean {
+                                    op,
+                                    base: base.id.clone(),
+                                    tool: tool.id.clone(),
+                                }),
+                                _ => None,
+                            }
+                        }
                         _ => None,
                     },
                     _ => plan.checks_of.remove(&feature.id).map(Check::Sweep),
                 },
+                suppressed: false,
             });
             // Which features each step serves, which checks its result decides, and what
             // uses what.
@@ -2577,21 +2642,18 @@ impl Plan {
         })
     }
 
-    /// The step of a fillet or chamfer `feature` (the next feature planned), of its base:
-    /// its steps, and the features it uses.
+    /// The step of a fillet or chamfer `feature` (the next feature planned), of its base
+    /// `base`, by place (its effective base: the feature whose solid stands for the one it
+    /// names): its steps, and the features it uses.
     fn dress(
         &mut self,
-        document: &Checked,
         feature: &crate::document::Feature,
+        base: Option<usize>,
         dressing: Dressing,
     ) -> (Vec<Key>, Vec<usize>) {
-        // The gate has checked that the base is an earlier feature, so it's planned.
-        let Some(b) = feature
-            .operation
-            .inputs()
-            .first()
-            .and_then(|(_, base)| document.place(base))
-        else {
+        // The gate has checked that the base is an earlier feature, with something
+        // unsuppressed up its chain, so it's planned.
+        let Some(b) = base else {
             return (Vec::new(), Vec::new());
         };
         let planned = self.features.get(b);
@@ -3979,11 +4041,17 @@ fn model(
                         Some(id.clone())
                     }
                     Some((_, FeatureOutcome::Blocked { on })) => Some(on.clone()),
-                    Some((_, FeatureOutcome::Built { .. } | FeatureOutcome::Sketch(_))) | None => {
-                        None
-                    }
+                    // A feature uses a suppressed one only through what stands for it.
+                    Some((
+                        _,
+                        FeatureOutcome::Built { .. }
+                        | FeatureOutcome::Sketch(_)
+                        | FeatureOutcome::Suppressed,
+                    ))
+                    | None => None,
                 });
         let outcome = match (blocked, planned.sketch) {
+            _ if planned.suppressed => FeatureOutcome::Suppressed,
             (Some(on), _) => FeatureOutcome::Blocked { on },
             (None, Some(key)) => match solutions.get(&key) {
                 Some(Ok(solution)) => FeatureOutcome::Sketch(Arc::clone(solution)),
@@ -4033,7 +4101,8 @@ fn model(
             FeatureOutcome::Failed(_)
             | FeatureOutcome::Broken { .. }
             | FeatureOutcome::Blocked { .. }
-            | FeatureOutcome::Sketch(_) => None,
+            | FeatureOutcome::Sketch(_)
+            | FeatureOutcome::Suppressed => None,
         })
         .collect::<Vec<_>>();
     let naming = naming(plan, &features, done);

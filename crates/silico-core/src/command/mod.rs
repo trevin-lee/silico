@@ -40,7 +40,8 @@ pub use session::{
     MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, Opened,
     OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted,
     Removed, Replaced, Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions,
-    Status, Stepped, Stopper, TOO_LONG, TextAnswer, TimelineAnswer, TryAgainBy, fault_suggestion,
+    Status, Stepped, Stopper, Suppressed, TOO_LONG, TextAnswer, TimelineAnswer, TryAgainBy,
+    fault_suggestion,
 };
 pub use session_command::{ReadCommand, SessionCommand};
 
@@ -517,14 +518,16 @@ pub fn outline(document: &Document) -> String {
             operation,
             version: _,
             name,
+            suppressed,
             note,
             fingerprint,
         } = feature;
         let _ = write!(
             out,
-            "{} {} {}",
+            "{} {} {}{}",
             id,
             quoted(name.as_str()),
+            if *suppressed { "suppressed " } else { "" },
             operation.type_name()
         );
         let values = values(operation);
@@ -656,16 +659,15 @@ fn measures(f: &Fingerprint) -> String {
 /// The features that make a solid and that no later feature consumes, in timeline order:
 /// the solids the timeline ends with, if every feature builds.
 fn bodies(document: &Document) -> Vec<&document::FeatureId> {
-    let consumed: std::collections::BTreeSet<&document::FeatureId> = document
-        .features
-        .iter()
-        .flat_map(|f| f.operation.inputs().into_iter().map(|(_, id)| id))
-        .collect();
+    // A feature consumes what stands for each of its inputs, a suppressed one's base passed
+    // through, and a suppressed feature consumes nothing and is no body
+    // (`document::suppression`).
+    let consumed = document::suppression::consumed(&document.features, &|_| true);
     document
         .features
         .iter()
         // A sketch makes no solid, so it's no body.
-        .filter(|f| f.operation.makes_solid() && !consumed.contains(&f.id))
+        .filter(|f| f.operation.makes_solid() && !f.suppressed && !consumed.contains(&f.id))
         .map(|f| &f.id)
         .collect()
 }

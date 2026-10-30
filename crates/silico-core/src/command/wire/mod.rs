@@ -1699,6 +1699,9 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         Command::MoveFeature => {
             command_schema::<edits::MoveFeatureRequestSchema, edits::MoveFeatureResultSchema>
         }
+        Command::SuppressFeature => {
+            command_schema::<edits::SuppressFeatureRequestSchema, edits::SuppressFeatureResultSchema>
+        }
         Command::Timeline => {
             command_schema::<reads::TimelineRequestSchema, reads::TimelineResultSchema>
         }

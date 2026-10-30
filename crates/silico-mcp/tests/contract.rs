@@ -126,6 +126,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "render",
         "export",
         "move_feature",
+        "suppress_feature",
     ];
     for tool in sent["tools"].as_array().unwrap() {
         let name = tool["name"].as_str().unwrap();
@@ -344,8 +345,8 @@ fn every_example_holds_to_its_tools_schemas() {
     // export's 8 (#182), cache_clear's 2 (#183), STEP export's 4 (#186), check's
     // warning (#189), and read_logs' 3 and version's result (#194); and M5.1's 11:
     // add_feature's 4 for `before`, remove_feature's result with `rewired`, move_feature's
-    // 4, and timeline's 2.
-    assert_eq!(seen, 119);
+    // 4, and timeline's 2; and suppress_feature's 6.
+    assert_eq!(seen, 125);
 }
 
 #[test]

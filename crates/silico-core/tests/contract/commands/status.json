@@ -138,6 +138,7 @@
           "render",
           "export",
           "move_feature",
+          "suppress_feature",
           "timeline"
         ],
         "type": "string"

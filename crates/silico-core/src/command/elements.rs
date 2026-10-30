@@ -114,7 +114,7 @@ fn named(asked: bool, error: Error) -> Error {
 }
 
 /// The feature `id`'s built solid, or why it has none: a feature the document doesn't
-/// have, a sketch, or one that failed (its failure, as `check` reports it, a kernel fault
+/// have, a sketch, one suppressed, or one that failed (its failure, as `check` reports it, a kernel fault
 /// as the revision keeps it) or was blocked (on a kernel fault, refused with the fault);
 /// naming the request's `feature` if `asked`, as [`entries`] names it. Every read of a
 /// feature's solid (`elements`, `query`, `mass_properties`) refuses one alike.
@@ -140,6 +140,17 @@ pub(crate) fn built<'m>(
             )
             .with_feature(id.as_str())
             .with_suggestion("name a feature that makes a solid"),
+        )
+        .into()),
+        Some(FeatureOutcome::Suppressed) => Err(named(
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!("{id} is suppressed, so it has no solid"),
+            )
+            .with_feature(id.as_str())
+            .with_suggestion(format!(
+                "unsuppress {id} first (suppress_feature with suppressed false), or name a feature that isn't suppressed"
+            )),
         )
         .into()),
         Some(FeatureOutcome::Failed(error)) => Err(worded(error).into()),

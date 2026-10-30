@@ -14,4 +14,5 @@ mod exact;
 mod handshake;
 mod hostile;
 mod lines;
+mod suppress_commands;
 mod timeline_commands;

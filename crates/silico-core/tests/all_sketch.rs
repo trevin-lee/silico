@@ -96,9 +96,13 @@ mod sketch_states;
 mod sketch_trim;
 #[path = "stored_coordinates.rs"]
 mod stored_coordinates;
+#[path = "suppression.rs"]
+mod suppression;
 #[path = "timeline.rs"]
 mod timeline;
 #[path = "undo.rs"]
 mod undo;
+#[path = "wire_suppress_commands.rs"]
+mod wire_suppress_commands;
 #[path = "wire_timeline_commands.rs"]
 mod wire_timeline_commands;

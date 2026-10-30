@@ -854,6 +854,21 @@ pub struct Moved {
     pub commit: Option<Committed>,
 }
 
+/// What `suppress_feature` did (docs/design/m5.0-app.md, section 7): the feature; the
+/// features the edit suppressed and unsuppressed, in timeline order, the feature itself
+/// among them; whether the document changed (not for a feature suppressed already, or one
+/// unsuppressed that isn't: then both lists are empty, there's no new revision, and nothing
+/// is written); and, outside a transaction, the commit's result, none inside one or if
+/// nothing changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Suppressed {
+    pub feature: FeatureId,
+    pub suppressed: Vec<FeatureId>,
+    pub unsuppressed: Vec<FeatureId>,
+    pub changed: bool,
+    pub commit: Option<Committed>,
+}
+
 /// What `replace_text` did (the design's section 7): whether the document changed (not if
 /// the text is the document the session holds, in whatever layout: then there's no new
 /// revision and nothing is written), its number of features, and, outside a transaction,

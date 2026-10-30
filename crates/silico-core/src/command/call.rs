@@ -27,7 +27,7 @@ use super::render::Rendering;
 use super::session::WeakSessions;
 use super::wire::edits::{
     AddFeatureRequest, MoveFeatureRequest, RemoveFeatureRequest, ReplaceTextRequest,
-    SetFieldRequest,
+    SetFieldRequest, SuppressFeatureRequest,
 };
 use super::wire::elements::{ElementsRequest, QueryRequest};
 use super::wire::export::ExportRequest;
@@ -75,13 +75,14 @@ pub enum Command {
     ReadLogs,
     Export,
     MoveFeature,
+    SuppressFeature,
     Timeline,
 }
 
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
     /// 7).
-    pub const ALL: [Command; 28] = [
+    pub const ALL: [Command; 29] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -109,6 +110,7 @@ impl Command {
         Command::ReadLogs,
         Command::Export,
         Command::MoveFeature,
+        Command::SuppressFeature,
         Command::Timeline,
     ];
 
@@ -142,6 +144,7 @@ impl Command {
             Command::ReadLogs => "read_logs",
             Command::Export => "export",
             Command::MoveFeature => "move_feature",
+            Command::SuppressFeature => "suppress_feature",
             Command::Timeline => "timeline",
         }
     }
@@ -187,6 +190,7 @@ impl Command {
             | Command::Render
             | Command::Export
             | Command::MoveFeature
+            | Command::SuppressFeature
             | Command::Timeline => false,
         }
     }
@@ -563,6 +567,9 @@ impl<P: Clients + 'static> Sessions<P> {
             }),
             Command::MoveFeature => typed(MoveFeatureRequest::read(request), |r| {
                 self.move_feature(&r.session, r.revision, r.feature, r.before)
+            }),
+            Command::SuppressFeature => typed(SuppressFeatureRequest::read(request), |r| {
+                self.suppress_feature(&r.session, r.revision, r.feature, r.suppressed)
             }),
             Command::Timeline => typed(TimelineRequest::read(request), |r| {
                 self.timeline(&r.session, r.model)

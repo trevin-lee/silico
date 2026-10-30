@@ -14,8 +14,8 @@
 //!   drift from its fingerprint (each a problem on it, as the session's check counts it); or
 //!   blocked by a failure of the document's upstream, which is no problem of its own (the problem is at its root) but didn't compute, as
 //!   Fusion's error is a feature that fails to compute;
-//! - **suppressed**: never yet: suppression comes with its schema change (M5.1, the
-//!   maintainer's);
+//! - **suppressed**: suppressed (`"suppressed": true`, the M5.0 design's
+//!   `suppress_feature`): not built, what consumes it building on what stands for it;
 //! - **unknown**: a feature the model hasn't built (added or edited since its revision, or
 //!   using one that was); one a kernel fault
 //!   stopped, building or measuring it, or blocked only by kernel faults upstream, which say
@@ -136,7 +136,7 @@ pub fn timeline(document: &Document, model: Option<&Model>, excepted: &Excepted)
                 id: feature.id.clone(),
                 kind: feature.operation.type_name(),
                 name: feature.name.as_str().to_owned(),
-                suppressed: false,
+                suppressed: feature.suppressed,
                 inputs: feature.operation.uses().cloned().collect(),
                 health: mark.health,
                 problems: mark.problems,
@@ -162,24 +162,21 @@ pub fn bodies(model: &Model) -> Vec<FeatureId> {
 /// model built a solid for and no feature of the document consumes (below). One edited
 /// since (in `unbuilt`) stays (marked unknown), so a body doesn't vanish while its rebuild
 /// runs; one a feature added since consumes, or whose consumer was removed since, is judged
-/// by the document.
+/// by the document. A feature consumes what stands for each of its inputs, a suppressed
+/// one's base passed through (`document::suppression`), and a suppressed feature consumes
+/// nothing and is no body, whatever the model built.
 fn bodies_of(document: &Document, model: &Model, unbuilt: &BTreeSet<FeatureId>) -> Vec<FeatureId> {
     // Consumed: by a feature the model built, or one it hasn't built yet (whose build will).
     // A solid whose consumer failed is a body still, as the model has it.
-    let consumed: BTreeSet<&FeatureId> = document
-        .features
-        .iter()
-        .filter(|f| {
-            unbuilt.contains(&f.id)
-                || matches!(model.outcome(&f.id), Some(FeatureOutcome::Built { .. }))
-        })
-        .flat_map(|f| f.operation.inputs().into_iter().map(|(_, id)| id))
-        .collect();
+    let consumed = crate::document::suppression::consumed(&document.features, &|f| {
+        unbuilt.contains(&f.id)
+            || matches!(model.outcome(&f.id), Some(FeatureOutcome::Built { .. }))
+    });
     document
         .features
         .iter()
         // A feature edited into a sketch since makes no solid, whatever the model built.
-        .filter(|f| !matches!(f.operation, crate::document::Operation::Sketch(_)))
+        .filter(|f| !matches!(f.operation, crate::document::Operation::Sketch(_)) && !f.suppressed)
         .map(|f| &f.id)
         .filter(|id| {
             !consumed.contains(id)
@@ -291,6 +288,11 @@ fn marks(model: &Model, excepted: &Excepted) -> BTreeMap<FeatureId, Mark> {
                     Root::Fault => unknown,
                 }
             }
+            FeatureOutcome::Suppressed => Mark {
+                health: Health::Suppressed,
+                problems: 0,
+                warnings: 0,
+            },
             FeatureOutcome::Built { .. } | FeatureOutcome::Sketch(_) if unmeasured.contains(id) => {
                 unknown
             }
