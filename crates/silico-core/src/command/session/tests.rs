@@ -2629,7 +2629,7 @@ fn a_feature_added_without_an_id_takes_the_next_id_the_document_doesnt_hold() {
     .unwrap();
     let added = f
         .sessions
-        .add_feature(&f.id, Revision::OPENED, ball)
+        .add_feature(&f.id, Revision::OPENED, None, ball)
         .wait()
         .result
         .unwrap();
@@ -3790,6 +3790,10 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
                 Box::new(move || erased(s.render(at, model, front()))),
             ),
             (
+                ReadCommand::Timeline,
+                Box::new(move || erased(s.timeline(at, model))),
+            ),
+            (
                 ReadCommand::Sketch,
                 Box::new(move || erased(s.sketch(at, model, id("k7f2qx3m")))),
             ),
@@ -3809,7 +3813,7 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         ),
         (
             SessionCommand::AddFeature,
-            Box::new(|| erased(s.add_feature(at, Revision::OPENED, length()))),
+            Box::new(|| erased(s.add_feature(at, Revision::OPENED, None, length()))),
         ),
         (
             SessionCommand::SetField,
@@ -3834,36 +3838,42 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         (SessionCommand::Text, Box::new(|| erased(s.text(at, None)))),
         (SessionCommand::Outline, Box::new(|| erased(s.outline(at)))),
     ];
+    // The reads M4.1 lists; `timeline` and `sketch`, M5.0's, after `export` and
+    // `move_feature`.
+    let (m4_reads, m5_reads): (Vec<_>, Vec<_>) = reads(ModelChoice::Current)
+        .into_iter()
+        .partition(|(read, _)| !matches!(read, ReadCommand::Timeline | ReadCommand::Sketch));
     queued.extend(
-        reads(ModelChoice::Current)
+        m4_reads
             .into_iter()
             .map(|(read, start)| (SessionCommand::from(read), start)),
     );
     // Stopped before it meshes anything, so its path is never written.
-    // Before `sketch`, M5.0's, as the design lists them.
     let never = std::env::temp_dir().join(format!("silico-never-{}.3mf", std::process::id()));
-    let before_sketch = queued
-        .iter()
-        .position(|(command, _)| *command == SessionCommand::Sketch)
-        .unwrap();
-    queued.insert(
-        before_sketch,
-        (
-            SessionCommand::Export,
-            Box::new(move || {
-                erased(s.export(
-                    at,
-                    crate::command::export::Export {
-                        format: crate::command::export::ExportFormat::ThreeMf {
-                            tolerance: crate::document::Length::from_nm(100_000),
-                        },
-                        path: never.clone(),
-                        replace: false,
-                        features: None,
+    queued.push((
+        SessionCommand::Export,
+        Box::new(move || {
+            erased(s.export(
+                at,
+                crate::command::export::Export {
+                    format: crate::command::export::ExportFormat::ThreeMf {
+                        tolerance: crate::document::Length::from_nm(100_000),
                     },
-                ))
-            }),
-        ),
+                    path: never.clone(),
+                    replace: false,
+                    features: None,
+                },
+            ))
+        }),
+    ));
+    queued.push((
+        SessionCommand::MoveFeature,
+        Box::new(|| erased(s.move_feature(at, Revision::OPENED, id("k7f2qx3m"), None))),
+    ));
+    queued.extend(
+        m5_reads
+            .into_iter()
+            .map(|(read, start)| (SessionCommand::from(read), start)),
     );
     // `cache_clear`, which reads no model, after `check`, as the design lists it.
     let after_check = queued

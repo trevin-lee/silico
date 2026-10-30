@@ -1,25 +1,31 @@
-//! `text`, `outline`, and `check`'s wire types (docs/design/m4.1-command-api.md, section 7):
-//! their requests, read strictly ([`TextRequest`], [`CheckRequest`], and the
+//! `text`, `outline`, `check`, and `timeline`'s wire types (docs/design/m4.1-command-api.md,
+//! section 7; docs/design/m5.0-app.md, section 7, for `timeline`): their requests, read
+//! strictly ([`TextRequest`], [`CheckRequest`], [`TimelineRequest`], and the
 //! [`SessionRequest`](super::transaction::SessionRequest) `outline` takes); their results,
-//! written field for field ([`ToWire`]: [`TextAnswer`], [`OutlineAnswer`], and
-//! [`CheckAnswer`], what the session's commands give); and the
-//! mirrors their snapshots, `commands/text.json`, `outline.json`, and `check.json`, are
-//! generated from.
+//! written field for field ([`ToWire`]: [`TextAnswer`], [`OutlineAnswer`], [`CheckAnswer`],
+//! and [`TimelineAnswer`], what the session's commands give); and the mirrors their
+//! snapshots, `commands/text.json`, `outline.json`, `check.json`, and `timeline.json`, are
+//! generated from. A timeline entry's health is written as [`Health::word`] gives it, and its
+//! snapshot's words are [`Health::ALL`]'s.
 //!
 //! `check`'s `fresh` (M4.3: the current revision rebuilt with every step built anew) is
 //! taken only with the current model: a published read never rebuilds. The request's
 //! [`CheckModel`] is what [`Sessions::check`](crate::command::Sessions::check) takes.
 
-use schemars::JsonSchema;
+use std::borrow::Cow;
+
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 use super::elements::ModelChoiceSchema;
-use super::{ErrorSchema, Json, RequestFields, ToWire, WarningSchema, problems, wire_shape};
+use super::{ErrorSchema, Json, RequestFields, ToWire, WarningSchema, problems, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
     CheckAnswer, CheckModel, ModelChoice, OutlineAnswer, Problems, SessionId, TextAnswer,
+    TimelineAnswer,
 };
 use crate::document::json::Node;
 use crate::document::{FeatureId, PROBLEMS_LISTED};
+use crate::timeline::{Entry, Health};
 use crate::{Error, ErrorCode};
 
 /// A `text` request: the session, and the feature to read alone (`None` for the whole
@@ -117,6 +123,76 @@ impl ToWire for CheckRequest {
             ("session", self.session.to_wire()),
             ("model", Json::str(choice.as_str())),
             ("fresh", Json::bool(fresh)),
+        ])
+    }
+}
+
+/// A `timeline` request: the session, and the model whose marks the features carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimelineRequest {
+    pub session: SessionId,
+    pub model: ModelChoice,
+}
+
+impl TimelineRequest {
+    /// The request `node` holds, or every reason its shape is refused.
+    pub fn read(node: &Node) -> Result<Self, Problems> {
+        RequestFields::read(node, |f| {
+            let session = f.session();
+            let model = f.model();
+            Some(TimelineRequest {
+                session: session?,
+                model: model?,
+            })
+        })
+    }
+}
+
+impl ToWire for TimelineRequest {
+    /// The request as a client writes it, every field in the shape's order.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("session", self.session.to_wire()),
+            ("model", self.model.to_wire()),
+        ])
+    }
+}
+
+impl ToWire for Entry {
+    /// A feature as the timeline draws it: its ID, type, and name, whether it's suppressed,
+    /// the features it names, its health, and how many problems and warnings it has.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("id", self.id.to_wire()),
+            ("type", Json::str(self.kind)),
+            ("name", Json::str(&self.name)),
+            ("suppressed", Json::bool(self.suppressed)),
+            ("inputs", Json::ids(&self.inputs)),
+            ("health", Json::str(self.health.word())),
+            ("problems", Json::whole(self.problems)),
+            ("warnings", Json::whole(self.warnings)),
+        ])
+    }
+}
+
+impl ToWire for TimelineAnswer {
+    /// The session's revision, the model's, the gate's count of problems, the features (or
+    /// `null` for text that doesn't read as a document), and the bodies.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("revision", self.revision.to_wire()),
+            (
+                "model_revision",
+                Json::or_null(self.model.as_ref(), ToWire::to_wire),
+            ),
+            ("problems", Json::whole(self.problems)),
+            (
+                "features",
+                Json::or_null(self.features.as_deref(), |features| {
+                    Json::array(features.iter().map(ToWire::to_wire))
+                }),
+            ),
+            ("bodies", Json::ids(&self.bodies)),
         ])
     }
 }
@@ -222,4 +298,84 @@ pub struct CheckResultSchema {
     pub warnings: Vec<WarningSchema>,
     /// How many warnings there are, listed or not.
     pub warnings_total: u64,
+}
+
+/// `timeline`'s request: the document's features as the browser and the timeline draw them,
+/// each with its health, from the model named.
+#[derive(JsonSchema)]
+#[schemars(rename = "TimelineRequest", transform = wire_shape)]
+pub struct TimelineRequestSchema {
+    /// The session's ID, as `open` gave it.
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
+    pub session: String,
+    pub model: ModelChoiceSchema,
+}
+
+/// `timeline`'s result. The features are the session's document's at its revision; their
+/// health is the model's, of `model_revision`, which may be older.
+#[derive(JsonSchema)]
+#[schemars(rename = "TimelineResult", transform = wire_shape)]
+pub struct TimelineResultSchema {
+    /// The session's revision, whose document the features are.
+    #[schemars(range(min = 1))]
+    pub revision: u64,
+    /// The revision of the model the health comes from, as the response's `model` names
+    /// it: older than `revision` where the published model is an older revision's. Null
+    /// with no model to read (a document the gate refused, with nothing published).
+    #[schemars(range(min = 1))]
+    pub model_revision: Option<u64>,
+    /// How many problems the gate found in the document (or the reader, in text that
+    /// doesn't read as one): 0 for a document the gate took, whose model's problems
+    /// `check` gives.
+    pub problems: u64,
+    /// The features, in timeline order: null if the text doesn't read as a document. While
+    /// the gate refuses the document, every health is `unknown`, and an ID used twice is
+    /// listed twice, so don't key entries by ID then.
+    pub features: Option<Vec<TimelineEntrySchema>>,
+    /// The bodies the model has, in timeline order: the solids no later feature consumes.
+    /// Empty with no model.
+    pub bodies: Vec<FeatureId>,
+}
+
+/// A feature as the browser and the timeline draw it.
+#[derive(JsonSchema)]
+#[schemars(rename = "TimelineEntry", transform = wire_shape)]
+pub struct TimelineEntrySchema {
+    /// Its ID. Unique, but in a document the gate refuses for an ID used twice.
+    pub id: FeatureId,
+    /// Its type, as the document writes it (`sketch`, `pad`, `fillet`, ...).
+    #[schemars(rename = "type")]
+    pub kind: String,
+    /// Its name.
+    pub name: String,
+    /// Whether it's suppressed.
+    pub suppressed: bool,
+    /// The features it names: its `base` and `tool`, then its `sketch`, in that order.
+    pub inputs: Vec<FeatureId>,
+    pub health: HealthSchema,
+    /// How many problems the model has on it, whose text `check` gives.
+    pub problems: u64,
+    /// How many warnings the model has on it, whose text `check` gives.
+    pub warnings: u64,
+}
+
+/// A feature's health, in Fusion's states ([`Health::ALL`], each as [`Health::word`] writes
+/// it).
+pub struct HealthSchema;
+
+impl JsonSchema for HealthSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "Health".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        words(
+            "A feature's health, as the model gave it: healthy (built, or solved, with no \
+             problem or warning), warning (built with warnings), error (not built, or built \
+             failing a check: a failure, a broken reference, drift; or blocked by a failure \
+             upstream), suppressed, or unknown (not built by this model: added or edited \
+             since, or using one that was; stopped by a kernel fault; or no model at all).",
+            Health::ALL.map(Health::word),
+        )
+    }
 }

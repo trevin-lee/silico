@@ -1033,6 +1033,8 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "render",
                 "read_logs",
                 "export",
+                "move_feature",
+                "timeline",
                 "sketch"
             ]
         );

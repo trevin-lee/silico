@@ -138,7 +138,8 @@ fn an_arc() -> Document {
 #[test]
 fn a_lines_end_is_dragged_once_from_the_stored_sketch_to_the_new_length() {
     // FreeCAD's target: from p0 along the line, 10 + 5 = 15 mm: (15, 0). The fake's frame
-    // puts p1 there nudged by its begin (10, 0) / 1000: (15.01, 0).
+    // puts p1 there nudged by its begin (10, 0) / 1000, (15.01, 0), and seeds the rest
+    // (p0 where it was); the end is written at the target, exactly.
     let before = a_line("");
     let mut fake = FakeSketches::new();
     let edited = extend(
@@ -150,7 +151,7 @@ fn a_lines_end_is_dragged_once_from_the_stored_sketch_to_the_new_length() {
     )
     .unwrap();
     let sketch = gated(&before, &edited);
-    assert_eq!(at(&sketch, "p0000001"), [15.01, 0.0]);
+    assert_eq!(at(&sketch, "p0000001"), [15.0, 0.0]);
     assert_eq!(at(&sketch, "p0000000"), [0.0, 0.0]);
     assert_eq!(edited.modified, [id("p0000001")]);
     assert!(edited.added.is_empty() && edited.removed.is_empty());
@@ -166,7 +167,7 @@ fn a_lines_end_is_dragged_once_from_the_stored_sketch_to_the_new_length() {
 
 #[test]
 fn a_lines_start_and_a_tilted_lines_end_go_along_the_line() {
-    // The start of a0, back 5: (−5, 0), nudged by (0, 0) / 1000.
+    // The start of a0, back 5: (−5, 0), the frame's nudge by (0, 0) / 1000 none.
     let before = a_line("");
     let mut fake = FakeSketches::new();
     let edited = extend(
@@ -179,7 +180,8 @@ fn a_lines_start_and_a_tilted_lines_end_go_along_the_line() {
     .unwrap();
     assert_eq!(at(&gated(&before, &edited), "p0000000"), [-5.0, 0.0]);
     assert_eq!(edited.modified, [id("p0000000")]);
-    // A 3-4-5 line from (0, 0) to (3, 4), its end on by 5: (6, 8), nudged by (3, 4) / 1000.
+    // A 3-4-5 line from (0, 0) to (3, 4), its end on by 5: (6, 8), where the frame put it
+    // nudged by (3, 4) / 1000, written at the target.
     let before = doc(
         &[point("p0000000", 0.0, 0.0), point("p0000001", 3.0, 4.0)],
         &[line("a0000000", "p0000000", "p0000001")],
@@ -197,8 +199,8 @@ fn a_lines_start_and_a_tilted_lines_end_go_along_the_line() {
     )
     .unwrap();
     assert_eq!(fake.drag_calls()[1], DragCall::Move([6.0, 8.0]));
-    assert_eq!(at(&gated(&before, &edited), "p0000001"), [6.003, 8.004]);
-    // Shortened by 2: (1.8, 2.4), nudged likewise.
+    assert_eq!(at(&gated(&before, &edited), "p0000001"), [6.0, 8.0]);
+    // Shortened by 2: (1.8, 2.4), the frame nudged likewise, the end written there.
     let mut fake = FakeSketches::new();
     let edited = extend(
         sketch_of(&before),
@@ -209,7 +211,7 @@ fn a_lines_start_and_a_tilted_lines_end_go_along_the_line() {
     )
     .unwrap();
     let got = at(&gated(&before, &edited), "p0000001");
-    near(got, [1.8 + 0.003, 2.4 + 0.004]);
+    near(got, [1.8, 2.4]);
 }
 
 #[test]
@@ -266,7 +268,7 @@ fn a_drag_that_flips_or_collapses_the_line_is_refused_after_it() {
         assert!(e.message().contains("flipped"), "{e}");
         assert_eq!(fake.drag_calls().last(), Some(&DragCall::End));
     }
-    // 2e-7 mm from it: made.
+    // 2e-7 mm from it: past the floor, so made, its end written at the target, (15, 0).
     let mut fake = FakeSketches::new();
     fake.answer_moves(|begin, _| Ok(frame_at(begin, [2e-7, 0.0])));
     let edited = extend(
@@ -277,7 +279,7 @@ fn a_drag_that_flips_or_collapses_the_line_is_refused_after_it() {
         &mut fake,
     )
     .unwrap();
-    assert_eq!(at(&edited.sketch, "p0000001"), [2e-7, 0.0]);
+    assert_eq!(at(&edited.sketch, "p0000001"), [15.0, 0.0]);
 }
 
 #[test]

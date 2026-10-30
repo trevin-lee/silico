@@ -337,6 +337,7 @@ fn a_feature_added_removed_and_replaced_comes_back_through_undo_and_redo_byte_fo
     let added = answer(f.sessions.add_feature(
         &f.id,
         f.revision(),
+        None,
         number(r#"{"type": "sphere", "name": "Ball", "position": [0, 0, 50], "radius": 5}"#),
     ));
     let ball = added.result.unwrap().feature.id;

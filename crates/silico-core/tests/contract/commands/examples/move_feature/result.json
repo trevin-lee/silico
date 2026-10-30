@@ -1,0 +1,12 @@
+{
+  "feature": "h0000001",
+  "from": 3,
+  "to": 5,
+  "rewired": [
+    {"feature": "h0000002", "field": "base", "from": "h0000001", "to": "p0000001"},
+    {"feature": "h0000001", "field": "base", "from": "p0000001", "to": "h0000002"},
+    {"feature": "f0000001", "field": "base", "from": "h0000002", "to": "h0000001"}
+  ],
+  "changed": true,
+  "commit": null
+}

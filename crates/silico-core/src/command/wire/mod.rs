@@ -32,8 +32,8 @@
 //! against (that is M4.9's to build from these and the envelope's). Each is added with the
 //! command's wire types ([`COMMANDS`]: [`session`], for `version`, `open`, `close`,
 //! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, and `format`;
-//! [`edits`], for `add_feature`, `set_field`, `remove_feature`, and `replace_text`;
-//! [`reads`], for `text`, `outline`, and `check`; [`cache`], for `cache_clear`;
+//! [`edits`], for `add_feature`, `set_field`, `remove_feature`, `replace_text`, and
+//! `move_feature`; [`reads`], for `text`, `outline`, `check`, and `timeline`; [`cache`], for `cache_clear`;
 //! [`elements`], for `elements` and `query`; [`schema`]; [`measure`], for `mass_properties`,
 //! `distance`, and `angle`; [`render`]; [`export`]; and [`sketch`]).
 
@@ -1723,6 +1723,12 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         }
         Command::Export => {
             command_schema::<export::ExportRequestSchema, export::ExportResultSchema>
+        }
+        Command::MoveFeature => {
+            command_schema::<edits::MoveFeatureRequestSchema, edits::MoveFeatureResultSchema>
+        }
+        Command::Timeline => {
+            command_schema::<reads::TimelineRequestSchema, reads::TimelineResultSchema>
         }
         Command::Sketch => {
             command_schema::<sketch::SketchRequestSchema, sketch::SketchResultSchema>

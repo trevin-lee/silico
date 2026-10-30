@@ -58,7 +58,8 @@ fn serve_initializes_lists_its_tools_makes_a_document_and_ends_with_its_input() 
         "2",
     );
     let tools = tools["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 27);
+    // M4.1's 26 commands, M5.1's move_feature and timeline, and M5.10's sketch.
+    assert_eq!(tools.len(), 29);
     assert_eq!(tools[1]["name"], "open");
     let opened = ask(
         &mut stdin,

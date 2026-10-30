@@ -1,0 +1,13 @@
+{
+  "session": "s1",
+  "revision": 12,
+  "before": "h0000002",
+  "feature": {
+    "id": "c0000002",
+    "type": "chamfer",
+    "name": "Base edge",
+    "base": "h0000001",
+    "edges": ["p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000002)"],
+    "size": {"distance": 1}
+  }
+}

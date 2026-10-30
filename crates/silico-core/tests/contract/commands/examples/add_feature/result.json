@@ -8,6 +8,8 @@
     "sketch": "s0000002",
     "extent": {"type": "through_all", "reversed": false}
   },
+  "index": 3,
+  "rewired": [],
   "changed": true,
   "commit": null
 }

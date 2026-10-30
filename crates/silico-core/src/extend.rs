@@ -9,8 +9,8 @@
 //!   as stored, moved once to the target, and ended, in one request held to a solve's
 //!   limits and time, not a drag's (an extend isn't a drag), so its constraints win (a line with a
 //!   length slides rather than grows, 1.1.3), and every curve sharing the end follows. The
-//!   frame's values are the edited sketch's coordinates, which the edit's solve then
-//!   settles, as a drag's end does.
+//!   frame's values seed the rest of the edited sketch, and the moving end is written at
+//!   the target, exactly; the edit's solve then settles them, as a drag's end does.
 //! - **An arc's end** moves by an `Angle`, written: its point turned about the centre
 //!   (the start back, the end on, so a positive angle lengthens the arc either way, as
 //!   FreeCAD's `setRange(start − increment, end)` and `(start, end + increment)` do). The
@@ -505,7 +505,7 @@ fn extend_line(
             .with_suggestion("remove or change the constraints that hold the line's end"));
         }
     };
-    let edited = translation.stored(&values)?;
+    let mut edited = translation.stored(&values)?;
     // The line the drag left: longer than the floor, and running the way it did.
     let (p1, q1) = (point(&edited, moving)?, point(&edited, other)?);
     let now = libm::hypot(p1[0] - q1[0], p1[1] - q1[1]);
@@ -525,6 +525,18 @@ fn extend_line(
         .with_parameter("by")
         .with_suggestion("remove or change the constraints that hold the line's end"));
     }
+    // The drag's frame seeds the rest of the sketch; the end is written where the request
+    // named, exactly (PlaneGCS's SQP stops on its step, never checking the pin's residual,
+    // so the drag leaves it short). The command's solve then settles it, moving it back only
+    // where constraints pull it.
+    place(&mut edited, moving, target).map_err(|()| {
+        past_reach(
+            curve,
+            "line",
+            &said,
+            "its target isn't a coordinate a document holds",
+        )
+    })?;
     gated(&edited, curve)?;
     Ok(Edited {
         modified,
