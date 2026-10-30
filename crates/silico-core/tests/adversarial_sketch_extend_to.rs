@@ -744,10 +744,11 @@ fn an_arc_meets_the_next_arc_of_its_own_circle_at_its_end() {
 }
 
 #[test]
-fn a_line_whose_drag_lands_short_of_the_point_is_taken_where_it_lands() {
+fn a_line_whose_drag_lands_short_of_the_point_is_written_at_the_point() {
     // The worker's move puts the end halfway to (15, 0), at (12.5, 0), as constraints that
-    // win would. By::To says the end is "placed there exactly"; the edit is Ok with the end
-    // 2.5 mm short of the curve it was sent to. Spec question, pinned as it is.
+    // win would. The edit writes what its request named (Fable, 2026-10-29: an edit writes
+    // exactly what it names, the drag's frame seeding the rest): the end at (15, 0), on the
+    // curve it was sent to; the command's solve then moves it back where constraints pull.
     let before = doc(
         &[
             p("p0000000", [0.0, 0.0]),
@@ -772,7 +773,7 @@ fn a_line_whose_drag_lands_short_of_the_point_is_taken_where_it_lands() {
         &mut fake,
     )
     .unwrap();
-    assert_eq!(at(&edited.sketch, "p0000001"), [12.5, 0.0]);
+    assert_eq!(at(&edited.sketch, "p0000001"), [15.0, 0.0]);
 }
 
 // ---------------------------------------------------------------------------------------
