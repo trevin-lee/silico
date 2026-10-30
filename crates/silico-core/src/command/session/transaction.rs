@@ -188,6 +188,21 @@ impl Held {
         }
     }
 
+    /// The document an open transaction began from, as its features' stored records are
+    /// read from it: `begin`'s, or, if its text didn't read as a document, the transaction's
+    /// mend. None outside a transaction, or with neither read.
+    pub(super) fn begun(&self) -> Option<Arc<Gated>> {
+        let begun = &self.transaction.as_ref()?.begun;
+        if begun.gated.document().is_ok() {
+            return Some(Arc::clone(&begun.gated));
+        }
+        begun
+            .mend
+            .as_ref()
+            .filter(|mend| mend.gated.document().is_ok())
+            .map(|mend| Arc::clone(&mend.gated))
+    }
+
     /// What the session's edits reach now, taken under the lock, to be worked out
     /// ([`Reaching::reach`]) once it's let go.
     pub(super) fn reaching(&self) -> Reaching {

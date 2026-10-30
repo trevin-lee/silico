@@ -1058,7 +1058,7 @@ fn schema_prints_the_documents_or_a_commands_as_committed() {
          Candidates: document, version, open, close, status, cancel, begin, commit, rollback, \
          format, add_feature, set_field, remove_feature, replace_text, text, outline, check, \
          cache_clear, elements, query, schema, mass_properties, distance, angle, render, \
-         read_logs, export.\n"
+         read_logs, export, move_feature, timeline.\n"
     );
     // Two names: a usage error.
     let out = schema(&["query", "elements"]);

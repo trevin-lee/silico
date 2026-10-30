@@ -132,9 +132,9 @@ fn the_refusal<T: std::fmt::Debug>(response: &Response<T>) -> String {
     written(&problems.errors()[0])
 }
 
-/// A box with the pad's ID (for the tests, any solid is the pad), and the holes' sketch,
-/// empty: what the design's pocket is added to.
-const BRACKET: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "p0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, 0], "length": 40, "width": 20, "height": 6}, {"id": "s0000002", "type": "sketch", "v": 1, "name": "Holes", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}]}"#;
+/// The bracket's profile, empty, a box with the pad's ID (for the tests, any solid is the
+/// pad), and the holes' sketch, empty: what the design's pocket is added to, at place 3.
+const BRACKET: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "L profile", "plane": "xz", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}, {"id": "p0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, 0], "length": 40, "width": 20, "height": 6}, {"id": "s0000002", "type": "sketch", "v": 1, "name": "Holes", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}]}"#;
 
 /// The design's pad, of an empty sketch: what `set_field` is refused on.
 const PAD: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "L profile", "plane": "xz", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}, {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 6, "reversed": false}}]}"#;
@@ -387,6 +387,7 @@ fn the_examples_are_the_designs_own_text() {
         let mut want: Vec<String> = names
             .iter()
             .flatten()
+            .chain(added_by_m5(dir))
             .map(|n| format!("{n}.json"))
             .collect();
         want.sort();
@@ -434,6 +435,30 @@ fn the_examples_are_the_designs_own_text() {
         left,
         LEFT_OUT.map(|(dir, code, parameter, _)| (dir, code, parameter))
     );
+}
+
+/// The examples of M4.1's commands that M5.0's design added beside M4.1's, by command:
+/// `add_feature`'s `before` and `remove_feature`'s `rewired` (M5.1), each the M5.0 design's
+/// own text (wire_timeline_commands.rs).
+const ADDED_BY_M5: [(&str, &[&str]); 2] = [
+    (
+        "add_feature",
+        &[
+            "request-before",
+            "result-before",
+            "refused-no-before",
+            "refused-consumed",
+        ],
+    ),
+    ("remove_feature", &["result-rewired"]),
+];
+
+/// The examples M5.0's design added to the command `dir`'s.
+fn added_by_m5(dir: &str) -> impl Iterator<Item = &'static &'static str> {
+    ADDED_BY_M5
+        .iter()
+        .filter(move |(of, _)| *of == dir)
+        .flat_map(|(_, names)| names.iter())
 }
 
 /// The design's examples not in the contract, by command and what each is (a refusal's code
@@ -594,7 +619,7 @@ const REQUESTS: [(&str, &[&str]); 15] = [
     ("commit", &["session"]),
     ("rollback", &["session"]),
     ("format", &["session", "features", "write"]),
-    ("add_feature", &["session", "revision", "feature"]),
+    ("add_feature", &["session", "revision", "before", "feature"]),
     (
         "set_field",
         &["session", "revision", "feature", "field", "value"],
@@ -824,7 +849,10 @@ fn each_requests_fields_are_of_their_types_and_null_only_where_the_shape_allows_
             "{value}"
         );
         // A Rust caller, past the wire: the session refuses it in the same words.
-        let added = answer(f.sessions.add_feature(&f.id, f.revision(), parsed(value)));
+        let added = answer(
+            f.sessions
+                .add_feature(&f.id, f.revision(), None, parsed(value)),
+        );
         assert_eq!(said(added.result.as_ref().unwrap_err()), want, "{value}");
     }
 }
@@ -972,18 +1000,19 @@ fn a_new_feature_given_null_where_the_reader_takes_it_holds_to_its_schema_and_is
         r#""type": "pocket","#,
         r#""id": null, "v": null, "type": "pocket", "note": null, "fingerprint": null,"#,
     );
-    let pad = r#"{"session": "s1", "revision": 6, "feature": {"id": null, "type": "pad", "v": null, "name": "Pad", "note": null, "base": null, "sketch": "s0000002", "extent": {"type": "one_side", "length": 6, "reversed": false}, "fingerprint": null}}"#;
+    let pad = r#"{"session": "s1", "revision": 6, "before": null, "feature": {"id": null, "type": "pad", "v": null, "name": "Pad", "note": null, "base": null, "sketch": "s0000002", "extent": {"type": "one_side", "length": 6, "reversed": false}, "fingerprint": null}}"#;
     let f = opened(BRACKET);
     f.begin();
     for (what, text) in [("a pocket", pocket.as_str()), ("a pad", pad)] {
         holds(&schema, text, what);
         let request = AddFeatureRequest::read(&parsed(text)).unwrap();
-        let added = answer(
-            f.sessions
-                .add_feature(&request.session, f.revision(), request.feature),
-        )
-        .result
-        .unwrap();
+        let added =
+            answer(
+                f.sessions
+                    .add_feature(&request.session, f.revision(), None, request.feature),
+            )
+            .result
+            .unwrap();
         // Each null left out: a new ID, no note, no fingerprint.
         assert!(!["p0000001", "s0000002"].contains(&added.feature.id.as_str()));
         assert_eq!(
@@ -1012,11 +1041,11 @@ fn a_new_feature_given_null_where_the_reader_takes_it_holds_to_its_schema_and_is
         assert_ne!(text, example("add_feature/request"), "{what}");
         fails(&schema, &text, what);
         let request = AddFeatureRequest::read(&parsed(&text)).unwrap();
-        let refused = answer(f.sessions.add_feature(
-            &request.session,
-            f.revision(),
-            request.feature,
-        ));
+        let refused =
+            answer(
+                f.sessions
+                    .add_feature(&request.session, f.revision(), None, request.feature),
+            );
         let problems = refused.result.as_ref().unwrap_err();
         let at: Vec<(ErrorCode, Option<&str>)> = problems
             .errors()
@@ -1105,10 +1134,11 @@ fn the_designs_added_and_removed_features_are_the_sessions_own() {
         panic!();
     };
     members.extend(id_member);
-    let added = answer(
-        f.sessions
-            .add_feature(&request.session, f.revision(), request.feature),
-    );
+    let added =
+        answer(
+            f.sessions
+                .add_feature(&request.session, f.revision(), None, request.feature),
+        );
     let text = written(added.result.as_ref().unwrap());
     assert_eq!(text, example("add_feature/result"));
     holds(&schema_of("add_feature", "result"), &text, "added");
@@ -1136,7 +1166,7 @@ fn the_designs_added_and_removed_features_are_the_sessions_own() {
     assert_eq!(
         text,
         format!(
-            "{{\n  \"feature\": {},\n  \"index\": 4,\n  \"changed\": true,\n  \"commit\": null\n}}\n",
+            "{{\n  \"feature\": {},\n  \"index\": 4,\n  \"rewired\": [],\n  \"changed\": true,\n  \"commit\": null\n}}\n",
             chamfer.trim_start()
         )
     );
@@ -1181,7 +1211,7 @@ fn the_designs_refusals_are_the_sessions_own_and_hold_to_the_error_contract() {
         let request = AddFeatureRequest::read(&parsed(&text)).unwrap();
         answer(
             f.sessions
-                .add_feature(&request.session, f.revision(), request.feature),
+                .add_feature(&request.session, f.revision(), None, request.feature),
         )
     };
     let pocket = example("add_feature/request");
@@ -1209,10 +1239,11 @@ fn the_designs_refusals_are_the_sessions_own_and_hold_to_the_error_contract() {
     std::fs::write(f.path(), BRACKET.replace("Plate", "Base")).unwrap();
     let request = AddFeatureRequest::read(&parsed(&pocket)).unwrap();
     assert_eq!(request.revision, revision(6));
-    let stale = answer(
-        f.sessions
-            .add_feature(&request.session, request.revision, request.feature),
-    );
+    let stale =
+        answer(
+            f.sessions
+                .add_feature(&request.session, request.revision, None, request.feature),
+        );
     check("add_feature/refused-stale", f.here(&the_refusal(&stale)));
     assert_eq!(f.revision(), revision(7));
 
@@ -1264,8 +1295,8 @@ fn the_designs_refusals_are_the_sessions_own_and_hold_to_the_error_contract() {
         ),
     );
 
-    // `remove_feature` of the cut, which the fillet uses: its edge's name, which names the
-    // cut, and its base, each refused; the design's example is the base's.
+    // `remove_feature` of the cut, whose elements the fillet names: refused before the gate,
+    // naming both (M5.0's A9 amends the M4.1 example to this), the session as it was.
     let f = opened(&committed("naming-scheme-5.silico"));
     let request =
         RemoveFeatureRequest::read(&parsed(&example("remove_feature/request-used"))).unwrap();
@@ -1273,23 +1304,8 @@ fn the_designs_refusals_are_the_sessions_own_and_hold_to_the_error_contract() {
         f.sessions
             .remove_feature(&request.session, f.revision(), request.feature),
     );
-    let problems = used.result.as_ref().unwrap_err();
-    let at: Vec<(Option<&str>, Option<&str>)> = problems
-        .errors()
-        .iter()
-        .map(|e| (e.feature(), e.parameter()))
-        .collect();
-    assert_eq!(
-        at,
-        [
-            (Some("f0000001"), Some("edges.0")),
-            (Some("f0000001"), Some("base"))
-        ]
-    );
-    check(
-        "remove_feature/refused-used",
-        written(&problems.errors()[1]),
-    );
+    check("remove_feature/refused-used", the_refusal(&used));
+    assert_eq!(f.revision(), Revision::OPENED);
 
     // `replace_text` of text without naming.
     let f = opened(BRACKET);

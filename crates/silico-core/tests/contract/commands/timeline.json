@@ -1,0 +1,162 @@
+{
+  "request": {
+    "$defs": {
+      "ModelChoice": {
+        "description": "Which model to read: the current one, or the newest published.",
+        "oneOf": [
+          {
+            "const": "current",
+            "description": "The session's current revision's model, rebuilt if it isn't yet: what an agent that\njust edited reads.",
+            "type": "string"
+          },
+          {
+            "const": "published",
+            "description": "The newest model published, which may be an older revision's, read at once: what a\nUI reads while a rebuild runs.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`timeline`'s request: the document's features as the browser and the timeline draw them,\neach with its health, from the model named.",
+    "properties": {
+      "model": {
+        "$ref": "#/$defs/ModelChoice"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "model",
+      "session"
+    ],
+    "title": "TimelineRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "Health": {
+        "description": "A feature's health, as the model gave it: healthy (built, or solved, with no problem or warning), warning (built with warnings), error (not built, or built failing a check: a failure, a broken reference, drift; or blocked by a failure upstream), suppressed, or unknown (not built by this model: added or edited since, or using one that was; stopped by a kernel fault; or no model at all).",
+        "enum": [
+          "healthy",
+          "warning",
+          "error",
+          "suppressed",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "TimelineEntry": {
+        "additionalProperties": false,
+        "description": "A feature as the browser and the timeline draw it.",
+        "properties": {
+          "health": {
+            "$ref": "#/$defs/Health"
+          },
+          "id": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "Its ID. Unique, but in a document the gate refuses for an ID used twice."
+          },
+          "inputs": {
+            "description": "The features it names: its `base` and `tool`, then its `sketch`, in that order.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "Its name.",
+            "type": "string"
+          },
+          "problems": {
+            "description": "How many problems the model has on it, whose text `check` gives.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "suppressed": {
+            "description": "Whether it's suppressed.",
+            "type": "boolean"
+          },
+          "type": {
+            "description": "Its type, as the document writes it (`sketch`, `pad`, `fillet`, ...).",
+            "type": "string"
+          },
+          "warnings": {
+            "description": "How many warnings the model has on it, whose text `check` gives.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "health",
+          "id",
+          "inputs",
+          "name",
+          "problems",
+          "suppressed",
+          "type",
+          "warnings"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`timeline`'s result. The features are the session's document's at its revision; their\nhealth is the model's, of `model_revision`, which may be older.",
+    "properties": {
+      "bodies": {
+        "description": "The bodies the model has, in timeline order: the solids no later feature consumes.\nEmpty with no model.",
+        "items": {
+          "$ref": "#/$defs/FeatureId"
+        },
+        "type": "array"
+      },
+      "features": {
+        "description": "The features, in timeline order: null if the text doesn't read as a document. While\nthe gate refuses the document, every health is `unknown`, and an ID used twice is\nlisted twice, so don't key entries by ID then.",
+        "items": {
+          "$ref": "#/$defs/TimelineEntry"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "model_revision": {
+        "description": "The revision of the model the health comes from, as the response's `model` names\nit: older than `revision` where the published model is an older revision's. Null\nwith no model to read (a document the gate refused, with nothing published).",
+        "minimum": 1,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "problems": {
+        "description": "How many problems the gate found in the document (or the reader, in text that\ndoesn't read as one): 0 for a document the gate took, whose model's problems\n`check` gives.",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "revision": {
+        "description": "The session's revision, whose document the features are.",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "bodies",
+      "features",
+      "model_revision",
+      "problems",
+      "revision"
+    ],
+    "title": "TimelineResult",
+    "type": "object"
+  }
+}

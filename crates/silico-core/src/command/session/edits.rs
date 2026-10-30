@@ -9,7 +9,7 @@ use super::cancel::Ticket;
 use super::transaction::Held;
 use super::{Committed, Gated, ModelRead, Problems, Revision, Session, SessionId, shown_path};
 use crate::command::edit::Candidate;
-use crate::document::Document;
+use crate::document::{Checked, Document};
 use crate::kernel::Kernel;
 use crate::{Error, ErrorCode};
 
@@ -54,7 +54,7 @@ impl<C: Kernel + 'static> Session<C> {
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
     ) -> Result<Edited<T>, Problems> {
-        let (text, gated, transaction) = {
+        let (text, gated, transaction, begun) = {
             let held = self.held.read();
             if held.revision != revision {
                 // Stale because the file changed outside the session, if a reload since
@@ -74,6 +74,7 @@ impl<C: Kernel + 'static> Session<C> {
                 Arc::clone(&held.text),
                 Arc::clone(&held.gated),
                 held.transaction.is_some(),
+                held.begun(),
             )
         };
         let (made, candidate) = {
@@ -83,6 +84,7 @@ impl<C: Kernel + 'static> Session<C> {
                 text: &text,
                 gated: &gated,
                 transaction,
+                begun: begun.as_deref().and_then(|begun| begun.document().ok()),
             })?
         };
         let Some(candidate) = candidate else {
@@ -110,21 +112,25 @@ impl<C: Kernel + 'static> Session<C> {
 }
 
 /// What an edit is made from ([`Session::edit`]): the session's ID, its text, the gate's
-/// finding of it, and whether a transaction is open.
+/// finding of it, whether a transaction is open, and, inside one, the document it began
+/// from (`begin`'s, or its mend, if `begin`'s text didn't read), whose stored fingerprint a
+/// feature added under the same ID carries.
 pub(super) struct Base<'a> {
     pub(super) id: SessionId,
     pub(super) text: &'a [u8],
     pub(super) gated: &'a Gated,
     pub(super) transaction: bool,
+    pub(super) begun: Option<&'a Document>,
 }
 
 impl<'a> Base<'a> {
-    /// The document a typed edit (`add_feature`, `set_field`, `remove_feature`) edits: one
+    /// The document a typed edit (`add_feature`, `set_field`, `remove_feature`,
+    /// `move_feature`) edits: one
     /// the gate took. A document it refused is mended by `replace_text` alone (decision 21),
     /// so every other edit of it is refused.
-    pub(super) fn checked(&self) -> Result<&'a Document, Problems> {
+    pub(super) fn checked(&self) -> Result<&'a Checked, Problems> {
         match self.gated {
-            Gated::Checked(checked) => Ok(checked.document()),
+            Gated::Checked(checked) => Ok(checked),
             Gated::Unread(_) | Gated::Refused(..) => Err(Problems::from(
                 Error::new(
                     ErrorCode::InvalidInput,

@@ -37,6 +37,15 @@ pub enum Health {
 }
 
 impl Health {
+    /// Every health, in Fusion's order: what `timeline`'s snapshot lists.
+    pub const ALL: [Health; 5] = [
+        Health::Healthy,
+        Health::Warning,
+        Health::Error,
+        Health::Suppressed,
+        Health::Unknown,
+    ];
+
     /// The word the command writes.
     pub fn word(self) -> &'static str {
         match self {

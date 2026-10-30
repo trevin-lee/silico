@@ -10,11 +10,11 @@ use super::call::Command;
 /// `read_logs`, and `schema`), and `open`, which runs before its session is there to name
 /// it. Its name is the command's ([`command`](Self::command)), as requests and tools give it.
 ///
-/// `undo` and `redo` (M5.2), and `timeline` (M5.1), run in a session as every other command
-/// does, so `status` says they're running and `cancel` stops them, but no transport names
-/// them yet: they're in no list a client reads ([`ALL`](Self::ALL), [`Command`],
-/// [`ReadCommand::ALL`]), whose change, with MCP's tools and the protected contracts, is the
-/// maintainer's (docs/design/m5.0-app.md, section 7).
+/// `undo` and `redo` (M5.2) run in a session as every other command does, so `status` says
+/// they're running and `cancel` stops them, but no transport names them yet: they're in no
+/// list a client reads ([`ALL`](Self::ALL), [`Command`]), whose change, with MCP's tools and
+/// the protected contracts, comes with M5.2's wire step (docs/design/m5.0-app.md, section
+/// 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SessionCommand {
     Close,
@@ -37,15 +37,16 @@ pub enum SessionCommand {
     Angle,
     Render,
     Export,
+    MoveFeature,
+    Timeline,
     Undo,
     Redo,
-    Timeline,
 }
 
 impl SessionCommand {
-    /// Every command that runs in a session that a transport names, in the design's order:
-    /// all but `undo`, `redo`, and `timeline`, which none names yet.
-    pub const ALL: [SessionCommand; 20] = [
+    /// Every command that runs in a session that a transport names, in the design's order
+    /// (M4.1's, then M5.0's): all but `undo` and `redo`, which none names yet.
+    pub const ALL: [SessionCommand; 22] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -66,10 +67,12 @@ impl SessionCommand {
         SessionCommand::Angle,
         SessionCommand::Render,
         SessionCommand::Export,
+        SessionCommand::MoveFeature,
+        SessionCommand::Timeline,
     ];
 
-    /// The command it is, of every command a transport names ([`Command`]): none for `undo`,
-    /// `redo`, and `timeline`, which none names yet.
+    /// The command it is, of every command a transport names ([`Command`]): none for `undo`
+    /// and `redo`, which none names yet.
     pub const fn command(self) -> Option<Command> {
         match self.named() {
             Ok(command) => Some(command),
@@ -109,9 +112,10 @@ impl SessionCommand {
             SessionCommand::Angle => Command::Angle,
             SessionCommand::Render => Command::Render,
             SessionCommand::Export => Command::Export,
+            SessionCommand::MoveFeature => Command::MoveFeature,
+            SessionCommand::Timeline => Command::Timeline,
             SessionCommand::Undo => return Err("undo"),
             SessionCommand::Redo => return Err("redo"),
-            SessionCommand::Timeline => return Err("timeline"),
         })
     }
 }
@@ -141,9 +145,9 @@ pub enum ReadCommand {
 }
 
 impl ReadCommand {
-    /// Every command that reads a model that a transport names, in the design's order (that
-    /// of [`SessionCommand::ALL`]): all but `timeline`, which none names yet.
-    pub const ALL: [ReadCommand; 7] = [
+    /// Every command that reads a model, in the design's order (that of
+    /// [`SessionCommand::ALL`]).
+    pub const ALL: [ReadCommand; 8] = [
         ReadCommand::Check,
         ReadCommand::Elements,
         ReadCommand::Query,
@@ -151,6 +155,7 @@ impl ReadCommand {
         ReadCommand::Distance,
         ReadCommand::Angle,
         ReadCommand::Render,
+        ReadCommand::Timeline,
     ];
 
     /// The session command it is.

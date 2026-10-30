@@ -1,0 +1,19 @@
+{
+  "feature": {
+    "id": "c0000002",
+    "type": "chamfer",
+    "v": 1,
+    "name": "Base edge",
+    "base": "h0000001",
+    "edges": [
+      "p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000002)"
+    ],
+    "size": {"distance": 1}
+  },
+  "index": 5,
+  "rewired": [
+    {"feature": "h0000002", "field": "base", "from": "h0000001", "to": "c0000002"}
+  ],
+  "changed": true,
+  "commit": null
+}

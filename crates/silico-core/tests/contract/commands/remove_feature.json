@@ -9,11 +9,11 @@
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`remove_feature`'s request: remove one feature, which no other may use.",
+    "description": "`remove_feature`'s request: remove one feature, the feature that consumed it taking its\nbase.",
     "properties": {
       "feature": {
         "$ref": "#/$defs/FeatureId",
-        "description": "The feature to remove, by ID. A feature others use is refused, each naming it:\nremove those first."
+        "description": "The feature to remove, by ID. The feature that consumed it takes its base. Refused,\nnaming both, where nothing can stand in: a chain's root under a feature that needs a\nbase, a feature whose sketch it is, or one that names its elements."
       },
       "revision": {
         "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
@@ -721,6 +721,14 @@
         ],
         "type": "object"
       },
+      "InputField": {
+        "description": "Which of the feature's inputs changed: its base, or a boolean's tool.",
+        "enum": [
+          "base",
+          "tool"
+        ],
+        "type": "string"
+      },
       "Length": {
         "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
         "type": "number"
@@ -902,6 +910,48 @@
             "type": "object"
           }
         ]
+      },
+      "Rewired": {
+        "additionalProperties": false,
+        "description": "A feature whose `base` or `tool` an edit changed, which the edit reaches.",
+        "properties": {
+          "feature": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The feature, by ID."
+          },
+          "field": {
+            "$ref": "#/$defs/InputField"
+          },
+          "from": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the field named before the edit: null where the feature had no base."
+          },
+          "to": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/FeatureId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What it names after: null where the feature is left with no base (a pad or revolve,\nwhich then begins a body)."
+          }
+        },
+        "required": [
+          "feature",
+          "field",
+          "from",
+          "to"
+        ],
+        "type": "object"
       },
       "SketchArc": {
         "additionalProperties": false,
@@ -1617,19 +1667,27 @@
       },
       "feature": {
         "$ref": "#/$defs/Feature",
-        "description": "The feature removed, as the document held it: `replace_text` can put it back."
+        "description": "The feature removed, as the document held it, its fingerprint too. To put it back,\ngive `add_feature` this feature without its `fingerprint`, `before` the feature that\nfollowed it (inside a transaction, the fingerprint `begin`'s document stored is\nkept); then, with `set_field`, set `base` back on each\n`rewired` entry whose `to` is null. Or undo the removal whole: remove inside a\ntransaction (`begin`), and `rollback`."
       },
       "index": {
         "description": "Its place in the timeline, from 0.",
         "minimum": 0,
         "type": "integer"
+      },
+      "rewired": {
+        "description": "Each feature whose `base` or `tool` named the removed feature and now names what it\nnamed (null where it named none, a pad or revolve then beginning a body), in\ntimeline order.",
+        "items": {
+          "$ref": "#/$defs/Rewired"
+        },
+        "type": "array"
       }
     },
     "required": [
       "changed",
       "commit",
       "feature",
-      "index"
+      "index",
+      "rewired"
     ],
     "title": "RemoveFeatureResult",
     "type": "object"

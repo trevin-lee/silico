@@ -7,9 +7,10 @@
 //!
 //! Pure functions over a document the gate took ([`Checked`]): each gives the edited
 //! document, which the caller puts through the gate ([`validate`](super::validate)), or why
-//! the edit is refused, naming both features where a child would lose its parent. No command
-//! runs them yet. Each costs about what the gate does: the document indexed once, by ID and
-//! by consumer, never searched feature by feature.
+//! the edit is refused, naming both features where a child would lose its parent. The
+//! session's edits run them (`add_feature` with a `before`, `move_feature`, and
+//! `remove_feature`). Each costs about what the gate does: the document indexed once, by ID
+//! and by consumer, never searched feature by feature.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,17 +73,7 @@ pub fn insert(
 ) -> Result<Inserted, Error> {
     let document = checked.document();
     let index = Index::of(document);
-    let place = match before {
-        None => document.features.len(),
-        Some(target) => index.place(target).ok_or_else(|| {
-            Error::new(
-                ErrorCode::InvalidInput,
-                format!("the document has no feature {target} to add this one before"),
-            )
-            .with_parameter("before")
-            .with_suggestion("name a feature by its ID, or give null to add at the end")
-        })?,
-    };
+    let place = insert_place(document, before)?;
     let inputs = feature.operation.inputs();
     if let [(_, base), (field, tool)] = inputs.as_slice()
         && base == tool
@@ -151,14 +142,34 @@ pub fn insert(
     })
 }
 
+/// Where a feature added before the feature `before` goes in `document`, from 0: that
+/// feature's place, or the end for none. Refused, naming `before`, where it names no feature.
+pub fn insert_place(document: &Document, before: Option<&FeatureId>) -> Result<usize, Error> {
+    let Some(target) = before else {
+        return Ok(document.features.len());
+    };
+    document
+        .features
+        .iter()
+        .position(|feature| feature.id == *target)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!("the document has no feature {target} to add this one before"),
+            )
+            .with_parameter("before")
+            .with_suggestion("name a feature by its ID, or give null to add at the end")
+        })
+}
+
 /// The feature `id` removed from `document` (the design's `remove_feature`, as A9 amends
 /// it). Its consumer, if it has one, takes its base: the field that named it now names
 /// what it named, listed in [`Removed::rewired`], or none for a pad's or revolve's base,
 /// which then begins the body. Refused, naming both features, where nothing can stand in:
 /// a chain's root under a feature that needs a base (or as a boolean's tool), a feature
-/// whose sketch it is, a feature that stores names of its elements, and (pending Trevin,
-/// extending the design's "names its elements") a feature whose stored names' makers its
-/// base would no longer be built from.
+/// whose sketch it is, a feature that stores names of its elements (checked directly, since
+/// a removed maker's name no longer parses), and a feature whose stored names' makers its
+/// base would no longer be built from (the lineage rule, open item 2b).
 pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
     let document = checked.document();
     let index = Index::of(document);
@@ -215,16 +226,22 @@ pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
 /// rewires it; its base becomes the last member of its chain before the new place (none for
 /// a pad or revolve placed before the chain's root); and the chain's next member after that
 /// place takes it as its base, never as its tool. A move that leaves it between its base and
-/// its consumer rewires nothing; a move to where it is changes nothing.
+/// its consumer rewires nothing; a move to where it is (before the feature after it, or to
+/// the end when it's last) changes nothing; and a move before itself is refused, naming
+/// `before`, since it names no place.
 ///
-/// Refused, naming both features: a move that puts it before its sketch, its tool, or a
-/// feature whose elements it names; after a feature that uses it as its sketch or names its
-/// elements; one that leaves a chain's root's consumer without a base; one that would make
-/// it the end of a chain a boolean consumes as its tool; one that would give a primitive a
-/// base or leave a feature that needs one without; and (pending Trevin, extending the
-/// design's "names its elements") one after which a feature's base is no longer built from
-/// a maker of the names it stores (SolidWorks refuses a reorder that puts a child before
-/// what its references come from: docs/ux/solidworks.md, §5, *Editing upstream*).
+/// Refused, naming both features: a move that puts it before its sketch or its tool; after
+/// a feature that uses it as its sketch; one that leaves a chain's root's consumer without
+/// a base; one that would make it the end of a chain a boolean consumes as its tool; one
+/// that would give a primitive a base or leave a feature that needs one without; and one
+/// after which a feature's base is no longer built from a maker of the names it stores (the
+/// lineage rule, open item 2b), which is how a move before a feature whose elements it
+/// names, or after one that names its elements, is refused (SolidWorks refuses a reorder
+/// that puts a child before what its references come from: docs/ux/solidworks.md, §5,
+/// *Editing upstream*). A stored name whose maker was outside its feature's lineage already
+/// (broken before the move, the rebuild's to report) isn't the lineage rule's: a move that
+/// puts its maker after it gives a document the gate refuses, as the caller puts it through
+/// the gate.
 ///
 /// A move within a chain a boolean consumes as its tool can't always be undone by moving
 /// back: the move that would make the feature that boolean's tool again is refused.
@@ -242,7 +259,18 @@ pub fn move_feature(
             .place(target)
             .ok_or_else(|| no_feature(target, "before"))?,
     };
-    if target == from || target == from + 1 {
+    if target == from {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!("{id} can't be moved before itself"),
+        )
+        .with_feature(id.as_str())
+        .with_parameter("before")
+        .with_suggestion(format!(
+            "name the feature {id} is to come before, another than {id} itself, or give null to move it to the end"
+        )));
+    }
+    if target == from + 1 {
         return Ok(Moved {
             document: document.clone(),
             from,
@@ -273,12 +301,11 @@ pub fn move_feature(
     {
         return Err(come_before(moving, tool, "which it uses as its tool"));
     }
-    for named in makers_named(&index, moving) {
-        if named != id && others(named).is_some_and(|p| p >= place_to) {
-            return Err(come_before(moving, named, "whose elements it names"));
-        }
-    }
+    // A feature whose elements it names, or that names its elements, is the lineage
+    // rule's to refuse (open item 2b), below: a stored name whose makers its base was built
+    // from must keep them.
     if let Some((child, why)) = children(document, &index, id)
+        .filter(|(_, why)| *why == Child::Sketch)
         .find(|(child, _)| others(&child.id).is_some_and(|p| p < place_to))
     {
         return Err(Error::new(
@@ -329,10 +356,13 @@ pub fn move_feature(
         )
         .with_feature(moving.id.as_str())
         .with_parameter("before")
-        .with_suggestion(format!(
-            "move {} elsewhere, or remove {feature} first",
-            moving.id
-        )));
+        .with_suggestion(if feature == moving.id {
+            format!(
+                "keep {feature} after {maker}, whose elements it names, or set its edges to names of other features' elements"
+            )
+        } else {
+            format!("move {} elsewhere, or remove {feature} first", moving.id)
+        }));
     }
     let rewired = rewired(document, &edited);
     Ok(Moved {
@@ -562,9 +592,10 @@ fn stand_in(
 
 /// The first feature of `edited`, in its timeline order, with a stored name whose makers
 /// were all in what its base was built from in `before`, one of which its base is no longer
-/// built from; with that maker. Pending Trevin: it extends the design's "names its
-/// elements" to what a feature's base is built from, so an edit that would break a
-/// reference the text can see is refused rather than left to fail at the rebuild. A name
+/// built from; with that maker: the lineage rule (open item 2b, as decided), which extends
+/// the design's "names its elements" to what a feature's base is built from, so an edit
+/// that would break a reference the text can see is refused rather than left to fail at the
+/// rebuild. A name
 /// one of whose makers was outside the base's lineage before the edit was broken already:
 /// it's the rebuild's to report, whatever the edit does to its other makers.
 fn lineage_broken(before: &Document, edited: &Document) -> Option<(FeatureId, FeatureId)> {
@@ -728,13 +759,23 @@ fn come_before(moving: &Feature, parent: &FeatureId, why: &str) -> Error {
     ))
 }
 
+/// The refusal of an edit naming a feature the document hasn't: as its `feature`, the one
+/// to remove or move, or as a move's `before`.
 fn no_feature(id: &FeatureId, parameter: &str) -> Error {
-    Error::new(
-        ErrorCode::InvalidInput,
-        format!("the document has no feature {id}"),
-    )
-    .with_parameter(parameter)
-    .with_suggestion("name a feature by its ID")
+    let (message, suggestion) = if parameter == "before" {
+        (
+            format!("the document has no feature {id} to move this one before"),
+            "name a feature by its ID, or give null to move it to the end",
+        )
+    } else {
+        (
+            format!("the document has no feature {id}"),
+            "name a feature by its ID, as the document holds it",
+        )
+    };
+    Error::new(ErrorCode::InvalidInput, message)
+        .with_parameter(parameter)
+        .with_suggestion(suggestion)
 }
 
 /// Every feature the element names `feature` stores name as a maker, as the document holds

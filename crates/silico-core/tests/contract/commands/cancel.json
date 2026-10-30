@@ -23,7 +23,9 @@
           "distance",
           "angle",
           "render",
-          "export"
+          "export",
+          "move_feature",
+          "timeline"
         ],
         "type": "string"
       }
@@ -73,7 +75,9 @@
           "distance",
           "angle",
           "render",
-          "export"
+          "export",
+          "move_feature",
+          "timeline"
         ],
         "type": "string"
       }

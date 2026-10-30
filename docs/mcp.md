@@ -53,9 +53,9 @@ The server's `instructions`, which every client is given at `initialize`, say th
 | Step | Tools |
 |---|---|
 | Open a document, or make one | `open` (`path`, `create`). A document the gate refuses still opens, with its problems in the result, so it can be mended with `replace_text`; the other edits are refused until it is. |
-| See what's there | `outline`, `text`, `status`, `check` |
+| See what's there | `outline`, `text`, `status`, `check`, and `timeline` (the features in order, structured: each one's type, name, inputs, and health from the model named, and the bodies) |
 | Find elements by name | `elements` (a page of a solid's faces, edges, and vertices, each with its geometry and measures; `after` for the next page) and `query` (a kind, a surface or curve type, `facing` a direction, ranges of measures, an order, a limit). Use a name exactly as given. A feature that stores names (a fillet's or chamfer's `edges`) takes only stable ones. An element whose `name` is unstable (one that came about for more than one element, a `~n` duplicate, or an element by its number) may have a stable name in `aliases`; use that, and if it has none, no stored reference can name it. `distance`, `angle`, and `render`'s `highlight` take any name. A stored name is found again after upstream edits, or fails as `reference_broken` with candidates, never re-pointed. |
-| Edit | `begin`, then `add_feature`, `set_field`, `remove_feature`, or `replace_text`, each with the `revision` the session's last answer gave; then `commit` to save or `rollback` to undo every edit since `begin`. An edit outside a transaction saves at once. Outside a transaction, a change made to the file by someone else is reloaded before the next command (`"reloaded": true`, a new revision), and an edit at the old revision is refused as `conflict`. Inside one, `commit` is refused as `conflict` if the file changed. |
+| Edit | `begin`, then `add_feature` (`before` a feature, or `null` for the end), `set_field`, `remove_feature`, `move_feature` (`before` a feature, or `null` for the end), or `replace_text`, each with the `revision` the session's last answer gave. Inserting, moving, and removing rewire the chain of `base` links they change, each change listed in `rewired`: a removed feature's consumer takes its base, and one refused names both features where nothing can stand in. Then `commit` to save or `rollback` to undo every edit since `begin`. An edit outside a transaction saves at once. Outside a transaction, a change made to the file by someone else is reloaded before the next command (`"reloaded": true`, a new revision), and an edit at the old revision is refused as `conflict`. Inside one, `commit` is refused as `conflict` if the file changed. |
 | Read the model | `check`, `elements`, `query`, `mass_properties`, `distance`, `angle`, `render` each take `model`: `current` waits for the session's latest edit to rebuild; `published` answers at once from the newest model rebuilt, which may be older. The answer's `model.revision` says which it read. |
 | Measure | `mass_properties` (volume, area, centre of mass), `distance` and `angle` (between two named elements) |
 | See it | `render`: a named `view` or a `camera`, `width` and `height`, elements to `highlight`, and `to`, a PNG path in the workspace or `null`. The PNG comes back as an image beside the result. |
@@ -106,13 +106,13 @@ The recorded session that M4's done test replays, [crates/silico-cli/tests/brack
 open        {"path": "bracket.silico", "create": true}
          →  session s1, revision 1; result {"created": true, "features": 0, …}
 begin       {"session": "s1"}                                       → {"base": 1}
-add_feature {"session": "s1", "revision": 1, "feature": {"id": "s0000001", "type": "sketch",
+add_feature {"session": "s1", "revision": 1, "before": null, "feature": {"id": "s0000001", "type": "sketch",
              "name": "Bracket profile", "plane": "xz", "points": [{"id": "pa000001", "x": 0, "y": 0,
              "construction": false}, …], "lines": […], "circles": [], "arcs": [],
              "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, …,
              {"id": "ka000009", "type": "length", "line": "na000001", "value": 60, "driving": true}, …]}}
          →  revision 2
-add_feature {"session": "s1", "revision": 2, "feature": {"id": "p0000001", "type": "pad", "name": "Legs",
+add_feature {"session": "s1", "revision": 2, "before": null, "feature": {"id": "p0000001", "type": "pad", "name": "Legs",
              "sketch": "s0000001", "extent": {"type": "one_side", "length": 4, "reversed": true}}}
          →  revision 3
 check       {"session": "s1", "model": "current", "fresh": false}   → {"problems": [], …}
@@ -145,7 +145,7 @@ query       {"session": "s1", "model": "current", "feature": null, "kind": "edge
 Of the six edges, the one from (5, 0, 5) to (5, 40, 5) is the inside corner. The agent fillets it by the name `query` gave.
 
 ```
-add_feature {"session": "s1", "revision": 10, "feature": {"id": "f0000001", "type": "fillet",
+add_feature {"session": "s1", "revision": 10, "before": null, "feature": {"id": "f0000001", "type": "fillet",
              "name": "Inside corner", "base": "h0000002",
              "edges": ["p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000004)"], "radius": 5}}
 commit      {"session": "s1"}

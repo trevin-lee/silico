@@ -127,8 +127,8 @@ pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
     Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
-    ModelChoice, ModelRead, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
-    RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
+    ModelChoice, ModelRead, Moved, Opened, OutlineAnswer, Progress, Published, Read, ReadClient,
+    Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
     SessionId, SessionInfo, Status, Stepped, Stopper, TextAnswer, TimelineAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
@@ -1241,18 +1241,28 @@ impl<P: Clients + 'static> Sessions<P> {
         )
     }
 
-    /// Appends `feature`, a feature as the document writes it, to the end of `session`'s
-    /// timeline (the design's `add_feature`), as an edit made against `revision`: its `id`
-    /// may be left out, for one made from the system's randomness that no feature holds
-    /// (decision 20), and its `v`, for the type's current version; a `fingerprint` is
-    /// refused (a commit writes it). Through the gate, all at once; inside a transaction,
-    /// applied, starting no rebuild; outside one, saved as its own transaction (decision 1).
-    /// Refused whole, the session as it was, as every edit is ([`Session::edit`]), and for a
-    /// document the gate refused (only `replace_text` mends one).
+    /// Adds `feature`, a feature as the document writes it, to `session`'s timeline before
+    /// the feature `before`, or at the end for none (the design's `add_feature`, with
+    /// M5.0's `before`), as an edit made against `revision`: its `id` may be left out, for
+    /// one made from the system's randomness that no feature holds (decision 20), and its
+    /// `v`, for the type's current version; a `fingerprint` is refused (a commit writes
+    /// it). Before a feature, each input it consumes that a feature at or after its place
+    /// consumed is consumed by it instead, that feature's field rewired to it and listed
+    /// (`document::chain::insert`); refused, naming `before`, where that consumer comes
+    /// before the place, and naming both where a boolean's two inputs both had consumers.
+    /// Inside a transaction, a feature added with the ID of one `begin`'s document (or its
+    /// mend) stored a fingerprint for carries that fingerprint, whatever its fields, so the
+    /// saved file is a function of the document's state, not of the edits' path: what the
+    /// edits reach decides whether it's read, as for a feature never removed.
+    /// Through the gate, all at once; inside a transaction, applied, starting no rebuild;
+    /// outside one, saved as its own transaction (decision 1). Refused whole, the session as
+    /// it was, as every edit is ([`Session::edit`]), for a `before` the document hasn't, and
+    /// for a document the gate refused (only `replace_text` mends one).
     pub fn add_feature(
         &self,
         session: &SessionId,
         revision: Revision,
+        before: Option<FeatureId>,
         feature: Node,
     ) -> Running<Added> {
         let registry = Arc::downgrade(&self.registry);
@@ -1266,21 +1276,32 @@ impl<P: Clients + 'static> Sessions<P> {
                     stop,
                     revision,
                     |base| {
-                        let (added, candidate) =
-                            edit::add_feature(base.checked()?, feature, |document| {
-                                lock(&ids).next_free(document)
-                            })?;
-                        Ok((added, Some(candidate)))
+                        let edit::Inserted {
+                            feature,
+                            index,
+                            rewired,
+                            candidate,
+                        } = edit::add_feature(
+                            base.checked()?,
+                            before.as_ref(),
+                            feature,
+                            base.begun,
+                            |document| lock(&ids).next_free(document),
+                        )?;
+                        Ok(((feature, index, rewired), Some(candidate)))
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
                 )?;
-                let id = edited.made.id.clone();
-                let feature = as_committed(edited.saved.as_deref(), edited.made, |saved| {
+                let (made, index, rewired) = edited.made;
+                let id = made.id.clone();
+                let feature = as_committed(edited.saved.as_deref(), made, |saved| {
                     saved.feature(&id).ok().cloned()
                 })?;
                 Ok(Added {
                     feature,
+                    index,
+                    rewired,
                     changed: edited.changed,
                     commit: edited.commit,
                 })
@@ -1313,7 +1334,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 let edited = session.edit(
                     stop,
                     revision,
-                    |base| edit::set_field(base.checked()?, &feature, &field, value),
+                    |base| edit::set_field(base.checked()?.document(), &feature, &field, value),
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
                 )?;
@@ -1337,11 +1358,19 @@ impl<P: Clients + 'static> Sessions<P> {
         )
     }
 
-    /// Removes `session`'s feature `feature` (the design's `remove_feature`), as an edit made
-    /// against `revision`, giving it back as the document held it, with its place in the
-    /// timeline, so `replace_text` can put it back. Refused, as the gate refuses it, with each
-    /// feature that uses it naming it (the client removes those first); otherwise as
-    /// [`add_feature`](Self::add_feature).
+    /// Removes `session`'s feature `feature` (the design's `remove_feature`, as M5.0's A9
+    /// amends it), as an edit made against `revision`, giving it back as the document held
+    /// it (its fingerprint too), with its place in the timeline: to put it back, give
+    /// `add_feature` the feature without its fingerprint, `before` the feature that followed
+    /// it (inside a transaction, the fingerprint `begin`'s document stored is kept), then
+    /// set `base` back with `set_field` on each rewired entry
+    /// whose `to` is none; or `rollback`, of a removal inside a transaction. The feature
+    /// that consumed it takes its base, listed in
+    /// `rewired` (`document::chain::remove`). Refused, naming both features, where nothing
+    /// can stand in: a chain's root under a feature that needs a base, a feature whose
+    /// sketch it is, or one that stores names of its elements; and where a feature's base
+    /// would no longer be built from a maker of the names it stores (open item 2b);
+    /// otherwise as [`add_feature`](Self::add_feature).
     pub fn remove_feature(
         &self,
         session: &SessionId,
@@ -1358,17 +1387,65 @@ impl<P: Clients + 'static> Sessions<P> {
                     stop,
                     revision,
                     |base| {
-                        let (removed, index, candidate) =
-                            edit::remove_feature(base.checked()?, &feature)?;
-                        Ok(((removed, index), Some(candidate)))
+                        let (removed, candidate) = edit::remove_feature(base.checked()?, &feature)?;
+                        Ok((removed, Some(candidate)))
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
                 )?;
-                let (feature, index) = edited.made;
+                let removed = edited.made;
                 Ok(Removed {
+                    feature: removed.feature,
+                    index: removed.index,
+                    rewired: removed.rewired,
+                    changed: edited.changed,
+                    commit: edited.commit,
+                })
+            },
+        )
+    }
+
+    /// Moves `session`'s feature `feature` before the feature `before`, or to the end for
+    /// none (docs/design/m5.0-app.md, `move_feature`), as an edit made against `revision`:
+    /// a removal then an insert (`document::chain::move_feature`). Its consumer takes its
+    /// base, as `remove_feature` rewires it; its base becomes the last member of its chain
+    /// before the new place; and the chain's next member after that place takes it as its
+    /// base, every change listed in `rewired`. A move to where it is changes nothing: no new
+    /// revision, nothing written. Refused, naming both features, for a move before its sketch
+    /// or its tool, after a feature that uses it as its sketch, that leaves a chain's root's
+    /// consumer without a base, that would give a primitive a base or leave a feature that
+    /// needs one without, that takes a feature off a tool's chain past its boolean, or after
+    /// which a feature's base is no longer built from a maker of the names it stores (open
+    /// item 2b); refused, naming `before`, before itself. A move that leaves a stored name
+    /// already broken (its maker never in its base's lineage) before its maker is refused by
+    /// the gate, in its words, naming the feature that stores it. Otherwise as
+    /// [`add_feature`](Self::add_feature).
+    pub fn move_feature(
+        &self,
+        session: &SessionId,
+        revision: Revision,
+        feature: FeatureId,
+        before: Option<FeatureId>,
+    ) -> Running<Moved> {
+        let registry = Arc::downgrade(&self.registry);
+        self.queued(
+            session,
+            SessionCommand::MoveFeature,
+            move |session, stop, model| {
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| edit::move_feature(base.checked()?, &feature, before.as_ref()),
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                let moved = edited.made;
+                Ok(Moved {
                     feature,
-                    index,
+                    from: moved.from,
+                    to: moved.to,
+                    rewired: moved.rewired,
                     changed: edited.changed,
                     commit: edited.commit,
                 })

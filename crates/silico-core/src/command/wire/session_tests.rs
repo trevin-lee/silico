@@ -288,6 +288,8 @@ fn the_edits_results_are_written_as_the_design_gives_them() {
             feature: feature(
                 r#"{"id": "q7m2x9kd", "type": "pocket", "v": 1, "name": "Leg holes", "base": "p0000001", "sketch": "s0000002", "extent": {"type": "through_all", "reversed": false}}"#,
             ),
+            index: 3,
+            rewired: Vec::new(),
             changed: true,
             commit: None,
         },
@@ -351,6 +353,7 @@ fn inside_a_transaction_an_edits_commit_and_replaced_text_are_null() {
             r#"{"id": "b0000001", "type": "sphere", "v": 1, "name": "S", "position": [0, 0, 0], "radius": 1}"#,
         ),
         index: 17,
+        rewired: Vec::new(),
         changed: false,
         commit: Some(committed(&[], &[])),
     };
@@ -369,6 +372,8 @@ fn an_added_features_commit_is_written_outside_a_transaction() {
         feature: feature(
             r#"{"id": "b0000001", "type": "sphere", "v": 1, "name": "S", "position": [0, 0, 0], "radius": 1}"#,
         ),
+        index: 0,
+        rewired: Vec::new(),
         changed: true,
         commit: Some(committed(&["b0000001"], &[])),
     };
@@ -592,7 +597,8 @@ fn the_commands_a_session_runs_are_the_wires_in_the_designs_order() {
             "mass_properties",
             "distance",
             "angle",
-            "render"
+            "render",
+            "timeline"
         ]
     );
 }

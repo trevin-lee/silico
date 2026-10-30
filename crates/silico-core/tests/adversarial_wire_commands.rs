@@ -1032,7 +1032,9 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "angle",
                 "render",
                 "read_logs",
-                "export"
+                "export",
+                "move_feature",
+                "timeline"
             ]
         );
         assert!(printable(error.message()), "{of:?}: {:?}", error.message());
