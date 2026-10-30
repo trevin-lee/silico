@@ -656,6 +656,10 @@
             "description": "A note about the feature, kept with it (left out when there's none).",
             "type": "string"
           },
+          "suppressed": {
+            "const": true,
+            "description": "Whether the feature is suppressed: not built, a feature that consumes it building on\nthe nearest unsuppressed feature up its chain (written only as true; a feature that\nisn't suppressed leaves it out)."
+          },
           "v": {
             "$ref": "#/$defs/FeatureVersion"
           }
