@@ -393,6 +393,15 @@ const UNJOIN: Edit = Edit {
     name: "unjoin",
     lever: None,
 };
+/// A drag's end writes the sketch as its whole solve from the cursor left it
+/// (docs/design/m5.0-app.md, `drag_end`): judged as every edit that writes geometry is, so a
+/// release into a configuration the solve finds worse (a redundancy the sketch hadn't) is
+/// refused, the document as it was. A solve that fails there already kept the begin state,
+/// with no edit, so there's no lever to suggest.
+pub(super) const DRAG: Edit = Edit {
+    name: "drag",
+    lever: None,
+};
 /// A merge's solve starts from the kept point's place, by the request's order (Fable,
 /// 2026-10-29): the lever is the request's.
 const MERGE: Edit = Edit {
@@ -408,7 +417,7 @@ const MERGE: Edit = Edit {
 /// the edit was made to ([`worse`]): refused then, as `edit`'s. An edit that changes nothing
 /// isn't solved, nor is `before` where the edit's solve is clean. Its solves are stopped by
 /// the command `stop`, of the session `session` ([`solved`]).
-fn judged<T>(
+pub(super) fn judged<T>(
     solvers: &SketchSolvers,
     stop: &Ticket,
     session: SessionId,

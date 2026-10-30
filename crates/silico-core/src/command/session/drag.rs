@@ -25,6 +25,7 @@ use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, Weak};
 
 use super::cancel::{Interrupt, Ticket, Why, cancelled};
+use super::sketch_edits::{DRAG, judged};
 use super::{
     DragBegun, DragEnded, DragFrame, DragGrab, DragOpen, FrameEnd, Gated, Problems, Response,
     Revision, Running, Session, SessionCommand, SessionId, SessionInfo, Sessions, command_span,
@@ -140,7 +141,13 @@ impl Frames {
                 || Response {
                     session: Some(info.clone()),
                     model: None,
-                    result: drag_frame(outcome).map_err(Problems::from),
+                    // Its session's close ended the drag, or came as the frame did: the
+                    // session is gone, and no client stopped the move.
+                    result: if stop.closed() {
+                        Err(Problems::from(not_open(info.id)))
+                    } else {
+                        drag_frame(outcome).map_err(Problems::from)
+                    },
                 },
             );
             // One answer to each channel of one: never waits.
@@ -357,7 +364,13 @@ impl<C: Kernel + 'static> Session<C> {
     }
 
     /// Ends the drag, if there's one, and stops a release under way: as the session closes.
+    /// Its moves unanswered are told the session closed first, so each answers `not_open`,
+    /// as a command of a session that isn't open does, never `cancelled`: no client stopped
+    /// them.
     pub(super) fn end_drag(&self) {
+        for stop in self.drag_moves() {
+            stop.close();
+        }
         self.stop_release();
         let open = lock(&self.drags).open.take();
         if let Some(open) = open {
@@ -445,7 +458,15 @@ impl<C: Kernel + 'static> Session<C> {
                 &drag_stop,
             ),
         }
-        .map_err(Problems::from)?;
+        .map_err(|error| {
+            // Its session's close stopped the solve, or came as it ended: the session is
+            // gone, and the drag's words for a stopped solve never reach the client.
+            if stop.closed() {
+                Problems::from(not_open(self.id))
+            } else {
+                Problems::from(error)
+            }
+        })?;
         // Past here a cancel comes too late: the drag stands, and the begin answers it.
         if let Err(error) = stop.settle() {
             if let Err(why) = opened.drag.end(None) {
@@ -466,26 +487,48 @@ impl<C: Kernel + 'static> Session<C> {
             dofs: opened.dofs,
             moves: opened.moves,
         };
-        let mut slot = lock(&self.drags);
-        let number = slot.next;
-        slot.next = slot.next.wrapping_add(1);
-        slot.open = Some(OpenDrag {
-            drag: opened.drag,
-            sketch,
-            grab,
-            revision,
-            frames,
-            number,
-        });
+        let number = {
+            let mut slot = lock(&self.drags);
+            let number = slot.next;
+            slot.next = slot.next.wrapping_add(1);
+            slot.open = Some(OpenDrag {
+                drag: opened.drag,
+                sketch,
+                grab,
+                revision,
+                frames,
+                number,
+            });
+            number
+        };
+        // Its session closed as it began: the close, which marks the begin closed before it
+        // ends the drag, may have ended it before the slot held it, so it's ended here (by
+        // whichever takes it first), and the begin is refused as of a session not open.
+        if stop.closed() {
+            let mine = {
+                let mut slot = lock(&self.drags);
+                match slot.open.as_ref() {
+                    Some(open) if open.number == number => slot.open.take(),
+                    _ => None,
+                }
+            };
+            if let Some(open) = mine {
+                open.end_quietly();
+            }
+            return Err(Problems::from(not_open(self.id)));
+        }
         Ok(begun)
     }
 
     /// `drag_end`'s work, as the command `stop` stops: the drag ended at `to`, or with no
-    /// edit for none, and what it kept made one edit, read into `read`, its new file claimed
-    /// with `claim`.
+    /// edit for none, and what it kept made one edit, judged by the sketch's solve on a
+    /// solver of `solvers` as every edit that writes geometry is (refused where that solve is
+    /// worse than the sketch's before it), read into `read`, its new file claimed with
+    /// `claim`.
     fn end_drag_with(
         self: &Arc<Self>,
         stop: &Ticket,
+        solvers: &SketchSolvers,
         to: Option<[f64; 2]>,
         read: &mut Option<super::ModelRead>,
         claim: &dyn Fn(&std::path::Path),
@@ -534,6 +577,11 @@ impl<C: Kernel + 'static> Session<C> {
         let ended = drag.end(to);
         lock(&self.drags).ending = None;
         drop(interrupt);
+        // Its session's close stopped the release, or came as it ended: the session is gone,
+        // and the drag's words for a stopped solve never reach the client.
+        if stop.closed() {
+            return Err(Problems::from(not_open(self.id)));
+        }
         let ended = ended.map_err(Problems::from)?;
         if let Some(why) = &ended.why {
             tracing::info!(why = why.message(), "the drag kept its begin state");
@@ -551,8 +599,12 @@ impl<C: Kernel + 'static> Session<C> {
             stop,
             revision,
             |base| {
-                let candidate = edit::sketch_replaced(base.checked()?.document(), &sketch, after)?;
-                Ok(((), candidate))
+                let checked = base.checked()?;
+                let made = (
+                    (),
+                    edit::sketch_replaced(checked.document(), &sketch, after)?,
+                );
+                judged(solvers, stop, base.id, checked, &sketch, DRAG, made)
             },
             read,
             claim,
@@ -683,16 +735,21 @@ impl<P: Clients + 'static> Sessions<P> {
     /// none (Esc): the drag ended with no edit, a move solving then stopped by restarting the
     /// drag's worker. Refused: no drag open (a new revision since the begin ended it); a
     /// cursor that isn't finite or is out of reach (naming `to`; the drag ended with no
-    /// edit); a drag its worker ended, given a cursor, with the worker's error; and the
-    /// gate's errors for the sketch, the drag ended with no edit.
+    /// edit); a drag its worker ended, given a cursor, with the worker's error; the gate's
+    /// errors for the sketch, the drag ended with no edit; and, as every edit that writes
+    /// geometry is, a sketch whose solve as written is worse than its solve before the drag
+    /// (a redundancy or a conflict it hadn't, or a result the file can't hold: "after the
+    /// drag, ..."), the drag ended with no edit, though a problem the sketch had already
+    /// isn't the drag's.
     pub fn drag_end(&self, session: &SessionId, to: Option<[f64; 2]>) -> Running<DragEnded> {
         let registry = Arc::downgrade(&self.registry);
+        let solvers = self.registry.sketches.clone();
         self.queued(
             session,
             SessionCommand::DragEnd,
             move |session, stop, model| {
                 let id = session.id;
-                session.end_drag_with(stop, to, model, &|resolved| {
+                session.end_drag_with(stop, &solvers, to, model, &|resolved| {
                     reclaim(&registry, id, resolved);
                 })
             },

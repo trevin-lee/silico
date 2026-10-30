@@ -773,6 +773,99 @@ fn outside_a_transaction_the_release_is_its_own_commit() {
     );
 }
 
+/// [`chain`]'s three points and two lines with `n0000001`'s length held twice: `k0000009`
+/// repeats `k0000001`, a redundancy whatever the sketch's coordinates, which PlaneGCS
+/// flags on the later (FreeCAD's redundant list). Its tags by the translation's rule:
+/// `k0000001` 1, `k0000002` 2, `k0000009` 3.
+fn chain_held_twice() -> String {
+    chain(3, false).replace(
+        r#""driving": true}]}"#,
+        r#""driving": true}, {"id": "k0000009", "type": "length", "line": "n0000001", "value": 1, "driving": true}]}"#,
+    )
+}
+
+/// `p0000003`'s coordinates in the document `text`.
+fn p3_of(text: &str) -> (f64, f64) {
+    let document: Value = serde_json::from_str(text).unwrap();
+    let point = document["features"][0]["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "p0000003")
+        .unwrap()
+        .clone();
+    (point["x"].as_f64().unwrap(), point["y"].as_f64().unwrap())
+}
+
+#[test]
+fn a_drag_in_a_sketch_whose_solve_had_a_redundancy_already_ends_and_is_written() {
+    // Every solve flags k0000009 (tag 3) redundant, as it is wherever the points are: the
+    // sketch's solve before the drag ranks a redundancy, as its solve after does, and flags
+    // nothing the one before didn't, so the drag's end is no worse (a problem the sketch
+    // had already isn't the edit's) and stands.
+    let f = opened(&chain_held_twice());
+    f.sketches.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.redundant = vec![Tag(3)];
+        Ok(solved)
+    });
+    // A redundancy isn't a conflict: the drag begins.
+    f.begin_point("p0000003").result.unwrap();
+    let ended = f.ended(Some([5.0, 4.0])).result.unwrap();
+    assert_eq!((ended.kept, ended.changed), (Kept::Cursor, true));
+    assert!(ended.commit.unwrap().written);
+    assert_eq!(f.revision(), revision(2));
+    // Written where the fake's move put it: the cursor, nudged by a thousandth of where
+    // p0000003 began, (3, 0); to the document's resolution, 1 nm.
+    let (x, y) = p3_of(&f.file());
+    assert!((x - (5.0 + 3.0 / 1000.0)).abs() < 1e-9, "{x}");
+    assert_eq!(y, 4.0);
+    assert_eq!(f.text(), f.file());
+}
+
+#[test]
+fn a_drag_whose_end_the_solve_finds_worse_is_refused_as_the_drags_the_document_as_it_was() {
+    // The solve flags k0000001 (tag 1) redundant only where p0000003 is off the x axis:
+    // PlaneGCS's diagnosis reads the constraints' Jacobian where the solve starts, so a
+    // constraint can repeat others in one configuration and not another (two point-on-line
+    // constraints of one point, on lines through one point, once the lines are collinear).
+    // The sketch as opened, p0000003 at (3, 0), solves clean; the drag leaves it at y = 4,
+    // where the solve flags k0000001, a redundancy the solve before didn't: worse, so the
+    // drag's end is refused, as every edit that writes geometry is, the document as it was.
+    // k0000001 is met there (p0000001 and p0000002 don't move: n0000001 is still 1 long), so
+    // the redundancy agrees with the others (decision 5) and the drag's own solve keeps the
+    // cursor: its judgment is what refuses it.
+    let f = opened(&chain(3, false));
+    f.sketches.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        // p0000003 is the sketch's third geometry after the origin and the two axes (5).
+        let p3 = system.point_values(PointOf::Point(Geometry(5))).unwrap();
+        if system.values[p3.y.0 as usize] != 0.0 {
+            solved.redundant = vec![Tag(1)];
+        }
+        Ok(solved)
+    });
+    let before = f.text();
+    assert_eq!(p3_of(&before), (3.0, 0.0));
+    f.begin_point("p0000003").result.unwrap();
+    let response = f.ended(Some([5.0, 4.0]));
+    let error = the_error(&response);
+    assert_eq!(error.code(), ErrorCode::OverConstrained, "{error:?}");
+    assert_eq!(error.feature(), Some("s0000001"));
+    assert_eq!(error.elements(), ["k0000001"]);
+    assert!(
+        error.message().starts_with("after the drag, "),
+        "{}",
+        error.message()
+    );
+    // Nothing changed: no new revision, the text and the file as they were, and the drag
+    // over.
+    assert_eq!(f.revision(), revision(1));
+    assert_eq!(f.text(), before);
+    assert_eq!(f.file(), chain(3, false));
+    assert_eq!(f.drag(), None);
+}
+
 #[test]
 fn an_edges_drag_moves_its_line_by_the_cursors_offset_from_the_press() {
     let f = opened(&bracket());
@@ -1431,7 +1524,12 @@ fn a_session_closed_ends_its_drag_and_gives_its_worker_back() {
     let moved = moving
         .try_take()
         .unwrap_or_else(|_| panic!("the move hadn't answered"));
-    assert_eq!(the_error(&moved).code(), ErrorCode::Cancelled);
+    // No client stopped it: it answers as a command of a session that isn't open does (the
+    // design's `close`), never `cancelled`.
+    let error = the_error(&moved);
+    assert_eq!(error.code(), ErrorCode::InvalidInput, "{error:?}");
+    assert_eq!(error.message(), "no session s1 is open");
+    assert_eq!(error.parameter(), Some("session"));
     f.sketches.release();
     // Closed: the session's commands are refused as of no session.
     assert_eq!(
@@ -1689,6 +1787,57 @@ fn a_cancel_of_drag_begin_or_drag_end_mid_solve_stops_its_solve() {
     assert_eq!(f.revision(), revision(1));
     assert_eq!(f.file(), freed_profile());
     assert_eq!(f.drag(), None);
+}
+
+/// `running`'s answer once `f`'s sessions are dropped, on a thread of their own, while its
+/// solve is held: every session closed with them, as a client that goes away closes its
+/// own; the held solve stopped by the close, then released.
+fn closed_mid_solve<T: std::fmt::Debug>(
+    f: Fixture,
+    running: silico_core::command::Running<T>,
+) -> Response<T> {
+    assert!(f.sketches.wait_held(HANG), "the solve never came");
+    let Fixture {
+        dir,
+        sketches,
+        sessions,
+    } = f;
+    let dropper = std::thread::spawn(move || drop(sessions));
+    let answered = answer(running);
+    assert!(sketches.stops() >= 1);
+    dropper.join().unwrap();
+    sketches.release();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("bracket.silico")).unwrap(),
+        freed_profile()
+    );
+    answered
+}
+
+#[test]
+fn a_begin_or_an_end_whose_solve_its_sessions_close_stops_answers_not_open_never_cancelled() {
+    // No client stopped either: each answers as a command of a session that isn't open
+    // does (the design's `close`: only a client's cancel makes a command answer
+    // `cancelled`), not with the drag's words for a stopped solve.
+    let not_open = |error: Error| {
+        assert_eq!(error.code(), ErrorCode::InvalidInput, "{error:?}");
+        assert_eq!(error.message(), "no session s1 is open");
+        assert_eq!(error.parameter(), Some("session"));
+    };
+    // The begin's solve of the sketch, held.
+    let f = opened(&freed_profile());
+    f.sketches.hold();
+    let begin = f
+        .sessions
+        .drag_begin(&s1(), fid("s0000001"), DragGrab::Point(eid("pa000003")));
+    not_open(the_error(&closed_mid_solve(f, begin)));
+    // The end's whole solve, after a frame at its cursor, held.
+    let f = opened(&freed_profile());
+    f.begin_point("pa000003").result.unwrap();
+    f.moved([62.5, 7.0]).result.unwrap();
+    f.sketches.hold();
+    let end = f.sessions.drag_end(&s1(), Some([62.5, 7.0]));
+    not_open(the_error(&closed_mid_solve(f, end)));
 }
 
 #[test]
