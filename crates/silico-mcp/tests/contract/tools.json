@@ -16109,7 +16109,7 @@
             "type": "object"
           },
           "SketchState": {
-            "description": "The sketch's state, as SolidWorks names it: under_defined (solved, something free), fully_defined (solved, nothing free; or empty), over_defined (constraints in conflict, so not solved; or solved, with a driving dimension whose value the others fix), no_solution (no algorithm placed it), or invalid (solved only to geometry that can't be built or held).",
+            "description": "The sketch's state, as SolidWorks names it: under_defined (solved, something free), fully_defined (solved, nothing free; or empty), over_defined (constraints in conflict, so not solved; or solved, with a driving dimension the solver found redundant), no_solution (no algorithm placed it), or invalid (solved only to geometry that can't be built or held).",
             "enum": [
               "under_defined",
               "fully_defined",
