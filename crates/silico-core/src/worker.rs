@@ -1954,11 +1954,52 @@ mod advice_words {
         }
     }
 
+    /// The kind of advice listed after `advice` (the first for none), none after the last:
+    /// matched whole on [`Advice`], so a new kind is a compile error here until it's given
+    /// its place in the list.
+    fn after(advice: Option<&Advice>) -> Option<Advice> {
+        let why = || "w".to_owned();
+        match advice {
+            None => Some(Advice::ChangeTheValues { why: why() }),
+            Some(Advice::ChangeTheValues { .. }) => Some(Advice::SimplifyOrWait),
+            Some(Advice::SimplifyOrWait) => Some(Advice::TryAgain {
+                once_more: false,
+                why: why(),
+            }),
+            Some(Advice::TryAgain {
+                once_more: false, ..
+            }) => Some(Advice::TryAgain {
+                once_more: true,
+                why: why(),
+            }),
+            Some(Advice::TryAgain {
+                once_more: true, ..
+            }) => Some(Advice::Other(why())),
+            Some(Advice::Other(_)) => None,
+        }
+    }
+
+    /// One advice of each kind, in [`after`]'s order.
+    fn kinds() -> Vec<Advice> {
+        let mut kinds: Vec<Advice> = Vec::new();
+        while let Some(next) = after(kinds.last()) {
+            // A list that came back on itself would never end.
+            assert!(!kinds.contains(&next), "{next:?} listed twice");
+            kinds.push(next);
+        }
+        kinds
+    }
+
     #[test]
     fn each_word_of_the_schema_is_one_kind_of_advice_and_each_kind_says_one_or_none() {
-        // Both ways matched whole (`Advice::kind`, `of`), so neither list can leave out what
-        // the other has: each word is said by the kind it stands for, and only by it; the
-        // words, in order, are the schema's, written out here; `Other` says none.
+        // Every kind of advice, listed by a match on `Advice` (`after`), gives the schema's
+        // words in order, each from exactly one kind, `Other` none: so a new kind that says
+        // a word another already says gives it twice, and fails here.
+        let given: Vec<&str> = kinds().iter().filter_map(Advice::word).collect();
+        let all: Vec<&str> = AdviceWord::ALL.iter().map(|w| w.as_str()).collect();
+        assert_eq!(given, all);
+        // And back: each word matched whole (`of`) is said by the kind it stands for. The
+        // words, in order, are the schema's, written out here.
         for word in AdviceWord::ALL {
             assert_eq!(of(*word).kind(), Some(*word), "{word}");
             assert_eq!(of(*word).word(), Some(word.as_str()));
