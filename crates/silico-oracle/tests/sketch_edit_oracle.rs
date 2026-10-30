@@ -105,14 +105,11 @@ fn every_case_agrees_with_freecad_modulo_the_note_or_is_a_reported_difference() 
 
 #[test]
 fn a_merge_that_would_make_a_constraint_hold_its_own_curve_agrees_with_freecads_rollback() {
-    // merge_holds_own_point_on_line, and `sketch-edit-sweep --seed 32 --count 500`'s case 490:
-    // a merge after which an `on` would hold a line's own end on the line, which Silico
+    // A merge after which an `on` would hold an arc's own centre on the arc, which Silico
     // refuses as the gate's rule for the merged sketch (:31, :305). FreeCAD 1.1.3 makes the
-    // merge, its solve finding the `on` redundant (-2, 10 of 10 runs), which its Coincident
-    // command rolls back (:66): both refuse.
-    let mut cases = cases(&["merge_holds_own_point_on_line"]);
-    let mut sweep = silico_oracle::generate::sketch_edit_cases(32, 500).unwrap();
-    cases.push(sweep.swap_remove(490));
+    // merge, its solve failing (-1), which its Coincident command rolls back (:66): both
+    // refuse. (An `on` held on its own curve's end is dropped as implied instead, :303.)
+    let mut cases = vec![holds_own_centre()];
     // `--seed 43`'s case 6, a symmetric that would mirror an end of its line about it: the
     // rule too, though FreeCAD's answer there varies run to run (KNOWN).
     let mut sweep = silico_oracle::generate::sketch_edit_cases(43, 500).unwrap();
@@ -123,11 +120,11 @@ fn a_merge_that_would_make_a_constraint_hold_its_own_curve_agrees_with_freecads_
         .map(|c| prepare(c, &mut worker).unwrap())
         .collect();
     assert!(
-        matches!(rule(&prepared[2]), Some(Rule::MergeHoldsOwn(id)) if id == "k0000032"),
+        matches!(rule(&prepared[1]), Some(Rule::MergeHoldsOwn(id)) if id == "k0000032"),
         "{:?}",
-        prepared[2].silico
+        prepared[1].silico
     );
-    let prepared = &prepared[..2];
+    let prepared = &prepared[..1];
     // A merge that would make a constraint name a point twice is its own rule, not this one.
     let (_, twice, _) = both(&["merge_with_constraint_between"]);
     assert!(
@@ -223,7 +220,7 @@ fn a_merge_that_would_make_a_constraint_hold_its_own_curve_agrees_with_freecads_
             };
             assert!(rule(&wrong).is_none(), "{}", p.name);
         } else {
-            assert_eq!(p.name, "merge_holds_own_point_on_line");
+            assert_eq!(p.name, "merge_holds_own_centre");
         }
     }
 }
@@ -2104,14 +2101,16 @@ fn a_split_circles_edge_tangent_goes_to_the_arc_whose_sweep_holds_the_contact() 
 
 #[test]
 fn a_varying_case_is_shown_known_only_while_silicos_side_is_its_rules_refusal() {
-    // merge_holds_own_point_on_line, made known here as FreeCAD varying by its rule: shown
-    // so while Silico refuses it by MergeHoldsOwn; with Silico's result gated, refused for a
-    // reason no rule names, or the case's sketch not drawn as it solves, it's compared, and
-    // the known case a problem.
-    let (_, prepared, theirs) = both(&["merge_holds_own_point_on_line"]);
+    // merge_holds_own_centre, made known here as FreeCAD varying by its rule: shown so while
+    // Silico refuses it by MergeHoldsOwn; with Silico's result gated, refused for a reason no
+    // rule names, or the case's sketch not drawn as it solves, it's compared, and the known
+    // case a problem.
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared = vec![prepare(&holds_own_centre(), &mut worker).unwrap()];
+    let theirs = freecad_outcomes(&prepared).unwrap();
     let p = &prepared[0];
     let known = [sketch_edit::Known {
-        case: "merge_holds_own_point_on_line",
+        case: "merge_holds_own_centre",
         shows: sketch_edit::Shows::Varies(Rule::MergeHoldsOwn(String::new())),
         why: "varies here",
     }];
@@ -2571,4 +2570,116 @@ fn a_merge_from_apart_agrees_and_silicos_other_points_moved_before_the_solve_are
             "{axis}: {v}"
         );
     }
+}
+
+/// The arc a0000004 about p0000001 (0, 0), radius 3, and the point p0000005 (-3, 0) held on
+/// it by k0000006; the centre and that point merged, the centre kept, so the `on` would hold
+/// the arc's own centre on it.
+fn holds_own_centre() -> EditCase {
+    case_of(
+        "merge_holds_own_centre",
+        r#""points": [{"id": "p0000001", "x": 0, "y": 0, "construction": false}, {"id": "p0000002", "x": 3, "y": 0, "construction": false}, {"id": "p0000003", "x": 0, "y": 3, "construction": false}, {"id": "p0000005", "x": -3, "y": 0, "construction": false}],
+        "lines": [], "circles": [], "arcs": [{"id": "a0000004", "center": "p0000001", "start": "p0000002", "end": "p0000003", "construction": false}],
+        "constraints": [{"id": "k0000006", "type": "on", "point": "p0000005", "curve": "a0000004"}]"#,
+        Edit::Merge {
+            points: vec!["p0000001".to_owned(), "p0000005".to_owned()],
+        },
+    )
+}
+
+#[test]
+fn a_merge_dropping_an_implied_on_is_excused_only_where_freecad_rolls_back_just_its_redundancy() {
+    // merge_holds_own_point_on_line, and `sketch-edit-sweep --seed 32 --count 500`'s case 490:
+    // a merge after which an `on` would hold a line's own end on the line, which Silico drops
+    // as implied, listing it in `removed` (decision 13b, :303). FreeCAD 1.1.3 keeps the
+    // PointOnObject, its solve finding just it redundant (-2), which its Coincident command
+    // rolls back (:66).
+    let mut cases = cases(&["merge_holds_own_point_on_line"]);
+    let mut sweep = silico_oracle::generate::sketch_edit_cases(32, 500).unwrap();
+    cases.push(sweep.swap_remove(490));
+    assert_eq!(cases[1].name, "edit_32_490");
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared: Vec<Prepared> = cases
+        .iter()
+        .map(|c| prepare(c, &mut worker).unwrap())
+        .collect();
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    for (p, fc) in prepared.iter().zip(&theirs) {
+        let v = verdict(p, fc.as_ref());
+        agrees(&v);
+        assert!(
+            v.excused.len() == 1
+                && v.excused[0].starts_with("a merge that drops the `on`")
+                && v.modulo == [66, 303],
+            "{v:?}"
+        );
+    }
+    let p = &prepared[0];
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("{:?}", p.silico);
+    };
+    assert!(s.edited.removed.contains(&id("k0000005")), "{:?}", s.edited);
+    let Some(Theirs::Edited(fc)) = &theirs[0] else {
+        panic!("{:?}", theirs[0]);
+    };
+    let on = fc
+        .constraints
+        .iter()
+        .position(|c| c.name == "s_k0000005")
+        .unwrap()
+        + 1;
+    assert_eq!((fc.after.code, &fc.after.redundant[..]), (-2, &[on][..]));
+    // FreeCAD otherwise: another constraint redundant too, one conflicting, its solve
+    // succeeding or failing, the sketch not clean before the merge, or the sketch not as it
+    // was (a geometry made): a difference each.
+    let dropped = |v: &Verdict| {
+        v.excused
+            .iter()
+            .any(|e| e.starts_with("a merge that drops"))
+    };
+    let other = if on == 1 { 2 } else { 1 };
+    let changes: Vec<(&str, Doctoring)> = vec![
+        (
+            "another constraint redundant too",
+            Box::new(move |fc| fc.after.redundant.push(other)),
+        ),
+        (
+            "a constraint conflicting",
+            Box::new(move |fc| fc.after.conflicting.push(other)),
+        ),
+        (
+            "its solve succeeding",
+            Box::new(|fc| fc.after = fc.before.clone()),
+        ),
+        (
+            "its solve failing (-1), the `on` redundant still",
+            Box::new(|fc| fc.after.code = -1),
+        ),
+        (
+            "the sketch not solving cleanly before the merge",
+            Box::new(|fc| fc.before.code = -1),
+        ),
+        (
+            "a geometry made",
+            Box::new(|fc| {
+                let mut made = fc.geometry[0].clone();
+                made.id = 999;
+                fc.geometry.push(made.clone());
+                fc.edited.push(made);
+            }),
+        ),
+    ];
+    for (what, change) in changes {
+        let v = verdict(p, Some(&doctored(&theirs[0], |fc| change(fc))));
+        assert!(!dropped(&v) && !v.how.is_empty(), "{what}: {v:?}");
+    }
+    // Silico's merge not listing the `on` as removed: a difference.
+    let mut kept = s.clone();
+    kept.edited.removed.retain(|r| *r != id("k0000005"));
+    let kept = Prepared {
+        silico: SilicoSide::Edited(kept),
+        ..p.clone()
+    };
+    let v = verdict(&kept, theirs[0].as_ref());
+    assert!(!dropped(&v) && !v.how.is_empty(), "{v:?}");
 }

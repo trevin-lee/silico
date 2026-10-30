@@ -1074,8 +1074,10 @@ fn a_gap_of_exactly_1e_12_from_tangent_is_tangent_as_drawn_not_in_the_band() {
     // c0000002 about the origin, radius 2^-20; c0000004 about (1e-12 + 2^-73, 0), radius
     // 2^-20 - 2^-73: one inside the other, the centres apart by the radii's difference plus
     // exactly the f64 1e-12, so the gap from tangent is exactly that, in f64 as computed.
-    let (r, q) = (2f64.powi(-20), 2f64.powi(-20) - 2f64.powi(-73));
-    let apart = 1e-12 + 2f64.powi(-73);
+    // 2^-20 and 2^-73, exactly.
+    let (r, step) = (9.5367431640625e-7, 1.058_791_184_067_875_4e-22);
+    let q = r - step;
+    let apart = 1e-12 + step;
     assert_eq!(apart - (r - q), 1e-12);
     let sketch = sketch_of(
         &[("p0000001", 0.0, 0.0), ("p0000003", apart, 0.0)],

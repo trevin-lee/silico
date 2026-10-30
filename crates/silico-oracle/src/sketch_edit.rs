@@ -1368,11 +1368,15 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                 )),
             }
         }
-        (None, Some(theirs_why)) => {
-            v.how.push(format!(
+        (None, Some(theirs_why)) => match implied_on(p, theirs) {
+            Some(excuse) => {
+                v.excused.push(excuse);
+                v.modulo.extend([303, 66]);
+            }
+            None => v.how.push(format!(
                 "FreeCAD refused ({theirs_why}); Silico made the edit"
-            ));
-        }
+            )),
+        },
         (None, None) => {
             if let (SilicoSide::Edited(s), Some(Theirs::Edited(fc))) = (&p.silico, theirs) {
                 let band = contact_band(p);
@@ -1988,6 +1992,89 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Why Silico's merge, made, is the note's where FreeCAD's Coincident command rolls it back:
+/// it drops an `on` the merge makes hold a line's or an arc's own end on it, as implied
+/// (decision 13b, :303), listing it in `removed`, where FreeCAD's merge keeps that
+/// `PointOnObject` and its solve finds exactly it newly redundant (-2, nothing else new),
+/// which the command rolls back (:66): every curve and point kept and none made, and the
+/// constraints the case's and the merge's coincidences ([`restored`]). Its places aren't
+/// checked, as [`rolled_back_worse`] doesn't: a merge from apart's solve that finds a
+/// constraint redundant has already moved the merged ends, which the command's rollback,
+/// which the harness doesn't run, puts back. Anything else is a difference.
+fn implied_on(p: &Prepared, theirs: Option<&Theirs>) -> Option<String> {
+    let (Edit::Merge { points }, SilicoSide::Edited(s), Some(Theirs::Edited(fc))) =
+        (&p.edit, &p.silico, theirs)
+    else {
+        return None;
+    };
+    s.ours.outcome.as_ref().ok()?;
+    let shape = Shape::of(&p.sketch);
+    let kept = points.first()?;
+    let as_merged = |id: &str| -> String {
+        if points.iter().any(|q| q == id) {
+            kept.clone()
+        } else {
+            id.to_owned()
+        }
+    };
+    // The `on`s Silico's merge removed that, merged, hold an end of their own curve.
+    let dropped: Vec<&str> = s
+        .edited
+        .removed
+        .iter()
+        .map(ElementId::as_str)
+        .filter(|id| {
+            p.sketch
+                .constraints
+                .iter()
+                .find(|k| k.id.as_str() == *id)
+                .is_some_and(|k| {
+                    let Form::On { point, curve } = &k.form else {
+                        return false;
+                    };
+                    let (Some(point), Some(curve)) = (point.element(), curve.element()) else {
+                        return false;
+                    };
+                    shape.members.get(curve.as_str()).is_some_and(|m| {
+                        matches!(m.kind, "line" | "arc")
+                            && [1, 2]
+                                .iter()
+                                .filter_map(|pos| m.at.get(pos))
+                                .any(|q| as_merged(q) == as_merged(point.as_str()))
+                    })
+                })
+        })
+        .collect();
+    let [on] = dropped[..] else {
+        return None;
+    };
+    // FreeCAD's PointOnObject for it, by its name, from 1, and the solve's new lists.
+    let index = fc
+        .constraints
+        .iter()
+        .position(|c| c.kind == "PointOnObject" && c.name == fc_name(on))?
+        + 1;
+    let new = |after: &[usize], before: &[usize]| -> Vec<usize> {
+        after
+            .iter()
+            .filter(|i| !before.contains(i))
+            .copied()
+            .collect()
+    };
+    let (b, a) = (&fc.before, &fc.after);
+    (b.code == 0
+        && a.code == -2
+        && new(&a.redundant, &b.redundant) == [index]
+        && new(&a.conflicting, &b.conflicting).is_empty()
+        && new(&a.malformed, &b.malformed).is_empty()
+        && restored(p, theirs, false))
+    .then(|| {
+        format!(
+            "a merge that drops the `on` {on} it makes hold its own curve's end, as implied: Silico's merge removes it ({NOTE}:303), where FreeCAD's keeps it, its solve finding it redundant, which its Coincident command rolls back (:66)"
+        )
+    })
 }
 
 /// Whether FreeCAD's merge of `p` failed its solve (-1, where the sketch before it solved)
