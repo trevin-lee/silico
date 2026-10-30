@@ -660,19 +660,49 @@ fn counting(sessions: &Sessions<Arc<FakeKernel>>) -> Arc<AtomicUsize> {
     count
 }
 
+/// Waits until the client has been woken `want` times, at least: the wake the test waits
+/// for has come. Whether any more came is for [`settled`] to say, exactly.
 #[track_caller]
-fn reaches(count: &AtomicUsize, want: usize) {
-    let deadline = std::time::Instant::now() + WAIT;
+fn woken(count: &AtomicUsize, want: usize) {
+    let deadline = Instant::now() + WAIT;
     while count.load(Ordering::SeqCst) < want {
         assert!(
-            std::time::Instant::now() < deadline,
-            "{} of {want}",
+            Instant::now() < deadline,
+            "woken {} times, never {want}",
             count.load(Ordering::SeqCst)
         );
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::yield_now();
     }
-    std::thread::sleep(Duration::from_millis(150));
-    assert_eq!(count.load(Ordering::SeqCst), want, "woken more than {want}");
+}
+
+/// The client's wakes so far, exactly, none still to come of what came before: the
+/// session's rebuilds' watchers and its published reads' threads joined (each wakes before
+/// it ends), then a `text` held as it starts, after every queued command and reload before
+/// it has answered and woken on the session's thread. Counted then, and the `text` let
+/// through: its own wake counted too, which the count returned includes.
+#[track_caller]
+fn settled(f: &Fixture, count: &AtomicUsize) -> usize {
+    let session = f.session();
+    let watchers = std::mem::replace(&mut lock(&session.rebuilds).watchers, Threads::new());
+    watchers.join();
+    let reads = lock(&session.reads)
+        .threads
+        .as_mut()
+        .map(|threads| std::mem::replace(threads, Threads::new()));
+    if let Some(reads) = reads {
+        reads.join();
+    }
+    let (started, through) = shut(&session.gate);
+    let text = f.sessions.text(&f.id, None);
+    started.recv_timeout(WAIT).unwrap();
+    let before = count.load(Ordering::SeqCst);
+    through.send(()).unwrap();
+    // The gate open again for every command after.
+    drop(through);
+    open_gate(&session.gate);
+    text.wait().result.unwrap();
+    woken(count, before + 1);
+    before + 1
 }
 
 #[test]
@@ -734,15 +764,17 @@ fn a_waker_takes_the_answer_that_woke_it_and_asks_status_with_no_lock_held() {
 fn a_held_command_wakes_once_as_it_answers_and_nothing_wakes_while_nothing_is_pending() {
     let f = opened(BOX);
     let count = counting(&f.sessions);
-    reaches(&count, 0);
+    // Counted from a point no wake is still to come of (the open's, which follows its
+    // answer, among them): every wake after it is this test's.
+    let base = settled(&f, &count);
     let (started, through) = shut(&f.session().gate);
     let text = f.sessions.text(&f.id, None);
     started.recv_timeout(WAIT).unwrap();
-    reaches(&count, 0);
     through.send(()).unwrap();
-    reaches(&count, 1);
+    woken(&count, base + 1);
     text.try_take().ok().unwrap().result.unwrap();
-    reaches(&count, 1);
+    // Held, nothing woke; answered, once; and nothing since.
+    assert_eq!(settled(&f, &count), base + 2);
 }
 
 /// Two boxes, neither using the other, each at the origin (so neither is moved): a step
@@ -754,6 +786,7 @@ fn each_step_of_a_held_rebuild_wakes_once_as_it_settles_then_its_end_and_its_ans
     // Two boxes, one step each, each held by its own size.
     let f = opened(TWO_BOXES);
     let count = counting(&f.sessions);
+    let base = settled(&f, &count);
     let block = f
         .kernel
         .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx > 20.0));
@@ -764,28 +797,28 @@ fn each_step_of_a_held_rebuild_wakes_once_as_it_settles_then_its_end_and_its_ans
         .sessions
         .check(&f.id, CheckModel::Current { fresh: false });
     assert!(f.kernel.wait_running(2, WAIT));
-    std::thread::sleep(Duration::from_millis(200));
-    // Its plan made (told once, unless it was made before its watcher first looked): two
-    // steps, none settled.
-    let planned = count.load(Ordering::SeqCst);
-    assert!(planned <= 1, "{planned}");
+    // Its plan made: two steps, none settled.
     let progress = check.progress().unwrap();
     assert_eq!((progress.done, progress.steps), (0, 2));
     block.release();
-    reaches(&count, planned + 1);
+    woken(&count, base + 1);
     lug.release();
-    // The lug's step, the rebuild's end (its model published), and the check's answer.
-    reaches(&count, planned + 4);
-    check.try_take().ok().unwrap().result.unwrap();
+    check.wait().result.unwrap();
+    // The block's step, the lug's, the rebuild's end (its model published), and the
+    // check's answer; and the plan, told once unless it was made before its watcher first
+    // looked, which nothing here decides. Then `settled`'s own.
+    let woke = settled(&f, &count) - base - 1;
+    assert!(woke == 4 || woke == 5, "{woke}");
 }
 
 #[test]
 fn a_finding_wakes_only_as_it_changes_and_the_sessions_own_reload_once() {
     let w = watched(BOX);
     let count = counting(&w.f.sessions);
+    let base = settled(&w.f, &count);
     // The first comparison's finding, from none to unchanged.
     w.f.status();
-    reaches(&count, 1);
+    woken(&count, base + 1);
     // Unchanged again: nothing.
     w.clock.advance(DISK_CHECK_INTERVAL);
     let ended = w.reader.ended();
@@ -795,13 +828,15 @@ fn a_finding_wakes_only_as_it_changes_and_the_sessions_own_reload_once() {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     }
-    reaches(&count, 1);
     // An agent's commit: the finding changed, then the session's reload.
     std::fs::write(&w.f.path, SPHERE).unwrap();
     w.clock.advance(DISK_CHECK_INTERVAL);
     w.f.status();
-    reaches(&count, 3);
+    woken(&count, base + 3);
     assert_eq!(w.f.at(), Revision(2));
+    // Three, and none besides (the second comparison, unchanged, told nothing); then
+    // `settled`'s own.
+    assert_eq!(settled(&w.f, &count), base + 4);
 }
 
 // ---- #297's review ----
@@ -833,10 +868,12 @@ fn a_published_read_wakes_the_client_once_as_it_answers() {
         .result
         .unwrap();
     let count = counting(&f.sessions);
-    reaches(&count, 0);
+    let base = settled(&f, &count);
     let read = f.sessions.check(&f.id, CheckModel::Published);
-    reaches(&count, 1);
+    woken(&count, base + 1);
     read.try_take().ok().unwrap().result.unwrap();
+    // Once, and nothing since; then `settled`'s own.
+    assert_eq!(settled(&f, &count), base + 2);
 }
 
 #[test]
@@ -855,22 +892,15 @@ fn an_open_wakes_the_client_as_it_answers_and_so_does_one_refused() {
     )
     .checking_disk_every(Duration::ZERO);
     let count = counting(&sessions);
-    let woken = |want: usize| {
-        let deadline = Instant::now() + WAIT;
-        while count.load(Ordering::SeqCst) < want {
-            assert!(Instant::now() < deadline, "never woken {want} times");
-            std::thread::yield_now();
-        }
-    };
     for (n, name) in ["a.silico", "b.silico"].into_iter().enumerate() {
         let path = dir.path().join(name);
         std::fs::write(&path, BOX).unwrap();
         sessions.open(&path, false).wait().result.unwrap();
-        woken(n + 1);
+        woken(&count, n + 1);
     }
     let refused = sessions.open(dir.path().join("none.silico"), false).wait();
     assert!(refused.result.is_err());
-    woken(3);
+    woken(&count, 3);
     drop(sessions);
     // One wake an open, and none besides.
     assert_eq!(count.load(Ordering::SeqCst), 3);
