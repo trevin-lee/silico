@@ -524,6 +524,30 @@ impl Model {
         self.maps.get(self.place(id)?)?.get()?.as_deref()
     }
 
+    /// The feature `id`'s element map as named so far, never naming it, so a caller that
+    /// mustn't wait never does: `None` while its names aren't settled yet (the background
+    /// names them once the model is published, [`Recompute::start`]); `Some(None)` once
+    /// settled with none (a feature that didn't build, a sketch, one whose names couldn't be
+    /// made, or one the document hasn't).
+    pub(crate) fn named_so_far(&self, id: &FeatureId) -> Option<Option<&ElementMap>> {
+        let Some(slot) = self.place(id).and_then(|i| self.maps.get(i)) else {
+            return Some(None);
+        };
+        slot.get().map(|map| map.as_deref())
+    }
+
+    /// This model with none of its elements named yet, as it is when it's published and
+    /// before the background has named any: so a test can read it as a client that asks
+    /// at once does, with no race against that naming.
+    #[cfg(test)]
+    pub(crate) fn unnamed(&self) -> Model {
+        Model {
+            maps: (0..self.features.len()).map(|_| OnceLock::new()).collect(),
+            entries: (0..self.features.len()).map(|_| OnceLock::new()).collect(),
+            ..self.clone()
+        }
+    }
+
     /// Names every feature's elements not yet named, in timeline order, while `go_on` says
     /// to.
     fn name_all(&self, go_on: impl Fn() -> bool) {

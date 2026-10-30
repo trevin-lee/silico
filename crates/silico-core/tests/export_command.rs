@@ -1130,6 +1130,53 @@ fn step_request(path: &Path, features: Option<&[&str]>) -> Export {
 }
 
 #[test]
+fn a_step_export_to_stp_in_either_case_writes_what_step_writes() {
+    // STEP's two spellings (decided at M4's close): .stp and .STP are STEP, byte for byte
+    // what .step writes; a STEP export to .3mf contradicts itself and is refused naming
+    // both spellings, and a 3MF export to .stp names .3mf alone, as before. Each its own
+    // name, as a file system that ignores case takes OUT.STP for out.stp.
+    let bench = Bench::of(EXAMPLE);
+    let dir = Scratch::new("stp");
+    let written: Vec<Vec<u8>> = ["a.step", "b.stp", "C.STP"]
+        .iter()
+        .map(|name| {
+            let path = dir.0.join(name);
+            bench.export(&step_request(&path, None)).unwrap();
+            std::fs::read(&path).unwrap()
+        })
+        .collect();
+    assert!(written[0].starts_with(b"FAKE STEP\n"));
+    assert_eq!(written[1], written[0]);
+    assert_eq!(written[2], written[0]);
+    let problems = refused(bench.export(&step_request(&dir.0.join("out.3mf"), None)));
+    let error = &problems.errors()[0];
+    assert_eq!(
+        (error.code(), error.parameter()),
+        (ErrorCode::InvalidInput, Some("path"))
+    );
+    assert!(
+        error.message().ends_with("doesn't end in .step or .stp"),
+        "{error:?}"
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some("give a path ending in .step or .stp")
+    );
+    let mut mesh = step_request(&dir.0.join("out2.stp"), None);
+    mesh.format = ExportFormat::ThreeMf {
+        tolerance: silico_core::command::export::DEFAULT_TOLERANCE,
+    };
+    let problems = refused(bench.export(&mesh));
+    let error = &problems.errors()[0];
+    assert!(
+        error.message().ends_with("doesn't end in .3mf"),
+        "{error:?}"
+    );
+    assert_eq!(error.suggestion(), Some("give a path ending in .3mf"));
+    assert!(!dir.0.join("out.3mf").exists() && !dir.0.join("out2.stp").exists());
+}
+
+#[test]
 fn a_step_export_writes_the_kernels_file_of_the_bodies_named_by_their_features() {
     // The fake kernel's file says what was asked: the header's file name, the document's;
     // one product, the cut's, its id the feature's ID and its name the feature's. No mesh,

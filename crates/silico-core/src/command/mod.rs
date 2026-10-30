@@ -25,7 +25,7 @@ mod edit;
 pub mod elements;
 pub mod export;
 pub mod logs;
-mod lookup;
+pub(crate) mod lookup;
 pub mod measure;
 pub mod meshes;
 pub mod render;

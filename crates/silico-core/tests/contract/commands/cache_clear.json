@@ -27,7 +27,6 @@
       },
       "removed": {
         "description": "How many entries were removed.",
-        "format": "uint64",
         "minimum": 0,
         "type": "integer"
       }

@@ -497,6 +497,36 @@ fn valid(validator: &jsonschema::Validator, text: &str) -> bool {
 }
 
 #[test]
+fn the_schema_gives_no_format() {
+    // JSON Schema's formats are all strings', and a document's strings have none: a `format`
+    // would be schemars' name of a Rust number's type (`uint64`, `double`), which a strict
+    // validator warns of. Each keyword is a string under `format`; a property of that name
+    // would be an object.
+    fn formats(value: &serde_json::Value, at: &str, found: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(serde_json::Value::String(f)) = map.get("format") {
+                    found.push(format!("{at}: {f}"));
+                }
+                for (key, value) in map {
+                    formats(value, &format!("{at}/{key}"), found);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (i, value) in items.iter().enumerate() {
+                    formats(value, &format!("{at}/{i}"), found);
+                }
+            }
+            _ => {}
+        }
+    }
+    let schema: serde_json::Value = serde_json::from_str(&schema().unwrap()).unwrap();
+    let mut found = Vec::new();
+    formats(&schema, "", &mut found);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
 fn the_schema_accepts_what_the_reader_reads() {
     // Once, the schema said lengths were a `multipleOf` 1e-6, and validators, dividing in
     // floating point, refused 0.1 mm (0.1 / 1e-6 isn't whole to them) and 27 more of

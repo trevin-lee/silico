@@ -24,7 +24,6 @@
       },
       "revision": {
         "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
-        "format": "uint64",
         "minimum": 1,
         "type": "integer"
       },
@@ -68,7 +67,6 @@
           },
           "problems_total": {
             "description": "How many problems there are, listed or not.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
@@ -132,7 +130,6 @@
           },
           "elements_total": {
             "description": "How many elements are at fault, listed or not.",
-            "format": "uint64",
             "minimum": 0,
             "type": "integer"
           },
