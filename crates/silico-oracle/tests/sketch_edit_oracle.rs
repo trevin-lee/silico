@@ -688,7 +688,7 @@ fn a_known_difference_that_no_longer_shows_is_a_problem() {
 }
 
 #[test]
-fn a_case_freecad_answers_otherwise_run_to_run_is_shown_whatever_it_shows() {
+fn a_case_freecad_answers_otherwise_run_to_run_is_known_only_by_its_rule_on_a_sound_case() {
     let known = [sketch_edit::Known {
         case: "c",
         shows: sketch_edit::Shows::Varies(Rule::MergeSolveUnbuildable),
@@ -2009,7 +2009,7 @@ fn a_merge_freecad_rolls_back_after_finding_constraints_redundant_agrees() {
     // FreeCAD's merge's coincidence missing, a case's constraint gone, or its solve finding a
     // conflict (-3, or a conflicting constraint beside the redundancy) rather than only
     // redundancy: a difference.
-    let changes: [(&str, Doctor); 5] = [
+    let changes: [(&str, Doctor); 6] = [
         ("a conflict", |fc| {
             fc.after.code = -3;
             fc.after.conflicting = vec![1];
@@ -2018,6 +2018,7 @@ fn a_merge_freecad_rolls_back_after_finding_constraints_redundant_agrees() {
         ("redundant with a conflict", |fc| {
             fc.after.conflicting = vec![1]
         }),
+        ("-2 with no redundancy new", |fc| fc.after.redundant.clear()),
         ("the coincidence missing", |fc| {
             fc.constraints.pop();
         }),
@@ -2101,6 +2102,19 @@ fn a_varying_case_is_shown_known_only_while_silicos_side_is_its_rules_refusal() 
             "{what}: {differ:?} {shown:?} {stale:?}"
         );
     }
+    // FreeCAD's model of the case malformed before the edit, or the harness's own code
+    // failing around FreeCAD's edit: not hidden as known either.
+    let malformed = doctored(&theirs[0], |fc| fc.before.malformed = vec![1]);
+    let harness = Theirs::Harness("KeyError: 'geometry'".to_owned());
+    for (what, other) in [("malformed before", malformed), ("the harness", harness)] {
+        let v = verdict(p, Some(&other));
+        assert!(v.problem, "{what}: {v:?}");
+        let (differ, shown, stale) = without_known(vec![v], &known);
+        assert!(
+            differ.len() == 1 && shown.is_empty() && stale.len() == 1,
+            "{what}: {differ:?} {shown:?} {stale:?}"
+        );
+    }
 }
 
 #[test]
@@ -2128,6 +2142,12 @@ fn a_merge_left_with_an_edge_tangent_beside_a_tangent_on_is_the_gates_rule() {
                 .message
                 .replace("constraint k0000020", "constraint k0000099")
         },
+        |r: &mut Refusal| {
+            r.message = r
+                .message
+                .replace("a tangent_on puts point", "a constraint puts point")
+        },
+        |r: &mut Refusal| r.elements.swap(0, 1),
     ] {
         let mut r = r.clone();
         change(&mut r);
@@ -2137,6 +2157,29 @@ fn a_merge_left_with_an_edge_tangent_beside_a_tangent_on_is_the_gates_rule() {
         };
         assert!(rule(&wrong).is_none(), "{:?}", wrong.silico);
     }
+    // The tangent_on's at moved to a point that's no curve's end: not the rule.
+    let mut moved = p.clone();
+    let elsewhere = p
+        .sketch
+        .points
+        .iter()
+        .map(|q| q.id.clone())
+        .find(|q| {
+            !p.sketch.lines.iter().any(|l| l.from == *q || l.to == *q)
+                && !p.sketch.arcs.iter().any(|a| a.start == *q || a.end == *q)
+        })
+        .unwrap();
+    let tangent_on = moved
+        .sketch
+        .constraints
+        .iter_mut()
+        .find(|k| k.id == id("k0000024"))
+        .unwrap();
+    let Form::TangentOn { at, .. } = &mut tangent_on.form else {
+        panic!("{:?}", tangent_on.form);
+    };
+    *at = Reference::Element(elsewhere);
+    assert!(rule(&moved).is_none(), "{:?}", moved.sketch.constraints);
 }
 
 #[test]
@@ -2200,7 +2243,8 @@ fn a_merge_freecad_rolls_back_after_finding_constraints_conflicting_agrees() {
     agrees(&v);
     assert!(v.refused, "{v:?}");
     // Its conflict beside a redundancy, or a malformed constraint: not what was measured.
-    let changes: [(&str, Doctor); 2] = [
+    let changes: [(&str, Doctor); 3] = [
+        ("-3 with no conflict new", |fc| fc.after.conflicting.clear()),
         ("a redundancy too", |fc| fc.after.redundant = vec![1]),
         ("a malformed constraint too", |fc| {
             fc.after.malformed = vec![1]

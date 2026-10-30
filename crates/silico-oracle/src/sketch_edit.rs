@@ -919,7 +919,9 @@ pub struct Verdict {
     pub crashed: bool,
     /// The note's rule Silico's refusal is, if it refused by one.
     pub rule: Option<Rule>,
-    /// The case itself has a problem (its sketch not drawn as it solves, or not solving).
+    /// The case itself has a problem, or the harness: its sketch not drawn as it solves or
+    /// not solving, FreeCAD's model of it malformed or conflicting before the edit, or the
+    /// harness's own code around FreeCAD's edit failing.
     pub problem: bool,
 }
 
@@ -1261,6 +1263,7 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         // The case's sketch as FreeCAD's model has it, before the edit: what the two edit
         // has to be a sketch FreeCAD reads as Silico does.
         if !fc.before.malformed.is_empty() || !fc.before.conflicting.is_empty() {
+            v.problem = true;
             v.how.push(format!(
                 "FreeCAD's model of the sketch, before the edit, has malformed constraints {:?} and conflicting {:?}",
                 fc.before.malformed, fc.before.conflicting
@@ -1268,6 +1271,7 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         }
     }
     if let Some(Theirs::Harness(why)) = theirs {
+        v.problem = true;
         v.how.push(format!(
             "the harness's FreeCAD side failed, not FreeCAD's edit: {why}"
         ));
