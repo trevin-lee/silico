@@ -434,3 +434,73 @@ fn negative_degrees_of_freedom_are_written_as_the_solver_gave_them() {
         "{read}"
     );
 }
+
+#[test]
+fn a_diagnosis_the_solver_failed_is_never_kept_so_the_next_rebuild_diagnoses_the_sketch_again() {
+    // An arc about p0000001 from (5, 0) to (8, 0) sweeps nothing: the translation refuses
+    // the sketch (`invalid_input`, naming the arc), a refusal that follows from the sketch
+    // and would be kept; its states come from a diagnosis of its geometry alone, which the
+    // solver is asked for. That first request fails (the worker crashed), so the read is
+    // refused with the crash, naming the sketch. A failure that isn't the sketch's may not
+    // happen again, so the solve isn't kept with it: an edit of the box beside it (the
+    // sketch's step unchanged) rebuilds, asks the solver again, and the read gives the
+    // sketch's state, `invalid`, from the diagnosis, its problem the translation's refusal.
+    let dir = tempfile::tempdir().unwrap();
+    let sketches = FakeSketches::new();
+    let first = Arc::new(AtomicBool::new(true));
+    let fails = Arc::clone(&first);
+    sketches.answer(move |system| {
+        if fails.swap(false, Ordering::SeqCst) {
+            Err(Error::new(
+                ErrorCode::WorkerCrashed,
+                "the sketch worker crashed",
+            ))
+        } else {
+            Ok(FakeSketches::as_sent(system))
+        }
+    });
+    let solver = sketches.clone();
+    let unswept = r#"{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "p0000001", "x": 0, "y": 0, "construction": false}, {"id": "p0000002", "x": 5, "y": 0, "construction": false}, {"id": "p0000003", "x": 8, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [{"id": "a0000001", "center": "p0000001", "start": "p0000002", "end": "p0000003", "construction": false}], "constraints": []}"#;
+    let block = r#"{"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 20, "height": 10}"#;
+    let sessions = opened(&dir, &document(&[unswept, block]), move || {
+        Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
+    });
+    let arguments = r#"{"session": "s1", "model": "current", "sketch": "k7f2qx3m"}"#;
+    let refused = call(&sessions, "sketch", arguments);
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(
+        (
+            &refused["errors"][0]["code"],
+            &refused["errors"][0]["feature"],
+            &refused["total"]
+        ),
+        (&json!("worker_crashed"), &json!("k7f2qx3m"), &json!(1)),
+        "{refused}"
+    );
+    assert_eq!(sketches.requests().len(), 1);
+    let edited = call(
+        &sessions,
+        "set_field",
+        r#"{"session": "s1", "revision": 1, "feature": "b0000001", "field": "length", "value": 12}"#,
+    );
+    assert_eq!(edited["ok"], true, "{edited}");
+    let read = call(&sessions, "sketch", arguments);
+    assert_eq!(read["ok"], true, "{read}");
+    assert_eq!(read["model"]["revision"], 2, "{read}");
+    assert_eq!(sketches.requests().len(), 2, "the sketch diagnosed again");
+    let result = &read["result"];
+    assert_eq!(result["state"], "invalid", "{read}");
+    assert_eq!(
+        (
+            &result["solve_problem"]["code"],
+            &result["solve_problem"]["feature"],
+            &result["solve_problem"]["elements"]
+        ),
+        (
+            &json!("invalid_input"),
+            &json!("k7f2qx3m"),
+            &json!(["a0000001"])
+        ),
+        "{read}"
+    );
+}
