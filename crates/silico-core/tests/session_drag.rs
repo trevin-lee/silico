@@ -1565,6 +1565,17 @@ fn a_moves_reason_reaches_the_sessions_logs() {
         })
     });
     assert_eq!(f.moved([62.5, 8.0]).result.unwrap().frame, FrameEnd::Failed);
+    // And one the worker fails, which ends the drag.
+    f.sketches.answer_moves(|_, _| {
+        Err(Error::new(
+            ErrorCode::WorkerCrashed,
+            "the fake worker crashed",
+        ))
+    });
+    assert_eq!(
+        the_error(&f.moved([62.5, 9.0])).code(),
+        ErrorCode::WorkerCrashed
+    );
     let logs = f
         .sessions
         .read_logs(
@@ -1593,6 +1604,10 @@ fn a_moves_reason_reaches_the_sessions_logs() {
                 "the drag's move was refused: the fake refused the move"
             ),
             ("drag_begin", "the drag's move didn't reach its cursor"),
+            (
+                "drag_begin",
+                "the drag's move failed: the fake worker crashed code=worker_crashed"
+            ),
         ]
     );
 }
@@ -1729,4 +1744,96 @@ fn a_release_at_another_cursor_than_the_last_moves_moves_once_more_from_the_begi
         (point["x"].as_f64().unwrap(), point["y"].as_f64().unwrap()),
         (61.0 + 60.0 / 1000.0, 9.0 + 5.0 / 1000.0)
     );
+}
+
+/// A sketch `s0000001` on xy of an arc about `p0000001` at the origin, counter-clockwise
+/// from `start` to `end`, each a point of the arc's circle of radius 10, its points free.
+fn arc_sketch(start: [i32; 2], end: [i32; 2]) -> String {
+    let point = |id: &str, [x, y]: [i32; 2]| {
+        format!(r#"{{"id": "{id}", "x": {x}, "y": {y}, "construction": false}}"#)
+    };
+    document(&[&format!(
+        r#"{{"id": "s0000001", "type": "sketch", "v": 1, "name": "Bend", "plane": "xy", "points": [{}, {}, {}], "lines": [], "circles": [], "arcs": [{{"id": "a0000001", "center": "p0000001", "start": "p0000002", "end": "p0000003", "construction": false}}], "constraints": []}}"#,
+        point("p0000001", [0, 0]),
+        point("p0000002", start),
+        point("p0000003", end),
+    )])
+}
+
+/// An edge drag of `curve` pressed at `press` on `f`'s sketch, ended at once if it began.
+fn pressed(f: &Fixture, curve: &str, press: [f64; 2]) -> Result<(), Error> {
+    let begun = answer(f.sessions.drag_begin(
+        &s1(),
+        fid("s0000001"),
+        DragGrab::Edge {
+            curve: eid(curve),
+            press,
+        },
+    ));
+    match begun.result {
+        Ok(_) => {
+            f.ended(None).result.unwrap();
+            Ok(())
+        }
+        Err(_) => Err(the_error(&begun)),
+    }
+}
+
+/// The refusal of a press `off` mm from the edge, at `press`, as the begin says it.
+fn off_by(error: &Error, press: &str, off: &str) {
+    assert_eq!(
+        (error.code(), error.parameter(), error.message()),
+        (
+            ErrorCode::InvalidInput,
+            Some("press"),
+            format!(
+                "the drag's press at {press} is {off} mm off the edge it drags: a press lands on its edge"
+            )
+            .as_str()
+        )
+    );
+}
+
+#[test]
+fn an_arcs_press_is_taken_on_its_sweep_and_refused_off_it_by_its_nearer_end() {
+    // A quarter, from (10, 0) to (0, 10): (6, 8) is on it (6² + 8² = 10², at 53°, within
+    // the sweep); (-6, -8) is on its circle but past its ends, √320 from (10, 0), nearer
+    // than √360 from (0, 10).
+    let f = opened(&arc_sketch([10, 0], [0, 10]));
+    pressed(&f, "a0000001", [6.0, 8.0]).unwrap();
+    off_by(
+        &pressed(&f, "a0000001", [-6.0, -8.0]).unwrap_err(),
+        "(-6, -8)",
+        "17.88854381999832",
+    );
+    // A half, from (0, -10) to (0, 10) through (10, 0), across angle 0: its start's angle
+    // below 0 or past a turn, the sweep reckoned round. (10, 0) is on it; (-10, 0) past
+    // it, √200 from either end.
+    let f = opened(&arc_sketch([0, -10], [0, 10]));
+    pressed(&f, "a0000001", [10.0, 0.0]).unwrap();
+    off_by(
+        &pressed(&f, "a0000001", [-10.0, 0.0]).unwrap_err(),
+        "(-10, 0)",
+        "14.142135623730951",
+    );
+}
+
+#[test]
+fn a_press_the_length_tolerance_off_its_line_is_taken_and_one_past_it_refused() {
+    // na000001, from (0, 0) to (60, 0): 1e-7 mm above it is on it, inclusive; the next
+    // number up isn't.
+    let f = opened(&freed_profile());
+    pressed(&f, "na000001", [30.0, 1e-7]).unwrap();
+    let past = 1e-7f64.next_up();
+    let error = pressed(&f, "na000001", [30.0, past]).unwrap_err();
+    assert_eq!(
+        (error.code(), error.parameter()),
+        (ErrorCode::InvalidInput, Some("press"))
+    );
+    assert!(
+        error.message().contains("mm off the edge it drags"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(f.drag(), None);
 }
