@@ -47,7 +47,8 @@ pub struct Edited {
 /// that meet there stay joined (shared points, where FreeCAD re-points coincidences); a
 /// `tangent_at` naming a removed curve goes with it, never onto a neighbour (`9ce5756011`).
 /// A removed line's `midpoint` becomes a `symmetric` of its ends about the point while the
-/// point and both ends stay, as FreeCAD's is stored (a `Symmetric` of the line's ends, which
+/// point and both ends stay (the origin, a fixed reference, always does), as FreeCAD's is
+/// stored (a `Symmetric` of the line's ends, which
 /// the line's delete leaves on the ends its neighbours keep), and as split makes it.
 pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused> {
     let kinds = kinds_of(sketch);
@@ -125,7 +126,7 @@ pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused>
         if let Form::Midpoint { point, line } = &constraint.form
             && let Some(removed) = line.element().filter(|l| gone.contains(*l))
             && !gone.contains(&constraint.id)
-            && point.element().is_some_and(|p| !gone.contains(p))
+            && point.element().is_none_or(|p| !gone.contains(p))
             && let Some(l) = sketch.lines.iter().find(|l| l.id == *removed)
             && !gone.contains(&l.from)
             && !gone.contains(&l.to)

@@ -84,6 +84,8 @@ mod adversarial_session_disk;
 mod adversarial_session_timeline;
 #[path = "adversarial_session_undo.rs"]
 mod adversarial_session_undo;
+#[path = "adversarial_sketch_edit_commands.rs"]
+mod adversarial_sketch_edit_commands;
 #[path = "adversarial_timeline.rs"]
 mod adversarial_timeline;
 #[path = "adversarial_type_words.rs"]
