@@ -85,7 +85,7 @@ M5's sketch mode needs them, and the draft M5 plan (#196) puts them in a step of
   - **A line's `left` or `right`** (a `tangent`'s, a `point_line_distance`'s): the solve never moves the drawing across. 1.1.3's PlaneGCS measures a point's or a circle's distance from a line unsigned, so it solves the drawing on the side it's on, and M3.3 refuses the result as `invalid_result` (`wrong_sides`), naming the constraint.
   - **`inside` or `outside`, and a `direction`**: the solve moves the drawing to the side given, or fails, refusing the edit (M3.3).
 - **`construction` is per member,** as given, for points too (D7; `3db4633f9d`).
-- **The add doesn't solve.** The command solves once, after the gate, as for every edit (the design's common rules), and a conflict that solve finds refuses the edit as data (M3.3). FreeCAD keeps a conflicting constraint and reports it. That check belongs to the command, around the edit, as it does for the merge (decision 10).
+- **The add doesn't solve, and isn't refused for what the solve then finds** (M5.0's SD7). Once the gate takes the batch, it's applied; the rebuild's solve is the sketch's state, so a conflicting or redundant constraint reads as such, and the features that sweep the sketch fail loudly. FreeCAD keeps a conflicting constraint and reports it, so this follows it. Only the edits that write geometry (split, trim, merge, unjoin, extend) refuse a conflict their solve finds, around the edit, as the merge's check does (decision 10).
 - **An empty batch changes nothing:** nothing is added, and the sketch is as it was, so the command's `changed` is false, as for `set_field` to a field's own value. FreeCAD's empty lists add nothing too.
 - **`added`** lists the members by kind (points, lines, circles, arcs, constraints), each kind in the request's order, which is the order the edit makes them. `modified` and `removed` are empty.
 - **Tangency substitution** is already the gate's rule (`tangent_at` where two curves share an end), so an edge `tangent` added between curves that share an end is refused, naming its field, never converted.
@@ -404,7 +404,7 @@ The fixes that set a rule the port must carry, newest first within each operatio
 | `f432d1c6a7`, `5a6be36bc3`, `3c8a254356` | 2026-04, #29007; 2025-12 | A tangent's or a distance's side recorded from the geometry when added (main only) | `side` given, never recorded (D4); test a side given against the drawing |
 | `0e85b24348` | 2023-05 | A list with a bad index refused with one message | Every problem in the batch at once, each at its path |
 | `c35d8be9a3` | 2020-06 | Constraints set directly bypassed the index check | One gate for every edit and every file |
-| `e1dd86f0a9` | 2015-10, #2281 | A solve inside `addConstraint` left a stale initial solution | The add doesn't solve; the command solves once, after the gate |
+| `e1dd86f0a9` | 2015-10, #2281 | A solve inside `addConstraint` left a stale initial solution | The add doesn't solve; the rebuild solves once, after the gate |
 | `7d8b1f30c3` | 2014-12, #1720 | A constraint with indices out of range crashed FreeCAD; a list is now checked whole first | Every reference checked by the gate, the whole batch before any is added |
 | `3838bddcdb` | 2014-11 | An end tangency's kind locked from the geometry | `direction` given (D4) |
 | **Missing coincidences** | | | |
