@@ -673,6 +673,7 @@ fn answer(t: &Translation, values: Vec<f64>, status: SolveStatus) -> Solved {
         conflicting: Vec::new(),
         redundant: Vec::new(),
         partially_redundant: Vec::new(),
+        dependencies: Vec::new(),
         free: Vec::new(),
         no_equations: false,
         status,
@@ -2044,6 +2045,48 @@ fn a_reply_whose_residuals_or_algorithm_dont_fit_its_request_is_a_protocol_error
                 "{status:?} by {algorithm:?}"
             );
         }
+    }
+}
+
+#[test]
+fn a_reply_whose_dependencies_arent_in_their_form_is_a_protocol_error() {
+    // Solved::dependencies' form (M5.0 open item 32's addendum 4): within each group,
+    // distinct tags sent, increasing; the groups in increasing lexicographic order, so each
+    // once; none empty. Two tags are sent here, the horizontal (1) and the length (2).
+    let t = translate(&ten(&[]));
+    let good = answer(&t, t.system.values.clone(), SolveStatus::Success);
+    for groups in [
+        vec![],
+        vec![vec![Tag(1)]],
+        vec![vec![Tag(1), Tag(2)]],
+        // [1] < [1, 2] < [2], lexicographically.
+        vec![vec![Tag(1)], vec![Tag(1), Tag(2)], vec![Tag(2)]],
+    ] {
+        let mut s = good.clone();
+        s.dependencies = groups.clone();
+        t.check_reply(&s)
+            .unwrap_or_else(|e| panic!("{groups:?}: {e}"));
+    }
+    for (what, groups) in [
+        ("a tag not sent", vec![vec![Tag(9)]]),
+        ("a tag not sent beside one sent", vec![vec![Tag(1), Tag(3)]]),
+        ("tag 0, an arc's rules", vec![vec![Tag(0), Tag(1)]]),
+        ("a group out of order", vec![vec![Tag(2), Tag(1)]]),
+        ("a tag twice in a group", vec![vec![Tag(1), Tag(1)]]),
+        ("an empty group", vec![vec![]]),
+        ("an empty group first", vec![vec![], vec![Tag(1)]]),
+        ("the groups out of order", vec![vec![Tag(2)], vec![Tag(1)]]),
+        (
+            "a longer group before its prefix",
+            vec![vec![Tag(1), Tag(2)], vec![Tag(1)]],
+        ),
+        ("a group twice", vec![vec![Tag(1)], vec![Tag(1)]]),
+    ] {
+        let mut s = good.clone();
+        s.dependencies = groups;
+        let e = t.check_reply(&s).unwrap_err();
+        assert_eq!(e.code(), ErrorCode::ProtocolError, "{what}");
+        assert!(e.message().contains("dependencies"), "{what}: {e}");
     }
 }
 

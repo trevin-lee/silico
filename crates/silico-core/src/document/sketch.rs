@@ -704,7 +704,10 @@ pub enum Form {
         at: Reference,
         direction: Direction,
     },
-    /// `a` and `b` mirror each other about a line or a point.
+    /// `a` and `b` mirror each other about a line or a point. An arc's own ends mirrored
+    /// about a line through its centre are one equation when the centre is held on the line
+    /// as the line's end or by an `on`, and two otherwise; if other constraints then put the
+    /// centre on the line as well, one of the sketch's equations is implied by the rest.
     Symmetric {
         a: Reference,
         b: Reference,

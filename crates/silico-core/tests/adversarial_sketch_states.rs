@@ -8,8 +8,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::fixture;
+use super::within;
 
 use fixture::{arc, circle, line, point};
+use within::within;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -17,8 +19,11 @@ use std::time::{Duration, Instant};
 use silico_core::ErrorCode;
 use silico_core::document::{ElementId, Operation, Sketch, read, validate};
 use silico_core::fake::FakeSketches;
-use silico_core::sketch::{Diagnosed, Diagnosis, Translation};
-use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, states};
+use silico_core::sketch::{
+    DEPENDENCIES_LISTED, DEPENDENCY_IDS_LISTED, Dependencies, Dependency, Diagnosed, Diagnosis,
+    Translation,
+};
+use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, SketchStates, states};
 use silico_protocol::{Algorithm, SolveStatus, Solved, Tag, Value};
 
 use ConstraintState::{Conflicting, Redundant, Satisfied};
@@ -87,6 +92,312 @@ fn placed_line() -> Sketch {
             c(r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#),
         ],
     ))
+}
+
+/// The gate's most constraints: one line given `horizontal` 10,000 times, `k0000000` to
+/// `k0009999`, tags 1 to 10,000.
+fn ten_thousand_horizontals() -> Sketch {
+    let mut constraints: Vec<String> = Vec::new();
+    for i in 0..10_000 {
+        constraints.push(format!(
+            r#"{{"id": "k{i:07}", "type": "horizontal", "line": "n0000001"}}"#
+        ));
+    }
+    gated(&text(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 10.0, 0.0)],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &constraints,
+    ))
+}
+
+/// What [`ten_thousand_horizontals`] reads, the fake calling every horizontal after the first
+/// redundant, every unknown free, 3 left: the horizontals are relations, which a dependency
+/// doesn't over-define (addendum 4), so the first reads satisfied, the rest redundant as
+/// listed, and the members and the sketch under defined.
+#[track_caller]
+fn expect_horizontals_read(read: &Diagnosed, got: &SketchStates) {
+    assert!(read.outcome().is_ok(), "{:?}", read.outcome());
+    assert_eq!((got.state, got.dofs), (SketchState::UnderDefined, 3));
+    assert_eq!(got.constraints[&id("k0000000")], Satisfied);
+    assert_eq!(
+        got.constraints
+            .values()
+            .filter(|&&s| s == Redundant)
+            .count(),
+        9_999
+    );
+    assert_eq!(
+        got.points,
+        members(&[("p0000001", Under), ("p0000002", Under)])
+    );
+    assert_eq!(got.lines, members(&[("n0000001", Under)]));
+}
+
+#[test]
+fn a_reply_naming_a_million_tags_in_its_dependencies_is_checked_read_and_stated_promptly() {
+    // The reply's groups, the tags in each, and the first tag of its first group.
+    const GROUPS: u32 = 1_000;
+    const GROUP_TAGS: u32 = 1_001;
+    const FIRST_TAG: u32 = 8_001;
+    // Robustness review, round 1: the read found each group's tags among the rows sent by a
+    // scan, for every tag, so a reply PlaneGCS's bounds allow, 9,000 groups of 1,001 tags
+    // on the gate's 10,000 constraints, took 12 minutes in the core, after the worker's
+    // timeout. Here the ten thousand horizontals and 1,000 groups of 1,001 tags, group i the
+    // tags from 8,001 + i (each sorted, the groups increasing, every tag sent: a reply
+    // check_reply takes), 1,001,000 tags, each near the end of the rows a scan walks; the
+    // fake calls every horizontal after the first redundant. Checked, read, and stated in
+    // 10 s of CPU (about 1.5 s in a debug build; the scan took more than 10). A smaller
+    // reply than the review's, whose 9,009,000 tags take 13 s of CPU in a debug build even
+    // looked up at once, the work of reading them.
+    //
+    // Round 2: the read made every tag an ID, a million Strings here, about a gigabyte for
+    // the review's reply. It lists the first 100 groups' first 100 IDs and counts the rest
+    // as tags, so it holds 100 × 100 IDs of the groups, and one for each constraint in any
+    // (2,000 here), however many tags the reply names: the cut sizes below are all it keeps.
+    // By hand: tag t is k{t − 1}, so group i names k{8,000 + i} to k{9,000 + i}; the
+    // first 100 listed, k0008000 to k0008099 the first, k0008099 to k0008198 the 100th,
+    // each of 1,001; 1,000 groups; every tag from 8,001 to 10,000 in some group, so k0008000
+    // to k0009999, 2,000 IDs, dependent. The states are the horizontals' own.
+    let sketch = ten_thousand_horizontals();
+    let translation = Translation::new(&sketch).unwrap();
+    let solved = Solved {
+        dofs: 3,
+        redundant: (2..=10_000).map(Tag).collect(),
+        dependencies: (0..GROUPS)
+            .map(|i| {
+                (FIRST_TAG + i..FIRST_TAG + i + GROUP_TAGS)
+                    .map(Tag)
+                    .collect()
+            })
+            .collect(),
+        free: translation.system.unknowns.clone(),
+        status: SolveStatus::SolvedExceptRedundant,
+        ..FakeSketches::as_sent(&translation.system)
+    };
+    let (read, got) = within(Duration::from_secs(10), move || {
+        translation.check_reply(&solved).unwrap();
+        let read = translation.read_diagnosed(&solved).unwrap();
+        let got = states(&sketch, &read).unwrap();
+        (read, got)
+    });
+    let named = |from: u32| -> Vec<ElementId> {
+        (from..from + 100)
+            .map(|i| id(&format!("k{i:07}")))
+            .collect()
+    };
+    let dependencies = &read.diagnosis().dependencies;
+    assert_eq!((DEPENDENCIES_LISTED, DEPENDENCY_IDS_LISTED), (100, 100));
+    assert_eq!(dependencies.groups.len(), 100);
+    assert_eq!(dependencies.groups_total, 1_000);
+    assert!(
+        dependencies
+            .groups
+            .iter()
+            .all(|g| g.constraints.len() == 100 && g.constraints_total == 1_001),
+        "{:?}",
+        dependencies
+            .groups
+            .iter()
+            .map(|g| (g.constraints.len(), g.constraints_total))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(dependencies.groups[0].constraints, named(8_000));
+    assert_eq!(dependencies.groups[99].constraints, named(8_099));
+    let dependent: BTreeSet<ElementId> = (8_000..10_000).map(|i| id(&format!("k{i:07}"))).collect();
+    assert_eq!(dependencies.dependent, dependent);
+    assert_eq!(&got.dependencies, dependencies);
+    expect_horizontals_read(&read, &got);
+}
+
+/// One line p1 (0, 0)–p2 (10, 0) given `horizontal` `n` times, `k0000000` on (tags 1 to
+/// `n`), and then a driving `distance_y` of 0 from p1 to p2, `k{n}` (tag `n` + 1): its one row
+/// is p2's y less p1's, as each horizontal's is.
+fn horizontals_and_a_height(n: u32) -> Sketch {
+    let mut constraints: Vec<String> = (0..n)
+        .map(|i| format!(r#"{{"id": "k{i:07}", "type": "horizontal", "line": "n0000001"}}"#))
+        .collect();
+    constraints.push(format!(
+        r#"{{"id": "k{n:07}", "type": "distance_y", "a": "p0000001", "b": "p0000002", "value": 0, "driving": true}}"#
+    ));
+    gated(&text(
+        &[point("p0000001", 0.0, 0.0), point("p0000002", 10.0, 0.0)],
+        &[line("n0000001", "p0000001", "p0000002")],
+        &[],
+        &[],
+        &constraints,
+    ))
+}
+
+/// `horizontals_and_a_height(n)` read from a reply with `groups`, PlaneGCS dropping every
+/// horizontal and keeping the height, every unknown free and 3 left.
+fn read_height_beside(n: u32, groups: Vec<Vec<Tag>>) -> (Diagnosed, SketchStates) {
+    let sketch = horizontals_and_a_height(n);
+    let translation = Translation::new(&sketch).unwrap();
+    let solved = Solved {
+        dofs: 3,
+        redundant: (1..=n).map(Tag).collect(),
+        dependencies: groups,
+        free: translation.system.unknowns.clone(),
+        status: SolveStatus::SolvedExceptRedundant,
+        ..FakeSketches::as_sent(&translation.system)
+    };
+    translation.check_reply(&solved).unwrap();
+    let read = translation.read_diagnosed(&solved).unwrap();
+    let got = states(&sketch, &read).unwrap();
+    (read, got)
+}
+
+/// `k{from}` to `k{to − 1}`.
+fn k_range(from: u32, to: u32) -> Vec<ElementId> {
+    (from..to).map(|i| id(&format!("k{i:07}"))).collect()
+}
+
+/// What a solved sketch with the height `k0000200` over-defining reads (addendum 4): the
+/// height redundant, though PlaneGCS kept it; the horizontals redundant as dropped; p1 and
+/// p2, which its row reads, over defined; the line, which it doesn't name, under defined
+/// by its free ends; the sketch over defined.
+#[track_caller]
+fn expect_height_over_defines(read: &Diagnosed, got: &SketchStates) {
+    assert!(read.outcome().is_ok(), "{:?}", read.outcome());
+    assert!(!read.diagnosis().redundant.contains(&id("k0000200")));
+    assert_eq!(got.constraints[&id("k0000200")], Redundant);
+    assert_eq!((got.state, got.dofs), (SketchState::OverDefined, 3));
+    assert_eq!(
+        got.points,
+        members(&[("p0000001", Over), ("p0000002", Over)])
+    );
+    assert_eq!(got.lines, members(&[("n0000001", Under)]));
+    assert_eq!(
+        read.diagnosis().points_depended_on.get(&id("k0000200")),
+        Some(&ids(&["p0000001", "p0000002"]))
+    );
+}
+
+#[test]
+fn a_group_of_more_than_a_hundred_lists_its_first_hundred_counts_them_all_and_its_201st_over_defines()
+ {
+    // Invariant 9's cut, on a group: 200 horizontals and the height k0000200 (tag 201), all
+    // one row, so one dependency of all 201 (tags 1 to 201), PlaneGCS dropping the 200
+    // horizontals and keeping the height. By hand: the group lists its first 100 IDs in ID
+    // order, k0000000 to k0000099, and counts 201; one group; all 201 dependent. The height
+    // is 201st in its group, past the cut, and still over-defines: a driving dimension in a
+    // dependency (addendum 4), wherever in it.
+    let (read, got) = read_height_beside(200, vec![(1..=201).map(Tag).collect()]);
+    let want = Dependencies {
+        groups: vec![Dependency {
+            constraints: k_range(0, 100),
+            constraints_total: 201,
+        }],
+        groups_total: 1,
+        dependent: k_range(0, 201).into_iter().collect(),
+    };
+    assert_eq!(read.diagnosis().dependencies, want);
+    assert_eq!(got.dependencies, want);
+    assert!(
+        !want.groups[0].constraints.contains(&id("k0000200")),
+        "the height is past the cut"
+    );
+    expect_height_over_defines(&read, &got);
+    // Every horizontal is a relation, dropped: redundant, over-defining nothing.
+    assert!(
+        k_range(0, 200)
+            .iter()
+            .all(|k| got.constraints[k] == Redundant),
+        "{got:#?}"
+    );
+}
+
+#[test]
+fn more_than_a_hundred_groups_list_the_first_hundred_count_them_all_and_one_in_the_150th_over_defines()
+ {
+    // Invariant 9's cut, on the groups: 150 groups, group i (i from 0 to 148) the
+    // horizontals k{i} and k{i + 1} (tags i + 1 and i + 2), and the 150th the horizontal
+    // k0000149 and the height k0000200 (tags 150 and 201), in increasing order as the
+    // solver gives them; tags 151 to 200 in none. By hand: the first 100 listed, group i
+    // [k{i}, k{i + 1}], each of 2; 150 groups; dependent k0000000 to k0000149 and the height.
+    // The height is only in the 150th group, past the cut, and still over-defines.
+    let mut groups: Vec<Vec<Tag>> = (0..149).map(|i| vec![Tag(i + 1), Tag(i + 2)]).collect();
+    groups.push(vec![Tag(150), Tag(201)]);
+    let (read, got) = read_height_beside(200, groups);
+    let dependencies = &read.diagnosis().dependencies;
+    assert_eq!(dependencies.groups.len(), 100);
+    assert_eq!(dependencies.groups_total, 150);
+    for (i, g) in (0u32..).zip(&dependencies.groups) {
+        assert_eq!(g.constraints, k_range(i, i + 2), "group {i}");
+        assert_eq!(g.constraints_total, 2, "group {i}");
+    }
+    let mut dependent: BTreeSet<ElementId> = k_range(0, 150).into_iter().collect();
+    dependent.insert(id("k0000200"));
+    assert_eq!(dependencies.dependent, dependent);
+    assert_eq!(&got.dependencies, dependencies);
+    expect_height_over_defines(&read, &got);
+}
+
+#[test]
+fn two_groups_alike_in_their_first_hundred_are_both_listed_each_with_its_total() {
+    // A chain closed twice: two dependencies that share their first 100 constraints and
+    // differ past them, tags 1 to 100 and 101, and tags 1 to 100 and 102 (k0000000 to
+    // k0000099, then k0000100 or k0000101), on 150 horizontals and the height. A set of the
+    // cut groups would keep one; the read lists both, alike, each of 101; 2 groups.
+    let first: Vec<Tag> = (1..=101).map(Tag).collect();
+    let mut second: Vec<Tag> = (1..=100).map(Tag).collect();
+    second.push(Tag(102));
+    let (read, _) = read_height_beside(150, vec![first, second]);
+    let alike = Dependency {
+        constraints: k_range(0, 100),
+        constraints_total: 101,
+    };
+    assert_eq!(
+        read.diagnosis().dependencies,
+        Dependencies {
+            groups: vec![alike.clone(), alike],
+            groups_total: 2,
+            dependent: k_range(0, 102).into_iter().collect(),
+        }
+    );
+}
+
+#[test]
+fn the_groups_are_listed_in_the_solvers_order_each_in_id_order_cut_or_not() {
+    // The reply's groups, in increasing order as the solver gives them, each before any
+    // longer one it begins: [1, 2], [1, 2, 3], [1 to 100, 102], [1 to 100, 103] (alike once
+    // cut), [5], [151] (the height, k0000150), on 150 horizontals. By hand, tag t is
+    // k{t − 1}: [k0000000, k0000001] of 2, [k0000000, k0000001, k0000002] of 3, the cut
+    // groups, each k0000000 to k0000099 of 101, [k0000004] of 1, [k0000150] of 1, in that
+    // order; 6 groups; dependent k0000000 to k0000099, k0000101, k0000102, and k0000150.
+    let cut = |last: u32| -> Vec<Tag> { (1..=100).chain([last]).map(Tag).collect() };
+    let groups = vec![
+        vec![Tag(1), Tag(2)],
+        vec![Tag(1), Tag(2), Tag(3)],
+        cut(102),
+        cut(103),
+        vec![Tag(5)],
+        vec![Tag(151)],
+    ];
+    let (read, _) = read_height_beside(150, groups);
+    let group = |constraints: Vec<ElementId>, constraints_total: u64| Dependency {
+        constraints,
+        constraints_total,
+    };
+    let mut dependent: BTreeSet<ElementId> = k_range(0, 100).into_iter().collect();
+    dependent.extend(ids(&["k0000101", "k0000102", "k0000150"]));
+    assert_eq!(
+        read.diagnosis().dependencies,
+        Dependencies {
+            groups: vec![
+                group(k_range(0, 2), 2),
+                group(k_range(0, 3), 3),
+                group(k_range(0, 100), 101),
+                group(k_range(0, 100), 101),
+                group(vec![id("k0000004")], 1),
+                group(vec![id("k0000150")], 1),
+            ],
+            groups_total: 6,
+            dependent,
+        }
+    );
 }
 
 #[test]
@@ -247,6 +558,7 @@ fn a_diagnosis_of_any_garbage_reply_is_data_or_a_structured_error_never_a_panic(
                             conflicting: Vec::new(),
                             redundant: Vec::new(),
                             partially_redundant: Vec::new(),
+                            dependencies: Vec::new(),
                             free: free.clone(),
                             no_equations: which == 2,
                             status,
@@ -289,19 +601,7 @@ fn ten_thousand_repeated_horizontals_are_diagnosed_and_stated_at_once() {
     // the first satisfied, the rest redundant. A redundant relation over-defines nothing
     // (addendum 2), so the members and the sketch read by the freedom the reply gives: every
     // unknown free, 3 left, both ends, the line, and the sketch under defined.
-    let mut constraints: Vec<String> = Vec::new();
-    for i in 0..10_000 {
-        constraints.push(format!(
-            r#"{{"id": "k{i:07}", "type": "horizontal", "line": "n0000001"}}"#
-        ));
-    }
-    let sketch = gated(&text(
-        &[point("p0000001", 0.0, 0.0), point("p0000002", 10.0, 0.0)],
-        &[line("n0000001", "p0000001", "p0000002")],
-        &[],
-        &[],
-        &constraints,
-    ));
+    let sketch = ten_thousand_horizontals();
     let translation = Translation::new(&sketch).unwrap();
     let solved = Solved {
         dofs: 3,
@@ -315,21 +615,7 @@ fn ten_thousand_repeated_horizontals_are_diagnosed_and_stated_at_once() {
     let got = states(&sketch, &read).unwrap();
     let took = started.elapsed();
     assert!(took < Duration::from_secs(10), "{took:?}");
-    assert!(read.outcome().is_ok(), "{:?}", read.outcome());
-    assert_eq!((got.state, got.dofs), (SketchState::UnderDefined, 3));
-    assert_eq!(got.constraints[&id("k0000000")], Satisfied);
-    assert_eq!(
-        got.constraints
-            .values()
-            .filter(|&&s| s == Redundant)
-            .count(),
-        9_999
-    );
-    assert_eq!(
-        got.points,
-        members(&[("p0000001", Under), ("p0000002", Under)])
-    );
-    assert_eq!(got.lines, members(&[("n0000001", Under)]));
+    expect_horizontals_read(&read, &got);
 }
 
 #[test]
@@ -385,9 +671,12 @@ fn the_states_dont_depend_on_the_order_the_sketch_holds_its_lists() {
     reversed.arcs.reverse();
     reversed.constraints.reverse();
     let translation = Translation::new(&sketch).unwrap();
+    // Its dependencies hold the flagged tags, each beside another (k0000005 with
+    // k0000001, k0000007 with k0000003), so the groups are read by ID too.
     let solved = Solved {
         redundant: vec![Tag(5)],
         partially_redundant: vec![Tag(7)],
+        dependencies: vec![vec![Tag(1), Tag(5)], vec![Tag(3), Tag(7)]],
         free: vec![Value(14)],
         status: SolveStatus::SolvedExceptRedundant,
         ..FakeSketches::as_sent(&translation.system)
@@ -398,6 +687,23 @@ fn the_states_dont_depend_on_the_order_the_sketch_holds_its_lists() {
         .read_diagnosed(&solved)
         .unwrap();
     assert_eq!(again.diagnosis(), read.diagnosis());
+    assert_eq!(
+        read.diagnosis().dependencies,
+        Dependencies {
+            groups: vec![
+                Dependency {
+                    constraints: vec![id("k0000001"), id("k0000005")],
+                    constraints_total: 2,
+                },
+                Dependency {
+                    constraints: vec![id("k0000003"), id("k0000007")],
+                    constraints_total: 2,
+                },
+            ],
+            groups_total: 2,
+            dependent: ids(&["k0000001", "k0000003", "k0000005", "k0000007"]),
+        }
+    );
     assert_eq!(states(&reversed, &read), states(&sketch, &read));
 }
 
@@ -749,29 +1055,41 @@ fn every_form(picked: &[usize]) -> Sketch {
 }
 
 #[test]
-fn every_form_flagged_alone_over_defines_exactly_when_it_carries_a_value() {
-    // Each form alone on the drawing, which meets it exactly, the fake listing it (tag 1)
-    // redundant, then partially redundant, with nothing free and 0 left: solved and kept, so
-    // a relation (13 forms) leaves the sketch fully defined, every member fully defined, and
-    // a dimension (8) makes it over defined, with some member over defined (each reads a
-    // point or names a curve). Listed conflicting, any form is refused, over defined, and
-    // over-defines what it governs.
+fn every_form_alone_in_a_dependency_over_defines_exactly_when_it_carries_a_value() {
+    // Each form alone on the drawing, which meets it exactly, in a dependency of its own (tag
+    // 1), the fake listing it redundant, then partially redundant, then not at all (kept),
+    // with nothing free and 0 left: solved, so a relation (13 forms) leaves the sketch fully
+    // defined, every member fully defined, and a dimension (8) makes it over defined, with
+    // some member over defined (each reads a point or names a curve), and reads redundant
+    // even where the solver kept it or listed it partially redundant (addendum 4: a driving
+    // dimension in a dependency is redundant), where a relation listed partially redundant
+    // reads so. Listed conflicting, any form is refused, over defined, and over-defines what
+    // it governs.
     for (i, &(form, dimension)) in EVERY_FORM.iter().enumerate() {
         let sketch = every_form(&[i]);
         let translation = Translation::new(&sketch).unwrap();
         for (redundant, partially_redundant, conflicting) in [
             (vec![Tag(1)], vec![], vec![]),
             (vec![], vec![Tag(1)], vec![]),
+            (vec![], vec![], vec![]),
             (vec![], vec![], vec![Tag(1)]),
         ] {
             let listed_conflicting = !conflicting.is_empty();
+            let listed_partially = !partially_redundant.is_empty();
+            let kept =
+                redundant.is_empty() && partially_redundant.is_empty() && !listed_conflicting;
             let solved = Solved {
                 dofs: 0,
                 free: Vec::new(),
                 redundant,
                 partially_redundant,
+                dependencies: vec![vec![Tag(1)]],
                 conflicting,
-                status: SolveStatus::SolvedExceptRedundant,
+                status: if kept {
+                    SolveStatus::Success
+                } else {
+                    SolveStatus::SolvedExceptRedundant
+                },
                 ..FakeSketches::as_sent(&translation.system)
             };
             let read = translation.read_diagnosed(&solved).unwrap();
@@ -802,7 +1120,48 @@ fn every_form_flagged_alone_over_defines_exactly_when_it_carries_a_value() {
             if !over {
                 assert!(members.iter().all(|&s| s == Fully), "{form}: {got:#?}");
             }
+            if kept {
+                let state = if dimension {
+                    Redundant
+                } else {
+                    ConstraintState::Satisfied
+                };
+                assert_eq!(
+                    got.constraints.values().collect::<Vec<_>>(),
+                    [&state],
+                    "{form}"
+                );
+            }
+            if listed_partially {
+                let state = if dimension {
+                    Redundant
+                } else {
+                    ConstraintState::PartiallyRedundant
+                };
+                assert_eq!(
+                    got.constraints.values().collect::<Vec<_>>(),
+                    [&state],
+                    "{form}"
+                );
+            }
         }
+        // Listed redundant, but in no dependency (a reply PlaneGCS never gives: what it drops
+        // is from a dependency): the state follows the list, and over-definition the
+        // dependencies alone, so nothing over-defines.
+        let solved = Solved {
+            dofs: 0,
+            free: Vec::new(),
+            redundant: vec![Tag(1)],
+            status: SolveStatus::SolvedExceptRedundant,
+            ..FakeSketches::as_sent(&translation.system)
+        };
+        let got = states(&sketch, &translation.read_diagnosed(&solved).unwrap()).unwrap();
+        assert_eq!(got.state, SketchState::FullyDefined, "{form}: {got:#?}");
+        assert_eq!(
+            got.constraints.values().collect::<Vec<_>>(),
+            [&Redundant],
+            "{form}"
+        );
     }
 }
 
@@ -828,12 +1187,18 @@ fn a_reply_listing_a_reference_dimension_redundant_is_a_protocol_error_not_an_ov
         ],
     ));
     let translation = Translation::new(&sketch).unwrap();
-    for (redundant, partially_redundant) in [(vec![Tag(1)], vec![]), (vec![], vec![Tag(1)])] {
+    for (redundant, partially_redundant, dependencies) in [
+        (vec![Tag(1)], vec![], vec![]),
+        (vec![], vec![Tag(1)], vec![]),
+        (vec![], vec![], vec![vec![Tag(1)]]),
+        (vec![], vec![], vec![vec![Tag(1), Tag(2)]]),
+    ] {
         let solved = Solved {
             dofs: 1,
             free: vec![Value(6)],
             redundant,
             partially_redundant,
+            dependencies,
             status: SolveStatus::SolvedExceptRedundant,
             ..FakeSketches::as_sent(&translation.system)
         };
@@ -908,27 +1273,35 @@ fn a_redundant_relation_beside_a_conflicting_dimension_over_defines_only_what_th
 }
 
 #[test]
-fn every_form_together_flagged_any_way_over_defines_by_addendum_2() {
+fn every_form_together_flagged_any_way_over_defines_by_addendum_4() {
     // All 21 forms on the drawing at once, each listed by the fake as nothing (0),
-    // redundant (1), partially redundant (2), or conflicting (3), with every unknown free
-    // (2 left) or none (0 left). Half the cases are relations only: no dimension listed and
-    // no conflict, each relation listed as nothing, redundant, or partially redundant, the
-    // cases where the rule differs from "anything flagged over-defines". By the rule
-    // (docs/ports/sketcher.md, *Definition states*, *An over-defining constraint*), by
-    // hand: over defined when any is conflicting or any dimension is listed; then some
-    // member over defined. Otherwise by the degrees left, no member over defined, every
-    // member under defined with everything free and fully defined with nothing.
+    // redundant (1), partially redundant (2), conflicting (3), or nothing but in a
+    // dependency PlaneGCS kept (4), every one but the nothings in a dependency of its own,
+    // with every unknown free (2 left) or none (0 left). Half the cases are relations only:
+    // no dimension in a dependency and no conflict, each relation nothing, redundant,
+    // partially redundant, or kept in a dependency, the cases where the rule differs from
+    // "anything in a dependency over-defines". By the rule (docs/ports/sketcher.md,
+    // *Definition states*, *An over-defining constraint*: M5.0 open item 32's addendum 4),
+    // by hand: over defined when any is conflicting or any dimension is in a dependency;
+    // then some member over defined. Otherwise by the degrees left, no member over defined,
+    // every member under defined with everything free and fully defined with nothing.
     use proptest::strategy::Strategy;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let strategy = (
-        proptest::collection::vec(0u8..4, 21),
+        proptest::collection::vec(0u8..5, 21),
         proptest::bool::ANY,
         proptest::bool::ANY,
     )
         .prop_map(|(flags, relations_only, free)| {
             let flags: Vec<u8> = if relations_only {
                 (0..21)
-                    .map(|i| if EVERY_FORM[i].1 { 0 } else { flags[i] % 3 })
+                    .map(|i| {
+                        if EVERY_FORM[i].1 {
+                            0
+                        } else {
+                            [0, 1, 2, 4][usize::from(flags[i] % 4)]
+                        }
+                    })
                     .collect()
             } else {
                 flags
@@ -963,6 +1336,10 @@ fn every_form_together_flagged_any_way_over_defines_by_addendum_2() {
                 },
                 redundant: tags(1),
                 partially_redundant: tags(2),
+                dependencies: (0..21)
+                    .filter(|&i| flags[i] != 0)
+                    .map(|i| vec![Tag(i as u32 + 1)])
+                    .collect(),
                 conflicting: tags(3),
                 status: SolveStatus::SolvedExceptRedundant,
                 ..FakeSketches::as_sent(&translation.system)
@@ -1000,8 +1377,9 @@ fn every_form_together_flagged_any_way_over_defines_by_addendum_2() {
             Ok(())
         })
         .unwrap();
-    // About 250 of each expected (half the cases relations only, a relation listed in all
-    // but 1 in 8192 of them, half of those free); 100 is far below what chance gives.
+    // About 250 of each expected (half the cases relations only, a relation flagged in all
+    // but 1 in 2^26 of them, 13 relations each nothing 1 in 4, half of those free); 100 is
+    // far below what chance gives.
     let (under, fully) = (under.into_inner(), fully.into_inner());
     assert!(under >= 100 && fully >= 100, "under {under}, fully {fully}");
 }

@@ -42,6 +42,7 @@ fn answer(system: &SketchSystem, values: Vec<f64>, status: SolveStatus) -> Solve
         conflicting: Vec::new(),
         redundant: Vec::new(),
         partially_redundant: Vec::new(),
+        dependencies: Vec::new(),
         free: Vec::new(),
         no_equations: false,
         status,

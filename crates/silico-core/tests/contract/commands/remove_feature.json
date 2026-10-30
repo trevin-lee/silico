@@ -1427,7 +1427,7 @@
             "type": "object"
           },
           {
-            "description": "`a` and `b` mirror each other about a line or a point.",
+            "description": "`a` and `b` mirror each other about a line or a point. An arc's own ends mirrored\nabout a line through its centre are one equation when the centre is held on the line\nas the line's end or by an `on`, and two otherwise; if other constraints then put the\ncentre on the line as well, one of the sketch's equations is implied by the rest.",
             "properties": {
               "a": {
                 "$ref": "#/$defs/SketchReference"

@@ -12,7 +12,9 @@
 //!
 //! To write the reference again (after a deliberate change to PlaneGCS, its patches, or
 //! the recipe, for review): SILICO_WRITE_SKETCH_STRESS=1 cargo nextest run -p silico-sketch
-//! --test stress.
+//! --test stress. With a path in place of the 1 (an absolute one), what it would write goes
+//! there instead, and the committed reference isn't touched: to compare platforms' before
+//! the rewrite.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "common/systems.rs"]
@@ -319,6 +321,11 @@ fn tags(tags: &[silico_protocol::Tag]) -> String {
     format!("[{}]", list.join(","))
 }
 
+fn groups(groups: &[Vec<silico_protocol::Tag>]) -> String {
+    let list: Vec<String> = groups.iter().map(|g| tags(g)).collect();
+    format!("[{}]", list.join(","))
+}
+
 /// One line of the reference: everything the solve says, its values as a digest of
 /// their bits.
 fn line(name: &str, system: &SketchSystem, solved: &Solved) -> String {
@@ -331,13 +338,14 @@ fn line(name: &str, system: &SketchSystem, solved: &Solved) -> String {
     };
     let free: Vec<String> = solved.free.iter().map(|v| v.0.to_string()).collect();
     format!(
-        "  \"{name}\": {{\"values\": {}, \"constraints\": {}, \"status\": \"{status}\", \"dofs\": {}, \"conflicting\": {}, \"redundant\": {}, \"partially_redundant\": {}, \"free\": [{}], \"solution\": \"{}\"}}",
+        "  \"{name}\": {{\"values\": {}, \"constraints\": {}, \"status\": \"{status}\", \"dofs\": {}, \"conflicting\": {}, \"redundant\": {}, \"partially_redundant\": {}, \"dependencies\": {}, \"free\": [{}], \"solution\": \"{}\"}}",
         system.values.len(),
         system.constraints.len(),
         solved.dofs,
         tags(&solved.conflicting),
         tags(&solved.redundant),
         tags(&solved.partially_redundant),
+        groups(&solved.dependencies),
         free.join(","),
         digest(solved)
     )
@@ -407,8 +415,9 @@ fn generated_sketches_solve_to_the_references_bits() {
         "{{\n{}\n}}\n",
         lines.values().cloned().collect::<Vec<_>>().join(",\n")
     );
-    if std::env::var_os("SILICO_WRITE_SKETCH_STRESS").is_some() {
-        std::fs::write(REFERENCE, &text).unwrap();
+    if let Some(to) = std::env::var_os("SILICO_WRITE_SKETCH_STRESS") {
+        let to = if to == "1" { REFERENCE.into() } else { to };
+        std::fs::write(&to, &text).unwrap();
         return;
     }
     let reference = std::fs::read_to_string(REFERENCE).unwrap();

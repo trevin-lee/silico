@@ -68,6 +68,7 @@ fn answer(t: &Translation, values: Vec<f64>, dropped: &[u32]) -> Solved {
         conflicting: Vec::new(),
         redundant: dropped.iter().map(|&t| Tag(t)).collect(),
         partially_redundant: Vec::new(),
+        dependencies: Vec::new(),
         free: Vec::new(),
         no_equations: false,
         status: SolveStatus::SolvedExceptRedundant,

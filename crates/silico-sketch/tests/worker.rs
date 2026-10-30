@@ -60,6 +60,105 @@ fn a_sketch_solved_through_the_worker_is_solved_as_in_this_process() {
 }
 
 #[test]
+fn a_row_of_fixed_values_alone_is_a_dependency_of_its_own_through_the_worker() {
+    // M5.0 open item 32's addendum 4: a group may be one tag. A line whose ends are fixed
+    // values, (0, 0) to (10, 0), made horizontal (tag 1), beside a free point with nothing
+    // on it. By hand: 2 unknowns (the free point's x and y); the horizontal's row reads no
+    // unknown, so its gradient is zero: 1 row of rank 0, the row past the rank with no pivot
+    // in it, a dependency of its one row, [[1]]. PlaneGCS drops it, and it holds (0 = 0) on
+    // the fixed ends, so it's redundant; 2 left, both unknowns free.
+    let build = |end_y: f64| {
+        let mut b = systems::Builder::default();
+        let start = silico_protocol::PointValues {
+            x: b.fixed(0.0),
+            y: b.fixed(0.0),
+        };
+        let end = silico_protocol::PointValues {
+            x: b.fixed(10.0),
+            y: b.fixed(end_y),
+        };
+        let line = b.add(silico_protocol::SketchGeometry::Line { start, end });
+        let free = b.point_values(3.0, 4.0);
+        b.add(silico_protocol::SketchGeometry::Point(free));
+        b.constrain(|tag| silico_protocol::SolverConstraint::Horizontal { tag, line });
+        b.system(Algorithm::DogLeg)
+    };
+    let mut w = worker();
+    let held = solve(&mut w, build(0.0));
+    assert_eq!(held.dependencies, [vec![silico_protocol::Tag(1)]]);
+    assert_eq!(held.redundant, [silico_protocol::Tag(1)]);
+    assert!(held.conflicting.is_empty(), "{held:?}");
+    assert_eq!(held.dofs, 2);
+    assert_eq!(
+        held.free,
+        [silico_protocol::Value(4), silico_protocol::Value(5)]
+    );
+    // The far end at y 1: the same zero row, the same dependency of one, but it doesn't hold
+    // (1 ≠ 0), so PlaneGCS finds it in conflict; the conflicting group is listed too.
+    let broken = solve(&mut w, build(1.0));
+    assert_eq!(broken.dependencies, [vec![silico_protocol::Tag(1)]]);
+    assert_eq!(broken.conflicting, [silico_protocol::Tag(1)]);
+    assert!(broken.redundant.is_empty(), "{broken:?}");
+    // No dependency at all: the rectangle's rows are independent.
+    let rectangle = solve(&mut w, rectangle_40_by_20().b.system(Algorithm::DogLeg));
+    assert!(rectangle.dependencies.is_empty(), "{rectangle:?}");
+}
+
+#[test]
+fn an_arc_whose_rules_alone_depend_lists_no_dependency_and_still_solves() {
+    // Fable's Addendum 5, point 4: a dependency among an arc's rules alone (tag 0) names no
+    // constraint, so the worker drops the empty group patch 0002 keeps. An arc whose centre
+    // (0, 0), start (5, 0), and end (0, 5) are fixed values, only its radius and angles
+    // unknown, and no constraint on it. By hand, over (r, a1, a2) at r = 5, a1 = 0, a2 =
+    // π/2: the start's x row is (−cos a1, r sin a1, 0) = (−1, 0, 0), its y row (−sin a1,
+    // −r cos a1, 0) = (0, −5, 0), the end's x row (−cos a2, 0, r sin a2) = (0, 0, 5), and its
+    // y row (−sin a2, 0, −r cos a2) = (−1, 0, 0) (to cos(π/2)'s 6e-17): 4 rows of rank 3,
+    // the start's x and the end's y one dependency, all tag 0. So no dependency is listed and
+    // nothing is flagged: PlaneGCS's contest takes no tag-0 row (GCS.cpp,
+    // identifyConflictingRedundantConstraints). The count is paramsNum − constrNum, 3 − 4 =
+    // −1: identifyConflictingRedundantConstraints ends by setting nonredundantconstrNum =
+    // constrNum whatever it found (GCS.cpp:5689), constrNum the 4 rows, less one for each
+    // group the redundant solve satisfied, of which there are none, nothing having been
+    // skipped; and System::diagnose, with paramsNum (3) equal to the rank and that count (4)
+    // above it, sets dofs = paramsNum − nonredundantconstrNum (GCS.cpp:4945), the core's to
+    // read. Nothing is free, and the drawing, which meets every rule, solves.
+    let mut b = systems::Builder::default();
+    let center = silico_protocol::PointValues {
+        x: b.fixed(0.0),
+        y: b.fixed(0.0),
+    };
+    let radius = b.unknown(5.0);
+    let start_angle = b.unknown(0.0);
+    let end_angle = b.unknown(std::f64::consts::FRAC_PI_2);
+    let start = silico_protocol::PointValues {
+        x: b.fixed(5.0),
+        y: b.fixed(0.0),
+    };
+    let end = silico_protocol::PointValues {
+        x: b.fixed(0.0),
+        y: b.fixed(5.0),
+    };
+    let arc = b.add(silico_protocol::SketchGeometry::Arc {
+        center,
+        radius,
+        start_angle,
+        end_angle,
+        start,
+        end,
+    });
+    b.constraints
+        .push(silico_protocol::SolverConstraint::ArcRules { arc });
+    let solved = solve(&mut worker(), b.system(Algorithm::DogLeg));
+    assert!(solved.dependencies.is_empty(), "{solved:?}");
+    assert!(solved.conflicting.is_empty(), "{solved:?}");
+    assert!(solved.redundant.is_empty(), "{solved:?}");
+    assert!(solved.partially_redundant.is_empty(), "{solved:?}");
+    assert_eq!(solved.dofs, -1, "{solved:?}");
+    assert!(solved.free.is_empty(), "{solved:?}");
+    assert_eq!(solved.status, SolveStatus::Success, "{solved:?}");
+}
+
+#[test]
 fn a_system_that_fails_its_check_is_invalid_input_and_the_worker_lives_on() {
     let mut system = rectangle_40_by_20().b.system(Algorithm::DogLeg);
     system.values[3] = f64::NAN;

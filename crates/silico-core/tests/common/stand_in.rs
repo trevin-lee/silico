@@ -37,6 +37,7 @@ pub fn answer(system: &SketchSystem, y: f64, status: SolveStatus) -> Solved {
         conflicting: Vec::new(),
         redundant: Vec::new(),
         partially_redundant: Vec::new(),
+        dependencies: Vec::new(),
         free: Vec::new(),
         no_equations: false,
         status,

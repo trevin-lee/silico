@@ -136,6 +136,9 @@ private:
     int dofs;
     std::set<Constraint*> redundant;
     VEC_I conflictingTags, redundantTags, partiallyRedundantTags;
+    // For each linear dependency among the diagnosed rows, the tags of its constraints,
+    // before the popularity contest reduces the groups to conflictingTags and redundantTags.
+    std::vector<VEC_I> dependentConstraintGroupTags;
 
     bool hasUnknowns;   // if plist is filled with the unknown parameters
     bool hasDiagnosis;  // if dofs, conflictingTags, redundantTags are up to date
@@ -621,6 +624,14 @@ public:
     void getPartiallyRedundant(VEC_I& partiallyredundantOut) const
     {
         partiallyredundantOut = hasDiagnosis ? partiallyRedundantTags : VEC_I(0);
+    }
+    // Each group of constraints in one linear dependency among the rows (constraints, not
+    // getDependentParamsGroups' parameters), as tags in increasing order, tag 0 and internal
+    // alignment excluded as getConflicting excludes them.
+    void getDependentConstraintGroups(std::vector<VEC_I>& dependentConstraintGroupsOut) const
+    {
+        dependentConstraintGroupsOut
+            = hasDiagnosis ? dependentConstraintGroupTags : std::vector<VEC_I>();
     }
     void getDependentParams(VEC_pD& pdependentparameterlist) const
     {

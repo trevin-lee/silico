@@ -18,7 +18,8 @@ pub use silico_protocol::MovedOnce;
 
 use crate::document::{
     Angle as DocumentAngle, Checked, Coordinate, Direction, ElementId, FeatureId, Form, Length,
-    LineSide, MemberPaths, Operation, Reference, Sketch, SketchConstraint, TangentSide,
+    LineSide, MemberPaths, Operation, PROBLEMS_LISTED, Reference, Sketch, SketchConstraint,
+    TangentSide,
 };
 use crate::worker::{Executable, Worker, WorkerKind};
 use crate::{Error, ErrorCode};
@@ -453,7 +454,8 @@ impl SketchWorker {
 
 /// Refuses `solved` unless it could be the solution of `sent`: as many values, its fixed
 /// ones as sent, every value within reach (one that can't be built may not be), lists of
-/// tags sent and unknowns, in order, a residual for each tag sent, and an algorithm exactly
+/// tags sent and unknowns, in order, dependencies of tags sent in
+/// [`Solved::dependencies`]' form, a residual for each tag sent, and an algorithm exactly
 /// where a solution is given ([`Translation::check_reply`]'s, and a drag's closing solve's).
 /// A worker that answers otherwise can't be trusted.
 pub(crate) fn check_solved(sent: &SketchSystem, solved: &Solved) -> Result<(), Error> {
@@ -491,9 +493,22 @@ pub(crate) fn check_solved(sent: &SketchSystem, solved: &Solved) -> Result<(), E
         ("redundant", &solved.redundant),
         ("partially redundant", &solved.partially_redundant),
     ] {
-        if list.windows(2).any(|w| w[0] >= w[1]) || list.iter().any(|t| !tags.contains(t)) {
+        if list.windows(2).any(|w| w[0] >= w[1])
+            || list.iter().any(|t| tags.binary_search(t).is_err())
+        {
             return bad(format!("lists {name} tags it wasn't sent, or out of order"));
         }
+    }
+    // Each dependency distinct tags sent, in increasing order, none empty; the groups in
+    // increasing lexicographic order, so each once.
+    if solved.dependencies.windows(2).any(|w| w[0] >= w[1])
+        || solved.dependencies.iter().any(|group| {
+            group.is_empty()
+                || group.windows(2).any(|w| w[0] >= w[1])
+                || group.iter().any(|t| tags.binary_search(t).is_err())
+        })
+    {
+        return bad("lists dependencies of tags it wasn't sent, empty, or out of order".to_owned());
     }
     if solved.free.windows(2).any(|w| w[0] >= w[1])
         || solved
@@ -825,7 +840,9 @@ fn holdable(file: &Sketch) -> Result<(), Error> {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Diagnosis {
     /// Degrees of freedom left, as PlaneGCS counts them: negative when constraints
-    /// conflict, and −1 for a sketch of no unknowns.
+    /// conflict, and −1 for a sketch of no unknowns. Negative too when an arc's rules alone
+    /// repeat each other (PlaneGCS then counts every row), a case no document reaches
+    /// (docs/ports/sketcher.md, *A dependency*).
     pub dofs: i32,
     /// The points, circles, and arcs with a value of their own the diagnosis finds free (a
     /// point's x or y, a circle's radius, an arc's radius or either angle): every one, when
@@ -841,10 +858,62 @@ pub struct Diagnosis {
     /// The constraints some, but not all, of whose equations repeat others', as PlaneGCS
     /// lists them.
     pub partially_redundant: BTreeSet<ElementId>,
-    /// Each constraint listed above, with the points whose x or y its equations depend on
-    /// ([`SketchSystem::depends_on`]): none, for one whose rows depend only on fixed values,
-    /// radii, and angles.
+    /// The linear dependencies among the diagnosed equations ([`Solved::dependencies`], M5.0
+    /// open item 32's addendum 4), listed up to [`DEPENDENCIES_LISTED`] groups of
+    /// [`DEPENDENCY_IDS_LISTED`] constraints each and counted whole, and every constraint in
+    /// any of them: removing one constraint of a group removes one dependency; the next read
+    /// lists any that remain. Which constraint is in some group is a fact of the sketch,
+    /// whichever PlaneGCS dropped; conflicting groups are here too.
+    pub dependencies: Dependencies,
+    /// Each constraint listed above, or in a dependency, with the points whose x or y its
+    /// equations depend on ([`SketchSystem::depends_on`]): none, for one whose rows depend
+    /// only on fixed values, radii, and angles.
     pub points_depended_on: BTreeMap<ElementId, BTreeSet<ElementId>>,
+}
+
+/// How many of a sketch's dependency groups the core lists ([`Dependencies::groups`]), the
+/// first in order; it counts them all ([`Dependencies::groups_total`]). The hundred every
+/// list of problems has (ARCHITECTURE.md, invariant 9): a reply PlaneGCS's bounds allow may
+/// name about ten thousand groups of a thousand constraints each, which as IDs would be about
+/// a gigabyte for each read.
+pub const DEPENDENCIES_LISTED: usize = PROBLEMS_LISTED;
+
+/// How many of a dependency group's constraints the core lists ([`Dependency::constraints`]),
+/// the first in ID order; it counts them all ([`Dependency::constraints_total`]).
+pub const DEPENDENCY_IDS_LISTED: usize = PROBLEMS_LISTED;
+
+/// One linear dependency among a sketch's equations ([`Solved::dependencies`]' group), as the
+/// core holds it: its first [`DEPENDENCY_IDS_LISTED`] constraints, by ID, in ID order, and
+/// how many it has.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Dependency {
+    /// The group's constraints, in ID order: every one, or the first
+    /// [`DEPENDENCY_IDS_LISTED`].
+    pub constraints: Vec<ElementId>,
+    /// How many constraints the group has: more than `constraints` lists when there are too
+    /// many to list, never fewer.
+    pub constraints_total: u64,
+}
+
+/// A sketch's linear dependencies among its equations, as the core holds them
+/// ([`Diagnosis::dependencies`]): the first [`DEPENDENCIES_LISTED`] groups, in the solver's
+/// order, each listed as a [`Dependency`]; how many groups there are; and every constraint in
+/// any group, all of them, which is what the states read (a driving dimension in some group
+/// over-defines, however far into it or into the list its group is).
+///
+/// The groups are in increasing order of their constraints' IDs, compared as lists, as the
+/// solver gives them (a constraint's tag follows its ID's order, so the tags' order is the
+/// IDs'). They're a list, not a set: two groups the solver tells apart may list alike, both
+/// cut at the same first [`DEPENDENCY_IDS_LISTED`] constraints, and both are listed.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Dependencies {
+    /// The groups: every one, or the first [`DEPENDENCIES_LISTED`].
+    pub groups: Vec<Dependency>,
+    /// How many groups there are: more than `groups` lists when there are too many to list,
+    /// never fewer.
+    pub groups_total: u64,
+    /// Every constraint in any group, listed or not, by ID.
+    pub dependent: BTreeSet<ElementId>,
 }
 
 impl Diagnosis {
@@ -983,6 +1052,22 @@ pub struct Translation {
     /// The sketch this translates, as its file holds it: what a solution is written into
     /// for a load to start from ([`Translation::solve`]).
     sketch: Sketch,
+}
+
+/// The constraints a translation sent, by tag ([`Translation::sent`]).
+struct Sent<'a>(BTreeMap<Tag, &'a SolverConstraint>);
+
+impl<'a> Sent<'a> {
+    /// The constraint sent tagged `tag`: a reply naming a tag that wasn't is a protocol
+    /// error.
+    fn get(&self, tag: Tag) -> Result<&'a SolverConstraint, Error> {
+        self.0.get(&tag).copied().ok_or_else(|| {
+            Error::new(
+                ErrorCode::ProtocolError,
+                format!("the sketch worker names tag {}, which wasn't sent", tag.0),
+            )
+        })
+    }
 }
 
 /// A line, or an axis, as the solver holds it.
@@ -2007,14 +2092,18 @@ impl Translation {
         conflicting.extend(named(&disagreeing)?);
         let redundant = named(&solved.redundant)?;
         let partially_redundant = named(&solved.partially_redundant)?;
-        // Each listed constraint's rows, in one pass over the rows, and the points whose x or
-        // y their equations depend on.
+        // Every tag in a dependency, from every group, listed or not.
+        let dependent: BTreeSet<Tag> = solved.dependencies.iter().flatten().copied().collect();
+        let dependencies = self.dependencies(&solved.dependencies, &dependent)?;
+        // Each listed constraint's rows, and each in a dependency, in one pass over the rows,
+        // and the points whose x or y their equations depend on.
         let listed: BTreeSet<Tag> = solved
             .conflicting
             .iter()
             .chain(&disagreeing)
             .chain(&solved.redundant)
             .chain(&solved.partially_redundant)
+            .chain(&dependent)
             .copied()
             .collect();
         let owner: BTreeMap<Value, &ElementId> = self
@@ -2047,9 +2136,49 @@ impl Translation {
                 conflicting,
                 redundant,
                 partially_redundant,
+                dependencies,
                 points_depended_on,
             },
             outcome,
+        })
+    }
+
+    /// `groups`, a reply's dependencies, `dependent` every tag in them, as the core holds
+    /// them ([`Dependencies`]): every constraint in any group, and how many groups there are
+    /// and how many in each, from all of them, in tag space; only the first
+    /// [`DEPENDENCIES_LISTED`] groups' first [`DEPENDENCY_IDS_LISTED`] tags made IDs, so a
+    /// reply of ten million tags makes ten thousand IDs and one for each constraint, not ten
+    /// million. Each tag must have been sent: a reference dimension's place has a tag, but no
+    /// row.
+    fn dependencies(
+        &self,
+        groups: &[Vec<Tag>],
+        dependent: &BTreeSet<Tag>,
+    ) -> Result<Dependencies, Error> {
+        let sent = self.sent();
+        let dependent = dependent
+            .iter()
+            .map(|&t| sent.get(t).and_then(|_| self.id(t)).cloned())
+            .collect::<Result<BTreeSet<_>, Error>>()?;
+        let listed = groups
+            .iter()
+            .take(DEPENDENCIES_LISTED)
+            .map(|group| {
+                let constraints = group
+                    .iter()
+                    .take(DEPENDENCY_IDS_LISTED)
+                    .map(|&t| self.id(t).cloned())
+                    .collect::<Result<Vec<_>, Error>>()?;
+                Ok(Dependency {
+                    constraints,
+                    constraints_total: group.len() as u64,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        Ok(Dependencies {
+            groups: listed,
+            groups_total: groups.len() as u64,
+            dependent,
         })
     }
 
@@ -2143,8 +2272,9 @@ impl Translation {
         // The disagreeing row with the largest gap (one that isn't a number the largest),
         // the lowest tag on a tie, and its part's window.
         let mut worst: Option<(Tag, f64, Window)> = None;
+        let sent = self.sent();
         for &tag in &dropped {
-            let c = self.sent(tag)?;
+            let c = sent.get(tag)?;
             let part = parts.of_constraint(c);
             let window = *windows
                 .entry(part)
@@ -2255,18 +2385,17 @@ impl Translation {
         })
     }
 
-    /// The constraint sent tagged `tag`.
-    fn sent(&self, tag: Tag) -> Result<&SolverConstraint, Error> {
-        self.system
-            .constraints
-            .iter()
-            .find(|c| c.tag() == Some(tag))
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::ProtocolError,
-                    format!("the sketch worker names tag {}, which wasn't sent", tag.0),
-                )
-            })
+    /// Each tag sent, with the first constraint sent under it, to look tags up in: built
+    /// once for each read, since a reply may name millions of tags, and a scan of the rows
+    /// for each would take minutes (robustness review).
+    fn sent(&self) -> Sent<'_> {
+        let mut by_tag = BTreeMap::new();
+        for c in &self.system.constraints {
+            if let Some(tag) = c.tag() {
+                by_tag.entry(tag).or_insert(c);
+            }
+        }
+        Sent(by_tag)
     }
 
     /// The points, lines, circles, and arcs `values` can't build, by ID, in order: the
