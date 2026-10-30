@@ -15970,13 +15970,29 @@
             ]
           },
           "SketchDependency": {
-            "description": "One dependent group: its constraints' IDs, sorted.",
-            "items": {
-              "$ref": "#/$defs/ElementId"
+            "additionalProperties": false,
+            "description": "One dependent group: its constraints' IDs, sorted, and how many it has, as an error's\n`elements` and `elements_total`.",
+            "properties": {
+              "constraints": {
+                "description": "The group's constraints, by ID, sorted: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/ElementId"
+                },
+                "maxItems": 100,
+                "minItems": 1,
+                "type": "array"
+              },
+              "constraints_total": {
+                "description": "How many constraints the group has, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
             },
-            "maxItems": 100,
-            "minItems": 1,
-            "type": "array"
+            "required": [
+              "constraints",
+              "constraints_total"
+            ],
+            "type": "object"
           },
           "SketchFrame": {
             "additionalProperties": false,
@@ -16193,6 +16209,11 @@
                     "maxItems": 100,
                     "type": "array"
                   },
+                  "dependencies_total": {
+                    "description": "How many dependent groups there are, listed or not.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
                   "dofs": {
                     "description": "The degrees of freedom left, as PlaneGCS counts them: 0 when nothing is free,\nnegative when constraints conflict. 0 for an empty sketch.",
                     "type": "integer"
@@ -16258,6 +16279,7 @@
                   "circles",
                   "constraints",
                   "dependencies",
+                  "dependencies_total",
                   "dofs",
                   "lines",
                   "plane",

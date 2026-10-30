@@ -340,3 +340,63 @@ fn two_hundred_and_two_profile_refusals_list_a_hundred_and_count_every_one_as_ch
         "{checked}"
     );
 }
+
+#[test]
+fn more_than_a_hundred_dependent_groups_and_a_group_of_more_than_a_hundred_list_a_hundred_and_count_all()
+ {
+    // 101 lines apart, each held horizontal: 101 constraints, k0000001 to k0000101, their
+    // tags in ID order. The solver (the fake, told so) finds 102 groups: each constraint
+    // alone, and all 101 together, in lexicographic order: [k1], [k1 .. k101], [k2], ...,
+    // [k101]. The read lists the first 100 groups (invariant 9), the second its first 100
+    // constraints with its total, 101, and counts 102 groups.
+    let dir = tempfile::tempdir().unwrap();
+    let sketches = FakeSketches::new();
+    sketches.answer(|system| {
+        let mut tags: Vec<_> = system.constraints.iter().filter_map(|c| c.tag()).collect();
+        tags.sort_unstable();
+        let mut groups: Vec<Vec<_>> = tags.iter().map(|&t| vec![t]).collect();
+        groups.push(tags.clone());
+        groups.sort();
+        let mut solved = FakeSketches::as_sent(system);
+        solved.dependencies = groups;
+        Ok(solved)
+    });
+    let solver = sketches.clone();
+    let horizontals: Vec<String> = (1..=101)
+        .map(|i| format!(r#"{{"id": "k{i:07}", "type": "horizontal", "line": "n{i:07}"}}"#))
+        .collect();
+    let sketch = lines_apart(101).replace(
+        r#""constraints": []"#,
+        &format!(r#""constraints": [{}]"#, horizontals.join(", ")),
+    );
+    let sessions = opened(&dir, &document(&[&sketch]), move || {
+        Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
+    });
+    let read = call(
+        &sessions,
+        "sketch",
+        r#"{"session": "s1", "model": "current", "sketch": "k7f2qx3m"}"#,
+    );
+    assert_eq!(read["ok"], true, "{read}");
+    let result = &read["result"];
+    assert_eq!(result["dependencies_total"], 102);
+    let groups = result["dependencies"].as_array().unwrap();
+    assert_eq!(groups.len(), 100);
+    let k = |i: usize| format!("k{i:07}");
+    assert_eq!(
+        groups[0],
+        json!({"constraints": [k(1)], "constraints_total": 1})
+    );
+    let all: Vec<String> = (1..=100).map(k).collect();
+    assert_eq!(
+        groups[1],
+        json!({"constraints": all, "constraints_total": 101})
+    );
+    for (i, group) in groups.iter().enumerate().skip(2) {
+        assert_eq!(
+            *group,
+            json!({"constraints": [k(i)], "constraints_total": 1}),
+            "group {i}"
+        );
+    }
+}

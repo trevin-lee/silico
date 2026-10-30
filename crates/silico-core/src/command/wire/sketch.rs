@@ -16,6 +16,7 @@ use crate::command::sketch::{Region, SketchRead};
 use crate::command::{ModelChoice, Problems, SessionId};
 use crate::document::json::Node;
 use crate::document::{Coordinate, ElementId, ElementKind, FeatureId, Form, PROBLEMS_LISTED};
+use crate::sketch::{DEPENDENCIES_LISTED, DEPENDENCY_IDS_LISTED};
 use crate::sketch_states::{ConstraintState, MemberState, SketchState};
 
 /// A `sketch` request: the session, the model it reads, and the sketch.
@@ -97,13 +98,16 @@ impl ToWire for SketchRead {
             ),
             (
                 "dependencies",
-                Json::array(
-                    states
-                        .dependencies
-                        .groups
-                        .iter()
-                        .map(|group| curves(&group.constraints)),
-                ),
+                Json::array(states.dependencies.groups.iter().map(|group| {
+                    Json::object([
+                        ("constraints", curves(&group.constraints)),
+                        ("constraints_total", Json::whole(group.constraints_total)),
+                    ])
+                })),
+            ),
+            (
+                "dependencies_total",
+                Json::whole(states.dependencies.groups_total),
             ),
             (
                 "profile_problems",
@@ -182,8 +186,10 @@ pub struct SketchResultSchema {
     /// whichever constraint the solver dropped. The first 100 groups are listed, each its
     /// first 100 constraints. Empty for an empty sketch, and for one whose constraints the
     /// solver never took (geometry that can't be held, before any constraint).
-    #[schemars(length(max = 100))]
+    #[schemars(length(max = DEPENDENCIES_LISTED))]
     pub dependencies: Vec<SketchDependencySchema>,
+    /// How many dependent groups there are, listed or not.
+    pub dependencies_total: u64,
     /// Why the solved sketch makes no profile, each as an error (the first 100, in the
     /// order they're checked): none if it makes one, or wasn't solved (`solve_problem` says
     /// why).
@@ -268,10 +274,17 @@ pub struct SketchRegionSchema {
     pub holes: Vec<Vec<ElementId>>,
 }
 
-/// One dependent group: its constraints' IDs, sorted.
+/// One dependent group: its constraints' IDs, sorted, and how many it has, as an error's
+/// `elements` and `elements_total`.
 #[derive(JsonSchema)]
-#[schemars(rename = "SketchDependency")]
-pub struct SketchDependencySchema(#[schemars(length(min = 1, max = 100))] pub Vec<ElementId>);
+#[schemars(rename = "SketchDependency", transform = wire_shape)]
+pub struct SketchDependencySchema {
+    /// The group's constraints, by ID, sorted: the first 100.
+    #[schemars(length(min = 1, max = DEPENDENCY_IDS_LISTED))]
+    pub constraints: Vec<ElementId>,
+    /// How many constraints the group has, listed or not.
+    pub constraints_total: u64,
+}
 
 /// A constraint, as the document writes it (its ID, its type, and its form's fields, a
 /// reference dimension's value as the solve measured it), with its state.

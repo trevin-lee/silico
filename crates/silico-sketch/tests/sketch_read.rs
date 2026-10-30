@@ -148,6 +148,11 @@ fn error(code: &str, message: &str, elements: &[&str], suggestion: &str) -> Valu
     })
 }
 
+/// A dependent group as the read writes it: its constraints, every one listed.
+fn group(constraints: &[&str]) -> Value {
+    json!({"constraints": constraints, "constraints_total": constraints.len()})
+}
+
 /// M3.5's refusal of an open end: `point` ends `line` and no other profile curve.
 fn open_end(point: &str, line: &str) -> Value {
     error(
@@ -265,6 +270,7 @@ fn a_free_line_is_under_defined_by_four_degrees_and_open_at_both_ends() {
             "constraints": [],
             "regions": [],
             "dependencies": [],
+            "dependencies_total": 0,
             "profile_problems": [open_end("p0000001", "n0000001"), open_end("p0000002", "n0000001")],
             "profile_problems_total": 2,
             "solve_problem": null,
@@ -314,7 +320,8 @@ fn two_driving_lengths_that_differ_over_define_the_line_given_as_stored() {
                 {"id": "k0000002", "type": "length", "line": "n0000001", "value": 12, "driving": true, "state": "conflicting"},
             ],
             "regions": [],
-            "dependencies": [["k0000001", "k0000002"]],
+            "dependencies": [group(&["k0000001", "k0000002"])],
+            "dependencies_total": 1,
             "profile_problems": [],
             "profile_problems_total": 0,
             "solve_problem": conflict,
@@ -443,8 +450,11 @@ fn a_redundant_relation_leaves_the_rectangle_fully_defined_and_a_redundant_dimen
     assert_eq!(relation["regions"], outline);
     // The one dependency, {top's horizontal, left's vertical, perpendicular}.
     assert_eq!(
-        relation["dependencies"],
-        json!([["x0y1z2a3", "z8a9b0c1", "zz000001"]])
+        (&relation["dependencies"], &relation["dependencies_total"]),
+        (
+            &json!([group(&["x0y1z2a3", "z8a9b0c1", "zz000001"])]),
+            &json!(1)
+        )
     );
 
     let f = fixture();
@@ -492,11 +502,14 @@ fn a_redundant_relation_leaves_the_rectangle_fully_defined_and_a_redundant_dimen
     // Two dependencies sharing nothing: {bottom's horizontal, right's vertical, angle} and
     // the perpendicular's; the groups in order of their IDs.
     assert_eq!(
-        dimension["dependencies"],
-        json!([
-            ["c0d1e2f3", "r2s3t4v5", "zz000002"],
-            ["x0y1z2a3", "z8a9b0c1", "zz000001"]
-        ])
+        (&dimension["dependencies"], &dimension["dependencies_total"]),
+        (
+            &json!([
+                group(&["c0d1e2f3", "r2s3t4v5", "zz000002"]),
+                group(&["x0y1z2a3", "z8a9b0c1", "zz000001"])
+            ]),
+            &json!(2)
+        )
     );
 }
 
@@ -550,6 +563,7 @@ fn an_empty_sketch_is_fully_defined_with_no_degrees_of_freedom_and_no_curves_for
             "constraints": [],
             "regions": [],
             "dependencies": [],
+            "dependencies_total": 0,
             "profile_problems": [error(
                 "invalid_input",
                 "the sketch has no curves to make a profile of",
@@ -837,9 +851,10 @@ fn a_sketch_that_cant_be_held_reads_invalid_from_its_diagnosis_as_check_refuses_
         (
             &read["regions"],
             &read["profile_problems"],
-            &read["dependencies"]
+            &read["dependencies"],
+            &read["dependencies_total"]
         ),
-        (&json!([]), &json!([]), &json!([]))
+        (&json!([]), &json!([]), &json!([]), &json!(0))
     );
     let checked: Value = serde_json::from_str(
         &f.call(
@@ -879,6 +894,9 @@ fn a_sketch_that_cant_be_held_reads_invalid_from_its_diagnosis_as_check_refuses_
     );
     assert_eq!(read["solve_problem"]["code"], "invalid_result");
     // Rank 2 of 2 rows: no dependency.
-    assert_eq!(read["dependencies"], json!([]));
+    assert_eq!(
+        (&read["dependencies"], &read["dependencies_total"]),
+        (&json!([]), &json!(0))
+    );
     assert_eq!(read["points"][1]["y"], 3);
 }

@@ -2172,7 +2172,7 @@ fn a_sketch_request_is_read_written_back_and_holds_to_its_schema_and_its_result_
         (r#""dofs": 0"#, r#""dofs": 0.5"#, "half a degree of freedom"),
         (
             r#""dependencies": []"#,
-            r#""dependencies": [[]]"#,
+            r#""dependencies": [{"constraints": [], "constraints_total": 0}]"#,
             "a dependency of no constraint",
         ),
         (
@@ -2181,10 +2181,42 @@ fn a_sketch_request_is_read_written_back_and_holds_to_its_schema_and_its_result_
             "a dependency not a group",
         ),
         (
+            r#""dependencies": []"#,
+            r#""dependencies": [["kb000001", "kb000002"]]"#,
+            "a dependency a bare list, not an object",
+        ),
+        (
+            r#""dependencies": []"#,
+            r#""dependencies": [{"constraints": ["kb000001", "kb000002"]}]"#,
+            "a dependency with no total",
+        ),
+        (
+            r#""dependencies": []"#,
+            r#""dependencies": [{"constraints": ["kb000001"], "constraints_total": 1, "x": 1}]"#,
+            "a dependency with a field it hasn't",
+        ),
+        (
             r#"  "dependencies": [],
 "#,
             "",
             "no dependencies",
+        ),
+        (
+            r#"  "dependencies_total": 0,
+"#,
+            "",
+            "no dependencies' total",
+        ),
+        (
+            r#"  "profile_problems_total": 0,
+"#,
+            "",
+            "no profile problems' total",
+        ),
+        (
+            r#""dependencies_total": 0"#,
+            r#""dependencies_total": -1"#,
+            "a negative count of dependencies",
         ),
     ] {
         assert_eq!(result.matches(from).count(), 1, "{what}");
@@ -2204,7 +2236,7 @@ fn a_sketch_request_is_read_written_back_and_holds_to_its_schema_and_its_result_
         ),
         (
             r#""dependencies": []"#,
-            r#""dependencies": [["kb000001", "kb000002"], ["kb000003"]]"#,
+            r#""dependencies": [{"constraints": ["kb000001", "kb000002"], "constraints_total": 2}, {"constraints": ["kb000003"], "constraints_total": 1}]"#,
         ),
     ] {
         holds(&schema, &result.replacen(from, to, 1), to);
