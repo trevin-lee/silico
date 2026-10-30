@@ -1467,3 +1467,266 @@ fn a_reload_of_the_file_changed_on_disk_ends_the_drag() {
     assert_eq!(f.drag(), None);
     assert_eq!(f.sketches.drag_calls().last(), Some(&DragCall::End));
 }
+
+/// The bracket's profile alone, its base leg's thickness free.
+fn freed_profile() -> String {
+    document(&[&S0000001.replace(
+        r#"{"id": "ka00000a", "type": "length", "line": "na000002", "value": 5, "driving": true}, "#,
+        "",
+    )])
+}
+
+#[test]
+fn a_move_the_solver_fails_or_solves_to_what_cant_be_built_answers_its_kind_with_no_values() {
+    let f = opened(&freed_profile());
+    f.begin_point("pa000003").result.unwrap();
+    for (status, end) in [
+        (SolveStatus::Failed, FrameEnd::Failed),
+        (SolveStatus::SolvedInvalid, FrameEnd::Invalid),
+    ] {
+        f.sketches.answer_moves(move |_, _| {
+            Ok(Moved {
+                status,
+                values: None,
+            })
+        });
+        let frame = f.moved([62.5, 7.0]).result.unwrap();
+        assert_eq!(
+            frame,
+            DragFrame {
+                to: [62.5, 7.0],
+                frame: end,
+                points: vec![],
+                radii: vec![],
+            },
+            "{status:?}"
+        );
+        // The drag goes on.
+        assert!(f.drag().is_some(), "{status:?}");
+    }
+}
+
+#[test]
+fn a_frame_gives_each_free_radius_of_its_part_by_id() {
+    // Two points, a line of held length between them, and a circle about the second with
+    // the first held on it: the circle's radius is in the part.
+    let f = opened(&chain(2, true));
+    f.begin_point("p0000001").result.unwrap();
+    // The fake's answer: the circle's radius 2.5, every other value as it began.
+    f.sketches.answer_moves(|begin, _| {
+        let mut values = begin.system.values.clone();
+        let radius = begin
+            .system
+            .geometry
+            .iter()
+            .find_map(|g| match g {
+                silico_protocol::SketchGeometry::Circle { radius, .. } => Some(*radius),
+                _ => None,
+            })
+            .unwrap();
+        values[radius.0 as usize] = 2.5;
+        Ok(Moved {
+            status: SolveStatus::Success,
+            values: Some(values),
+        })
+    });
+    let frame = f.moved([1.0, 1.0]).result.unwrap();
+    assert_eq!(frame.radii, [(eid("c0000001"), 2.5)]);
+    // Both points, where they began: (1, 0) and (2, 0).
+    assert_eq!(
+        frame.points,
+        [(eid("p0000001"), [1.0, 0.0]), (eid("p0000002"), [2.0, 0.0])]
+    );
+}
+
+#[test]
+fn a_moves_reason_reaches_the_sessions_logs() {
+    use silico_core::command::logs::{LogLevel, LogQuery};
+    use tracing_subscriber::layer::SubscriberExt;
+    // Alone in its process (nextest runs each test in its own): the core's log layer.
+    let _ = tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(silico_core::command::logs::layer()),
+    );
+    let f = opened(&freed_profile());
+    f.begin_point("pa000003").result.unwrap();
+    // A move the worker refuses: a failed frame, its reason at info.
+    f.sketches.answer_moves(|_, _| {
+        Err(Error::new(
+            ErrorCode::InvalidInput,
+            "the fake refused the move",
+        ))
+    });
+    assert_eq!(f.moved([62.5, 7.0]).result.unwrap().frame, FrameEnd::Failed);
+    // And one that doesn't reach its cursor.
+    f.sketches.answer_moves(|_, _| {
+        Ok(Moved {
+            status: SolveStatus::Failed,
+            values: None,
+        })
+    });
+    assert_eq!(f.moved([62.5, 8.0]).result.unwrap().frame, FrameEnd::Failed);
+    let logs = f
+        .sessions
+        .read_logs(
+            &s1(),
+            &LogQuery {
+                level: LogLevel::Info,
+                feature: None,
+                after: None,
+                limit: 1000,
+            },
+        )
+        .result
+        .unwrap();
+    let said: Vec<(&str, &str)> = logs
+        .events
+        .iter()
+        .filter(|e| e.message.starts_with("the drag's move"))
+        .map(|e| (e.spans[0].as_str(), e.message.as_str()))
+        .collect();
+    // Each filed under the session's command that began the drag, whose thread solves it.
+    assert_eq!(
+        said,
+        [
+            (
+                "drag_begin",
+                "the drag's move was refused: the fake refused the move"
+            ),
+            ("drag_begin", "the drag's move didn't reach its cursor"),
+        ]
+    );
+}
+
+#[test]
+fn the_sessions_own_reload_of_its_file_ends_the_drag() {
+    let profile = freed_profile();
+    let f = opened(&profile);
+    f.begin_point("pa000003").result.unwrap();
+    let began = f.revision();
+    std::fs::write(
+        f.dir.path().join("bracket.silico"),
+        profile.replace("Bracket profile", "Profile"),
+    )
+    .unwrap();
+    // No command sent: `status` compares the file, at most once a second, and the session
+    // reloads it itself, a new revision, which ends the drag.
+    let deadline = std::time::Instant::now() + HANG;
+    loop {
+        let ended = f.revision() > began
+            && f.drag().is_none()
+            && f.sketches.drag_calls().last() == Some(&DragCall::End);
+        if ended {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reload didn't end the drag"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        the_error(&f.moved([1.0, 1.0])).message(),
+        "no drag is open in session s1"
+    );
+}
+
+#[test]
+fn a_cancel_of_drag_begin_or_drag_end_mid_solve_stops_its_solve() {
+    let f = opened(&freed_profile());
+    // The begin's solve of the sketch (no model holds it), held.
+    f.sketches.hold();
+    let begin = f
+        .sessions
+        .drag_begin(&s1(), fid("s0000001"), DragGrab::Point(eid("pa000003")));
+    assert!(f.sketches.wait_held(HANG));
+    let stops = f.sketches.stops();
+    assert!(
+        f.sessions
+            .cancel(&s1(), SessionCommand::DragBegin)
+            .result
+            .unwrap()
+            .stopped
+    );
+    let begun = answer(begin);
+    f.sketches.release();
+    assert_eq!(the_error(&begun).code(), ErrorCode::Cancelled);
+    assert_eq!(f.sketches.stops(), stops + 1);
+    assert_eq!(f.drag(), None);
+    // The end's whole solve, after a frame at its cursor, held.
+    f.begin_point("pa000003").result.unwrap();
+    f.moved([62.5, 7.0]).result.unwrap();
+    f.sketches.hold();
+    let end = f.sessions.drag_end(&s1(), Some([62.5, 7.0]));
+    assert!(f.sketches.wait_held(HANG));
+    let stops = f.sketches.stops();
+    assert!(
+        f.sessions
+            .cancel(&s1(), SessionCommand::DragEnd)
+            .result
+            .unwrap()
+            .stopped
+    );
+    let ended = answer(end);
+    f.sketches.release();
+    assert_eq!(the_error(&ended).code(), ErrorCode::Cancelled);
+    assert_eq!(f.sketches.stops(), stops + 1);
+    // Nothing changed, no drag open.
+    assert_eq!(f.revision(), revision(1));
+    assert_eq!(f.file(), freed_profile());
+    assert_eq!(f.drag(), None);
+}
+
+#[test]
+fn after_a_cancelled_move_a_release_with_a_cursor_is_told_no_drag_is_open() {
+    let f = opened(&freed_profile());
+    f.begin_point("pa000003").result.unwrap();
+    f.sketches.hold();
+    let moving = f.sessions.drag_move(&s1(), [62.5, 7.0]);
+    assert!(f.sketches.wait_held(HANG));
+    f.sessions
+        .cancel(&s1(), SessionCommand::DragMove)
+        .result
+        .unwrap();
+    assert_eq!(the_error(&answer(moving)).code(), ErrorCode::Cancelled);
+    f.sketches.release();
+    let error = the_error(&f.ended(Some([62.5, 7.0])));
+    assert_eq!(
+        (error.code(), error.message()),
+        (ErrorCode::InvalidInput, "no drag is open in session s1")
+    );
+}
+
+#[test]
+fn a_release_at_another_cursor_than_the_last_moves_moves_once_more_from_the_begin_state() {
+    let f = opened(&freed_profile());
+    f.begin_point("pa000003").result.unwrap();
+    f.moved([62.5, 7.0]).result.unwrap();
+    let ended = f.ended(Some([61.0, 9.0])).result.unwrap();
+    assert_eq!((ended.kept, ended.changed), (Kept::Cursor, true));
+    // One move more, to the release's cursor.
+    let moves: Vec<DragCall> = f
+        .sketches
+        .drag_calls()
+        .into_iter()
+        .filter(|c| matches!(c, DragCall::Move(_)))
+        .collect();
+    assert_eq!(
+        moves,
+        [DragCall::Move([62.5, 7.0]), DragCall::Move([61.0, 9.0])]
+    );
+    // From the begin state, as the fake answers it: the cursor, nudged by a thousandth of
+    // where pa000003 began, (60, 5); not of the last frame's (62.56, 7.005).
+    let text = f.file();
+    let document: Value = serde_json::from_str(&text).unwrap();
+    let point = document["features"][0]["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == "pa000003")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (point["x"].as_f64().unwrap(), point["y"].as_f64().unwrap()),
+        (61.0 + 60.0 / 1000.0, 9.0 + 5.0 / 1000.0)
+    );
+}
