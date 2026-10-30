@@ -702,28 +702,24 @@ fn an_edges_failed_end_leaves_the_pool_able_to_drag_again() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
-    /// A free line pressed anywhere along it, released anywhere: it ends moved by the
-    /// release's offset from the press, its load giving it back; pressed off it, refused.
+    /// A free line pressed anywhere along it (on it exactly, or off it by no more than the
+    /// length tolerance), released anywhere: it ends moved by the release's offset from the
+    /// press, its load giving it back.
     #[test]
     fn a_lines_edge_ends_moved_by_the_releases_offset_from_the_press(
         t in prop_oneof![Just(0.0), Just(1.0), Just(0.5), 0.0..1.0f64],
-        off in prop_oneof![Just(0.0), -1e3..1e3f64],
+        off in prop_oneof![
+            Just(0.0),
+            Just(silico_protocol::LENGTH_TOLERANCE),
+            Just(-silico_protocol::LENGTH_TOLERANCE),
+            -silico_protocol::LENGTH_TOLERANCE..=silico_protocol::LENGTH_TOLERANCE,
+        ],
         cx in biased(), cy in biased(),
     ) {
         let solvers = solvers();
         let doc = free(false);
         let press = [10.0 * t, off];
-        let begun = edge(&solvers, &doc, "ne000001", press);
-        // Off the line by more than the length tolerance, the press is refused, naming it
-        // (#307: a pick lands on its edge); `t` keeps it within the line's ends, so `off` is
-        // its distance.
-        if off.abs() > silico_protocol::LENGTH_TOLERANCE {
-            let refused = begun.err().unwrap();
-            prop_assert_eq!(refused.code(), ErrorCode::InvalidInput);
-            prop_assert_eq!(refused.parameter(), Some("press"));
-            return Ok(());
-        }
-        let Opened { drag, .. } = begun.unwrap();
+        let Opened { drag, .. } = edge(&solvers, &doc, "ne000001", press).unwrap();
         let ended = drag.end(Some([cx, cy])).unwrap();
         check_end(&doc, &ended, "line");
         if [cx, cy] == press {
@@ -737,6 +733,26 @@ proptest! {
             prop_assert!(libm::hypot(a[0] - d[0], a[1] - d[1]) <= tol, "{:?}", a);
             prop_assert!(libm::hypot(b[0] - 10.0 - d[0], b[1] - d[1]) <= tol, "{:?}", b);
         }
+    }
+
+    /// The same line pressed within its ends but off it by more than the length tolerance is
+    /// refused, naming the press (#307: a pick lands on its edge); `t` keeps the press within
+    /// the line's ends, so `off` is its distance from the line.
+    #[test]
+    fn a_lines_edge_pressed_off_the_line_is_refused_naming_the_press(
+        t in prop_oneof![Just(0.0), Just(1.0), Just(0.5), 0.0..1.0f64],
+        off in prop_oneof![
+            Just(2.0 * silico_protocol::LENGTH_TOLERANCE),
+            Just(-2.0 * silico_protocol::LENGTH_TOLERANCE),
+            2.0 * silico_protocol::LENGTH_TOLERANCE..1e3f64,
+            -1e3f64..-2.0 * silico_protocol::LENGTH_TOLERANCE,
+        ],
+    ) {
+        let solvers = solvers();
+        let doc = free(false);
+        let refused = edge(&solvers, &doc, "ne000001", [10.0 * t, off]).err().unwrap();
+        prop_assert_eq!(refused.code(), ErrorCode::InvalidInput);
+        prop_assert_eq!(refused.parameter(), Some("press"));
     }
 }
 
