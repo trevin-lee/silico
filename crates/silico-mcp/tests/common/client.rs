@@ -15,7 +15,8 @@ use serde_json::Value;
 use serde_json::value::RawValue;
 use silico_core::cache::Cache;
 use silico_core::command::Sessions;
-use silico_core::fake::{FakeKernel, FakeRenderer};
+use silico_core::fake::{FakeKernel, FakeRenderer, FakeSketches};
+use silico_core::sketch::SketchSolver;
 use silico_core::kernel::{Op, Primitive};
 use silico_mcp::{Ended, Server, Stop};
 use tempfile::TempDir;
@@ -145,14 +146,37 @@ impl Client {
 
     /// A server, not yet initialized, reading `reader` (the client's own writes fail).
     pub fn reading(reader: impl std::io::BufRead + Send + 'static) -> Client {
+        Client::reading_solving(reader, None)
+    }
+
+    /// A server, initialized, its sketches solved by `solver`, the fake sketch solver, as
+    /// the core's own tests solve them.
+    pub fn initialized_solving(solver: FakeSketches) -> Client {
+        let (reader, input) = std::io::pipe().unwrap();
+        let mut client = Client::reading_solving(BufReader::new(reader), Some(solver));
+        client.input = Some(input);
+        client.initialize();
+        client
+    }
+
+    /// A server, not yet initialized, reading `reader`, its sketches solved by `solver` if
+    /// it's given, else by the sketch worker.
+    fn reading_solving(
+        reader: impl std::io::BufRead + Send + 'static,
+        solver: Option<FakeSketches>,
+    ) -> Client {
         let dir = tempfile::tempdir().unwrap();
         let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
         std::fs::create_dir(&work).unwrap();
         let secret = dir.path().join("secret");
         let kernel = Arc::new(FakeKernel::new(2).unwrap());
-        let sessions = Sessions::with_cache_opener(Arc::clone(&kernel), move |cache| {
-            Cache::with_secret(cache, &secret)
-        })
+        let cache = move |cache: &std::path::Path| Cache::with_secret(cache, &secret);
+        let sessions = match solver {
+            None => Sessions::with_cache_opener(Arc::clone(&kernel), cache),
+            Some(solver) => Sessions::with_stand_ins(Arc::clone(&kernel), cache, move || {
+                Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
+            }),
+        }
         .rendering(FakeRenderer::new())
         .in_workspace(&work)
         .unwrap();
@@ -184,10 +208,15 @@ impl Client {
     /// A server, initialized.
     pub fn initialized() -> Client {
         let mut client = Client::start();
-        let reply = client.request(0, "initialize", r#"{"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}"#);
-        assert_eq!(reply["result"]["protocolVersion"], "2025-06-18");
-        client.send(r#"{"jsonrpc": "2.0", "method": "notifications/initialized"}"#);
+        client.initialize();
         client
+    }
+
+    /// The handshake.
+    fn initialize(&mut self) {
+        let reply = self.request(0, "initialize", r#"{"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}"#);
+        assert_eq!(reply["result"]["protocolVersion"], "2025-06-18");
+        self.send(r#"{"jsonrpc": "2.0", "method": "notifications/initialized"}"#);
     }
 
     /// A server, initialized, with `part.silico` ([`BOX`]) open as s1 (by the call `1`).
