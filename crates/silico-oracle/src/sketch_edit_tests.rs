@@ -1068,3 +1068,29 @@ fn a_trims_contact_band_holds_the_curves_tangent_to_it_within_1e_7_with_their_ga
     assert!(band("c0000009").is_none());
     assert!(band("c0000007").is_none());
 }
+
+#[test]
+fn a_gap_of_exactly_1e_12_from_tangent_is_tangent_as_drawn_not_in_the_band() {
+    // c0000002 about the origin, radius 2^-20; c0000004 about (1e-12 + 2^-73, 0), radius
+    // 2^-20 - 2^-73: one inside the other, the centres apart by the radii's difference plus
+    // exactly the f64 1e-12, so the gap from tangent is exactly that, in f64 as computed.
+    let (r, q) = (2f64.powi(-20), 2f64.powi(-20) - 2f64.powi(-73));
+    let apart = 1e-12 + 2f64.powi(-73);
+    assert_eq!(apart - (r - q), 1e-12);
+    let sketch = sketch_of(
+        &[("p0000001", 0.0, 0.0), ("p0000003", apart, 0.0)],
+        &[],
+        &[("c0000002", "p0000001", r), ("c0000004", "p0000003", q)],
+        &[],
+        &[],
+    );
+    let trim = prepared_with(
+        sketch,
+        Edit::Trim {
+            curve: "c0000002".to_owned(),
+            pick: [r, 0.0],
+        },
+        refusal("x", &[], "pick"),
+    );
+    assert!(contact_band(&trim).is_none(), "{:?}", contact_band(&trim));
+}
