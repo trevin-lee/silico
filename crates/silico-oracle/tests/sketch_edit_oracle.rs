@@ -3046,7 +3046,8 @@ fn a_drag_a_reference_reaches_compares_all_it_can() {
         "{v:?}"
     );
     // The dragged end elsewhere before the solve: FreeCAD's isn't reproducible there, so not
-    // compared.
+    // compared; but Silico's own end off the request's target is Silico's, and reported
+    // (:328), nothing else before the solve.
     let p = changed(&cases[0], &prepared[0], |s| {
         let end = s
             .points
@@ -3056,10 +3057,16 @@ fn a_drag_a_reference_reaches_compares_all_it_can() {
         end.x = silico_core::document::Coordinate::new(14.5).unwrap();
     });
     let v = verdict(&p, theirs[0].as_ref());
+    let before: Vec<&String> = v
+        .how
+        .iter()
+        .filter(|h| h.starts_with("after the edit, before the solve"))
+        .collect();
     assert!(
-        !v.how
-            .iter()
-            .any(|h| h.starts_with("after the edit, before the solve")),
+        before.len() == 1
+            && before[0].starts_with(
+                "after the edit, before the solve, Silico's p0000002, the line's moving end, is at [14.5, 0.0], not the request's target [14.0, 0.0] exactly"
+            ),
         "{v:?}"
     );
 }
@@ -3083,7 +3090,7 @@ fn a_reference_that_doesnt_reach_the_line_leaves_its_drag_compared_in_full() {
     let v = verdict(&p, theirs[0].as_ref());
     assert!(
         v.how.iter().any(|h| h.starts_with(
-            "after the edit, before the solve, Silico's point p0000002 is at [14.5, 0.0]"
+            "after the edit, before the solve, Silico's p0000002, the line's moving end, is at [14.5, 0.0], not the request's target"
         )),
         "{v:?}"
     );
@@ -3731,7 +3738,8 @@ fn a_lines_drag_compares_the_points_it_moved_within_its_band_and_the_rest_exactl
         "{v}"
     );
     // FreeCAD's dragged end (n0000005's end, p0000002) 1e-6 mm further short, before the
-    // solve and after: past the band, reported both times.
+    // solve and after: before it, Silico's end is the request's target exactly (:328), so
+    // FreeCAD's isn't compared there; after it, past the band, reported.
     let short = doctored(&theirs[0], |fc| {
         let g = &mut edited_geometry(p, fc, "n0000005").points;
         g.get_mut("2").unwrap()[0] -= 1e-6;
@@ -3746,7 +3754,7 @@ fn a_lines_drag_compares_the_points_it_moved_within_its_band_and_the_rest_exactl
     });
     let v = verdict(p, Some(&short));
     assert!(
-        v.how
+        !v.how
             .iter()
             .any(|h| h.starts_with("after the edit, before the solve, Silico's point p0000002")),
         "{v}"
@@ -3917,12 +3925,35 @@ fn a_lines_drag_that_moves_a_circles_centre_compares_its_solved_radius_and_misse
         })),
     ));
     let v = verdict(p, Some(&across));
-    for want in [
-        "after the edit, before the solve, Silico's point p0000003 is at",
-        "after the solve, Silico's point p0000003, which the drag moved, is at",
-    ] {
-        assert!(v.how.iter().any(|h| h.starts_with(want)), "{want}: {v}");
-    }
+    assert!(
+        v.how.iter().any(|h| h
+            .starts_with("after the solve, Silico's point p0000003, which the drag moved, is at")),
+        "{v}"
+    );
+    // Before the solve the moving end is the request's target, not FreeCAD's place: Silico's
+    // there exactly, so nothing is reported of it then; Silico's end 1e-11 mm off it, well
+    // inside any tolerance, is.
+    assert!(
+        !v.how
+            .iter()
+            .any(|h| h.starts_with("after the edit, before the solve, Silico's")),
+        "{v}"
+    );
+    let off = changed(&case, p, |sketch| {
+        let q = sketch
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("p0000003"))
+            .unwrap();
+        q.x = silico_core::document::Coordinate::new(15.000_000_000_01).unwrap();
+    });
+    let v = verdict(&off, theirs[0].as_ref());
+    assert!(
+        v.how.iter().any(|h| h.starts_with(
+            "after the edit, before the solve, Silico's p0000003, the line's moving end, is at [15.00000000001, 0.0], not the request's target [15.0, 0.0] exactly"
+        )),
+        "{v}"
+    );
     let no_circle = doctored(&theirs[0], |fc| {
         let circle = solved(fc, "c0000004");
         fc.geometry.retain(|g| g.id != circle);
@@ -4036,6 +4067,62 @@ fn an_extends_band_and_tolerances_hold_at_their_edges_exactly() {
             list.iter_mut().find(|g| g.id == circle).unwrap().radius = Some(5e-7);
         });
         agrees(&verdict(p, Some(&smaller)));
+    }
+    // A line held horizontal, or vertical, at its length 10, its end extended 5: the drag
+    // takes its start along (section 7's probe), on y = 0 (x = 0) exactly. FreeCAD's start
+    // exactly the band across it before the solve is within; 6e-7, past it, is reported.
+    for (name, held, end, axis) in [
+        ("frame_horizontal", "horizontal", [10, 0], 1),
+        ("frame_vertical", "vertical", [0, 10], 0),
+    ] {
+        let frame = case_of(
+            name,
+            &format!(
+                r#""points": [{{"id": "p0000001", "x": 0, "y": 0, "construction": false}}, {{"id": "p0000002", "x": {}, "y": {}, "construction": false}}],
+        "lines": [{{"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}}], "circles": [], "arcs": [],
+        "constraints": [{{"id": "k0000004", "type": "{held}", "line": "n0000003"}}, {{"id": "k0000005", "type": "length", "line": "n0000003", "value": 10, "driving": true}}]"#,
+                end[0], end[1]
+            ),
+            Edit::Extend {
+                curve: "n0000003".to_owned(),
+                end: sketch_edit::ExtendEnd::End,
+                by: ExtendBy::Length(5.0),
+            },
+        );
+        let prepared = vec![prepare(&frame, &mut worker).unwrap()];
+        let p = &prepared[0];
+        let SilicoSide::Edited(s) = &p.silico else {
+            panic!("{:?}", p.silico)
+        };
+        let start = s
+            .edited
+            .sketch
+            .points
+            .iter()
+            .find(|q| q.id == id("p0000001"))
+            .unwrap();
+        let start = [start.x.mm(), start.y.mm()];
+        assert!(
+            start[axis] == 0.0 && start[1 - axis] > 1.0,
+            "{name}: {start:?}"
+        );
+        let theirs = freecad_outcomes(&prepared).unwrap();
+        agrees(&verdict(p, theirs[0].as_ref()));
+        let across = |by: f64| {
+            doctored(&theirs[0], |fc| {
+                edited_geometry(p, fc, "n0000003")
+                    .points
+                    .get_mut("1")
+                    .unwrap()[axis] = by;
+            })
+        };
+        agrees(&verdict(p, Some(&across(5e-7))));
+        let v = verdict(p, Some(&across(6e-7)));
+        assert!(
+            v.how.iter().any(|h| h
+                .starts_with("after the edit, before the solve, Silico's point p0000001 is at")),
+            "{name}: {v}"
+        );
     }
     // Silico's lone p0000005, or the line's start, moved by exactly 1e-8 (from 0): not moved
     // by the drag, so FreeCAD's 2e-7 there, before the solve, is past the comparison's 1e-8.

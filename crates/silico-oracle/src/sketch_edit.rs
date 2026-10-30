@@ -2706,6 +2706,33 @@ fn merged_by_freecad(p: &Prepared, fc: &FreecadEdited) -> bool {
     })
 }
 
+/// For a line's extend by a length: its moving end, and the target Silico writes it at, as
+/// `silico_core::extend` works it (:328): the end moved along the line, away from the other
+/// end, by the increment's share of the line's length, from the end's own coordinates.
+fn written_end(p: &Prepared, before: &Shape) -> Option<(String, [f64; 2])> {
+    let Edit::Extend { curve, end, by } = &p.edit else {
+        return None;
+    };
+    let member = before.members.get(curve).filter(|m| m.kind == "line")?;
+    let silico_core::extend::By::Length(by) = by.silico().ok()? else {
+        return None;
+    };
+    let (moving, other) = match end {
+        ExtendEnd::Start => (1, 2),
+        ExtendEnd::End => (2, 1),
+    };
+    let moving = member.at.get(&moving)?;
+    let (p, q) = (
+        *before.points.get(moving)?,
+        *before.points.get(member.at.get(&other)?)?,
+    );
+    let along = by.mm() / libm::hypot(p[0] - q[0], p[1] - q[1]);
+    Some((
+        moving.clone(),
+        [p[0] + (p[0] - q[0]) * along, p[1] + (p[1] - q[1]) * along],
+    ))
+}
+
 /// Whether FreeCAD's extend of an arc a whole turn or more wrapped its range, as the note
 /// says (:318): its arc after the edit, before the solve, with the centre and radius it had,
 /// its other end where it was, and its sweep the sweep it had plus the turn, less whole
@@ -3075,7 +3102,8 @@ enum Unreproducible {
 }
 
 /// How far apart the two sides' points a line's drag moved may be, in mm, before the solve
-/// and after it: FreeCAD 1.1.3's drag lands short of its target otherwise each run, as its
+/// (but the moving end, written at the target exactly, [`written_end`]) and after it:
+/// FreeCAD 1.1.3's drag lands short of its target otherwise each run, as its
 /// unknowns' order follows its allocator (docs/ports/sketcher.md:51). Measured in 10 runs
 /// each, the two sides apart by up to 1.61e-7 mm (the extend sweep's `extend_43_425`) and
 /// 3.00e-7 mm (`extend_45_412`), before the solve and after it alike; the band covers that,
@@ -3872,8 +3900,8 @@ fn compare_edited(
     // A line's extend through the drag (:323): the points Silico's drag moved (the same every
     // run), which FreeCAD's drag settles otherwise each run, short of its target by up to
     // DRAG_BAND (docs/ports/sketcher.md:51), so they compare within that band, before the
-    // solve and after it; every other point at the comparison's tolerance, FreeCAD's moving
-    // one Silico's drag didn't a difference.
+    // solve (but the moving end, [`written_end`]) and after it; every other point at the
+    // comparison's tolerance, FreeCAD's moving one Silico's drag didn't a difference.
     let drag_moved: BTreeSet<String> = match &p.edit {
         Edit::Extend { curve, .. }
             if !dragged && before.members.get(curve).is_some_and(|m| m.kind == "line") =>
@@ -3913,6 +3941,21 @@ fn compare_edited(
             sketch::TOLERANCE
         }
     };
+    // A line's extend writes its moving end at the request's target exactly, after the drag
+    // (Fable's decision 3, #299, :328): the new length along the line from the other end,
+    // worked from the end itself. FreeCAD's drag stops where it stops, short of the target
+    // where constraints hold the end, and its solve settles it as Silico's does, so before the
+    // solve that end is checked against the target, not against FreeCAD's; after the solve,
+    // it's compared as ever.
+    let written_end = written_end(p, &before);
+    if let Some((end, target)) = &written_end
+        && let Some(ours) = after.points.get(end)
+        && ours != target
+    {
+        how.push(format!(
+            "after the edit, before the solve, Silico's {end}, the line's moving end, is at {ours:?}, not the request's target {target:?} exactly ({NOTE}:328)"
+        ));
+    }
     if merged.is_some() {
         for (id, ours) in &after.points {
             if exempt(id) {
@@ -3940,7 +3983,7 @@ fn compare_edited(
                     continue;
                 };
                 let point = fc_name_place(gi, pos, false);
-                if exempt(&point) {
+                if exempt(&point) || written_end.as_ref().is_some_and(|(end, _)| *end == point) {
                     continue;
                 }
                 // The shared arc end's neighbour, which FreeCAD's setRange leaves where the case
