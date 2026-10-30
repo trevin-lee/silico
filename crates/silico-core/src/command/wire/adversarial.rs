@@ -885,7 +885,7 @@ fn the_envelopes_snapshot_refuses_what_no_response_is() {
     // The schema can fail: each of these breaks one rule of section 2.
     let validator = validator();
     let s = r#"{"id": "s1", "path": "p", "revision": 1, "transaction": false, "reloaded": false}"#;
-    let e = r#"{"code": "internal", "message": "m", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": null, "candidates": []}"#;
+    let e = r#"{"code": "internal", "message": "m", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": null, "candidates": [], "advice": null}"#;
     for bad in [
         r#"{"ok": "true", "session": null, "model": null, "result": 1}"#.to_owned(),
         r#"{"ok": true, "session": null, "model": null}"#.to_owned(),
@@ -910,7 +910,16 @@ fn the_envelopes_snapshot_refuses_what_no_response_is() {
         r#"{"ok": true, "session": null, "model": {"revision": 1, "of": "current", "fault": null, "extra": 1}, "result": 1}"#.to_owned(),
         format!(
             r#"{{"ok": false, "session": null, "model": null, "errors": [{}], "total": 1}}"#,
-            e.replace("[]}", r#"[], "extra": 1}"#)
+            e.replace("null}", r#"null, "extra": 1}"#)
+        ),
+        // A code no list has, and advice no worker gives (the contract lows: each an enum).
+        format!(
+            r#"{{"ok": false, "session": null, "model": null, "errors": [{}], "total": 1}}"#,
+            e.replace(r#""internal""#, r#""no_such_code""#)
+        ),
+        format!(
+            r#"{{"ok": false, "session": null, "model": null, "errors": [{}], "total": 1}}"#,
+            e.replace(r#""advice": null"#, r#""advice": "never""#)
         ),
         // Past the snapshot's bounds: a refusal listing 101 errors, and revision 0.
         format!(

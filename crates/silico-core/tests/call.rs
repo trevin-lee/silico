@@ -526,7 +526,7 @@ fn refusal(message: &str, parameter: Option<&str>, suggestion: Option<&str>) -> 
     let quoted = |text: Option<&str>| text.map_or("null".to_owned(), |t| format!("\"{t}\""));
     let (parameter, suggestion) = (quoted(parameter), quoted(suggestion));
     format!(
-        r#"{{"ok": false, "session": null, "model": null, "errors": [{{"code": "invalid_input", "message": "{message}", "feature": null, "elements": [], "elements_total": 0, "parameter": {parameter}, "cause": null, "suggestion": {suggestion}, "candidates": []}}], "total": 1}}"#
+        r#"{{"ok": false, "session": null, "model": null, "errors": [{{"code": "invalid_input", "message": "{message}", "feature": null, "elements": [], "elements_total": 0, "parameter": {parameter}, "cause": null, "suggestion": {suggestion}, "candidates": [], "advice": null}}], "total": 1}}"#
     )
 }
 
@@ -591,7 +591,7 @@ fn a_request_the_reader_refuses_is_answered_with_the_cores_refused_envelope() {
 /// (written out by hand).
 fn refusal_in(session: &str, revision: u64, transaction: bool) -> String {
     format!(
-        r#"{{"ok": false, "session": {{"id": "{session}", "path": "part.silico", "revision": {revision}, "transaction": {transaction}, "reloaded": false}}, "model": null, "errors": [{{"code": "invalid_input", "message": "extra isn't a field of this request", "feature": null, "elements": [], "elements_total": 0, "parameter": "extra", "cause": null, "suggestion": "leave it out: a request has only the fields its shape gives", "candidates": []}}], "total": 1}}"#
+        r#"{{"ok": false, "session": {{"id": "{session}", "path": "part.silico", "revision": {revision}, "transaction": {transaction}, "reloaded": false}}, "model": null, "errors": [{{"code": "invalid_input", "message": "extra isn't a field of this request", "feature": null, "elements": [], "elements_total": 0, "parameter": "extra", "cause": null, "suggestion": "leave it out: a request has only the fields its shape gives", "candidates": [], "advice": null}}], "total": 1}}"#
     )
 }
 

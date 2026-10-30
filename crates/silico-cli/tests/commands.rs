@@ -166,6 +166,7 @@ fn check_json_is_a_line_an_agent_reads() {
 /// --json` line holds it (written out by hand).
 fn fingerprint_missing(feature: &str) -> serde_json::Value {
     serde_json::json!({
+        "advice": null,
         "candidates": [],
         "cause": null,
         "code": "fingerprint_missing",
@@ -723,13 +724,13 @@ fn check_jsons_lines_hold_their_keys_in_the_contracts_order_in_any_build() {
     assert_eq!(
         check_text(&scratch),
         concat!(
-            r#"{"file":"bad.silico","ok":false,"problems":[{"candidates":[],"cause":null,"#,
+            r#"{"file":"bad.silico","ok":false,"problems":[{"advice":null,"candidates":[],"cause":null,"#,
             r#""code":"invalid_input","elements":[],"elements_total":0,"feature":"k7f2qx3m","#,
             r#""message":"box length must be a length above 1e-7 mm and at most 1e6 mm (a "#,
             r#"kilometre), got 0","parameter":"length","suggestion":"give the box a valid "#,
             r#"length"}],"total":1,"warnings":[],"warnings_total":0}"#,
             "\n",
-            r#"{"error":{"candidates":[],"cause":null,"code":"io_failed","elements":[],"#,
+            r#"{"error":{"advice":null,"candidates":[],"cause":null,"code":"io_failed","elements":[],"#,
             r#""elements_total":0,"feature":null,"message":"couldn't be read: No such file "#,
             r#"or directory (os error 2)","parameter":null,"suggestion":"check the file's "#,
             r#"name, and that it's a regular file this user may read"},"file":"missing.silico","#,

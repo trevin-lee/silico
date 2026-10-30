@@ -1000,7 +1000,7 @@ fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_a_cluster_is_to_be_lengthen
          \"parameter\": null, \"cause\": \"the points are at most 1.5e-7 mm apart, each closer \
          than FreeCAD's joining distance of 1e-7 mm to another of them\", \"suggestion\": \
          \"lengthen arc na000001; then share one point: make the curves that end at the points \
-         named end at one of them\", \"candidates\": []}"
+         named end at one of them\", \"candidates\": [], \"advice\": null}"
     );
 }
 
@@ -1804,7 +1804,7 @@ fn fingerprint_missing_on_the_wire_names_its_parameter() {
          stores no fingerprint, so a change in what it builds isn't caught as drift\", \
          \"feature\": \"k7f2qx3m\", \"elements\": [], \"elements_total\": 0, \"parameter\": \
          \"fingerprint\", \"cause\": null, \"suggestion\": \"format the document to store \
-         it\", \"candidates\": []}"
+         it\", \"candidates\": [], \"advice\": null}"
     );
 }
 

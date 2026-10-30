@@ -438,6 +438,7 @@ fn said_as<'a>(said: Said<'a>, suggestion: Json<'a>) -> Json<'a> {
         cause,
         suggestion: _,
         candidates,
+        advice,
     } = said;
     Json::object([
         ("code", Json::str(code)),
@@ -455,6 +456,7 @@ fn said_as<'a>(said: Said<'a>, suggestion: Json<'a>) -> Json<'a> {
             "candidates",
             Json::array(candidates.iter().map(|c| Json::str(c))),
         ),
+        ("advice", Json::or_null(advice, Json::str)),
     ])
 }
 
@@ -1544,6 +1546,29 @@ pub struct ErrorSchema {
     pub suggestion: Option<String>,
     /// What might have been meant, such as the names nearest one that found nothing.
     pub candidates: Vec<String>,
+    /// What the suggestion advises, as data, for a kernel fault whose worker said:
+    /// `change_the_values` (the request's values crashed the worker, and would again: change
+    /// them, never retry as is), `simplify_or_wait` (it ran past its time: simplify the
+    /// operation, or try again), `try_again` (it wasn't the values: try the request again),
+    /// or `try_once_more` (only once more: the worker may have been stopped for the memory
+    /// the request used). Null for any other error, and a fault whose advice is in its
+    /// suggestion's words alone.
+    #[schemars(schema_with = "advice_schema")]
+    pub advice: Option<String>,
+}
+
+/// An error's or a warning's `advice`: one of the worker's advice's words, in their order
+/// (`Advice::WORDS`), or null.
+fn advice_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let mut words: Vec<serde_json::Value> = crate::worker::Advice::WORDS
+        .iter()
+        .map(|&word| serde_json::Value::from(word))
+        .collect();
+    words.push(serde_json::Value::Null);
+    schemars::json_schema!({
+        "type": ["string", "null"],
+        "enum": words,
+    })
 }
 
 /// Something `check` found that fails nothing: it never refuses a command, blocks a save, or
@@ -1574,6 +1599,10 @@ pub struct WarningSchema {
     pub suggestion: Option<String>,
     /// What might have been meant, if anything.
     pub candidates: Vec<String>,
+    /// Null: a warning is never a worker's fault, so it advises nothing as data (an error's
+    /// `advice`, in the same shape).
+    #[schemars(schema_with = "advice_schema")]
+    pub advice: Option<String>,
 }
 
 /// The session as the command left it.

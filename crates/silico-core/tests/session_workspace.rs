@@ -595,7 +595,7 @@ fn refused_by_name(f: &Fixture, s: &str, path: &str, link: &str) {
     assert_eq!(
         cleared.text,
         format!(
-            r#"{{"ok": false, "session": {{"id": "{s}", "path": "{path}", "revision": 1, "transaction": false, "reloaded": false}}, "model": null, "errors": [{{"code": "invalid_input", "message": "the rebuild cache beside \"{path}\" leads out of the workspace, through a link, so it isn't cleared", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": "\"{link}\" is a link that leads out of the workspace", "suggestion": "remove the link, or clear the cache from inside the workspace", "candidates": []}}], "total": 1}}"#
+            r#"{{"ok": false, "session": {{"id": "{s}", "path": "{path}", "revision": 1, "transaction": false, "reloaded": false}}, "model": null, "errors": [{{"code": "invalid_input", "message": "the rebuild cache beside \"{path}\" leads out of the workspace, through a link, so it isn't cleared", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": "\"{link}\" is a link that leads out of the workspace", "suggestion": "remove the link, or clear the cache from inside the workspace", "candidates": [], "advice": null}}], "total": 1}}"#
         )
     );
 }

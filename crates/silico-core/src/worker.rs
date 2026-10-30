@@ -1439,6 +1439,33 @@ pub(crate) enum Advice {
 }
 
 impl Advice {
+    /// Every word the error contract's `advice` says, one for each kind of advice but
+    /// [`Advice::Other`], whose advice is its words alone, in order: what
+    /// [`word`](Self::word) gives.
+    pub(crate) const WORDS: [&'static str; 4] = [
+        "change_the_values",
+        "simplify_or_wait",
+        "try_again",
+        "try_once_more",
+    ];
+
+    /// The advice as the error contract's `advice` says it, for an agent to act on as data:
+    /// one word for each kind, `try_again` and `try_once_more` apart; none for
+    /// [`Advice::Other`], whose advice is its words alone.
+    pub(crate) fn word(&self) -> Option<&'static str> {
+        match self {
+            Advice::ChangeTheValues { .. } => Some("change_the_values"),
+            Advice::SimplifyOrWait => Some("simplify_or_wait"),
+            Advice::TryAgain {
+                once_more: false, ..
+            } => Some("try_again"),
+            Advice::TryAgain {
+                once_more: true, ..
+            } => Some("try_once_more"),
+            Advice::Other(_) => None,
+        }
+    }
+
     /// The advice as the worker client words it.
     pub(crate) fn words(&self) -> String {
         match self {

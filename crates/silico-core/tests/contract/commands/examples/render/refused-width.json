@@ -1,1 +1,1 @@
-{"code": "invalid_input", "message": "width must be from 1 to 4096 pixels, got 0", "feature": null, "elements": [], "elements_total": 0, "parameter": "width", "cause": null, "suggestion": "give a width from 1 to 4096", "candidates": []}
+{"code": "invalid_input", "message": "width must be from 1 to 4096 pixels, got 0", "feature": null, "elements": [], "elements_total": 0, "parameter": "width", "cause": null, "suggestion": "give a width from 1 to 4096", "candidates": [], "advice": null}

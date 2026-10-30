@@ -725,7 +725,8 @@ impl Refusal {
 /// again.
 fn with_retry(fault: &Error, command: &str) -> Error {
     let suggestion = command::fault_suggestion(fault, command::TryAgainBy::Running(command));
-    fault.clone().with_suggestion(suggestion)
+    // Its advice kept: the words still say it, and the line's `advice` says it as data.
+    fault.clone().reworded(suggestion)
 }
 
 /// `silico check FILE`: open, the session's `check` of its current revision, close. Its
@@ -876,6 +877,7 @@ fn line_warnings(warnings: &Warnings) -> Vec<LineError<'_>> {
 /// the error writes, its keys sorted.
 #[derive(Serialize)]
 struct LineError<'a> {
+    advice: Option<&'static str>,
     candidates: &'a [String],
     cause: Option<&'a str>,
     code: &'static str,
@@ -906,8 +908,10 @@ impl<'a> LineError<'a> {
             cause,
             suggestion,
             candidates,
+            advice,
         } = said;
         LineError {
+            advice,
             candidates,
             cause,
             code,
@@ -1506,13 +1510,13 @@ mod tests {
             problems,
             concat!(
                 r#"{"file":"a b.silico","ok":false,"problems":["#,
-                r#"{"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
+                r#"{"advice":null,"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
                 r#""elements":["Edge1","Edge2"],"elements_total":5,"feature":"k7f2qx3m","#,
                 r#""message":"m \"q\"","parameter":"edges","suggestion":"s"},"#,
-                r#"{"candidates":[],"cause":null,"code":"invalid_input","elements":[],"#,
+                r#"{"advice":null,"candidates":[],"cause":null,"code":"invalid_input","elements":[],"#,
                 r#""elements_total":0,"feature":null,"message":"n","parameter":null,"#,
                 r#""suggestion":null}],"total":7,"warnings":["#,
-                r#"{"candidates":[],"cause":"w","code":"ends_not_joined","#,
+                r#"{"advice":null,"candidates":[],"cause":"w","code":"ends_not_joined","#,
                 r#""elements":["pa000001","pa000002"],"elements_total":3,"feature":"s0000001","#,
                 r#""message":"apart","parameter":null,"suggestion":"join"}],"#,
                 r#""warnings_total":1}"#,
@@ -1538,14 +1542,14 @@ mod tests {
         assert_eq!(
             failed,
             concat!(
-                r#"{"error":{"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
+                r#"{"error":{"advice":null,"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
                 r#""elements":["Edge1","Edge2"],"elements_total":5,"feature":"k7f2qx3m","#,
                 r#""message":"m \"q\"","parameter":"edges","suggestion":"s"},"#,
                 r#""file":"m.silico","ok":false,"problems":["#,
-                r#"{"candidates":[],"cause":null,"code":"drift","elements":[],"#,
+                r#"{"advice":null,"candidates":[],"cause":null,"code":"drift","elements":[],"#,
                 r#""elements_total":0,"feature":"m0000002","message":"d","parameter":null,"#,
                 r#""suggestion":null}],"total":4,"warnings":["#,
-                r#"{"candidates":[],"cause":"w","code":"ends_not_joined","#,
+                r#"{"advice":null,"candidates":[],"cause":"w","code":"ends_not_joined","#,
                 r#""elements":["pa000001","pa000002"],"elements_total":3,"feature":"s0000001","#,
                 r#""message":"apart","parameter":null,"suggestion":"join"}],"#,
                 r#""warnings_total":1}"#,
@@ -1578,8 +1582,8 @@ mod tests {
         };
         let invalid = Error::new(ErrorCode::InvalidInput, "bad");
         let io = Error::new(ErrorCode::IoFailed, "gone");
-        let bad = r#"{"candidates":[],"cause":null,"code":"invalid_input","elements":[],"elements_total":0,"feature":null,"message":"bad","parameter":null,"suggestion":null}"#;
-        let gone = r#"{"candidates":[],"cause":null,"code":"io_failed","elements":[],"elements_total":0,"feature":null,"message":"gone","parameter":null,"suggestion":null}"#;
+        let bad = r#"{"advice":null,"candidates":[],"cause":null,"code":"invalid_input","elements":[],"elements_total":0,"feature":null,"message":"bad","parameter":null,"suggestion":null}"#;
+        let gone = r#"{"advice":null,"candidates":[],"cause":null,"code":"io_failed","elements":[],"elements_total":0,"feature":null,"message":"gone","parameter":null,"suggestion":null}"#;
         // Three reasons, two listed, the second the one that stopped it.
         let refusal = Refusal::of(vec![invalid.clone(), io.clone()], 3, false);
         assert_eq!(
@@ -1630,7 +1634,7 @@ mod tests {
         let core = keys(serde_json::to_string(&error).unwrap());
         let line = keys(serde_json::to_string(&LineError::new(&error)).unwrap());
         assert_eq!(line, core);
-        assert_eq!(core.len(), 9);
+        assert_eq!(core.len(), 10);
         // And each value as the core writes it.
         let core: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&error).unwrap()).unwrap();

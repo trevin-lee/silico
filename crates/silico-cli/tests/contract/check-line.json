@@ -4,6 +4,7 @@
     "ok": false,
     "problems": [
       {
+        "advice": null,
         "candidates": [],
         "cause": null,
         "code": "invalid_input",
@@ -21,6 +22,7 @@
   },
   "couldnt_check": {
     "error": {
+      "advice": null,
       "candidates": [],
       "cause": null,
       "code": "io_failed",

@@ -4,7 +4,7 @@
   "features": 3,
   "bodies": ["m3tq8v0z"],
   "problems": [
-    {"code": "invalid_input", "message": "box length must be a length above 1e-7 mm and at most 1e6 mm (a kilometre), got 0", "feature": "k7f2qx3m", "elements": [], "elements_total": 0, "parameter": "length", "cause": null, "suggestion": "give the box a valid length", "candidates": []}
+    {"code": "invalid_input", "message": "box length must be a length above 1e-7 mm and at most 1e6 mm (a kilometre), got 0", "feature": "k7f2qx3m", "elements": [], "elements_total": 0, "parameter": "length", "cause": null, "suggestion": "give the box a valid length", "candidates": [], "advice": null}
   ],
   "problems_total": 1
 }

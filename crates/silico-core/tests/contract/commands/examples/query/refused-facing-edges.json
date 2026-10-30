@@ -1,1 +1,1 @@
-{"code": "invalid_input", "message": "only planar faces face a direction, and kind is edge", "feature": null, "elements": [], "elements_total": 0, "parameter": "facing", "cause": null, "suggestion": "query faces of type plane to filter by direction", "candidates": []}
+{"code": "invalid_input", "message": "only planar faces face a direction, and kind is edge", "feature": null, "elements": [], "elements_total": 0, "parameter": "facing", "cause": null, "suggestion": "query faces of type plane to filter by direction", "candidates": [], "advice": null}
