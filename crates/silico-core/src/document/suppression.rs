@@ -11,7 +11,9 @@
 //!
 //! - a feature whose `sketch` is `X`;
 //! - a feature that stores an element name one of whose makers is `X` (a fillet's or
-//!   chamfer's `edges`: every feature its parsed name holds);
+//!   chamfer's `edges`: every feature its parsed name holds), or one of whose makers reaches
+//!   the feature's base only as the `tool` of `X`, a boolean (a fuse keeps its tool's
+//!   elements under the tool's names, and `X`, suppressed, passes only its base through);
 //! - a feature one of whose inputs it needs has no unsuppressed feature up its chain. A
 //!   pad's or revolve's base is optional, so with its whole chain suppressed it builds
 //!   alone; every other input is needed ([`needs`]).
@@ -34,6 +36,9 @@ pub(crate) enum Cause {
     Sketch,
     /// A name it stores has a suppressed maker; which of its names, by its place in `edges`.
     Names(usize),
+    /// A name it stores (by its place in `edges`) has a maker (by its place in the timeline)
+    /// that reaches the feature's base only as a suppressed boolean's tool.
+    Lost { edge: usize, maker: usize },
     /// An input it needs (`base` or `tool`) has no unsuppressed feature up its chain.
     Chain(&'static str),
 }
@@ -100,6 +105,59 @@ pub(crate) fn consumed<'a>(
     consumed
 }
 
+/// A document's features indexed as its text links them: each ID's first feature's place
+/// (as the gate finds a reference), and each solid's first consumer, by place, with the field
+/// that names it. Built once, so each question is a search, not a scan.
+pub(crate) struct Links<'a> {
+    places: BTreeMap<&'a FeatureId, usize>,
+    consumers: Vec<Option<(usize, &'static str)>>,
+}
+
+impl<'a> Links<'a> {
+    pub(crate) fn of(features: &'a [Feature]) -> Self {
+        let places = first_places(features);
+        let mut consumers: Vec<Option<(usize, &'static str)>> = vec![None; features.len()];
+        for (at, feature) in features.iter().enumerate() {
+            for (field, input) in feature.operation.inputs() {
+                if let Some(slot) = places
+                    .get(input)
+                    .copied()
+                    .filter(|&p| p < at)
+                    .and_then(|p| consumers.get_mut(p))
+                    && slot.is_none()
+                {
+                    *slot = Some((at, field));
+                }
+            }
+        }
+        Links { places, consumers }
+    }
+
+    /// The place of `id`'s first feature.
+    pub(crate) fn place(&self, id: &FeatureId) -> Option<usize> {
+        self.places.get(id).copied()
+    }
+
+    /// The feature that consumes the solid at `at`, by place, and the field naming it.
+    fn consumer(&self, at: usize) -> Option<(usize, &'static str)> {
+        self.consumers.get(at).copied().flatten()
+    }
+}
+
+/// Whether any of `features` that `suppressed` says is suppressed consumes a `tool`: only
+/// then can a stored name be lost to a suppression ([`Cause::Lost`]), so only then is it
+/// looked for.
+pub(crate) fn any_tool_suppressed(features: &[Feature], suppressed: &dyn Fn(usize) -> bool) -> bool {
+    features
+        .iter()
+        .enumerate()
+        .any(|(at, f)| suppressed(at) && has_tool(&f.operation))
+}
+
+fn has_tool(operation: &Operation) -> bool {
+    operation.inputs().iter().any(|(field, _)| *field == "tool")
+}
+
 /// Each ID's first feature's place.
 fn first_places(features: &[Feature]) -> BTreeMap<&FeatureId, usize> {
     let mut places = BTreeMap::new();
@@ -140,28 +198,35 @@ pub(crate) fn needs(operation: &Operation, field: &str) -> bool {
 }
 
 /// The suppressed feature the feature at `at` is a dependent of, if it's one, by its place
-/// and why, the first in the order the feature's fields come: its sketch, its stored names,
-/// its inputs. `suppressed` says which features are suppressed, by place; `standing` is
-/// theirs ([`standing`]); `place` finds a feature before `at` by ID. For a chain's cause,
-/// the place is the input's, which names it.
+/// and why, the first in the order the feature's fields come: its sketch, its stored names
+/// (a suppressed maker, then a maker lost to a suppressed boolean, looked for only where
+/// `walk` says one may be: [`any_tool_suppressed`]), its inputs. `suppressed` says which
+/// features are suppressed, by place; `standing` is theirs ([`standing`]); `links` finds a
+/// feature by ID and a solid's consumer. For a chain's cause, the place is the input's, which
+/// names it; for a lost name, the boolean's.
 pub(crate) fn suppressed_parent(
     features: &[Feature],
+    links: &Links,
     at: usize,
     suppressed: &dyn Fn(usize) -> bool,
     standing: &[Option<usize>],
-    place: &dyn Fn(&FeatureId) -> Option<usize>,
+    walk: bool,
 ) -> Option<(usize, Cause)> {
     let feature = features.get(at)?;
-    let before = |id: &FeatureId| place(id).filter(|&p| p < at);
+    let before = |id: &FeatureId| links.place(id).filter(|&p| p < at);
     if let Some(sketch) = feature.operation.sketch().and_then(before)
         && suppressed(sketch)
     {
         return Some((sketch, Cause::Sketch));
     }
-    for (i, maker) in makers(features, feature, &before) {
+    let made = makers(features, feature, &before);
+    for &(i, maker) in &made {
         if suppressed(maker) {
             return Some((maker, Cause::Names(i)));
         }
+    }
+    if walk && let Some(lost) = lost(features, links, at, &made, suppressed) {
+        return Some(lost);
     }
     for (field, input) in feature.operation.inputs() {
         if !needs(&feature.operation, field) {
@@ -175,6 +240,41 @@ pub(crate) fn suppressed_parent(
         }
     }
     None
+}
+
+/// Of the stored names' makers `made` (each with its name's place) of the feature at `at`,
+/// the first whose way down to the feature's base, by its consumers (each solid is consumed
+/// once, so it's one way), passes a suppressed feature that consumes it as its `tool`: that
+/// boolean passes only its base through, so the name is lost to the suppression. The
+/// boolean nearest the maker, and the cause. A maker whose consumers never reach the base
+/// was out of the base's lineage before any suppression (open item 2b): the rebuild's to
+/// report, not suppression's. A sketch's elements are named only in what a feature made of
+/// them, so its maker is a solid's too, which this walk takes.
+fn lost(
+    features: &[Feature],
+    links: &Links,
+    at: usize,
+    made: &[(usize, usize)],
+    suppressed: &dyn Fn(usize) -> bool,
+) -> Option<(usize, Cause)> {
+    let base = features
+        .get(at)
+        .and_then(|f| base_of(&f.operation))
+        .and_then(|b| links.place(b))
+        .filter(|&b| b < at)?;
+    made.iter().find_map(|&(edge, maker)| {
+        let mut step = maker;
+        let mut through = None;
+        while step != base {
+            // Each consumer comes after what it consumes, so the walk ends.
+            let (next, field) = links.consumer(step).filter(|&(n, _)| n <= base)?;
+            if through.is_none() && field == "tool" && suppressed(next) {
+                through = Some(next);
+            }
+            step = next;
+        }
+        through.map(|boolean| (boolean, Cause::Lost { edge, maker }))
+    })
 }
 
 /// The places of the makers of each name `feature` stores, with the name's place in its
@@ -207,6 +307,7 @@ fn makers(
 /// The refusal of a document in which `dependent` isn't suppressed though `parent`, which it
 /// can't do without, is (the gate's), naming both, in the words of `cause`.
 pub(crate) fn unsuppressed_dependent(
+    features: &[Feature],
     dependent: &Feature,
     parent: &Feature,
     cause: Cause,
@@ -219,6 +320,15 @@ pub(crate) fn unsuppressed_dependent(
             format!("edges.{i}"),
             format!("edges.{i} names an element of {p}, which is suppressed"),
         ),
+        Cause::Lost { edge, maker } => {
+            let maker = features.get(maker).map_or("", |f| f.id.as_str());
+            (
+                format!("edges.{edge}"),
+                format!(
+                    "edges.{edge} names an element of {maker}, which reaches its base only as {p}'s tool, and {p} is suppressed"
+                ),
+            )
+        }
         Cause::Chain(field) => (
             field.to_owned(),
             format!(
@@ -282,22 +392,29 @@ pub fn suppress(checked: &Checked, id: &FeatureId) -> Result<Suppression, Error>
         return Ok(unchanged(document));
     }
     let place = |id: &FeatureId| checked.place(id);
+    let links = Links::of(features);
+    let mut walk = any_tool_suppressed(features, &|p| flags.get(p).copied().unwrap_or(false));
     let mut standing: Vec<Option<usize>> = Vec::with_capacity(features.len());
     let mut newly = Vec::new();
     for (i, feature) in features.iter().enumerate() {
+        let suppressed = |p: usize| flags.get(p).copied().unwrap_or(false);
         if i == at
             || (i > at
                 && !feature.suppressed
-                && suppressed_parent(features, i, &|p| flags[p], &standing, &place).is_some())
+                && suppressed_parent(features, &links, i, &suppressed, &standing, walk)
+                    .is_some())
         {
-            flags[i] = true;
+            if let Some(flag) = flags.get_mut(i) {
+                *flag = true;
+            }
+            walk |= has_tool(&feature.operation);
             newly.push(feature.id.clone());
         }
         // What stands for it, now that whether it's suppressed is settled: those before it
         // are.
         let stands = if !feature.operation.makes_solid() {
             None
-        } else if !flags[i] {
+        } else if !flags.get(i).copied().unwrap_or(false) {
             Some(i)
         } else {
             base_of(&feature.operation)
@@ -315,8 +432,9 @@ pub fn suppress(checked: &Checked, id: &FeatureId) -> Result<Suppression, Error>
 }
 
 /// The feature `id` unsuppressed, with what it needs and lacks, recursively: its sketch;
-/// each suppressed maker of a name it stores; and, for an input it needs whose chain holds no
-/// unsuppressed feature once those are unsuppressed, that chain's root. What depends on it
+/// each suppressed maker of a name it stores; each suppressed boolean whose tool a maker of
+/// a name it stores reaches its base through; and, for an input it needs whose chain holds
+/// no unsuppressed feature once those are unsuppressed, that chain's root. What depends on it
 /// stays suppressed. A feature that isn't suppressed changes nothing. Refused, naming
 /// `feature`, where the document has no feature `id`.
 pub fn unsuppress(checked: &Checked, id: &FeatureId) -> Result<Suppression, Error> {
@@ -329,17 +447,22 @@ pub fn unsuppress(checked: &Checked, id: &FeatureId) -> Result<Suppression, Erro
         return Ok(unchanged(document));
     }
     let place = |id: &FeatureId| checked.place(id);
-    // Its sketch and its names' makers first, all the way up; then each chain left with no
-    // unsuppressed feature gives its root, whose own needs are taken the same way. In
-    // timeline order, so the result is the text's alone.
+    let links = Links::of(features);
+    // Unsuppressing only takes suppressions away, so a name can be lost only if one could
+    // be before.
+    let walk = any_tool_suppressed(features, &|p| flags.get(p).copied().unwrap_or(false));
+    // Its sketch and its names' makers first, all the way up; then each name lost to a
+    // suppressed boolean gives that boolean, and each chain left with no unsuppressed
+    // feature its root, whose own needs are taken the same way, the feature looked at again
+    // until it lacks nothing. In timeline order, so the result is the text's alone.
     let mut direct: Vec<usize> = vec![at];
     let mut chains: BTreeSet<usize> = BTreeSet::new();
     loop {
         while let Some(w) = direct.pop() {
-            if !flags[w] {
-                continue;
+            match flags.get_mut(w) {
+                Some(flag) if *flag => *flag = false,
+                _ => continue,
             }
-            flags[w] = false;
             chains.insert(w);
             let Some(feature) = features.get(w) else {
                 continue;
@@ -358,6 +481,16 @@ pub fn unsuppress(checked: &Checked, id: &FeatureId) -> Result<Suppression, Erro
         let Some(feature) = features.get(w) else {
             continue;
         };
+        if walk {
+            let before = |id: &FeatureId| place(id).filter(|&p| p < w);
+            let made = makers(features, feature, &before);
+            let suppressed = |p: usize| flags.get(p).copied().unwrap_or(false);
+            if let Some((boolean, _)) = lost(features, &links, w, &made, &suppressed) {
+                direct.push(boolean);
+                chains.insert(w);
+                continue;
+            }
+        }
         for (field, input) in feature.operation.inputs() {
             if !needs(&feature.operation, field) {
                 continue;
@@ -560,7 +693,7 @@ mod tests {
         let st = standing(&d.features, &place);
         let suppressed = |p: usize| d.features[p].suppressed;
         assert_eq!(
-            suppressed_parent(&d.features, 2, &suppressed, &st, &place),
+            suppressed_parent(&d.features, &Links::of(&d.features), 2, &suppressed, &st, true),
             Some((0, Cause::Names(0)))
         );
         // Named elsewhere (a sketch's element can't be, so a second box), c2's only cause
@@ -573,7 +706,7 @@ mod tests {
         let st = standing(&d.features, &place);
         let suppressed = |p: usize| d.features[p].suppressed;
         assert_eq!(
-            suppressed_parent(&d.features, 3, &suppressed, &st, &place),
+            suppressed_parent(&d.features, &Links::of(&d.features), 3, &suppressed, &st, true),
             Some((2, Cause::Chain("base")))
         );
         // b back: c1 passes it through, so c2 has none.
@@ -582,7 +715,7 @@ mod tests {
         let st = standing(&back.features, &place);
         let suppressed = |p: usize| back.features[p].suppressed;
         assert_eq!(
-            suppressed_parent(&back.features, 3, &suppressed, &st, &place),
+            suppressed_parent(&back.features, &Links::of(&back.features), 3, &suppressed, &st, true),
             None
         );
     }

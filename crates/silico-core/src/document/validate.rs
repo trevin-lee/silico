@@ -145,6 +145,9 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
     // the one making it.
     let place = |id: &FeatureId| holder(id);
     let standing = super::suppression::standing(features, &place);
+    let links = super::suppression::Links::of(features);
+    let is_suppressed = |p: usize| features.get(p).is_some_and(|f| f.suppressed);
+    let walk = super::suppression::any_tool_suppressed(features, &is_suppressed);
 
     let mut problems = Problems::default();
     // The feature that consumed each feature's solid, if one has.
@@ -482,16 +485,17 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
         if !feature.suppressed
             && let Some((parent, cause)) = super::suppression::suppressed_parent(
                 features,
+                &links,
                 index,
-                &|p| features.get(p).is_some_and(|f| f.suppressed),
+                &is_suppressed,
                 &standing,
-                &place,
+                walk,
             )
             && let Some(parent) = features.get(parent)
         {
             problems.add(|| {
                 let (parameter, message, suggestion) =
-                    super::suppression::unsuppressed_dependent(feature, parent, cause);
+                    super::suppression::unsuppressed_dependent(features, feature, parent, cause);
                 refuse(&parameter, message, suggestion)
             });
         }
