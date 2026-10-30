@@ -43,7 +43,7 @@ pub use session::{
     Status, Stepped, Stopper, TOO_LONG, TextAnswer, TimelineAnswer, Transaction, TryAgainBy,
     fault_suggestion,
 };
-pub use session_command::{ReadCommand, SessionCommand};
+pub use session_command::{ReadCommand, RunningCommand, SessionCommand};
 
 pub use crate::warnings::Warnings;
 

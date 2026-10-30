@@ -752,7 +752,7 @@ fn an_undo_is_named_by_status_and_stopped_by_cancel_before_it_changes_anything()
     was_started.recv_timeout(WAIT).unwrap();
     assert_eq!(
         f.sessions.status(&f.id).result.unwrap().running,
-        Some(SessionCommand::Undo)
+        Some(RunningCommand::Command(SessionCommand::Undo))
     );
     assert_eq!(
         f.sessions

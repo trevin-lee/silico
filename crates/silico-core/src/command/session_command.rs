@@ -102,6 +102,36 @@ impl SessionCommand {
     }
 }
 
+/// What `status` says is running on a session's thread (docs/design/m5.0-app.md, A3): one of
+/// its queued commands, or the session's own reload of its file, found changed on disk with
+/// no transaction open, which no client sent and none can cancel (`cancel`'s `command` is a
+/// [`SessionCommand`], which this isn't).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunningCommand {
+    /// A command a client sent.
+    Command(SessionCommand),
+    /// The session's own reload.
+    Reload,
+}
+
+impl RunningCommand {
+    /// Its name, as `status` and `read_logs`' spans give it: the command's, or `reload`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RunningCommand::Command(command) => command.as_str(),
+            RunningCommand::Reload => "reload",
+        }
+    }
+
+    /// The command a client sent, if it's one: what `cancel` can stop.
+    pub const fn command(self) -> Option<SessionCommand> {
+        match self {
+            RunningCommand::Command(command) => Some(command),
+            RunningCommand::Reload => None,
+        }
+    }
+}
+
 impl std::fmt::Display for SessionCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -163,5 +193,23 @@ impl ReadCommand {
 impl From<ReadCommand> for SessionCommand {
     fn from(read: ReadCommand) -> Self {
         read.command()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_runs_is_a_command_cancel_can_name_or_the_reload_it_cant() {
+        // `cancel` stops only what a client sent: each command is its own, the session's
+        // reload none.
+        for command in SessionCommand::ALL {
+            let running = RunningCommand::Command(command);
+            assert_eq!(running.command(), Some(command));
+            assert_eq!(running.as_str(), command.as_str());
+        }
+        assert_eq!(RunningCommand::Reload.command(), None);
+        assert_eq!(RunningCommand::Reload.as_str(), "reload");
     }
 }

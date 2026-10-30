@@ -1026,12 +1026,22 @@ fn by_name_against_typed(acts: &[(Act, i8)]) {
             ),
         };
         let got = by_name.call(name, &arguments);
-        assert_eq!(got.text, expected, "act {n}: {name} {arguments}");
+        if name == "status" {
+            // `disk` is when the background comparison of the file last ended, a diagnostic,
+            // so two reads in a row may differ by it alone: the rest is compared.
+            assert_eq!(
+                without_disk(&got.text),
+                without_disk(&expected),
+                "act {n}: {name} {arguments}"
+            );
+        } else {
+            assert_eq!(got.text, expected, "act {n}: {name} {arguments}");
+        }
     }
     // Both end as one: the same status and text.
     assert_eq!(
-        by_name.call("status", r#"{"session": "s1"}"#).text,
-        response_text(&t.status(&s1), Layout::OneLine)
+        without_disk(&by_name.call("status", r#"{"session": "s1"}"#).text),
+        without_disk(&response_text(&t.status(&s1), Layout::OneLine))
     );
 }
 
@@ -1279,4 +1289,13 @@ fn steps_racing_edits_and_status_from_other_threads_replay_as_one_order() {
     assert_eq!(text["features"][0]["length"], length);
     let committed = answer(f.sessions.commit(&f.id)).result.unwrap();
     assert_eq!(committed.written, length != 40);
+}
+
+/// A status envelope's text, its result's `disk` taken out.
+fn without_disk(text: &str) -> serde_json::Value {
+    let mut value: serde_json::Value = serde_json::from_str(text).unwrap();
+    if let Some(result) = value.get_mut("result").and_then(|r| r.as_object_mut()) {
+        result.remove("disk");
+    }
+    value
 }

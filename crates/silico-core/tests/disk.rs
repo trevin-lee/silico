@@ -394,3 +394,74 @@ fn the_interval_runs_from_a_held_comparisons_end_by_the_watchs_clock() {
     assert_eq!(w.finding(), Some(Disk::Unchanged));
     held.wait_reads(2);
 }
+
+/// What a test's subscriber writes, kept.
+#[derive(Clone, Default)]
+struct Written(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Written {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_comparison_still_reading_is_logged_once_at_ten_seconds_never_before_nor_again() {
+    // `DISK_READ_STALLED`: a read past it (a stalled mount) is said once, as a warning, by
+    // the `status` (the finding) that finds it so; the finding before it stands.
+    assert_eq!(
+        silico_core::disk::DISK_READ_STALLED,
+        Duration::from_secs(10)
+    );
+    let written = Written::default();
+    let into = written.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || into.clone())
+        .with_ansi(false)
+        .finish();
+    let said = || {
+        String::from_utf8(written.0.lock().unwrap().clone())
+            .unwrap()
+            .matches("still hasn't ended")
+            .count()
+    };
+    let start = Instant::now();
+    let time = Arc::new(Mutex::new(start));
+    let set = |millis| *time.lock().unwrap() = start + Duration::from_millis(millis);
+    let clock: Clock = {
+        let time = Arc::clone(&time);
+        Arc::new(move || *time.lock().unwrap())
+    };
+    let held = Held::new();
+    let w = DiskWatch::clocked(
+        "p",
+        Arc::new(b"A".to_vec()),
+        Duration::from_secs(1),
+        None,
+        held.reader(Found::Bytes(b"A".to_vec())),
+        clock,
+    );
+    tracing::subscriber::with_default(subscriber, || {
+        assert_eq!(w.finding(), None);
+        held.wait_reads(1);
+        set(9_999);
+        assert_eq!(w.finding(), None);
+        assert_eq!(said(), 0, "said before ten seconds");
+        set(10_000);
+        assert_eq!(w.finding(), None);
+        assert_eq!(said(), 1);
+        set(30_000);
+        assert_eq!(w.finding(), None);
+        set(60_000);
+        assert_eq!(w.finding(), None);
+        assert_eq!(said(), 1, "said again");
+    });
+    held.open();
+    assert_eq!(settled(&w), Disk::Unchanged);
+    assert_eq!(held.reads(), 1);
+}

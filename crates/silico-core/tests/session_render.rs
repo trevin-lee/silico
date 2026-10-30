@@ -159,6 +159,57 @@ fn a_render_cancelled_through_its_session_answers_cancelled() {
     assert!(renderer.sent().is_empty());
 }
 
+#[test]
+fn a_render_cancelled_while_its_scene_waits_to_be_drawn_answers_cancelled() {
+    // M5.0's section 3 (M4.6's open item): the stop button's `cancel` of a render whose
+    // scene is with the renderer answers `cancelled`, never `internal`, for the current
+    // model and the published one alike, and through either way of stopping it.
+    use silico_core::command::SessionCommand;
+    use std::time::{Duration, Instant};
+    for (choice, by_name) in [
+        (ModelChoice::Current, true),
+        (ModelChoice::Published, true),
+        (ModelChoice::Current, false),
+    ] {
+        let (f, renderer, s) = rendering();
+        // Published once, so a published read has a model to draw.
+        answer(f.sessions.render(&s, ModelChoice::Current, front()))
+            .result
+            .unwrap();
+        renderer.hold_all();
+        let held = f.sessions.render(&s, choice, front());
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while renderer.sent().len() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "the scene never reached the renderer"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        if by_name {
+            let cancelled = f
+                .sessions
+                .cancel(&s, SessionCommand::Render)
+                .result
+                .unwrap();
+            assert!(cancelled.stopped, "{choice:?}");
+        } else {
+            assert!(held.cancel());
+        }
+        let refused = answer(held).result.unwrap_err();
+        assert_eq!(refused.total(), 1, "{refused:?}");
+        assert_eq!(
+            refused.errors()[0].code(),
+            ErrorCode::Cancelled,
+            "{choice:?}: {refused:?}"
+        );
+        assert_eq!(
+            refused.errors()[0].message(),
+            "render was cancelled before it finished"
+        );
+    }
+}
+
 /// A renderer that, asked to draw, cancels the read that asked (its stopper, once the test
 /// has handed it over) and then answers as the fake does: the read cancelled after its PNG
 /// is drawn, before it's written.

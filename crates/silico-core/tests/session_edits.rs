@@ -393,8 +393,22 @@ fn a_refused_commit_of_an_edit_outside_a_transaction_leaves_the_session_as_it_wa
         (ErrorCode::Conflict, Some("path"))
     );
     assert_eq!(f.file(), "edited elsewhere");
+    // Read without `status`, whose comparison would have the session reload the change
+    // itself (M5.0's A3) before the command below could.
     assert_eq!(
-        f.sessions.status(&f.id).session.unwrap().revision,
+        f.sessions
+            .read_logs(
+                &f.id,
+                &silico_core::command::logs::LogQuery {
+                    level: silico_core::command::logs::LogLevel::Error,
+                    feature: None,
+                    after: None,
+                    limit: 1,
+                },
+            )
+            .session
+            .unwrap()
+            .revision,
         Revision::OPENED
     );
     // And nothing of the edit is published: the session's published model is none yet

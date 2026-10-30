@@ -17,8 +17,8 @@ use super::transaction::TransactionSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
-    Cancelled, Closed, Limits, Opened, Problems, ReadCommand, Rebuild, SessionCommand, SessionId,
-    Status, Version,
+    Cancelled, Closed, Limits, Opened, Problems, ReadCommand, Rebuild, RunningCommand,
+    SessionCommand, SessionId, Status, Version,
 };
 use crate::document::json::Node;
 use crate::document::{FeatureId, Length, PROBLEMS_LISTED};
@@ -234,9 +234,9 @@ impl ToWire for Rebuild {
 impl ToWire for Status {
     /// `status`'s result: the number of features (`null` if the text doesn't read as a
     /// document), whether the gate took it, the transaction open and its undo stack's counts
-    /// (`null` if none), the
-    /// queued command running (`null` if none), the published reads running, and the
-    /// rebuild.
+    /// (`null` if none), what's running on the session's thread (a queued command, or
+    /// `reload`; `null` if nothing), the published reads running, the rebuild, and what the
+    /// last disk comparison found (`null` if none has ended).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("features", Json::or_null(self.features, Json::count)),
@@ -247,13 +247,17 @@ impl ToWire for Status {
             ),
             (
                 "running",
-                Json::or_null(self.running, |command| Json::str(command.as_str())),
+                Json::or_null(self.running, |running| Json::str(running.as_str())),
             ),
             (
                 "reads",
                 Json::array(self.reads.iter().map(|read| Json::str(read.as_str()))),
             ),
             ("rebuild", self.rebuild.to_wire()),
+            (
+                "disk",
+                Json::or_null(self.disk, |disk| Json::str(disk.word())),
+            ),
         ])
     }
 }
@@ -284,6 +288,45 @@ impl JsonSchema for SessionCommandSchema {
             SESSION_COMMANDS,
         )
     }
+}
+
+/// What runs on a session's thread, by name, as `status` gives it: a command that runs in a
+/// session ([`SESSION_COMMANDS`]), or the session's own reload (docs/design/m5.0-app.md, A3).
+pub struct RunningCommandSchema;
+
+impl JsonSchema for RunningCommandSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "RunningCommand".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        words(
+            "What runs on a session's thread, by name: a command, as a tool is named, which \
+             `cancel` stops; or `reload`, the session's own reload of its file, found changed \
+             on disk with no transaction open, which nothing cancels.",
+            SESSION_COMMANDS
+                .iter()
+                .copied()
+                .chain([RunningCommand::Reload.as_str()]),
+        )
+    }
+}
+
+/// What a comparison of a session's file on disk found, as `status` gives it.
+#[derive(JsonSchema)]
+#[schemars(rename = "Disk", rename_all = "lowercase")]
+pub enum DiskSchema {
+    /// The bytes the session last read or wrote.
+    Unchanged,
+    /// Other bytes. With no transaction open, the session reloads them itself (`reload`);
+    /// inside one, its `commit` is refused as a `conflict` until it rolls back. A file this
+    /// session's own save left part written reads `changed` too, and isn't reloaded: the
+    /// next save says where its old text is.
+    Changed,
+    /// No file at its path.
+    Gone,
+    /// Not a regular file this user may read, or past what Silico reads of a document.
+    Unreadable,
 }
 
 /// A command that runs as a read of the published model, by name ([`PUBLISHED_READS`]), in
@@ -498,12 +541,19 @@ pub struct StatusResultSchema {
     /// The transaction open, its base as `begin` answered it, with its undo and redo: null
     /// if none is.
     pub transaction: Option<TransactionSchema>,
-    /// The session's queued command running, which `cancel` can stop: null if none is.
-    pub running: Option<SessionCommandSchema>,
+    /// What's running on the session's thread: a queued command, which `cancel` can stop,
+    /// or `reload`, its own reload of a file changed on disk; null if nothing is.
+    pub running: Option<RunningCommandSchema>,
     /// Each read of the published model running, in the order they started: `cancel` stops
     /// every one of a name.
     pub reads: Vec<PublishedReadSchema>,
     pub rebuild: RebuildSchema,
+    /// What the last comparison of the session's file on disk found, against the bytes the
+    /// session last read or wrote: a diagnostic, never a result, and it reloads nothing
+    /// itself. `status` starts the next comparison, off its caller's thread, once the last
+    /// ended a second ago or more. Null before one has ended, while the session's own save
+    /// runs, and after a save that failed until the next comparison ends.
+    pub disk: Option<DiskSchema>,
 }
 
 /// `cancel`'s request: stop the command named, if it's running in the session (its queued
