@@ -2238,6 +2238,44 @@ fn a_save_this_session_left_part_written_refuses_the_next_saying_where_the_text_
 }
 
 #[test]
+fn a_save_as_from_a_file_left_part_written_writes_and_says_where_its_old_text_is() {
+    // The session's own file left part written: a Save As writes elsewhere all the same,
+    // and, the session holding the new file now, lists the old one's mark among its
+    // problems, so where the old text is isn't lost.
+    let f = opened(STORED);
+    let old = f.path.with_file_name(".a.silico.fmt-1");
+    // Marked inside the transaction, where nothing reads the file again (a read that finds
+    // it as the session wrote it clears the mark).
+    f.sessions.begin(&f.id).wait().result.unwrap();
+    f.session().held.session_changing().part_written = Some(old.clone());
+    let to = f.path.with_file_name("b.silico");
+    let response = f.sessions.save_as(&f.id, &to, false).wait();
+    let committed = response.result.unwrap();
+    assert!(committed.written);
+    assert!(to.exists());
+    // Beside STORED's drift, one: the old file's, last.
+    let io: Vec<_> = committed
+        .problems
+        .errors()
+        .iter()
+        .filter(|e| e.code() == ErrorCode::IoFailed)
+        .collect();
+    assert_eq!(io.len(), 1);
+    let problem = committed.problems.errors().last().unwrap();
+    assert_eq!(problem.code(), ErrorCode::IoFailed);
+    assert_eq!(problem.parameter(), Some("path"));
+    assert_eq!(
+        problem.message(),
+        format!(
+            "{} was left part written by this session's own save, which couldn't put its text back: its text before is in {}",
+            shown_path(&f.path),
+            shown_path(&old)
+        )
+    );
+    assert_eq!(f.session().held.read().part_written, None);
+}
+
+#[test]
 fn a_file_this_sessions_own_save_left_part_written_isnt_reloaded() {
     let f = opened(STORED);
     let old = f.path.with_file_name(".a.silico.fmt-1");
