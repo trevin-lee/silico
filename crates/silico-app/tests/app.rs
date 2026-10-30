@@ -1882,7 +1882,7 @@ fn reload_to_a_name_the_field_typed_before_shows_that_name() {
 
 #[test]
 fn a_revert_after_a_queued_save_keeps_the_save_and_has_nothing_left_to_revert() {
-    // A save running (its rebuild held), then "b" typed and Ctrl+S again, both queued, then
+    // A save waiting (its session's queue held), then "b" typed and Ctrl+S again, both queued, then
     // File > Revert: the save queued stays ahead of the revert and saves "b"; the revert
     // comes up with no transaction open and is done, refusing nothing.
     let f = fixture();
@@ -1893,7 +1893,7 @@ fn a_revert_after_a_queued_save_keeps_the_save_and_has_nothing_left_to_revert() 
     step_until(&mut h, "unsaved", |h| {
         h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
     });
-    let hold = f.kernel.hold(|_| true);
+    let (hold, check) = hold_queue(&f, &h, 0);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
     type_name(&mut h, "b");
@@ -1905,6 +1905,7 @@ fn a_revert_after_a_queued_save_keeps_the_save_and_has_nothing_left_to_revert() 
     h.get_by_role_and_label(Role::Button, "Revert").click();
     step(&mut h);
     hold.release();
+    let _ = check.wait();
     step_until(&mut h, "both saved", |h| {
         h.state().tabs()[0].saves == 2 && !h.state().tabs()[0].unsaved()
     });
@@ -1927,7 +1928,7 @@ fn dont_save_on_a_quit_while_a_save_runs_closes_once_it_has_saved() {
     step_until(&mut h, "unsaved", |h| {
         h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
     });
-    let hold = f.kernel.hold(|_| true);
+    let (hold, check) = hold_queue(&f, &h, 0);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
     close_window(&mut h);
@@ -1939,6 +1940,7 @@ fn dont_save_on_a_quit_while_a_save_runs_closes_once_it_has_saved() {
         .click_accesskit();
     step(&mut h);
     hold.release();
+    let _ = check.wait();
     step_until(&mut h, "the window closing", |h| told(h, true));
     // The save asked before the quit stands.
     assert_eq!(names_in(&path), ["Block", "qPin", "Hole"]);
