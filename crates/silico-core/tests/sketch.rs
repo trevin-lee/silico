@@ -186,7 +186,7 @@ fn every_constraint_form_reads_and_writes_back_in_schema_order() {
         r#"{"id": "k000000d", "type": "radius", "curve": "ca000000", "value": 5, "driving": true}"#,
         r#"{"id": "k000000e", "type": "diameter", "curve": "aa000000", "value": 20, "driving": false}"#,
         r#"{"id": "k000000f", "type": "equal", "a": "ca000000", "b": "aa000000"}"#,
-        r#"{"id": "k000000g", "type": "tangent", "a": "na000000", "b": "ca000000", "side": "right"}"#,
+        r#"{"id": "k000000g", "type": "tangent", "a": "na000000", "b": "cb000000", "side": "right"}"#,
         r#"{"id": "k000000h", "type": "tangent_on", "a": "na000000", "at": "pb000000", "b": "ca000000", "direction": "same"}"#,
         r#"{"id": "k000000j", "type": "tangent_at", "a": "na000000", "b": "aa000000", "at": "pb000000", "direction": "opposite"}"#,
         r#"{"id": "k000000k", "type": "symmetric", "a": "pb000000", "b": "pc000000", "about": "origin"}"#,
@@ -213,7 +213,8 @@ fn every_constraint_form_reads_and_writes_back_in_schema_order() {
         {LINE}
       ],
       "circles": [
-        {CIRCLE}
+        {CIRCLE},
+        {cb}
       ],
       "arcs": [
         {ARC}
@@ -229,6 +230,9 @@ fn every_constraint_form_reads_and_writes_back_in_schema_order() {
         pa = r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}"#,
         pb = r#"{"id": "pb000000", "x": 10, "y": 0, "construction": false}"#,
         pc = r#"{"id": "pc000000", "x": 0, "y": 10, "construction": false}"#,
+        // A second circle for the edge tangent, about pc: the tangent_on already holds na's
+        // end on ca, and an edge tangent of that pair would repeat it (#258).
+        cb = r#"{"id": "cb000000", "center": "pc000000", "radius": 5, "construction": false}"#,
     );
     let document = read(text.as_bytes()).unwrap();
     assert_eq!(write(&document).unwrap(), text);
@@ -243,7 +247,7 @@ fn every_constraint_form_reads_and_writes_back_in_schema_order() {
         sketch.constraints[16].form,
         Form::Tangent {
             a: Reference::Element(el("na000000")),
-            b: Reference::Element(el("ca000000")),
+            b: Reference::Element(el("cb000000")),
             side: TangentSide::Right,
         }
     );
