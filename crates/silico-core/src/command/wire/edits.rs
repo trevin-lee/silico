@@ -590,7 +590,7 @@ pub struct RemoveFeatureResultSchema {
     /// The feature removed, as the document held it, its fingerprint too. To put it back,
     /// give `add_feature` this feature without its `fingerprint`, `before` the feature that
     /// followed it (inside a transaction, the fingerprint `begin`'s document stored is
-    /// kept, if it's added back as it was); then, with `set_field`, set `base` back on each
+    /// kept); then, with `set_field`, set `base` back on each
     /// `rewired` entry whose `to` is null. Or undo the removal whole: remove inside a
     /// transaction (`begin`), and `rollback`.
     pub feature: Feature,

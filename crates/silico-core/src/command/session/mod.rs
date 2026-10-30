@@ -1250,9 +1250,10 @@ impl<P: Clients + 'static> Sessions<P> {
     /// consumed is consumed by it instead, that feature's field rewired to it and listed
     /// (`document::chain::insert`); refused, naming `before`, where that consumer comes
     /// before the place, and naming both where a boolean's two inputs both had consumers.
-    /// Inside a transaction, a feature added with the ID of one `begin`'s document held,
-    /// and every field of that one's but its fingerprint, keeps the fingerprint it stored, so
-    /// a feature removed and added back as it was is saved as never touching it saves.
+    /// Inside a transaction, a feature added with the ID of one `begin`'s document (or its
+    /// mend) stored a fingerprint for carries that fingerprint, whatever its fields, so the
+    /// saved file is a function of the document's state, not of the edits' path: what the
+    /// edits reach decides whether it's read, as for a feature never removed.
     /// Through the gate, all at once; inside a transaction, applied, starting no rebuild;
     /// outside one, saved as its own transaction (decision 1). Refused whole, the session as
     /// it was, as every edit is ([`Session::edit`]), for a `before` the document hasn't, and
@@ -1361,8 +1362,8 @@ impl<P: Clients + 'static> Sessions<P> {
     /// amends it), as an edit made against `revision`, giving it back as the document held
     /// it (its fingerprint too), with its place in the timeline: to put it back, give
     /// `add_feature` the feature without its fingerprint, `before` the feature that followed
-    /// it (inside a transaction, the fingerprint `begin`'s document stored is kept if it's
-    /// added back as it was), then set `base` back with `set_field` on each rewired entry
+    /// it (inside a transaction, the fingerprint `begin`'s document stored is kept), then
+    /// set `base` back with `set_field` on each rewired entry
     /// whose `to` is none; or `rollback`, of a removal inside a transaction. The feature
     /// that consumed it takes its base, listed in
     /// `rewired` (`document::chain::remove`). Refused, naming both features, where nothing

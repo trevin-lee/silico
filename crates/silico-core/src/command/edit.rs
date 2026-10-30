@@ -656,8 +656,8 @@ pub(super) struct Inserted {
 /// holds (each naming `feature.id`), each of these at once with a `before` the document
 /// hasn't; for an insert the chain refuses; and with every error the reader or the gate
 /// finds in the document with it added. Inside a transaction (`begun`, the document it
-/// began from), a feature of an ID `begun` holds, with all its fields but its fingerprint,
-/// keeps the fingerprint `begun` stored ([`kept_record`]).
+/// began from), a feature of an ID `begun` stored a fingerprint for carries it
+/// ([`kept_record`]).
 pub(super) fn add_feature(
     checked: &Checked,
     before: Option<&FeatureId>,
@@ -832,30 +832,20 @@ fn new_feature(
         .map_err(Problems::from)
 }
 
-/// `added`, with the fingerprint the document a transaction began from (`begun`) stored for
-/// the feature of its ID, if that feature holds the same fields as `added` in all but its
-/// fingerprint: a feature removed and added back as it was is saved as never touching it
-/// saves (the saved file a function of the document's state, not of the edits' path), so
-/// it's held to its old record, its drift reported as an untouched feature's is. Any other
-/// is added as given, with none: a feature of other values under the ID is reached, and its
-/// commit writes it fresh. Outside a transaction (`begun` none), as given.
+/// `added`, carrying the fingerprint the document a transaction began from (`begun`) stored
+/// for the feature of its ID, whatever its fields: the saved file is a function of the
+/// document's state, not of the edits' path, and what the edits reach (decision 28) decides
+/// whether that record is read. Added back with values as `begun` held them (its name and
+/// note aside, which reach nothing, or set back after), it's unreached, held to its old
+/// record, its drift reported as an untouched feature's is; with others, it's reached, its
+/// drift not read, and its commit writes it fresh. Outside a transaction (`begun` none), or
+/// for an ID `begun` stored no fingerprint for, as given.
 fn kept_record(mut added: Feature, begun: Option<&Document>) -> Feature {
-    let Some(was) = begun.and_then(|begun| begun.features.iter().find(|f| f.id == added.id)) else {
-        return added;
-    };
-    let Some(fingerprint) = was.fingerprint.as_ref() else {
-        return added;
-    };
-    let unprinted = |feature: &Feature| {
-        let mut feature = feature.clone();
-        feature.fingerprint = None;
-        document::write_feature(&feature).ok()
-    };
-    if added.fingerprint.is_none()
-        && let (Some(was_text), Some(added_text)) = (unprinted(was), unprinted(&added))
-        && was_text == added_text
+    if let Some(fingerprint) = begun
+        .and_then(|begun| begun.features.iter().find(|f| f.id == added.id))
+        .and_then(|was| was.fingerprint)
     {
-        added.fingerprint = Some(*fingerprint);
+        added.fingerprint = Some(fingerprint);
     }
     added
 }

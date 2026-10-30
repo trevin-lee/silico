@@ -975,7 +975,11 @@ fn added_back_with_other_values_it_is_reached_and_written_fresh() {
         ))
         .result
         .unwrap();
-    assert_eq!(added.feature.fingerprint, None);
+    // It carries begin's fingerprint, as set_field in place leaves it; reached, it's never
+    // read.
+    let begun = document::read(file.as_bytes()).unwrap().features[3].fingerprint;
+    assert!(begun.is_some());
+    assert_eq!(added.feature.fingerprint, begun);
     let check = answer(f.sessions.check(
         &f.id,
         silico_core::command::CheckModel::Current { fresh: false },
@@ -1426,4 +1430,123 @@ fn a_before_the_document_hasnt_is_refused_with_the_features_own_refusals_at_once
     );
     assert_eq!(errors.total(), 2);
     assert_eq!(f.revision(), at);
+}
+
+/// h0000001's canonical text without its fingerprint, `from` replaced by `to` in it.
+fn pocket_with(file: &str, from: &str, to: &str) -> String {
+    let pocket = unprinted(&document::read(file.as_bytes()).unwrap().features[3]);
+    assert!(pocket.contains(from), "{pocket}");
+    pocket.replace(from, to)
+}
+
+/// `f`'s h0000001's `field` set to `value`, JSON's text.
+fn set(f: &Fixture, feature: &str, field: &str, value: &str) {
+    answer(f.sessions.set_field(
+        &f.id,
+        f.revision(),
+        id(feature),
+        field.to_owned(),
+        parsed(value),
+    ))
+    .result
+    .unwrap();
+}
+
+#[test]
+fn removed_and_added_back_renamed_or_noted_it_saves_as_the_name_or_note_set_in_place() {
+    // Reach ignores a name and a note: h0000001 added back under another name, or with a
+    // note, saves as set_field of that name or note leaves it, its fingerprint kept, drifted
+    // at begin or not, the commit's problems the same.
+    for file in [fingerprinted(), drifted(&fingerprinted())] {
+        for (field, value, from, to) in [
+            (
+                "name",
+                r#""Holes, renamed""#,
+                r#""name": "Base holes","#,
+                r#""name": "Holes, renamed","#,
+            ),
+            (
+                "note",
+                r#""Drilled""#,
+                r#""name": "Base holes","#,
+                r#""name": "Base holes", "note": "Drilled","#,
+            ),
+        ] {
+            let pocket = pocket_with(&file, from, to);
+            let (in_place, set_file) = committed_after(&file, |f| set(f, "h0000001", field, value));
+            let (with, round_trip) = committed_after(&file, |f| removed_and_added_back(f, &pocket));
+            assert!(in_place.written, "{field}");
+            assert_eq!(round_trip, set_file, "{field}");
+            assert_eq!(with.problems, in_place.problems, "{field}");
+            assert_eq!(with.refingerprinted, in_place.refingerprinted, "{field}");
+        }
+    }
+    // The drifted run's problem is h0000001's drift, as an untouched feature's.
+    let file = drifted(&fingerprinted());
+    let pocket = pocket_with(&file, r#""name": "Base holes","#, r#""name": "Renamed","#);
+    let (with, _) = committed_after(&file, |f| removed_and_added_back(f, &pocket));
+    let drift: Vec<(ErrorCode, Option<&str>)> = with
+        .problems
+        .errors()
+        .iter()
+        .map(|e| (e.code(), e.feature()))
+        .collect();
+    assert_eq!(drift, [(ErrorCode::Drift, Some("h0000001"))]);
+}
+
+#[test]
+fn removed_added_back_changed_then_set_back_it_saves_as_never_touching_it() {
+    // h0000001 added back 5 deep, then its extent set back to begin's: the values are
+    // begin's, so it's unreached, and the file and problems are those of never touching it
+    // (beside an edit that writes the file), drifted at begin or not.
+    for file in [fingerprinted(), drifted(&fingerprinted())] {
+        let pocket = pocket_with(
+            &file,
+            r#""extent": {"type": "through_all", "reversed": true}"#,
+            r#""extent": {"type": "one_side", "length": 5, "reversed": true}"#,
+        );
+        let (alone, untouched) = committed_after(&file, noted);
+        let (with, round_trip) = committed_after(&file, |f| {
+            removed_and_added_back(f, &pocket);
+            set(
+                f,
+                "h0000001",
+                "extent",
+                r#"{"type": "through_all", "reversed": true}"#,
+            );
+            noted(f);
+        });
+        assert_eq!(round_trip, untouched);
+        assert_eq!(with.problems, alone.problems);
+        assert_eq!(with.refingerprinted, alone.refingerprinted);
+    }
+}
+
+#[test]
+fn a_feature_added_back_in_a_transaction_begun_on_text_that_didnt_read_keeps_the_mends_fingerprint()
+{
+    // The file doesn't read as a document; begin, then mend it with replace_text (the
+    // fingerprinted bracket): the transaction's mend. h0000001 removed and added back
+    // carries the mend's fingerprint.
+    let mend = fingerprinted();
+    let f = opened("{\"silico\": 1, <<<<<<< ours\n");
+    f.begin();
+    answer(f.sessions.replace_text(&f.id, f.revision(), mend.clone()))
+        .result
+        .unwrap();
+    let stored = document::read(mend.as_bytes()).unwrap().features[3].fingerprint;
+    assert!(stored.is_some());
+    f.remove("h0000001").result.unwrap();
+    let pocket = unprinted(&document::read(mend.as_bytes()).unwrap().features[3]);
+    let added = f
+        .add(&format!(
+            r#"{{"session": "s1", "revision": 1, "before": "s0000003", "feature": {pocket}}}"#
+        ))
+        .result
+        .unwrap();
+    assert_eq!(added.feature.fingerprint, stored);
+    assert_eq!(
+        answer(f.sessions.text(&f.id, None)).result.unwrap().text,
+        mend
+    );
 }

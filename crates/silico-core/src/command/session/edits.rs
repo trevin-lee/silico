@@ -113,8 +113,8 @@ impl<C: Kernel + 'static> Session<C> {
 
 /// What an edit is made from ([`Session::edit`]): the session's ID, its text, the gate's
 /// finding of it, whether a transaction is open, and, inside one, the document it began
-/// from (`begin`'s, or its mend, if `begin`'s text didn't read), whose stored records a
-/// feature added back as it was keeps.
+/// from (`begin`'s, or its mend, if `begin`'s text didn't read), whose stored fingerprint a
+/// feature added under the same ID carries.
 pub(super) struct Base<'a> {
     pub(super) id: SessionId,
     pub(super) text: &'a [u8],

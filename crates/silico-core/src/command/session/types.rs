@@ -827,7 +827,7 @@ pub struct FieldSet {
 /// whether the document changed (always), and, outside a transaction, the commit's result,
 /// none inside one. Its way back: the feature given to `add_feature` without its
 /// fingerprint, `before` the feature that followed it (inside a transaction, the
-/// fingerprint `begin`'s document stored is kept if it's added back as it was), then `base`
+/// fingerprint `begin`'s document stored is kept), then `base`
 /// set back with `set_field` on each rewired entry whose `to` is none; or `rollback`, of a
 /// removal made in a transaction.
 #[derive(Debug, Clone, PartialEq)]
