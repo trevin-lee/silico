@@ -357,7 +357,10 @@ fn a_split_lists_the_fillet_whose_name_its_line_reaches_and_the_name_then_finds_
     assert_eq!(xs, [-30.0, 0.0], "{start:?} {end:?}");
     assert_eq!((start[1], end[1]), (-15.0, -15.0));
     assert_eq!(start[2], end[2]);
-    f.ran("commit", &json!({"session": s}).to_string());
+    f.ran(
+        "commit",
+        &json!({"session": s, "path": null, "replace": false}).to_string(),
+    );
     let saved = std::fs::read_to_string(f.path("plate.silico")).unwrap();
     assert_eq!(stored_edges(&saved), json!([NAME]));
 }
