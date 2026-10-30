@@ -35,7 +35,8 @@ pub use model::{
 #[cfg(test)]
 pub(crate) use model::{cloned, compared};
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
-pub use reach::{Before, QuotedIds, net_reach, with_users};
+pub(crate) use reach::changed as changed_features;
+pub use reach::{Before, QuotedIds, net_reach, net_reach_but, with_users};
 pub use sketch::{
     CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, Form, LineSide, Plane,
     Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,

@@ -115,6 +115,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "angle",
         "read_logs",
         "timeline",
+        "sketch",
     ];
     let destructive = [
         "commit",
@@ -348,8 +349,8 @@ fn every_example_holds_to_its_tools_schemas() {
     // export's 8 (#182), cache_clear's 2 (#183), STEP export's 4 (#186), check's
     // warning (#189), and read_logs' 3 and version's result (#194); M5.1's 11:
     // add_feature's 4 for `before`, remove_feature's result with `rewired`, move_feature's
-    // 4, and timeline's 2; and M5.10's 6: sketch_add's 2 and sketch_remove's 4.
-    assert_eq!(seen, 125);
+    // 4, and timeline's 2; and M5.10's 8: sketch's 2, sketch_add's 2, and sketch_remove's 4.
+    assert_eq!(seen, 127);
 }
 
 #[test]

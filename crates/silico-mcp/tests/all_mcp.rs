@@ -7,6 +7,7 @@ mod client;
 
 mod adversarial_server;
 mod adversarial_sketch_edits;
+mod adversarial_sketch_read;
 mod adversarial_timeline_commands;
 mod calls;
 mod contract;

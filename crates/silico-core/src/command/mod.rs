@@ -32,6 +32,7 @@ pub mod render;
 pub mod schema;
 mod session;
 mod session_command;
+pub mod sketch;
 pub mod wire;
 
 pub use call::{Answered, Call, Calling, Command};
@@ -43,7 +44,7 @@ pub use session::{
     SessionInfo, Sessions, SketchEdited, Status, Stepped, Stopper, TOO_LONG, TextAnswer,
     TimelineAnswer, TryAgainBy, fault_suggestion,
 };
-pub use session_command::{ReadCommand, SessionCommand};
+pub use session_command::{ReadCommand, RunningCommand, SessionCommand};
 
 pub use crate::warnings::Warnings;
 

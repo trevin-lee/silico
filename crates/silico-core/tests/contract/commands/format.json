@@ -9,7 +9,7 @@
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`format`'s request: save the document in canonical form with every feature's\nfingerprint as rebuilt, as `silico fmt` does, accepting the drift of the features named.",
+    "description": "`format`'s request: save the document in canonical form with every feature's\nfingerprint as rebuilt, as `silico fmt` does, accepting the drift of the features named.\nInside a transaction it writes no file: what it would write becomes the transaction's\ndocument, one edit `undo` can undo, which the transaction's `commit` saves.",
     "properties": {
       "features": {
         "description": "The features whose drift to accept, by ID, or null for every feature's. Any other\ndrifted feature keeps its stored fingerprint and is a problem.",
@@ -27,7 +27,7 @@
         "type": "string"
       },
       "write": {
-        "description": "Whether to write the file: false only says whether it would change (`silico fmt\n--check`).",
+        "description": "Whether to write the file (inside a transaction, its document): false only says\nwhether it would change (`silico fmt --check`), changing nothing.",
         "type": "boolean"
       }
     },
@@ -132,7 +132,7 @@
         "type": "array"
       },
       "changed": {
-        "description": "Whether the canonical text differs from the file.",
+        "description": "Whether the canonical text differs from the file; inside a transaction, whether the\ncanonical text differs from the transaction's.",
         "type": "boolean"
       },
       "path": {
@@ -167,7 +167,7 @@
         "type": "array"
       },
       "written": {
-        "description": "Whether the file was written.",
+        "description": "Whether the file was written: never inside a transaction.",
         "type": "boolean"
       }
     },

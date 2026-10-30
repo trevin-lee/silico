@@ -89,6 +89,7 @@ fn the_commands_are_one_list_in_one_order() {
             "export",
             "move_feature",
             "timeline",
+            "sketch",
             "sketch_add",
             "sketch_remove",
         ]

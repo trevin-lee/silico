@@ -33,6 +33,8 @@ mod adversarial_edge_drag;
 mod adversarial_extend;
 #[path = "adversarial_load_path.rs"]
 mod adversarial_load_path;
+#[path = "adversarial_sketch_read.rs"]
+mod adversarial_sketch_read;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
 #[path = "document.rs"]
@@ -47,6 +49,8 @@ mod extend;
 mod session_sketch_edits;
 #[path = "sketch_edit.rs"]
 mod sketch_edit;
+#[path = "sketch_read.rs"]
+mod sketch_read;
 #[path = "sketch_states.rs"]
 mod sketch_states;
 #[path = "worker.rs"]

@@ -4,5 +4,6 @@
   "transaction": {"base": 4},
   "running": "check",
   "reads": ["distance"],
-  "rebuild": {"revision": 6, "state": "running", "done": 3, "steps": 9}
+  "rebuild": {"revision": 6, "state": "running", "done": 3, "steps": 9},
+  "disk": "unchanged"
 }

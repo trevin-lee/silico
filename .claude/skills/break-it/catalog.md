@@ -249,6 +249,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Helpers shared between commands that word an error with one command's name ("the session closed before the render finished", "render it there"): reach each shared failure path from the other command and read its words
 - Per-name reasons that copy a shared one (each name of a failed feature given the feature's whole failure, up to its hundred listed errors): 10,000 names of one broken fillet's faces are a million errors, 300 MB from a 250 KB selection; count what the answer holds, not only its time
 - Parser words written for a document reused by a request with no place in a timeline ("no feature b0000001 before this one" for a selected name): read each refusal of a shared parser from every caller
+- A result that copies the first hundred of a helper's refusals (`Refused::errors()`) without its count (`total()`): 202 profile refusals read as 100, with nothing saying there are more, though `check` words the count
 
 ## Kernel worker and IPC
 
@@ -307,6 +308,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A watch that drops findings against a superseded counter, told of the session's own write after it lands or before: a comparison that reads the new bytes and ends between the write and `held` (or reads the old ones between `held` and the write) is kept as changed; gate a stand-in reader and try both orders
 - A save bracketed for a watch, ended every way a save ends (a conflict, a cancel before it writes, a directory that won't take the file, a file it can't read to check): after each, the finding goes back to what's on disk, never stuck unknown and never the session's own text where nothing was written; then a save that works is its own
 - A background job's "running" flag cleared only after a callback returns (a reader, a solver): a callback that panics leaves it set, and no job ever starts again
+
+- Reads that redo work a model already did (a sketch read solving its sketch again) on a shared pool whose take starts a worker whenever none is idle: N reads at once start N workers, kept idle for ever; count the starts against the design's bound on workers
+- Reads that redo a model's step against a model whose step failed transiently (a worker crash under the rebuild): the read answers a result the model never had, beside the envelope's fault naming the same feature
 
 ## Oracles and comparisons
 

@@ -26,6 +26,7 @@
           "export",
           "move_feature",
           "timeline",
+          "sketch",
           "sketch_add",
           "sketch_remove"
         ],
@@ -80,6 +81,7 @@
           "export",
           "move_feature",
           "timeline",
+          "sketch",
           "sketch_add",
           "sketch_remove"
         ],

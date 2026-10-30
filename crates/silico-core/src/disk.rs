@@ -25,12 +25,21 @@
 //!   unreadable, never saying what's there.
 //!
 //! A read that hangs (a stalled network mount) holds the watch's one comparison: its last
-//! finding stands until the read ends.
+//! finding stands until the read ends, and the read is logged, once, as a warning, once it
+//! has run [`DISK_READ_STALLED`]. Its thread isn't stopped: it ends with the read, holding the
+//! session's bytes until then, after the session has closed if it closes first.
 //!
-//! It reloads nothing: what to do with a finding is the session's (A3).
+//! An outside write that lands between the session's own read or save and the watch being
+//! told of it ([`DiskWatch::held`], [`Saving::saved`]) reads as unchanged until the file
+//! changes again; the session's next command, which reads the file itself, still finds it.
+//!
+//! It reloads nothing: what to do with a finding is the session's (A3), told each time a
+//! comparison finds the file changed ([`DiskWatch::when_changed`]), not only when the finding
+//! changes, so a reload the session couldn't make at one comparison is asked again at the
+//! next.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::document::json::MAX_INPUT_LEN;
@@ -41,6 +50,10 @@ use crate::worker::lock;
 /// The least time from one comparison's end to the next one's start (the design's
 /// `DISK_CHECK_INTERVAL`): the app's idle frame asks once a second.
 pub const DISK_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How long a comparison may read its file before it's logged as stalled (a network mount
+/// that stopped answering, say): the finding before it stands while it runs.
+pub const DISK_READ_STALLED: Duration = Duration::from_secs(10);
 
 /// What a comparison found of the file at the session's path (`status`'s `disk`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +95,10 @@ pub type Reader = Arc<dyn Fn(&Path) -> Found + Send + Sync>;
 /// the interval without waiting it out.
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
+/// What a watch tells its session each time a comparison finds the file changed (with what
+/// it read), with no lock held, so the session can reload it ([`DiskWatch::when_changed`]).
+pub type Changed = Arc<dyn Fn(&[u8]) + Send + Sync>;
+
 /// A session's file watched for changes on disk.
 pub struct DiskWatch {
     shared: Arc<Shared>,
@@ -100,6 +117,8 @@ struct Shared {
     read: Reader,
     now: Clock,
     notify: Option<Notify>,
+    /// Told of each comparison that finds the file changed: the session's reload.
+    changed: OnceLock<Changed>,
     state: Mutex<State>,
 }
 
@@ -121,6 +140,8 @@ struct State {
     saving: bool,
     /// When the last comparison ended, if one has.
     ended: Option<Instant>,
+    /// When the comparison running started, and whether it has been logged as stalled.
+    started: Option<(Instant, bool)>,
 }
 
 impl Saving<'_> {
@@ -199,6 +220,7 @@ impl DiskWatch {
                 read,
                 now,
                 notify,
+                changed: OnceLock::new(),
                 state: Mutex::new(State {
                     held,
                     counter: 0,
@@ -208,9 +230,17 @@ impl DiskWatch {
                     running: false,
                     saving: false,
                     ended: None,
+                    started: None,
                 }),
             }),
         }
+    }
+
+    /// From now on, `changed` is told of each comparison that finds the file changed, with
+    /// the bytes it read, with no lock held: the session's reload of a file changed on disk
+    /// (A3). Given once, as the session is made; given again, it's ignored.
+    pub fn when_changed(&self, changed: Changed) {
+        let _ = self.shared.changed.set(changed);
     }
 
     /// The session read `bytes` (a reload): what it holds now. A comparison running is
@@ -243,8 +273,20 @@ impl DiskWatch {
         let due = state
             .ended
             .is_none_or(|ended| now.saturating_duration_since(ended) >= self.shared.interval);
+        if let Some((started, logged)) = &mut state.started
+            && !*logged
+            && now.saturating_duration_since(*started) >= DISK_READ_STALLED
+        {
+            *logged = true;
+            tracing::warn!(
+                path = %crate::file::shown_path(&self.shared.path),
+                "the file's comparison on disk has read it for {} s and still hasn't ended: its last finding stands",
+                DISK_READ_STALLED.as_secs()
+            );
+        }
         if !state.running && !state.saving && due {
             state.running = true;
+            state.started = Some((now, false));
             let counter = state.counter;
             let held = Arc::clone(&state.held);
             let shared = Arc::clone(&self.shared);
@@ -270,8 +312,9 @@ fn compare(shared: &Shared, counter: u64, held: &[u8]) {
     // If the read panics (a test's reader), the comparison has ended all the same: the
     // next can start.
     let ended = Ended(shared);
-    let found = match (shared.read)(&shared.path) {
-        Found::Bytes(bytes) if bytes == held => Disk::Unchanged,
+    let read = (shared.read)(&shared.path);
+    let found = match &read {
+        Found::Bytes(bytes) if bytes.as_slice() == held => Disk::Unchanged,
         Found::Bytes(_) => Disk::Changed,
         Found::Gone => Disk::Gone,
         Found::Unreadable => Disk::Unreadable,
@@ -283,16 +326,22 @@ fn compare(shared: &Shared, counter: u64, held: &[u8]) {
     std::mem::forget(ended);
     state.running = false;
     state.ended = Some(now);
+    state.started = None;
     // The session read or wrote since: this was against its bytes before.
     if state.counter != counter {
         return;
     }
-    let changed = state.told != Some(found);
+    let told = state.told != Some(found);
     state.finding = Some(found);
     state.told = Some(found);
     drop(state);
-    if changed && let Some(notify) = &shared.notify {
+    if told && let Some(notify) = &shared.notify {
         notify();
+    }
+    if let (Found::Bytes(bytes), Disk::Changed) = (&read, found)
+        && let Some(changed) = shared.changed.get()
+    {
+        changed(bytes);
     }
 }
 
@@ -305,6 +354,7 @@ impl Drop for Ended<'_> {
         let mut state = lock(&self.0.state);
         state.running = false;
         state.ended = Some(now);
+        state.started = None;
     }
 }
 

@@ -39,6 +39,7 @@ pub enum SessionCommand {
     Export,
     MoveFeature,
     Timeline,
+    Sketch,
     SketchAdd,
     SketchRemove,
     Undo,
@@ -48,7 +49,7 @@ pub enum SessionCommand {
 impl SessionCommand {
     /// Every command that runs in a session that a transport names, in the design's order
     /// (M4.1's, then M5.0's): all but `undo` and `redo`, which none names yet.
-    pub const ALL: [SessionCommand; 24] = [
+    pub const ALL: [SessionCommand; 25] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -71,6 +72,7 @@ impl SessionCommand {
         SessionCommand::Export,
         SessionCommand::MoveFeature,
         SessionCommand::Timeline,
+        SessionCommand::Sketch,
         SessionCommand::SketchAdd,
         SessionCommand::SketchRemove,
     ];
@@ -118,11 +120,42 @@ impl SessionCommand {
             SessionCommand::Export => Command::Export,
             SessionCommand::MoveFeature => Command::MoveFeature,
             SessionCommand::Timeline => Command::Timeline,
+            SessionCommand::Sketch => Command::Sketch,
             SessionCommand::SketchAdd => Command::SketchAdd,
             SessionCommand::SketchRemove => Command::SketchRemove,
             SessionCommand::Undo => return Err("undo"),
             SessionCommand::Redo => return Err("redo"),
         })
+    }
+}
+
+/// What `status` says is running on a session's thread (docs/design/m5.0-app.md, A3): one of
+/// its queued commands, or the session's own reload of its file, found changed on disk with
+/// no transaction open, which no client sent and none can cancel (`cancel`'s `command` is a
+/// [`SessionCommand`], which this isn't).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunningCommand {
+    /// A command a client sent.
+    Command(SessionCommand),
+    /// The session's own reload.
+    Reload,
+}
+
+impl RunningCommand {
+    /// Its name, as `status` and `read_logs`' spans give it: the command's, or `reload`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            RunningCommand::Command(command) => command.as_str(),
+            RunningCommand::Reload => "reload",
+        }
+    }
+
+    /// The command a client sent, if it's one: what `cancel` can stop.
+    pub const fn command(self) -> Option<SessionCommand> {
+        match self {
+            RunningCommand::Command(command) => Some(command),
+            RunningCommand::Reload => None,
+        }
     }
 }
 
@@ -147,13 +180,14 @@ pub enum ReadCommand {
     Distance,
     Angle,
     Render,
+    Sketch,
     Timeline,
 }
 
 impl ReadCommand {
     /// Every command that reads a model, in the design's order (that of
     /// [`SessionCommand::ALL`]).
-    pub const ALL: [ReadCommand; 8] = [
+    pub const ALL: [ReadCommand; 9] = [
         ReadCommand::Check,
         ReadCommand::Elements,
         ReadCommand::Query,
@@ -162,6 +196,7 @@ impl ReadCommand {
         ReadCommand::Angle,
         ReadCommand::Render,
         ReadCommand::Timeline,
+        ReadCommand::Sketch,
     ];
 
     /// The session command it is.
@@ -174,6 +209,7 @@ impl ReadCommand {
             ReadCommand::Distance => SessionCommand::Distance,
             ReadCommand::Angle => SessionCommand::Angle,
             ReadCommand::Render => SessionCommand::Render,
+            ReadCommand::Sketch => SessionCommand::Sketch,
             ReadCommand::Timeline => SessionCommand::Timeline,
         }
     }
@@ -187,5 +223,23 @@ impl ReadCommand {
 impl From<ReadCommand> for SessionCommand {
     fn from(read: ReadCommand) -> Self {
         read.command()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_runs_is_a_command_cancel_can_name_or_the_reload_it_cant() {
+        // `cancel` stops only what a client sent: each command is its own, the session's
+        // reload none.
+        for command in SessionCommand::ALL {
+            let running = RunningCommand::Command(command);
+            assert_eq!(running.command(), Some(command));
+            assert_eq!(running.as_str(), command.as_str());
+        }
+        assert_eq!(RunningCommand::Reload.command(), None);
+        assert_eq!(RunningCommand::Reload.as_str(), "reload");
     }
 }
