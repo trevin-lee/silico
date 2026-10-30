@@ -160,8 +160,10 @@ pub struct SketchResultSchema {
     pub sketch: FeatureId,
     pub plane: SketchFrameSchema,
     pub state: SketchStateSchema,
-    /// The degrees of freedom left, as PlaneGCS counts them: 0 when nothing is free,
-    /// negative when constraints conflict. 0 for an empty sketch.
+    /// The degrees of freedom left, PlaneGCS's number as given: 0 when nothing is free. A
+    /// conflict needn't make it negative (two lengths on one free line leave 3); PlaneGCS
+    /// gives a negative number where it counts its equations' rows in place of their rank,
+    /// as for an arc whose rules alone repeat each other. 0 for an empty sketch.
     pub dofs: i32,
     /// Each point, by ID, as the document writes it, at its solved place.
     pub points: Vec<SketchPointReadSchema>,

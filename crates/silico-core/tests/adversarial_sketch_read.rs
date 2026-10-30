@@ -400,3 +400,37 @@ fn more_than_a_hundred_dependent_groups_and_a_group_of_more_than_a_hundred_list_
         );
     }
 }
+
+#[test]
+fn negative_degrees_of_freedom_are_written_as_the_solver_gave_them() {
+    // PlaneGCS's number as given (the design's `dofs`): the fake answers −1, as PlaneGCS
+    // does for an arc whose rules alone repeat each other. The writer gives −1 exactly, not
+    // its magnitude, nor a count clamped at 0. Nothing flagged and a solution: `state` by
+    // the design's rule (`dofs` above 0 under_defined, any other fully_defined).
+    let dir = tempfile::tempdir().unwrap();
+    let sketches = FakeSketches::new();
+    sketches.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.dofs = -1;
+        Ok(solved)
+    });
+    let solver = sketches.clone();
+    let sessions = opened(&dir, &document(&[SKETCH]), move || {
+        Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>)
+    });
+    let arguments = r#"{"session": "s1", "model": "current", "sketch": "k7f2qx3m"}"#;
+    let Call::Running(calling) = sessions.call("sketch", arguments) else {
+        panic!("no command sketch");
+    };
+    let text = calling
+        .wait_timeout(HANG)
+        .unwrap_or_else(|_| panic!("sketch didn't answer in {HANG:?}"))
+        .text;
+    assert_eq!(text.matches(r#""dofs": -1,"#).count(), 1, "{text}");
+    let read: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        (&read["result"]["dofs"], &read["result"]["state"]),
+        (&json!(-1), &json!("fully_defined")),
+        "{read}"
+    );
+}

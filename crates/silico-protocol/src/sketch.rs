@@ -473,9 +473,10 @@ pub enum SolveStatus {
 /// What the sketch worker found: the diagnosis, then the solve.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Solved {
-    /// Degrees of freedom left: negative when over-constrained, and when an arc's rules
-    /// alone repeat each other (PlaneGCS then counts every row: the unknowns less the rows),
-    /// a case no document reaches.
+    /// Degrees of freedom left, PlaneGCS's `dofsNumber`: its unknowns less the rank of its
+    /// rows, which a conflict needn't make negative; negative where PlaneGCS counts the rows
+    /// in place of their rank, as when an arc's rules alone repeat each other (the unknowns
+    /// less the rows), a case no document reaches.
     pub dofs: i32,
     /// Constraints in conflict, by tag, in increasing order.
     pub conflicting: Vec<Tag>,

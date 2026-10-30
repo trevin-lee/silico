@@ -1173,7 +1173,7 @@
         "type": "integer"
       },
       "dofs": {
-        "description": "The degrees of freedom left, as PlaneGCS counts them: 0 when nothing is free,\nnegative when constraints conflict. 0 for an empty sketch.",
+        "description": "The degrees of freedom left, PlaneGCS's number as given: 0 when nothing is free. A\nconflict needn't make it negative (two lengths on one free line leave 3); PlaneGCS\ngives a negative number where it counts its equations' rows in place of their rank,\nas for an arc whose rules alone repeat each other. 0 for an empty sketch.",
         "type": "integer"
       },
       "lines": {

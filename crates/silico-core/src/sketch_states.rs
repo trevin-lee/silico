@@ -154,9 +154,11 @@ impl ConstraintState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SketchStates {
     pub state: SketchState,
-    /// Degrees of freedom left, as PlaneGCS counts them: negative when a conflict
-    /// over-determines the sketch, and when an arc's rules alone repeat each other (PlaneGCS
-    /// then counts every row), a case no document reaches. 0 for an empty sketch.
+    /// Degrees of freedom left, PlaneGCS's number as given: 0 when nothing is free. A
+    /// conflict needn't make it negative (two lengths on one free line leave 3); PlaneGCS
+    /// gives a negative number where it counts its equations' rows in place of their rank,
+    /// as for an arc whose rules alone repeat each other, a case no document reaches. 0 for
+    /// an empty sketch.
     pub dofs: i32,
     pub points: BTreeMap<ElementId, MemberState>,
     pub lines: BTreeMap<ElementId, MemberState>,
