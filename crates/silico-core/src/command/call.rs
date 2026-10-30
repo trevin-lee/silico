@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use super::render::Rendering;
 use super::session::WeakSessions;
+use super::wire::drag::{DragBeginRequest, DragEndRequest, DragMoveRequest};
 use super::wire::edits::{
     AddFeatureRequest, MoveFeatureRequest, RemoveFeatureRequest, ReplaceTextRequest,
     SetFieldRequest,
@@ -78,6 +79,9 @@ pub enum Command {
     Export,
     MoveFeature,
     Timeline,
+    DragBegin,
+    DragMove,
+    DragEnd,
     Sketch,
     SketchAdd,
     SketchRemove,
@@ -86,7 +90,7 @@ pub enum Command {
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
     /// 7).
-    pub const ALL: [Command; 31] = [
+    pub const ALL: [Command; 34] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -115,6 +119,9 @@ impl Command {
         Command::Export,
         Command::MoveFeature,
         Command::Timeline,
+        Command::DragBegin,
+        Command::DragMove,
+        Command::DragEnd,
         Command::Sketch,
         Command::SketchAdd,
         Command::SketchRemove,
@@ -151,6 +158,9 @@ impl Command {
             Command::Export => "export",
             Command::MoveFeature => "move_feature",
             Command::Timeline => "timeline",
+            Command::DragBegin => "drag_begin",
+            Command::DragMove => "drag_move",
+            Command::DragEnd => "drag_end",
             Command::Sketch => "sketch",
             Command::SketchAdd => "sketch_add",
             Command::SketchRemove => "sketch_remove",
@@ -199,6 +209,9 @@ impl Command {
             | Command::Export
             | Command::MoveFeature
             | Command::Timeline
+            | Command::DragBegin
+            | Command::DragMove
+            | Command::DragEnd
             | Command::Sketch
             | Command::SketchAdd
             | Command::SketchRemove => false,
@@ -580,6 +593,15 @@ impl<P: Clients + 'static> Sessions<P> {
             }),
             Command::Timeline => typed(TimelineRequest::read(request), |r| {
                 self.timeline(&r.session, r.model)
+            }),
+            Command::DragBegin => typed(DragBeginRequest::read(request), |r| {
+                self.drag_begin(&r.session, r.sketch, r.grab)
+            }),
+            Command::DragMove => typed(DragMoveRequest::read(request), |r| {
+                self.drag_move(&r.session, r.to)
+            }),
+            Command::DragEnd => typed(DragEndRequest::read(request), |r| {
+                self.drag_end(&r.session, r.to)
             }),
             Command::Sketch => typed(SketchRequest::read(request), |r| {
                 self.sketch(&r.session, r.model, r.sketch)

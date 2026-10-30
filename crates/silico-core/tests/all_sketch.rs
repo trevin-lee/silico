@@ -68,6 +68,8 @@ mod adversarial_warm;
 mod chain;
 #[path = "drag_session.rs"]
 mod drag_session;
+#[path = "session_drag.rs"]
+mod session_drag;
 #[path = "sketch.rs"]
 mod sketch;
 #[path = "sketch_add.rs"]

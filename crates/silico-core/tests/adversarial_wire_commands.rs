@@ -1035,6 +1035,9 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "export",
                 "move_feature",
                 "timeline",
+                "drag_begin",
+                "drag_move",
+                "drag_end",
                 "sketch",
                 "sketch_add",
                 "sketch_remove"

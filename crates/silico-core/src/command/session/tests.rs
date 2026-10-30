@@ -76,6 +76,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             None,
         ),
         reloads: Mutex::default(),
+        drags: Mutex::default(),
         waker: Arc::default(),
         gate: Gate::default(),
         settled: Gate::default(),
@@ -3901,6 +3902,35 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         SessionCommand::SketchRemove,
         Box::new(move || erased(s.sketch_remove(at, Revision::OPENED, id("k7f2qx3m"), vec![]))),
     ));
+    // M5.3's queued drag commands, after `timeline`, as the design lists them: `drag_move`
+    // runs beside the queue, on the drag, and its cancel is the drag's tests'.
+    let after_timeline = queued
+        .iter()
+        .position(|(command, _)| *command == SessionCommand::Timeline)
+        .unwrap()
+        + 1;
+    queued.insert(
+        after_timeline,
+        (
+            SessionCommand::DragBegin,
+            Box::new(|| {
+                erased(s.drag_begin(
+                    at,
+                    id("k7f2qx3m"),
+                    crate::command::DragGrab::Point(
+                        crate::document::ElementId::new("pa000001").unwrap(),
+                    ),
+                ))
+            }),
+        ),
+    );
+    queued.insert(
+        after_timeline + 1,
+        (
+            SessionCommand::DragEnd,
+            Box::new(|| erased(s.drag_end(at, None))),
+        ),
+    );
     // `cache_clear`, which reads no model, after `check`, as the design lists it.
     let after_check = queued
         .iter()
@@ -3914,13 +3944,16 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             Box::new(|| erased(s.cache_clear(at))),
         ),
     );
-    // Every one, in the design's order.
+    // Every one, in the design's order, but `drag_move`, which isn't queued.
     assert_eq!(
         queued
             .iter()
             .map(|(command, _)| *command)
             .collect::<Vec<_>>(),
         SessionCommand::ALL
+            .into_iter()
+            .filter(|command| *command != SessionCommand::DragMove)
+            .collect::<Vec<_>>()
     );
     let stops = |command: SessionCommand, start: &Start<'_>, running, reads: Vec<_>| {
         let answer = start();

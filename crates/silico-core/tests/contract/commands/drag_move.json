@@ -1,0 +1,137 @@
+{
+  "request": {
+    "$defs": {
+      "Coordinate": {
+        "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+        "type": "number"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`drag_move`'s request: move the drag's cursor. It runs beside the session's queue, and\nonly the newest move is solved: one replaced before it's solved answers `dropped`. Send\nmoves only once `drag_begin` has answered.",
+    "properties": {
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      },
+      "to": {
+        "description": "The cursor, `[x, y]` in the sketch's coordinates.",
+        "items": {
+          "$ref": "#/$defs/Coordinate"
+        },
+        "maxItems": 2,
+        "minItems": 2,
+        "type": "array"
+      }
+    },
+    "required": [
+      "session",
+      "to"
+    ],
+    "title": "DragMoveRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Coordinate": {
+        "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+        "type": "number"
+      },
+      "ElementId": {
+        "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "FrameEnd": {
+        "description": "How the frame ended: solved (the cursor solved for, the part's points and free radii given); failed (the solver didn't reach the cursor; the drag goes on); invalid (it reached geometry that can't be built); or dropped (a newer move replaced it before it was solved). Only solved gives values: otherwise keep the last frame.",
+        "enum": [
+          "solved",
+          "failed",
+          "invalid",
+          "dropped"
+        ],
+        "type": "string"
+      },
+      "FramePoint": {
+        "additionalProperties": false,
+        "description": "A point of a drag's frame.",
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/ElementId",
+            "description": "The point's ID."
+          },
+          "x": {
+            "$ref": "#/$defs/Coordinate"
+          },
+          "y": {
+            "$ref": "#/$defs/Coordinate"
+          }
+        },
+        "required": [
+          "id",
+          "x",
+          "y"
+        ],
+        "type": "object"
+      },
+      "FrameRadius": {
+        "additionalProperties": false,
+        "description": "A free radius of a drag's frame.",
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/ElementId",
+            "description": "The circle's or arc's ID."
+          },
+          "radius": {
+            "$ref": "#/$defs/Coordinate"
+          }
+        },
+        "required": [
+          "id",
+          "radius"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`drag_move`'s result: a frame, a diagnostic, never a result (which moves are solved\ndepends on the worker's speed).",
+    "properties": {
+      "frame": {
+        "$ref": "#/$defs/FrameEnd"
+      },
+      "points": {
+        "description": "With solved, every point of the part the drag moves, by ID; otherwise empty.",
+        "items": {
+          "$ref": "#/$defs/FramePoint"
+        },
+        "type": "array"
+      },
+      "radii": {
+        "description": "With solved, each circle and arc of the part whose radius is free, by ID; otherwise\nempty.",
+        "items": {
+          "$ref": "#/$defs/FrameRadius"
+        },
+        "type": "array"
+      },
+      "to": {
+        "description": "The cursor solved for, as the request gave it.",
+        "items": {
+          "$ref": "#/$defs/Coordinate"
+        },
+        "maxItems": 2,
+        "minItems": 2,
+        "type": "array"
+      }
+    },
+    "required": [
+      "frame",
+      "points",
+      "radii",
+      "to"
+    ],
+    "title": "DragMoveResult",
+    "type": "object"
+  }
+}

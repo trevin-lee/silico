@@ -35,8 +35,9 @@
 //! [`edits`], for `add_feature`, `set_field`, `remove_feature`, `replace_text`, and
 //! `move_feature`; [`reads`], for `text`, `outline`, `check`, and `timeline`; [`cache`], for `cache_clear`;
 //! [`elements`], for `elements` and `query`; [`schema`]; [`measure`], for `mass_properties`,
-//! `distance`, and `angle`; [`render`]; [`export`]; [`sketch`]; and [`sketch_edits`], for
-//! `sketch_add` and `sketch_remove`).
+//! `distance`, and `angle`; [`render`]; [`export`]; [`drag`], for `drag_begin`,
+//! `drag_move`, and `drag_end`; [`sketch`]; and [`sketch_edits`], for `sketch_add` and
+//! `sketch_remove`).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -1731,6 +1732,13 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         Command::Timeline => {
             command_schema::<reads::TimelineRequestSchema, reads::TimelineResultSchema>
         }
+        Command::DragBegin => {
+            command_schema::<drag::DragBeginRequestSchema, drag::DragBeginResultSchema>
+        }
+        Command::DragMove => {
+            command_schema::<drag::DragMoveRequestSchema, drag::DragMoveResultSchema>
+        }
+        Command::DragEnd => command_schema::<drag::DragEndRequestSchema, drag::DragEndResultSchema>,
         Command::Sketch => {
             command_schema::<sketch::SketchRequestSchema, sketch::SketchResultSchema>
         }
@@ -1835,6 +1843,7 @@ pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
 }
 
 pub mod cache;
+pub mod drag;
 pub mod edits;
 pub mod elements;
 pub mod export;

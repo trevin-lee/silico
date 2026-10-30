@@ -631,11 +631,13 @@ fn version_is_answered_with_every_limit_as_the_design_gives_them_and_no_session(
             export_bytes: 32,
             kernel_seconds: 21,
             sketch_seconds: 22,
+            drag_move_seconds: 33,
+            drag_unknowns: 34,
         },
     };
     assert_eq!(
         one_line(&other),
-        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "highlight": 23, "render_side": 24, "render_seconds": 25, "log_read_events": 26, "log_read_bytes": 27, "log_events": 28, "log_bytes": 29, "export_tolerance": [0.000001, 30], "export_triangles": 31, "export_bytes": 32, "kernel_seconds": 21, "sketch_seconds": 22}}"#
+        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "highlight": 23, "render_side": 24, "render_seconds": 25, "log_read_events": 26, "log_read_bytes": 27, "log_events": 28, "log_bytes": 29, "export_tolerance": [0.000001, 30], "export_triangles": 31, "export_bytes": 32, "kernel_seconds": 21, "sketch_seconds": 22, "drag_move_seconds": 33, "drag_unknowns": 34}}"#
     );
     holds(&schema_of("version", "result"), &written(&other), "another");
 }
@@ -768,6 +770,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
                 running: Some("f0000001 fillet".to_owned()),
             }),
         },
+        drag: None,
         disk: Some(Disk::Unchanged),
     };
     // By hand: the design's result, its rebuild 3 steps of 9 in; the step running, which
@@ -775,7 +778,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     let text = written(&status);
     assert_eq!(
         text,
-        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\", \"done\": 3, \"steps\": 9},\n  \"disk\": \"unchanged\"\n}\n"
+        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\", \"done\": 3, \"steps\": 9},\n  \"drag\": null,\n  \"disk\": \"unchanged\"\n}\n"
     );
     // Its read, `distance`, a read of the published model (M4.5's): it holds.
     holds(&schema_of("status", "result"), &text, "the design's");
@@ -796,7 +799,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     let text = written(f.sessions.status(&request.session).result.as_ref().unwrap());
     assert_eq!(
         text,
-        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\", \"done\": null, \"steps\": null},\n  \"disk\": null\n}\n"
+        "{\n  \"features\": 1,\n  \"gated\": true,\n  \"transaction\": null,\n  \"running\": null,\n  \"reads\": [],\n  \"rebuild\": {\"revision\": 1, \"state\": \"none\", \"done\": null, \"steps\": null},\n  \"drag\": null,\n  \"disk\": null\n}\n"
     );
     holds(&schema_of("status", "result"), &text, "a box's");
     // A document the reader refuses: no features, not gated.
@@ -811,11 +814,12 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
             state: RebuildState::Idle,
             progress: None,
         },
+        drag: None,
         disk: None,
     };
     assert_eq!(
         one_line(&other),
-        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none", "done": null, "steps": null}, "disk": null}"#
+        r#"{"features": null, "gated": false, "transaction": null, "running": null, "reads": ["elements", "query"], "rebuild": {"revision": 9, "state": "none", "done": null, "steps": null}, "drag": null, "disk": null}"#
     );
     holds(&schema_of("status", "result"), &written(&other), "unread");
     // The session's own reload (M5.0's A3), and each finding on disk, each the word the
@@ -1124,7 +1128,7 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
     }
     let base = |running: &str, reads: &str| {
         format!(
-            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none", "done": null, "steps": null}}, "disk": null}}"#
+            r#"{{"features": 1, "gated": true, "transaction": null, "running": {running}, "reads": [{reads}], "rebuild": {{"revision": 1, "state": "none", "done": null, "steps": null}}, "drag": null, "disk": null}}"#
         )
     };
     holds(&status, &base(r#""check""#, ""), "check running");

@@ -900,6 +900,10 @@ fn version_gives_the_designs_numbers_and_limits() {
     assert_eq!(limits.query_measures, 7);
     assert_eq!(limits.kernel_seconds, 60);
     assert_eq!(limits.sketch_seconds, 300);
+    // A drag's move: ten times the 0.76 s M3.7 sized 256 unknowns for, loaded (M5.0's A4);
+    // and those 256 unknowns.
+    assert_eq!(limits.drag_move_seconds, 10);
+    assert_eq!(limits.drag_unknowns, 256);
     assert_eq!(limits.highlight, 1000);
     assert_eq!(limits.render_side, 4096);
     assert_eq!(limits.render_seconds, 30);

@@ -21,6 +21,16 @@
             "minimum": 0,
             "type": "integer"
           },
+          "drag_move_seconds": {
+            "description": "How long one move of a drag may take, in seconds: past it, the drag's worker is\nstopped, a `worker_timeout`, and the drag ends. A drag's whole solves (its begin's,\nits end's) take a sketch's solve's time.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "drag_unknowns": {
+            "description": "The most unknowns the part of a sketch a drag moves may have (two a free point, one a\nfree radius): past it, `drag_begin` is refused, naming `point`, or `curve`.",
+            "minimum": 0,
+            "type": "integer"
+          },
           "elements": {
             "description": "The most entries an `elements` call lists: its `limit` at most.",
             "minimum": 0,
@@ -133,6 +143,8 @@
         },
         "required": [
           "document_bytes",
+          "drag_move_seconds",
+          "drag_unknowns",
           "elements",
           "export_bytes",
           "export_tolerance",

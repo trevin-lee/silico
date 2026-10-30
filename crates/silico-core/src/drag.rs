@@ -306,12 +306,19 @@ fn prepared(
     Ok((begin, started))
 }
 
-/// `begin`'s own check, as the worker makes it: refused naming its parameter.
+/// `begin`'s own check, as the worker makes it: refused naming its parameter. A part past
+/// `MAX_DRAG_UNKNOWNS` (the one check a single move doesn't make) is told what to drag
+/// instead (docs/design/m5.0-app.md, `drag_begin`).
 fn checked_begin(begin: &DragBegin) -> Result<(), Error> {
     begin.check().map_err(|invalid| {
+        let suggestion = if begin.check_move().is_ok() {
+            "drag a point of a smaller connected part, or set the value with a dimension"
+        } else {
+            "change the value the message names"
+        };
         Error::new(ErrorCode::InvalidInput, invalid.message)
             .with_parameter(invalid.parameter)
-            .with_suggestion("change the value the message names")
+            .with_suggestion(suggestion)
     })
 }
 

@@ -940,6 +940,26 @@ pub(super) fn sketch_remove(
     sketch_edited(document, index, sketch, edited)
 }
 
+/// The sketch `id` of `document` replaced by `after`, its points where a drag's release
+/// solved them (docs/design/m5.0-app.md, `drag_end`): the state it leads to, none if the
+/// sketch is the same, through the gate otherwise. Refused, naming `sketch`, for a feature
+/// that isn't a sketch, and with every problem the gate finds.
+pub(super) fn sketch_replaced(
+    document: &Document,
+    id: &FeatureId,
+    after: Sketch,
+) -> Result<Option<Candidate>, Problems> {
+    let (index, _, sketch) = sketch_of(document, id)?;
+    if after == *sketch {
+        return Ok(None);
+    }
+    let mut edited = document.clone();
+    if let Some(feature) = edited.features.get_mut(index) {
+        feature.operation = Operation::Sketch(after);
+    }
+    Ok(Some(candidate(&edited, "sketch")?))
+}
+
 /// The sketch `id` of `document`, with its place in the timeline and its feature; or the
 /// refusal, naming `sketch`, of a feature the document hasn't or one that isn't a sketch,
 /// the document's first sketches the candidates (as the `sketch` read refuses them).

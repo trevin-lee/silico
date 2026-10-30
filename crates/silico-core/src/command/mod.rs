@@ -37,8 +37,8 @@ pub mod wire;
 
 pub use call::{Answered, Call, Calling, Command};
 pub use session::{
-    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
-    MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers,
+    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, DragBegun,
+    DragEnded, DragFrame, DragGrab, DragOpen, FieldSet, FrameEnd, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers,
     Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
     Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
     SessionInfo, Sessions, SketchEdited, Status, Stepped, Stopper, TOO_LONG, TextAnswer,
@@ -110,6 +110,10 @@ pub struct Limits {
     pub kernel_seconds: u64,
     /// A sketch solve's time, in seconds.
     pub sketch_seconds: u64,
+    /// A drag's move's time, in seconds (`DRAG_MOVE_TIMEOUT`).
+    pub drag_move_seconds: u64,
+    /// The most unknowns the part of a sketch a drag moves may have (`MAX_DRAG_UNKNOWNS`).
+    pub drag_unknowns: usize,
 }
 
 /// What `version` answers.
@@ -140,6 +144,8 @@ pub const VERSION: Version = Version {
         export_bytes: crate::export::MAX_ARCHIVE,
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
+        drag_move_seconds: crate::drag::DRAG_MOVE_TIMEOUT.as_secs(),
+        drag_unknowns: silico_protocol::MAX_DRAG_UNKNOWNS,
     },
 };
 

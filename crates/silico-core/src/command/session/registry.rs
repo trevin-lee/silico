@@ -295,6 +295,7 @@ pub(super) fn start<P: Clients + 'static>(
             logs,
             disk,
             reloads: Mutex::default(),
+            drags: Mutex::default(),
             waker: Arc::clone(&registry.waker),
             #[cfg(test)]
             gate: super::Gate::default(),

@@ -127,6 +127,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "render",
         "export",
         "move_feature",
+        "drag_end",
         "sketch_add",
         "sketch_remove",
     ];
@@ -174,6 +175,8 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
     assert!(said("query", "only as `elements` or `query` gives it"));
     assert!(said("sketch_add", "Edit inside a transaction"));
     assert!(said("sketch_remove", "`model: \"current\"`"));
+    assert!(said("drag_end", "Edit inside a transaction"));
+    assert!(said("drag_begin", "One drag is open in a session at once"));
     assert!(!said("version", "transaction"));
 }
 

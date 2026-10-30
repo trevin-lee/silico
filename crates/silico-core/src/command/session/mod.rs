@@ -90,6 +90,7 @@
 
 mod cancel;
 mod clearing;
+mod drag;
 mod edits;
 mod holding;
 mod rebuilds;
@@ -138,11 +139,11 @@ use transaction::{Claim, Held, Reload, Rereads, transaction_open};
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
-    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
-    ModelChoice, ModelRead, Moved, NewMembers, Opened, OutlineAnswer, Progress, Published, Read,
-    ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
-    RolledBack, Running, SessionId, SessionInfo, SketchEdited, Status, Stepped, Stopper,
-    TextAnswer, TimelineAnswer,
+    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, DragBegun,
+    DragEnded, DragFrame, DragGrab, DragOpen, FieldSet, FrameEnd, ModelChoice, ModelRead, Moved,
+    NewMembers, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
+    RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
+    SessionId, SessionInfo, SketchEdited, Status, Stepped, Stopper, TextAnswer, TimelineAnswer,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 use waking::Waker;
@@ -171,7 +172,7 @@ pub struct Sessions<P: Clients + 'static> {
 /// the order is taken: the registry's book, then a session's published reads (then those
 /// unanswered), then its held state, then its rebuilds, then its queue, then the command
 /// running, then its disk watch's, under which none is taken. The registry's `feature_ids`
-/// is taken alone.
+/// is taken alone, and so are a session's reloads and its drag's.
 struct Session<C: Kernel + 'static> {
     id: SessionId,
     /// The sessions' workspace, if they have one: each re-read and save of the session's file
@@ -204,6 +205,10 @@ struct Session<C: Kernel + 'static> {
     /// the bytes a reload last refused, so the same refusal isn't queued at each comparison.
     /// Taken alone.
     reloads: Mutex<Reloads>,
+    /// Its drag, if one is open (docs/design/m5.0-app.md, A2), and the `drag_begin`s queued.
+    /// Taken alone (its drag's own lock and its moves' under it), and never held while a
+    /// drag ends or the client is woken.
+    drags: Mutex<drag::DragSlot>,
     /// The client's waker, the sessions' ([`Sessions::on_change`]).
     waker: Arc<Waker>,
     /// Where its commands wait as each starts, in this crate's tests only.
@@ -367,6 +372,8 @@ impl<C: Kernel + 'static> Session<C> {
         if let Some(ticket) = running {
             ticket.close();
         }
+        // And its drag, its worker given back.
+        self.end_drag();
     }
 
     fn closed(&self) -> bool {
@@ -529,7 +536,10 @@ fn reload_job<P: Clients + 'static>(
                 .upgrade()
                 .map_or(0, |registry| lock(&registry.book).claims);
             let reloaded = session.reload(Rereads::Always, &claimed);
-            session.reloaded_itself(reloaded, found, claims)
+            let woken = session.reloaded_itself(reloaded, found, claims);
+            // A drag ends at any new revision.
+            session.end_stale_drag();
+            woken
         };
         lock(&session.command).take();
         if woken {
@@ -1826,6 +1836,9 @@ impl<P: Clients + 'static> Sessions<P> {
                             }
                         },
                     );
+                    // A drag ends at any new revision (an edit, a reload, an undo), before
+                    // the command that made it answers.
+                    session.end_stale_drag();
                     lock(&session.command).take();
                     response
                 }
@@ -1982,8 +1995,9 @@ fn status_in<P: Clients + 'static>(
     let Some(found) = find_in(registry, session) else {
         return refused(not_open(*session));
     };
-    // First, alone: the watch's lock is taken last of the session's.
+    // First, alone: the watch's lock is taken last of the session's; the drag's, alone.
     let disk = found.disk.finding();
+    let drag = found.drag_open();
     let reads = found.reads_running();
     let running = found.running().and_then(|ticket| ticket.running());
     let held = found.held.read();
@@ -2013,6 +2027,7 @@ fn status_in<P: Clients + 'static>(
             running,
             reads,
             rebuild,
+            drag,
             disk,
         }),
     }
@@ -2071,6 +2086,8 @@ fn cancel_in<P: Clients + 'static>(
         let reads = lock(&found.reads);
         lock(&reads.unanswered).tickets().cloned().collect()
     };
+    // And the drag's moves unanswered, which run beside the queue.
+    let reads: Vec<Arc<Ticket>> = reads.into_iter().chain(found.drag_moves()).collect();
     let named: Vec<&Arc<Ticket>> = queued
         .iter()
         .chain(&reads)
