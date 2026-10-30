@@ -985,6 +985,12 @@ pub const KNOWN: &[Known] = &[
         shows: Shows::Varies(None),
         why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which a tangent_on would put n0000005's end on c0000019, which the edge tangent k0000020 already makes it tangent to, a sketch the gate refuses (#290) and Silico refuses as the merge's (:303). FreeCAD makes the merge, its solve succeeding (0) in 8 of 10 runs, at a different place nearly every run, and failing (-1) in 2. The note gives #290's rule for a merge only through :303's merged sketch being gated",
     },
+    // `sketch-edit-sweep --seed 44 --count 500`'s case 337.
+    Known {
+        case: "edit_44_337",
+        shows: Shows::Varies(Some(Rule::MergeHoldsOwn(String::new()))),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which a symmetric would mirror an end of n0000005 about n0000005 itself, which Silico refuses (:31, :303). FreeCAD's merge finds 13 constraints redundant with one conflicting (-3) in 7 of 10 runs, fails (-1) in 1, either way rolled back, and solves (0) in 2, its geometry different nearly every run",
+    },
     // `sketch-edit-sweep --seed 32 --count 500`'s case 154.
     Known {
         case: "edit_32_154",
