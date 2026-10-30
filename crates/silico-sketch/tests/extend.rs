@@ -236,6 +236,96 @@ fn a_line_extended_to_the_next_curve_ends_on_it() {
 }
 
 #[test]
+fn a_free_lines_end_lands_on_its_target_exactly_and_onto_a_neighbours_end_joinably() {
+    // The drag stops on its step and leaves the end about 1.6e-7 mm short; the extend
+    // writes the end where the request named, the drag's frame seeding the rest, and the
+    // solve leaves a free end there bit for bit. A free line from (0, 0) to (10, 0): by 5,
+    // its end at (15, 0); to (18.066, 0), there; each the stored number exactly.
+    let text = document(&fields(
+        &[
+            point("p0000000", 0.0, 0.0),
+            point("p0000001", 10.0, 0.0),
+            point("q0000000", 18.066, 0.0),
+            point("q0000001", 18.066, 5.0),
+        ]
+        .join(", "),
+        &[
+            line("a0000000", "p0000000", "p0000001"),
+            line("b0000000", "q0000000", "q0000001"),
+        ]
+        .join(", "),
+        "",
+        "",
+        "",
+    ));
+    let before = read(text.as_bytes()).unwrap();
+    let Operation::Sketch(sketch) = &before.features[0].operation else {
+        panic!("not a sketch")
+    };
+    let a = ElementId::new("a0000000").unwrap();
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    let by = extend(
+        sketch,
+        &a,
+        End::End,
+        By::Length(Length::rounded(5.0).unwrap()),
+        &mut worker,
+    )
+    .unwrap();
+    assert_eq!(at(&by.sketch, "p0000001"), [15.0, 0.0]);
+    assert_eq!(at(&by.sketch, "p0000000"), [0.0, 0.0]);
+    let neighbours = sketch
+        .points
+        .iter()
+        .find(|p| p.id.as_str() == "q0000000")
+        .map(|p| [p.x, p.y])
+        .unwrap();
+    let to = extend(sketch, &a, End::End, By::To(neighbours), &mut worker).unwrap();
+    assert_eq!(at(&to.sketch, "p0000001"), [18.066, 0.0]);
+    // The edit's solve, from the written sketch, leaves the free end where it was written.
+    let solution = Translation::new(&to.sketch)
+        .unwrap()
+        .solve(&mut worker)
+        .unwrap()
+        .into_outcome()
+        .unwrap();
+    assert_eq!(
+        solution
+            .point(&ElementId::new("p0000001").unwrap())
+            .unwrap(),
+        [18.066, 0.0]
+    );
+    // So the two ends are one place, which `ends_not_joined` warns of and a merge of the
+    // two points (what `--merge-touching` runs) joins: a's end becomes b's start.
+    let merged = silico_core::document::sketch_edit::merge(
+        &to.sketch,
+        &[
+            ElementId::new("p0000001").unwrap(),
+            ElementId::new("q0000000").unwrap(),
+        ],
+    )
+    .unwrap();
+    let mut after = before.clone();
+    after.features[0].operation = Operation::Sketch(merged.sketch.clone());
+    validate(&after).unwrap();
+    let joined = merged
+        .sketch
+        .lines
+        .iter()
+        .find(|l| l.id == a)
+        .map(|l| l.to.clone())
+        .unwrap();
+    let starts = merged
+        .sketch
+        .lines
+        .iter()
+        .find(|l| l.id.as_str() == "b0000000")
+        .map(|l| l.from.clone())
+        .unwrap();
+    assert_eq!(joined, starts);
+}
+
+#[test]
 fn a_line_in_a_part_past_a_drags_unknowns_extends_as_one_solve_does() {
     // 140 lines end to end along x, p0 at 0 to p140 at 1,400, each held 10 mm long: one
     // part of 141 free points, 282 unknowns, past the 256 a drag takes. An extend isn't a

@@ -505,7 +505,7 @@ fn extend_line(
             .with_suggestion("remove or change the constraints that hold the line's end"));
         }
     };
-    let edited = translation.stored(&values)?;
+    let mut edited = translation.stored(&values)?;
     // The line the drag left: longer than the floor, and running the way it did.
     let (p1, q1) = (point(&edited, moving)?, point(&edited, other)?);
     let now = libm::hypot(p1[0] - q1[0], p1[1] - q1[1]);
@@ -525,6 +525,18 @@ fn extend_line(
         .with_parameter("by")
         .with_suggestion("remove or change the constraints that hold the line's end"));
     }
+    // The drag's frame seeds the rest of the sketch; the end is written where the request
+    // named, exactly (PlaneGCS's SQP stops on its step, never checking the pin's residual,
+    // so the drag leaves it short). The command's solve then settles it, moving it back only
+    // where constraints pull it.
+    place(&mut edited, moving, target).map_err(|()| {
+        past_reach(
+            curve,
+            "line",
+            &said,
+            "its target isn't a coordinate a document holds",
+        )
+    })?;
     gated(&edited, curve)?;
     Ok(Edited {
         modified,
