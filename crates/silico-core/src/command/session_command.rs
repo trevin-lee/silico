@@ -39,6 +39,8 @@ pub enum SessionCommand {
     Export,
     MoveFeature,
     Timeline,
+    SketchAdd,
+    SketchRemove,
     Undo,
     Redo,
 }
@@ -46,7 +48,7 @@ pub enum SessionCommand {
 impl SessionCommand {
     /// Every command that runs in a session that a transport names, in the design's order
     /// (M4.1's, then M5.0's): all but `undo` and `redo`, which none names yet.
-    pub const ALL: [SessionCommand; 22] = [
+    pub const ALL: [SessionCommand; 24] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -69,6 +71,8 @@ impl SessionCommand {
         SessionCommand::Export,
         SessionCommand::MoveFeature,
         SessionCommand::Timeline,
+        SessionCommand::SketchAdd,
+        SessionCommand::SketchRemove,
     ];
 
     /// The command it is, of every command a transport names ([`Command`]): none for `undo`
@@ -114,6 +118,8 @@ impl SessionCommand {
             SessionCommand::Export => Command::Export,
             SessionCommand::MoveFeature => Command::MoveFeature,
             SessionCommand::Timeline => Command::Timeline,
+            SessionCommand::SketchAdd => Command::SketchAdd,
+            SessionCommand::SketchRemove => Command::SketchRemove,
             SessionCommand::Undo => return Err("undo"),
             SessionCommand::Redo => return Err("redo"),
         })

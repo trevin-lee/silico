@@ -57,7 +57,7 @@ fn the_commands_are_one_list_in_one_order() {
     let listed: Vec<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
     assert_eq!(names, listed);
     // The design's section 7, in its order, written out by hand (read_logs comes with its
-    // command), then M5.0's section 7's, in its order.
+    // command), then M5.0's section 7's, in its order (M5.1's, then M5.10's).
     assert_eq!(
         names,
         [
@@ -89,6 +89,8 @@ fn the_commands_are_one_list_in_one_order() {
             "export",
             "move_feature",
             "timeline",
+            "sketch_add",
+            "sketch_remove",
         ]
     );
     for command in Command::ALL {

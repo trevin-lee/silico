@@ -35,7 +35,8 @@
 //! [`edits`], for `add_feature`, `set_field`, `remove_feature`, `replace_text`, and
 //! `move_feature`; [`reads`], for `text`, `outline`, `check`, and `timeline`; [`cache`], for `cache_clear`;
 //! [`elements`], for `elements` and `query`; [`schema`]; [`measure`], for `mass_properties`,
-//! `distance`, and `angle`; [`render`]; and [`export`]).
+//! `distance`, and `angle`; [`render`]; [`export`]; and [`sketch_edits`], for `sketch_add`
+//! and `sketch_remove`).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -1702,6 +1703,18 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         Command::Timeline => {
             command_schema::<reads::TimelineRequestSchema, reads::TimelineResultSchema>
         }
+        Command::SketchAdd => {
+            command_schema::<
+                sketch_edits::SketchAddRequestSchema,
+                sketch_edits::SketchEditResultSchema,
+            >
+        }
+        Command::SketchRemove => {
+            command_schema::<
+                sketch_edits::SketchRemoveRequestSchema,
+                sketch_edits::SketchEditResultSchema,
+            >
+        }
     }
 }
 
@@ -1800,6 +1813,7 @@ pub mod reads;
 pub mod render;
 pub mod schema;
 pub mod session;
+pub mod sketch_edits;
 pub mod transaction;
 
 #[cfg(test)]

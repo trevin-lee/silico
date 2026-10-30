@@ -37,6 +37,7 @@ use super::wire::reads::{CheckRequest, TextRequest, TimelineRequest};
 use super::wire::render::RenderRequest;
 use super::wire::schema::SchemaRequest;
 use super::wire::session::{CancelRequest, OpenRequest, VersionRequest};
+use super::wire::sketch_edits::{SketchAddRequest, SketchRemoveRequest};
 use super::wire::transaction::{FormatRequest, SessionRequest};
 use super::wire::{self, Json, Layout, ToWire};
 use super::{Problems, Progress, Response, Running, Sessions, Stopper, VERSION};
@@ -76,12 +77,14 @@ pub enum Command {
     Export,
     MoveFeature,
     Timeline,
+    SketchAdd,
+    SketchRemove,
 }
 
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
     /// 7).
-    pub const ALL: [Command; 28] = [
+    pub const ALL: [Command; 30] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -110,6 +113,8 @@ impl Command {
         Command::Export,
         Command::MoveFeature,
         Command::Timeline,
+        Command::SketchAdd,
+        Command::SketchRemove,
     ];
 
     /// The command's name, as requests and tools give it.
@@ -143,6 +148,8 @@ impl Command {
             Command::Export => "export",
             Command::MoveFeature => "move_feature",
             Command::Timeline => "timeline",
+            Command::SketchAdd => "sketch_add",
+            Command::SketchRemove => "sketch_remove",
         }
     }
 
@@ -187,7 +194,9 @@ impl Command {
             | Command::Render
             | Command::Export
             | Command::MoveFeature
-            | Command::Timeline => false,
+            | Command::Timeline
+            | Command::SketchAdd
+            | Command::SketchRemove => false,
         }
     }
 }
@@ -566,6 +575,12 @@ impl<P: Clients + 'static> Sessions<P> {
             }),
             Command::Timeline => typed(TimelineRequest::read(request), |r| {
                 self.timeline(&r.session, r.model)
+            }),
+            Command::SketchAdd => typed(SketchAddRequest::read(request), |r| {
+                self.sketch_add(&r.session, r.revision, r.sketch, r.members)
+            }),
+            Command::SketchRemove => typed(SketchRemoveRequest::read(request), |r| {
+                self.sketch_remove(&r.session, r.revision, r.sketch, r.members)
             }),
         }
     }

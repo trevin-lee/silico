@@ -65,12 +65,14 @@ pub fn remove(sketch: &Sketch, members: &[ElementId]) -> Result<Edited, Refused>
             )
         })
         .collect();
-    // Who uses each point, among the curves that stay.
-    let mut users: BTreeMap<&ElementId, Vec<(ElementKind, &ElementId)>> = BTreeMap::new();
+    // Who uses each point, among the curves that stay, and whether as its centre: a
+    // circle's one point, and an arc's first ([`curves`]' order).
+    let mut users: BTreeMap<&ElementId, Vec<(ElementKind, &ElementId, bool)>> = BTreeMap::new();
     for (kind, curve, points) in curves(sketch) {
         if !curves_removed.contains(curve) {
-            for point in points {
-                users.entry(point).or_default().push((kind, curve));
+            for (place, point) in points.into_iter().enumerate() {
+                let centre = place == 0 && matches!(kind, ElementKind::Circle | ElementKind::Arc);
+                users.entry(point).or_default().push((kind, curve, centre));
             }
         }
     }
@@ -705,30 +707,40 @@ fn references_mut(form: &mut Form) -> Vec<&mut Reference> {
 
 /// A point that curves still use, refused as removed alone: the point and the first of
 /// its curves in `elements`, up to [`PROBLEMS_LISTED`], all counted, and the message naming
-/// the first few.
+/// the first few. Its cause says what the point is to them, from each use's `centre`:
+/// their end, their centre, or (some of each) their end or centre (docs/design/m5.0-app.md,
+/// `sketch_remove`'s error, for a point two lines end at).
 fn point_in_use(
     point: &ElementId,
-    using: &[(ElementKind, &ElementId)],
+    using: &[(ElementKind, &ElementId, bool)],
     parameter: String,
 ) -> Error {
     const SAID: usize = 3;
-    let nouns: BTreeSet<&str> = using.iter().map(|(kind, _)| kind.noun()).collect();
+    let nouns: BTreeSet<&str> = using.iter().map(|(kind, _, _)| kind.noun()).collect();
     let noun = match (using, nouns.len()) {
-        ([(kind, _)], _) => kind.noun().to_owned(),
-        ([(kind, _), ..], 1) => format!("{}s", kind.noun()),
+        ([(kind, _, _)], _) => kind.noun().to_owned(),
+        ([(kind, _, _), ..], 1) => format!("{}s", kind.noun()),
         _ => "curves".to_owned(),
+    };
+    let role = match (
+        using.iter().any(|(_, _, centre)| !centre),
+        using.iter().any(|(_, _, centre)| *centre),
+    ) {
+        (true, true) => "end or centre",
+        (false, true) => "centre",
+        _ => "end",
     };
     let said: Vec<String> = using
         .iter()
         .take(SAID)
-        .map(|(_, id)| id.to_string())
+        .map(|(_, id, _)| id.to_string())
         .collect();
     let curves = match using.len() {
         n if n <= SAID => listed(&said),
         n => format!("{} and {} more", said.join(", "), n - SAID),
     };
     let elements = std::iter::once(point.to_string())
-        .chain(using.iter().map(|(_, id)| id.to_string()))
+        .chain(using.iter().map(|(_, id, _)| id.to_string()))
         .take(PROBLEMS_LISTED);
     let total = u64::try_from(using.len()).map_or(u64::MAX, |n| n.saturating_add(1));
     Error::new(
@@ -738,7 +750,7 @@ fn point_in_use(
     .with_elements(elements)
     .with_elements_total(total)
     .with_parameter(parameter)
-    .with_cause("a point that curves use is those curves' end or centre")
+    .with_cause(format!("a point that curves use is those curves' {role}"))
     .with_suggestion("remove the curves that use it with it, or unjoin it first")
 }
 

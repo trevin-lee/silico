@@ -167,7 +167,9 @@ fn effect(command: Command) -> Effect {
         | Command::SetField
         | Command::RemoveFeature
         | Command::ReplaceText
-        | Command::MoveFeature => Effect::Changes { destructive: true },
+        | Command::MoveFeature
+        | Command::SketchAdd
+        | Command::SketchRemove => Effect::Changes { destructive: true },
         // `replace: true` writes over a file at `to`, or at `path`.
         Command::Render | Command::Export => Effect::Changes { destructive: true },
         // A new document is only made where nothing is; the rest change what the server
@@ -250,6 +252,14 @@ fn words(command: Command) -> (&'static str, String) {
             "Replace the text",
             "Replace the document's whole text, read and checked as `silico check` reads a file; the text replaced is returned. Give the revision the edit was made against.",
         ),
+        Command::SketchAdd => (
+            "Add to a sketch",
+            "Add points, lines, circles, arcs, and constraints to one sketch, each as the document writes it with an ID the sketch doesn't hold; a new curve may end at a point the sketch holds, joining it there. The batch is checked whole, each problem at its member's path (`circles.cb000003.radius`). A constraint that over-defines the sketch is added all the same: `check` then reports the conflict, and the sketch's features fail until it's mended (make the dimension driven with `set_field`, or remove it). Give the revision the edit was made against.",
+        ),
+        Command::SketchRemove => (
+            "Remove from a sketch",
+            "Remove members of one sketch by ID: a constraint; a curve, with its points no other curve uses and every constraint on what goes; a point only if no curve uses it. A sketch left under or over defined, or unsolvable, isn't refused: `check` reports it. Give the revision the edit was made against.",
+        ),
         Command::Text => (
             "Document text",
             "The document's text as the session holds it, or one feature's.",
@@ -310,7 +320,9 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::SetField
         | Command::RemoveFeature
         | Command::ReplaceText
-        | Command::MoveFeature => &[IN_A_TRANSACTION, READ_CURRENT],
+        | Command::MoveFeature
+        | Command::SketchAdd
+        | Command::SketchRemove => &[IN_A_TRANSACTION, READ_CURRENT],
         Command::Check | Command::MassProperties | Command::Render | Command::Timeline => {
             &[READ_CURRENT]
         }

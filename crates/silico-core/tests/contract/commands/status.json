@@ -138,7 +138,9 @@
           "render",
           "export",
           "move_feature",
-          "timeline"
+          "timeline",
+          "sketch_add",
+          "sketch_remove"
         ],
         "type": "string"
       }
