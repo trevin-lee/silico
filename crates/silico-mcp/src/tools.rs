@@ -171,10 +171,15 @@ fn effect(command: Command) -> Effect {
         // `replace: true` writes over a file at `to`, or at `path`.
         Command::Render | Command::Export => Effect::Changes { destructive: true },
         // A new document is only made where nothing is; the rest change what the server
-        // holds, never a file.
-        Command::Open | Command::Close | Command::Cancel | Command::Begin | Command::Rollback => {
-            Effect::Changes { destructive: false }
-        }
+        // holds, never a file: an undo's or a redo's state stays on the transaction's stack,
+        // and `rollback` restores what `begin` saw.
+        Command::Open
+        | Command::Close
+        | Command::Cancel
+        | Command::Begin
+        | Command::Rollback
+        | Command::Undo
+        | Command::Redo => Effect::Changes { destructive: false },
         // Removes only the cache's own entries, each a miss the next rebuild makes again.
         Command::CacheClear => Effect::Changes { destructive: false },
     }
@@ -204,7 +209,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Status => (
             "Session status",
-            "What a session holds, answered at once even while another of its commands runs: its features, whether a transaction is open, what's running, and how far its rebuild has got.",
+            "What a session holds, answered at once even while another of its commands runs: its features; the transaction open, if one is, with whether its document differs from the one it began from (unsaved), and the edits `undo` and `redo` can step through; what's running; and how far its rebuild has got.",
         ),
         Command::ReadLogs => (
             "Read logs",
@@ -225,6 +230,14 @@ fn words(command: Command) -> (&'static str, String) {
         Command::Rollback => (
             "Roll back",
             "End the session's transaction, undoing every edit made in it. The file is never touched.",
+        ),
+        Command::Undo => (
+            "Undo",
+            "Inside a transaction, undo its last edit not undone, or with `to` (an earlier revision the session was at in it), every edit after that revision: its state restored byte for byte, at a new revision. Each edit is one step: to undo a run of edits as one, undo `to` the revision the run began at. The result says the edits left to undo and redo, and `dropped`, how many more edits the undo stack's bound (`version`'s `undo_bytes`) put out of reach; `rollback` still returns to the transaction's start. Outside a transaction each edit was saved as it was made, so there's nothing to undo. Give the revision the session's last answer says.",
+        ),
+        Command::Redo => (
+            "Redo",
+            "Inside a transaction, redo the last edit undone, or with `to` (a later revision the session was at in it), every edit undone up to that revision: its state restored byte for byte, at a new revision. An edit after an undo drops what was undone, which can't be redone. Give the revision the session's last answer says.",
         ),
         Command::Format => (
             "Format",
@@ -311,9 +324,12 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::RemoveFeature
         | Command::ReplaceText
         | Command::MoveFeature => &[IN_A_TRANSACTION, READ_CURRENT],
-        Command::Check | Command::MassProperties | Command::Render | Command::Timeline => {
-            &[READ_CURRENT]
-        }
+        Command::Check
+        | Command::MassProperties
+        | Command::Render
+        | Command::Timeline
+        | Command::Undo
+        | Command::Redo => &[READ_CURRENT],
         Command::Elements | Command::Query | Command::Distance | Command::Angle => {
             &[READ_CURRENT, NAMES_FROM_ELEMENTS]
         }

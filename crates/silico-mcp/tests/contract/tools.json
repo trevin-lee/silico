@@ -211,6 +211,11 @@
                 "description": "How long one sketch's solve may take, in seconds: past it, a `worker_timeout`.",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "undo_bytes": {
+                "description": "The most bytes a transaction's undo stack holds, counted as `status`'s\n`transaction.bytes` counts them: not refused, the oldest states after the one the\ntransaction began from are dropped and counted (`transaction.dropped`), and undo then\nstops at the oldest kept; `rollback` still returns to the start.",
+                "minimum": 0,
+                "type": "integer"
               }
             },
             "required": [
@@ -235,7 +240,8 @@
               "request_depth",
               "response_bytes",
               "sessions",
-              "sketch_seconds"
+              "sketch_seconds",
+              "undo_bytes"
             ],
             "type": "object"
           },
@@ -1074,7 +1080,7 @@
         "readOnlyHint": true,
         "title": "Session status"
       },
-      "description": "What a session holds, answered at once even while another of its commands runs: its features, whether a transaction is open, what's running, and how far its rebuild has got.",
+      "description": "What a session holds, answered at once even while another of its commands runs: its features; the transaction open, if one is, with whether its document differs from the one it began from (unsaved), and the edits `undo` and `redo` can step through; what's running; and how far its rebuild has got.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -1095,21 +1101,6 @@
       "name": "status",
       "outputSchema": {
         "$defs": {
-          "BeginResult": {
-            "additionalProperties": false,
-            "description": "`begin`'s result.",
-            "properties": {
-              "base": {
-                "description": "The revision the transaction began from: the one `rollback` returns to.",
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "base"
-            ],
-            "type": "object"
-          },
           "Error": {
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
@@ -1415,9 +1406,55 @@
               "render",
               "export",
               "move_feature",
-              "timeline"
+              "timeline",
+              "undo",
+              "redo"
             ],
             "type": "string"
+          },
+          "Transaction": {
+            "additionalProperties": false,
+            "description": "The transaction open in a session, as `status` gives it.",
+            "properties": {
+              "base": {
+                "description": "The revision the transaction began from: the one `rollback` returns to.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "bytes": {
+                "description": "What its undo stack holds, in bytes, as its bound counts it: the file's bytes as it\nbegan, and each earlier state's texts beyond what they share.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "changed": {
+                "description": "Whether its document differs from the one it began from, as a commit compares them:\nunsaved changes. False after undoing back to that one, or editing back to it, and a\ncommit then writes nothing.",
+                "type": "boolean"
+              },
+              "dropped": {
+                "description": "How many of its edits undo can no longer reach, the undo stack's bound (`version`'s\n`undo_bytes`) having dropped their states: 2 at the first drop (the edits before and\nafter the state dropped), one more at each after. `rollback` still returns to the\nstate it began from.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "redo": {
+                "description": "How many `redo` can redo: the edits undone, until an edit drops them.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "undo": {
+                "description": "How many of its edits `undo` can undo, one step each.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "base",
+              "bytes",
+              "changed",
+              "dropped",
+              "redo",
+              "undo"
+            ],
+            "type": "object"
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1481,13 +1518,13 @@
                   "transaction": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/BeginResult"
+                        "$ref": "#/$defs/Transaction"
                       },
                       {
                         "type": "null"
                       }
                     ],
-                    "description": "The transaction open, as `begin` answered it: null if none is."
+                    "description": "The transaction open, its base as `begin` answered it, with its undo and redo: null\nif none is."
                   }
                 },
                 "required": [
@@ -1562,7 +1599,9 @@
               "render",
               "export",
               "move_feature",
-              "timeline"
+              "timeline",
+              "undo",
+              "redo"
             ],
             "type": "string"
           }
@@ -1815,7 +1854,9 @@
               "render",
               "export",
               "move_feature",
-              "timeline"
+              "timeline",
+              "undo",
+              "redo"
             ],
             "type": "string"
           }
@@ -15901,6 +15942,658 @@
         "type": "object"
       },
       "title": "Timeline"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Undo"
+      },
+      "description": "Inside a transaction, undo its last edit not undone, or with `to` (an earlier revision the session was at in it), every edit after that revision: its state restored byte for byte, at a new revision. Each edit is one step: to undo a run of edits as one, undo `to` the revision the run began at. The result says the edits left to undo and redo, and `dropped`, how many more edits the undo stack's bound (`version`'s `undo_bytes`) put out of reach; `rollback` still returns to the transaction's start. Outside a transaction each edit was saved as it was made, so there's nothing to undo. Give the revision the session's last answer says. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`undo`'s request: inside a transaction, the state before its last edit not undone\nrestored, or with `to`, the state at that revision, undoing every edit after it; at a new\nrevision, whose state equals that one, byte for byte. Never touches the file.",
+        "properties": {
+          "revision": {
+            "description": "The session's revision the undo was made against: one against another is refused\nas a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "to": {
+            "description": "Null to undo one edit; or an earlier revision whose state the undo stack holds, to\nundo every edit after it, as a dialog's Cancel undoes to the revision it opened at.\nThe session's own revision, a later one, or one the stack doesn't hold (from before\nthe transaction, past its bound, or dropped by an edit after an undo) is refused,\nthe revisions it holds its candidates.",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "revision",
+          "session",
+          "to"
+        ],
+        "title": "UndoRequest",
+        "type": "object"
+      },
+      "name": "undo",
+      "outputSchema": {
+        "$defs": {
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`undo`'s result. The session is at a new revision, whose state equals the restored one's.",
+                "properties": {
+                  "dropped": {
+                    "description": "How many more of the transaction's edits this step put out of undo's reach, the\nstack's bound having dropped its oldest states (a state restored can hold more than\nthe one it replaces): 2 at the first drop, one more at each after, as `status`'s\n`transaction.dropped` counts them; 0 if it dropped none.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "redo": {
+                    "description": "How many edits are left to redo.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "restored": {
+                    "description": "The revision whose state is restored.",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "undo": {
+                    "description": "How many edits are left to undo.",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "dropped",
+                  "redo",
+                  "restored",
+                  "undo"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Undo"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Redo"
+      },
+      "description": "Inside a transaction, redo the last edit undone, or with `to` (a later revision the session was at in it), every edit undone up to that revision: its state restored byte for byte, at a new revision. An edit after an undo drops what was undone, which can't be redone. Give the revision the session's last answer says. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`redo`'s request: inside a transaction, the state after its last edit undone restored,\nor with `to`, the state at that revision, redoing every edit up to it; at a new revision,\nwhose state equals that one, byte for byte. Never touches the file.",
+        "properties": {
+          "revision": {
+            "description": "The session's revision the redo was made against: one against another is refused\nas a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "to": {
+            "description": "Null to redo one edit; or a later revision whose state the undo stack holds, to redo\nevery edit up to it. The session's own revision, an earlier one, or one the stack\ndoesn't hold (an edit after an undo drops what was undone) is refused, the revisions\nit holds its candidates.",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "revision",
+          "session",
+          "to"
+        ],
+        "title": "RedoRequest",
+        "type": "object"
+      },
+      "name": "redo",
+      "outputSchema": {
+        "$defs": {
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`redo`'s result. The session is at a new revision, whose state equals the restored one's.",
+                "properties": {
+                  "dropped": {
+                    "description": "How many more of the transaction's edits this step put out of undo's reach, the\nstack's bound having dropped its oldest states: 2 at the first drop, one more at each\nafter, as `status`'s `transaction.dropped` counts them; 0 if it dropped none.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "redo": {
+                    "description": "How many edits are left to redo.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "restored": {
+                    "description": "The revision whose state is restored.",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "undo": {
+                    "description": "How many edits are left to undo.",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "dropped",
+                  "redo",
+                  "restored",
+                  "undo"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Redo"
     }
   ]
 }

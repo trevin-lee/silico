@@ -344,8 +344,8 @@ fn every_example_holds_to_its_tools_schemas() {
     // export's 8 (#182), cache_clear's 2 (#183), STEP export's 4 (#186), check's
     // warning (#189), and read_logs' 3 and version's result (#194); and M5.1's 11:
     // add_feature's 4 for `before`, remove_feature's result with `rewired`, move_feature's
-    // 4, and timeline's 2.
-    assert_eq!(seen, 119);
+    // 4, and timeline's 2; and M5.2's 9: undo's 6, and redo's 3.
+    assert_eq!(seen, 128);
 }
 
 #[test]
