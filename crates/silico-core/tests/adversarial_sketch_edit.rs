@@ -1431,3 +1431,41 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn merging_an_arcs_centre_with_a_point_held_on_that_arc_is_refused_not_dropped() {
+    // Open item 13b drops an `on` only where the merge makes its point an end of its curve;
+    // a centre on its own arc conflicts (a radius of nothing), and stays refused. Arc r about
+    // q0 (10, 10) from p1 (10, 0) to q2 (20, 10); z (0, 10), on r's circle, held on r; q0
+    // kept, merged with z.
+    let points = format!("{POINTS}, {}", point("z0000000", 0.0, 10.0));
+    let before = doc(
+        &points,
+        "",
+        "",
+        &arc("r0000000", "q0000000", "p0000001", "q0000002"),
+        r#"{"id": "k0000000", "type": "on", "point": "z0000000", "curve": "r0000000"}"#,
+    );
+    assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
+    refused_as(
+        merge(sketch_of(&before), &ids(&["q0000000", "z0000000"])),
+        "merging them would make constraint k0000000 hold q0000000, a point of r0000000, on r0000000 itself",
+        &["k0000000", "q0000000", "r0000000"],
+    );
+}
+
+#[test]
+fn merging_an_arcs_centre_with_its_start_is_said_as_its_centre_and_an_end() {
+    let before = doc(
+        POINTS,
+        "",
+        "",
+        &arc("r0000000", "q0000000", "p0000001", "q0000002"),
+        "",
+    );
+    refused_as(
+        merge(sketch_of(&before), &ids(&["q0000000", "p0000001"])),
+        "merging q0000000 and p0000001 would give arc r0000000 one point as its centre and an end",
+        &["q0000000", "p0000001", "r0000000"],
+    );
+}

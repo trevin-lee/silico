@@ -1090,8 +1090,49 @@ fn each_edit_is_undone_and_redone_byte_for_byte() {
     assert_eq!(states[3], states[1]);
 }
 
+/// The judgment's cause, as every refusal for a solve worse than before says it.
+const WORSE: &str = "an edit that writes geometry is refused where the sketch's solve after it is worse than before it (a conflict the sketch had already isn't the edit's), as FreeCAD's Coincident command rolls one back";
+
+/// The fake answering every solve of the L profile but its system as first sent (the
+/// sketch before an edit) by `edited`, and every other as solved: so only an edit's solve
+/// is `edited`'s.
+fn answering_edits(f: &Fixture, edited: fn(&SketchSystem) -> Solved) {
+    let base = f
+        .sketches
+        .requests()
+        .into_iter()
+        .find(|s| points_sent(s) == 7)
+        .expect("the L profile solved");
+    f.sketches.answer(move |system| {
+        Ok(if points_sent(system) >= 5 && *system != base {
+            edited(system)
+        } else {
+            FakeSketches::as_sent(system)
+        })
+    });
+}
+
+/// The first `n` constraints sent, by tag.
+fn first_tags(system: &SketchSystem, n: usize) -> Vec<silico_protocol::Tag> {
+    system
+        .constraints
+        .iter()
+        .filter_map(|c| c.tag())
+        .take(n)
+        .collect()
+}
+
+/// Every unknown at 0: every line of no length, a solve the file can't hold.
+fn collapsed(system: &SketchSystem) -> Solved {
+    let mut solved = FakeSketches::as_sent(system);
+    for v in &system.unknowns {
+        solved.values[v.0 as usize] = 0.0;
+    }
+    solved
+}
+
 #[test]
-fn a_solve_that_conflicts_or_fails_refuses_the_edit_as_data_leaving_the_text_byte_for_byte() {
+fn a_split_trim_or_unjoin_whose_solve_conflicts_or_fails_where_the_sketch_didnt_is_refused() {
     for inside in [true, false] {
         let f = opened(&bracket());
         f.checked();
@@ -1100,7 +1141,7 @@ fn a_solve_that_conflicts_or_fails_refuses_the_edit_as_data_leaving_the_text_byt
         }
         let text = f.text();
         let file = std::fs::read(f.path()).unwrap();
-        f.sketches.answer(|system| Ok(conflicting(system)));
+        answering_edits(&f, conflicting);
         // The fake puts the first constraint sent in conflict: the first by ID the edited
         // sketch holds, ka000001, but after the trim, which removes it with na000001.
         for (command, request, named) in [
@@ -1139,7 +1180,7 @@ fn a_solve_that_conflicts_or_fails_refuses_the_edit_as_data_leaving_the_text_byt
                     Some("s0000001"),
                     &[named],
                     None,
-                    None,
+                    Some(WORSE),
                     Some("remove or change one of the constraints named")
                 )]),
                 "{command}, inside: {inside}"
@@ -1147,7 +1188,7 @@ fn a_solve_that_conflicts_or_fails_refuses_the_edit_as_data_leaving_the_text_byt
             assert_eq!((f.text(), f.revision()), (text.clone(), revision(1)));
             assert_eq!(std::fs::read(f.path()).unwrap(), file);
         }
-        f.sketches.answer(|system| Ok(failing(system)));
+        answering_edits(&f, failing);
         let refused = f.refused(
             "sketch_split",
             &split(1, "s0000001", "na000001", json!([[30, 0]]), json!(null)),
@@ -1160,6 +1201,21 @@ fn a_solve_that_conflicts_or_fails_refuses_the_edit_as_data_leaving_the_text_byt
         assert_eq!(refused[0]["feature"], "s0000001");
         assert_eq!((f.text(), f.revision()), (text.clone(), revision(1)));
         assert_eq!(std::fs::read(f.path()).unwrap(), file);
+        // A result the file can't hold: always refused, whatever the sketch before was.
+        f.sketches.answer(|system| Ok(collapsed(system)));
+        let refused = f.refused(
+            "sketch_unjoin",
+            &unjoin(1, "s0000001", "pa000004", "na000004", json!(null)),
+        );
+        assert_eq!(refused[0]["code"], "invalid_result", "{refused}");
+        assert!(
+            refused[0]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("after the unjoin, "),
+            "{refused}"
+        );
+        assert_eq!((f.text(), f.revision()), (text.clone(), revision(1)));
         // The solver well again, the same request is made.
         f.sketches
             .answer(|system| Ok(FakeSketches::as_sent(system)));
@@ -1168,6 +1224,88 @@ fn a_solve_that_conflicts_or_fails_refuses_the_edit_as_data_leaving_the_text_byt
             &split(1, "s0000001", "na000001", json!([[30, 0]]), json!(null)),
         );
     }
+}
+
+#[test]
+fn a_conflict_the_sketch_had_already_isnt_the_edits_but_one_it_draws_a_new_constraint_into_is() {
+    // The fake puts every solve's first constraint sent in conflict, the sketch's before too:
+    // a split and an unjoin leave that one, ka000001, in conflict, as before them (FreeCAD's
+    // rollback: same rank, nothing newly flagged), and are made; the trim, which removes
+    // ka000001 with its line, flags ka000002, which the solve before didn't: refused.
+    let f = opened(&bracket());
+    f.begin();
+    f.sketches.answer(|system| Ok(conflicting(system)));
+    let made = f.ran(
+        "sketch_split",
+        &split(
+            1,
+            "s0000001",
+            "na000003",
+            json!([[30, 5]]),
+            json!(["pa000007", "na000007", "ka00000d"]),
+        ),
+    );
+    assert_eq!(made["changed"], true);
+    let unjoined = f.ran(
+        "sketch_unjoin",
+        &unjoin(2, "s0000001", "pa000004", "na000004", json!(null)),
+    );
+    assert_eq!(unjoined["changed"], true);
+    let refused = f.refused(
+        "sketch_trim",
+        &trim(3, "s0000001", "na000001", [30.0, 0.0], json!(null)),
+    );
+    assert_eq!(refused[0]["code"], "over_constrained", "{refused}");
+    assert_eq!(refused[0]["elements"], json!(["ka000002"]));
+    assert_eq!(refused[0]["cause"], WORSE);
+}
+
+#[test]
+fn a_conflict_that_leaves_no_freedom_ranks_worse_than_one_that_does() {
+    // FreeCAD main's getCoincidentSolveStatus reads a negative DoF count first: the same
+    // constraint in conflict, with DoF 0 before (ConflictingConstraints, 2) and -1 after
+    // (Overconstrained, 3), is worse, and refused; the other way round, it's made.
+    fn conflict_with(system: &SketchSystem, dofs: i32) -> Solved {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.conflicting = first_tags(system, 1);
+        solved.dofs = dofs;
+        solved
+    }
+    fn free(system: &SketchSystem) -> Solved {
+        conflict_with(system, 0)
+    }
+    fn bound(system: &SketchSystem) -> Solved {
+        conflict_with(system, -1)
+    }
+    let judged = |before: fn(&SketchSystem) -> Solved, after: fn(&SketchSystem) -> Solved| {
+        let f = opened(&bracket());
+        f.begin();
+        f.sketches.answer(move |system| {
+            Ok(match points_sent(system) {
+                7 => before(system),
+                8 => after(system),
+                _ => FakeSketches::as_sent(system),
+            })
+        });
+        f.call(
+            "sketch_split",
+            &split(
+                1,
+                "s0000001",
+                "na000003",
+                json!([[30, 5]]),
+                json!(["pa000007", "na000007", "ka00000d"]),
+            ),
+        )
+    };
+    let envelope = judged(free, bound);
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_eq!(
+        envelope["errors"][0]["message"],
+        "after the split, the sketch's constraints conflict: these 1 can't all hold"
+    );
+    let envelope = judged(bound, free);
+    assert_eq!(envelope["ok"], true, "{envelope}");
 }
 
 #[test]
@@ -1204,10 +1342,8 @@ fn a_merge_is_refused_only_where_its_solve_is_worse_than_the_one_before() {
             Some("s0000001"),
             &["ka000001"],
             None,
-            Some(
-                "a merge whose solve is worse than the one before it is refused, as FreeCAD's Coincident command rolls it back"
-            ),
-            Some("remove or change one of the constraints named first, or merge other points")
+            Some(WORSE),
+            Some("remove or change one of the constraints named")
         )])
     );
     assert_eq!(f.text(), text);
@@ -1549,4 +1685,135 @@ fn the_solve_runs_on_the_edited_sketch_as_written_from_its_coordinates() {
             (60.0, 5.0)
         ]
     );
+}
+
+// ------------------------------------------------------------------ the review's cases
+
+/// The bracket unjoined at pa000004 (eight points sent with the origin), then the merge
+/// back, the fake answering the sketch before (8) by `before` and after (7) by `after`.
+fn merge_judged(before: fn(&SketchSystem) -> Solved, after: fn(&SketchSystem) -> Solved) -> Value {
+    let f = opened(&bracket());
+    f.begin();
+    f.ran(
+        "sketch_unjoin",
+        &unjoin(1, "s0000001", "pa000004", "na000004", json!(["pa000008"])),
+    );
+    f.sketches.answer(move |system| {
+        Ok(match points_sent(system) {
+            8 => before(system),
+            7 => after(system),
+            _ => FakeSketches::as_sent(system),
+        })
+    });
+    f.call(
+        "sketch_merge",
+        &merge(2, "s0000001", &["pa000004", "pa000008"]),
+    )
+}
+
+#[test]
+fn a_merge_that_draws_another_constraint_into_the_conflict_is_refused() {
+    // Same rank (in conflict, no freedom, both), but a constraint in conflict after that
+    // wasn't before: FreeCAD's introducesDiagnostic, rejected.
+    let envelope = merge_judged(
+        |s| {
+            let mut solved = FakeSketches::as_sent(s);
+            solved.conflicting = first_tags(s, 1);
+            solved.dofs = -1;
+            solved
+        },
+        |s| {
+            let mut solved = FakeSketches::as_sent(s);
+            solved.conflicting = first_tags(s, 2);
+            solved.dofs = -1;
+            solved
+        },
+    );
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_eq!(
+        envelope["errors"][0]["code"], "over_constrained",
+        "{envelope}"
+    );
+    assert_eq!(
+        envelope["errors"][0]["elements"],
+        json!(["ka000001", "ka000002"])
+    );
+}
+
+#[test]
+fn a_merge_that_adds_a_redundancy_to_one_the_sketch_had_is_refused_naming_the_new_one() {
+    let envelope = merge_judged(
+        |s| {
+            let mut solved = FakeSketches::as_sent(s);
+            solved.redundant = first_tags(s, 1);
+            solved
+        },
+        |s| {
+            let mut solved = FakeSketches::as_sent(s);
+            solved.redundant = first_tags(s, 2);
+            solved
+        },
+    );
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_eq!(
+        envelope["errors"][0]["elements"],
+        json!(["ka000002"]),
+        "{envelope}"
+    );
+    assert_eq!(
+        envelope["errors"][0]["message"],
+        "after the merge, these 1 constraints repeat others, as the sketch's solve before it found none of them do"
+    );
+}
+
+#[test]
+fn a_merge_whose_conflict_before_becomes_a_failed_solve_is_refused() {
+    // Over-constrained (3) before, no solution (4) after: worse, though nothing new is
+    // flagged.
+    let envelope = merge_judged(conflicting, failing);
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_eq!(envelope["errors"][0]["code"], "solve_failed", "{envelope}");
+}
+
+#[test]
+fn a_merge_whose_sketch_solves_unbuildable_before_and_after_is_refused() {
+    // FreeCAD: InvalidGeometry after is always rejected, whatever before was.
+    let envelope = merge_judged(collapsed, collapsed);
+    assert_eq!(envelope["ok"], false, "{envelope}");
+    assert_eq!(
+        envelope["errors"][0]["code"], "invalid_result",
+        "{envelope}"
+    );
+}
+
+#[test]
+fn a_split_of_an_arc_or_a_circle_lists_the_features_storing_a_name_made_from_it_or_its_points() {
+    // A D (line ne000001 from pe000001 (-10, 0) to pe000002 (10, 0), arc ae000001 about the
+    // origin back over the top, from pe000002 to pe000001), padded, its fillet naming the
+    // arc's end's vertex; and a circle cc000001 of radius 5 about the origin, padded, its
+    // fillet naming the circle's edge. Each split lists the fillet whose name it reaches.
+    let d = r#"{"id": "s0000009", "type": "sketch", "v": 1, "name": "D", "plane": "xy", "points": [{"id": "pe000001", "x": -10, "y": 0, "construction": false}, {"id": "pe000002", "x": 10, "y": 0, "construction": false}, {"id": "pe000003", "x": 0, "y": 0, "construction": false}], "lines": [{"id": "ne000001", "from": "pe000001", "to": "pe000002", "construction": false}], "circles": [], "arcs": [{"id": "ae000001", "center": "pe000003", "start": "pe000002", "end": "pe000001", "construction": false}], "constraints": []}"#;
+    let d_pad = r#"{"id": "p0000009", "type": "pad", "v": 1, "name": "D", "sketch": "s0000009", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+    let d_fillet = r#"{"id": "f0000009", "type": "fillet", "v": 1, "name": "F", "base": "p0000009", "edges": ["p0000009.pad.Edge(G s0000009.sketch.Vertex.pe000001)"], "radius": 1}"#;
+    let o = r#"{"id": "s000000c", "type": "sketch", "v": 1, "name": "O", "plane": "xy", "points": [{"id": "pc000001", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [{"id": "cc000001", "center": "pc000001", "radius": 5, "construction": false}], "arcs": [], "constraints": []}"#;
+    let o_pad = r#"{"id": "p000000c", "type": "pad", "v": 1, "name": "O", "sketch": "s000000c", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+    let o_fillet = r#"{"id": "f000000c", "type": "fillet", "v": 1, "name": "G", "base": "p000000c", "edges": ["p000000c.pad.Edge(G s000000c.sketch.Edge.cc000001)"], "radius": 1}"#;
+    let f = opened(&document(&[d, d_pad, d_fillet, o, o_pad, o_fillet]));
+    f.begin();
+    let result = f.ran(
+        "sketch_split",
+        &split(1, "s0000009", "ae000001", json!([[0, 10]]), json!(null)),
+    );
+    assert_eq!(result["references"], json!(["f0000009"]), "{result}");
+    let result = f.ran(
+        "sketch_split",
+        &split(
+            2,
+            "s000000c",
+            "cc000001",
+            json!([[5, 0], [-5, 0]]),
+            json!(null),
+        ),
+    );
+    assert_eq!(result["references"], json!(["f000000c"]), "{result}");
 }

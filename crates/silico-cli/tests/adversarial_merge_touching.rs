@@ -307,3 +307,24 @@ fn check_merge_touching_on_a_file_with_nothing_to_merge_says_nothing_and_writes_
     assert_eq!(stderr(&out), "");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
 }
+
+#[test]
+fn check_merge_touching_of_a_canonical_file_with_a_cluster_says_it_would_rewrite_it() {
+    // Plain `fmt` writes the file in canonical form and leaves its cluster: `fmt --check`
+    // then finds nothing to rewrite, and `--merge-touching` the merge it would make, so a
+    // rewrite it would make, though the format alone wouldn't change a byte.
+    let scratch = Scratch::new("canonical-cluster");
+    let file = scratch.file("part.silico", &one_cluster());
+    let out = silico(&scratch, &["fmt"], &file);
+    assert_ne!(out.status.code(), Some(2), "{}", stderr(&out));
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(warned(&scratch, &file), 1);
+    let out = silico(&scratch, &["fmt", "--check"], &file);
+    assert!(!stderr(&out).contains("would rewrite"), "{}", stderr(&out));
+    let out = silico(&scratch, &["fmt", "--check", "--merge-touching"], &file);
+    let said = stderr(&out);
+    assert_eq!(out.status.code(), Some(1), "{said}");
+    assert!(said.contains(": would merge points "), "{said}");
+    assert!(said.contains("`silico fmt` would rewrite it"), "{said}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}

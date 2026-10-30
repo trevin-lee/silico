@@ -267,19 +267,19 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::SketchSplit => (
             "Split a sketch curve",
-            "Split one line or arc of a sketch at a position on it (within 1e-7 mm), or a circle at two, into pieces sharing a new point; the piece on the curve's start side keeps its ID, and `references` lists the features whose stored names the curve reached, which now find only that piece. Constraints on the curve follow the pieces (a length becomes a distance of the outer ends). `ids` gives the new members' IDs in `added`'s order, or null for the core's. Refused if the sketch's solve then conflicts or fails. Give the revision the edit was made against.",
+            "Split one line or arc of a sketch at a position on it (within 1e-7 mm), or a circle at two, into pieces sharing a new point; the piece on the curve's start side keeps its ID, and `references` lists the features whose stored names the curve reached, which now find only that piece. Constraints on the curve follow the pieces (a length becomes a distance of the outer ends). `ids` gives the new members' IDs in `added`'s order, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
         ),
         Command::SketchTrim => (
             "Trim a sketch curve",
-            "Trim one curve of a sketch back to the curves that cut it either side of `pick`, removing that part, or the whole curve where nothing cuts it there. A new end shares a cutter's end held on the curve, or gets a new point held on the cutter. `ids` gives the new members' IDs in `added`'s order, or null for the core's. Refused if the sketch's solve then conflicts or fails. Give the revision the edit was made against.",
+            "Trim one curve of a sketch back to the curves that cut it either side of `pick`, removing that part, or the whole curve where nothing cuts it there. A new end shares a cutter's end held on the curve, or gets a new point held on the cutter. `ids` gives the new members' IDs in `added`'s order, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
         ),
         Command::SketchUnjoin => (
             "Unjoin a sketch point",
-            "Pull one curve off a point it shares with others: it gets a new point at the same place, keeping its own constraints; the others keep the point and its constraints. `check` then warns of the two points as `ends_not_joined` until something moves them. `ids` is the new point's ID, a list of one, or null for the core's. Refused if the sketch's solve then conflicts or fails. Give the revision the edit was made against.",
+            "Pull one curve off a point it shares with others: it gets a new point at the same place, keeping its own constraints; the others keep the point and its constraints. `check` then warns of the two points as `ends_not_joined` until something moves them. `ids` is the new point's ID, a list of one, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
         ),
         Command::SketchMerge => (
             "Merge sketch points",
-            "Make two or more points of a sketch one: the first named survives at its own coordinates, and the others' curves and constraints move to it. Refused if the sketch's solve is then worse than before (a new conflict or redundancy, or no solution): name first the point the constraints hold. `silico fmt --merge-touching` merges every `ends_not_joined` cluster so. Give the revision the edit was made against.",
+            "Make two or more points of a sketch one: the first named survives at its own coordinates, and the others' curves and constraints move to it. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): name first the point the constraints hold. `silico fmt --merge-touching` merges every `ends_not_joined` cluster so. Give the revision the edit was made against.",
         ),
         Command::Text => (
             "Document text",

@@ -11,11 +11,13 @@
 //!   `sketch_merge`, writes exactly what its request names into the sketch as stored, and
 //!   the sketch's ordinary solve from that written sketch (M3.4, FreeCAD's order) is the
 //!   edit's solve (Fable, 2026-10-29): run here, on one of the sessions' sketch solvers,
-//!   before the edit is held or committed, stopped by the command's `cancel`. A solve that
-//!   conflicts, fails, or gives a result the file can't hold refuses the edit as data, the
-//!   session as it was (SD7, M3.3); a merge is refused only where its solve is worse than the
-//!   one before it, as FreeCAD main's Coincident command rolls one back
-//!   (`shouldRejectCoincidentSolve`, `cb2780e2fa`; sketch-edit decision 10). No edit tries a
+//!   before the edit is held or committed, stopped by the command's `cancel`. An edit whose
+//!   solve is worse than the sketch's before it refuses as data, the session as it was (SD7,
+//!   refined: a conflict the sketch had already isn't the edit's), by one rule for all of
+//!   them, as FreeCAD main's Coincident command rolls one back (`shouldRejectCoincidentSolve`,
+//!   `cb2780e2fa`; sketch-edit decision 10): a result the file can't hold, a solve that ranks
+//!   worse (a conflict, then over-constrained, then no solution), or one that flags a
+//!   constraint redundant or in conflict that the solve before didn't. No edit tries a
 //!   second seed, retries, snaps, or solves again: the rebuild then solves the same text the
 //!   same way.
 //!
@@ -121,8 +123,10 @@ impl<P: Clients + 'static> Sessions<P> {
     /// at one position, into two pieces sharing a new point at its projection; a circle at
     /// two, into two arcs. The start-side piece keeps the curve's ID. The new members' IDs
     /// are `ids`, in `added`'s order, or, if `None`, the core's. The sketch's solve then
-    /// judges it: refused, the session as it was, for a conflict, a failed solve, or a
-    /// result the file can't hold (SD7), as for what the split itself refuses (a position
+    /// judges it: refused, the session as it was, where it's worse than the sketch's solve
+    /// before the split (the module's rule: a result the file can't hold, a solve that ranks
+    /// worse, or one flagging a constraint the solve before didn't), as for what the split
+    /// itself refuses (a position
     /// off the curve, at or near an end, the wrong number of positions or of `ids`) and a
     /// feature that isn't a sketch. Its result lists the features storing a name made from
     /// the curve or its points (`references`).
@@ -153,11 +157,11 @@ impl<P: Clients + 'static> Sessions<P> {
                     stop,
                     revision,
                     |base| {
-                        let document = base.checked()?.document();
+                        let checked = base.checked()?;
                         let made = with_ids(ids.as_deref(), &drawn, |ids| {
-                            edit::sketch_split(document, &sketch, &curve, &at, ids)
+                            edit::sketch_split(checked.document(), &sketch, &curve, &at, ids)
                         })?;
-                        judged(&solvers, stop, &sketch, "split", made)
+                        judged(&solvers, stop, checked, &sketch, SPLIT, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -202,11 +206,11 @@ impl<P: Clients + 'static> Sessions<P> {
                     stop,
                     revision,
                     |base| {
-                        let document = base.checked()?.document();
+                        let checked = base.checked()?;
                         let made = with_ids(ids.as_deref(), &drawn, |ids| {
-                            edit::sketch_trim(document, &sketch, &curve, pick, ids)
+                            edit::sketch_trim(checked.document(), &sketch, &curve, pick, ids)
                         })?;
-                        judged(&solvers, stop, &sketch, "trim", made)
+                        judged(&solvers, stop, checked, &sketch, TRIM, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -249,11 +253,11 @@ impl<P: Clients + 'static> Sessions<P> {
                     stop,
                     revision,
                     |base| {
-                        let document = base.checked()?.document();
+                        let checked = base.checked()?;
                         let made = with_ids(ids.as_deref(), &drawn, |ids| {
-                            edit::sketch_unjoin(document, &sketch, &point, &curve, ids)
+                            edit::sketch_unjoin(checked.document(), &sketch, &point, &curve, ids)
                         })?;
-                        judged(&solvers, stop, &sketch, "unjoin", made)
+                        judged(&solvers, stop, checked, &sketch, UNJOIN, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -268,11 +272,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// own coordinates, the others' curves and constraints re-pointed to it; an edge
     /// `tangent` left at a shared end becomes a `tangent_at`, and an `on` it makes hold an
     /// end on its own curve goes as implied (open items 13 and 13b). It makes no member, so
-    /// it takes no `ids`. Refused, the session as it was, where its solve is worse than the
-    /// one before it (FreeCAD main's `shouldRejectCoincidentSolve`, `cb2780e2fa`): a result
-    /// the file can't hold, a solve that fails where the one before didn't fail so, or a
-    /// constraint the solve finds conflicting or redundant that the one before didn't, each
-    /// naming the constraints; and for what the merge itself refuses (points already one, a
+    /// it takes no `ids`. Judged by its solve as [`sketch_split`](Self::sketch_split) is,
+    /// a solve that fails suggesting the request's lever (name first the point the
+    /// constraints hold); and refused for what the merge itself refuses (points already one, a
     /// curve that would use one point twice, a constraint that would name one twice).
     pub fn sketch_merge(
         &self,
@@ -300,20 +302,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     |base| {
                         let checked = base.checked()?;
                         let made = edit::sketch_merge(checked.document(), &sketch, &points)?;
-                        let Some(candidate) = &made.1 else {
-                            return Ok(made);
-                        };
-                        let after = solved(&solvers, stop, checked_of(candidate)?, &sketch)?;
-                        if let Err(error) = &after.outcome
-                            && always_refused(error)
-                        {
-                            return Err(refusal(&sketch, "merge", error.clone()));
-                        }
-                        let before = solved(&solvers, stop, checked, &sketch)?;
-                        if let Some(error) = worse(&before, &after) {
-                            return Err(Problems::from(error.with_feature(sketch.as_str())));
-                        }
-                        Ok(made)
+                        judged(&solvers, stop, checked, &sketch, MERGE, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -383,23 +372,63 @@ fn with_ids<T>(
     }
 }
 
-/// An edit that writes geometry, `made`, judged by its sketch's solve (SD7): its candidate's
-/// sketch `sketch` solved, and `made` given back if it solved; refused, as the `edit`
-/// ("split") that wrote it, if the solve conflicts, fails, or gives a result the file can't
-/// hold. An edit that changes nothing isn't solved.
+/// An edit that writes geometry, as its judgment says it: its name, as a refusal names it
+/// ("after the split, ..."), and what to suggest where its solve fails, or none for the
+/// solve's own advice.
+#[derive(Clone, Copy)]
+pub(super) struct Edit {
+    name: &'static str,
+    lever: Option<&'static str>,
+}
+
+const SPLIT: Edit = Edit {
+    name: "split",
+    lever: None,
+};
+const TRIM: Edit = Edit {
+    name: "trim",
+    lever: None,
+};
+const UNJOIN: Edit = Edit {
+    name: "unjoin",
+    lever: None,
+};
+/// A merge's solve starts from the kept point's place, by the request's order (Fable,
+/// 2026-10-29): the lever is the request's.
+const MERGE: Edit = Edit {
+    name: "merge",
+    lever: Some(
+        "name first the point the constraints hold, or move the points together, then merge",
+    ),
+};
+
+/// An edit that writes geometry, `made`, judged by its sketch's solve (SD7, refined: a
+/// conflict the sketch had already isn't the edit's): its candidate's sketch `sketch` solved,
+/// and `made` given back unless that solve is worse than the solve of `before`, the document
+/// the edit was made to ([`worse`]): refused then, as `edit`'s. An edit that changes nothing
+/// isn't solved, nor is `before` where the edit's solve is clean.
 fn judged<T>(
     solvers: &SketchSolvers,
     stop: &Ticket,
+    before: &Checked,
     sketch: &FeatureId,
-    edit: &str,
+    edit: Edit,
     made: (T, Option<Candidate>),
 ) -> Result<(T, Option<Candidate>), Problems> {
     let Some(candidate) = &made.1 else {
         return Ok(made);
     };
-    match solved(solvers, stop, checked_of(candidate)?, sketch)?.outcome {
-        Ok(_) => Ok(made),
-        Err(error) => Err(refusal(sketch, edit, error)),
+    let after = solved(solvers, stop, checked_of(candidate)?, sketch)?;
+    // A clean solve is never worse, and one the file can't hold always is: neither needs the
+    // solve before.
+    let refusal = match severity(&after) {
+        0 => None,
+        UNBUILDABLE => worse(None, &after, edit),
+        _ => worse(Some(&solved(solvers, stop, before, sketch)?), &after, edit),
+    };
+    match refusal {
+        Some(error) => Err(Problems::from(error.with_feature(sketch.as_str()))),
+        None => Ok(made),
     }
 }
 
@@ -491,40 +520,30 @@ fn solved(
     }
 }
 
-/// The refusal of the `edit` ("split") of sketch `sketch` whose solve refused it as `error`
-/// (SD7): the solve's own words, code, constraints, cause, and advice, said as after the
-/// edit, naming the sketch. The session is left as it was.
-fn refusal(sketch: &FeatureId, edit: &str, error: Error) -> Problems {
-    let message = format!("after the {edit}, {}", error.message());
-    Problems::from(error.with_message(message).with_feature(sketch.as_str()))
-}
-
-/// A merge's solve that refuses it whatever the solve before it found: a result the file
-/// can't hold, or a sketch that can't be sent (FreeCAD's `InvalidGeometry`, which its
-/// rollback always refuses).
-fn always_refused(error: &Error) -> bool {
-    !matches!(
-        error.code(),
-        ErrorCode::OverConstrained | ErrorCode::SolveFailed
-    )
-}
-
-/// How bad a solve's outcome is, as FreeCAD main's coincident rollback ranks it
-/// (`getCoincidentSolveStatusSeverity`, `CommandConstraints.cpp`): solved, 0; solved with
-/// redundant constraints, 1; constraints in conflict, 2 (FreeCAD's conflicting and
-/// over-constrained, which Silico's solve doesn't tell apart, 2 and 3); no solution, 4;
-/// anything else (a result the file can't hold, a sketch that can't be sent), 5.
-fn severity(outcome: &Result<SketchSolution, Error>) -> u8 {
-    match outcome {
+/// How bad a solve is, as FreeCAD main's coincident rollback ranks it
+/// (`getCoincidentSolveStatusSeverity`, `CommandConstraints.cpp`, with
+/// `getCoincidentSolveStatus`, which reads a negative DoF count first): solved, 0; solved with
+/// redundant constraints, 1; constraints in conflict, 2, or over-constrained, 3, where the
+/// diagnosis leaves fewer than no degrees of freedom; no solution, 4; anything else (a result
+/// the file can't hold, a sketch that can't be sent), [`UNBUILDABLE`].
+fn severity(judged: &Judged) -> u8 {
+    match &judged.outcome {
         Ok(solution) if solution.redundant.is_empty() => 0,
         Ok(_) => 1,
         Err(error) => match error.code() {
+            ErrorCode::OverConstrained if judged.diagnosis.as_ref().is_some_and(|d| d.dofs < 0) => {
+                3
+            }
             ErrorCode::OverConstrained => 2,
             ErrorCode::SolveFailed => 4,
-            _ => 5,
+            _ => UNBUILDABLE,
         },
     }
 }
+
+/// The rank of a solve whose result the file can't hold, or of a sketch that can't be sent
+/// (FreeCAD's `InvalidGeometry`): an edit that leaves one is always refused.
+const UNBUILDABLE: u8 = 5;
 
 /// The constraints a solve flags redundant (each all of whose equations repeat others':
 /// FreeCAD's redundant, not its partially redundant) and in conflict, from its diagnosis,
@@ -538,24 +557,27 @@ fn flagged(judged: &Judged) -> (BTreeSet<String>, BTreeSet<String>) {
     }
 }
 
-/// Why a merge's solve, `after`, is worse than the solve before it, `before`, if it is: as
-/// FreeCAD main's `shouldRejectCoincidentSolve` decides (`cb2780e2fa`), a solve that's not a
-/// clean success and either ranks worse ([`severity`]) or flags a constraint redundant or in
-/// conflict that the solve before didn't, named. None if the merge stands.
-fn worse(before: &Judged, after: &Judged) -> Option<Error> {
-    let rank = severity(&after.outcome);
+/// Why `edit`'s solve, `after`, is worse than the solve of the sketch before it, `before`, if
+/// it is (none, unasked, where `after` ranks [`UNBUILDABLE`], which is always worse): as
+/// FreeCAD main's `shouldRejectCoincidentSolve` decides (`cb2780e2fa`), a solve
+/// that isn't a clean success and ranks [`UNBUILDABLE`], or worse than the solve before
+/// ([`severity`]), or flags a constraint redundant or in conflict that the solve before
+/// didn't, those named. One rule for every edit that writes geometry: a conflict the sketch
+/// had already isn't the edit's. None if the edit stands.
+fn worse(before: Option<&Judged>, after: &Judged, edit: Edit) -> Option<Error> {
+    let rank = severity(after);
     if rank == 0 {
         return None;
     }
-    let (was_redundant, was_conflicting) = flagged(before);
+    let (was_redundant, was_conflicting) = before.map(flagged).unwrap_or_default();
     let (redundant, conflicting) = flagged(after);
     let new_redundant: Vec<String> = redundant.difference(&was_redundant).cloned().collect();
     let new_conflicting: Vec<String> = conflicting.difference(&was_conflicting).cloned().collect();
-    let worse_rank = rank > severity(&before.outcome);
+    let worse_rank = rank == UNBUILDABLE || rank > before.map_or(0, severity);
     if !worse_rank && new_redundant.is_empty() && new_conflicting.is_empty() {
         return None;
     }
-    const CAUSE: &str = "a merge whose solve is worse than the one before it is refused, as FreeCAD's Coincident command rolls it back";
+    let name = edit.name;
     Some(match &after.outcome {
         Ok(_) => {
             let named = if new_redundant.is_empty() {
@@ -567,28 +589,31 @@ fn worse(before: &Judged, after: &Judged) -> Option<Error> {
             Error::new(
                 ErrorCode::OverConstrained,
                 format!(
-                    "after the merge, these {n} constraints repeat others, as the sketch's solve before it found none of them do"
+                    "after the {name}, these {n} constraints repeat others, as the sketch's solve before it found none of them do"
                 ),
             )
             .with_elements(named)
-            .with_cause(CAUSE)
-            .with_suggestion("remove the constraints named first, or merge other points")
+            .with_cause(WORSE)
+            .with_suggestion(format!(
+                "remove the constraints named, then make the {name} again"
+            ))
         }
         Err(error) if error.code() == ErrorCode::OverConstrained => {
-            let message = format!("after the merge, {}", error.message());
-            error
-                .clone()
-                .with_message(message)
-                .with_cause(CAUSE)
-                .with_suggestion(
-                    "remove or change one of the constraints named first, or merge other points",
-                )
+            let message = format!("after the {name}, {}", error.message());
+            error.clone().with_message(message).with_cause(WORSE)
         }
         Err(error) => {
-            let message = format!("after the merge, {}", error.message());
-            error.clone().with_message(message).with_suggestion(
-                "name first the point the constraints hold, or move the points together, then merge",
-            )
+            let message = format!("after the {name}, {}", error.message());
+            let error = error.clone().with_message(message);
+            match edit.lever {
+                Some(lever) if error.code() == ErrorCode::SolveFailed => {
+                    error.with_suggestion(lever)
+                }
+                _ => error,
+            }
         }
     })
 }
+
+/// Why an edit whose solve is worse is refused.
+const WORSE: &str = "an edit that writes geometry is refused where the sketch's solve after it is worse than before it (a conflict the sketch had already isn't the edit's), as FreeCAD's Coincident command rolls one back";

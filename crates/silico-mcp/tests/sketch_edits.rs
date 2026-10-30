@@ -299,9 +299,9 @@ fn each_geometry_edit_is_a_tool_whose_answer_is_the_cores_envelope_byte_for_byte
         envelope(5)["result"],
         json!({"sketch": "k7f2qx3m", "pieces": [], "added": [], "modified": [], "removed": ["n0000003", "c0000002"], "references": [], "changed": true, "commit": null})
     );
-    // The core's side asked its solver for each edit's solve (a merge's two: after, and
-    // before).
-    assert!(solver.requests().len() >= 5);
+    // The core's side asked its solver for each edit's solve (each clean, so none asks for
+    // the sketch's solve before it).
+    assert!(solver.requests().len() >= 4);
     let first = |n: usize| {
         let e = envelope(n);
         assert_eq!(e["ok"], false, "{e}");

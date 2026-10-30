@@ -1488,4 +1488,27 @@ mod tests {
         );
         assert_eq!(ids.next_free(&document).unwrap().as_str(), "zzzzzzzz");
     }
+
+    #[test]
+    fn a_new_members_id_is_never_one_taken_and_a_source_of_only_taken_ones_is_a_bug() {
+        // "00000000" taken (a member of the sketch, or drawn for the edit before): skipped,
+        // and "zzzzzzzz", the next, given.
+        let taken = |id: &ElementId| id.as_str() == "00000000";
+        let mut ids = FeatureIds::given([[0; 5], [0xff; 5]]);
+        assert_eq!(ids.next_member(&taken).unwrap().as_str(), "zzzzzzzz");
+        let mut ids =
+            FeatureIds::given(std::iter::repeat_n([0; 5], ID_TRIES - 1).chain([[0xff; 5]]));
+        assert_eq!(ids.next_member(&taken).unwrap().as_str(), "zzzzzzzz");
+        let mut ids = FeatureIds::given(std::iter::repeat_n([0; 5], ID_TRIES).chain([[0xff; 5]]));
+        let refused = ids.next_member(&taken).unwrap_err();
+        assert_eq!(
+            (refused.code(), refused.message(), refused.suggestion()),
+            (
+                ErrorCode::Internal,
+                "16 new member IDs in a row were IDs the sketch holds",
+                Some(crate::worker::SILICO_BUG)
+            )
+        );
+        assert_eq!(ids.next_member(&taken).unwrap().as_str(), "zzzzzzzz");
+    }
 }

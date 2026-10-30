@@ -156,84 +156,58 @@ impl Fixture {
     }
 }
 
-/// The over-defined profile's conflict, as the edit `edit` ("split") refuses with it.
-fn conflict(edit: &str) -> Value {
-    json!([{
-        "code": "over_constrained",
-        "message": format!("after the {edit}, the sketch's constraints conflict: these 2 can't all hold"),
-        "feature": "s0000001",
-        "elements": ["ka000009", "ka00000d"],
-        "elements_total": 2,
-        "parameter": null,
-        "cause": null,
-        "suggestion": "remove or change one of the constraints named",
-        "candidates": []
-    }])
-}
+/// Why an edit whose solve is worse than before is refused.
+const WORSE: &str = "an edit that writes geometry is refused where the sketch's solve after it is worse than before it (a conflict the sketch had already isn't the edit's), as FreeCAD's Coincident command rolls one back";
 
 #[test]
-fn a_split_trim_or_unjoin_whose_solve_conflicts_is_refused_as_data_inside_a_transaction_and_out() {
+fn an_edit_far_from_a_conflict_the_sketch_had_is_made_inside_a_transaction_and_out() {
+    // The over-defined L (dofs -1 on PlaneGCS: nothing free, the base's two lengths in
+    // conflict): a split of the leg's top, a trim of the upright's inside edge (nothing cuts
+    // it but its neighbours: removed whole), and an unjoin at the inside corner each leave
+    // the conflict as it was or lighter, never worse, so each is made (SD7, refined: a
+    // conflict the sketch had already isn't the edit's).
     for inside in [true, false] {
-        let f = bracket();
-        assert_eq!(f.problems(), []);
-        if inside {
-            f.ran("begin", r#"{"session": "s1"}"#);
-        }
-        f.over_define();
-        let at = f.revision();
-        let text = f.text();
-        let file = std::fs::read(f.path()).unwrap();
         for (command, request) in [
             (
                 "sketch_split",
-                json!({"session": "s1", "revision": at, "sketch": "s0000001", "curve": "na000003", "at": [[30, 5]], "ids": null}),
+                json!({"session": "s1", "sketch": "s0000001", "curve": "na000003", "at": [[30, 5]], "ids": null}),
             ),
             (
-                // Nothing cuts the upright's inner edge but its neighbours, at its ends: the
-                // trim removes it whole, and the base line's two lengths still conflict.
                 "sketch_trim",
-                json!({"session": "s1", "revision": at, "sketch": "s0000001", "curve": "na000004", "pick": [5, 30], "ids": null}),
+                json!({"session": "s1", "sketch": "s0000001", "curve": "na000004", "pick": [5, 30], "ids": null}),
             ),
             (
                 "sketch_unjoin",
-                json!({"session": "s1", "revision": at, "sketch": "s0000001", "point": "pa000004", "curve": "na000004", "ids": null}),
+                json!({"session": "s1", "sketch": "s0000001", "point": "pa000004", "curve": "na000004", "ids": null}),
             ),
         ] {
-            let edit = command.trim_start_matches("sketch_");
-            assert_eq!(
-                f.refused(command, &request.to_string()),
-                conflict(edit),
-                "{command}, inside: {inside}"
+            let f = bracket();
+            assert_eq!(f.problems(), []);
+            if inside {
+                f.ran("begin", r#"{"session": "s1"}"#);
+            }
+            f.over_define();
+            let mut request = request;
+            request["revision"] = json!(f.revision());
+            let made = f.ran(command, &request.to_string());
+            assert_eq!(made["changed"], true, "{command}, inside: {inside}");
+            // The sketch still conflicts, as it did: the base's two lengths.
+            let problems = f.problems();
+            assert!(
+                problems.contains(&("over_constrained".to_owned(), Some("s0000001".to_owned()))),
+                "{command}: {problems:?}"
             );
-            assert_eq!(f.revision(), at, "{command}");
-            assert_eq!(f.text(), text, "{command}");
-            assert_eq!(std::fs::read(f.path()).unwrap(), file, "{command}");
         }
     }
 }
 
 #[test]
-fn a_split_of_the_over_defined_base_line_makes_both_lengths_distances_of_its_outer_ends_which_conflict()
- {
-    // Split, each length of the base line becomes a distance of its outer ends, under its
-    // ID (§3's table): 60 and 61 between pa000001 and pa000002, which can't both hold.
-    let f = bracket();
-    f.ran("begin", r#"{"session": "s1"}"#);
-    f.over_define();
-    let at = f.revision();
-    let text = f.text();
-    let refused = f.refused(
-        "sketch_split",
-        &json!({"session": "s1", "revision": at, "sketch": "s0000001", "curve": "na000001", "at": [[30, 0]], "ids": null}).to_string(),
-    );
-    assert_eq!(refused, conflict("split"));
-    assert_eq!((f.revision(), f.text()), (at, text));
-}
-
-#[test]
-fn a_merge_that_leaves_the_conflict_the_sketch_had_is_no_worse_and_is_made() {
-    // The unjoin first, on the clean profile; then the second length; then the merge, whose
-    // solve finds the same two lengths in conflict as the solve before it did.
+fn a_merge_that_takes_a_conflicting_sketch_past_its_last_freedom_is_refused_as_main_rolls_it_back()
+{
+    // The review's case, reproduced on FreeCAD 1.1.3: the L, its inside corner unjoined, a
+    // second length of 61 on the base line, then the corner merged back. Before: 14 unknowns,
+    // rank 12, dofs 2, the lengths in conflict (FreeCAD's ConflictingConstraints, 2). After:
+    // 12 unknowns, nothing free, dofs -1 (Overconstrained, 3): worse, and refused.
     let f = bracket();
     f.ran("begin", r#"{"session": "s1"}"#);
     let unjoined = f.ran(
@@ -242,23 +216,126 @@ fn a_merge_that_leaves_the_conflict_the_sketch_had_is_no_worse_and_is_made() {
     );
     assert_eq!(unjoined["added"], json!(["pa000008"]));
     f.over_define();
-    let merged = f.ran(
+    let read = f.ran(
+        "sketch",
+        r#"{"session": "s1", "model": "current", "sketch": "s0000001"}"#,
+    );
+    assert_eq!(read["dofs"], 2, "{read}");
+    let text = f.text();
+    let refused = f.refused(
         "sketch_merge",
         &json!({"session": "s1", "revision": 3, "sketch": "s0000001", "points": ["pa000004", "pa000008"]}).to_string(),
     );
     assert_eq!(
-        merged,
-        json!({"sketch": "s0000001", "added": [], "modified": ["na000004"], "removed": ["pa000008"], "changed": true, "commit": null})
+        refused,
+        json!([{
+            "code": "over_constrained",
+            "message": "after the merge, the sketch's constraints conflict: these 2 can't all hold",
+            "feature": "s0000001",
+            "elements": ["ka000009", "ka00000d"],
+            "elements_total": 2,
+            "parameter": null,
+            "cause": WORSE,
+            "suggestion": "remove or change one of the constraints named",
+            "candidates": []
+        }])
     );
-    // And a split now, which is no merge, is refused for the conflict, as the common rules
-    // have it.
+    assert_eq!((f.revision(), f.text()), (3, text));
+}
+
+#[test]
+fn a_merge_that_leaves_a_conflict_the_sketch_had_with_freedom_both_sides_is_no_worse_and_is_made() {
+    // The same unjoined, over-defined L, and two free lines apart from it whose ends touch
+    // (q2 and q3, at one place): merged, the conflict is the one the sketch had, its rank
+    // the same (dofs 2 + 8 before, 2 + 6 after, both free), so the merge is made.
+    let f = bracket();
+    f.ran("begin", r#"{"session": "s1"}"#);
+    f.ran(
+        "sketch_unjoin",
+        &json!({"session": "s1", "revision": 1, "sketch": "s0000001", "point": "pa000004", "curve": "na000004", "ids": ["pa000008"]}).to_string(),
+    );
+    f.over_define();
+    let added = f.ran(
+        "sketch_add",
+        r#"{"session": "s1", "revision": 3, "sketch": "s0000001", "points": [{"id": "qa000001", "x": 100, "y": 0, "construction": false}, {"id": "qa000002", "x": 110, "y": 0, "construction": false}, {"id": "qa000003", "x": 110, "y": 0, "construction": false}, {"id": "qa000004", "x": 110, "y": 10, "construction": false}], "lines": [{"id": "nq000001", "from": "qa000001", "to": "qa000002", "construction": false}, {"id": "nq000002", "from": "qa000003", "to": "qa000004", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#,
+    );
+    assert_eq!(added["changed"], true);
+    let merged = f.ran(
+        "sketch_merge",
+        &json!({"session": "s1", "revision": 4, "sketch": "s0000001", "points": ["qa000002", "qa000003"]}).to_string(),
+    );
     assert_eq!(
-        f.refused(
-            "sketch_split",
-            &json!({"session": "s1", "revision": 4, "sketch": "s0000001", "curve": "na000003", "at": [[30, 5]], "ids": null}).to_string(),
-        ),
-        conflict("split")
+        merged,
+        json!({"sketch": "s0000001", "added": [], "modified": ["nq000002"], "removed": ["qa000003"], "changed": true, "commit": null})
     );
+}
+
+#[test]
+fn freecads_conflicting_coincident_selection_is_refused_as_a_merge_the_text_as_it_was() {
+    // TestCoincidentCommandGui.py's test_conflicting_coincident_selection_is_rejected
+    // (FreeCAD main, cb2780e2fa): two construction lines, (0, 0)-(10, 0) and (20, 0)-(30, 0),
+    // the first's end held at x = 10, the second's start at x = 20; their coincidence
+    // conflicts, so main's command adds nothing. As a merge, the first's end kept: the two
+    // distance_x of one point, 10 and 20, can't both hold.
+    let sketch = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "Two", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": true}, {"id": "pa000002", "x": 10, "y": 0, "construction": true}, {"id": "pa000003", "x": 20, "y": 0, "construction": true}, {"id": "pa000004", "x": 30, "y": 0, "construction": true}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": true}, {"id": "na000002", "from": "pa000003", "to": "pa000004", "construction": true}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "distance_x", "a": "origin", "b": "pa000002", "value": 10, "driving": true}, {"id": "ka000002", "type": "distance_x", "a": "origin", "b": "pa000003", "value": 20, "driving": true}]}"#;
+    let f = opened(&document(&[sketch]));
+    assert_eq!(f.problems(), []);
+    f.ran("begin", r#"{"session": "s1"}"#);
+    let text = f.text();
+    let refused = f.refused(
+        "sketch_merge",
+        &json!({"session": "s1", "revision": 1, "sketch": "s0000001", "points": ["pa000002", "pa000003"]}).to_string(),
+    );
+    assert_eq!(refused[0]["code"], "over_constrained", "{refused}");
+    assert_eq!(refused[0]["elements"], json!(["ka000001", "ka000002"]));
+    assert_eq!((f.revision(), f.text()), (1, text));
+    assert_eq!(f.problems(), []);
+}
+
+#[test]
+fn freecads_failed_tangent_substitution_is_refused_as_a_merge_the_text_as_it_was() {
+    // TestCoincidentCommandGui.py's test_failed_tangent_substitution_is_rolled_back: a line
+    // from (-10, 0) to (10, 0), held horizontal, its start at (-10, 0), 20 long; an arc of
+    // radius 5 about (0, 5), its centre held at x = 0, edge tangent to the line (on its
+    // left). Merging the line's end with the arc's start makes the tangency an end tangency
+    // there (open item 13), which can't hold with the line's end 10 from the centre's line:
+    // main's command rolls the substitution back. As a merge, the line's end kept: refused,
+    // the text as it was.
+    let start = [5.0 * libm::cos(0.5), 5.0 + 5.0 * libm::sin(0.5)];
+    let end = [5.0 * libm::cos(2.5), 5.0 + 5.0 * libm::sin(2.5)];
+    let sketch = format!(
+        r#"{{"id": "s0000001", "type": "sketch", "v": 1, "name": "Tangent", "plane": "xy", "points": [{{"id": "pa000001", "x": -10, "y": 0, "construction": false}}, {{"id": "pa000002", "x": 10, "y": 0, "construction": false}}, {{"id": "pa000003", "x": 0, "y": 5, "construction": false}}, {{"id": "pa000004", "x": {}, "y": {}, "construction": false}}, {{"id": "pa000005", "x": {}, "y": {}, "construction": false}}], "lines": [{{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}}], "circles": [], "arcs": [{{"id": "aa000001", "center": "pa000003", "start": "pa000004", "end": "pa000005", "construction": false}}], "constraints": [{{"id": "ka000001", "type": "horizontal", "line": "na000001"}}, {{"id": "ka000002", "type": "distance_x", "a": "origin", "b": "pa000001", "value": -10, "driving": true}}, {{"id": "ka000003", "type": "distance_y", "a": "origin", "b": "pa000001", "value": 0, "driving": true}}, {{"id": "ka000004", "type": "length", "line": "na000001", "value": 20, "driving": true}}, {{"id": "ka000005", "type": "distance_x", "a": "origin", "b": "pa000003", "value": 0, "driving": true}}, {{"id": "ka000006", "type": "radius", "curve": "aa000001", "value": 5, "driving": true}}, {{"id": "ka000007", "type": "tangent", "a": "na000001", "b": "aa000001", "side": "left"}}]}}"#,
+        start[0], start[1], end[0], end[1]
+    );
+    let f = opened(&document(&[&sketch]));
+    let checked = f.ran(
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": false}"#,
+    );
+    let sketch_problems: Vec<&Value> = checked["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["code"] != "drift")
+        .collect();
+    assert!(sketch_problems.is_empty(), "{checked}");
+    f.ran("begin", r#"{"session": "s1"}"#);
+    let text = f.text();
+    let refused = f.refused(
+        "sketch_merge",
+        &json!({"session": "s1", "revision": 1, "sketch": "s0000001", "points": ["pa000002", "pa000004"]}).to_string(),
+    );
+    // The tangent, now at the shared end (ka000007, kept under its ID), with the line's
+    // and the centre's holds: six that can't all hold.
+    assert_eq!(refused[0]["code"], "over_constrained", "{refused}");
+    assert_eq!(
+        refused[0]["elements"],
+        json!([
+            "ka000001", "ka000002", "ka000004", "ka000005", "ka000006", "ka000007"
+        ])
+    );
+    assert_eq!(refused[0]["cause"], WORSE);
+    assert_eq!((f.revision(), f.text()), (1, text));
 }
 
 /// Two lines, `na` from `pa` (at the origin) to (10, 0) and `nb` from `pb` (at the origin)
@@ -295,8 +372,8 @@ fn a_merge_of_two_locked_ends_makes_a_lock_redundant_and_is_refused_as_main_roll
             "elements": elements,
             "elements_total": 2,
             "parameter": null,
-            "cause": "a merge whose solve is worse than the one before it is refused, as FreeCAD's Coincident command rolls it back",
-            "suggestion": "remove the constraints named first, or merge other points",
+            "cause": WORSE,
+            "suggestion": "remove the constraints named, then make the merge again",
             "candidates": []
         })
     );
