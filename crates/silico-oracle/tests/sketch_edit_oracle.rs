@@ -1636,6 +1636,19 @@ fn a_trim_in_the_tangency_band_compares_every_curve_it_doesnt_touch() {
     };
     let v = verdict(p, Some(&without("n0000005")));
     agrees(&v);
+    // A constraint of FreeCAD's on the line in the band, last, found redundant: touched, so
+    // not named as FreeCAD's own.
+    let listed = doctored(&theirs[0], |fc| {
+        fc.constraints.push(FcConstraint {
+            kind: "Horizontal".to_owned(),
+            refs: vec![[0, 0]],
+            value: 0.0,
+            driving: true,
+            name: String::new(),
+        });
+        fc.after.redundant.push(fc.constraints.len());
+    });
+    agrees(&verdict(p, Some(&listed)));
     let v = verdict(p, Some(&without("n0000008")));
     assert!(
         v.how
@@ -2368,6 +2381,60 @@ fn freecad_joining_what_silico_has_apart_names_each_place_and_point() {
         )),
         "{v}"
     );
+    // A line of FreeCAD's own, first, its start joined with n0000005's start and n0000006's
+    // end: named as FreeCAD's geometry 0.
+    let own = doctored(&theirs[0], |fc| {
+        for c in &mut fc.constraints {
+            for r in &mut c.refs {
+                if r[0] >= 0 {
+                    r[0] += 1;
+                }
+            }
+        }
+        let line = FcGeometry {
+            id: 999,
+            kind: "line".to_owned(),
+            points: [("1", [0.0, 0.0]), ("2", [5.0, 0.0])]
+                .into_iter()
+                .map(|(k, q)| (k.to_owned(), q))
+                .collect(),
+            radius: None,
+            construction: false,
+        };
+        fc.edited.insert(0, line.clone());
+        fc.geometry.insert(0, line);
+        let (n5, n6) = (
+            solved_index(p, fc, "n0000005"),
+            solved_index(p, fc, "n0000006"),
+        );
+        for other in [[n5, 1], [n6, 2]] {
+            fc.constraints.push(FcConstraint {
+                kind: "Coincident".to_owned(),
+                refs: vec![[0, 1], other],
+                value: 0.0,
+                driving: true,
+                name: String::new(),
+            });
+        }
+    });
+    let v = verdict(p, Some(&own));
+    assert!(
+        v.how
+            .iter()
+            .any(|h| h.starts_with("FreeCAD joins FreeCAD's geometry 0's start, ")),
+        "{v}"
+    );
+    // FreeCAD's distance_y k0000009 1e-9 rather than 0, exactly the values' tolerance: the
+    // same value.
+    let near = doctored(&theirs[0], |fc| {
+        let c = fc
+            .constraints
+            .iter_mut()
+            .find(|c| c.kind == "DistanceY")
+            .unwrap();
+        c.value = 1e-9;
+    });
+    agrees(&verdict(p, Some(&near)));
     // FreeCAD's distance_x 5.001: the dimension's value differs.
     let longer = doctored(&theirs[0], |fc| {
         let c = fc
@@ -2457,11 +2524,11 @@ fn a_redundancy_both_sides_find_agrees_and_one_only_freecads_is_named() {
 
 #[test]
 fn a_merge_from_apart_agrees_and_silicos_other_points_moved_before_the_solve_are_named() {
-    // p0000006 (3, 4), a lone point, merged into the line n0000003's end p0000002 (10, 0);
-    // the lone point p0000007 (6, 7) stays where it is.
+    // p0000006 (3, 4), a lone point, merged into the line n0000003's end p0000002 (10, 3);
+    // the lone points p0000007 (6, 7) and p0000008 (0, 0) stay where they are.
     let case = case_of(
         "merge_lone_point_from_apart",
-        r#""points": [{"id": "p0000001", "x": 1, "y": 2, "construction": false}, {"id": "p0000002", "x": 10, "y": 3, "construction": false}, {"id": "p0000006", "x": 3, "y": 4, "construction": false}, {"id": "p0000007", "x": 6, "y": 7, "construction": false}],
+        r#""points": [{"id": "p0000001", "x": 1, "y": 2, "construction": false}, {"id": "p0000002", "x": 10, "y": 3, "construction": false}, {"id": "p0000006", "x": 3, "y": 4, "construction": false}, {"id": "p0000007", "x": 6, "y": 7, "construction": false}, {"id": "p0000008", "x": 0, "y": 0, "construction": false}],
         "lines": [{"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}], "circles": [], "arcs": [], "constraints": []"#,
         Edit::Merge {
             points: vec!["p0000002".to_owned(), "p0000006".to_owned()],
@@ -2472,6 +2539,20 @@ fn a_merge_from_apart_agrees_and_silicos_other_points_moved_before_the_solve_are
     let p = &prepared[0];
     let theirs = freecad_outcomes(&prepared).unwrap();
     agrees(&verdict(p, theirs[0].as_ref()));
+    // Silico's p0000008 moved before the solve by exactly 1e-8, across or up: within the
+    // comparison's 1e-8, so not named.
+    for axis in [0, 1] {
+        let moved = changed(&case, p, |sketch| {
+            let q = sketch
+                .points
+                .iter_mut()
+                .find(|q| q.id == id("p0000008"))
+                .unwrap();
+            let at = if axis == 0 { &mut q.x } else { &mut q.y };
+            *at = silico_core::document::Coordinate::new(1e-8).unwrap();
+        });
+        agrees(&verdict(&moved, theirs[0].as_ref()));
+    }
     // Silico's p0000007 moved before the solve, across or up: each named.
     for (axis, by) in [(0, 1e-6), (1, -1e-6)] {
         let moved = changed(&case, p, |sketch| {

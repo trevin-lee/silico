@@ -435,8 +435,9 @@ fn a_splits_refusal_is_a_rule_only_for_what_it_names_and_where_it_is() {
 
 #[test]
 fn a_trims_refusal_is_a_rule_only_for_a_constraint_no_piece_can_take() {
-    // The circle c0000008 about p0000007 (0.5, 1), radius 1, tangent to n0000003; and
-    // p0000009 and p0000010 symmetric about n0000005.
+    // The circle c0000008 about p0000007 (0.5, 1), radius 1, tangent to n0000003; the
+    // circle c0000013 about p0000014 (5, 5), tangent to n0000005; and p0000009 and p0000010
+    // symmetric about n0000005.
     let sketch = || {
         sketch_of(
             &[
@@ -446,16 +447,18 @@ fn a_trims_refusal_is_a_rule_only_for_a_constraint_no_piece_can_take() {
                 ("p0000007", 0.5, 1.0),
                 ("p0000009", 0.0, 0.5),
                 ("p0000010", 2.0, 0.5),
+                ("p0000014", 5.0, 5.0),
             ],
             &[
                 ("n0000003", "p0000001", "p0000002"),
                 ("n0000005", "p0000002", "p0000004"),
             ],
-            &[("c0000008", "p0000007", 1.0)],
+            &[("c0000008", "p0000007", 1.0), ("c0000013", "p0000014", 1.0)],
             &[],
             &[
                 r#"{"id": "k0000011", "type": "tangent", "a": "n0000003", "b": "c0000008", "side": "left"}"#,
                 r#"{"id": "k0000012", "type": "symmetric", "a": "p0000009", "b": "p0000010", "about": "n0000005"}"#,
+                r#"{"id": "k0000015", "type": "tangent", "a": "n0000005", "b": "c0000013", "side": "left"}"#,
             ],
         )
     };
@@ -477,6 +480,8 @@ fn a_trims_refusal_is_a_rule_only_for_a_constraint_no_piece_can_take() {
         rule_of("c0000008", &["k0000011", "c0000008"], "pick"),
         Some(Rule::NoPieceTakes("k0000011".to_owned()))
     );
+    // Another circle's tangency isn't the trimmed circle's.
+    assert_eq!(rule_of("c0000008", &["k0000015", "c0000008"], "pick"), None);
     // A symmetric about the trimmed line has no piece to be about; one about another line
     // isn't this trim's.
     assert_eq!(

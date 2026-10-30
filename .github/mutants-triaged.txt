@@ -253,3 +253,10 @@ crates/silico-render/src/lavapipe.rs | environment | replace && with || | #275
 # can cause on purpose; without it a watcher would wait for a change that never comes.
 crates/silico-core/src/recompute.rs | <impl Drop for EndsCount>::drop | replace <impl Drop for EndsCount>::drop with () | #297
 crates/silico-core/src/document/undo.rs | Plan<K>::restored | replace Plan<K>::restored -> Option<K> with None | #300
+# A merge's gated refusal that names just the request's points has a point last, neither a
+# line its placement collapses nor a tangent_on: `>=` lets it through as named first, and
+# both checks after it still find no rule.
+crates/silico-oracle/src/sketch_edit.rs | rule | replace > with >= | #251
+# A trim's curve whose gap from tangent is exactly 1e-12 mm (the f64 nearest): no drawn
+# coordinates make one, and at the floor either answer is the band's (tangent as drawn).
+crates/silico-oracle/src/sketch_edit.rs | contact_band | replace > with >= | #251
