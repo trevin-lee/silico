@@ -1428,7 +1428,9 @@ fn a_session_closed_ends_its_drag_and_gives_its_worker_back() {
     // the worker's drag ended with it: the close ends the drag, not the session's last
     // reference going some time after.
     assert_eq!(f.sketches.stops(), 1);
-    let moved = moving.try_take().unwrap_or_else(|_| panic!("the move hadn't answered"));
+    let moved = moving
+        .try_take()
+        .unwrap_or_else(|_| panic!("the move hadn't answered"));
     assert_eq!(the_error(&moved).code(), ErrorCode::Cancelled);
     f.sketches.release();
     // Closed: the session's commands are refused as of no session.
@@ -1436,4 +1438,32 @@ fn a_session_closed_ends_its_drag_and_gives_its_worker_back() {
         the_error(&f.moved([1.0, 1.0])).message(),
         "no session s1 is open"
     );
+}
+
+#[test]
+fn a_reload_of_the_file_changed_on_disk_ends_the_drag() {
+    let profile = document(&[&S0000001.replace(
+        r#"{"id": "ka00000a", "type": "length", "line": "na000002", "value": 5, "driving": true}, "#,
+        "",
+    )]);
+    let f = opened(&profile);
+    f.begin_point("pa000003").result.unwrap();
+    // Another client renames the profile; the release, queued, reloads the file first, a
+    // new revision, which ends the drag before the release runs.
+    let renamed = profile.replace("Bracket profile", "Profile");
+    std::fs::write(f.dir.path().join("bracket.silico"), &renamed).unwrap();
+    let release = f.ended(Some([62.5, 7.0]));
+    assert!(release.session.as_ref().unwrap().reloaded);
+    assert_eq!(
+        the_error(&release).message(),
+        "no drag is open in session s1"
+    );
+    assert_eq!(f.file(), renamed);
+    // And a drag begun at the new revision is ended by a command's reload alike.
+    f.begin_point("pa000003").result.unwrap();
+    std::fs::write(f.dir.path().join("bracket.silico"), &profile).unwrap();
+    let text = answer(f.sessions.text(&s1(), None));
+    assert!(text.session.unwrap().reloaded);
+    assert_eq!(f.drag(), None);
+    assert_eq!(f.sketches.drag_calls().last(), Some(&DragCall::End));
 }
