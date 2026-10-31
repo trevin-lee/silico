@@ -758,8 +758,12 @@ mod tests {
             let coarse = box_read(&halved);
             let limit = whole(&coarse).len();
             assert!(whole(&fine).len() > limit, "{side}");
-            let Ok(fine_read) = &fine.result else { panic!() };
-            let Ok(coarse_read) = &coarse.result else { panic!() };
+            let Ok(fine_read) = &fine.result else {
+                panic!()
+            };
+            let Ok(coarse_read) = &coarse.result else {
+                panic!()
+            };
             assert_eq!(
                 coarse_read.bodies[0].level,
                 2.0 * fine_read.bodies[0].level,
