@@ -6507,3 +6507,549 @@ fn the_format_chosen_is_the_one_marked_chosen() {
     assert!(chosen(&h, "3MF") && !chosen(&h, "STEP"));
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- The viewport (M5.6) ----
+
+/// Two boxes, each a body: a 50 mm cube at the origin, and a 1 m cube 2 m along x. The
+/// fake meshes a box at its floor, its box's diagonal × 1e-4 (`mesh_floor`): the small
+/// one's 0.00866 mm, under every level these tests view it at; the large one's
+/// 1000√3 × 1e-4 = 0.173205 mm, over all of them, so it's meshed at its floor, which
+/// serves every half pixel under 2 · 0.125 (its floor's level, 2⁻³).
+const TWO_BOXES: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Small", "position": [0, 0, 0], "length": 50, "width": 50, "height": 50},
+    {"id": "a91cw0de", "type": "box", "v": 1, "name": "Large", "position": [2000, 0, 0], "length": 1000, "width": 1000, "height": 1000}
+  ]
+}
+"#;
+
+/// What the fake renderer was told: each upload, by body, with its mesh; each forget; each
+/// frame; and the picking answer to give once a frame asks for one.
+#[derive(Default)]
+struct Told {
+    uploads: Vec<(u32, Arc<silico_protocol::Mesh>)>,
+    forgets: Vec<u32>,
+    frames: Vec<silico_app::renderer::FrameData>,
+    pick: Option<silico_app::renderer::Pick>,
+    picking: Option<silico_app::renderer::PixelRect>,
+}
+
+type Record = Arc<Mutex<Told>>;
+
+/// A renderer that needs no GPU: it counts what it's told, as the real one is told it.
+struct FakeRenderer(Record);
+
+impl silico_app::renderer::ViewRenderer for FakeRenderer {
+    type Failure = String;
+    fn upload(&mut self, body: u32, mesh: &Arc<silico_protocol::Mesh>) -> Result<(), String> {
+        self.0
+            .lock()
+            .unwrap()
+            .uploads
+            .push((body, Arc::clone(mesh)));
+        Ok(())
+    }
+    fn forget(&mut self, body: u32) {
+        self.0.lock().unwrap().forgets.push(body);
+    }
+    fn prepare(
+        &mut self,
+        _: &silico_app::renderer::Frame<'_>,
+    ) -> Result<eframe::wgpu::CommandBuffer, String> {
+        panic!("no GPU in these tests")
+    }
+    fn composite(&self, _: &mut eframe::wgpu::RenderPass<'_>) {}
+    fn take_picking(&mut self) -> Option<silico_app::renderer::Picking> {
+        let mut told = self.0.lock().unwrap();
+        let rect = told.picking.take()?;
+        Some(silico_app::renderer::Picking {
+            rect,
+            hit: told.pick,
+        })
+    }
+}
+
+/// Frames handed to the fake renderer on the UI thread, its changes made through the same
+/// `apply` the GPU's paint callback makes them through, and its picking a frame late.
+struct Recorder(FakeRenderer);
+
+impl silico_app::renderer::Present for Recorder {
+    fn present(
+        &mut self,
+        _: &eframe::egui::Painter,
+        _: eframe::egui::Rect,
+        changes: Vec<silico_app::renderer::Change>,
+        frame: Option<silico_app::renderer::FrameData>,
+    ) {
+        assert!(silico_app::renderer::apply(&mut self.0, changes).is_empty());
+        if let Some(frame) = frame {
+            let mut told = self.0.0.lock().unwrap();
+            // The renderer takes bodies ascending, each once.
+            assert!(frame.bodies.windows(2).all(|pair| pair[0] < pair[1]));
+            if let Some(rect) = frame.picking {
+                told.picking = Some(rect);
+            }
+            told.frames.push(frame);
+        }
+    }
+    fn picked(&mut self) -> Option<silico_app::renderer::Picking> {
+        use silico_app::renderer::ViewRenderer as _;
+        self.0.take_picking()
+    }
+    fn refused(&mut self) -> std::collections::BTreeSet<u32> {
+        std::collections::BTreeSet::new()
+    }
+}
+
+impl Fixture {
+    /// The app with `text` open from `name`, drawn through the fake renderer.
+    fn drawn(&self, name: &str, text: &str) -> (AppHarness, Record) {
+        let path = self.file(name, text);
+        let record = Record::default();
+        let app = App::new(Arc::clone(&self.sessions))
+            .presenting(Box::new(Recorder(FakeRenderer(Arc::clone(&record)))));
+        let mut h = {
+            let _marked = never_waits::marked();
+            Harness::builder()
+                .with_size((1280.0, 800.0))
+                .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+        };
+        h.state_mut().open(path.to_str().unwrap(), false);
+        (h, record)
+    }
+}
+
+fn view(h: &AppHarness) -> &silico_app::viewport::View {
+    &h.state().tabs()[0].view
+}
+
+fn view_mut(h: &mut AppHarness) -> &mut silico_app::viewport::View {
+    &mut h.state_mut().tabs_mut()[0].view
+}
+
+/// How many meshes the fake kernel has made.
+fn tessellated(f: &Fixture) -> usize {
+    f.kernel
+        .calls()
+        .iter()
+        .filter(|call| matches!(call.op, Op::Tessellate { .. }))
+        .count()
+}
+
+/// Frames stepped until the tab's read has answered and nothing more is read: its bodies
+/// held, of the published revision, no read out, and none wanted over three more frames.
+fn meshes_settled(h: &mut AppHarness) {
+    step_until(h, "the meshes read", |h| {
+        h.state().tabs().first().is_some_and(|tab| {
+            !tab.view.reading() && tab.published.is_some() && tab.view.model() == tab.published
+        })
+    });
+    for _ in 0..3 {
+        step(h);
+    }
+    step_until(h, "the meshes read", |h| !view(h).reading());
+}
+
+fn uploads(record: &Record) -> Vec<u32> {
+    record
+        .lock()
+        .unwrap()
+        .uploads
+        .iter()
+        .map(|(body, _)| *body)
+        .collect()
+}
+
+/// The viewport's place in the window, in points, as it was last frame.
+fn the_viewport(h: &AppHarness) -> eframe::egui::Rect {
+    view(h).frame().unwrap().rect
+}
+
+#[track_caller]
+fn near(a: [f64; 3], b: [f64; 3], within: f64) {
+    for k in 0..3 {
+        assert!((a[k] - b[k]).abs() <= within, "{a:?} against {b:?}");
+    }
+}
+
+fn minus(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+#[test]
+fn a_models_buffers_are_uploaded_once_over_a_hundred_frames_and_an_orthographic_orbit_reads_nothing()
+ {
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    // One body, the cut, as body 1, read once (Home's view, fitted by the core), meshed
+    // once, and uploaded once, with the mesh the read gave.
+    assert_eq!(view(&h).reads(), 1);
+    assert_eq!(tessellated(&f), 1);
+    assert_eq!(uploads(&record), [1]);
+    let mesh = Arc::clone(&view(&h).bodies()[&1].mesh);
+    assert!(Arc::ptr_eq(&record.lock().unwrap().uploads[0].1, &mesh));
+    // Home: from the top front right, onto the cut's box's centre, (20, 10, 5).
+    let home = view(&h).camera().clone();
+    assert_eq!(home.target, [20.0, 10.0, 5.0]);
+    let d = minus(home.eye, home.target);
+    assert!(d[0] > 0.0 && (d[0] + d[1]).abs() < 1e-6 && (d[0] - d[2]).abs() < 1e-6);
+    let framed = record.lock().unwrap().frames.len();
+    for _ in 0..100 {
+        step(&mut h);
+    }
+    {
+        let told = record.lock().unwrap();
+        assert_eq!(told.uploads.len(), 1);
+        assert!(told.forgets.is_empty());
+        assert!(told.frames.len() >= framed + 100);
+        assert!(
+            told.frames[framed..]
+                .iter()
+                .all(|frame| frame.bodies == [1] && frame.camera == home)
+        );
+    }
+    assert_eq!((view(&h).reads(), tessellated(&f)), (1, 1));
+    // An orbit, Shift and the middle button dragged 90 points right, ten at a time: 45°
+    // about z through the target. The eye's way from the target, (1, −1, 1)/√3, turned
+    // by −45°, is (0, −√2, 1)/√3: the front, from above. The half pixel of an
+    // orthographic view doesn't change as it turns, so nothing is read or uploaded.
+    let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, 0.0);
+    let shift = eframe::egui::Modifiers::SHIFT;
+    h.event(eframe::egui::Event::ModifiersChanged(shift));
+    h.hover_at(at);
+    h.event(eframe::egui::Event::PointerButton {
+        pos: at,
+        button: eframe::egui::PointerButton::Middle,
+        pressed: true,
+        modifiers: shift,
+    });
+    step(&mut h);
+    for i in 1..=9u8 {
+        h.hover_at(at + eframe::egui::vec2(10.0 * f32::from(i), 0.0));
+        step(&mut h);
+    }
+    h.event(eframe::egui::Event::PointerButton {
+        pos: at + eframe::egui::vec2(90.0, 0.0),
+        button: eframe::egui::PointerButton::Middle,
+        pressed: false,
+        modifiers: shift,
+    });
+    h.event(eframe::egui::Event::ModifiersChanged(
+        eframe::egui::Modifiers::NONE,
+    ));
+    step(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    let turned = view(&h).camera().clone();
+    assert_eq!(turned.target, home.target);
+    let distance = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let way = [0.0, -(2f64.sqrt()), 1.0].map(|c| c / 3f64.sqrt() * distance);
+    near(minus(turned.eye, turned.target), way, 1e-9 * distance);
+    assert_eq!(turned.projection, home.projection);
+    assert_eq!((view(&h).reads(), tessellated(&f)), (1, 1));
+    assert_eq!(uploads(&record), [1]);
+    assert_eq!(record.lock().unwrap().frames.last().unwrap().camera, turned);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_zoom_past_serves_reads_again_listing_what_is_held_and_uploads_only_the_body_whose_level_changed()
+ {
+    let f = fixture();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    assert_eq!(uploads(&record), [1, 2]);
+    assert_eq!(record.lock().unwrap().frames.last().unwrap().bodies, [1, 2]);
+    // From the front onto the small cube, at half a pixel of 0.04 mm (the view 0.08 mm a
+    // pixel high): the small cube's level is 2⁻⁵; the large one is at its floor.
+    let height = view(&h).frame().unwrap().size_px[1];
+    let camera = silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic {
+            view_height: 0.08 * f64::from(height),
+        },
+        eye: [25.0, -500.0, 25.0],
+        target: [25.0, 25.0, 25.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    view_mut(&mut h).set_camera(camera);
+    meshes_settled(&mut h);
+    let floor = 1000.0 * 3f64.sqrt() * 1e-4;
+    let at = |h: &AppHarness, n: u32| {
+        let body = &view(h).bodies()[&n];
+        (body.level, body.deflection, body.serves)
+    };
+    assert_eq!(view(&h).reads(), 2);
+    assert_eq!(at(&h, 1), (0.03125, 0.03125, [0.03125, 0.0625]));
+    let (level, deflection, serves) = at(&h, 2);
+    assert_eq!((level, serves), (0.03125, [0.0, 0.25]));
+    assert!((deflection - floor).abs() < 1e-12, "{deflection}");
+    let (made, told) = (tessellated(&f), uploads(&record).len());
+    // The wheel, 200 points toward the model at the view's centre: the view halves, so
+    // the half pixel is 0.02, under the small cube's [0.03125, 0.0625); the large one's
+    // [0, 0.25) still serves it. One read, holding both; the small cube meshed at 2⁻⁶
+    // and uploaded again, alone; the large one answered held.
+    h.hover_at(the_viewport(&h).center());
+    h.event(eframe::egui::Event::MouseWheel {
+        unit: eframe::egui::MouseWheelUnit::Point,
+        delta: eframe::egui::vec2(0.0, 200.0),
+        phase: eframe::egui::TouchPhase::Move,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    step(&mut h);
+    match view(&h).camera().projection {
+        silico_protocol::Projection::Orthographic { view_height } => {
+            assert_eq!(view_height, 0.04 * f64::from(height));
+        }
+        silico_protocol::Projection::Perspective { .. } => panic!("orthographic"),
+    }
+    meshes_settled(&mut h);
+    assert_eq!(view(&h).reads(), 3);
+    let held: Vec<(String, f64)> = view(&h)
+        .held_asked()
+        .iter()
+        .map(|held| (held.key.to_string(), held.deflection))
+        .collect();
+    let keys: Vec<String> = view(&h)
+        .bodies()
+        .values()
+        .map(|body| body.key.to_string())
+        .collect();
+    assert_eq!(
+        held,
+        [(keys[0].clone(), 0.03125), (keys[1].clone(), deflection)]
+    );
+    assert_eq!(at(&h, 1), (0.015625, 0.015625, [0.015625, 0.03125]));
+    assert_eq!(at(&h, 2).1, deflection);
+    assert_eq!(tessellated(&f), made + 1);
+    assert_eq!(uploads(&record)[told..], [1]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn frames_climb_and_the_panels_answer_while_the_meshes_read_is_held() {
+    let f = fixture();
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "the meshes read held", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.view.reading() && tab.timeline.is_some())
+    });
+    let frames = h.state().frames();
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    assert!(h.state().frames() >= frames + 30);
+    assert!(view(&h).reading());
+    assert!(shows(&h, "Timeline", "Hole"));
+    select(&mut h, "Pin");
+    assert!(uploads(&record).is_empty());
+    hold.release();
+    step_until(&mut h, "the body uploaded", |h| !view(h).reading());
+    step(&mut h);
+    assert_eq!(uploads(&record), [1]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_edits_new_revision_reads_again_and_a_body_gone_is_forgotten() {
+    let f = fixture();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    assert_eq!(uploads(&record), [1, 2]);
+    let id = h.state().tabs()[0].id;
+    let opened = h.state().tabs()[0].published;
+    let keys = |h: &AppHarness| -> Vec<String> {
+        view(h)
+            .bodies()
+            .values()
+            .map(|body| body.key.to_string())
+            .collect()
+    };
+    let before = keys(&h);
+    // Another client lengthens the small cube: a new revision, whose model is read with
+    // both meshes held; the small cube's key changes, so it alone is uploaded again.
+    let small = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
+    f.sessions
+        .set_field(
+            &id,
+            h.state().tabs()[0].revision,
+            small,
+            "length".to_owned(),
+            json::read(b"60").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the edit's model read", |h| {
+        view(h).model() > opened && !view(h).reading()
+    });
+    meshes_settled(&mut h);
+    let after = keys(&h);
+    assert_ne!(after[0], before[0]);
+    assert_eq!(after[1], before[1]);
+    let held: Vec<String> = view(&h)
+        .held_asked()
+        .iter()
+        .map(|held| held.key.to_string())
+        .collect();
+    assert_eq!(held, before);
+    assert_eq!(uploads(&record), [1, 2, 1]);
+    assert!(record.lock().unwrap().forgets.is_empty());
+    // The large cube removed: body 2 forgotten, nothing uploaded.
+    let large = silico_core::document::FeatureId::new("a91cw0de").unwrap();
+    let revision = f.sessions.status(&id).session.unwrap().revision;
+    f.sessions
+        .remove_feature(&id, revision, large)
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "body 2 forgotten", |h| {
+        !view(h).bodies().contains_key(&2)
+    });
+    step(&mut h);
+    assert_eq!(record.lock().unwrap().forgets, [2]);
+    assert_eq!(uploads(&record), [1, 2, 1]);
+    assert_eq!(record.lock().unwrap().frames.last().unwrap().bodies, [1]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_view_cubes_front_is_the_cores_front_view_and_f6_fits_after_a_pan() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Front")
+        .click();
+    step(&mut h);
+    // From −y onto the cut's box's centre, z up: the box 40 across and 12 high, 1.1 times
+    // the larger of 12 and 40 · height / width.
+    let [width, height] = view(&h).frame().unwrap().size_px;
+    let fitted = 1.1 * 12f64.max(40.0 * f64::from(height) / f64::from(width));
+    let front = view(&h).camera().clone();
+    assert_eq!(front.target, [20.0, 10.0, 5.0]);
+    let d = minus(front.eye, front.target);
+    assert!(d[0] == 0.0 && d[1] < 0.0 && d[2] == 0.0, "{d:?}");
+    assert_eq!(front.up, [0.0, 0.0, 1.0]);
+    let view_height = |camera: &silico_protocol::Camera| match camera.projection {
+        silico_protocol::Projection::Orthographic { view_height } => view_height,
+        silico_protocol::Projection::Perspective { .. } => panic!("orthographic"),
+    };
+    assert!((view_height(&front) - fitted).abs() < 1e-9);
+    // The middle button pans 40 points left: the target moves right by 40 points' worth.
+    let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, 0.0);
+    h.hover_at(at);
+    h.event(eframe::egui::Event::PointerButton {
+        pos: at,
+        button: eframe::egui::PointerButton::Middle,
+        pressed: true,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    h.hover_at(at - eframe::egui::vec2(40.0, 0.0));
+    h.event(eframe::egui::Event::PointerButton {
+        pos: at - eframe::egui::vec2(40.0, 0.0),
+        button: eframe::egui::PointerButton::Middle,
+        pressed: false,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    step(&mut h);
+    let points = f64::from(the_viewport(&h).height());
+    let panned = view(&h).camera().clone();
+    near(
+        panned.target,
+        [20.0 + 40.0 * view_height(&front) / points, 10.0, 5.0],
+        1e-9,
+    );
+    // F6 fits again: the box's centre, as high as the ViewCube's fit.
+    h.key_press(eframe::egui::Key::F6);
+    step(&mut h);
+    let refit = view(&h).camera().clone();
+    near(refit.target, [20.0, 10.0, 5.0], 1e-12);
+    assert!((view_height(&refit) - fitted).abs() < 1e-9);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn each_frame_gives_the_camera_its_size_scale_pointer_highlights_and_picking_a_frame_late() {
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    h.set_pixels_per_point(2.0);
+    meshes_settled(&mut h);
+    let rect = the_viewport(&h);
+    let at = rect.min + eframe::egui::vec2(30.0, 40.0);
+    h.hover_at(at);
+    step(&mut h);
+    let frame = view(&h).frame().unwrap().clone();
+    assert_eq!(frame.pixels_per_point, 2.0);
+    assert_eq!(frame.pointer_px, Some([60.0, 80.0]));
+    let size = [rect.width() * 2.0, rect.height() * 2.0].map(|side| side.round());
+    assert_eq!(frame.size_px.map(|side| side as f32), size);
+    assert_eq!(&frame.camera, view(&h).camera());
+    // The selection's highlights are passed through as they're set.
+    let face = (1, silico_app::renderer::Element::Face(3));
+    let edge = (1, silico_app::renderer::Element::Edge(2));
+    view_mut(&mut h).highlights = [face, edge].into_iter().collect();
+    // A picking rectangle asked: in the next frame only, and its result the frame after.
+    let rect_px = silico_app::renderer::PixelRect {
+        min: [58, 78],
+        size: [5, 5],
+    };
+    let pick = silico_app::renderer::Pick {
+        body: 1,
+        hit: silico_app::renderer::Element::Face(3),
+        pixel: [60, 80],
+        point: Some([20.0, 0.0, 5.0]),
+    };
+    record.lock().unwrap().pick = Some(pick);
+    // A rectangle past what a renderer takes isn't asked.
+    let wide = silico_app::renderer::PixelRect {
+        min: [0, 0],
+        size: [257, 1],
+    };
+    assert!(!view_mut(&mut h).pick(wide));
+    assert!(view_mut(&mut h).pick(rect_px));
+    step(&mut h);
+    {
+        let told = record.lock().unwrap();
+        let last = told.frames.last().unwrap();
+        assert_eq!(last.highlights, [face, edge]);
+        assert_eq!(last.picking, Some(rect_px));
+    }
+    assert_eq!(view(&h).picked(), None);
+    step(&mut h);
+    assert_eq!(
+        view(&h).picked(),
+        Some(silico_app::renderer::Picking {
+            rect: rect_px,
+            hit: Some(pick)
+        })
+    );
+    assert_eq!(record.lock().unwrap().frames.last().unwrap().picking, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_body_hidden_in_the_browser_is_left_out_of_the_frame_and_kept_uploaded() {
+    let f = fixture();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        shows(h, "Browser", "Hide Large")
+    });
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Hide Large")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(record.lock().unwrap().frames.last().unwrap().bodies, [1]);
+    assert_eq!(uploads(&record), [1, 2]);
+    assert!(record.lock().unwrap().forgets.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
