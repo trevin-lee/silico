@@ -4799,13 +4799,12 @@ fn a_sweeps_body_read_before_the_session_moved_is_read_again() {
     let f = fixture();
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
-    h.get_by_role_and_label(Role::Pane, "Browser")
-        .get_by_label("Triangle")
-        .click();
-    step(&mut h);
+    // The Pad's dialog, no sketch chosen: nothing to add yet.
+    create(&mut h, "Pad");
+    settled(&mut h);
     let id = h.state().tabs()[0].id;
     // Another client's box, the document's tip once it's added, held in the session's
-    // queue; the Pad's body is read now, beside the queue, at the revision before it.
+    // queue.
     let (hold, check) = hold_queue(&f, &h, 0);
     let theirs = f.sessions.add_feature(
         &id,
@@ -4816,11 +4815,16 @@ fn a_sweeps_body_read_before_the_session_moved_is_read_again() {
         )
         .unwrap(),
     );
-    create(&mut h, "Pad");
-    // Its read sent, and answered (no published read is left running), but not yet taken,
-    // the harness not stepped: so it read the revision before the box. The session then
-    // moves.
-    assert!(h.state().tabs()[0].reading_body());
+    // The sketch chosen with no frame drawn (a frame would take the read's answer): the
+    // Pad's body is read, beside the queue, at the revision before the box.
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.pick(&silico_core::document::FeatureId::new("s0000001").unwrap());
+        tab.dialog_changed(&sessions);
+        assert!(tab.reading_body());
+    }
+    // Answered (no published read is left running), not taken: the session then moves.
     let deadline = Instant::now() + WAIT;
     while !f.sessions.status(&id).result.unwrap().reads.is_empty() {
         assert!(Instant::now() < deadline, "the body's read never answered");
@@ -4838,5 +4842,40 @@ fn a_sweeps_body_read_before_the_session_moved_is_read_again() {
         "{pad:?}"
     );
     assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    made(&mut h, "Box", "Length");
+    let boxed = text_of(&f, &h);
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    // The Pin's radius made "-2.5" (refused), then "2.5" again: a set_field of the value
+    // the document holds, which changes nothing.
+    double_click(&mut h, "Timeline", "Pin");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    type_into(&mut h, "Radius", "-");
+    settled(&mut h);
+    let sent = h.state().tabs()[0].edits.sent;
+    h.key_press(eframe::egui::Key::Home);
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("2.5"));
+    assert_eq!(h.state().tabs()[0].edits.sent, sent + 1);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    step_key(&mut h, false);
+    assert_eq!(text_of(&f, &h), boxed);
     assert_eq!(never_waits::waits(), 0);
 }

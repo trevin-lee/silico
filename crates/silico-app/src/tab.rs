@@ -2054,7 +2054,7 @@ mod tests {
         let fused = [
             feature("b0000001", "box", true, &[]),
             feature("b0000002", "box", false, &[]),
-            feature("u0000001", "fuse", true, &["b0000001", "b0000002"]),
+            feature("z0000001", "fuse", true, &["b0000001", "b0000002"]),
         ];
         assert_eq!(tip_of(&fused), None);
         assert_eq!(tip_of(&[]), None);
