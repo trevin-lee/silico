@@ -213,10 +213,12 @@ pub struct Pick {
 /// pixels, lies nearest the rectangle's centre (the first in rows, top to bottom, of those
 /// as near), or none if only the background does.
 ///
-/// A body forgotten or replaced (by an upload of another mesh) since its frame asked is
-/// stale there: its pixels are passed over as the background's, so the hit is the nearest
-/// pixel of a body still drawn as it was, or none. An answer is still given, so a hover can
-/// clear: never a face of a mesh the frame didn't draw.
+/// A body forgotten or replaced (by an upload of another mesh) since its frame asked, up to
+/// the moment the answer is taken, is stale there: its pixels are passed over as the
+/// background's, so the hit is the nearest pixel of a body still drawn as it was, or none.
+/// The hit is chosen when [`Renderer::take_picking`] gives it, from the readback kept till
+/// then. An answer is still given, so a hover can clear: never a face of a mesh the frame
+/// didn't draw.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Picking {
     pub frame: u64,
@@ -246,8 +248,9 @@ pub struct Renderer {
     view: Option<ViewBuilder>,
     /// The frames' picking requests waiting for their answers, by readback identifier.
     pending: BTreeMap<u64, PendingPick>,
-    /// The newest picking answered and not yet taken.
-    picked: Option<Picking>,
+    /// The newest picking answered and not yet taken: its request and its readback, the
+    /// hit chosen from them when it's taken.
+    picked: Option<Answer>,
     /// The last generation a body's mesh was given: each new mesh takes the next, so a
     /// picking answer knows a body changed since its frame.
     generations: u64,
@@ -449,7 +452,36 @@ impl Renderer {
     /// again once taken). An answer older than one already taken is never given.
     pub fn take_picking(&mut self) -> Option<Picking> {
         self.harvest();
-        self.picked.take()
+        let Answer {
+            request,
+            ids,
+            depths,
+            extent,
+        } = self.picked.take()?;
+        // Drawn in its frame, and as it is now, when it's taken: neither forgotten nor
+        // replaced since.
+        let current = |body: u32| {
+            let drawn = request
+                .bodies
+                .binary_search_by_key(&body, |&(b, _)| b)
+                .ok()
+                .and_then(|i| request.bodies.get(i))
+                .map(|&(_, generation)| generation);
+            drawn.is_some() && drawn == self.bodies.get(&body).map(|u| u.generation)
+        };
+        let hit = request.nearest(&ids, extent, current).map(|(i, mut pick)| {
+            if depths.len() == ids.len()
+                && let Some(&depth) = usize::try_from(i).ok().and_then(|i| depths.get(i))
+            {
+                pick.point = request.point_at(pick.pixel, depth);
+            }
+            pick
+        });
+        Some(Picking {
+            frame: request.serial,
+            rect: request.rect,
+            hit,
+        })
     }
 
     /// `frame`'s checks, and what it draws: its view, and each body's highlights.
@@ -580,7 +612,8 @@ impl Renderer {
         Ok((view, lit))
     }
 
-    /// The newest picking the GPU has answered, kept for [`Renderer::take_picking`], and
+    /// The newest picking the GPU has answered, kept for [`Renderer::take_picking`] (which
+    /// chooses its hit from it then, against the bodies as they are when it's taken), and
     /// every request older than it dropped; never waiting.
     fn harvest(&mut self) {
         if let Err(e) = self.ctx.device.poll(wgpu::PollType::Poll) {
@@ -593,34 +626,12 @@ impl Renderer {
             }
         }
         if let Some((id, result)) = newest {
-            if let Some(pending) = self.pending.get(&id) {
-                let extent = result.rect.extent;
-                // Drawn in that frame, and as it is now: neither forgotten nor replaced.
-                let current = |body: u32| {
-                    let drawn = pending
-                        .bodies
-                        .binary_search_by_key(&body, |&(b, _)| b)
-                        .ok()
-                        .and_then(|i| pending.bodies.get(i))
-                        .map(|&(_, generation)| generation);
-                    drawn.is_some() && drawn == self.bodies.get(&body).map(|u| u.generation)
-                };
-                let hit = pending
-                    .nearest(&result.picking_id_data, extent, current)
-                    .map(|(i, mut pick)| {
-                        if result.picking_depth_data.len() == result.picking_id_data.len()
-                            && let Some(&depth) = usize::try_from(i)
-                                .ok()
-                                .and_then(|i| result.picking_depth_data.get(i))
-                        {
-                            pick.point = pending.point_at(pick.pixel, depth);
-                        }
-                        pick
-                    });
-                self.picked = Some(Picking {
-                    frame: pending.serial,
-                    rect: pending.rect,
-                    hit,
+            if let Some(request) = self.pending.remove(&id) {
+                self.picked = Some(Answer {
+                    request,
+                    ids: result.picking_id_data,
+                    depths: result.picking_depth_data,
+                    extent: result.rect.extent,
                 });
             }
             self.pending.retain(|&k, _| k > id);
@@ -852,6 +863,15 @@ enum Highlight {
 /// The outline mask a highlighted instance is drawn with: the outline config's first layer.
 fn outlined() -> OutlineMaskPreference {
     OutlineMaskPreference::some(1, 0)
+}
+
+/// A picking request answered: the request, and its readback's IDs and depths, `extent` in
+/// size (at most [`MAX_PICKING_SIDE`]² each).
+struct Answer {
+    request: PendingPick,
+    ids: Vec<PickingLayerId>,
+    depths: Vec<f32>,
+    extent: glam::UVec2,
 }
 
 /// A frame's picking request, waiting for its answer: its rectangle, the frame's size, and

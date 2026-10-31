@@ -1049,3 +1049,62 @@ fn a_highlight_outlines_its_instance_alone_and_changes_nothing_else() {
         },
     );
 }
+
+#[test]
+fn an_answer_already_read_back_is_judged_against_the_bodies_when_its_taken() {
+    on_lavapipe(
+        "render::frame_tests::an_answer_already_read_back_is_judged_against_the_bodies_when_its_taken",
+        |r| {
+            let camera = front();
+            let one = frame(&camera, &[1], &[], Some(ON_THE_FACE));
+            // Frame N asks; frame N + 1 reads the answer back while body 1 is as drawn;
+            // then the body changes, and only then is the answer taken.
+            let read_back = |r: &mut Renderer, asking: &Frame<'_>| -> u64 {
+                draw(r, asking);
+                let asked = r.frame();
+                draw(
+                    r,
+                    &Frame {
+                        picking: None,
+                        ..*asking
+                    },
+                );
+                assert!(r.picked.is_some(), "not read back yet");
+                asked
+            };
+            r.upload(1, &the_box()).unwrap();
+            // Replaced (moved 1 mm, still under the rectangle): no hit, the answer given.
+            let asked = read_back(r, &one);
+            r.upload(1, &Arc::new(box_mesh([1.0, 0.0, 0.0], [40.0, 20.0, 10.0])))
+                .unwrap();
+            let answer = r.take_picking().expect("no answer");
+            assert_eq!(
+                (answer.frame, answer.rect, answer.hit),
+                (asked, ON_THE_FACE, None)
+            );
+            // Forgotten: the same.
+            read_back(r, &one);
+            r.forget(1);
+            assert_eq!(r.take_picking().expect("no answer").hit, None);
+            // Unchanged: named.
+            r.upload(1, &the_box()).unwrap();
+            read_back(r, &one);
+            let found = r.take_picking().unwrap().hit.unwrap();
+            assert_eq!(
+                (found.body, found.hit, found.pixel),
+                (1, Element::Face(3), [32, 26])
+            );
+            // Of two bodies (body 2 left of the box, as in the test before), the other body's
+            // pixel in the rectangle is the answer once the nearer one is replaced.
+            r.upload(2, &Arc::new(box_mesh([-8.0, 0.0, 0.0], [5.0, 20.0, 10.0])))
+                .unwrap();
+            let both = frame(&camera, &[1, 2], &[], Some(rect([4, 24], [9, 5])));
+            read_back(r, &both);
+            r.upload(1, &Arc::new(box_mesh([1.0, 0.0, 0.0], [40.0, 20.0, 10.0])))
+                .unwrap();
+            let found = r.take_picking().unwrap().hit.unwrap();
+            assert_eq!(found.body, 2, "{found:?}");
+            assert!(found.pixel[0] <= 6, "{found:?}");
+        },
+    );
+}
