@@ -48,11 +48,78 @@ pub const VALUE_TOLERANCE: f64 = 1e-9;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Edit {
-    Remove { members: Vec<String> },
-    Unjoin { point: String, curve: String },
-    Merge { points: Vec<String> },
-    Split { curve: String, at: Vec<[f64; 2]> },
-    Trim { curve: String, pick: [f64; 2] },
+    Remove {
+        members: Vec<String>,
+    },
+    Unjoin {
+        point: String,
+        curve: String,
+    },
+    Merge {
+        points: Vec<String>,
+    },
+    Split {
+        curve: String,
+        at: Vec<[f64; 2]>,
+    },
+    Trim {
+        curve: String,
+        pick: [f64; 2],
+    },
+    /// `silico_core::extend` (§7): a line's end by a length (mm), an arc's by an angle
+    /// (degrees), each written in the case exactly as the document writes it.
+    Extend {
+        curve: String,
+        end: ExtendEnd,
+        by: ExtendBy,
+    },
+}
+
+/// Which end an extend moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtendEnd {
+    Start,
+    End,
+}
+
+/// How far an extend moves the end: a line's in mm, an arc's in degrees.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtendBy {
+    Length(f64),
+    Angle(f64),
+}
+
+impl ExtendBy {
+    /// Silico's increment: the number as the document writes it, read exactly (a length to
+    /// the nanometre, an angle to the nanodegree), never rounded.
+    fn silico(self) -> Result<silico_core::extend::By, String> {
+        use silico_core::document::{Angle, Length};
+        use silico_core::extend::By;
+        match self {
+            ExtendBy::Length(mm) => Length::parse(&format!("{mm}"))
+                .map(By::Length)
+                .map_err(|e| format!("length {mm}: {e}")),
+            ExtendBy::Angle(degrees) => Angle::parse(&format!("{degrees}"))
+                .map(By::Angle)
+                .map_err(|e| format!("angle {degrees}: {e}")),
+        }
+    }
+
+    /// FreeCAD's increment: mm for a line, radians for an arc (§7, :317).
+    fn freecad(self) -> f64 {
+        match self {
+            ExtendBy::Length(mm) => mm,
+            ExtendBy::Angle(degrees) => degrees.to_radians(),
+        }
+    }
+
+    fn amount(self) -> f64 {
+        match self {
+            ExtendBy::Length(v) | ExtendBy::Angle(v) => v,
+        }
+    }
 }
 
 /// A case as its file writes it: the sketch feature it edits, by name.
@@ -154,7 +221,11 @@ pub fn load(dir: &Path) -> Result<Vec<EditCase>, String> {
 /// feature as the document writes it, the edit (a split's positions, a trim's pick), and
 /// what Silico's edit makes of it: its edited sketch feature, what it added, changed, and
 /// removed, and each line's and arc's length in it (mm); or its refusal.
-pub fn dump(case: &EditCase, dir: &Path) -> Result<std::path::PathBuf, String> {
+pub fn dump(
+    case: &EditCase,
+    dir: &Path,
+    worker: &mut dyn SketchSolver,
+) -> Result<std::path::PathBuf, String> {
     let at = |e: String| format!("{}: {e}", case.name);
     let feature = case
         .document
@@ -166,7 +237,7 @@ pub fn dump(case: &EditCase, dir: &Path) -> Result<std::path::PathBuf, String> {
         serde_json::from_str(&text).map_err(|e| at(e.to_string()))
     };
     let sketch = case.sketch()?;
-    let silico = match silico_edit(sketch, &case.edit).map_err(at)? {
+    let silico = match silico_edit(sketch, &case.edit, worker).map_err(at)? {
         Err(refusal) => serde_json::json!({ "refused": refusal.text }),
         Ok(edited) => {
             let mut changed = feature.clone();
@@ -292,7 +363,11 @@ const MOST_IDS: usize = 64;
 
 /// `edit` applied to `sketch` by Silico's `sketch_edit`, or its refusal. A split or trim is
 /// given as many fresh IDs as it asks for, as its own tests give them.
-pub fn silico_edit(sketch: &Sketch, edit: &Edit) -> Result<Result<Edited, Refusal>, String> {
+pub fn silico_edit(
+    sketch: &Sketch,
+    edit: &Edit,
+    worker: &mut dyn SketchSolver,
+) -> Result<Result<Edited, Refusal>, String> {
     let ids = |list: &[String]| {
         list.iter()
             .map(|s| element_id(s))
@@ -335,6 +410,14 @@ pub fn silico_edit(sketch: &Sketch, edit: &Edit) -> Result<Result<Edited, Refusa
             let curve = element_id(curve)?;
             asking(|n| sketch_edit::trim(sketch, &curve, *pick, &fresh(sketch, n)))
                 .map(|t| t.edited)
+                .map_err(refused)
+        }
+        Edit::Extend { curve, end, by } => {
+            let end = match end {
+                ExtendEnd::Start => silico_core::extend::End::Start,
+                ExtendEnd::End => silico_core::extend::End::End,
+            };
+            silico_core::extend::extend(sketch, &element_id(curve)?, end, by.silico()?, worker)
                 .map_err(refused)
         }
     })
@@ -503,6 +586,17 @@ pub enum FreecadEdit {
     Split { geometry: i32, at: Vec<[f64; 2]> },
     /// `trim(geometry, pick)`.
     Trim { geometry: i32, pick: [f64; 2] },
+    /// `extend(geometry, increment, position)`: a line's end moved through `moveGeometry`'s
+    /// drag, an arc's range written (`setRange`), each then solved (§7). A line's moving
+    /// end is then written at `target` in each of its `places`, as decision (3) writes
+    /// Silico's (:328), before the solve.
+    Extend {
+        geometry: i32,
+        increment: f64,
+        position: i32,
+        target: Option<[f64; 2]>,
+        places: Vec<[i32; 2]>,
+    },
 }
 
 /// What FreeCAD is asked for a case: a job, or nothing, since FreeCAD refuses it before any
@@ -582,7 +676,7 @@ pub fn plan(sketch: &Sketch, model: &FreecadSketch, edit: &Edit) -> Plan {
         Edit::Unjoin { curve, .. } => (BTreeSet::from([curve.as_str()]), 265),
         Edit::Trim { curve, .. } => (BTreeSet::from([curve.as_str()]), 241),
         Edit::Split { curve, .. } => (BTreeSet::from([curve.as_str()]), 176),
-        Edit::Merge { .. } => (BTreeSet::new(), 0),
+        Edit::Merge { .. } | Edit::Extend { .. } => (BTreeSet::new(), 0),
     };
     let rehub = matches!(edit, Edit::Trim { .. });
     let (constraints, moved) = job_constraints(sketch, model, &away, rehub);
@@ -708,6 +802,44 @@ pub fn plan(sketch: &Sketch, model: &FreecadSketch, edit: &Edit) -> Plan {
                 geometry: as_i32(g),
                 at: at.clone(),
             },
+            None => return Plan::Refuses(format!("FreeCAD has no geometry {curve}")),
+        },
+        Edit::Extend { curve, end, by } => match index(curve) {
+            Some(g) => {
+                // A line's moving end, written at the target after FreeCAD's drag as
+                // decision (3) writes Silico's (:328), so both solves start alike: at each
+                // of FreeCAD's places that are Silico's point.
+                let written = written_end(edit, &shape);
+                let places = written
+                    .as_ref()
+                    .map(|(point, _)| {
+                        model
+                            .elements
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(i, e)| {
+                                shape
+                                    .members
+                                    .get(e)
+                                    .into_iter()
+                                    .flat_map(|m| m.at.iter())
+                                    .filter(|(_, q)| *q == point)
+                                    .map(move |(pos, _)| [as_i32(i), *pos])
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                FreecadEdit::Extend {
+                    geometry: as_i32(g),
+                    increment: by.freecad(),
+                    position: match end {
+                        ExtendEnd::Start => 1,
+                        ExtendEnd::End => 2,
+                    },
+                    target: written.map(|(_, at)| at),
+                    places,
+                }
+            }
             None => return Plan::Refuses(format!("FreeCAD has no geometry {curve}")),
         },
         Edit::Trim { curve, pick } => match index(curve) {
@@ -1000,6 +1132,18 @@ pub const KNOWN: &[Known] = &[
         shows: Shows::Varies(Rule::MergeSolveUnbuildable),
         why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, whose solve puts a symmetry's two points at one place, which Silico refuses (:307). FreeCAD's merge finds 13 constraints redundant (-2) in 39 of 40 runs and one conflicting as well (-3) in 1, its geometry before the rollback different each run; either way its Coincident command rolls it back (:66), but an answer that varies is no oracle",
     },
+    // `sketch-extend-sweep --seed 43 --count 500`'s case 212.
+    Known {
+        case: "extend_43_212",
+        shows: Shows::Varies(Rule::ExtendSolveFails),
+        why: "FreeCAD 1.1.3 isn't the same run to run here (:323): the arc a0000020's start p0000015, which the line n0000016 shares and holds tangent (tangent_at) and parallel to the horizontal n0000005, turned 130.869 degrees on. FreeCAD's setRange moves only the arc's start, and its solve succeeds (0, 10 of 10 runs) at a different place each run (at least six in 10). Silico's write moves the shared point and the line's end with it (:323), and its solve fails from there, which refuses the extend (:333): turn it less, or unjoin the end first",
+    },
+    // `sketch-extend-sweep --seed 45 --count 500`'s case 455.
+    Known {
+        case: "extend_45_455",
+        shows: Shows::Varies(Rule::ExtendGated),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: an extend whose result collapses a circle to a radius of 4.9e-11 mm, which the gate refuses and Silico refuses as the edit's (:335). FreeCAD's drag fails and its extend raises \"Not able to extend geometry\" in 7 of 10 runs, and makes the edit in 3, each at a different place",
+    },
     // `sketch-edit-sweep --seed 32 --count 500`'s case 154.
     Known {
         case: "edit_32_154",
@@ -1141,11 +1285,20 @@ pub fn prepare(case: &EditCase, worker: &mut dyn SketchSolver) -> Result<Prepare
         }
         Err(e) => problems.push(format!("the case's sketch can't be solved: {e}")),
     }
-    let silico = match silico_edit(&sketch, &case.edit).map_err(at)? {
+    let silico = match silico_edit(&sketch, &case.edit, worker).map_err(at)? {
         Err(refusal) => SilicoSide::Refused(refusal),
         Ok(edited) => silico_side(&case.document, case.feature, edited, worker).map_err(at)?,
     };
-    let plan = plan(&sketch, &model, &case.edit);
+    let mut plan = plan(&sketch, &model, &case.edit);
+    // FreeCAD's end is written at the target only to compare the edit both made: where
+    // Silico refuses, the note's excusals read FreeCAD's sketch as its extend left it.
+    if !matches!(silico, SilicoSide::Edited(_))
+        && let Plan::Run { job, .. } = &mut plan
+        && let FreecadEdit::Extend { target, places, .. } = &mut job.edit
+    {
+        *target = None;
+        places.clear();
+    }
     Ok(Prepared {
         name: case.name.clone(),
         sketch,
@@ -1305,6 +1458,18 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         SilicoSide::Edited(s) => match (&p.edit, &s.ours.outcome) {
             // A merge's solve settles it (:306).
             (Edit::Merge { .. }, Err(e)) => Some(format!("its merge's solve refused: {e}")),
+            // An arc extend's solve failing from the written end refuses it (:333).
+            (Edit::Extend { .. }, Err(_)) if rule(p) == Some(Rule::ExtendSolveFails) => {
+                Some(format!(
+                    "its extend's solve refused: {}",
+                    s.ours
+                        .outcome
+                        .as_ref()
+                        .err()
+                        .map(ToString::to_string)
+                        .unwrap_or_default()
+                ))
+            }
             _ => None,
         },
     };
@@ -1334,6 +1499,12 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                     }
                     Some(Pinned::RollsBack) => rolled_back_worse(p, theirs),
                     Some(Pinned::Raises(text)) => raised(text),
+                    // Only a line's extend drags (:316).
+                    Some(Pinned::EditsOrDragFails) => {
+                        let line = matches!(&p.edit, Edit::Extend { curve, .. }
+                            if Shape::of(&p.sketch).members.get(curve).is_some_and(|m| m.kind == "line"));
+                        line && raised("Not able to extend geometry")
+                    }
                     // 1.1.3's vertex Delete raises only on an end with no coincidence (:262).
                     Some(Pinned::UnjoinsVertex) => raised(VERTEX_DELETE_RAISES) && !vertex_shared(p),
                     Some(Pinned::Crashes | Pinned::Edits) => false,
@@ -1384,6 +1555,13 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                     v.excused.extend(band.excuses());
                     v.modulo.push(532);
                 }
+                let dragged = match freecad_unreproducible(p) {
+                    Some(Unreproducible::Drag(why)) => {
+                        v.excused.push(why);
+                        true
+                    }
+                    None => false,
+                };
                 let merged = merged_apart(p);
                 if merged.is_some() {
                     v.excused.push(format!(
@@ -1391,9 +1569,26 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                     ));
                     v.modulo.push(298);
                 }
+                let shared = shared_arc_end(p);
+                if let Some(end) = &shared {
+                    v.excused.push(format!(
+                        "arc {}'s end {} is another curve's too: Silico's write moves the shared point, so the neighbour's end moves with it before the solve, where FreeCAD's setRange moves only the arc's end and its solve pulls the neighbour after ({NOTE}:323); FreeCAD's neighbour end is checked where the case drew it before the solve, and after it only points neither solve moved are compared, since FreeCAD 1.1.3 settles the rest otherwise each run",
+                        end.arc, end.point
+                    ));
+                    v.modulo.push(323);
+                }
+                let settles = SETTLES_OTHERWISE.contains(&p.name.as_str());
+                if settles {
+                    v.excused.push(format!(
+                        "harness limit: FreeCAD 1.1.3's solve after its extend, from the end written at the target as Silico's is ({NOTE}:328), settles the sketch's free places otherwise run to run here, so after the solve only the points neither solve moved are compared by place; the constraints, the degrees of freedom, the diagnostics, and the outcome in full"
+                    ));
+                }
                 let unsettled = Unsettled {
                     merged: merged.as_ref(),
                     band: band.as_ref(),
+                    shared: shared.as_ref(),
+                    dragged,
+                    settles,
                 };
                 let how = compare_edited(p, s, fc, &unsettled, &mut v.excused, &mut v.modulo);
                 v.how.extend(how);
@@ -1497,6 +1692,31 @@ pub enum Rule {
     MergeGatedTangentOn(String),
     /// Removing a point curves still use (decision 7, :137).
     RemovePointInUse,
+    /// Extending anything but a line or an arc (:324).
+    ExtendKind,
+    /// Extending by 0 (:329).
+    ExtendZero,
+    /// An arc's turn too small to move its end (:335).
+    ExtendTurnTooSmall,
+    /// A line's end its constraints hold where it is (:335).
+    ExtendHeld,
+    /// A drag frame that isn't a success (:330).
+    ExtendFrame,
+    /// A result 1e-7 mm or less, or flipped: the request's own target (:331) or a drag's
+    /// (:332), :325.
+    ExtendShortOrFlipped,
+    /// An arc turned to no sweep at all, which FreeCAD 1.1.3 raises as
+    /// `Geom_TrimmedCurve::U1 == U2` (:318, :325). OCCT raises only where its range's two
+    /// parameters are exactly one; the rule takes a sweep within 1e-9 rad of none, a band
+    /// around the float noise between Silico's turn (degrees, converted) and FreeCAD's range
+    /// (its own sum of radians), not a tolerance of OCCT's.
+    ExtendArcToNothing,
+    /// An arc swept a whole turn or more (:333).
+    ExtendWholeTurn,
+    /// An arc's extend whose solve fails from the written end (:333).
+    ExtendSolveFails,
+    /// A result the gate would refuse, refused as the extend's (:335).
+    ExtendGated,
 }
 
 impl Rule {
@@ -1520,6 +1740,13 @@ impl Rule {
             Rule::MergeGated(_) | Rule::MergeGatedTangentOn(_) => vec![305],
             Rule::MergeHoldsOwn(_) => vec![31, 305],
             Rule::RemovePointInUse => vec![135, 137],
+            Rule::ExtendKind => vec![324],
+            Rule::ExtendZero => vec![329],
+            Rule::ExtendTurnTooSmall | Rule::ExtendHeld | Rule::ExtendGated => vec![335],
+            Rule::ExtendFrame => vec![330],
+            Rule::ExtendShortOrFlipped => vec![325, 331, 332],
+            Rule::ExtendArcToNothing => vec![318, 325],
+            Rule::ExtendWholeTurn | Rule::ExtendSolveFails => vec![333],
         }
     }
 
@@ -1529,7 +1756,9 @@ impl Rule {
     /// refuses, :64-66), or the note gives FreeCAD both a refusal and an edit (a split at or
     /// beyond an end raises, one near it makes a tiny piece, :145-146; a merge the gate
     /// refuses, :305, whose coincidences FreeCAD's solve takes to a curve with length, or its
-    /// Coincident command rolls back as a worse solve, :66).
+    /// Coincident command rolls back as a worse solve, :66). Every extend Silico refuses but a
+    /// kind FreeCAD 1.1 refuses too (:319), and an arc turned to no sweep, which OCCT refuses
+    /// (:318), FreeCAD makes, reporting success (:318, :329-335).
     pub fn pinned(&self) -> Option<Pinned> {
         match self {
             Rule::SplitNotCurve => Some(Pinned::Crashes),
@@ -1538,7 +1767,16 @@ impl Rule {
             Rule::SplitCircleAtOne
             | Rule::SplitOffCurve(_)
             | Rule::TrimPoint
-            | Rule::NoPieceTakes(_) => Some(Pinned::Edits),
+            | Rule::NoPieceTakes(_)
+            | Rule::ExtendZero
+            | Rule::ExtendTurnTooSmall
+            | Rule::ExtendHeld
+            | Rule::ExtendGated
+            | Rule::ExtendWholeTurn
+            | Rule::ExtendSolveFails => Some(Pinned::Edits),
+            Rule::ExtendKind => Some(Pinned::Raises("Not able to extend geometry")),
+            Rule::ExtendArcToNothing => Some(Pinned::Raises("Geom_TrimmedCurve::U1 == U2")),
+            Rule::ExtendFrame | Rule::ExtendShortOrFlipped => Some(Pinned::EditsOrDragFails),
             Rule::MergeSolveUnbuildable | Rule::MergeSolveFails => Some(Pinned::SolvesOrRollsBack),
             Rule::MergeHoldsOwn(_) => Some(Pinned::RollsBack),
             Rule::RemovePointInUse => Some(Pinned::UnjoinsVertex),
@@ -1558,7 +1796,9 @@ pub enum Pinned {
     Crashes,
     /// Its edit raises, with this text, as the note gives it (a trim picked at a round's
     /// centre, "Unknown C++ exception", :250; an unjoin of an end with no coincidence,
-    /// [`VERTEX_DELETE_RAISES`], :262).
+    /// [`VERTEX_DELETE_RAISES`], :262; an extend of anything but a line or an arc, which 1.1
+    /// refuses, "Not able to extend geometry", :319; an arc turned to no sweep,
+    /// "Geom_TrimmedCurve::U1 == U2", :318).
     Raises(&'static str),
     /// It makes the edit, and its result is what the note says, which the excusal checks.
     Edits,
@@ -1570,6 +1810,10 @@ pub enum Pinned {
     /// Its Coincident command rolls the merge back as a worse solve (:66), nothing else of the
     /// sketch changed ([`rolled_back_worse`]).
     RollsBack,
+    /// It makes the edit, which the excusal checks, or, a line's drag failing, its Python
+    /// `extend` raises "Not able to extend geometry", moveGeometry having reported the failure
+    /// (:318, :330).
+    EditsOrDragFails,
     /// Its Delete on the vertex (one curve's end at the point) deletes no curve: it unjoins
     /// that end (:133-135), which the excusal checks, or, on an end with no coincidence,
     /// 1.1.3 raises (:262).
@@ -1583,6 +1827,9 @@ impl Pinned {
             Pinned::Raises(_) => "raise as the note gives it",
             Pinned::RollsBack => {
                 "make the merge, its solve worse, which the Coincident command rolls back to the sketch before it"
+            }
+            Pinned::EditsOrDragFails => {
+                "make the edit, or raise \"Not able to extend geometry\" where its drag fails"
             }
             Pinned::UnjoinsVertex => {
                 "unjoin the vertex its Delete is on, deleting no curve, or raise only where the end has no coincidence"
@@ -1606,6 +1853,12 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
             let Err(e) = &s.ours.outcome else {
                 return None;
             };
+            if let Edit::Extend { curve, .. } = &p.edit {
+                // An arc's: its end is written, not dragged (:323).
+                let arc = shape.members.get(curve).is_some_and(|m| m.kind == "arc");
+                return (arc && e.code() == silico_core::ErrorCode::SolveFailed)
+                    .then_some(Rule::ExtendSolveFails);
+            }
             if !matches!(p.edit, Edit::Merge { .. }) {
                 return None;
             }
@@ -1620,7 +1873,9 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
         }
         SilicoSide::Gated(_) => return None,
     };
-    if r.code != "invalid_input" {
+    if r.code != "invalid_input"
+        && !(r.code == "invalid_result" && matches!(p.edit, Edit::Extend { .. }))
+    {
         return None;
     }
     let field = r.parameter.as_deref().unwrap_or_default();
@@ -1846,6 +2101,7 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
                 _ => None,
             }
         }
+        Edit::Extend { curve, end, by } => extend_rule(&shape, r, curve, *end, *by),
         Edit::Remove { members } => {
             let n = index("members.")?;
             let point = members.get(n)?;
@@ -1853,6 +2109,94 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
             (r.elements.first() == Some(point) && keeping).then_some(Rule::RemovePointInUse)
         }
     }
+}
+
+/// The rule an extend's refusal `r` is, checked against what it names and the sketch.
+fn extend_rule(
+    shape: &Shape,
+    r: &Refusal,
+    curve: &str,
+    end: ExtendEnd,
+    by: ExtendBy,
+) -> Option<Rule> {
+    let member = shape.members.get(curve)?;
+    let field = r.parameter.as_deref().unwrap_or_default();
+    let at = |pos: i32| {
+        member
+            .at
+            .get(&pos)
+            .and_then(|id| shape.points.get(id))
+            .copied()
+    };
+    let moving = member
+        .at
+        .get(&match end {
+            ExtendEnd::Start => 1,
+            ExtendEnd::End => 2,
+        })
+        .cloned();
+    let names_curve = r.elements.first().map(String::as_str) == Some(curve);
+    if field == "curve" {
+        return (names_curve
+            && !matches!(member.kind, "line" | "arc")
+            && r.message.contains("only a line or an arc"))
+        .then_some(Rule::ExtendKind);
+    }
+    if field != "by" || !names_curve {
+        return None;
+    }
+    // The arc's sweep, and the turn asked for, in radians.
+    let arc = || -> Option<(f64, f64, f64)> {
+        let (c, s, e) = (at(3)?, at(1)?, at(2)?);
+        let [radius, from, to] = arc_from_points(c, s, e)?;
+        Some((radius, to - from, by.amount().to_radians()))
+    };
+    if r.message.contains("changes nothing") {
+        if by.amount() == 0.0 {
+            return Some(Rule::ExtendZero);
+        }
+        let (radius, _, turn) = arc()?;
+        // A turn that moves the end by far less than the coordinates' last bits.
+        return (member.kind == "arc" && radius * turn.abs() <= 1e-9)
+            .then_some(Rule::ExtendTurnTooSmall);
+    }
+    if r.code == "invalid_result" {
+        let names_end = r
+            .elements
+            .get(1)
+            .is_some_and(|e| Some(e) == moving.as_ref());
+        if !(member.kind == "line" && names_end) {
+            return None;
+        }
+        if r.message.contains("its constraints hold it where it is") {
+            return Some(Rule::ExtendHeld);
+        }
+        return (r.message.contains("the drag")).then_some(Rule::ExtendFrame);
+    }
+    if r.message.contains("long or flipped") {
+        return match member.kind {
+            "line" => Some(Rule::ExtendShortOrFlipped),
+            "arc" => {
+                let (radius, sweep, turn) = arc()?;
+                // No sweep left, within the float noise of the two sides' radians.
+                if (sweep + turn).abs() <= 1e-9 {
+                    return Some(Rule::ExtendArcToNothing);
+                }
+                // A sweep left of nothing or less is 1e-7 mm or less along it too.
+                (radius * (sweep + turn) <= LENGTH_TOLERANCE).then_some(Rule::ExtendShortOrFlipped)
+            }
+            _ => None,
+        };
+    }
+    if r.message.contains("a whole turn or more") {
+        let (radius, sweep, turn) = arc()?;
+        let swept = sweep + turn;
+        return (swept >= TAU || radius * (TAU - swept).abs() <= LENGTH_TOLERANCE)
+            .then_some(Rule::ExtendWholeTurn);
+    }
+    r.message
+        .contains("a sketch the gate refuses")
+        .then_some(Rule::ExtendGated)
 }
 
 /// The points a constraint names, where it can name two: a constraint that names one point
@@ -1972,6 +2316,119 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
                         "points merged from apart, whose placement leaves {curve} 1e-7 mm or less, a sketch the gate refuses: Silico refuses the merge ({NOTE}:305), where FreeCAD's coincidences solve to a curve with length"
                     )
                 })
+        }
+        Rule::ExtendZero | Rule::ExtendTurnTooSmall | Rule::ExtendHeld => {
+            // FreeCAD reports success with the end where it was.
+            let still = fc_untouched(p, fc);
+            still.then(|| {
+                format!(
+                    "an extend that moves nothing: Silico refuses it ({NOTE}:{}), FreeCAD reports success with nothing moved",
+                    if *rule == Rule::ExtendZero { 298 } else { 304 }
+                )
+            })
+        }
+        Rule::ExtendShortOrFlipped => {
+            let Edit::Extend { curve, by, .. } = &p.edit else {
+                return None;
+            };
+            let shape = Shape::of(&p.sketch);
+            let member = shape.members.get(curve)?;
+            // An arc the rule has already found swept to nothing or less.
+            if member.kind != "line" {
+                return Some(format!(
+                    "an extend leaving the curve 1e-7 mm or less, or flipped: Silico refuses it ({NOTE}:325, :332), FreeCAD's is unchecked (:318)"
+                ));
+            }
+            let at = |pos: i32| member.at.get(&pos).and_then(|id| shape.points.get(id));
+            let (a, b) = (at(1)?, at(2)?);
+            // A line whose own target, its length and the increment, is 1e-7 mm or less or
+            // flipped: Silico refuses the request before any drag (:325, :331), where FreeCAD
+            // drags toward it and keeps what the line's constraints leave (Worker 1, #270).
+            if libm::hypot(b[0] - a[0], b[1] - a[1]) + by.amount() <= LENGTH_TOLERANCE {
+                return Some(format!(
+                    "an extend whose own target leaves the line 1e-7 mm or less, or flipped: Silico refuses the request before any drag ({NOTE}:325, :331), whatever FreeCAD's drag makes of it"
+                ));
+            }
+            // A sound target, the drag's own result refused: FreeCAD's line left 1e-7 mm or
+            // less, or running the other way.
+            let now = extend_geometry(p, fc)?;
+            let (c, d) = (now.points.get("1")?, now.points.get("2")?);
+            let length = libm::hypot(d[0] - c[0], d[1] - c[1]);
+            let same_way = (d[0] - c[0]) * (b[0] - a[0]) + (d[1] - c[1]) * (b[1] - a[1]) > 0.0;
+            if length <= LENGTH_TOLERANCE || !same_way {
+                return Some(format!(
+                    "an extend leaving the curve 1e-7 mm or less, or flipped: Silico refuses it ({NOTE}:325, :332), FreeCAD's is unchecked (:318)"
+                ));
+            }
+            // A sound target whose drag Silico refuses (the line taken to nothing on its
+            // way): 1.1.3's drag fails, leaves the sketch as it was, and returns success (:318).
+            fc_untouched(p, fc).then(|| {
+                format!(
+                    "an extend whose drag would take the line to nothing: Silico refuses it ({NOTE}:325, :332), FreeCAD 1.1.3's drag fails, leaves the sketch as it was, and returns success (:318)"
+                )
+            })
+        }
+        // FreeCAD's solve after its extend succeeds, its arc before the solve as the request
+        // names it.
+        Rule::ExtendSolveFails => (fc.after.code == 0 && arc_as_requested(p, fc)).then(|| {
+            format!(
+                "an extend whose solve fails from the written end: Silico refuses it ({NOTE}:333), where FreeCAD's solve succeeds"
+            )
+        }),
+        Rule::ExtendWholeTurn => range_wrapped(p, fc).then(|| format!(
+            "an arc extended a whole turn or more: Silico refuses it ({NOTE}:333), FreeCAD's range wraps (:318)"
+        )),
+        Rule::ExtendFrame => {
+            // A drag frame the worker can't build (a neighbour collapsed), where FreeCAD's
+            // drag returns success with the collapse in it (:330, :335).
+            let degenerate = fc.edited.iter().any(|g| {
+                curve_length(g).is_some_and(|l| l <= LENGTH_TOLERANCE)
+                    || g.radius.is_some_and(|r| r <= LENGTH_TOLERANCE)
+            });
+            if degenerate {
+                return Some(format!(
+                    "an extend whose drag reaches geometry that can't be built: Silico refuses it ({NOTE}:330, :335), FreeCAD's drag makes it, a curve 1e-7 mm or less"
+                ));
+            }
+            // 1.1.3's drag that would collapse a neighbour fails, leaves the sketch as it was,
+            // and returns success (:318, :330).
+            let left = fc_untouched(p, fc);
+            left.then(|| {
+                format!(
+                    "an extend whose drag reaches geometry that can't be built: Silico refuses it ({NOTE}:330, :335), FreeCAD 1.1.3's drag fails, leaves the sketch as it was, and returns success (:318, :330)"
+                )
+            })
+        }
+        Rule::ExtendGated => {
+            // FreeCAD makes what the gate refuses: a curve 1e-7 mm or less, or a radius.
+            let degenerate = fc.geometry.iter().any(|g| {
+                curve_length(g).is_some_and(|l| l <= LENGTH_TOLERANCE)
+                    || g.radius.is_some_and(|r| r <= LENGTH_TOLERANCE)
+            });
+            if degenerate {
+                return Some(format!(
+                    "an extend whose result the gate refuses: Silico refuses it as the edit's ({NOTE}:335), FreeCAD makes it, a curve or radius 1e-7 mm or less"
+                ));
+            }
+            // An arc's end another curve shares, whose move the gate refuses, naming that end:
+            // Silico's write takes the neighbour's end with it, where FreeCAD's setRange moves
+            // only the arc's and its solve settles them otherwise (:323).
+            let shape = Shape::of(&p.sketch);
+            let at_shared_end = shared_arc_end(p).is_some_and(|end| {
+                let neighbours: Vec<&String> = shape
+                    .users(&end.point)
+                    .into_iter()
+                    .filter(|c| **c != end.arc)
+                    .collect();
+                matches!(&p.silico, SilicoSide::Refused(r)
+                    if r.elements.contains(&end.point)
+                        && r.elements.iter().any(|e| neighbours.contains(&e)))
+            });
+            at_shared_end.then(|| {
+                format!(
+                    "an extend whose result the gate refuses: Silico refuses it as the edit's ({NOTE}:335), its write taking the neighbour's end with the arc's shared one, where FreeCAD's setRange moves only the arc's end and its solve settles them otherwise (:323)"
+                )
+            })
         }
         // FreeCAD's coincidences solve: its solve after the edit succeeds, every coincidence
         // made, and each pair's places at one place.
@@ -2296,6 +2753,129 @@ fn merged_by_freecad(p: &Prepared, fc: &FreecadEdited) -> bool {
     })
 }
 
+/// For a line's extend by a length: its moving end, and the target Silico writes it at, as
+/// `silico_core::extend` works it (:328): the end moved along the line, away from the other
+/// end, by the increment's share of the line's length, from the end's own coordinates.
+fn written_end(edit: &Edit, before: &Shape) -> Option<(String, [f64; 2])> {
+    let Edit::Extend { curve, end, by } = edit else {
+        return None;
+    };
+    let member = before.members.get(curve).filter(|m| m.kind == "line")?;
+    let silico_core::extend::By::Length(by) = by.silico().ok()? else {
+        return None;
+    };
+    let (moving, other) = match end {
+        ExtendEnd::Start => (1, 2),
+        ExtendEnd::End => (2, 1),
+    };
+    let moving = member.at.get(&moving)?;
+    let (p, q) = (
+        *before.points.get(moving)?,
+        *before.points.get(member.at.get(&other)?)?,
+    );
+    let along = by.mm() / libm::hypot(p[0] - q[0], p[1] - q[1]);
+    Some((
+        moving.clone(),
+        [p[0] + (p[0] - q[0]) * along, p[1] + (p[1] - q[1]) * along],
+    ))
+}
+
+/// Whether FreeCAD's extend of an arc a whole turn or more wrapped its range, as the note
+/// says (:318): its arc after the edit, before the solve, with the centre and radius it had,
+/// its other end where it was, and its sweep the sweep it had plus the turn, less whole
+/// turns, within 1e-8 mm along the arc.
+fn range_wrapped(p: &Prepared, fc: &FreecadEdited) -> bool {
+    let Edit::Extend { curve, by, end } = &p.edit else {
+        return false;
+    };
+    let shape = Shape::of(&p.sketch);
+    let drawn = |pos: i32| {
+        shape
+            .point(curve, pos)
+            .and_then(|q| shape.points.get(q))
+            .copied()
+    };
+    let (Some(c), Some(s), Some(e), Some(arc)) =
+        (drawn(3), drawn(1), drawn(2), extend_geometry(p, fc))
+    else {
+        return false;
+    };
+    let at = |k: &str| arc.points.get(k).copied();
+    let (Some(c2), Some(s2), Some(e2)) = (at("3"), at("1"), at("2")) else {
+        return false;
+    };
+    // Each sweep as its ends' angles about the centre give it, a whole turn's ambiguity
+    // left to the comparison: an arc whose ends meet sweeps 0 or a whole turn alike.
+    let sweep = |c: [f64; 2], s: [f64; 2], e: [f64; 2]| {
+        libm::atan2(e[1] - c[1], e[0] - c[0]) - libm::atan2(s[1] - c[1], s[0] - c[0])
+    };
+    let radius = libm::hypot(s[0] - c[0], s[1] - c[1]);
+    let wrapped = libm::remainder(
+        sweep(c2, s2, e2) - (sweep(c, s, e) + by.amount().to_radians()),
+        TAU,
+    );
+    let on_circle =
+        |q: [f64; 2]| (libm::hypot(q[0] - c2[0], q[1] - c2[1]) - radius).abs() <= sketch::TOLERANCE;
+    // The end not extended stays where it was.
+    let kept = match end {
+        ExtendEnd::Start => near(e2, e),
+        ExtendEnd::End => near(s2, s),
+    };
+    arc.kind == "arc"
+        && kept
+        && near(c2, c)
+        && on_circle(s2)
+        && on_circle(e2)
+        && arc
+            .radius
+            .is_some_and(|r| (r - radius).abs() <= sketch::TOLERANCE)
+        && radius * wrapped.abs() <= sketch::TOLERANCE
+}
+
+/// Whether FreeCAD's arc after its extend, before the solve, is the one the request names
+/// (:317): its centre, radius, and other end as drawn, and the end extended turned by the
+/// request's angle about the centre (the start back, the end on), within 1e-8 mm.
+fn arc_as_requested(p: &Prepared, fc: &FreecadEdited) -> bool {
+    let Edit::Extend { curve, end, by } = &p.edit else {
+        return false;
+    };
+    let shape = Shape::of(&p.sketch);
+    let drawn = |pos: i32| {
+        shape
+            .point(curve, pos)
+            .and_then(|q| shape.points.get(q))
+            .copied()
+    };
+    let (Some(c), Some(s), Some(e), Some(arc)) =
+        (drawn(3), drawn(1), drawn(2), extend_geometry(p, fc))
+    else {
+        return false;
+    };
+    let at = |k: &str| arc.points.get(k).copied();
+    let (Some(c2), Some(s2), Some(e2)) = (at("3"), at("1"), at("2")) else {
+        return false;
+    };
+    let radius = libm::hypot(s[0] - c[0], s[1] - c[1]);
+    let turned = |q: [f64; 2], by: f64| {
+        let angle = libm::atan2(q[1] - c[1], q[0] - c[0]) + by;
+        [
+            c[0] + radius * libm::cos(angle),
+            c[1] + radius * libm::sin(angle),
+        ]
+    };
+    let turn = by.amount().to_radians();
+    let ends = match end {
+        ExtendEnd::Start => near(s2, turned(s, -turn)) && near(e2, e),
+        ExtendEnd::End => near(e2, turned(e, turn)) && near(s2, s),
+    };
+    arc.kind == "arc"
+        && ends
+        && near(c2, c)
+        && arc
+            .radius
+            .is_some_and(|r| (r - radius).abs() <= sketch::TOLERANCE)
+}
+
 /// `member`'s FreeCAD geometry after the edit, before the solve, by the ID it had before.
 fn edited_geometry<'a>(
     p: &Prepared,
@@ -2462,15 +3042,6 @@ impl Band {
     }
 }
 
-/// What an edit leaves unsettled, whose places or curves the comparison takes only where
-/// both sides settle them alike: points merged from apart (:298), and a trim's curves
-/// within decision 6's band (:532).
-#[derive(Clone, Copy)]
-struct Unsettled<'a> {
-    merged: Option<&'a BTreeSet<String>>,
-    band: Option<&'a Band>,
-}
-
 /// For a trim, the curves whose gap from the trimmed one, as a tangency, is in decision 6's
 /// band (:532), if any is.
 fn contact_band(p: &Prepared) -> Option<Band> {
@@ -2519,6 +3090,200 @@ fn contact_band(p: &Prepared) -> Option<Band> {
 enum Geometry2 {
     Line([f64; 2], [f64; 2]),
     Round([f64; 2], f64),
+}
+
+/// Whether FreeCAD's sketch after its edit (before the last solve) has every point of every
+/// geometry where the case drew it: what "leaves the sketch as it was" and "nothing moved"
+/// say, checked whole, not at the extended end alone.
+fn fc_untouched(p: &Prepared, fc: &FreecadEdited) -> bool {
+    let shape = Shape::of(&p.sketch);
+    fc.edited.len() == fc.ids_before.len()
+        && fc.edited.iter().all(|g| {
+            let member = fc
+                .ids_before
+                .iter()
+                .position(|id| *id == g.id)
+                .and_then(|i| p.model.elements.get(i))
+                .and_then(|e| shape.members.get(e));
+            let element = fc
+                .ids_before
+                .iter()
+                .position(|id| *id == g.id)
+                .and_then(|i| p.model.elements.get(i));
+            let radius_kept = match (g.radius, element.and_then(|e| shape.radii.get(e))) {
+                (Some(r), Some(was)) => (r - was).abs() <= sketch::TOLERANCE,
+                (None, _) => true,
+                (Some(_), None) => false,
+            };
+            radius_kept
+                && member.is_some_and(|m| {
+                    g.points.iter().all(|(pos, at)| {
+                        pos.parse::<i32>()
+                            .ok()
+                            .and_then(|n| m.at.get(&n))
+                            .and_then(|id| shape.points.get(id))
+                            .is_some_and(|was| {
+                                libm::hypot(at[0] - was[0], at[1] - was[1]) <= sketch::TOLERANCE
+                            })
+                    })
+                })
+        })
+}
+
+/// A place as a report shows it: to the nanometre (well inside the comparison's 1e-8 mm),
+/// so the last bits of a solve, which can change run to run, don't change the report.
+fn shown(at: [f64; 2]) -> [f64; 2] {
+    at.map(|v| (v * 1e9).round() / 1e9 + 0.0)
+}
+
+/// Where FreeCAD 1.1.3's result isn't reproducible run to run, found by running the same case
+/// in several FreeCAD runs (a harness limit, not the note's): its solver's path through an
+/// under-determined system changes with the run.
+enum Unreproducible {
+    /// A line's drag that a reference dimension reaches: the reference's value takes part in
+    /// FreeCAD's drag, which settles the line's ends otherwise each run, so no place or
+    /// radius before the solve is compared, and after it only points neither solve moved. A
+    /// reference dimension isn't a constraint, so Silico's drag rightly ignores it (Worker 1,
+    /// #259): the difference is FreeCAD's.
+    Drag(String),
+}
+
+/// How far apart the two sides' points a line's drag moved may be, in mm, before the solve
+/// and after it:
+/// FreeCAD 1.1.3's drag lands short of its target otherwise each run, as its
+/// unknowns' order follows its allocator (docs/ports/sketcher.md:51). Measured in 10 runs
+/// each, the two sides apart by up to 1.61e-7 mm (the extend sweep's `extend_43_425`) and
+/// 3.00e-7 mm (`extend_45_412`), before the solve and after it alike; the band covers that,
+/// 1.67 times the most measured and below the document's 1 nm, and applies to every line's
+/// extend, as the cause is general.
+const DRAG_BAND: f64 = 5e-7;
+
+/// The extend cases at an arc's shared end whose FreeCAD solve after setRange fails (-1) in
+/// some runs and not in others, each measured in 10 runs (:323): `extend_32_115` failed 5,
+/// the seed-43 sweep's `extend_43_274` 5, and the seed-42 sweep's `extend_42_165` 5. The case file's
+/// (`extend_arc_start_with_tangent`, `extend_arc_order_probe`) and the seed-32 sweep's 22
+/// others solved in all 10, so a failure there is a difference.
+const SOLVE_VARIES: &[&str] = &["extend_32_115", "extend_43_274", "extend_42_165"];
+
+/// The sweep's line extends whose solve, from the end written at the target in both
+/// (:328), FreeCAD 1.1.3 settles otherwise run to run, the sketch's free places landing in
+/// one run where Silico's do and in another elsewhere, as its unknowns' order follows its
+/// allocator (docs/ports/sketcher.md:51), measured alone and in whole sweeps:
+/// `extend_44_183` apart in 3 of 3 runs alone and 2 of 3 sweeps, `extend_44_305` in 3 of 3
+/// alone and 1 of 3 sweeps, `extend_84_412` in none of 3 alone and 3 of 4 sweeps. A harness
+/// limit: after the solve only the points neither solve moved are compared by place, and
+/// the constraints, the degrees of freedom, the diagnostics, and the outcome in full.
+const SETTLES_OTHERWISE: &[&str] = &["extend_44_183", "extend_44_305", "extend_84_412"];
+
+/// What an edit leaves unsettled, whose places or curves the comparison takes only where
+/// both sides settle them alike: points merged from apart (:298), a trim's curves within
+/// decision 6's band (:532), an extended arc's shared end (:323), and a line's drag a
+/// reference dimension reaches (a harness limit).
+#[derive(Clone, Copy)]
+struct Unsettled<'a> {
+    merged: Option<&'a BTreeSet<String>>,
+    band: Option<&'a Band>,
+    shared: Option<&'a SharedArcEnd>,
+    dragged: bool,
+    /// A line's extend whose solve, from the end written at the target, FreeCAD settles
+    /// otherwise run to run ([`SETTLES_OTHERWISE`]).
+    settles: bool,
+}
+
+impl Unsettled<'_> {
+    /// Whether places are left unsettled, so that after the solve only the points neither
+    /// solve moved are compared. A band's curves aren't compared at all, and every other
+    /// place is, so it isn't one.
+    fn any(&self) -> bool {
+        self.merged.is_some() || self.shared.is_some() || self.dragged || self.settles
+    }
+}
+
+/// An extended arc's end another curve shares (:323): the point, and the arc.
+pub struct SharedArcEnd {
+    pub point: String,
+    pub arc: String,
+}
+
+/// For an extend of an arc at an end another curve shares, that end: Silico's write moves
+/// the shared point, so the neighbour's end moves with it before the solve, where FreeCAD's
+/// setRange moves only the arc's (:323). Only what follows from that goes uncompared: the
+/// neighbour's end before the solve, and places after it (where FreeCAD 1.1.3's own result
+/// varies run to run, :323).
+fn shared_arc_end(p: &Prepared) -> Option<SharedArcEnd> {
+    let Edit::Extend { curve, end, .. } = &p.edit else {
+        return None;
+    };
+    let shape = Shape::of(&p.sketch);
+    let member = shape.members.get(curve)?;
+    if member.kind != "arc" {
+        return None;
+    }
+    let point = member.at.get(&match end {
+        ExtendEnd::Start => 1,
+        ExtendEnd::End => 2,
+    })?;
+    (shape.users(point).len() > 1).then(|| SharedArcEnd {
+        point: point.clone(),
+        arc: curve.clone(),
+    })
+}
+
+fn freecad_unreproducible(p: &Prepared) -> Option<Unreproducible> {
+    let Edit::Extend { curve, .. } = &p.edit else {
+        return None;
+    };
+    let shape = Shape::of(&p.sketch);
+    let member = shape.members.get(curve)?;
+    match member.kind {
+        "line" => reference_reaches(p, curve).then(|| {
+            Unreproducible::Drag(format!(
+                "harness limit: FreeCAD 1.1.3's drag of line {curve}, which a reference dimension reaches through the sketch's constraints, isn't reproducible run to run (the reference's value takes part in its solve), so the places it settles aren't compared: none before the solve (even the dragged end's, which its drag leaves short of the target or past it), and after it only points neither solve moved; a reference dimension isn't a constraint, so Silico's drag rightly ignores it (Worker 1, #259)"
+            ))
+        }),
+        _ => None,
+    }
+}
+
+/// Whether a reference dimension (FreeCAD's non-driving constraint) reaches `curve` through
+/// the sketch's constraints and shared points, in FreeCAD's model of it: the geometries one
+/// constraint names are joined, and a coincidence joins two.
+fn reference_reaches(p: &Prepared, curve: &str) -> bool {
+    let Some(start) = p.model.elements.iter().position(|e| e == curve) else {
+        return false;
+    };
+    let named = |c: &crate::sketch::FreecadConstraint| -> Vec<usize> {
+        pairs(c.kind, &c.ints)
+            .iter()
+            .filter_map(|[g, _]| usize::try_from(*g).ok())
+            .collect()
+    };
+    let mut reached = BTreeSet::from([start]);
+    loop {
+        let before = reached.len();
+        for c in &p.model.constraints {
+            let geometries = named(c);
+            if geometries.iter().any(|g| reached.contains(g)) {
+                if !c.driving {
+                    return true;
+                }
+                reached.extend(geometries);
+            }
+        }
+        if reached.len() == before {
+            return false;
+        }
+    }
+}
+
+/// The extended curve in FreeCAD's result, after its edit (before the last solve).
+fn extend_geometry<'a>(p: &Prepared, fc: &'a FreecadEdited) -> Option<&'a FcGeometry> {
+    let Edit::Extend { curve, .. } = &p.edit else {
+        return None;
+    };
+    let g = p.model.elements.iter().position(|e| e == curve)?;
+    let id = fc.ids_before.get(g)?;
+    fc.edited.iter().find(|x| x.id == *id)
 }
 
 /// For a merge of points apart (farther than the comparison's tolerance): the point they
@@ -2944,7 +3709,13 @@ fn compare_edited(
     excused: &mut Vec<String>,
     modulo: &mut Vec<u32>,
 ) -> Vec<String> {
-    let Unsettled { merged, band } = *unsettled;
+    let Unsettled {
+        merged,
+        band,
+        shared,
+        dragged,
+        settles,
+    } = *unsettled;
     let mut how = Vec::new();
     let before = Shape::of(&p.sketch);
     // A split construction circle: FreeCAD 1.1.3's pieces aren't construction, where every
@@ -3187,6 +3958,66 @@ fn compare_edited(
     // it adds a constraint, so a merge's FreeCAD side before the solve is the sketch as it
     // was: its points where the case drew them.
     let exempt = |point: &str| merged.is_some_and(|m| m.contains(point));
+    // A line's extend through the drag (:323): the points Silico's drag moved (the same every
+    // run), which FreeCAD's drag settles otherwise each run, short of its target by up to
+    // DRAG_BAND (docs/ports/sketcher.md:51), so they compare within that band, before the
+    // solve and after it; every other point at the comparison's tolerance, FreeCAD's moving
+    // one Silico's drag didn't a difference.
+    let drag_moved: BTreeSet<String> = match &p.edit {
+        Edit::Extend { curve, .. }
+            if !dragged && before.members.get(curve).is_some_and(|m| m.kind == "line") =>
+        {
+            let moved = |at: [f64; 2], drawn: [f64; 2]| {
+                (at[0] - drawn[0]).abs() > sketch::TOLERANCE
+                    || (at[1] - drawn[1]).abs() > sketch::TOLERANCE
+            };
+            after
+                .points
+                .iter()
+                .filter(|(id, at)| before.points.get(*id).is_some_and(|d| moved(**at, *d)))
+                .map(|(id, _)| id.clone())
+                .collect()
+        }
+        _ => BTreeSet::new(),
+    };
+    let within = |point: &str| {
+        if drag_moved.contains(point) {
+            DRAG_BAND
+        } else {
+            sketch::TOLERANCE
+        }
+    };
+    // The circles and arcs whose points Silico's drag moved: their radii too.
+    let drag_rounds: BTreeSet<String> = after
+        .members
+        .iter()
+        .filter(|(_, m)| matches!(m.kind, "arc" | "circle"))
+        .filter(|(_, m)| m.at.values().any(|q| drag_moved.contains(q)))
+        .map(|(id, _)| id.clone())
+        .collect();
+    let round_within = |member: &str| {
+        if drag_rounds.contains(member) {
+            DRAG_BAND
+        } else {
+            sketch::TOLERANCE
+        }
+    };
+    // A line's extend writes its moving end at the request's target exactly, after the drag
+    // (Fable's decision 3, #299, :328): the new length along the line from the other end,
+    // worked from the end itself. FreeCAD's drag stops where it stops, short of the target
+    // where constraints hold the end, so the harness writes FreeCAD's end at the target too
+    // (`edit_extend`, the plan's `target`), and both solves start alike: Silico's is checked
+    // at the target exactly, and compared with FreeCAD's within the drag's band as the rest
+    // of the frame is.
+    let written_end = written_end(&p.edit, &before);
+    if let Some((end, target)) = &written_end
+        && let Some(ours) = after.points.get(end)
+        && ours != target
+    {
+        how.push(format!(
+            "after the edit, before the solve, Silico's {end}, the line's moving end, is at {ours:?}, not the request's target {target:?} exactly ({NOTE}:328)"
+        ));
+    }
     if merged.is_some() {
         for (id, ours) in &after.points {
             if exempt(id) {
@@ -3201,7 +4032,9 @@ fn compare_edited(
                 ));
             }
         }
-    } else {
+    } else if !dragged {
+        // (A drag a reference dimension reaches settles even its dragged end otherwise each
+        // run in FreeCAD, short of the target or past it: no place before the solve compares.)
         for (i, g) in fc.edited.iter().enumerate() {
             let gi = i32::try_from(i).unwrap_or(i32::MAX);
             if touched.ids.contains(&g.id) {
@@ -3215,19 +4048,39 @@ fn compare_edited(
                 if exempt(&point) {
                     continue;
                 }
+                // The shared arc end's neighbour, which FreeCAD's setRange leaves where the case
+                // drew it (:323); the arc's own end there is compared with Silico's point.
+                if let Some(end) = shared
+                    && end.point == point
+                    && fc_member(gi).as_deref() != Some(end.arc.as_str())
+                {
+                    if let Some(drawn) = before.points.get(&point)
+                        && libm::hypot(at[0] - drawn[0], at[1] - drawn[1]) > sketch::TOLERANCE
+                    {
+                        how.push(format!(
+                            "after the edit, before the solve, FreeCAD's {} is at {:?}, not where the case drew it, {:?}, as its setRange leaves the neighbour's end (:323)",
+                            describe((gi, pos)),
+                            shown(*at),
+                            shown(*drawn)
+                        ));
+                    }
+                    continue;
+                }
                 if let Some(ours) = after.points.get(&point)
-                    && ((ours[0] - at[0]).abs() > sketch::TOLERANCE
-                        || (ours[1] - at[1]).abs() > sketch::TOLERANCE)
+                    && ((ours[0] - at[0]).abs() > within(&point)
+                        || (ours[1] - at[1]).abs() > within(&point))
                 {
                     how.push(format!(
-                        "after the edit, before the solve, Silico's point {point} is at {ours:?}, FreeCAD's {} at {at:?}",
-                        describe((gi, pos))
+                        "after the edit, before the solve, Silico's point {point} is at {:?}, FreeCAD's {} at {:?}",
+                        shown(*ours),
+                        describe((gi, pos)),
+                        shown(*at)
                     ));
                 }
             }
             if let (Some(m), Some(r)) = (fc_member(gi), g.radius)
                 && let Some(ours) = after.radii.get(&m)
-                && (ours - r).abs() > sketch::TOLERANCE
+                && (ours - r).abs() > round_within(&m)
             {
                 how.push(format!(
                     "after the edit, before the solve, Silico's {m} has radius {ours}, FreeCAD's {r}"
@@ -3399,22 +4252,92 @@ fn compare_edited(
         list.retain(|id| !ours_touched.contains(id));
     }
     if let Ok(solution) = &mut ours.outcome {
-        solution
-            .points
-            .retain(|id, _| !touched.points.contains(id.as_str()));
-        solution
-            .radii
-            .retain(|id, _| !touched.members.contains(id.as_str()));
+        solution.points.retain(|id, _| {
+            !touched.points.contains(id.as_str()) && !drag_moved.contains(id.as_str())
+        });
+        solution.radii.retain(|id, _| {
+            !touched.members.contains(id.as_str()) && !drag_rounds.contains(id.as_str())
+        });
     }
+    // At an extended arc's shared end, in the cases measured to vary (SOLVE_VARIES), FreeCAD
+    // 1.1.3's solve after setRange fails (-1) in some runs and not in others (:323): a harness
+    // limit where Silico's solved. Only the failure is excused: the degrees of freedom and the
+    // diagnostics, found before FreeCAD solves, are still compared, and after the solve the
+    // points neither solve moved, a failed solve leaving FreeCAD's where setRange put them.
+    let flaky = shared.filter(|_| {
+        SOLVE_VARIES.contains(&p.name.as_str()) && fc.after.code == -1 && s.ours.outcome.is_ok()
+    });
+    if let Some(end) = flaky {
+        excused.push(format!(
+            "harness limit: FreeCAD 1.1.3's solve after setRange moved arc {}'s shared end {} failed, as it does in some runs and not in others here ({NOTE}:323); Silico's solved, so FreeCAD's outcome isn't compared, but its diagnostics are, and after the solve the points neither solve moved",
+            end.arc, end.point
+        ));
+    }
+    let theirs = FreecadSolved {
+        code: if flaky.is_some() { 0 } else { theirs.code },
+        ..theirs
+    };
     how.extend(sketch::compare_outcomes(
         model,
         &ours,
         &theirs,
-        merged.is_none(),
+        !unsettled.any(),
     ));
-    // A merge from apart: after the solve, every point neither solve moved, but the merged
-    // one (:298); what the solves move from different starts isn't compared by place.
-    if let (Some(merged), Ok(solution), 0) = (merged, &s.ours.outcome, fc.after.code) {
+    // The points the drag moved, and the radii of the curves they're on, after the solve,
+    // within its band; none where FreeCAD's solve settles them otherwise run to run.
+    if let (Ok(solution), 0, false) = (&s.ours.outcome, theirs.code, settles) {
+        for point in &drag_moved {
+            let Some(id) = ElementId::new(point) else {
+                continue;
+            };
+            let (Some(ours), Some(at)) = (solution.points.get(&id), theirs.points.get(point))
+            else {
+                how.push(format!(
+                    "after the solve, Silico's point {point}, which the drag moved, has no place on one side: Silico's {:?}, FreeCAD's {:?}",
+                    solution.points.get(&id).map(|q| [q[0].mm(), q[1].mm()]),
+                    theirs.points.get(point)
+                ));
+                continue;
+            };
+            let ours = [ours[0].mm(), ours[1].mm()];
+            if (ours[0] - at[0]).abs() > DRAG_BAND || (ours[1] - at[1]).abs() > DRAG_BAND {
+                how.push(format!(
+                    "after the solve, Silico's point {point}, which the drag moved, is at {:?}, FreeCAD's at {:?}, farther apart than the drag's band ({DRAG_BAND:e} mm)",
+                    shown(ours),
+                    shown(*at)
+                ));
+            }
+        }
+        // A circle's radius, which both solves give; an arc's follows from its points.
+        for round in drag_rounds
+            .iter()
+            .filter(|r| model.circles.contains_key(*r))
+        {
+            let Some(id) = ElementId::new(round) else {
+                continue;
+            };
+            let (Some(ours), Some(r)) = (solution.radii.get(&id), theirs.radii.get(round)) else {
+                how.push(format!(
+                    "after the solve, Silico's {round}, whose points the drag moved, has no radius on one side: Silico's {:?}, FreeCAD's {:?}",
+                    solution.radii.get(&id).map(|r| r.mm()),
+                    theirs.radii.get(round)
+                ));
+                continue;
+            };
+            if (ours.mm() - r).abs() > DRAG_BAND {
+                how.push(format!(
+                    "after the solve, Silico's {round}, whose points the drag moved, has radius {}, FreeCAD's {r}, farther apart than the drag's band ({DRAG_BAND:e} mm)",
+                    ours.mm()
+                ));
+            }
+        }
+    }
+    // An unsettled edit: after the solve, every point neither solve moved, but the merged
+    // one (:298); what the solves move from different starts, or settle otherwise each run,
+    // isn't compared by place.
+    let none_merged = BTreeSet::new();
+    if let (true, Ok(solution), 0) = (unsettled.any(), &s.ours.outcome, theirs.code) {
+        let merged = merged.unwrap_or(&none_merged);
         let near = |a: [f64; 2], b: [f64; 2]| {
             (a[0] - b[0]).abs() <= sketch::TOLERANCE && (a[1] - b[1]).abs() <= sketch::TOLERANCE
         };

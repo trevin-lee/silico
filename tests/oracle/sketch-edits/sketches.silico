@@ -1564,6 +1564,418 @@
       "arcs": [],
       "constraints": [],
       "note": "A line (0, 0) to (10, 0), and a lone point at its start, not joined to it."
+    },
+    {
+      "id": "s0000066",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_probe_line",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000004", "type": "horizontal", "line": "n0000003"},
+        {"id": "k0000005", "type": "length", "line": "n0000003", "value": 10, "driving": true}
+      ],
+      "note": "The note's 1.1.3 probe (section 7): a line (0, 0) to (10, 0), horizontal, 10 long."
+    },
+    {
+      "id": "s0000067",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_reference_length",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000006", "x": 20, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000004", "type": "horizontal", "line": "n0000003"},
+        {"id": "k0000005", "type": "length", "line": "n0000003", "value": 10, "driving": false}
+      ],
+      "note": "A line (0, 0) to (10, 0), horizontal, with a reference (not driving) length, and a lone point at (20, 20)."
+    },
+    {
+      "id": "s0000068",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_free_line",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000004", "x": 1, "y": 2, "construction": false},
+        {"id": "p0000005", "x": 3, "y": 4, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000006", "from": "p0000004", "to": "p0000005", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A line (0, 0) to (10, 0), unconstrained, and a slanted one (1, 2) to (3, 4)."
+    },
+    {
+      "id": "s0000069",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_held_line",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000004", "type": "distance_x", "a": "origin", "b": "p0000002", "value": 10, "driving": true},
+        {"id": "k0000005", "type": "distance_y", "a": "origin", "b": "p0000002", "value": 0, "driving": true}
+      ],
+      "note": "A line (0, 0) to (10, 0) whose end is held at (10, 0) by its distances from the origin."
+    },
+    {
+      "id": "s0000070",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_line_held_by_dimensions",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000004", "type": "horizontal", "line": "n0000003"},
+        {"id": "k0000005", "type": "length", "line": "n0000003", "value": 10, "driving": true},
+        {"id": "k0000006", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}
+      ],
+      "note": "A line (0, 0) to (10, 0), horizontal, 10 long, its start 0 from the origin across."
+    },
+    {
+      "id": "s0000071",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_upright_line",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 2, "y": 1, "construction": false},
+        {"id": "p0000002", "x": 2, "y": 7, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000004", "type": "vertical", "line": "n0000003"},
+        {"id": "k0000005", "type": "length", "line": "n0000003", "value": 6, "driving": true}
+      ],
+      "note": "An upright line (2, 1) to (2, 7), vertical, 6 long."
+    },
+    {
+      "id": "s0000072",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_line_at_angle",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000005", "x": 12, "y": 0, "construction": false},
+        {"id": "p0000006", "x": 16, "y": 4, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000007", "from": "p0000005", "to": "p0000006", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000004", "type": "horizontal", "line": "n0000003"},
+        {"id": "k0000008", "type": "angle", "a": "n0000003", "b": "n0000007", "value": 45, "driving": true}
+      ],
+      "note": "A line (0, 0) to (10, 0), horizontal, and a free line (12, 0) to (16, 4) at 45 degrees to it."
+    },
+    {
+      "id": "s0000073",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_shared_end",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 10, "y": 5, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000004", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000005", "from": "p0000002", "to": "p0000003", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "Lines A (0, 0)-(10, 0) and B (10, 0)-(10, 5) sharing A's end."
+    },
+    {
+      "id": "s0000074",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_onto_a_point",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 5, "y": 0, "construction": false},
+        {"id": "p0000004", "x": 8, "y": 0, "construction": false},
+        {"id": "p0000005", "x": 8, "y": 4, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000006", "from": "p0000004", "to": "p0000005", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "A line (0, 0) to (5, 0), and a line from (8, 0) up to (8, 4)."
+    },
+    {
+      "id": "s0000075",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_collapses_neighbour",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 15, "y": 0, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000004", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000005", "from": "p0000002", "to": "p0000003", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [],
+      "note": "Lines A (0, 0)-(10, 0) and B (10, 0)-(15, 0) end to end."
+    },
+    {
+      "id": "s0000076",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_arc",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 5, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 0, "y": 5, "construction": false}
+      ],
+      "lines": [],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000004", "center": "p0000001", "start": "p0000002", "end": "p0000003", "construction": false}
+      ],
+      "constraints": [
+        {"id": "k0000005", "type": "radius", "curve": "a0000004", "value": 5, "driving": true}
+      ],
+      "note": "An arc about the origin, radius 5, from 0 to 90 degrees, its radius constrained."
+    },
+    {
+      "id": "s0000077",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_arc_tangent_neighbour",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": -5, "y": 0, "construction": false},
+        {"id": "p0000004", "x": 0, "y": 3, "construction": false},
+        {"id": "p0000005", "x": 3, "y": 3, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000002", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000006", "center": "p0000004", "start": "p0000001", "end": "p0000005", "construction": false}
+      ],
+      "constraints": [
+        {"id": "k0000007", "type": "tangent_at", "a": "n0000003", "b": "a0000006", "at": "p0000001", "direction": "same"},
+        {"id": "k0000008", "type": "horizontal", "line": "n0000003"}
+      ],
+      "note": "An arc about (0, 3), radius 3, from (0, 0) to (3, 3), tangent at its start to a line from (-5, 0)."
+    },
+    {
+      "id": "s0000078",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_arc_edge_tangent",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 5, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 0, "y": 5, "construction": false},
+        {"id": "p0000005", "x": -8, "y": -5, "construction": false},
+        {"id": "p0000006", "x": 8, "y": -5, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000007", "from": "p0000005", "to": "p0000006", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000004", "center": "p0000001", "start": "p0000002", "end": "p0000003", "construction": false}
+      ],
+      "constraints": [
+        {"id": "k0000008", "type": "tangent", "a": "n0000007", "b": "a0000004", "side": "left"}
+      ],
+      "note": "An arc about the origin, radius 5, from 0 to 90 degrees, edge tangent to a line below it."
+    },
+    {
+      "id": "s0000079",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_far_arc",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 900000, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 900001, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 900000, "y": 1, "construction": false}
+      ],
+      "lines": [],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000004", "center": "p0000001", "start": "p0000002", "end": "p0000003", "construction": false}
+      ],
+      "constraints": [],
+      "note": "An arc of radius 1 about (900000, 0), from 0 to 90 degrees."
+    },
+    {
+      "id": "s0000080",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_other_kinds",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 9, "y": 9, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "c0000002", "center": "p0000001", "radius": 5, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": [],
+      "note": "A circle and a point."
+    },
+    {
+      "id": "s0000081",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_arc_into_neighbour",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 5, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 0, "y": 5, "construction": false},
+        {"id": "p0000005", "x": -5, "y": 0, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000006", "from": "p0000003", "to": "p0000005", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000004", "center": "p0000001", "start": "p0000002", "end": "p0000003", "construction": false}
+      ],
+      "constraints": [],
+      "note": "An arc about the origin, radius 5, from 0 to 90 degrees, and a line from its end, (0, 5), to (-5, 0), on the arc's circle."
+    },
+    {
+      "id": "s0000082",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_arc_order_probe",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000003", "x": 0, "y": 10, "construction": false},
+        {"id": "p0000005", "x": -10, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000006", "from": "p0000003", "to": "p0000005", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "a0000004", "center": "p0000001", "start": "p0000002", "end": "p0000003", "construction": false}
+      ],
+      "constraints": [],
+      "note": "The note's arc-order probe (:323): an arc about the origin, radius 10, from 0 to 90 degrees, and a line from its end, (0, 10), to (-10, 10)."
+    },
+    {
+      "id": "s0000083",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_line_beside_a_reference",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000004", "x": 0, "y": 5, "construction": false},
+        {"id": "p0000005", "x": 10, "y": 5, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000006", "from": "p0000004", "to": "p0000005", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000007", "type": "horizontal", "line": "n0000003"},
+        {"id": "k0000008", "type": "length", "line": "n0000006", "value": 10, "driving": false}
+      ],
+      "note": "A horizontal line (0, 0) to (10, 0), and apart from it a line (0, 5) to (10, 5) with a reference length."
+    },
+    {
+      "id": "s0000084",
+      "type": "sketch",
+      "v": 1,
+      "name": "extend_line_joined_to_a_reference",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000005", "x": 0, "y": 5, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000006", "from": "p0000001", "to": "p0000005", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000007", "type": "horizontal", "line": "n0000003"},
+        {"id": "k0000008", "type": "length", "line": "n0000006", "value": 5, "driving": false}
+      ],
+      "note": "A horizontal line (0, 0) to (10, 0), and a second line from its start to (0, 5) with a reference length: joined at the shared start."
     }
   ]
 }

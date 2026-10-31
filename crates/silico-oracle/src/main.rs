@@ -18,6 +18,8 @@
 //!   `--only INDEX` takes the one case of them at INDEX (from 0); `--dump DIR` writes each
 //!   case taken to DIR as `<name>.json`: its sketch, its edit, and Silico's edited sketch
 //!   ([`sketch_edit::dump`]).
+//! - `silico-oracle sketch-extend-sweep`, with the same options: the same random sketches,
+//!   each with one of its lines or arcs extended (`silico_core::extend`).
 //! - `silico-oracle corpus DIR`: the STEP files in DIR, as FreeCAD reads them, each as it is
 //!   and moved; Silico also meshes each (`pixi run corpus` fetches them first).
 //!
@@ -32,7 +34,7 @@ use std::process::ExitCode;
 
 use silico_oracle::{Case, corpus, generate, load, run, sketch, sketch_edit};
 
-const USAGE: &str = "usage: silico-oracle run [DIR] | silico-oracle sweep [--count N] [--seed S] | silico-oracle sketch-edit-sweep [--count N] [--seed S] [--only INDEX] [--dump DIR] | silico-oracle corpus DIR";
+const USAGE: &str = "usage: silico-oracle run [DIR] | silico-oracle sweep [--count N] [--seed S] | silico-oracle sketch-edit-sweep [--count N] [--seed S] [--only INDEX] [--dump DIR] | silico-oracle sketch-extend-sweep [the same] | silico-oracle corpus DIR";
 
 /// The most cases a sweep runs: a few hours' worth (500 take about 10 s), a few hundred
 /// megabytes of cases.
@@ -225,8 +227,9 @@ fn cases() -> Result<Asked, String> {
             }
             _ => Err(format!("corpus takes one directory\n{USAGE}")),
         },
-        Some(sweep @ ("sweep" | "sketch-edit-sweep")) => {
-            let edits = sweep == "sketch-edit-sweep";
+        Some(sweep @ ("sweep" | "sketch-edit-sweep" | "sketch-extend-sweep")) => {
+            let extends = sweep == "sketch-extend-sweep";
+            let edits = sweep == "sketch-edit-sweep" || extends;
             let (mut count, mut seed) = (500usize, 1u64);
             let (mut dump, mut only): (Option<PathBuf>, Option<usize>) = (None, None);
             let mut rest = args[1..].iter();
@@ -260,7 +263,11 @@ fn cases() -> Result<Asked, String> {
                 return Err(format!("--count {count}: at most {MAX_SWEEP}\n{USAGE}"));
             }
             if edits {
-                let mut cases = generate::sketch_edit_cases(seed, count)?;
+                let mut cases = if extends {
+                    generate::sketch_extend_cases(seed, count)?
+                } else {
+                    generate::sketch_edit_cases(seed, count)?
+                };
                 if let Some(index) = only {
                     if index >= cases.len() {
                         return Err(format!(
@@ -271,8 +278,10 @@ fn cases() -> Result<Asked, String> {
                     cases = vec![cases.swap_remove(index)];
                 }
                 if let Some(dir) = &dump {
+                    let mut worker =
+                        silico_core::sketch::SketchWorker::start().map_err(|e| e.to_string())?;
                     for case in &cases {
-                        sketch_edit::dump(case, dir)?;
+                        sketch_edit::dump(case, dir, &mut worker)?;
                     }
                 }
                 return Ok((Vec::new(), None, Vec::new(), None, None, cases));

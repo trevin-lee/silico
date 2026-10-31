@@ -699,18 +699,10 @@ fn diagnosis(
 /// A FreeCAD geometry by hand: its kind, its points by position, and its radius.
 type HandGeometry<'a> = (&'a str, Vec<(&'a str, [f64; 2])>, Option<f64>);
 
-/// FreeCAD's merge of `p` rolled back, as its plan gives FreeCAD the sketch: every geometry
-/// where it was given (IDs from 1), the constraints it was given and the merge's
-/// coincidences, and both solves clean.
-fn rolled_back_by_hand(p: &Prepared) -> FreecadEdited {
-    let Plan::Run { job, .. } = &p.plan else {
-        panic!("{:?}", p.plan);
-    };
-    let FreecadEdit::Merge { coincidences } = &job.edit else {
-        panic!("{:?}", job.edit);
-    };
-    let geometry: Vec<FcGeometry> = job
-        .geometry
+/// FreeCAD's geometry as it was given `geometry`, IDs from 1: each point by position (an
+/// arc's ends at its angles).
+fn fc_geometry_of(geometry: &[FreecadGeometry]) -> Vec<FcGeometry> {
+    geometry
         .iter()
         .zip(1..)
         .map(|(g, id)| {
@@ -754,7 +746,20 @@ fn rolled_back_by_hand(p: &Prepared) -> FreecadEdited {
                 ..fc_geometry(kind, &points, radius)
             }
         })
-        .collect();
+        .collect()
+}
+
+/// FreeCAD's merge of `p` rolled back, as its plan gives FreeCAD the sketch: every geometry
+/// where it was given (IDs from 1), the constraints it was given and the merge's
+/// coincidences, and both solves clean.
+fn rolled_back_by_hand(p: &Prepared) -> FreecadEdited {
+    let Plan::Run { job, .. } = &p.plan else {
+        panic!("{:?}", p.plan);
+    };
+    let FreecadEdit::Merge { coincidences } = &job.edit else {
+        panic!("{:?}", job.edit);
+    };
+    let geometry = fc_geometry_of(&job.geometry);
     let constraints = job
         .constraints
         .iter()
@@ -944,7 +949,8 @@ fn a_merge_whose_solve_silico_refuses_as_unbuildable_is_the_rule_only_for_points
         let edit = Edit::Merge {
             points: vec!["p0000001".to_owned(), "p0000002".to_owned()],
         };
-        let Ok(Ok(edited)) = silico_edit(&sketch, &edit) else {
+        let mut worker = silico_core::sketch::SketchWorker::start().unwrap();
+        let Ok(Ok(edited)) = silico_edit(&sketch, &edit, &mut worker) else {
             panic!("not merged");
         };
         let translation = Translation::new(&edited.sketch).unwrap();
@@ -989,11 +995,13 @@ fn a_merge_whose_solve_silico_refuses_as_unbuildable_is_the_rule_only_for_points
 #[test]
 fn a_removals_refusal_reads_its_first_problem_and_tells_them_all() {
     // p0000001 and p0000004 each used by a line that stays.
+    let mut worker = silico_core::sketch::SketchWorker::start().unwrap();
     let Ok(Err(r)) = silico_edit(
         &two_lines(&[]),
         &Edit::Remove {
             members: vec!["p0000001".to_owned(), "p0000004".to_owned()],
         },
+        &mut worker,
     ) else {
         panic!("removed");
     };
@@ -1095,4 +1103,218 @@ fn a_gap_of_exactly_1e_12_from_tangent_is_tangent_as_drawn_not_in_the_band() {
         refusal("x", &[], "pick"),
     );
     assert!(contact_band(&trim).is_none(), "{:?}", contact_band(&trim));
+}
+
+/// FreeCAD's geometry as `p`'s model gives it, IDs from 1, edited and solved alike, with
+/// none of its constraints, and both solves clean.
+fn as_modelled(p: &Prepared) -> FreecadEdited {
+    let geometry = fc_geometry_of(&p.model.geometry);
+    FreecadEdited {
+        before: diagnosis(0, &[], &[], &[]),
+        ids_before: geometry.iter().map(|g| g.id).collect(),
+        edited: geometry.clone(),
+        geometry,
+        constraints: Vec::new(),
+        after: diagnosis(0, &[], &[], &[]),
+        applied: Vec::new(),
+    }
+}
+
+/// [`arc_30_120`] as a sketch: the arc a0000004 about p0000003 (1, 1), from p0000001 to
+/// p0000002.
+fn arc_sketch() -> Sketch {
+    let (s, ..) = arc_30_120();
+    let at = |id: &str| s.points[id];
+    let (p1, p2, p3) = (at("p1"), at("p2"), at("p3"));
+    sketch_of(
+        &[
+            ("p0000001", p1[0], p1[1]),
+            ("p0000002", p2[0], p2[1]),
+            ("p0000003", p3[0], p3[1]),
+        ],
+        &[],
+        &[],
+        &[("a0000004", "p0000003", "p0000001", "p0000002")],
+        &[],
+    )
+}
+
+fn extend(curve: &str, end: ExtendEnd, by: ExtendBy) -> Edit {
+    Edit::Extend {
+        curve: curve.to_owned(),
+        end,
+        by,
+    }
+}
+
+#[test]
+fn an_arcs_extend_refused_as_short_or_to_nothing_is_the_rule_by_its_sweep_and_turn() {
+    // The arc sweeps 90 degrees on a radius of 2.
+    let rule_of = |degrees: f64| {
+        rule(&prepared_with(
+            arc_sketch(),
+            extend("a0000004", ExtendEnd::End, ExtendBy::Angle(degrees)),
+            refusal(
+                "the extend would leave it 1e-7 mm long or flipped",
+                &["a0000004"],
+                "by",
+            ),
+        ))
+    };
+    // Turned back its whole sweep: nothing left.
+    assert_eq!(rule_of(-90.0), Some(Rule::ExtendArcToNothing));
+    // Past it, or to 1e-6 degrees of it (2 x 1.75e-8 rad, 3.5e-8 mm): short or flipped.
+    assert_eq!(rule_of(-100.0), Some(Rule::ExtendShortOrFlipped));
+    assert_eq!(rule_of(-90.0 + 1e-6), Some(Rule::ExtendShortOrFlipped));
+    // 10 degrees left: neither.
+    assert_eq!(rule_of(-80.0), None);
+}
+
+/// The line n0000003 from `a` to `b`, extended at its end by `by` mm, Silico's side refused.
+fn line_extend(a: [f64; 2], b: [f64; 2], by: f64) -> Prepared {
+    prepared_with(
+        sketch_of(
+            &[("p0000001", a[0], a[1]), ("p0000002", b[0], b[1])],
+            &[("n0000003", "p0000001", "p0000002")],
+            &[],
+            &[],
+            &[],
+        ),
+        extend("n0000003", ExtendEnd::End, ExtendBy::Length(by)),
+        refusal("long or flipped", &["n0000003"], "by"),
+    )
+}
+
+/// FreeCAD's extend of `p`'s line making it run from `c` to `d`.
+fn line_made(p: &Prepared, c: [f64; 2], d: [f64; 2]) -> FreecadEdited {
+    let mut fc = as_modelled(p);
+    for list in [&mut fc.edited, &mut fc.geometry] {
+        *list[0].points.get_mut("1").unwrap() = c;
+        *list[0].points.get_mut("2").unwrap() = d;
+    }
+    fc
+}
+
+#[test]
+fn a_lines_extend_refused_as_short_or_flipped_is_excused_by_its_target_or_freecads_line() {
+    let excuse = |p: &Prepared, fc: &FreecadEdited| excused(p, &Rule::ExtendShortOrFlipped, fc);
+    let leaves =
+        |e: Option<String>| e.is_some_and(|e| e.starts_with("an extend leaving the curve"));
+    // Its own target 0 long (5 - 5): refused before any drag, whatever FreeCAD makes.
+    let (a, b) = ([1.0, 2.0], [4.0, 6.0]);
+    let short = line_extend(a, b, -5.0);
+    assert!(
+        excuse(&short, &line_made(&short, a, [7.0, 10.0]))
+            .is_some_and(|e| e.starts_with("an extend whose own target")),
+    );
+    // A sound target (6 long), FreeCAD's line: flipped a little (-0.1 along it), at right
+    // angles (0 along it exactly), or 5e-8 long its way: each the rule's; 3 long its way:
+    // not.
+    let p = line_extend(a, b, 1.0);
+    assert!(leaves(excuse(&p, &line_made(&p, a, [0.94, 1.92]))));
+    assert!(leaves(excuse(&p, &line_made(&p, a, [-3.0, 5.0]))));
+    assert!(leaves(excuse(
+        &p,
+        &line_made(&p, [2.0, 3.0], [2.0 + 3e-8, 3.0 + 4e-8])
+    )));
+    assert_eq!(excuse(&p, &line_made(&p, a, [2.8, 4.4])), None);
+    // From (1, 2) to (1.5, 6), along (0.5, 4): FreeCAD's along (1, -0.2) and (-1, 0.1), each
+    // against it (dot products -0.3 and -0.1).
+    let b = [1.5, 6.0];
+    let p = line_extend(a, b, 1.0);
+    assert!(leaves(excuse(&p, &line_made(&p, a, [2.0, 1.8]))));
+    assert!(leaves(excuse(&p, &line_made(&p, a, [0.0, 2.1]))));
+}
+
+#[test]
+fn an_extend_refused_for_what_it_reaches_is_excused_by_freecads_degenerate_curve_or_untouched_sketch()
+ {
+    // The line n0000003 and the circle c0000005 about p0000004, radius 1.
+    let p = prepared_with(
+        sketch_of(
+            &[
+                ("p0000001", 1.0, 2.0),
+                ("p0000002", 4.0, 6.0),
+                ("p0000004", 9.0, 9.0),
+            ],
+            &[("n0000003", "p0000001", "p0000002")],
+            &[("c0000005", "p0000004", 1.0)],
+            &[],
+            &[],
+        ),
+        extend("n0000003", ExtendEnd::End, ExtendBy::Length(1.0)),
+        refusal("x", &["n0000003"], "by"),
+    );
+    let untouched = as_modelled(&p);
+    let circle = untouched
+        .edited
+        .iter()
+        .position(|g| g.kind == "circle")
+        .unwrap();
+    let mut tiny = untouched.clone();
+    tiny.edited[circle].radius = Some(1e-8);
+    tiny.geometry[circle].radius = Some(1e-8);
+    // The drag's frame: FreeCAD's drag making a circle 1e-8 across, or leaving the sketch.
+    let frame = |fc| excused(&p, &Rule::ExtendFrame, fc).unwrap_or_default();
+    assert!(frame(&tiny).ends_with("FreeCAD's drag makes it, a curve 1e-7 mm or less"));
+    assert!(frame(&untouched).contains("FreeCAD 1.1.3's drag fails, leaves the sketch as it was"));
+    // The gate's: FreeCAD's result with the circle 1e-8 across.
+    assert!(
+        excused(&p, &Rule::ExtendGated, &tiny)
+            .is_some_and(|e| e.ends_with("FreeCAD makes it, a curve or radius 1e-7 mm or less"))
+    );
+}
+
+#[test]
+fn an_arc_extended_past_a_whole_turn_wraps_its_range_as_freecads_setrange_does() {
+    // 370 degrees on at its end: FreeCAD's range wraps to a sweep of 100, its end at 130
+    // degrees, its start, centre, and radius kept.
+    let (s, c, from, _) = arc_30_120();
+    let p = prepared_with(
+        arc_sketch(),
+        extend("a0000004", ExtendEnd::End, ExtendBy::Angle(370.0)),
+        refusal("x", &["a0000004"], "by"),
+    );
+    let made = |end: [f64; 2], start: [f64; 2]| {
+        let mut fc = as_modelled(&p);
+        *fc.edited[0].points.get_mut("2").unwrap() = end;
+        *fc.edited[0].points.get_mut("1").unwrap() = start;
+        fc
+    };
+    let start = s.points["p1"];
+    let at = |deg: f64| on_round(c, from + deg.to_radians());
+    assert!(range_wrapped(&p, &made(at(100.0), start)));
+    // Its end at 120 or 140 degrees, its start moved, or its end off the circle: not so.
+    assert!(!range_wrapped(&p, &made(at(90.0), start)));
+    assert!(!range_wrapped(&p, &made(at(110.0), start)));
+    assert!(!range_wrapped(&p, &made(at(100.0), at(1.0))));
+    let mut off = at(100.0);
+    off[0] += 1e-6;
+    assert!(!range_wrapped(&p, &made(off, start)));
+    // 370 degrees on at its start: its start turned back to 20 degrees, its end kept.
+    let p = prepared_with(
+        arc_sketch(),
+        extend("a0000004", ExtendEnd::Start, ExtendBy::Angle(370.0)),
+        refusal("x", &["a0000004"], "by"),
+    );
+    let end = s.points["p2"];
+    let made = |start: [f64; 2]| {
+        let mut fc = as_modelled(&p);
+        *fc.edited[0].points.get_mut("1").unwrap() = start;
+        *fc.edited[0].points.get_mut("2").unwrap() = end;
+        fc
+    };
+    assert!(range_wrapped(&p, &made(at(-10.0))));
+    assert!(!range_wrapped(&p, &made(at(0.0))));
+    assert!(!range_wrapped(&p, &made(at(-20.0))));
+}
+
+#[test]
+fn a_place_is_shown_to_the_nanometre_and_never_as_minus_zero() {
+    assert_eq!(
+        shown([2.000_000_000_4, -1.000_000_000_6]),
+        [2.0, -1.000_000_001]
+    );
+    let zero = shown([-1e-12, 0.0]);
+    assert!(zero[0] == 0.0 && zero[0].is_sign_positive(), "{zero:?}");
 }
