@@ -4913,3 +4913,73 @@ fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_re
     assert_eq!(text_of(&f, &h), boxed);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn a_refused_body_read_is_read_again_and_no_add_goes_until_it_answers() {
+    use silico_core::command::{MAX_PUBLISHED_READS, ReadCommand};
+    use std::sync::mpsc;
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    // The Pad's dialog, no sketch chosen: nothing to add yet.
+    create(&mut h, "Pad");
+    settled(&mut h);
+    let id = h.state().tabs()[0].id;
+    // As many published reads as a session runs at once, each held until released: a body's
+    // read past them is refused (too many reads).
+    let (release, released) = mpsc::channel::<()>();
+    let released = Arc::new(Mutex::new(released));
+    let (started, starts) = mpsc::channel::<()>();
+    let held: Vec<_> = (0..MAX_PUBLISHED_READS)
+        .map(|_| {
+            let released = Arc::clone(&released);
+            let started = started.clone();
+            f.sessions
+                .read_model(&id, ReadCommand::Check, ModelChoice::Published, move |_| {
+                    started.send(()).unwrap();
+                    let _ = released.lock().unwrap().recv();
+                    Ok(())
+                })
+        })
+        .collect();
+    for _ in 0..MAX_PUBLISHED_READS {
+        starts.recv_timeout(WAIT).unwrap();
+    }
+    // The sketch chosen: the body's read is sent, and refused.
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.pick(&silico_core::document::FeatureId::new("s0000001").unwrap());
+        tab.dialog_changed(&sessions);
+        assert!(tab.reading_body());
+    }
+    // Refused each time it's read: no add sent, the dialog still adding.
+    for _ in 0..20 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!h.state().tabs()[0].sent.contains(&Sent::Add));
+    assert!(h.state().tabs()[0].dialog.as_ref().unwrap().adding);
+    assert!(h.state().tabs()[0].reading_body());
+    // Released: read, and added on the document's tip, the plate.
+    drop(release);
+    for read in held {
+        read.wait().result.unwrap();
+    }
+    added(&mut h);
+    settled(&mut h);
+    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    assert!(
+        pad.contains(&("base".to_owned(), Plain::String("b0000001".to_owned()))),
+        "{pad:?}"
+    );
+    assert_eq!(
+        h.state().tabs()[0]
+            .sent
+            .iter()
+            .filter(|s| **s == Sent::Add)
+            .count(),
+        1
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
