@@ -154,6 +154,8 @@ mod session_rebuild;
 mod session_reload;
 #[path = "session_render.rs"]
 mod session_render;
+#[path = "session_save_as.rs"]
+mod session_save_as;
 #[path = "session_sketch.rs"]
 mod session_sketch;
 #[path = "session_sketch_edits.rs"]

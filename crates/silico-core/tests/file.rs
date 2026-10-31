@@ -296,6 +296,7 @@ fn png_rules<'a>(
         replace,
         workspace,
         held,
+        document: false,
     }
 }
 
@@ -710,6 +711,7 @@ fn a_link_to_either_spelling_of_a_format_with_two_is_written_through_and_any_oth
         replace: true,
         workspace: Some(&workspace),
         held: &[],
+        document: false,
     };
     let real = dir.0.join("real.stp");
     std::fs::write(&real, b"old").unwrap();

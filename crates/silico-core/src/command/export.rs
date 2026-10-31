@@ -347,6 +347,7 @@ pub fn export<K: Kernel>(
         replace: request.replace,
         workspace: on.workspace,
         held: on.held,
+        document: false,
     };
     let solids = checked(model, request, &output)?;
     let (bytes, objects) = match request.format {

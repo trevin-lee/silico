@@ -481,7 +481,11 @@ fn record() -> Vec<String> {
             r#"{{"id": "f0000001", "type": "fillet", "name": "Inside corner", "base": "h0000002", "edges": [{corner}], "radius": {FILLET_R}}}"#
         ),
     );
-    r.call("commit: the file is saved", "commit", SESSION);
+    r.call(
+        "commit: the file is saved",
+        "commit",
+        r#"{"session": "s1", "path": null, "replace": false}"#,
+    );
     r.call("check the saved model", "check", CHECK);
     r.call("measure the bracket", "mass_properties", MASS);
     let face = r.call(

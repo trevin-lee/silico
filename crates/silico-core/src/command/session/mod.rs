@@ -130,11 +130,12 @@ use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
 pub use rebuilds::{TryAgainBy, fault_suggestion};
 pub(super) use rebuilds::{kept_fault, retried};
 use registry::{
-    Book, CacheOpener, Opening, Registry, Release, Started, claim, reclaim, serve, start,
+    Book, CacheOpener, Opening, Registry, Release, Started, claim, holder, moved, reclaim, reserve,
+    serve, start, unreserve,
 };
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
-use transaction::{Claim, Held, Open, Reload, Rereads, transaction_open};
+use transaction::{Claim, Held, Open, Reload, Rereads, SaveTo, transaction_open};
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
@@ -170,8 +171,8 @@ pub struct Sessions<P: Clients + 'static> {
 /// Its locks, and the registry's, are taken in one order, each let go before one earlier in
 /// the order is taken: the registry's book, then a session's published reads (then those
 /// unanswered), then its held state, then its rebuilds, then its queue, then the command
-/// running, then its disk watch's, under which none is taken. The registry's `feature_ids`
-/// is taken alone.
+/// running, then its reloads, then its disk watch's, under which none is taken. The
+/// registry's `feature_ids` is taken alone.
 struct Session<C: Kernel + 'static> {
     id: SessionId,
     /// The sessions' workspace, if they have one: each re-read and save of the session's file
@@ -202,7 +203,8 @@ struct Session<C: Kernel + 'static> {
     disk: DiskWatch,
     /// Its own reload of its file, found changed on disk (A3): whether one is queued, and
     /// the bytes a reload last refused, so the same refusal isn't queued at each comparison.
-    /// Taken alone.
+    /// Taken before the disk watch's lock (whether a comparison is still current is asked
+    /// under it), and under none of the others.
     reloads: Mutex<Reloads>,
     /// The client's waker, the sessions' ([`Sessions::on_change`]).
     waker: Arc<Waker>,
@@ -219,6 +221,10 @@ struct Session<C: Kernel + 'static> {
     /// Where the session's own reload waits as it starts, in this crate's tests only.
     #[cfg(test)]
     reloading: Gate,
+    /// Where a rebuild's watcher waits before it first looks at the rebuild's progress, in
+    /// this crate's tests only.
+    #[cfg(test)]
+    watching: Gate,
 }
 
 /// A session's own reloads (A3): one queued, and what the last refused, if it was refused
@@ -409,9 +415,11 @@ impl<C: Kernel + 'static> Session<C> {
     /// session's own reload (A3): not inside a transaction (only `commit` reads the file
     /// there), nor while its own save has left the file part written (the next save says
     /// where its old text is), nor while one is queued, nor for the bytes a reload refused
-    /// last (a file another session holds, say), which would be refused again. If it should,
-    /// it's marked queued.
-    fn reload_wanted(&self, found: &[u8], claims: u64) -> bool {
+    /// last (a file another session holds, say), which would be refused again; nor for a
+    /// comparison made against `counter`, a count of the session's reads and writes no
+    /// longer its own (it read or wrote since: dropped, never reported). If it should, it's
+    /// marked queued.
+    fn reload_wanted(&self, found: &[u8], claims: u64, counter: u64) -> bool {
         {
             let held = self.held.read();
             if held.transaction.is_some() || held.part_written.is_some() {
@@ -419,7 +427,12 @@ impl<C: Kernel + 'static> Session<C> {
             }
         }
         let mut reloads = lock(&self.reloads);
-        if reloads.queued
+        // A comparison the session has read or written since (its own reload, taking these
+        // bytes) is dropped, never reported (the design's section 4): checked under the
+        // reloads' lock, as a reload moves the watch on before it clears `queued` there, so
+        // a comparison found current here either finds `queued` still set or is current.
+        if !self.disk.current(counter)
+            || reloads.queued
             || reloads
                 .refused
                 .is_some_and(|refused| refused == (digest(found), claims))
@@ -479,14 +492,14 @@ fn reloader<P: Clients + 'static>(
     registry: Weak<Registry<P>>,
     session: Weak<Session<P::Client>>,
 ) -> crate::disk::Changed {
-    Arc::new(move |found: &[u8]| {
+    Arc::new(move |found: &[u8], counter: u64| {
         let Some(session) = session.upgrade() else {
             return;
         };
         let claims = registry
             .upgrade()
             .map_or(0, |registry| lock(&registry.book).claims);
-        if session.reload_wanted(found, claims) {
+        if session.reload_wanted(found, claims, counter) {
             session.queue(reload_job(Weak::clone(&registry), digest(found)));
         }
     })
@@ -1389,6 +1402,84 @@ impl<P: Clients + 'static> Sessions<P> {
                 let id = session.id;
                 session.commit(stop, reload.outside(), model, &|resolved| {
                     reclaim(&registry, id, resolved);
+                })
+            },
+        )
+    }
+
+    /// Ends `session`'s transaction, saving its document to the file at `path` (a Save As,
+    /// M5.4; docs/design/m5.0-app.md, open item 22): as [`commit`](Self::commit) saves,
+    /// but there, written even if the document is the one `begin` saw, and whatever the
+    /// session's own file holds now (a file changed on disk is left as it is). The session
+    /// then holds the new path, as given (in a workspace, relative to its root), and claims
+    /// its file, letting its old one go. Refused, the transaction left open and nothing
+    /// written, as `commit` is, for a document the gate refuses, and as a file a command
+    /// writes is (decision 35, as a document): not ending in `.silico`, out of the
+    /// workspace or through a link out of it, in a `.silico-cache/` directory, not a file,
+    /// or a file there without `replace`; and for the session's own file, one another
+    /// session holds or is opening, or a path that isn't UTF-8 (a response couldn't name
+    /// it exactly). Its rebuild cache stays the directory's it opened in until it's opened
+    /// again.
+    pub fn save_as(
+        &self,
+        session: &SessionId,
+        path: impl Into<PathBuf>,
+        replace: bool,
+    ) -> Running<Committed> {
+        let given = match path.into().into_os_string().into_string() {
+            Ok(given) => given,
+            Err(given) => {
+                return Running::answered(refused(
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "{} isn't UTF-8, so the API can't name it exactly",
+                            shown_path(Path::new(&given))
+                        ),
+                    )
+                    .with_parameter("path")
+                    .with_suggestion("give a path that is UTF-8"),
+                ));
+            }
+        };
+        let registry = Arc::downgrade(&self.registry);
+        self.queued_with(
+            session,
+            SessionCommand::Commit,
+            Rereads::OutsideTransaction,
+            move |session, stop, model, _| {
+                let id = session.id;
+                let reserve = |target: &Path| match registry.upgrade() {
+                    Some(registry) => reserve(&registry, id, target),
+                    // The sessions are being dropped: no claim is kept.
+                    None => Ok(()),
+                };
+                let unreserve = |target: &Path| {
+                    if let Some(registry) = registry.upgrade() {
+                        unreserve(&registry, id, target);
+                    }
+                };
+                let holder =
+                    |target: &Path| registry.upgrade().and_then(|r| holder(&r, id, target));
+                // The other sessions' documents, which it never writes over.
+                let held = registry.upgrade().map_or_else(Vec::new, |registry| {
+                    lock(&registry.book)
+                        .paths
+                        .iter()
+                        .filter(|(_, holder)| **holder != id)
+                        .map(|(path, _)| path.clone())
+                        .collect()
+                });
+                let to = SaveTo {
+                    given,
+                    replace,
+                    held,
+                    holder: &holder,
+                    reserve: &reserve,
+                    unreserve: &unreserve,
+                };
+                session.commit_as(stop, &to, model, &|resolved| {
+                    moved(&registry, id, resolved);
                 })
             },
         )

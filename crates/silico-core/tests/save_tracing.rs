@@ -186,6 +186,7 @@ fn a_file_a_command_writes_syncs_its_new_file_and_then_the_directory_it_was_rena
         replace: false,
         workspace: Some(&silico_core::file::Workspace::new(&directory).unwrap()),
         held: &[],
+        document: false,
     };
     let seen = Arc::new(Mutex::new(Seen::default()));
     let subscriber = tracing_subscriber::registry().with(Recorder(Arc::clone(&seen)));

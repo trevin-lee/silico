@@ -1498,7 +1498,7 @@
         "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
         "properties": {
           "path": {
-            "description": "The document's path, as `open` was given it.",
+            "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
             "type": "string"
           },
           "problems": {

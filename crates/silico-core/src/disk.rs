@@ -96,8 +96,11 @@ pub type Reader = Arc<dyn Fn(&Path) -> Found + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 /// What a watch tells its session each time a comparison finds the file changed (with what
-/// it read), with no lock held, so the session can reload it ([`DiskWatch::when_changed`]).
-pub type Changed = Arc<dyn Fn(&[u8]) + Send + Sync>;
+/// it read, and the count of the session's reads and writes it compared against), with no
+/// lock held, so the session can reload it ([`DiskWatch::when_changed`]): only if the count
+/// is still the session's ([`DiskWatch::current`]), as it checks under its own lock, since a
+/// read or write of the session's may come between the finding and this.
+pub type Changed = Arc<dyn Fn(&[u8], u64) + Send + Sync>;
 
 /// A session's file watched for changes on disk.
 pub struct DiskWatch {
@@ -112,17 +115,25 @@ pub struct Saving<'a> {
 }
 
 struct Shared {
-    path: PathBuf,
     interval: Duration,
     read: Reader,
     now: Clock,
     notify: Option<Notify>,
     /// Told of each comparison that finds the file changed: the session's reload.
     changed: OnceLock<Changed>,
+    /// Called between a comparison's finding and its telling `changed`, in this crate's
+    /// tests only: to hold it there.
+    #[cfg(test)]
+    before_changed: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// How many times `changed` has been told and returned, in this crate's tests only.
+    #[cfg(test)]
+    changed_told: std::sync::atomic::AtomicUsize,
     state: Mutex<State>,
 }
 
 struct State {
+    /// The file's path, where the session last read or wrote it (a Save As moves it).
+    path: PathBuf,
     /// The bytes the session last read or wrote, and its count of reads and writes.
     held: Arc<Vec<u8>>,
     counter: u64,
@@ -215,13 +226,17 @@ impl DiskWatch {
     ) -> Self {
         DiskWatch {
             shared: Arc::new(Shared {
-                path: path.into(),
                 interval,
                 read,
                 now,
                 notify,
                 changed: OnceLock::new(),
+                #[cfg(test)]
+                before_changed: Mutex::new(None),
+                #[cfg(test)]
+                changed_told: std::sync::atomic::AtomicUsize::new(0),
                 state: Mutex::new(State {
+                    path: path.into(),
                     held,
                     counter: 0,
                     // None before a first comparison ends (`status`'s `null`).
@@ -243,11 +258,42 @@ impl DiskWatch {
         let _ = self.shared.changed.set(changed);
     }
 
+    /// Whether `counter`, a count of the session's reads and writes a comparison was made
+    /// against (as [`Changed`] is told it), is still the session's: no read or write since.
+    pub fn current(&self, counter: u64) -> bool {
+        lock(&self.shared.state).counter == counter
+    }
+
+    /// From now on, each comparison that finds the file changed calls `hold` after its
+    /// finding is kept and before it tells the session, in this crate's tests only.
+    #[cfg(test)]
+    pub(crate) fn before_changed(&self, hold: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.shared.before_changed) = Some(hold);
+    }
+
+    /// How many times a comparison has told `changed` and it returned, in this crate's tests
+    /// only.
+    #[cfg(test)]
+    pub(crate) fn changed_told(&self) -> usize {
+        self.shared
+            .changed_told
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// The session read `bytes` (a reload): what it holds now. A comparison running is
     /// against the bytes before, and its finding is dropped; the file is as the session
     /// holds it, unchanged, until a comparison says otherwise.
     pub fn held(&self, bytes: Arc<Vec<u8>>) {
         hold(&mut lock(&self.shared.state), Some(bytes));
+    }
+
+    /// The session saved its document as `bytes` at `path`, its file from now on (a Save
+    /// As): what it holds now, compared there. A comparison running is of the file before,
+    /// and its finding is dropped.
+    pub fn moved(&self, path: impl Into<PathBuf>, bytes: Arc<Vec<u8>>) {
+        let mut state = lock(&self.shared.state);
+        state.path = path.into();
+        hold(&mut state, Some(bytes));
     }
 
     /// The session is about to write its file: until the [`Saving`] is
@@ -269,7 +315,9 @@ impl DiskWatch {
     /// file.
     pub fn finding(&self) -> Option<Disk> {
         let now = (self.shared.now)();
-        let mut state = lock(&self.shared.state);
+        let mut guard = lock(&self.shared.state);
+        // Borrowed whole, so its fields borrow apart.
+        let state = &mut *guard;
         let due = state
             .ended
             .is_none_or(|ended| now.saturating_duration_since(ended) >= self.shared.interval);
@@ -279,7 +327,7 @@ impl DiskWatch {
         {
             *logged = true;
             tracing::warn!(
-                path = %crate::file::shown_path(&self.shared.path),
+                path = %crate::file::shown_path(&state.path),
                 "the file's comparison on disk has read it for {} s and still hasn't ended: its last finding stands",
                 DISK_READ_STALLED.as_secs()
             );
@@ -289,10 +337,11 @@ impl DiskWatch {
             state.started = Some((now, false));
             let counter = state.counter;
             let held = Arc::clone(&state.held);
+            let path = state.path.clone();
             let shared = Arc::clone(&self.shared);
             let spawned = std::thread::Builder::new()
                 .name("silico-disk".to_owned())
-                .spawn(move || compare(&shared, counter, &held));
+                .spawn(move || compare(&shared, &path, counter, &held));
             if let Err(error) = spawned {
                 // No thread to spare: the next asks again after the interval, the last
                 // finding standing.
@@ -305,14 +354,14 @@ impl DiskWatch {
     }
 }
 
-/// One comparison of `shared`'s file with `held`, the session's bytes at `counter`: its
-/// finding kept if the session still holds them, and told if it changed.
-fn compare(shared: &Shared, counter: u64, held: &[u8]) {
+/// One comparison of the file at `path` with `held`, the session's bytes at `counter`:
+/// its finding kept if the session still holds them, and told if it changed.
+fn compare(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
     let _span = tracing::debug_span!("disk_compare").entered();
     // If the read panics (a test's reader), the comparison has ended all the same: the
     // next can start.
     let ended = Ended(shared);
-    let read = (shared.read)(&shared.path);
+    let read = (shared.read)(path);
     let found = match &read {
         Found::Bytes(bytes) if bytes.as_slice() == held => Disk::Unchanged,
         Found::Bytes(_) => Disk::Changed,
@@ -341,7 +390,20 @@ fn compare(shared: &Shared, counter: u64, held: &[u8]) {
     if let (Found::Bytes(bytes), Disk::Changed) = (&read, found)
         && let Some(changed) = shared.changed.get()
     {
-        changed(bytes);
+        #[cfg(test)]
+        {
+            let hold = lock(&shared.before_changed).clone();
+            if let Some(hold) = hold {
+                hold();
+            }
+        }
+        // Told with the count it compared against: the session may have read or written
+        // since the finding was kept, the lock let go (its own reload, taking these bytes).
+        changed(bytes, counter);
+        #[cfg(test)]
+        shared
+            .changed_told
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
