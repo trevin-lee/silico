@@ -86,6 +86,8 @@ mod sketch_features;
 mod sketch_features_gate;
 #[path = "sketch_gate.rs"]
 mod sketch_gate;
+#[path = "sketch_join.rs"]
+mod sketch_join;
 #[path = "sketch_solve.rs"]
 mod sketch_solve;
 #[path = "sketch_split.rs"]
