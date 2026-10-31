@@ -1858,6 +1858,86 @@ fn a_clean_edit_asks_the_solver_once_never_for_the_sketchs_solve_before_it() {
     }
 }
 
+#[test]
+fn a_suppressed_sketch_is_edited_and_its_edits_judged_as_any_sketchs() {
+    // M5.0's common rules for the sketch edits: a suppressed sketch can be edited, as
+    // `set_field` edits any suppressed feature, and its edits are judged as any sketch's.
+    // Its rebuild never solves it, so a geometry edit's solves, the edit's and the one
+    // before it, are the edit's own, on its own worker. Inside a transaction at 12, as the
+    // design's examples are, so each result is the design's, byte for byte.
+    let f = opened(&bracket());
+    f.checked();
+    f.inside_at(12);
+    // The L profile suppressed takes the pad and the pocket on it with it (section 7's
+    // dependents: the pocket's base has no unsuppressed feature up its chain).
+    let suppressed = f.ran(
+        "suppress_feature",
+        r#"{"session": "s1", "revision": 12, "feature": "s0000001", "suppressed": true}"#,
+    );
+    assert_eq!(
+        suppressed["suppressed"],
+        json!(["s0000001", "p0000001", "h0000001"])
+    );
+    // A split whose solve conflicts where the sketch's didn't is refused as for any sketch,
+    // after asking its worker for the split's solve, then the one before it.
+    answering_edits(&f, conflicting);
+    let text = f.text();
+    let request = split(
+        13,
+        "s0000001",
+        "na000001",
+        json!([[30, 0]]),
+        json!(["pa000007", "na000007", "ka00000d"]),
+    );
+    let solves = f.sketches.requests().len();
+    assert_eq!(
+        f.refused("sketch_split", &request),
+        json!([error(
+            "over_constrained",
+            "after the split, the sketch's constraints conflict: these 1 can't all hold",
+            Some("s0000001"),
+            &["ka000001"],
+            None,
+            Some(WORSE),
+            Some("remove or change one of the constraints named")
+        )])
+    );
+    assert_eq!(f.sketches.requests().len(), solves + 2);
+    assert_eq!((f.text(), f.revision()), (text, revision(13)));
+    // Its solve clean, the same split is the design's result, the sketch still suppressed.
+    f.sketches
+        .answer(|system| Ok(FakeSketches::as_sent(system)));
+    assert_eq!(
+        f.ran("sketch_split", &request),
+        example_value("sketch_split/result")
+    );
+    let after = f.sketch("s0000001");
+    assert_eq!(after["suppressed"], true);
+    assert_eq!(
+        member(&after, "lines", "na000007"),
+        &json!({"id": "na000007", "from": "pa000007", "to": "pa000002", "construction": false})
+    );
+    // `sketch_add`, which no solve judges, only the gate: the design's own addition to the
+    // base's holes, suppressed too, is its result.
+    f.ran(
+        "suppress_feature",
+        r#"{"session": "s1", "revision": 14, "feature": "s0000002", "suppressed": true}"#,
+    );
+    let mut add = example_value("sketch_add/request");
+    add["revision"] = json!(15);
+    assert_eq!(
+        f.ran("sketch_add", &add.to_string()),
+        example_value("sketch_add/result")
+    );
+    let holes = f.sketch("s0000002");
+    assert_eq!(holes["suppressed"], true);
+    assert_eq!(
+        member(&holes, "circles", "cb000003"),
+        &json!({"id": "cb000003", "center": "pb000003", "radius": 2.75, "construction": false})
+    );
+    assert_eq!(f.revision(), revision(16));
+}
+
 /// The bracket's L profile with two construction circles: ca000001 about pa000004, the
 /// corner whose vertex the fillet f0000001 names, and ca000002 about a point of its own,
 /// pa000007, clear of the profile.

@@ -27,7 +27,7 @@ pub use super::DragStop;
 use super::{Begun, DragSession, Kept, MoveOutcome, MoveTicket, Notify, cancelled};
 use crate::document::{Checked, ElementId, FeatureId, Operation, Sketch};
 use crate::recompute::{FeatureOutcome, Model, SketchSolvers};
-use crate::sketch::{SketchSolution, SketchSolver, Translation};
+use crate::sketch::{SketchSolution, SketchSolver, Translation, suppressed_sketch};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -163,9 +163,10 @@ pub fn begin(
 /// `solvers` and held until the drag ends, each change of its moves told to `notify`, its
 /// whole solves under `stop`. The begin state is `held`, the model's solve of the sketch,
 /// if it solved the sketch as `document` holds it; otherwise the sketch is solved on the
-/// drag's solver. Refused, as `invalid_input`: a feature the document hasn't, or one that
-/// isn't a sketch (naming `sketch`); a point the sketch hasn't, or a part with more
-/// unknowns than a drag takes (naming `point`). A sketch whose constraints conflict is
+/// drag's solver. Refused, as `invalid_input`: a feature the document hasn't, one that
+/// isn't a sketch, or a suppressed sketch, which is never solved (naming `sketch`); a
+/// point the sketch hasn't, or a part with more unknowns than a drag takes (naming
+/// `point`). A sketch whose constraints conflict is
 /// `over_constrained`, naming them. A solve stopped is `cancelled`; a solver that failed is
 /// its error. Each names the sketch.
 pub fn begin_stoppable(
@@ -255,6 +256,7 @@ fn start(
     let named = |e: Error| e.with_feature(feature.as_str());
     let sketch = match document.feature(feature) {
         Ok(found) => match &found.operation {
+            Operation::Sketch(_) if found.suppressed => return Err(suppressed_sketch(feature)),
             Operation::Sketch(sketch) => sketch,
             _ => {
                 return Err(named(

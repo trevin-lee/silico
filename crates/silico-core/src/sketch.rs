@@ -764,6 +764,21 @@ pub fn solve(
     answer.into_outcome().map_err(named)
 }
 
+/// The refusal of a request naming `feature`, a suppressed sketch, as its `sketch`: a
+/// suppressed sketch is never solved, so neither `sketch` reads it nor `drag_begin` drags it
+/// (docs/design/m5.0-app.md, section 7), worded as a read of a suppressed feature's solid is.
+pub(crate) fn suppressed_sketch(feature: &FeatureId) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("{feature} is suppressed, so it isn't solved"),
+    )
+    .with_feature(feature.as_str())
+    .with_parameter("sketch")
+    .with_suggestion(format!(
+        "unsuppress {feature} first (suppress_feature with suppressed false), or name a sketch that isn't suppressed"
+    ))
+}
+
 /// Whether `file`, a sketch with a solve written back, is one the gate takes: a solve can be
 /// met only to rounding, and where a value is at its limit the file's measure of it can
 /// land past (break-it: an arc of radius 1 km solved to points 1 km and an ulp apart, which
