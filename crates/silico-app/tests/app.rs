@@ -6408,6 +6408,63 @@ fn open_and_save_as_each_keep_their_own_path() {
             .as_deref(),
         Some("")
     );
+    // And by Ctrl+Shift+S, after something typed in it: empty again.
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("typed-again.silico");
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "Save As closed", |h| {
+        !anywhere(h, "Save example.silico as")
+    });
+    h.key_press_modifiers(
+        eframe::egui::Modifiers::COMMAND | eframe::egui::Modifiers::SHIFT,
+        eframe::egui::Key::S,
+    );
+    step_until(&mut h, "Save As again", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    assert_eq!(
+        h.get_by_role_and_label(Role::TextInput, "Path")
+            .value()
+            .as_deref(),
+        Some("")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_right_after_a_menu_item_opened_the_dialog_by_enter_is_its_ok() {
+    // The focus left on the menu item, no longer drawn, is no focus: a fresh Enter in the
+    // very next frame is the dialog's OK.
+    use eframe::egui::{Event, Key, Modifiers};
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Export…").focus();
+    step(&mut h);
+    let enter = |pressed: bool| Event::Key {
+        key: Key::Enter,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    h.input_mut().events.push(enter(true));
+    step(&mut h);
+    assert!(exporting_dialog(&h));
+    h.input_mut().events.push(enter(false));
+    h.input_mut().events.push(enter(true));
+    step(&mut h);
+    step_until(&mut h, "its answer", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    assert_eq!(h.state().tabs()[0].exports.len(), 1);
+    assert!(!path.with_extension("step").exists());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -6428,5 +6485,25 @@ fn enter_on_a_feature_dialogs_focused_cancel_cancels() {
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_format_chosen_is_the_one_marked_chosen() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let chosen = |h: &AppHarness, word: &str| {
+        h.get_by_role_and_label(Role::Button, word)
+            .accesskit_node()
+            .toggled()
+            == Some(eframe::egui::accesskit::Toggled::True)
+    };
+    open_export(&mut h);
+    assert!(chosen(&h, "3MF") && !chosen(&h, "STEP"));
+    press(&mut h, "STEP");
+    assert!(chosen(&h, "STEP") && !chosen(&h, "3MF"));
+    press(&mut h, "3MF");
+    assert!(chosen(&h, "3MF") && !chosen(&h, "STEP"));
     assert_eq!(never_waits::waits(), 0);
 }

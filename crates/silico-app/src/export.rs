@@ -177,11 +177,11 @@ impl ExportForm {
             if !self.step {
                 ui.horizontal(|ui| {
                     let label = ui.label("Tolerance");
-                    let reads = Length::parse(self.tolerance.trim()).is_ok();
+                    let red = unreadable(&self.tolerance);
                     let mut edit = egui::TextEdit::singleline(&mut self.tolerance)
                         .id_salt("export-tolerance")
                         .desired_width(100.0);
-                    if !reads {
+                    if red {
                         edit = edit.text_color(ui.visuals().error_fg_color);
                     }
                     ui.add(edit).labelled_by(label.id);
@@ -243,6 +243,11 @@ pub fn beside(document: &str, typed: &str) -> PathBuf {
     }
 }
 
+/// Whether a tolerance as typed shows red: it doesn't read as a length.
+fn unreadable(tolerance: &str) -> bool {
+    Length::parse(tolerance.trim()).is_err()
+}
+
 /// `path` with its extension `extension` in place of the one it has (if any).
 fn with_extension(path: &str, extension: &str) -> String {
     Path::new(path)
@@ -284,6 +289,16 @@ mod tests {
                 features: None,
             })
         );
+    }
+
+    #[test]
+    fn a_tolerance_that_doesnt_read_as_a_length_shows_red() {
+        for typed in ["0.1", " 0.25 ", "1e-5", "0"] {
+            assert!(!unreadable(typed), "{typed:?}");
+        }
+        for typed in ["x", "", "-0", "1e400", "0.1mm"] {
+            assert!(unreadable(typed), "{typed:?}");
+        }
     }
 
     #[test]
