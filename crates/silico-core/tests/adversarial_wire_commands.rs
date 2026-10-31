@@ -1047,6 +1047,7 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "sketch_unjoin",
                 "sketch_merge",
                 "sketch_extend",
+                "sketch_join",
                 "undo",
                 "redo"
             ]

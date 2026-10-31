@@ -177,7 +177,8 @@ fn effect(command: Command) -> Effect {
         | Command::SketchTrim
         | Command::SketchUnjoin
         | Command::SketchMerge
-        | Command::SketchExtend => Effect::Changes { destructive: true },
+        | Command::SketchExtend
+        | Command::SketchJoin => Effect::Changes { destructive: true },
         // A drag is held by the server, and its moves change no file.
         Command::DragBegin | Command::DragMove => Effect::Changes { destructive: false },
         // `replace: true` writes over a file at `to`, or at `path`.
@@ -319,6 +320,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Merge sketch points",
             "Make two or more points of a sketch one: the first named survives at its own coordinates, and the others' curves and constraints move to it. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): name first the point the constraints hold. `silico fmt --merge-touching` merges every `ends_not_joined` cluster so. Give the revision the edit was made against.",
         ),
+        Command::SketchJoin => (
+            "Join a split's pieces",
+            "Join the two pieces a split left at a point into one curve again, split's inverse: two lines held on one line by a `tangent_at` (`same`) at the point, or two arcs about one centre (a split circle's two arcs make its circle again). Name the point they share. The piece that ends there keeps its ID and takes the other's far end (it's the one curve in `modified`, the other piece in `removed`); the other piece, the point, and the constraints naming the point go, and constraints on the other piece move to the kept one. Nothing is retyped: a split's distance of the outer ends stays a distance. `references` lists the features whose stored names either piece reached. Refused for a piece's length, midpoint, or equal with another line, which would then measure the whole line: remove it, or dimension the outer ends. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
+        ),
         Command::Text => (
             "Document text",
             "The document's text as the session holds it, or one feature's.",
@@ -392,7 +397,8 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::SketchTrim
         | Command::SketchUnjoin
         | Command::SketchMerge
-        | Command::SketchExtend => &[IN_A_TRANSACTION, READ_CURRENT],
+        | Command::SketchExtend
+        | Command::SketchJoin => &[IN_A_TRANSACTION, READ_CURRENT],
         Command::Check
         | Command::MassProperties
         | Command::Render

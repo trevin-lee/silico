@@ -38,6 +38,7 @@
           "sketch_unjoin",
           "sketch_merge",
           "sketch_extend",
+          "sketch_join",
           "undo",
           "redo",
           "rebuild"
@@ -105,6 +106,7 @@
           "sketch_unjoin",
           "sketch_merge",
           "sketch_extend",
+          "sketch_join",
           "undo",
           "redo",
           "rebuild"

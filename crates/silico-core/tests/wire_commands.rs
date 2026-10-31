@@ -803,6 +803,7 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "sketch_unjoin",
                 "sketch_merge",
                 "sketch_extend",
+                "sketch_join",
                 "undo",
                 "redo"
             ]
