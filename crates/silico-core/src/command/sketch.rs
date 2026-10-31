@@ -17,6 +17,7 @@ use crate::kernel::Clients;
 use crate::profile::{self, Profile};
 use crate::recompute::Model;
 use crate::references::CANDIDATES;
+use crate::sketch::suppressed_sketch;
 use crate::sketch_states::{self, SketchStates};
 use crate::worker::SILICO_BUG;
 use crate::{Error, ErrorCode};
@@ -25,11 +26,11 @@ impl<P: Clients + 'static> Sessions<P> {
     /// `sketch` (M5.10): the sketch `sketch` of the model `model` names (decision 33), as
     /// its rebuild solved it ([`SketchRead`]). Refused, naming `sketch`, for a feature the
     /// document doesn't have, or one that isn't a sketch, the document's first sketches the
-    /// candidates; and with the rebuild's own error for a sketch it couldn't solve or
-    /// diagnose for a reason that isn't the sketch's (a worker's failure), as `check`
-    /// reports it. Read as every model is ([`read_model`](Self::read_model)): the current one
-    /// queued, waiting for the revision's rebuild, or the newest published at once, counted
-    /// among the session's published reads.
+    /// candidates, or a suppressed one, which is never solved; and with the rebuild's own
+    /// error for a sketch it couldn't solve or diagnose for a reason that isn't the sketch's
+    /// (a worker's failure), as `check` reports it. Read as every model is
+    /// ([`read_model`](Self::read_model)): the current one queued, waiting for the revision's
+    /// rebuild, or the newest published at once, counted among the session's published reads.
     pub fn sketch(
         &self,
         session: &SessionId,
@@ -169,7 +170,8 @@ fn every_member_stated(
 }
 
 /// Why the model holds no solve of its sketch `id`: what became of it, as `check` reports
-/// it, or, if that's nothing, a bug's (every sketch a model's document has is solved).
+/// it, or, if that's nothing, a bug's (every unsuppressed sketch a model's document has is
+/// solved, and [`sketch_of`] refuses a suppressed one).
 fn unsolved(model: &Model, id: &FeatureId) -> Error {
     match model.outcome(id).map(|outcome| outcome.errors()) {
         Some([first, ..]) => first.clone(),
@@ -185,7 +187,8 @@ fn unsolved(model: &Model, id: &FeatureId) -> Error {
 /// The sketch `id` of `model`'s document, or why there's none: a feature the document
 /// doesn't have, or one that isn't a sketch, each `invalid_input` naming `sketch`, the
 /// document's first [`CANDIDATES`] sketches, in timeline order, the candidates (as a chain's
-/// edit offers its bases).
+/// edit offers its bases); or a suppressed sketch, which its rebuild never solved, refused
+/// naming `sketch` and the feature, as a read of a suppressed feature's solid is.
 fn sketch_of<'m>(model: &'m Model, id: &FeatureId) -> Result<&'m Sketch, Problems> {
     let document = model.document();
     let refused = |message: String| {
@@ -211,6 +214,9 @@ fn sketch_of<'m>(model: &'m Model, id: &FeatureId) -> Result<&'m Sketch, Problem
     match document.features.iter().find(|f| &f.id == id) {
         None => Err(refused(format!("the document has no feature {id}"))),
         Some(feature) => match &feature.operation {
+            Operation::Sketch(_) if feature.suppressed => {
+                Err(Problems::from(suppressed_sketch(id)))
+            }
             Operation::Sketch(sketch) => Ok(sketch),
             other => Err(refused(format!(
                 "{id} is a {}, not a sketch",
