@@ -6,6 +6,8 @@
 //! one doesn't claim; that's the fake's own model, tested in silico-core.)
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::planes;
+
 use std::path::Path;
 use std::time::Duration;
 
@@ -181,9 +183,13 @@ fn regions(plane: SketchPlane) -> FaceRegions {
 
 #[test]
 fn faces_have_the_real_kernels_history_area_and_box() {
+    // On every plane whose axes are model space's, a face frame's (the reversed top) among
+    // them, where the fake is exact: on a tilted frame the kernel's volume and centre of
+    // faces are 0 only to rounding (silico-core's adversarial_fake_face_frame checks the
+    // fake's measures there against their closed forms).
     let real = pool();
     let fake = FakeKernel::new(2).unwrap();
-    for plane in SketchPlane::ALL {
+    for plane in planes::square() {
         let request = || KernelRequest::make_faces(&regions(plane)).unwrap();
         let real_faces = done(real.submit(real.generation(), request()));
         let fake_faces = done(fake.submit(fake.generation(), request()));
@@ -242,7 +248,9 @@ fn a_prism_and_a_turn_of_faces_have_the_real_kernels_counts_and_rule() {
         origin: [-20.0, 0.0, 0.0],
         direction: [0.0, 1.0, 0.0],
     };
-    for plane in SketchPlane::ALL {
+    // The prisms on every plane whose axes are model space's (the reversed top's among
+    // them), as the faces above.
+    for plane in planes::square() {
         let sweep = |faces: &ShapeData, turn: bool| {
             if turn {
                 KernelRequest::revolution(faces, axis, -0.25, 1.0).unwrap()

@@ -45,8 +45,9 @@ pub use export::{
     export_deflection, export_rounding,
 };
 pub use faces::{
-    ArcEnd, Curve, FACE_FRAME_TOLERANCE, FaceFrame, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES,
-    Region, SizeProblem, SketchPlane, area_and_perimeter, distance, loop_area, on_circle, sliver,
+    ArcEnd, Curve, FACE_FRAME_SQUARENESS, FaceFrame, FaceFrameError, FaceRegions, MAX_ARC_ANGLE,
+    MAX_FACE_CURVES, MAX_FRAME_ORIGIN, MIN_AXIS_OFF_NORMAL, Region, SizeProblem, SketchPlane,
+    area_and_perimeter, distance, loop_area, on_circle, sliver,
 };
 pub use frame::{
     FrameError, FrameReader, MAX_FRAME_LEN, decode, encoded_len, write_message,

@@ -27,7 +27,7 @@ pub fn plane_z0() -> FaceDescription {
     FaceDescription {
         surface: Surface::Plane {
             normal: [0.0, 0.0, 1.0],
-            origin: [0.0; 3],
+            location: [0.0; 3],
         },
         area: 1.0,
         centroid: [1.0, 0.0, 0.0],

@@ -1024,7 +1024,7 @@ fn kept_descriptions_holding_values_no_worker_could_send_are_described_again() {
         ("normal-not-unit", |d| {
             d.faces[1].surface = Surface::Plane {
                 normal: [0.0, 0.0, 1.5],
-                origin: [0.0; 3],
+                location: [0.0; 3],
             };
         }),
         ("cone-right-angle", |d| {

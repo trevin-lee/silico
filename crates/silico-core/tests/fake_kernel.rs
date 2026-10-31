@@ -773,8 +773,16 @@ fn faces_are_made_symbolically_with_their_areas_by_formula() {
         ),
         (vec![(slot(), vec![])], 8.0 + PI, counts(1, 4, 4, 0)),
     ];
+    // Every plane: the origin planes, and a face's frame, tilted 30° about X from (1, 2, 3)
+    // (x +X, y (0, cos 30°, sin 30°)), on which a region's area is the same.
+    let (c, s) = (libm::cos(PI / 6.0), libm::sin(PI / 6.0));
+    let tilted = SketchPlane::Face(silico_protocol::FaceFrame {
+        origin: [1.0, 2.0, 3.0],
+        x: [1.0, 0.0, 0.0],
+        y: [0.0, c, s],
+    });
     for (sent, area, want) in cases {
-        for plane in SketchPlane::ALL {
+        for plane in SketchPlane::ORIGIN_PLANES.into_iter().chain([tilted]) {
             let faces = regions(plane, sent.clone());
             let built = run(&kernel, KernelRequest::make_faces(&faces).unwrap());
             assert_eq!(FakeKernel::counts(&built.shape), Some(want));
@@ -820,7 +828,7 @@ fn faces_are_made_symbolically_with_their_areas_by_formula() {
 fn faces_on_a_face_frame_are_placed_on_it_and_read_back_as_written() {
     use silico_protocol::FaceFrame;
     let kernel = FakeKernel::new(1).unwrap();
-    // A reversed top face's frame at z = 7: x −X, y +Y, n −Z. The 4 × 3 rectangle from the
+    // A reversed top face's frame at z = 7: x −X, y +Y, so n −Z. The 4 × 3 rectangle from the
     // sketch's origin is x −4..0, y 0..3 at z = 7, 12 mm²: its box's low corner is where
     // the sketch's high x lands, so the box is taken in model space, not of the sketch's
     // low and high corners placed.
@@ -828,7 +836,6 @@ fn faces_on_a_face_frame_are_placed_on_it_and_read_back_as_written() {
         origin: [0.0, 0.0, 7.0],
         x: [-1.0, 0.0, 0.0],
         y: [0.0, 1.0, 0.0],
-        normal: [0.0, 0.0, -1.0],
     };
     let faces = regions(
         SketchPlane::Face(frame),
@@ -837,7 +844,7 @@ fn faces_on_a_face_frame_are_placed_on_it_and_read_back_as_written() {
     let built = run(&kernel, KernelRequest::make_faces(&faces).unwrap());
     assert_eq!(
         std::str::from_utf8(built.shape.brep().as_bytes()).unwrap(),
-        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 0 0 -1 region loop line 0 0 4 0 \
+        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 region loop line 0 0 4 0 \
          line 4 0 4 3 line 4 3 0 3 line 0 3 0 0\n"
     );
     assert_eq!(
@@ -872,18 +879,18 @@ fn faces_on_a_face_frame_are_placed_on_it_and_read_back_as_written() {
         panic!("{flat:?}")
     };
     assert_eq!(error.parameter(), Some("vector"));
-    // A frame the protocol refuses doesn't read back: left-handed, or short of its twelve
-    // numbers.
+    // A frame the protocol refuses doesn't read back: its y twice a unit, x and y not
+    // square, short of its nine numbers, or one of them not a number.
     for text in [
-        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 0 0 1 region loop circle 0 0 1\n",
-        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 0 0 region loop circle 0 0 1\n",
-        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 0 0 nan region loop circle 0 0 1\n",
+        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 2 0 region loop circle 0 0 1\n",
+        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 -1 0 0 region loop circle 0 0 1\n",
+        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 region loop circle 0 0 1\n",
+        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 nan region loop circle 0 0 1\n",
     ] {
         let shape = ShapeData::checked(Blob::inline(text.as_bytes().to_vec()), true);
         assert_eq!(FakeKernel::describe(&shape), None, "{text}");
     }
-    let good =
-        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 0 0 -1 region loop circle 0 0 1\n";
+    let good = "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 region loop circle 0 0 1\n";
     let shape = ShapeData::checked(Blob::inline(good.as_bytes().to_vec()), true);
     assert_eq!(
         FakeKernel::describe(&shape).as_deref(),

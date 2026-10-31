@@ -258,7 +258,6 @@ fn every_op() -> Vec<Op> {
                 origin: [-0.0, 1e6, 5e-324],
                 x: [0.6, 0.8, -0.0],
                 y: [-0.8, 0.6, 1e-300],
-                normal: [0.0, -1e-300, 1.000_000_000_000_000_2],
             }),
             regions: vec![Region {
                 outer: vec![Curve::Circle {
@@ -655,7 +654,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                 faces: [
                     Surface::Plane {
                         normal: [0.0, 0.0, -1.0],
-                        origin: [-0.0, 1e300, 5e-324],
+                        location: [-0.0, 1e300, 5e-324],
                     },
                     Surface::Cylinder {
                         axis: AXIS,

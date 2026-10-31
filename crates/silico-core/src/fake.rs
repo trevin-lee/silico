@@ -2315,58 +2315,14 @@ impl Measured {
                 area += loop_area(curves, contour == 0);
             }
         }
-        let (mut low, mut high) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-        let mut include = |p: [f64; 2]| {
-            for k in 0..2 {
-                low[k] = low[k].min(p[k]);
-                high[k] = high[k].max(p[k]);
-            }
-        };
-        for curve in regions.curves() {
-            match *curve {
-                Curve::Line { start, end } => {
-                    include(start);
-                    include(end);
-                }
-                Curve::Circle { center, radius } => {
-                    include([center[0] - radius, center[1] - radius]);
-                    include([center[0] + radius, center[1] + radius]);
-                }
-                Curve::Arc {
-                    center,
-                    start,
-                    end,
-                    radius,
-                    start_angle,
-                    end_angle,
-                } => {
-                    include(start);
-                    include(end);
-                    // Each quarter turn the arc passes: where it reaches furthest along an
-                    // axis.
-                    let quarter = std::f64::consts::FRAC_PI_2;
-                    let (from, to) = (start_angle.min(end_angle), start_angle.max(end_angle));
-                    let mut k = libm::ceil(from / quarter);
-                    while k * quarter <= to {
-                        let [x, y] = match k.rem_euclid(4.0) as u8 {
-                            0 => [1.0, 0.0],
-                            1 => [0.0, 1.0],
-                            2 => [-1.0, 0.0],
-                            _ => [0.0, -1.0],
-                        };
-                        include([center[0] + radius * x, center[1] + radius * y]);
-                        k += 1.0;
-                    }
-                }
-            }
-        }
         // On an origin plane, whose axes point along model space's, the box of the curves in
         // the sketch's coordinates, its corners placed; on a face frame, in model space.
         let bounds = match regions.plane {
-            SketchPlane::Xy | SketchPlane::Xz | SketchPlane::Yz => {
-                [regions.plane.place(low), regions.plane.place(high)]
-            }
             SketchPlane::Face(frame) => frame_box(frame, regions),
+            plane @ (SketchPlane::Xy | SketchPlane::Xz | SketchPlane::Yz) => {
+                let [low, high] = sketch_box(regions);
+                [plane.place(low), plane.place(high)]
+            }
         };
         Measured {
             volume: 0.0,
@@ -2804,6 +2760,59 @@ impl FacesLayout {
     }
 }
 
+/// The box around faces' curves in the sketch's own coordinates: each line's and arc's
+/// ends, each circle's square, and each quarter turn an arc passes, where it reaches
+/// furthest along an axis. On an origin plane, whose axes point along model space's, its
+/// corners placed are the faces' box.
+fn sketch_box(regions: &FaceRegions) -> [[f64; 2]; 2] {
+    let (mut low, mut high) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    let mut include = |p: [f64; 2]| {
+        for k in 0..2 {
+            low[k] = low[k].min(p[k]);
+            high[k] = high[k].max(p[k]);
+        }
+    };
+    for curve in regions.curves() {
+        match *curve {
+            Curve::Line { start, end } => {
+                include(start);
+                include(end);
+            }
+            Curve::Circle { center, radius } => {
+                include([center[0] - radius, center[1] - radius]);
+                include([center[0] + radius, center[1] + radius]);
+            }
+            Curve::Arc {
+                center,
+                start,
+                end,
+                radius,
+                start_angle,
+                end_angle,
+            } => {
+                include(start);
+                include(end);
+                // Each quarter turn the arc passes: where it reaches furthest along an
+                // axis.
+                let quarter = std::f64::consts::FRAC_PI_2;
+                let (from, to) = (start_angle.min(end_angle), start_angle.max(end_angle));
+                let mut k = libm::ceil(from / quarter);
+                while k * quarter <= to {
+                    let [x, y] = match k.rem_euclid(4.0) as u8 {
+                        0 => [1.0, 0.0],
+                        1 => [0.0, 1.0],
+                        2 => [-1.0, 0.0],
+                        _ => [0.0, -1.0],
+                    };
+                    include([center[0] + radius * x, center[1] + radius * y]);
+                    k += 1.0;
+                }
+            }
+        }
+    }
+    [low, high]
+}
+
 /// The box in model space around faces' curves on a face frame, whose axes may point any
 /// way: each line's and arc's ends placed, and each circle's or arc's furthest reach along
 /// each axis k. About its centre a placed, a round is a + r(x cos t + y sin t), whose k-th
@@ -2864,29 +2873,13 @@ fn frame_box(frame: FaceFrame, regions: &FaceRegions) -> [[f64; 3]; 2] {
     [low, high]
 }
 
-/// A plane's word in a shape's bytes and expressions: `xy`, `xz`, `yz`, or `frame` for a
-/// face's frame, whose numbers follow it in a shape's bytes ([`plane_line`]).
-fn plane_word(plane: SketchPlane) -> &'static str {
-    // An origin plane's is the document's word for it (D6).
-    use crate::document::Plane;
-    match plane {
-        SketchPlane::Xy => Plane::Xy.as_str(),
-        SketchPlane::Xz => Plane::Xz.as_str(),
-        SketchPlane::Yz => Plane::Yz.as_str(),
-        SketchPlane::Face(_) => "frame",
-    }
-}
-
-/// A plane in a shape's bytes: its word, and a face frame's twelve numbers after it, its
-/// origin, x, y, and normal, each as Rust writes it (a zero of either sign as 0, as a
-/// curve's numbers are).
+/// A plane in a shape's bytes: its word ([`SketchPlane::word`]), and a face frame's nine
+/// numbers after it, its origin, x, and y, each as Rust writes it (a zero of either sign as
+/// 0, as a curve's numbers are).
 fn plane_line(plane: SketchPlane) -> String {
-    let mut line = plane_word(plane).to_owned();
+    let mut line = plane.word().to_owned();
     if let SketchPlane::Face(frame) = plane {
-        for value in [frame.origin, frame.x, frame.y, frame.normal]
-            .into_iter()
-            .flatten()
-        {
+        for value in [frame.origin, frame.x, frame.y].into_iter().flatten() {
             line.push_str(&format!(" {}", value + 0.0));
         }
     }
@@ -2949,7 +2942,7 @@ fn faces_line(regions: &FaceRegions) -> String {
 fn faces_text(regions: &FaceRegions) -> String {
     format!(
         "faces({}, {} regions, {} curves)",
-        plane_word(regions.plane),
+        regions.plane.word(),
         regions.regions.len(),
         regions.curves().count()
     )
@@ -2961,7 +2954,7 @@ fn parse_faces(words: &[&str]) -> Option<FaceRegions> {
     let number = |w: &str| w.parse::<f64>().ok().filter(|v| v.is_finite());
     let (plane, rest) = match words.split_first()? {
         (&"frame", rest) => {
-            let (values, rest) = rest.split_first_chunk::<12>()?;
+            let (values, rest) = rest.split_first_chunk::<9>()?;
             let mut values = values.iter().map(|w| number(w));
             let mut next = || -> Option<[f64; 3]> {
                 Some([values.next()??, values.next()??, values.next()??])
@@ -2970,14 +2963,13 @@ fn parse_faces(words: &[&str]) -> Option<FaceRegions> {
                 origin: next()?,
                 x: next()?,
                 y: next()?,
-                normal: next()?,
             };
             (SketchPlane::Face(frame), rest)
         }
         (plane, rest) => (
-            SketchPlane::ALL
+            SketchPlane::ORIGIN_PLANES
                 .into_iter()
-                .find(|p| plane_word(*p) == *plane)?,
+                .find(|p| p.word() == *plane)?,
             rest,
         ),
     };

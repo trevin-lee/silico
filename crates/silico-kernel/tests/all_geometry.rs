@@ -42,6 +42,8 @@ mod logs;
 mod numbers;
 #[path = "common/oracle.rs"]
 mod oracle;
+#[path = "common/planes.rs"]
+mod planes;
 #[path = "common/quadrature.rs"]
 mod quadrature;
 #[path = "../../silico-core/tests/common/share.rs"]

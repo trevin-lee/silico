@@ -441,7 +441,7 @@ mod tests {
         };
         let plane = |z| Surface::Plane {
             normal: [0.0, 0.0, z],
-            origin: [0.0; 3],
+            location: [0.0; 3],
         };
         for (description, said) in [
             (face(plane(1.0), -1.0), "the kernel's Face7's area is -1"),
@@ -482,7 +482,7 @@ mod tests {
         let face = |area| FaceDescription {
             surface: Surface::Plane {
                 normal: [0.0, 0.0, 1.0],
-                origin: [0.0; 3],
+                location: [0.0; 3],
             },
             area,
             centroid: [0.0; 3],

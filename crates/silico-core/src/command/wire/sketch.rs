@@ -75,7 +75,7 @@ impl ToWire for SketchRead {
             (
                 "plane",
                 Json::object([
-                    ("origin", Json::direction([0.0; 3])),
+                    ("origin", Json::direction(frame.origin())),
                     ("x", Json::direction(frame.x_axis())),
                     ("y", Json::direction(frame.y_axis())),
                     ("normal", Json::direction(frame.normal())),

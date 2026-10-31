@@ -49,25 +49,23 @@ fn assert_point(what: &str, got: [f64; 3], want: [f64; 3], tolerance: f64) {
     assert!(off <= tolerance, "{what}: got {got:?}, want {want:?}");
 }
 
-/// The frame of a box's top face at z = 10: x +X, y +Y, n +Z, from (0, 0, 10).
+/// The frame of a box's top face at z = 10: x +X, y +Y (so n +Z), from (0, 0, 10).
 fn top() -> FaceFrame {
     FaceFrame {
         origin: [0.0, 0.0, 10.0],
         x: [1.0, 0.0, 0.0],
         y: [0.0, 1.0, 0.0],
-        normal: [0.0, 0.0, 1.0],
     }
 }
 
-/// The XY frame tilted 30° about X, from `origin`: x +X, y (0, cos 30°, sin 30°), and n
-/// (0, −sin 30°, cos 30°), which is x × y.
+/// The XY frame tilted 30° about X, from `origin`: x +X, y (0, cos 30°, sin 30°), so n,
+/// x × y, is (0, −sin 30°, cos 30°).
 fn tilted(origin: [f64; 3]) -> FaceFrame {
     let (c, s) = (libm::cos(radians(30.0)), libm::sin(radians(30.0)));
     FaceFrame {
         origin,
         x: [1.0, 0.0, 0.0],
         y: [0.0, c, s],
-        normal: [0.0, -s, c],
     }
 }
 
@@ -80,11 +78,11 @@ fn a_rectangle_on_a_boxs_top_face_is_at_the_faces_height_and_its_pad_rises_from_
     let face = &d.faces[0];
     assert_close("the face's area", face.area, 200.0, 1e-12);
     assert_point("the face's centre", face.centroid, [10.0, 5.0, 10.0], 1e-9);
-    let Surface::Plane { normal, origin } = face.surface else {
+    let Surface::Plane { normal, location } = face.surface else {
         panic!("{:?}", face.surface)
     };
     assert_eq!(normal, [0.0, 0.0, 1.0]);
-    assert_eq!(origin, [0.0, 0.0, 10.0]);
+    assert_eq!(location, [0.0, 0.0, 10.0]);
     let pad = prism(&faces.shape, [0.0; 3], [0.0, 0.0, 5.0]).unwrap();
     let s = summarize(&pad.shape).unwrap();
     assert!(s.valid);
@@ -112,14 +110,14 @@ fn a_rectangle_on_a_tilted_frame_lies_tilted_and_pads_along_its_normal() {
         [10.0, 5.0 * c, 5.0 * s],
         1e-9,
     );
-    let Surface::Plane { normal, origin } = face.surface else {
+    let Surface::Plane { normal, location } = face.surface else {
         panic!("{:?}", face.surface)
     };
     assert_point("the face's normal", normal, [0.0, -s, c], 1e-15);
     // The plane's own location is on it.
-    let along: f64 = (0..3).map(|k| normal[k] * origin[k]).sum();
-    assert!(along.abs() <= 1e-15, "{origin:?}");
-    let pad = prism(&faces.shape, [0.0; 3], frame.normal.map(|k| k * 4.0)).unwrap();
+    let along: f64 = (0..3).map(|k| normal[k] * location[k]).sum();
+    assert!(along.abs() <= 1e-15, "{location:?}");
+    let pad = prism(&faces.shape, [0.0; 3], [0.0, -s * 4.0, c * 4.0]).unwrap();
     let summary = summarize(&pad.shape).unwrap();
     assert!(summary.valid);
     assert_close("the pad's volume", summary.volume, 800.0, 1e-9);
@@ -147,7 +145,6 @@ fn a_circle_on_a_reversed_top_face_is_placed_mirrored_in_x() {
         origin: [0.0, 0.0, 7.0],
         x: [-1.0, 0.0, 0.0],
         y: [0.0, 1.0, 0.0],
-        normal: [0.0, 0.0, -1.0],
     };
     let (faces, d) = made(&on(
         frame,
@@ -159,11 +156,11 @@ fn a_circle_on_a_reversed_top_face_is_placed_mirrored_in_x() {
     let face = &d.faces[0];
     assert_close("the face's area", face.area, 9.0 * PI, 1e-12);
     assert_point("the face's centre", face.centroid, [-2.0, 1.0, 7.0], 1e-9);
-    let Surface::Plane { normal, origin } = face.surface else {
+    let Surface::Plane { normal, location } = face.surface else {
         panic!("{:?}", face.surface)
     };
     assert_eq!(normal, [0.0, 0.0, -1.0]);
-    assert_eq!(origin, [0.0, 0.0, 7.0]);
+    assert_eq!(location, [0.0, 0.0, 7.0]);
     // The circle's one vertex, at its angle 0 along the sketch's x: (2 + 3, 1) on the
     // sketch, (−5, 1, 7) in the model.
     assert_eq!(d.vertices.len(), 1);

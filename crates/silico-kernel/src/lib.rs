@@ -1001,7 +1001,7 @@ pub fn describe(
             let surface = match f.surface {
                 ffi::SurfaceType::Plane => Surface::Plane {
                     normal: point(&f.normal),
-                    origin: point(&f.origin),
+                    location: point(&f.origin),
                 },
                 ffi::SurfaceType::Cylinder => Surface::Cylinder {
                     axis,
@@ -1598,11 +1598,12 @@ pub fn make_faces(regions: &FaceRegions) -> Result<Built, KernelError> {
     let plane = regions.plane;
     let point3 = |[x, y, z]: [f64; 3]| ffi::Point3 { x, y, z };
     // The plane the points are placed on: through the plane's origin, spanned by its x and y
-    // axes, so its normal is x × y (OCCT makes it a unit vector). An origin plane's is its
-    // normal exactly. A face frame's is within the frame's tolerance of its normal: placed
-    // along x and y a kilometre out, a point stays on this plane where it would be up to
-    // 1e-6 off one built from the frame's normal, past OCCT's tolerance.
-    let normal = silico_protocol::vec3::cross(plane.x_axis(), plane.y_axis());
+    // axes, its normal the plane's one normal, x × y normalized (`SketchPlane::normal`),
+    // which every sweep of the faces reads too: an origin plane's exactly its axis. OCCT
+    // takes x as it comes and makes its own y, n × x; a face frame's x and y are square to
+    // 1e-14 (`FaceFrame::check`), so a point placed a kilometre along the frame's y is within
+    // 1e-8 of OCCT's, inside its tolerance.
+    let normal = plane.normal();
     let reversed = normal.map(|c| -c);
     let mut points = Vec::new();
     let mut curves = Vec::new();

@@ -37,7 +37,7 @@ fn plane(normal: [f64; 3]) -> FaceDescription {
     FaceDescription {
         surface: Surface::Plane {
             normal,
-            origin: [0.0; 3],
+            location: [0.0; 3],
         },
         area: 1.0,
         centroid: [0.0; 3],

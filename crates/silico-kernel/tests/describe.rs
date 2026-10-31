@@ -46,7 +46,7 @@ fn a_boxs_faces_are_planes_facing_out_from_their_middles_with_their_areas() {
         let what = format!("Face{}", i + 1);
         let Surface::Plane {
             normal: got,
-            origin,
+            location,
         } = face.surface
         else {
             panic!("{what}: {:?}", face.surface)
@@ -54,11 +54,11 @@ fn a_boxs_faces_are_planes_facing_out_from_their_middles_with_their_areas() {
         assert_eq!(got, normal, "{what}");
         // The plane's own location is on it: along the normal, its offset exactly (0, 10,
         // 0, 20, 0, 30 out from the origin).
-        let offset: f64 = (0..3).map(|k| normal[k] * origin[k]).sum();
+        let offset: f64 = (0..3).map(|k| normal[k] * location[k]).sum();
         assert_eq!(
             offset,
             [0.0, 10.0, 0.0, 20.0, 0.0, 30.0][i],
-            "{what}: {origin:?}"
+            "{what}: {location:?}"
         );
         assert_close(&what, face.area, area, 1e-12);
         assert_point(&what, face.centroid, centroid);
@@ -97,21 +97,21 @@ fn a_moved_boxs_planes_are_located_on_themselves_where_the_box_was_moved_to() {
         let what = format!("Face{}", i + 1);
         let Surface::Plane {
             normal: got,
-            origin,
+            location,
         } = face.surface
         else {
             panic!("{what}: {:?}", face.surface)
         };
         assert_eq!(got, normal, "{what}");
-        let along: f64 = (0..3).map(|k| normal[k] * origin[k]).sum();
-        assert_eq!(along, offset, "{what}: {origin:?}");
+        let along: f64 = (0..3).map(|k| normal[k] * location[k]).sum();
+        assert_eq!(along, offset, "{what}: {location:?}");
         // Within the box's extent across the face too: a point of the face's plane near
         // the face, not one of the unmoved box's.
         for (k, (low, high)) in [(3.0, 13.0), (4.0, 24.0), (5.0, 35.0)]
             .into_iter()
             .enumerate()
         {
-            assert!((low..=high).contains(&origin[k]), "{what}: {origin:?}");
+            assert!((low..=high).contains(&location[k]), "{what}: {location:?}");
         }
     }
 }
@@ -315,12 +315,12 @@ fn a_cones_side_has_its_half_angle_and_its_apex_where_its_radius_would_be_none()
         .iter()
         .find(|f| matches!(f.surface, Surface::Plane { .. }))
         .unwrap();
-    let Surface::Plane { normal, origin } = base.surface else {
+    let Surface::Plane { normal, location } = base.surface else {
         unreachable!()
     };
     assert_eq!(normal, [0.0, 0.0, -1.0]);
     // The base's plane's own location is on it, z = 0.
-    assert_eq!(origin[2], 0.0, "{origin:?}");
+    assert_eq!(location[2], 0.0, "{location:?}");
     assert_close("the base's area", base.area, 16.0 * PI, 1e-12);
     let apexes: Vec<_> = d
         .edges
