@@ -931,14 +931,13 @@ pub struct SketchCut {
 }
 
 /// What a join did (`sketch_join`: docs/design/m5.0-app.md, section 7): as
-/// [`SketchEdited`] says it, with the curve the two pieces make, the start-side piece's ID,
-/// and the features that store a name made from either piece's ID or its points' IDs, in
-/// timeline order: one made from the kept piece then finds the whole joined curve, one from
-/// the other piece or the shared point nothing.
+/// [`SketchEdited`] says it (the joined curve, the start-side piece's ID, in `modified`, the
+/// other piece in `removed`), with the features that store a name made from either piece's
+/// ID or its points' IDs, in timeline order: one made from the kept piece then finds the
+/// whole joined curve, one from the other piece or the shared point nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SketchJoined {
     pub sketch: FeatureId,
-    pub curve: ElementId,
     pub added: Vec<ElementId>,
     pub modified: Vec<ElementId>,
     pub removed: Vec<ElementId>,

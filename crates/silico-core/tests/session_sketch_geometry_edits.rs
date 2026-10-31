@@ -611,14 +611,9 @@ fn each_request_is_read_and_written_back_and_holds_to_its_schema_and_its_result_
     value["references"] = json!(["not an id"]);
     fails(&schema, &value.to_string(), "join's references");
     value["references"] = json!([]);
-    value["curve"] = json!("origin");
-    fails(
-        &schema,
-        &value.to_string(),
-        "join's curve a fixed reference",
-    );
-    value.as_object_mut().unwrap().remove("curve");
-    fails(&schema, &value.to_string(), "join without its curve");
+    // The joined curve is in `modified`; the result has no field of its own for it.
+    value["curve"] = json!("na000001");
+    fails(&schema, &value.to_string(), "join with a curve field");
     for of in ["sketch_split", "sketch_trim"] {
         let schema = schema_of(of, "result");
         let mut value = example_value(&format!("{of}/result"));
@@ -2202,7 +2197,6 @@ fn a_split_then_a_join_gives_the_text_back_byte_for_byte_and_lists_the_fillet_it
             f.checked();
         }
         let joined = f.ran("sketch_join", &join(at + 1, "s0000001", &point));
-        assert_eq!(joined["curve"], "na000003");
         assert_eq!(joined["added"], json!([]));
         assert_eq!(joined["modified"], json!(["na000003"]));
         assert_eq!(joined["removed"], json!([point, piece, tangent]));
@@ -2398,4 +2392,97 @@ fn malformed_joins_and_joins_of_what_isnt_two_pieces_are_refused_the_session_as_
         }
     }
     assert_eq!((f.text(), f.revision()), (text, revision(1)));
+}
+
+#[test]
+fn a_split_circle_joined_at_either_split_point_lists_the_circle_in_modified() {
+    // The base's hole cb000001, radius 2.75 about pb000001 (40, 12), its diameter kb000001
+    // and kb000002 equal to cb000002, split at (42.75, 12), at.0, pb000003, and
+    // (37.25, 12), at.1, pb000004: cb000001 runs from pb000003 to pb000004, cb000003 from
+    // pb000004 back. Joined at at.1's point, cb000001, which ends there, is the circle
+    // again, the text as before the split; at at.0's, cb000003 is, of radius 2.75 (from
+    // pb000001 to its start, pb000004), and the two constraints name it. Either way the
+    // joined curve is the one curve in `modified`, first, and the other arc is in
+    // `removed`, with the two points.
+    for (point, kept, other, constraints) in [
+        ("pb000004", "cb000001", "cb000003", json!([])),
+        (
+            "pb000003",
+            "cb000003",
+            "cb000001",
+            json!(["kb000001", "kb000002"]),
+        ),
+    ] {
+        let f = opened(&bracket());
+        f.begin();
+        let before = f.sketch("s0000002");
+        f.ran(
+            "sketch_split",
+            &split(
+                1,
+                "s0000002",
+                "cb000001",
+                json!([[42.75, 12], [37.25, 12]]),
+                json!(["pb000003", "pb000004", "cb000003"]),
+            ),
+        );
+        let joined = f.ran("sketch_join", &join(2, "s0000002", point));
+        let mut modified = vec![json!(kept)];
+        modified.extend(constraints.as_array().unwrap().iter().cloned());
+        assert_eq!(joined["modified"], Value::Array(modified), "{point}");
+        assert_eq!(
+            joined["removed"],
+            json!(["pb000003", "pb000004", other]),
+            "{point}"
+        );
+        let sketch = f.sketch("s0000002");
+        assert_eq!(sketch["arcs"], json!([]), "{point}");
+        assert_eq!(
+            member(&sketch, "circles", kept),
+            &json!({"id": kept, "center": "pb000001", "radius": 2.75, "construction": false}),
+            "{point}"
+        );
+        if point == "pb000004" {
+            assert_eq!(sketch, before);
+        }
+    }
+}
+
+#[test]
+fn a_join_that_would_hold_the_joined_lines_own_point_off_itself_is_refused_the_session_kept() {
+    // na000001 split at (30, 0): na000001 from pa000001 to pa000007, na000007 on to
+    // pa000002. A point_line_distance of pa000001, na000001's own start, 1 from na000007's
+    // line (the fake solver takes it as stored): re-pointed by the join, it would hold
+    // na000001's own point off na000001 itself.
+    // Refused, naming it, the text and the revision as they were.
+    let f = opened(&bracket());
+    f.begin();
+    f.ran(
+        "sketch_split",
+        &split(
+            1,
+            "s0000001",
+            "na000001",
+            json!([[30, 0]]),
+            json!(["pa000007", "na000007", "ka00000d"]),
+        ),
+    );
+    f.ran(
+        "sketch_add",
+        &json!({"session": "s1", "revision": 2, "sketch": "s0000001", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": [{"id": "ka00000e", "type": "point_line_distance", "point": "pa000001", "line": "na000007", "value": 1, "side": "left", "driving": true}]}).to_string(),
+    );
+    let text = f.text();
+    assert_eq!(
+        f.refused("sketch_join", &join(3, "s0000001", "pa000007")),
+        json!([error(
+            "invalid_input",
+            "the join would make constraint ka00000e hold pa000001, a point of na000001, on na000001 itself",
+            Some("s0000001"),
+            &["ka00000e", "pa000001", "na000001"],
+            Some("point"),
+            None,
+            Some("remove the constraint first, or leave the pieces apart")
+        )])
+    );
+    assert_eq!((f.text(), f.revision()), (text, revision(3)));
 }

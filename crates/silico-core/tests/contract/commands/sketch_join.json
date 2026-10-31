@@ -239,12 +239,8 @@
         ],
         "description": "Outside a transaction, the commit that saved the edit; null inside one."
       },
-      "curve": {
-        "$ref": "#/$defs/ElementId",
-        "description": "The curve the pieces make: the start-side piece's ID, a circle's where a split\ncircle's two arcs join."
-      },
       "modified": {
-        "description": "The members changed in place (the joined curve; a constraint on the other piece,\nnow on it), by kind, then by ID.",
+        "description": "The members changed in place (the joined curve, the start-side piece's ID, a\ncircle's where a split circle's two arcs join, and so first, as the one curve\nchanged; a constraint on the other piece, now on it), by kind, then by ID.",
         "items": {
           "$ref": "#/$defs/ElementId"
         },
@@ -273,7 +269,6 @@
       "added",
       "changed",
       "commit",
-      "curve",
       "modified",
       "references",
       "removed",

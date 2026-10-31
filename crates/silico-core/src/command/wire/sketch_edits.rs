@@ -508,13 +508,12 @@ impl ToWire for SketchJoinRequest {
 }
 
 impl ToWire for SketchJoined {
-    /// A join's result: the sketch, the curve the pieces make, the members added, modified,
-    /// and removed, the features storing a name either piece reaches, whether the document
-    /// changed, and the commit outside a transaction.
+    /// A join's result: the sketch, the members added, modified (the joined curve among
+    /// them), and removed (the other piece among them), the features storing a name either
+    /// piece reaches, whether the document changed, and the commit outside a transaction.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("sketch", self.sketch.to_wire()),
-            ("curve", Json::str(self.curve.as_str())),
             ("added", members(&self.added)),
             ("modified", members(&self.modified)),
             ("removed", members(&self.removed)),
@@ -924,13 +923,11 @@ pub struct SketchMergeResultSchema {
 pub struct SketchJoinResultSchema {
     /// The sketch, as the request named it.
     pub sketch: FeatureId,
-    /// The curve the pieces make: the start-side piece's ID, a circle's where a split
-    /// circle's two arcs join.
-    pub curve: ElementId,
     /// Always empty: a join makes no member.
     pub added: Vec<ElementId>,
-    /// The members changed in place (the joined curve; a constraint on the other piece,
-    /// now on it), by kind, then by ID.
+    /// The members changed in place (the joined curve, the start-side piece's ID, a
+    /// circle's where a split circle's two arcs join, and so first, as the one curve
+    /// changed; a constraint on the other piece, now on it), by kind, then by ID.
     pub modified: Vec<ElementId>,
     /// The members removed (the point, the other piece, the constraints naming the point,
     /// the joining `tangent_at` among them, and a constraint the join makes repeat another

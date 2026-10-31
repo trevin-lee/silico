@@ -423,7 +423,7 @@ fn the_join_is_a_tool_whose_answer_is_the_cores_envelope_byte_for_byte() {
     let envelope = |n: usize| serde_json::from_str::<Value>(&core[n].0).unwrap();
     assert_eq!(
         envelope(4)["result"],
-        json!({"sketch": "k7f2qx3m", "curve": "n0000001", "added": [], "modified": ["n0000001"], "removed": ["p0000004", "n0000003", "c0000002"], "references": [], "changed": true, "commit": null})
+        json!({"sketch": "k7f2qx3m", "added": [], "modified": ["n0000001"], "removed": ["p0000004", "n0000003", "c0000002"], "references": [], "changed": true, "commit": null})
     );
     assert_eq!(envelope(4)["session"]["revision"], 3);
     let first = |n: usize| {

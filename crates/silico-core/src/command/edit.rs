@@ -1041,19 +1041,18 @@ pub(super) fn sketch_merge(
     sketch_edited(document, index, sketch, edited)
 }
 
-/// What a join did (docs/design/m5.0-app.md, section 7, `sketch_join`): what it changed,
-/// the curve its two pieces make, and the features that store a name either piece reaches,
-/// in timeline order (*What a result lists*).
+/// What a join did (docs/design/m5.0-app.md, section 7, `sketch_join`): what it changed
+/// (the joined curve first among `modified`), and the features that store a name either
+/// piece reaches, in timeline order (*What a result lists*).
 pub(super) struct Join {
     pub(super) changes: SketchChanges,
-    pub(super) curve: ElementId,
     pub(super) references: Vec<FeatureId>,
 }
 
 /// The two pieces sharing `point`, of the sketch `id` of `document`, joined into one curve
 /// (docs/design/m5.0-app.md, section 7, `sketch_join`; open item 12b), by
-/// [`sketch_edit::join`], and the document put through the gate: what it changed, the curve
-/// they make, the features storing a name either piece reaches, and the state it leads to.
+/// [`sketch_edit::join`], and the document put through the gate: what it changed, the
+/// features storing a name either piece reaches, and the state it leads to.
 /// Whether its solve is worse than the one before is the session's to judge. Refused as
 /// [`sketch_split`] is.
 pub(super) fn sketch_join(
@@ -1064,12 +1063,10 @@ pub(super) fn sketch_join(
     let (index, _, sketch) = sketch_of(document, id)?;
     let joined = sketch_edit::join(sketch, point).map_err(|e| one(id, e))?;
     let references = referencing_any(document, id, sketch, &joined.pieces);
-    let [curve, _] = joined.pieces;
     let (changes, candidate) = sketch_edited(document, index, sketch, joined.edited)?;
     Ok((
         Join {
             changes,
-            curve,
             references,
         },
         candidate,

@@ -568,7 +568,8 @@ fn a_split_then_a_join_solves_cleanly_both_ways_and_gives_the_sketch_back() {
             &json!({"session": "s1", "revision": f.revision(), "sketch": sketch, "point": point})
                 .to_string(),
         );
-        assert_eq!(joined["curve"], curve, "{joined}");
+        assert_eq!(joined["modified"][0], curve, "{joined}");
+        assert_eq!(joined.get("curve"), None, "{joined}");
         let after = read(sketch);
         assert_eq!(
             (&after["state"], &after["dofs"]),

@@ -401,8 +401,8 @@ fn sketch_cut(sketch: FeatureId, edited: super::edits::Edited<Cut>) -> SketchCut
     }
 }
 
-/// A join's result, as [`sketch_edited`] gives an edit's, with the curve the pieces make and
-/// the features storing a name either piece reaches.
+/// A join's result, as [`sketch_edited`] gives an edit's, with the features storing a name
+/// either piece reaches.
 fn sketch_joined(sketch: FeatureId, edited: super::edits::Edited<Join>) -> SketchJoined {
     let Join {
         changes:
@@ -411,12 +411,10 @@ fn sketch_joined(sketch: FeatureId, edited: super::edits::Edited<Join>) -> Sketc
                 modified,
                 removed,
             },
-        curve,
         references,
     } = edited.made;
     SketchJoined {
         sketch,
-        curve,
         added,
         modified,
         removed,
