@@ -171,7 +171,8 @@ fn hostile_undo_redo_and_status_calls_are_answered_as_the_core_answers_them_and_
     std::fs::write(work.join("part.silico"), BOX).unwrap();
     let secret = dir.path().join("secret");
     // Each side's disk watch held: its first comparison reads until the test ends, so no
-    // finding is ever had and every `status` answers `disk` null, on both sides alike. A
+    // comparison's finding is ever had, and `status` answers `disk` as the session's own
+    // saves leave it alone (null, then `unchanged` once the commit saves), on both sides. A
     // comparison started off the thread by one `status` and ended, or not, by the next
     // would make the twins differ (#300's flake, with #297's watch).
     let hold = DiskHold::default();
