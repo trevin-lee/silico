@@ -410,7 +410,7 @@ fn a_timeline_is_named_by_status_and_stopped_by_cancel_queued_or_read_beside_the
                 .result
                 .unwrap(),
             Cancelled {
-                command: SessionCommand::Timeline,
+                command: SessionCommand::Timeline.into(),
                 stopped: true
             }
         );

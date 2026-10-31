@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use super::{Problems, Response, SessionInfo};
-use crate::command::{RunningCommand, SessionCommand};
+use crate::command::{Cancellable, RunningCommand, SessionCommand};
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 
@@ -245,21 +245,22 @@ pub(super) fn cancelled(command: &str) -> Error {
     )
 }
 
-/// The refusal of a `cancel` of `command` in session `session`, which isn't running there:
-/// what is (the queued command, then each published read, as `status` lists them) said, and
-/// given as candidates, each name once, in the order first seen, since a candidate is a name
-/// to pick: so a cancel that came late never stops the next command (decision 34).
+/// The refusal of a `cancel` of `named` in session `session`, which isn't running there:
+/// what is, `running` (the queued command, then each published read, then the rebuild, as
+/// `status` reports them), said, and given as candidates, each name once, in the order first
+/// seen, since a candidate is a name to pick: so a cancel that came late never stops the
+/// command after it (decision 34).
 pub(super) fn not_running(
     session: super::SessionId,
-    command: SessionCommand,
-    running: &[SessionCommand],
+    named: Cancellable,
+    running: &[Cancellable],
 ) -> Error {
     let names: Vec<&str> = running.iter().map(|running| running.as_str()).collect();
     let message = match names.as_slice() {
-        [] => format!("no {command} is running in session {session}"),
-        [one] => format!("no {command} is running in session {session}: {one} is"),
+        [] => format!("no {named} is running in session {session}"),
+        [one] => format!("no {named} is running in session {session}: {one} is"),
         many => format!(
-            "no {command} is running in session {session}: {} are",
+            "no {named} is running in session {session}: {} are",
             many.join(", ")
         ),
     };

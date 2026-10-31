@@ -342,43 +342,18 @@ fn serve(workspace: Option<&Path>) -> Ended {
     // The workers, found before the handshake, all four or none: a missing one is a broken
     // install, said here, every one of them at once, rather than met by the agent at the
     // command that first needs it.
-    let pool = KernelPool::start();
-    let mut missing = Vec::new();
-    if let Some(why) = pool.refused() {
-        missing.push(format!(
-            "silico serve: there's no kernel worker it can use, so nothing can be built: {why}"
-        ));
-    }
-    if let Err(e) = silico_core::sketch::worker_path() {
-        missing.push(format!(
-            "silico serve: there's no sketch worker, so no sketch can be solved: {e}"
-        ));
-    }
-    if let Err(e) = silico_core::step_worker::worker_path() {
-        missing.push(format!(
-            "silico serve: there's no STEP worker, so nothing can be exported as STEP: {e}"
-        ));
-    }
-    let renderer = silico_core::render::worker_path().and_then(|exe| {
-        silico_core::render::RenderClient::start(
-            &exe,
-            silico_core::render::RenderSettings::default(),
-        )
-    });
-    let renderer = match renderer {
-        Ok(renderer) => Some(renderer),
-        Err(e) => {
-            missing.push(format!(
-                "silico serve: there's no render worker, so nothing can be rendered: {e}"
-            ));
-            None
+    let workers = match silico_core::workers::find() {
+        Ok(workers) => workers,
+        Err(missing) => {
+            let said: Vec<String> = missing
+                .iter()
+                .map(|why| format!("silico serve: {why}"))
+                .collect();
+            say!("{}", said.join("\n"));
+            return Ended::Failed;
         }
     };
-    let (Some(renderer), true) = (renderer, missing.is_empty()) else {
-        say!("{}", missing.join("\n"));
-        return Ended::Failed;
-    };
-    let sessions = Sessions::new(pool).rendering(renderer);
+    let sessions = Sessions::new(workers.kernel).rendering(workers.renderer);
     let sessions = match sessions.in_workspace(&root) {
         Ok(sessions) => sessions,
         Err(e) => {

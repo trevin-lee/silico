@@ -49,6 +49,7 @@ pub mod timeline;
 pub mod views;
 pub mod warnings;
 pub mod worker;
+pub mod workers;
 
 pub use error::{Error, ErrorCode, Said, Warning, WarningCode};
 

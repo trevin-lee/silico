@@ -298,6 +298,72 @@ crates/silico-core/src/document/suppression.rs | unsuppress | replace match guar
 # ulp, at least 2^-76 for any radius the gate takes (over 1e-7 mm), and fl(1e-8) is an odd
 # multiple of 2^-78: no input reaches the edge exactly.
 crates/silico-oracle/src/sketch_edit.rs | placed_geometry | replace > with >= | #316
+# The app's drawing (#298): sizes, margins, gaps, and shapes the painter draws, and the
+# theme's fonts and spacing, which no accessibility node or state holds; the harness
+# reads the window through its accessibility tree (the marks' and rows' text, roles, and
+# states are tested there), so a pixel's size or a mark's shape is a visual review's.
+crates/silico-app/src/app.rs | App<P>::toolbar | replace App<P>::toolbar with () | #298
+crates/silico-app/src/app.rs | App<P>::toolbar | replace * with + | #298
+crates/silico-app/src/app.rs | App<P>::toolbar | replace * with / | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::pane_ui | replace / with % | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::pane_ui | replace / with * | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width -> f32 with -1.0 | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width -> f32 with 0.0 | #298
+crates/silico-app/src/panes.rs | viewport | replace viewport with () | #298
+crates/silico-app/src/panes.rs | mark | replace - with + | #298
+crates/silico-app/src/panes.rs | mark | replace - with / | #298
+crates/silico-app/src/panes.rs | mark | delete match arm Health::Error | #298
+crates/silico-app/src/panes.rs | mark | replace / with % | #298
+crates/silico-app/src/panes.rs | mark | replace / with * | #298
+crates/silico-app/src/panes.rs | mark | replace * with + | #298
+crates/silico-app/src/panes.rs | mark | replace * with / | #298
+crates/silico-app/src/panes.rs | row | replace - with + | #298
+crates/silico-app/src/panes.rs | row | replace - with / | #298
+crates/silico-app/src/panes.rs | row | replace / with % | #298
+crates/silico-app/src/panes.rs | row | replace / with * | #298
+crates/silico-app/src/panes.rs | row | replace / with % | #298
+crates/silico-app/src/panes.rs | row | replace / with * | #298
+crates/silico-app/src/panes.rs | Panes<'_, P>::timeline | delete match arm Health::Suppressed | Health::Unknown | #298
+crates/silico-app/src/panes.rs | Panes<'_, P>::properties | delete match arm Health::Error | #298
+crates/silico-app/src/theme.rs | apply | replace apply with () | #298
+crates/silico-app/src/theme.rs | style | replace - with + | #298
+crates/silico-app/src/theme.rs | style | replace - with / | #298
+# The window's tiles are linear containers only (`panes::layout`), so no pane has a tab
+# bar: a pane's tab title is never drawn, and `all_panes_must_have_tabs: false` is
+# egui_tiles' default.
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::tab_title_for_pane | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::tab_title_for_pane -> egui::WidgetText with Default::default() | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::simplification_options | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::simplification_options -> egui_tiles::SimplificationOptions with Default::default() | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::simplification_options | delete field all_panes_must_have_tabs from struct egui_tiles::SimplificationOptions expression | #298
+# The native entry points (#298): `main`, its window options, and each eframe::App's
+# `ui`, which only the native runner calls; the harness drives `App::frame` and
+# `Missing::frame` themselves, headless.
+crates/silico-app/src/main.rs | main | replace main -> ExitCode with Default::default() | #298
+crates/silico-app/src/main.rs | options | replace options -> eframe::NativeOptions with Default::default() | #298
+crates/silico-app/src/main.rs | options | delete field renderer from struct eframe::NativeOptions expression | #298
+crates/silico-app/src/main.rs | options | delete field viewport from struct eframe::NativeOptions expression | #298
+crates/silico-app/src/app.rs | <impl eframe::App for App<P>>::ui | replace <impl eframe::App for App<P>>::ui with () | #298
+crates/silico-app/src/missing.rs | <impl eframe::App for Missing>::ui | replace <impl eframe::App for Missing>::ui with () | #298
+# `keys`' answer only asks egui for the next frame at once, which egui asks for itself
+# after any input event (each key press is one), so no frame comes later for it (#298).
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
+# Equivalent (#298). `name_value`: U+0020 escaped as   reads back as the same space.
+# `NameField::keeps`: a name the document moves to other than by this field's own edits
+# resets the field by the tab's count of resets (an undo, a redo, a revert, a reload), so
+# keeping it for any typed text other than the name keeps nothing more. `properties`: the
+# typed list pushed each frame, not each change, holds the same texts (the field's text,
+# typed). `Tab::save`: a save queued after a save waiting, not merged, comes up with no
+# transaction open once the first has saved, and closes the tab if it was to, as the
+# merged one does. `read_timeline`: the published model is read first either way while
+# none is published (refused at once, then the current read), and `nothing_published` is
+# never true while one is.
+crates/silico-app/src/panes.rs | name_value | replace < with <= | #298
+crates/silico-app/src/panes.rs | NameField::keeps | replace == with != | #298
+crates/silico-app/src/panes.rs | Panes<'_, P>::properties | replace != with == | #298
+crates/silico-app/src/tab.rs | Tab::save | delete match arm Some(Queued::Save{then_close:last}) | #298
+crates/silico-app/src/tab.rs | Tab::read_timeline | replace && with || | #298
 crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with <= | #320
 crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with > | #320
 crates/silico-core/src/document/sketch_edit/join.rs | one_arc | replace > with >= | #320

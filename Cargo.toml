@@ -62,6 +62,15 @@ re_renderer = { version = "=0.38.1", default-features = false }
 # wgpu as re_renderer uses it, with Vulkan (lavapipe) and Metal, and Vulkan's portability
 # enumeration so lavapipe is found on macOS.
 wgpu = { version = "30", default-features = false, features = ["vulkan", "vulkan-portability", "metal", "wgsl", "std"] }
+# The app's window, docking, and tests (docs/study/toolkit.md; M5 decision 11), at the
+# versions re_ui 0.38.1 pins, so one wgpu serves the viewport and the UI. eframe's own wgpu
+# features off (wgpu_no_default_features): the workspace's wgpu above chooses the backends.
+# Its default fonts off too: Inter (silico-font) is the one font.
+eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "wgpu_no_default_features", "wayland", "x11"] }
+egui_tiles = "=0.17.1"
+# Drives the app through its accessibility tree in tests, with no GPU (dev only).
+egui_kittest = "=0.36.2"
+silico-font = { path = "crates/silico-font" }
 glam = "0.30"
 macaw = "0.30"
 pollster = "0.4"

@@ -18,13 +18,13 @@ use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::wire::reads::{CheckRequest, TextRequest};
 use silico_core::command::wire::session::{
-    CancelRequest, OpenRequest, PUBLISHED_READS, SESSION_COMMANDS, VersionRequest,
+    CANCELLABLE, CancelRequest, OpenRequest, PUBLISHED_READS, SESSION_COMMANDS, VersionRequest,
 };
 use silico_core::command::wire::transaction::SessionRequest;
 use silico_core::command::wire::{Layout, ToWire, response, response_text, snapshot_value, write};
 use silico_core::command::{
-    Cancelled, CheckModel, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer, Problems,
-    Progress, ReadCommand, Rebuild, RebuildState, Response, Revision, RunningCommand,
+    Cancellable, Cancelled, CheckModel, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer,
+    Problems, Progress, ReadCommand, Rebuild, RebuildState, Response, Revision, RunningCommand,
     SessionCommand, SessionId, Sessions, Status, TextAnswer, Transaction, VERSION, Version,
 };
 use silico_core::disk::Disk;
@@ -267,7 +267,7 @@ fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_sc
         request,
         CancelRequest {
             session: s1(),
-            command: SessionCommand::Check,
+            command: SessionCommand::Check.into(),
         }
     );
     assert_eq!(written(&request), text);
@@ -353,14 +353,38 @@ fn requests_with_their_other_values_are_read_and_written_back() {
     );
     assert_eq!(written(&request), text);
     holds(&schema_of("check", "request"), text, "fresh");
-    // Every command that runs in a session can be named, and is written back as named.
-    for name in SESSION_COMMANDS {
+    // Every command that runs in a session can be named, and the rebuild, each written back
+    // as named.
+    for name in CANCELLABLE {
         let text = format!("{{\"session\": \"s1\", \"command\": \"{name}\"}}\n");
         let request = CancelRequest::read(&parsed(&text)).unwrap();
         assert_eq!(request.command.as_str(), name);
         assert_eq!(written(&request), text);
         holds(&schema_of("cancel", "request"), &text, name);
     }
+    // The rebuild (decision 34 as amended): read as itself, no command, and its result
+    // written as the decision gives it.
+    let text = "{\"session\": \"s1\", \"command\": \"rebuild\"}\n";
+    assert_eq!(
+        CancelRequest::read(&parsed(text)).unwrap(),
+        CancelRequest {
+            session: s1(),
+            command: Cancellable::Rebuild,
+        }
+    );
+    let stopped = Cancelled {
+        command: Cancellable::Rebuild,
+        stopped: true,
+    };
+    assert_eq!(
+        one_line(&stopped),
+        r#"{"command": "rebuild", "stopped": true}"#
+    );
+    holds(
+        &schema_of("cancel", "result"),
+        &written(&stopped),
+        "rebuild",
+    );
 }
 
 #[test]
@@ -431,7 +455,12 @@ fn version_and_open_take_only_their_fields_and_require_each() {
 #[test]
 fn cancel_names_only_a_command_and_any_other_name_is_refused_with_every_command_as_candidates() {
     let text = example("cancel/request");
-    let names: Vec<String> = SESSION_COMMANDS.map(str::to_owned).to_vec();
+    let names: Vec<String> = CANCELLABLE.map(str::to_owned).to_vec();
+    // Every command that runs in a session, then the rebuild: 33 and one, counted by hand
+    // from the design's lists (M4.1's 20, M5.0's 13, sketch_join the last of them).
+    assert_eq!(names.len(), 34);
+    assert_eq!(names[..33], SESSION_COMMANDS.map(str::to_owned));
+    assert_eq!(names[33], "rebuild");
     // A name close to one, the session's own probe, commands that never run in a session
     // (`read_logs` among them, answered at once), and other types.
     for (value, got) in [
@@ -439,6 +468,9 @@ fn cancel_names_only_a_command_and_any_other_name_is_refused_with_every_command_
         (r#""check ""#, r#""check ""#),
         (r#""read_logs""#, "read_logs"),
         (r#""probe""#, "probe"),
+        // The session's own reload, which nothing cancels, and the rebuild misspelt.
+        (r#""reload""#, "reload"),
+        (r#""Rebuild""#, "Rebuild"),
         (r#""status""#, "status"),
         (r#""open""#, "open"),
         (r#""version""#, "version"),
@@ -922,7 +954,10 @@ fn cancel_answers_and_refuses_as_the_design_gives_it() {
     holds(&error, &text, "the check's answer");
 
     // An edit, outside a transaction, waits for its commit's rebuild: a cancel of check is
-    // refused, naming it.
+    // refused, naming what status reports running, the edit and the rebuild (decision 34 as
+    // amended). The design's example is that refusal with the edit alone running, before
+    // its rebuild starts, which only the crate's own tests can hold a command at; they give
+    // it byte for byte (`session::tests::cancel_rebuild`).
     let f = opened(BOX);
     let (_hold, edit) = f.running_held(|| {
         f.sessions.set_field(
@@ -935,12 +970,18 @@ fn cancel_answers_and_refuses_as_the_design_gives_it() {
     });
     let refused = f.sessions.cancel(&request.session, request.command);
     let text = the_refusal(&refused);
-    assert_eq!(text, example("cancel/refused-not-running"));
+    let designed = example("cancel/refused-not-running");
+    let both = designed
+        .replace("set_field is", "set_field, rebuild are")
+        .replace(r#"["set_field"]"#, r#"["set_field", "rebuild"]"#);
+    assert_ne!(both, designed);
+    assert_eq!(text, both);
     holds(&error, &text, "not running");
+    holds(&error, &designed, "the design's");
     assert!(edit.cancel());
     // A result by hand: not stopped, another command.
     let late = Cancelled {
-        command: SessionCommand::SetField,
+        command: SessionCommand::SetField.into(),
         stopped: false,
     };
     assert_eq!(
@@ -1124,12 +1165,20 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
         status["$defs"]["RunningCommand"]["enum"],
         serde_json::json!(running)
     );
+    // `cancel` names what status reports running by its key: each command, and `rebuild`
+    // (decision 34 as amended), never `reload`.
+    let cancellable: Vec<&str> = SESSION_COMMANDS
+        .iter()
+        .copied()
+        .chain(["rebuild"])
+        .collect();
+    assert_eq!(CANCELLABLE.to_vec(), cancellable);
     for part in ["request", "result"] {
         let cancel = schema_of("cancel", part);
         assert_eq!(cancel["properties"]["command"]["$ref"], command["$ref"]);
         assert_eq!(
             cancel["$defs"]["SessionCommand"]["enum"],
-            serde_json::json!(SESSION_COMMANDS.as_slice())
+            serde_json::json!(cancellable)
         );
     }
     let base = |running: &str, reads: &str| {
