@@ -4879,3 +4879,37 @@ fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
     assert_eq!(text_of(&f, &h), boxed);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_redo() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    made(&mut h, "Box", "Length");
+    let boxed = text_of(&f, &h);
+    step_key(&mut h, true);
+    select(&mut h, "KPin");
+    // The queue held: another client's undo (of KPin), then a name typed here against the
+    // revision before it, refused as stale, the session's revision moved by the undo,
+    // which drops no redo branch.
+    let id = h.state().tabs()[0].id;
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let theirs = f.sessions.undo(&id, h.state().tabs()[0].revision, None);
+    type_name(&mut h, "Q");
+    hold.release();
+    check.wait();
+    theirs.wait().result.unwrap();
+    step_until(&mut h, "the stale name refused", |h| {
+        h.state().tabs()[0].message.is_some() && !h.state().tabs()[0].unsettled()
+    });
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    // Redo: KPin, then the box's edits whole.
+    step_key(&mut h, false);
+    step_key(&mut h, false);
+    assert_eq!(text_of(&f, &h), boxed);
+    assert_eq!(never_waits::waits(), 0);
+}
