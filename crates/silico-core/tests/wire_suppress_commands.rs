@@ -791,6 +791,71 @@ fn a_read_of_a_suppressed_features_solid_is_refused_naming_feature() {
 }
 
 #[test]
+fn a_read_of_a_suppressed_sketch_is_refused_naming_sketch_current_and_published() {
+    // M5.0's `sketch`: "a feature that isn't a sketch, naming `sketch`; a suppressed one,
+    // likewise", worded as the read of a suppressed feature's solid above. A suppressed
+    // sketch is never solved, so the read has no solve to give, which is the user's doing,
+    // never `internal`.
+    let f = opened(&bracket());
+    let read = |model| answer(f.sessions.sketch(&f.id, model, id("s0000002")));
+    let before = read(ModelChoice::Current).result.unwrap();
+    // Outside a transaction the suppression is its own commit, and a check of the current
+    // model waits for its rebuild, which publishes it.
+    let done = f.suppress("s0000002", true).result.unwrap();
+    assert_eq!(done.suppressed, ids(&["s0000002", "h0000001"]));
+    let current = CheckModel::Current { fresh: false };
+    answer(f.sessions.check(&f.id, current)).result.unwrap();
+    for model in [ModelChoice::Current, ModelChoice::Published] {
+        let refused = read(model);
+        assert_eq!(
+            refused.model.as_ref().unwrap().revision,
+            f.revision(),
+            "{model:?}"
+        );
+        let error = the_error(&refused);
+        assert_eq!(
+            (
+                error.code(),
+                error.parameter(),
+                error.feature(),
+                error.message(),
+                error.suggestion(),
+                error.candidates(),
+            ),
+            (
+                ErrorCode::InvalidInput,
+                Some("sketch"),
+                Some("s0000002"),
+                "s0000002 is suppressed, so it isn't solved",
+                Some(
+                    "unsuppress s0000002 first (suppress_feature with suppressed false), or \
+                     name a sketch that isn't suppressed"
+                ),
+                &[][..],
+            ),
+            "{model:?}"
+        );
+        holds(&error_schema(), &written(&error), "sketch");
+    }
+    // The bracket's other sketches read as usual.
+    for sketch in ["s0000001", "s0000003"] {
+        answer(f.sessions.sketch(&f.id, ModelChoice::Current, id(sketch)))
+            .result
+            .unwrap();
+    }
+    // Unsuppressed (alone: its pocket stays suppressed, as a parent's unsuppression leaves
+    // its children), it reads as it did before, from either model.
+    let done = f.suppress("s0000002", false).result.unwrap();
+    assert_eq!(done.unsuppressed, ids(&["s0000002"]));
+    answer(f.sessions.check(&f.id, current)).result.unwrap();
+    for model in [ModelChoice::Current, ModelChoice::Published] {
+        let again = read(model);
+        assert_eq!(again.model.as_ref().unwrap().revision, f.revision());
+        assert_eq!(again.result.unwrap(), before, "{model:?}");
+    }
+}
+
+#[test]
 fn set_field_takes_suppressed_true_and_false_and_the_gate_refuses_a_dependent_left() {
     let f = opened(&bracket());
     f.begin();

@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 
 use silico_core::document::{Checked, ElementId, FeatureId, Operation, Sketch, read};
 use silico_core::drag::Kept;
-use silico_core::drag::sketch::{DragStop, Frame, FrameKind, Held, Opened, begin, begin_stoppable};
+use silico_core::drag::sketch::{
+    DragStop, EdgeGrab, Frame, FrameKind, Held, Opened, begin, begin_edge, begin_stoppable,
+};
 use silico_core::fake::{DragCall, FakeSketches};
 use silico_core::recompute::SketchSolvers;
 use silico_core::sketch::{SketchSolver, solve};
@@ -318,6 +320,71 @@ fn a_point_the_sketch_hasnt_or_a_feature_that_isnt_a_sketch_is_refused_naming_it
         (e.code(), e.parameter()),
         (ErrorCode::InvalidInput, Some("sketch"))
     );
+}
+
+#[test]
+fn a_suppressed_sketch_is_refused_naming_sketch_a_point_and_an_edge_alike() {
+    // M5.0's `drag_begin`: "A suppressed sketch is `invalid_input`, naming `sketch`." It's
+    // never solved, so there's no begin state; refused before any solver is taken.
+    let holes = HOLES.replacen(
+        r#""name": "Holes", "#,
+        r#""name": "Holes", "suppressed": true, "#,
+        1,
+    );
+    assert_ne!(holes, HOLES);
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{PROFILE}, {PAD}, {holes}]}}"#
+    );
+    let document = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
+    let (solvers, started) = pool();
+    let point = begin(
+        &solvers,
+        None,
+        &document,
+        &feature("s0000002"),
+        &id("pb000001"),
+        None,
+    );
+    let edge = begin_edge(
+        &solvers,
+        None,
+        &document,
+        &feature("s0000002"),
+        EdgeGrab {
+            curve: &id("cb000001"),
+            press: [22.75, 10.0],
+        },
+        None,
+        &DragStop::new(),
+    );
+    for (grab, begun) in [("point", point), ("edge", edge)] {
+        let Err(e) = begun else {
+            panic!("a suppressed sketch's {grab} began a drag")
+        };
+        assert_eq!(
+            (
+                e.code(),
+                e.parameter(),
+                e.feature(),
+                e.message(),
+                e.suggestion()
+            ),
+            (
+                ErrorCode::InvalidInput,
+                Some("sketch"),
+                Some("s0000002"),
+                "s0000002 is suppressed, so it isn't solved",
+                Some(
+                    "unsuppress s0000002 first (suppress_feature with suppressed false), or \
+                     name a sketch that isn't suppressed"
+                )
+            ),
+            "{grab}"
+        );
+    }
+    assert!(started.lock().unwrap().is_empty());
+    // The same sketch unsuppressed begins a drag of the same point.
+    opened(&solvers, "s0000002", "pb000001");
 }
 
 #[test]
