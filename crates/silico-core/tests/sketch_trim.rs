@@ -2873,3 +2873,263 @@ fn a_point_on_a_line_trimmed_at_one_end_keeps_its_on_on_the_part_kept_alone() {
         assert_eq!(done.edited.removed, ids(&[end_gone, gone]), "{pick:?}");
     }
 }
+
+// ---- one cutter per new end (Fable, 2026-10-30; the note's §4): of cuts at one place, a
+// held end's, then a held tangency's, then any other, the cuts' order the bound on a tie
+
+/// Line a0000000 from p0 (0, 10) to p4 (20, 10), edge tangent (k0, the circle on its right)
+/// to `circle`, of radius 10 about z0 (`x`, 0), which it touches at (`x`, 10); and
+/// `upright`, up x = 10 from v1 (10, −5) to v2 (10, `top`), through or to that place;
+/// `more` constraints after k0.
+fn tangent_line_and_upright(
+    circle_id: &str,
+    upright_id: &str,
+    x: f64,
+    top: f64,
+    more: &str,
+) -> Document {
+    doc(
+        &[
+            point("p0000000", 0.0, 10.0),
+            point("p0000004", 20.0, 10.0),
+            point("z0000000", x, 0.0),
+            point("v0000001", 10.0, -5.0),
+            point("v0000002", 10.0, top),
+        ]
+        .join(", "),
+        &[
+            line("a0000000", "p0000000", "p0000004"),
+            line(upright_id, "v0000001", "v0000002"),
+        ]
+        .join(", "),
+        &circle(circle_id, "z0000000", 10.0),
+        "",
+        &format!(
+            r#"{{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "{circle_id}", "side": "right"}}{more}"#
+        ),
+    )
+}
+
+/// The circle's ID and the upright's, the circle's sorting first, then the upright's.
+const EITHER_FIRST: [(&str, &str); 2] = [("c0000000", "d0000000"), ("d0000000", "c0000000")];
+
+#[test]
+fn a_held_tangency_beats_a_crossing_at_its_contact_whichever_sorts_first() {
+    // Rank 2 over rank 3: the circle touches the line at (10, 10), where the upright crosses
+    // it, both unheld there, the circle held edge tangent. Picked at (15, 10), the line ends
+    // at a new point at exactly (10, 10), and k0 becomes its tangent_on on the circle:
+    // leaving the end toward p0 is (−1, 0), the circle's counter-clockwise direction at
+    // (10, 10) about (10, 0) is (−10, 0): same. No on to the upright, which FreeCAD's tie
+    // (by GeoId) would add beside the tangency, and the upright is untouched. The same with
+    // the upright's ID first: the rule, not ID order.
+    for (circle_id, upright_id) in EITHER_FIRST {
+        let before = tangent_line_and_upright(circle_id, upright_id, 10.0, 15.0, "");
+        let done = trim(
+            sketch_of(&before),
+            &id("a0000000"),
+            [15.0, 10.0],
+            &ids(&["n0000000"]),
+        )
+        .unwrap();
+        let sketch = gated(&before, &done);
+        assert_eq!(
+            ends(&sketch, "a0000000"),
+            ("p0000000".to_owned(), "n0000000".to_owned()),
+            "{circle_id}"
+        );
+        assert_eq!(at(&sketch, "n0000000"), (10.0, 10.0, false), "{circle_id}");
+        assert_eq!(
+            form(&sketch, "k0000000"),
+            &Form::TangentOn {
+                a: element("a0000000"),
+                at: element("n0000000"),
+                b: element(circle_id),
+                direction: Direction::Same,
+            },
+            "{circle_id}"
+        );
+        assert_eq!(sketch.constraints.len(), 1, "{:?}", sketch.constraints);
+        assert_eq!(
+            ends(&sketch, upright_id),
+            ("v0000001".to_owned(), "v0000002".to_owned())
+        );
+        assert_eq!(at(&sketch, "v0000001"), (10.0, -5.0, false));
+        assert_eq!(at(&sketch, "v0000002"), (10.0, 15.0, false));
+        assert_eq!(done.edited.added, ids(&["n0000000"]), "{circle_id}");
+        assert_eq!(
+            done.edited.modified,
+            ids(&["a0000000", "k0000000"]),
+            "{circle_id}"
+        );
+        assert_eq!(done.edited.removed, ids(&["p0000004"]), "{circle_id}");
+    }
+}
+
+#[test]
+fn a_held_end_beats_a_held_tangency_at_its_contact_whichever_sorts_first() {
+    // Rank 1 over rank 2: the upright ends at v2 (10, 10), held on the line by k1, where
+    // the circle touches it. Picked at (15, 10), the line ends at v2 itself: k1 goes as
+    // implied, k0 stays the edge tangency it was, and nothing is added. The same with the
+    // upright's ID first.
+    for (circle_id, upright_id) in EITHER_FIRST {
+        let before = tangent_line_and_upright(
+            circle_id,
+            upright_id,
+            10.0,
+            10.0,
+            r#", {"id": "k0000001", "type": "on", "point": "v0000002", "curve": "a0000000"}"#,
+        );
+        let done = trim(sketch_of(&before), &id("a0000000"), [15.0, 10.0], &[]).unwrap();
+        let sketch = gated(&before, &done);
+        assert_eq!(
+            ends(&sketch, "a0000000"),
+            ("p0000000".to_owned(), "v0000002".to_owned()),
+            "{circle_id}"
+        );
+        assert_eq!(
+            ends(&sketch, upright_id),
+            ("v0000001".to_owned(), "v0000002".to_owned())
+        );
+        assert_eq!(
+            form(&sketch, "k0000000"),
+            &Form::Tangent {
+                a: element("a0000000"),
+                b: element(circle_id),
+                side: TangentSide::Right,
+            },
+            "{circle_id}"
+        );
+        assert_eq!(sketch.constraints.len(), 1, "{:?}", sketch.constraints);
+        assert!(done.edited.added.is_empty(), "{circle_id}");
+        assert_eq!(done.edited.modified, ids(&["a0000000"]), "{circle_id}");
+        assert_eq!(
+            done.edited.removed,
+            ids(&["p0000004", "k0000001"]),
+            "{circle_id}"
+        );
+    }
+}
+
+#[test]
+fn two_unheld_cutters_at_one_place_go_by_the_cuts_order_which_is_the_bound() {
+    // Rank 3 twice: two uprights cross the line at (16, 0), one from y = −5 to 5, the other
+    // from −3 to 8, neither held there. Nothing tells them apart but the cuts' order (along
+    // the line, then by cutter ID): that is the bound, so the new end, picked either side,
+    // is one new point at (16, 0), on d0000000, whichever of the two it names.
+    for (d_low, e_low) in [(-5.0, -3.0), (-3.0, -5.0)] {
+        let d_high = if d_low == -5.0 { 5.0 } else { 8.0 };
+        let e_high = if e_low == -5.0 { 5.0 } else { 8.0 };
+        let before = a_line(
+            &[
+                point("d0000001", 16.0, d_low),
+                point("d0000002", 16.0, d_high),
+                point("e0000001", 16.0, e_low),
+                point("e0000002", 16.0, e_high),
+            ],
+            &[
+                line("d0000000", "d0000001", "d0000002"),
+                line("e0000000", "e0000001", "e0000002"),
+            ],
+            "",
+            "",
+        );
+        for (pick, line_ends) in [
+            ([24.0, 0.0], ("p0000000", "n0000000")),
+            ([8.0, 0.0], ("n0000000", "p0000004")),
+        ] {
+            let done = trim(
+                sketch_of(&before),
+                &id("a0000000"),
+                pick,
+                &ids(&["n0000000", "k0000009"]),
+            )
+            .unwrap();
+            let sketch = gated(&before, &done);
+            assert_eq!(
+                ends(&sketch, "a0000000"),
+                (line_ends.0.to_owned(), line_ends.1.to_owned()),
+                "{d_low} {pick:?}"
+            );
+            assert_eq!(
+                at(&sketch, "n0000000"),
+                (16.0, 0.0, false),
+                "{d_low} {pick:?}"
+            );
+            assert_eq!(
+                sketch.constraints,
+                vec![silico_core::document::SketchConstraint {
+                    id: id("k0000009"),
+                    form: on("n0000000", "d0000000"),
+                }],
+                "{d_low} {pick:?}"
+            );
+            assert_eq!(
+                done.edited.added,
+                ids(&["n0000000", "k0000009"]),
+                "{d_low} {pick:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_held_tangency_9e_8_mm_off_beats_a_crossing_at_the_place_itself() {
+    // Rank before nearness, as a held end's: the circle touches the line 9e-8 mm short of the
+    // upright's crossing at (10, 10), on the pick's far side, so the crossing is the cut the
+    // trim meets first and the contact is within 1e-7 mm of it. Picked at (15, 10), the
+    // circle about (10 − 9e-8, 0); picked at (5, 10), about (10 + 9e-8, 0). Either way the
+    // new end is a new point at the contact, k0 its tangent_on, and no on: same leaving
+    // toward p0 (−1, 0), opposite leaving toward p4 (+1, 0), against the circle's (−10, 0).
+    // The same with the upright's ID first.
+    for (circle_id, upright_id) in EITHER_FIRST {
+        for (pick, x, line_ends, direction, gone) in [
+            (
+                [15.0, 10.0],
+                10.0 - 0.00000009,
+                ("p0000000", "n0000000"),
+                Direction::Same,
+                "p0000004",
+            ),
+            (
+                [5.0, 10.0],
+                10.0 + 0.00000009,
+                ("n0000000", "p0000004"),
+                Direction::Opposite,
+                "p0000000",
+            ),
+        ] {
+            let before = tangent_line_and_upright(circle_id, upright_id, x, 15.0, "");
+            let done = trim(
+                sketch_of(&before),
+                &id("a0000000"),
+                pick,
+                &ids(&["n0000000"]),
+            )
+            .unwrap();
+            let sketch = gated(&before, &done);
+            assert_eq!(
+                ends(&sketch, "a0000000"),
+                (line_ends.0.to_owned(), line_ends.1.to_owned()),
+                "{circle_id} {pick:?}"
+            );
+            near(&sketch, "n0000000", [x, 10.0]);
+            assert_eq!(
+                form(&sketch, "k0000000"),
+                &Form::TangentOn {
+                    a: element("a0000000"),
+                    at: element("n0000000"),
+                    b: element(circle_id),
+                    direction,
+                },
+                "{circle_id} {pick:?}"
+            );
+            assert_eq!(sketch.constraints.len(), 1, "{:?}", sketch.constraints);
+            assert_eq!(
+                done.edited.added,
+                ids(&["n0000000"]),
+                "{circle_id} {pick:?}"
+            );
+            assert_eq!(done.edited.removed, ids(&[gone]), "{circle_id} {pick:?}");
+        }
+    }
+}
