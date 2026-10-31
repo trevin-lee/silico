@@ -1034,6 +1034,7 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "read_logs",
                 "export",
                 "move_feature",
+                "suppress_feature",
                 "timeline",
                 "drag_begin",
                 "drag_move",

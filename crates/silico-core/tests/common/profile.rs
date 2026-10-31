@@ -178,6 +178,7 @@ impl Draw {
                 operation: Operation::Sketch(self.sketch.clone()),
                 version: FeatureVersion,
                 name: Name::new("Sketch").unwrap(),
+                suppressed: false,
                 note: None,
                 fingerprint: None,
             }],

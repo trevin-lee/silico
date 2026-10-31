@@ -214,6 +214,7 @@
           "render",
           "export",
           "move_feature",
+          "suppress_feature",
           "timeline",
           "drag_begin",
           "drag_move",

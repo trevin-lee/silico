@@ -88,6 +88,7 @@ fn the_commands_are_one_list_in_one_order() {
             "read_logs",
             "export",
             "move_feature",
+            "suppress_feature",
             "timeline",
             "drag_begin",
             "drag_move",

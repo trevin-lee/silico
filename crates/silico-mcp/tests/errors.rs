@@ -161,7 +161,7 @@ fn an_unknown_method_is_method_not_found_naming_the_methods() {
 }
 
 /// Every tool's name, in the list's order, written out by hand.
-pub const TOOLS: [&str; 40] = [
+pub const TOOLS: [&str; 41] = [
     "version",
     "open",
     "close",
@@ -189,6 +189,7 @@ pub const TOOLS: [&str; 40] = [
     "read_logs",
     "export",
     "move_feature",
+    "suppress_feature",
     "timeline",
     "drag_begin",
     "drag_move",

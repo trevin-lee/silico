@@ -62,6 +62,8 @@ mod adversarial_sketch_states;
 mod adversarial_sketch_trim;
 #[path = "adversarial_stored_coordinates.rs"]
 mod adversarial_stored_coordinates;
+#[path = "adversarial_suppression.rs"]
+mod adversarial_suppression;
 #[path = "adversarial_timeline_commands.rs"]
 mod adversarial_timeline_commands;
 #[path = "adversarial_warm.rs"]
@@ -100,9 +102,13 @@ mod sketch_states;
 mod sketch_trim;
 #[path = "stored_coordinates.rs"]
 mod stored_coordinates;
+#[path = "suppression.rs"]
+mod suppression;
 #[path = "timeline.rs"]
 mod timeline;
 #[path = "undo.rs"]
 mod undo;
+#[path = "wire_suppress_commands.rs"]
+mod wire_suppress_commands;
 #[path = "wire_timeline_commands.rs"]
 mod wire_timeline_commands;

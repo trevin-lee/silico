@@ -1612,6 +1612,7 @@
               "render",
               "export",
               "move_feature",
+              "suppress_feature",
               "timeline",
               "drag_begin",
               "drag_move",
@@ -1875,6 +1876,7 @@
               "render",
               "export",
               "move_feature",
+              "suppress_feature",
               "timeline",
               "drag_begin",
               "drag_move",
@@ -2173,6 +2175,7 @@
               "render",
               "export",
               "move_feature",
+              "suppress_feature",
               "timeline",
               "drag_begin",
               "drag_move",
@@ -4255,6 +4258,10 @@
                 ],
                 "description": "A note about the feature, kept with it (left out when there's none). Null is the same as left out."
               },
+              "suppressed": {
+                "const": true,
+                "description": "Whether the feature is suppressed: not built, a feature that consumes it building on\nthe nearest unsuppressed feature up its chain (written only as true; a feature that\nisn't suppressed leaves it out)."
+              },
               "v": {
                 "anyOf": [
                   {
@@ -5820,6 +5827,10 @@
               "note": {
                 "description": "A note about the feature, kept with it (left out when there's none).",
                 "type": "string"
+              },
+              "suppressed": {
+                "const": true,
+                "description": "Whether the feature is suppressed: not built, a feature that consumes it building on\nthe nearest unsuppressed feature up its chain (written only as true; a feature that\nisn't suppressed leaves it out)."
               },
               "v": {
                 "$ref": "#/$defs/FeatureVersion"
@@ -8176,6 +8187,10 @@
               "note": {
                 "description": "A note about the feature, kept with it (left out when there's none).",
                 "type": "string"
+              },
+              "suppressed": {
+                "const": true,
+                "description": "Whether the feature is suppressed: not built, a feature that consumes it building on\nthe nearest unsuppressed feature up its chain (written only as true; a feature that\nisn't suppressed leaves it out)."
               },
               "v": {
                 "$ref": "#/$defs/FeatureVersion"
@@ -16605,6 +16620,442 @@
         "type": "object"
       },
       "title": "Move a feature"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Suppress a feature"
+      },
+      "description": "Suppress one feature (`suppressed: true`) or unsuppress it (`false`). A suppressed feature isn't built: a feature that consumes it builds on the nearest unsuppressed feature up its chain, so suppressing a part's first hole leaves the part. Its dependents go with it: a feature whose sketch it is, one naming its elements, and one left with an input it needs and nothing unsuppressed up its chain. Unsuppressing a feature unsuppresses what it needs (its sketch, the features its names come from, its chain's first feature if every one is suppressed); what depends on it stays suppressed. Each list is in `suppressed` and `unsuppressed`, in timeline order. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`suppress_feature`'s request: suppress a feature with its dependents, or unsuppress it\nwith what it needs.",
+        "properties": {
+          "feature": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The feature to suppress or unsuppress, by ID."
+          },
+          "revision": {
+            "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "suppressed": {
+            "description": "True to suppress it: it isn't built, and a feature that consumes it builds on the\nnearest unsuppressed feature up its chain; its dependents go with it (a feature whose\nsketch it is, one naming its elements, and one left with an input it needs and nothing\nunsuppressed up its chain). False to unsuppress it, with its sketch, the makers of the\nnames it stores, and, for an input it needs with nothing unsuppressed up its chain,\nthat chain's first feature; what depends on it stays suppressed.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "feature",
+          "revision",
+          "session",
+          "suppressed"
+        ],
+        "title": "SuppressFeatureRequest",
+        "type": "object"
+      },
+      "name": "suppress_feature",
+      "outputSchema": {
+        "$defs": {
+          "CommitResult": {
+            "additionalProperties": false,
+            "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+            "properties": {
+              "path": {
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "problems_total": {
+                "description": "How many problems there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refingerprinted": {
+                "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "resolved": {
+                "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "written": {
+                "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "problems",
+              "problems_total",
+              "refingerprinted",
+              "resolved",
+              "written"
+            ],
+            "type": "object"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "advice",
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`suppress_feature`'s result.",
+                "properties": {
+                  "changed": {
+                    "description": "Whether the document changed: false for a feature suppressed already, or unsuppressed\nthat isn't, which makes no new revision and writes nothing.",
+                    "type": "boolean"
+                  },
+                  "commit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/CommitResult"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Outside a transaction, the commit that saved the edit (which carries a suppressed\nfeature's stored fingerprint as stored, never checked or rewritten, and writes a fresh\none for each feature that uses it); null inside one, or if nothing changed."
+                  },
+                  "feature": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The feature, as the request named it."
+                  },
+                  "suppressed": {
+                    "description": "The features the edit suppressed, in timeline order, the feature itself among them:\nempty for an unsuppression, or for a feature suppressed already.",
+                    "items": {
+                      "$ref": "#/$defs/FeatureId"
+                    },
+                    "type": "array"
+                  },
+                  "unsuppressed": {
+                    "description": "The features the edit unsuppressed, in timeline order, the feature itself among them:\nempty for a suppression, or for a feature that isn't suppressed.",
+                    "items": {
+                      "$ref": "#/$defs/FeatureId"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "changed",
+                  "commit",
+                  "feature",
+                  "suppressed",
+                  "unsuppressed"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Suppress a feature"
     },
     {
       "annotations": {
