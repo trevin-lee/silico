@@ -28,6 +28,7 @@ fn feature(id_text: &str, name: &str, operation: Operation) -> Feature {
         operation,
         version: FeatureVersion,
         name: Name::new(name).unwrap(),
+        suppressed: false,
         note: None,
         fingerprint: None,
     }
@@ -1184,16 +1185,22 @@ fn any_axis() -> impl Strategy<Value = Axis> {
 }
 
 fn any_feature() -> impl Strategy<Value = Feature> {
-    (any_id(), any_operation(), ".+", prop::option::of(".*")).prop_map(
-        |(id, operation, name, note)| Feature {
+    (
+        any_id(),
+        any_operation(),
+        ".+",
+        prop::option::of(".*"),
+        any::<bool>(),
+    )
+        .prop_map(|(id, operation, name, note, suppressed)| Feature {
             id,
             operation,
             version: FeatureVersion,
             name: Name::new(name).unwrap(),
+            suppressed,
             note,
             fingerprint: None,
-        },
-    )
+        })
 }
 
 fn any_document() -> impl Strategy<Value = Document> {

@@ -367,6 +367,12 @@ pub struct Feature {
     #[serde(rename = "v")]
     pub version: FeatureVersion,
     pub name: Name,
+    /// Whether the feature is suppressed: not built, a feature that consumes it building on
+    /// the nearest unsuppressed feature up its chain (written only as true; a feature that
+    /// isn't suppressed leaves it out).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schemars(schema_with = "suppressed_schema")]
+    pub suppressed: bool,
     /// A note about the feature, kept with it (left out when there's none).
     #[schemars(extend("type" = "string"))]
     pub note: Option<String>,
@@ -388,6 +394,7 @@ impl Feature {
             operation,
             version,
             name,
+            suppressed,
             note,
             fingerprint,
         } = self;
@@ -395,9 +402,16 @@ impl Feature {
             && operation.canonically_eq(&other.operation)
             && *version == other.version
             && *name == other.name
+            && *suppressed == other.suppressed
             && *note == other.note
             && *fingerprint == other.fingerprint
     }
+}
+
+/// `suppressed`'s shape in the schema: `true` only, since a feature that isn't suppressed
+/// leaves it out (decision 4: one spelling; the reader refuses `false`).
+fn suppressed_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({ "const": true })
 }
 
 /// A feature's version: changing a feature type's behaviour bumps it, and a document keeps

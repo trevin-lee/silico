@@ -1538,6 +1538,7 @@ mod constructed {
                 operation: Operation::Sketch(sketch),
                 version: FeatureVersion,
                 name: Name::new("S").unwrap(),
+                suppressed: false,
                 note: None,
                 fingerprint: None,
             }],

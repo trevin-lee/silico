@@ -790,6 +790,7 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "read_logs",
                 "export",
                 "move_feature",
+                "suppress_feature",
                 "timeline",
                 "sketch",
                 "sketch_add",

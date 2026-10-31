@@ -418,6 +418,7 @@ pub fn feature(index: usize, node: Node) -> Result<Feature, Error> {
             "give the feature a name",
         )
     })?;
+    let suppressed = suppressed(&mut fields)?;
     let operation = operation(&type_name, &mut fields)?;
     let note = match fields.optional("note") {
         Some(node) => Some(string(node, fields.feature(), "note")?),
@@ -433,9 +434,30 @@ pub fn feature(index: usize, node: Node) -> Result<Feature, Error> {
         operation,
         version: FeatureVersion,
         name,
+        suppressed,
         note,
         fingerprint,
     })
+}
+
+/// Whether the feature is suppressed: `true` if it says so, and false if it leaves
+/// `suppressed` out. `false` is refused, naming the field, so a document has one spelling
+/// (decision 4, as M2.1's D6 writes optional fields omitted, never as their absent value).
+fn suppressed(fields: &mut Fields) -> Result<bool, Error> {
+    let Some(node) = fields.optional("suppressed") else {
+        return Ok(false);
+    };
+    match node.value {
+        Value::Bool(true) => Ok(true),
+        Value::Bool(false) => Err(refuse(
+            fields.feature(),
+            "suppressed",
+            node.at,
+            "suppressed is false: a feature that isn't suppressed leaves suppressed out",
+            "remove suppressed; write it only as true",
+        )),
+        _ => Err(wrong_kind(fields.feature(), "suppressed", &node, "true")),
+    }
 }
 
 fn fingerprint(node: Node, feature: Option<&str>) -> Result<Fingerprint, Error> {
@@ -1337,21 +1359,21 @@ mod tests {
 
     /// One feature of each type, written by hand, with every member it may have.
     const FEATURES: [&str; 15] = [
-        r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
-        r#"{"id": "b0000002", "type": "cylinder", "v": 1, "name": "C", "position": [0, 0, 0], "radius": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 3, "edges": 3, "vertices": 2}}"#,
-        r#"{"id": "b0000003", "type": "sphere", "v": 1, "name": "S", "position": [0, 0, 0], "radius": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 1, "edges": 3, "vertices": 2}}"#,
-        r#"{"id": "b0000004", "type": "cone", "v": 1, "name": "C", "position": [0, 0, 0], "radius1": 2, "radius2": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 3, "edges": 3, "vertices": 2}}"#,
-        r#"{"id": "b0000005", "type": "torus", "v": 1, "name": "T", "position": [0, 0, 0], "radius1": 2, "radius2": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 1, "edges": 2, "vertices": 1}}"#,
-        r#"{"id": "b0000006", "type": "fuse", "v": 1, "name": "F", "base": "b0000001", "tool": "b0000002", "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
-        r#"{"id": "b0000007", "type": "cut", "v": 1, "name": "C", "base": "b0000001", "tool": "b0000002", "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
-        r#"{"id": "b0000008", "type": "common", "v": 1, "name": "C", "base": "b0000001", "tool": "b0000002", "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
-        r#"{"id": "b0000009", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": [], "note": "N"}"#,
-        r#"{"id": "b000000a", "type": "fillet", "v": 1, "name": "F", "base": "b0000001", "edges": ["b0000001.box.Edge1"], "radius": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 7, "edges": 15, "vertices": 10}}"#,
-        r#"{"id": "b000000b", "type": "chamfer", "v": 1, "name": "C", "base": "b0000001", "edges": ["b0000001.box.Edge1"], "size": {"distance": 1}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 7, "edges": 15, "vertices": 10}}"#,
-        r#"{"id": "b000000c", "type": "pad", "v": 1, "name": "P", "base": "b0000001", "sketch": "b0000009", "extent": {"type": "one_side", "length": 6, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
-        r#"{"id": "b000000d", "type": "pocket", "v": 1, "name": "P", "base": "b0000001", "sketch": "b0000009", "extent": {"type": "through_all", "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
-        r#"{"id": "b000000e", "type": "revolve", "v": 1, "name": "R", "base": "b0000001", "sketch": "b0000009", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
-        r#"{"id": "b000000f", "type": "groove", "v": 1, "name": "G", "base": "b0000001", "sketch": "b0000009", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "suppressed": true, "position": [0, 0, 0], "length": 1, "width": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b0000002", "type": "cylinder", "v": 1, "name": "C", "suppressed": true, "position": [0, 0, 0], "radius": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 3, "edges": 3, "vertices": 2}}"#,
+        r#"{"id": "b0000003", "type": "sphere", "v": 1, "name": "S", "suppressed": true, "position": [0, 0, 0], "radius": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 1, "edges": 3, "vertices": 2}}"#,
+        r#"{"id": "b0000004", "type": "cone", "v": 1, "name": "C", "suppressed": true, "position": [0, 0, 0], "radius1": 2, "radius2": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 3, "edges": 3, "vertices": 2}}"#,
+        r#"{"id": "b0000005", "type": "torus", "v": 1, "name": "T", "suppressed": true, "position": [0, 0, 0], "radius1": 2, "radius2": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 1, "edges": 2, "vertices": 1}}"#,
+        r#"{"id": "b0000006", "type": "fuse", "v": 1, "name": "F", "suppressed": true, "base": "b0000001", "tool": "b0000002", "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b0000007", "type": "cut", "v": 1, "name": "C", "suppressed": true, "base": "b0000001", "tool": "b0000002", "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b0000008", "type": "common", "v": 1, "name": "C", "suppressed": true, "base": "b0000001", "tool": "b0000002", "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b0000009", "type": "sketch", "v": 1, "name": "S", "suppressed": true, "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": [], "note": "N"}"#,
+        r#"{"id": "b000000a", "type": "fillet", "v": 1, "name": "F", "suppressed": true, "base": "b0000001", "edges": ["b0000001.box.Edge1"], "radius": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 7, "edges": 15, "vertices": 10}}"#,
+        r#"{"id": "b000000b", "type": "chamfer", "v": 1, "name": "C", "suppressed": true, "base": "b0000001", "edges": ["b0000001.box.Edge1"], "size": {"distance": 1}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 7, "edges": 15, "vertices": 10}}"#,
+        r#"{"id": "b000000c", "type": "pad", "v": 1, "name": "P", "suppressed": true, "base": "b0000001", "sketch": "b0000009", "extent": {"type": "one_side", "length": 6, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000d", "type": "pocket", "v": 1, "name": "P", "suppressed": true, "base": "b0000001", "sketch": "b0000009", "extent": {"type": "through_all", "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000e", "type": "revolve", "v": 1, "name": "R", "suppressed": true, "base": "b0000001", "sketch": "b0000009", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000f", "type": "groove", "v": 1, "name": "G", "suppressed": true, "base": "b0000001", "sketch": "b0000009", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
     ];
 
     #[test]
@@ -1387,6 +1409,7 @@ mod tests {
                 )
                 .is_ok();
                 let optional = member.key == "fingerprint"
+                    || member.key == "suppressed"
                     || optional_members(type_name).contains(&member.key.as_str());
                 assert_eq!(reads, optional, "{type_name} without {}", member.key);
             }

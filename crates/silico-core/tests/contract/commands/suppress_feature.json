@@ -1,0 +1,254 @@
+{
+  "request": {
+    "$defs": {
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`suppress_feature`'s request: suppress a feature with its dependents, or unsuppress it\nwith what it needs.",
+    "properties": {
+      "feature": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The feature to suppress or unsuppress, by ID."
+      },
+      "revision": {
+        "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      },
+      "suppressed": {
+        "description": "True to suppress it: it isn't built, and a feature that consumes it builds on the\nnearest unsuppressed feature up its chain; its dependents go with it (a feature whose\nsketch it is, one naming its elements, and one left with an input it needs and nothing\nunsuppressed up its chain). False to unsuppress it, with its sketch, the makers of the\nnames it stores, and, for an input it needs with nothing unsuppressed up its chain,\nthat chain's first feature; what depends on it stays suppressed.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "feature",
+      "revision",
+      "session",
+      "suppressed"
+    ],
+    "title": "SuppressFeatureRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "CommitResult": {
+        "additionalProperties": false,
+        "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+        "properties": {
+          "path": {
+            "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
+            "type": "string"
+          },
+          "problems": {
+            "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+            "items": {
+              "$ref": "#/$defs/Error"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "problems_total": {
+            "description": "How many problems there are, listed or not.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refingerprinted": {
+            "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": "array"
+          },
+          "resolved": {
+            "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": "array"
+          },
+          "written": {
+            "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "problems",
+          "problems_total",
+          "refingerprinted",
+          "resolved",
+          "written"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "additionalProperties": false,
+        "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+        "properties": {
+          "advice": {
+            "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+            "enum": [
+              "change_the_values",
+              "simplify_or_wait",
+              "try_again",
+              "try_once_more",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidates": {
+            "description": "What might have been meant, such as the names nearest one that found nothing.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cause": {
+            "description": "What lay under it, such as the kernel's own failure, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "enum": [
+              "invalid_input",
+              "kernel_failed",
+              "worker_crashed",
+              "worker_timeout",
+              "protocol_error",
+              "internal",
+              "invalid_result",
+              "resource_exhausted",
+              "drift",
+              "io_failed",
+              "reference_broken",
+              "over_constrained",
+              "solve_failed",
+              "conflict",
+              "worker_unavailable",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          "elements": {
+            "description": "The elements at fault, by name: the first of them, if there are many.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "elements_total": {
+            "description": "How many elements are at fault, listed or not.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feature": {
+            "description": "The ID of the feature at fault, if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "What went wrong, in a sentence.",
+            "type": "string"
+          },
+          "parameter": {
+            "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggestion": {
+            "description": "What to do about it, if Silico can say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "advice",
+          "candidates",
+          "cause",
+          "code",
+          "elements",
+          "elements_total",
+          "feature",
+          "message",
+          "parameter",
+          "suggestion"
+        ],
+        "type": "object"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`suppress_feature`'s result.",
+    "properties": {
+      "changed": {
+        "description": "Whether the document changed: false for a feature suppressed already, or unsuppressed\nthat isn't, which makes no new revision and writes nothing.",
+        "type": "boolean"
+      },
+      "commit": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/CommitResult"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Outside a transaction, the commit that saved the edit (which carries a suppressed\nfeature's stored fingerprint as stored, never checked or rewritten, and writes a fresh\none for each feature that uses it); null inside one, or if nothing changed."
+      },
+      "feature": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The feature, as the request named it."
+      },
+      "suppressed": {
+        "description": "The features the edit suppressed, in timeline order, the feature itself among them:\nempty for an unsuppression, or for a feature suppressed already.",
+        "items": {
+          "$ref": "#/$defs/FeatureId"
+        },
+        "type": "array"
+      },
+      "unsuppressed": {
+        "description": "The features the edit unsuppressed, in timeline order, the feature itself among them:\nempty for a suppression, or for a feature that isn't suppressed.",
+        "items": {
+          "$ref": "#/$defs/FeatureId"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "changed",
+      "commit",
+      "feature",
+      "suppressed",
+      "unsuppressed"
+    ],
+    "title": "SuppressFeatureResult",
+    "type": "object"
+  }
+}

@@ -169,6 +169,7 @@ fn effect(command: Command) -> Effect {
         | Command::RemoveFeature
         | Command::ReplaceText
         | Command::MoveFeature
+        | Command::SuppressFeature
         | Command::SketchAdd
         | Command::SketchRemove
         | Command::SketchSplit
@@ -266,6 +267,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Move a feature",
             "Move one feature before another, or to the end (`before: null`), rewiring the chains it leaves and joins: its consumer takes its base, it builds on the last feature of its chain before the new place, and the next one builds on it, each change listed in `rewired`. Refused, naming both, where a child would come before its parent (its sketch, its tool, a feature whose elements it names). Give the revision the edit was made against.",
         ),
+        Command::SuppressFeature => (
+            "Suppress a feature",
+            "Suppress one feature (`suppressed: true`) or unsuppress it (`false`). A suppressed feature isn't built: a feature that consumes it builds on the nearest unsuppressed feature up its chain, so suppressing a part's first hole leaves the part. Its dependents go with it: a feature whose sketch it is, one naming its elements, and one left with an input it needs and nothing unsuppressed up its chain. Unsuppressing a feature unsuppresses what it needs (its sketch, the features its names come from, its chain's first feature if every one is suppressed); what depends on it stays suppressed. Each list is in `suppressed` and `unsuppressed`, in timeline order. Give the revision the edit was made against.",
+        ),
         Command::ReplaceText => (
             "Replace the text",
             "Replace the document's whole text, read and checked as `silico check` reads a file; the text replaced is returned. Give the revision the edit was made against.",
@@ -359,6 +364,7 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::RemoveFeature
         | Command::ReplaceText
         | Command::MoveFeature
+        | Command::SuppressFeature
         | Command::SketchAdd
         | Command::SketchRemove
         | Command::SketchSplit
