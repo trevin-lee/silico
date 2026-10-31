@@ -41,9 +41,15 @@ pub struct FaceDescription {
 pub enum Surface {
     /// Its unit normal, pointing out of a solid: the surface's (Du × Dv, which is the
     /// plane's axis's opposite where its frame is left-handed), reversed where the face is
-    /// reversed. An internal or external face's is its surface's.
+    /// reversed. An internal or external face's is its surface's. `origin` is the plane's
+    /// own location (`gp_Pln::Location()`, the face's location applied): a point on the
+    /// plane, exact as OCCT stores it, not measured, so a sketch placed on the face
+    /// (docs/ports/attacher.md, F2's p) is on its plane to rounding, where the centroid is
+    /// only to [`MEASURE_PRECISION`](crate::MEASURE_PRECISION). It's the core's alone:
+    /// `elements` and `query` don't report it.
     Plane {
         normal: [f64; 3],
+        origin: [f64; 3],
     },
     Cylinder {
         axis: Axis,
@@ -148,6 +154,7 @@ pub enum What {
     Area,
     Centroid,
     Normal,
+    Origin,
     AxisOrigin,
     AxisDirection,
     Radius,
@@ -167,6 +174,7 @@ impl fmt::Display for What {
             What::Area => "area",
             What::Centroid => "centre of area",
             What::Normal => "normal",
+            What::Origin => "plane's origin",
             What::AxisOrigin => "axis's origin",
             What::AxisDirection => "axis's direction",
             What::Radius => "radius",
@@ -214,7 +222,10 @@ impl Description {
             at(What::Area, &[face.area]);
             at(What::Centroid, &face.centroid);
             match &face.surface {
-                Surface::Plane { normal } => at(What::Normal, normal),
+                Surface::Plane { normal, origin } => {
+                    at(What::Normal, normal);
+                    at(What::Origin, origin);
+                }
                 Surface::Cylinder { axis: a, radius } | Surface::Sphere { axis: a, radius } => {
                     axis(&mut at, a);
                     at(What::Radius, &[*radius]);
@@ -331,7 +342,7 @@ impl Description {
         };
         for (i, face) in self.faces.iter().enumerate() {
             let (what, direction) = match &face.surface {
-                Surface::Plane { normal } => (What::Normal, *normal),
+                Surface::Plane { normal, .. } => (What::Normal, *normal),
                 Surface::Cylinder { axis, .. }
                 | Surface::Sphere { axis, .. }
                 | Surface::Cone { axis, .. }
@@ -511,6 +522,7 @@ mod tests {
             faces: vec![
                 face(Surface::Plane {
                     normal: [0.0, 0.0, 1.0],
+                    origin: [0.0, 0.0, 5.0],
                 }),
                 face(Surface::Cylinder {
                     axis: z_axis(),
@@ -571,9 +583,19 @@ mod tests {
                 |d| {
                     d.faces[0].surface = Surface::Plane {
                         normal: [0.0, 0.0, 1.1],
+                        origin: [0.0, 0.0, 5.0],
                     }
                 },
                 "the kernel's Face1's normal",
+            ),
+            (
+                |d| {
+                    d.faces[0].surface = Surface::Plane {
+                        normal: [0.0, 0.0, 1.0],
+                        origin: [0.0, f64::NEG_INFINITY, 5.0],
+                    }
+                },
+                "the kernel's Face1's plane's origin is -inf",
             ),
             (
                 |d| {
@@ -765,14 +787,24 @@ mod tests {
             (quantity.to_string(), value.is_nan() || value.is_infinite())
         };
         type Spoil = fn(&mut Description);
-        let cases: [(Spoil, &str); 5] = [
+        let cases: [(Spoil, &str); 6] = [
             (
                 |d| {
                     d.faces[0].surface = Surface::Plane {
                         normal: [0.0, f64::NAN, 1.0],
+                        origin: [0.0, 0.0, 5.0],
                     }
                 },
                 "the kernel's Face1's normal",
+            ),
+            (
+                |d| {
+                    d.faces[0].surface = Surface::Plane {
+                        normal: [0.0, 0.0, 1.0],
+                        origin: [f64::NAN, 0.0, 5.0],
+                    }
+                },
+                "the kernel's Face1's plane's origin",
             ),
             (
                 |d| d.faces[4].centroid[2] = f64::NAN,

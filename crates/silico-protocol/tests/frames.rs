@@ -639,6 +639,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                 faces: [
                     Surface::Plane {
                         normal: [0.0, 0.0, -1.0],
+                        origin: [-0.0, 1e300, 5e-324],
                     },
                     Surface::Cylinder {
                         axis: AXIS,

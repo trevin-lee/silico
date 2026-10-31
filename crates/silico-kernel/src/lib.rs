@@ -265,10 +265,10 @@ mod ffi {
     }
 
     /// A face as `describe` finds it (`silico_protocol::FaceDescription`): its surface, area,
-    /// and centre of area; a plane's outward `normal`; a cylinder's, cone's, sphere's, or
-    /// torus's axis (`origin`, `direction`); a cylinder's, cone's, or sphere's `radius`, or
-    /// a torus's major `radius` and minor `radius2`; and a cone's half-angle, `angle`.
-    /// Unused fields are 0.
+    /// and centre of area; a plane's outward `normal` and its own location (`origin`); a
+    /// cylinder's, cone's, sphere's, or torus's axis (`origin`, `direction`); a cylinder's,
+    /// cone's, or sphere's `radius`, or a torus's major `radius` and minor `radius2`; and a
+    /// cone's half-angle, `angle`. Unused fields are 0.
     struct FaceOut {
         surface: SurfaceType,
         area: f64,
@@ -994,6 +994,7 @@ pub fn describe(
             let surface = match f.surface {
                 ffi::SurfaceType::Plane => Surface::Plane {
                     normal: point(&f.normal),
+                    origin: point(&f.origin),
                 },
                 ffi::SurfaceType::Cylinder => Surface::Cylinder {
                     axis,

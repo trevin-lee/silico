@@ -44,9 +44,75 @@ fn a_boxs_faces_are_planes_facing_out_from_their_middles_with_their_areas() {
     assert_eq!(d.faces.len(), 6);
     for (i, (face, (normal, area, centroid))) in d.faces.iter().zip(want).enumerate() {
         let what = format!("Face{}", i + 1);
-        assert_eq!(face.surface, Surface::Plane { normal }, "{what}");
+        let Surface::Plane {
+            normal: got,
+            origin,
+        } = face.surface
+        else {
+            panic!("{what}: {:?}", face.surface)
+        };
+        assert_eq!(got, normal, "{what}");
+        // The plane's own location is on it: along the normal, its offset exactly (0, 10,
+        // 0, 20, 0, 30 out from the origin).
+        let offset: f64 = (0..3).map(|k| normal[k] * origin[k]).sum();
+        assert_eq!(
+            offset,
+            [0.0, 10.0, 0.0, 20.0, 0.0, 30.0][i],
+            "{what}: {origin:?}"
+        );
         assert_close(&what, face.area, area, 1e-12);
         assert_point(&what, face.centroid, centroid);
+    }
+}
+
+#[test]
+fn a_moved_boxs_planes_are_located_on_themselves_where_the_box_was_moved_to() {
+    // The 10 × 20 × 30 box moved to (3, 4, 5): its faces at x = 3 and 13, y = 4 and 24,
+    // z = 5 and 35. Each plane's own location is on it, the move applied: along the
+    // outward normal, exactly the face's offset from the origin (−3, 13, −4, 24, −5, 35),
+    // where the box unmoved gives 0, 10, 0, 20, 0, 30.
+    let moved = translate(
+        &make(&Primitive::Box {
+            dx: 10.0,
+            dy: 20.0,
+            dz: 30.0,
+        })
+        .unwrap(),
+        [3.0, 4.0, 5.0],
+    )
+    .unwrap()
+    .shape;
+    let d = describe_whole(&moved).unwrap();
+    d.validate(1).unwrap();
+    let want = [
+        ([-1.0, 0.0, 0.0], -3.0),
+        ([1.0, 0.0, 0.0], 13.0),
+        ([0.0, -1.0, 0.0], -4.0),
+        ([0.0, 1.0, 0.0], 24.0),
+        ([0.0, 0.0, -1.0], -5.0),
+        ([0.0, 0.0, 1.0], 35.0),
+    ];
+    assert_eq!(d.faces.len(), 6);
+    for (i, (face, (normal, offset))) in d.faces.iter().zip(want).enumerate() {
+        let what = format!("Face{}", i + 1);
+        let Surface::Plane {
+            normal: got,
+            origin,
+        } = face.surface
+        else {
+            panic!("{what}: {:?}", face.surface)
+        };
+        assert_eq!(got, normal, "{what}");
+        let along: f64 = (0..3).map(|k| normal[k] * origin[k]).sum();
+        assert_eq!(along, offset, "{what}: {origin:?}");
+        // Within the box's extent across the face too: a point of the face's plane near
+        // the face, not one of the unmoved box's.
+        for (k, (low, high)) in [(3.0, 13.0), (4.0, 24.0), (5.0, 35.0)]
+            .into_iter()
+            .enumerate()
+        {
+            assert!((low..=high).contains(&origin[k]), "{what}: {origin:?}");
+        }
     }
 }
 
@@ -128,7 +194,7 @@ fn a_cylinders_side_is_a_cylinder_of_its_radius_about_its_axis() {
                 assert_close("the side's area", face.area, 50.0 * PI, 1e-12);
                 assert_point("the side's centre", face.centroid, [0.0, 0.0, 5.0]);
             }
-            Surface::Plane { normal } => {
+            Surface::Plane { normal, .. } => {
                 assert_close("a cap's area", face.area, 6.25 * PI, 1e-12);
                 caps.push((normal[2], face.centroid));
             }
@@ -249,12 +315,12 @@ fn a_cones_side_has_its_half_angle_and_its_apex_where_its_radius_would_be_none()
         .iter()
         .find(|f| matches!(f.surface, Surface::Plane { .. }))
         .unwrap();
-    assert_eq!(
-        base.surface,
-        Surface::Plane {
-            normal: [0.0, 0.0, -1.0]
-        }
-    );
+    let Surface::Plane { normal, origin } = base.surface else {
+        unreachable!()
+    };
+    assert_eq!(normal, [0.0, 0.0, -1.0]);
+    // The base's plane's own location is on it, z = 0.
+    assert_eq!(origin[2], 0.0, "{origin:?}");
     assert_close("the base's area", base.area, 16.0 * PI, 1e-12);
     let apexes: Vec<_> = d
         .edges
@@ -321,7 +387,7 @@ fn faces_a_cut_turns_round_face_out_of_the_solid() {
     assert_eq!(d.faces.len(), 10);
     let mut hole = 0;
     for (i, face) in d.faces.iter().enumerate() {
-        let Surface::Plane { normal } = face.surface else {
+        let Surface::Plane { normal, .. } = face.surface else {
             panic!("Face{} isn't a plane", i + 1)
         };
         let flat = normal[2] != 0.0;
