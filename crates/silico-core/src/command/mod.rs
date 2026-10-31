@@ -47,6 +47,8 @@ pub use session::{
 };
 pub use session_command::{Cancellable, ReadCommand, RunningCommand, SessionCommand};
 
+pub(crate) use edit::FeatureIds;
+
 pub use crate::warnings::Warnings;
 
 /// The command API's version (docs/design/m4.1-command-api.md, section 8): one more for

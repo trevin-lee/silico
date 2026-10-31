@@ -1,0 +1,664 @@
+//! What the pointer shows (docs/design/m5.0-app.md, section 9, *Sketching*; #278's A to G;
+//! docs/study/sketch-tool-relations.md, *Recommended for M5.11, by tool*): where a click
+//! would put a point, the point it would share or the relation it would leave there, the
+//! points it's level with or above, and the direction a line would take.
+//!
+//! The pointer looks, nearest first within each kind, ties by ID, in this order:
+//! 1. a point of the sketch, shared (D2), always, whatever the setting and Ctrl (#278's F);
+//! 2. with relations inferred: the origin (#278's A), then a line's middle, then where two
+//!    curves cross (two `on`s), then a curve (`on`; a line or an axis as the infinite line,
+//!    an arc as its circle, §2 of the help), each within the pick tolerance;
+//! 3. nothing: the point is placed where the pointer is.
+//!
+//! A point placed on nothing may line up with another point (#278's E): it's moved onto the
+//! line, which a dotted guide shows, and the relation (`horizontal_points`,
+//! `vertical_points`) is the pointer's only where the tool says the pointer shows it.
+
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+
+use silico_protocol::LENGTH_TOLERANCE;
+
+use super::geometry::{
+    add, angle_between, cross, distance, dot, left, scale, sub, to_segment, unit,
+};
+use super::{Relation, Shown, Xy};
+use crate::document::sketch_edit::{Geo, Members, crossings};
+use crate::document::{Direction, ElementId, Form, Reference, Sketch};
+
+/// How far from horizontal or vertical a line may be drawn, and from perpendicular,
+/// parallel, or tangent, for the pointer to show it: 2°, FreeCAD 1.1.3's, since SolidWorks'
+/// help gives none (docs/study/sketch-tool-relations.md, §10 and *Item 26's text*).
+pub const ANGLE_TOLERANCE_DEGREES: f64 = 2.0;
+
+fn angle_tolerance() -> f64 {
+    ANGLE_TOLERANCE_DEGREES.to_radians()
+}
+
+/// The sketch a tool snaps to: the newest `sketch` read's members, with what the tool has
+/// added since that the read doesn't hold yet (a chain's last segments), so a click can
+/// share a point the core hasn't answered with.
+pub(super) struct View<'s> {
+    pub(super) sketch: Cow<'s, Sketch>,
+    points: BTreeMap<ElementId, Xy>,
+}
+
+impl<'s> View<'s> {
+    /// `read` with each member of `pending` it doesn't hold (by ID) added.
+    pub(super) fn of(read: &'s Sketch, pending: &Members) -> View<'s> {
+        let held: std::collections::BTreeSet<&ElementId> =
+            read.elements().map(|(id, _)| id).collect();
+        let missing = |id: &ElementId| !held.contains(id);
+        let sketch = if pending
+            .points
+            .iter()
+            .map(|p| &p.id)
+            .chain(pending.lines.iter().map(|l| &l.id))
+            .chain(pending.circles.iter().map(|c| &c.id))
+            .chain(pending.arcs.iter().map(|a| &a.id))
+            .chain(pending.constraints.iter().map(|c| &c.id))
+            .any(missing)
+        {
+            let mut merged = read.clone();
+            merged
+                .points
+                .extend(pending.points.iter().filter(|p| missing(&p.id)).cloned());
+            merged
+                .lines
+                .extend(pending.lines.iter().filter(|l| missing(&l.id)).cloned());
+            merged
+                .circles
+                .extend(pending.circles.iter().filter(|c| missing(&c.id)).cloned());
+            merged
+                .arcs
+                .extend(pending.arcs.iter().filter(|a| missing(&a.id)).cloned());
+            merged.constraints.extend(
+                pending
+                    .constraints
+                    .iter()
+                    .filter(|c| missing(&c.id))
+                    .cloned(),
+            );
+            Cow::Owned(merged)
+        } else {
+            Cow::Borrowed(read)
+        };
+        // The first holder of an ID is the one a reference finds, as the gate's.
+        let mut points = BTreeMap::new();
+        for p in &sketch.points {
+            points.entry(p.id.clone()).or_insert([p.x.mm(), p.y.mm()]);
+        }
+        View { sketch, points }
+    }
+
+    /// Where the point `id` is.
+    pub(super) fn point(&self, id: &ElementId) -> Option<Xy> {
+        self.points.get(id).copied()
+    }
+
+    /// Every ID the sketch holds, of any kind.
+    pub(super) fn ids(&self) -> std::collections::BTreeSet<ElementId> {
+        self.sketch.elements().map(|(id, _)| id.clone()).collect()
+    }
+
+    /// The lines and arcs that end at the point `id`, each with the direction it leaves
+    /// there along (outward: a line from its other end, an arc on past its end), in the
+    /// sketch's order. One whose direction there can't be found (no length) is left out.
+    pub(super) fn ends_at(&self, id: &ElementId) -> Vec<(ElementId, Xy, EndOf)> {
+        let mut ends = Vec::new();
+        for line in &self.sketch.lines {
+            let other = if &line.to == id {
+                &line.from
+            } else if &line.from == id {
+                &line.to
+            } else {
+                continue;
+            };
+            if let (Some(at), Some(far)) = (self.point(id), self.point(other))
+                && let Some(out) = unit(sub(at, far))
+            {
+                ends.push((line.id.clone(), out, EndOf::Line));
+            }
+        }
+        for arc in &self.sketch.arcs {
+            // Counter-clockwise, an arc runs on past its end a quarter turn left of the
+            // radius there, and back past its start a quarter turn right.
+            let sign = if &arc.end == id {
+                1.0
+            } else if &arc.start == id {
+                -1.0
+            } else {
+                continue;
+            };
+            if let (Some(at), Some(centre)) = (self.point(id), self.point(&arc.center))
+                && let Some(radial) = unit(sub(at, centre))
+            {
+                ends.push((arc.id.clone(), scale(left(radial), sign), EndOf::Arc));
+            }
+        }
+        ends
+    }
+}
+
+/// What kind of curve ends at a point ([`View::ends_at`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EndOf {
+    Line,
+    Arc,
+}
+
+/// Where a click puts a point, and what it leaves there.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Target {
+    /// A point the sketch holds, shared (D2): structure, never a relation (#278's F).
+    Shared(ElementId),
+    /// The origin: a new point, level with it and above it (#278's A).
+    Origin,
+    /// A line's middle: a new point and `midpoint`.
+    Midpoint(ElementId),
+    /// A curve or an axis: a new point and `on`.
+    On(Reference),
+    /// Where two curves cross: a new point and two `on`s.
+    Crossing(Reference, Reference),
+    /// Nothing: a new point.
+    Free,
+}
+
+/// A point a click places: where, on what, and the points it lines up with.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Placed {
+    pub(super) at: Xy,
+    pub(super) target: Target,
+    /// A point it's level with, the relation the pointer shows (`horizontal_points`).
+    pub(super) level_with: Option<ElementId>,
+    /// A point it's above or below, the relation the pointer shows (`vertical_points`).
+    pub(super) above: Option<ElementId>,
+    /// The dotted lines from it to what it lines up with.
+    pub(super) guides: Vec<[Xy; 2]>,
+}
+
+impl Placed {
+    fn new(at: Xy, target: Target) -> Self {
+        Placed {
+            at,
+            target,
+            level_with: None,
+            above: None,
+            guides: Vec::new(),
+        }
+    }
+
+    /// The point it shares, if it shares one.
+    pub(super) fn shared(&self) -> Option<&ElementId> {
+        match &self.target {
+            Target::Shared(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The relations a new point placed so keeps, `point` being its ID.
+    pub(super) fn relations(&self, point: &ElementId) -> Vec<Form> {
+        let p = || Reference::Element(point.clone());
+        let mut forms = match &self.target {
+            Target::Shared(_) | Target::Free => Vec::new(),
+            Target::Origin => vec![
+                Form::HorizontalPoints {
+                    a: p(),
+                    b: Reference::Origin,
+                },
+                Form::VerticalPoints {
+                    a: p(),
+                    b: Reference::Origin,
+                },
+            ],
+            Target::Midpoint(line) => vec![Form::Midpoint {
+                point: p(),
+                line: Reference::Element(line.clone()),
+            }],
+            Target::On(curve) => vec![Form::On {
+                point: p(),
+                curve: curve.clone(),
+            }],
+            Target::Crossing(a, b) => vec![
+                Form::On {
+                    point: p(),
+                    curve: a.clone(),
+                },
+                Form::On {
+                    point: p(),
+                    curve: b.clone(),
+                },
+            ],
+        };
+        if let Some(q) = &self.level_with {
+            forms.push(Form::HorizontalPoints {
+                a: p(),
+                b: Reference::Element(q.clone()),
+            });
+        }
+        if let Some(q) = &self.above {
+            forms.push(Form::VerticalPoints {
+                a: p(),
+                b: Reference::Element(q.clone()),
+            });
+        }
+        forms
+    }
+
+    /// What the pointer shows of it, drawn at it.
+    pub(super) fn shown(&self) -> Vec<Shown> {
+        let at = self.at;
+        let mut shown: Vec<Relation> = match &self.target {
+            Target::Free => Vec::new(),
+            Target::Shared(id) => vec![Relation::Shared(id.clone())],
+            Target::Origin => vec![Relation::Origin],
+            Target::Midpoint(line) => vec![Relation::Midpoint(line.clone())],
+            Target::On(curve) => vec![Relation::On(curve.clone())],
+            Target::Crossing(a, b) => vec![Relation::On(a.clone()), Relation::On(b.clone())],
+        };
+        shown.extend(
+            self.level_with
+                .iter()
+                .cloned()
+                .map(Relation::HorizontalPoints),
+        );
+        shown.extend(self.above.iter().cloned().map(Relation::VerticalPoints));
+        shown
+            .into_iter()
+            .map(|relation| Shown { at, relation })
+            .collect()
+    }
+}
+
+/// What lining up with another point does to a point placed on nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Align {
+    /// Moved onto both lines, and both relations the pointer's (#278's E).
+    Relations,
+    /// Moved onto both lines, a guide only: the entity's own relations show instead (a
+    /// rectangle's sides, the 2025 help's horizontal line).
+    Guides,
+    /// Moved onto the vertical line through the point (x) only, a guide only: a horizontal
+    /// line, which keeps its relation.
+    GuideX,
+    /// Moved onto the horizontal line (y) only, a guide only: a vertical line.
+    GuideY,
+    /// Not lined up.
+    None,
+}
+
+/// The pointer over a sketch: what a click there would place.
+pub(super) struct Pointer<'v, 's> {
+    pub(super) view: &'v View<'s>,
+    pub(super) tolerance: f64,
+    /// Whether the pointer infers relations: *Automatic relations* on and Ctrl not held.
+    pub(super) infer: bool,
+}
+
+/// A curve near the pointer: the reference, its shape, where the pointer's nearest to it, and
+/// how far that is.
+struct Near {
+    reference: Reference,
+    geo: Geo,
+    /// An axis, infinite.
+    infinite: bool,
+    foot: Xy,
+    off: f64,
+}
+
+/// The nearest of `items` by distance, then by key: none if there are none.
+fn nearest<T>(items: impl Iterator<Item = (f64, String, T)>) -> Option<T> {
+    items
+        .min_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
+        .map(|(_, _, t)| t)
+}
+
+impl Pointer<'_, '_> {
+    /// The point of the sketch nearest `at`, within the tolerance.
+    fn point_near(&self, at: Xy) -> Option<(f64, ElementId)> {
+        nearest(self.view.points.iter().filter_map(|(id, &p)| {
+            let d = distance(p, at);
+            (d <= self.tolerance).then(|| (d, id.as_str().to_owned(), (d, id.clone())))
+        }))
+    }
+
+    /// Where a click at `at` puts a point: a point of the sketch it shares, whatever the
+    /// pointer infers; then, if it infers, the origin, a line's middle, two curves' crossing,
+    /// or a curve; or nothing.
+    pub(super) fn snap(&self, at: Xy) -> Placed {
+        let point = self.point_near(at);
+        if !self.infer {
+            return match point {
+                Some((_, id)) => self.shared(id, at),
+                None => Placed::new(at, Target::Free),
+            };
+        }
+        // The origin wins only over a point farther away: a point at the origin is shared,
+        // not placed there again.
+        let origin = distance(at, [0.0, 0.0]);
+        match point {
+            Some((d, _)) if origin < d => return Placed::new([0.0, 0.0], Target::Origin),
+            Some((_, id)) => return self.shared(id, at),
+            None if origin <= self.tolerance => {
+                return Placed::new([0.0, 0.0], Target::Origin);
+            }
+            None => {}
+        }
+        if let Some((mid, line)) = self.midpoint_near(at) {
+            return Placed::new(mid, Target::Midpoint(line));
+        }
+        let near = self.curves_near(at);
+        if let Some((cross, a, b)) = self.crossing_near(at, &near) {
+            return Placed::new(cross, Target::Crossing(a, b));
+        }
+        if let Some(curve) = nearest(
+            near.iter()
+                .map(|n| (n.off, n.reference.as_str().to_owned(), n)),
+        ) {
+            return Placed::new(curve.foot, Target::On(curve.reference.clone()));
+        }
+        Placed::new(at, Target::Free)
+    }
+
+    /// Only a point of the sketch the click shares, else nothing: where a tool fixes the
+    /// point's place itself (a square's corner, a tangent arc's start).
+    pub(super) fn shared_only(&self, at: Xy) -> Placed {
+        match self.point_near(at) {
+            Some((_, id)) => self.shared(id, at),
+            None => Placed::new(at, Target::Free),
+        }
+    }
+
+    fn shared(&self, id: ElementId, at: Xy) -> Placed {
+        let where_ = self.view.point(&id).unwrap_or(at);
+        Placed::new(where_, Target::Shared(id))
+    }
+
+    /// The middle of a line nearest `at`, within the tolerance.
+    fn midpoint_near(&self, at: Xy) -> Option<(Xy, ElementId)> {
+        nearest(self.view.sketch.lines.iter().filter_map(|line| {
+            let (a, b) = (self.view.point(&line.from)?, self.view.point(&line.to)?);
+            let mid = scale(add(a, b), 0.5);
+            let d = distance(mid, at);
+            (d <= self.tolerance).then(|| (d, line.id.as_str().to_owned(), (mid, line.id.clone())))
+        }))
+    }
+
+    /// The curves within the tolerance of `at`: lines as drawn, circles, arcs where they're
+    /// drawn, and the axes, infinite.
+    fn curves_near(&self, at: Xy) -> Vec<Near> {
+        let mut near = Vec::new();
+        let tolerance = self.tolerance;
+        for (reference, foot, from, to) in [
+            (Reference::XAxis, [at[0], 0.0], [0.0, 0.0], [1.0, 0.0]),
+            (Reference::YAxis, [0.0, at[1]], [0.0, 0.0], [0.0, 1.0]),
+        ] {
+            let off = distance(foot, at);
+            if off <= tolerance {
+                near.push(Near {
+                    reference,
+                    geo: Geo::Line { from, to },
+                    infinite: true,
+                    foot,
+                    off,
+                });
+            }
+        }
+        let sketch = &*self.view.sketch;
+        let ids = sketch
+            .lines
+            .iter()
+            .map(|l| &l.id)
+            .chain(sketch.circles.iter().map(|c| &c.id))
+            .chain(sketch.arcs.iter().map(|a| &a.id));
+        for id in ids {
+            let Some(geo) = Geo::of(sketch, id) else {
+                continue;
+            };
+            let (foot, off) = match &geo {
+                Geo::Line { from, to } => to_segment(*from, *to, at),
+                Geo::Circle { .. } | Geo::Arc { .. } => {
+                    let foot = geo.project(at);
+                    if !geo.spans(foot) {
+                        continue;
+                    }
+                    (foot, distance(foot, at))
+                }
+            };
+            if off <= tolerance && off.is_finite() {
+                near.push(Near {
+                    reference: Reference::Element(id.clone()),
+                    geo,
+                    infinite: false,
+                    foot,
+                    off,
+                });
+            }
+        }
+        near
+    }
+
+    /// Where two of the curves `near` cross, nearest `at` and within the tolerance of it, on
+    /// both as drawn.
+    fn crossing_near(&self, at: Xy, near: &[Near]) -> Option<(Xy, Reference, Reference)> {
+        let mut found = Vec::new();
+        for (i, a) in near.iter().enumerate() {
+            for b in near.iter().skip(i + 1) {
+                for x in crossings(&a.geo, &b.geo) {
+                    let d = distance(x, at);
+                    let on = |n: &Near| n.infinite || n.geo.spans(x);
+                    if d <= self.tolerance && on(a) && on(b) {
+                        let key = format!("{} {}", a.reference, b.reference);
+                        found.push((d, key, (x, a.reference.clone(), b.reference.clone())));
+                    }
+                }
+            }
+        }
+        nearest(found.into_iter())
+    }
+
+    /// `placed`, placed on nothing, lined up with the points of the sketch within the
+    /// tolerance of its x (one above or below it) and its y (one level with it), `align`
+    /// saying how; the points `besides` (the entity's own) left out.
+    pub(super) fn align(&self, placed: &mut Placed, align: Align, besides: &[&ElementId]) {
+        if !self.infer || placed.target != Target::Free || align == Align::None {
+            return;
+        }
+        let at = placed.at;
+        let candidates = || {
+            self.view
+                .points
+                .iter()
+                .filter(|(id, _)| !besides.contains(id))
+        };
+        let (want_x, want_y) = match align {
+            Align::GuideX => (true, false),
+            Align::GuideY => (false, true),
+            _ => (true, true),
+        };
+        let above = want_x
+            .then(|| {
+                nearest(candidates().filter_map(|(id, &p)| {
+                    let d = (p[0] - at[0]).abs();
+                    (d <= self.tolerance).then(|| (d, id.as_str().to_owned(), (id.clone(), p)))
+                }))
+            })
+            .flatten();
+        let level = want_y
+            .then(|| {
+                nearest(candidates().filter_map(|(id, &p)| {
+                    let d = (p[1] - at[1]).abs();
+                    (d <= self.tolerance).then(|| (d, id.as_str().to_owned(), (id.clone(), p)))
+                }))
+            })
+            .flatten();
+        if let Some((_, p)) = &above {
+            placed.at[0] = p[0];
+        }
+        if let Some((_, p)) = &level {
+            placed.at[1] = p[1];
+        }
+        for (_, p) in above.iter().chain(level.iter()) {
+            placed.guides.push([*p, placed.at]);
+        }
+        if align == Align::Relations {
+            placed.above = above.map(|(id, _)| id);
+            placed.level_with = level.map(|(id, _)| id);
+        }
+    }
+}
+
+/// A line's own direction the pointer shows, from its start.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Along {
+    Horizontal,
+    Vertical,
+    /// Leaving the arc that ends at its start smoothly: `tangent_at`, `same`.
+    Tangent(ElementId),
+    Perpendicular(ElementId),
+    Parallel(ElementId),
+}
+
+impl Along {
+    /// The relation, of the line `line` from the point `start`.
+    pub(super) fn form(&self, line: &ElementId, start: &ElementId) -> Form {
+        let l = || Reference::Element(line.clone());
+        let r = |id: &ElementId| Reference::Element(id.clone());
+        match self {
+            Along::Horizontal => Form::Horizontal { line: l() },
+            Along::Vertical => Form::Vertical { line: l() },
+            Along::Tangent(arc) => Form::TangentAt {
+                a: r(arc),
+                b: l(),
+                at: r(start),
+                direction: Direction::Same,
+            },
+            Along::Perpendicular(other) => Form::Perpendicular {
+                a: r(other),
+                b: l(),
+            },
+            Along::Parallel(other) => Form::Parallel {
+                a: r(other),
+                b: l(),
+            },
+        }
+    }
+
+    pub(super) fn relation(&self) -> Relation {
+        match self {
+            Along::Horizontal => Relation::Horizontal,
+            Along::Vertical => Relation::Vertical,
+            Along::Tangent(arc) => Relation::Tangent(arc.clone()),
+            Along::Perpendicular(other) => Relation::Perpendicular(other.clone()),
+            Along::Parallel(other) => Relation::Parallel(other.clone()),
+        }
+    }
+}
+
+/// The direction a line from `start` (the point `start_id`, if the sketch holds it) to `end`
+/// shows, and the exact direction that holds it, within [`ANGLE_TOLERANCE_DEGREES`]:
+/// horizontal, then vertical, then tangent to an arc ending at its start, then perpendicular
+/// to a line ending there, then parallel to one; the nearest of each kind, ties by ID.
+pub(super) fn along(
+    view: &View<'_>,
+    start: Xy,
+    start_id: Option<&ElementId>,
+    end: Xy,
+) -> Option<(Along, Xy)> {
+    let d = sub(end, start);
+    unit(d)?;
+    let tolerance = angle_tolerance();
+    let sign = |v: f64| if v < 0.0 { -1.0 } else { 1.0 };
+    if libm::atan2(d[1].abs(), d[0].abs()) <= tolerance {
+        return Some((Along::Horizontal, [sign(d[0]), 0.0]));
+    }
+    if libm::atan2(d[0].abs(), d[1].abs()) <= tolerance {
+        return Some((Along::Vertical, [0.0, sign(d[1])]));
+    }
+    let ends = start_id.map(|id| view.ends_at(id)).unwrap_or_default();
+    let tangent = nearest(
+        ends.iter()
+            .filter(|(_, _, of)| *of == EndOf::Arc)
+            .filter_map(|(arc, out, _)| {
+                let off = angle_between(d, *out);
+                (off <= tolerance).then(|| {
+                    (
+                        off,
+                        arc.as_str().to_owned(),
+                        (Along::Tangent(arc.clone()), *out),
+                    )
+                })
+            }),
+    );
+    if tangent.is_some() {
+        return tangent;
+    }
+    let lines: Vec<(&ElementId, Xy)> = ends
+        .iter()
+        .filter(|(_, _, of)| *of == EndOf::Line)
+        .map(|(id, out, _)| (id, *out))
+        .collect();
+    let toward = |dir: Xy| {
+        if dot(dir, d) < 0.0 {
+            scale(dir, -1.0)
+        } else {
+            dir
+        }
+    };
+    let perpendicular = nearest(lines.iter().filter_map(|(id, out)| {
+        let off = (angle_between(d, *out) - std::f64::consts::FRAC_PI_2).abs();
+        (off <= tolerance).then(|| {
+            (
+                off,
+                id.as_str().to_owned(),
+                (Along::Perpendicular((*id).clone()), toward(left(*out))),
+            )
+        })
+    }));
+    if perpendicular.is_some() {
+        return perpendicular;
+    }
+    nearest(lines.iter().filter_map(|(id, out)| {
+        let a = angle_between(d, *out);
+        let off = a.min(std::f64::consts::PI - a);
+        (off <= tolerance).then(|| {
+            (
+                off,
+                id.as_str().to_owned(),
+                (Along::Parallel((*id).clone()), toward(*out)),
+            )
+        })
+    }))
+}
+
+/// `end` moved onto the ray from `start` along `direction` (a unit vector), as far along it
+/// as it was.
+pub(super) fn onto(start: Xy, direction: Xy, end: Xy) -> Xy {
+    add(start, scale(direction, dot(sub(end, start), direction)))
+}
+
+/// Whether two places are one to the kernel: at most [`LENGTH_TOLERANCE`] apart.
+pub(super) fn one_place(a: Xy, b: Xy) -> bool {
+    distance(a, b) <= LENGTH_TOLERANCE
+}
+
+/// Which way an arc turns from `from`, leaving along `direction`, to reach `to`: its
+/// centre, and whether it turns counter-clockwise. None where `to` lies straight ahead or
+/// behind (no arc), or the centre isn't finite.
+pub(super) fn tangent_arc(from: Xy, direction: Xy, to: Xy) -> Option<(Xy, bool)> {
+    let d = sub(to, from);
+    let n = left(direction);
+    let across = dot(d, n);
+    if across == 0.0 {
+        return None;
+    }
+    let s = dot(d, d) / (2.0 * across);
+    let centre = add(from, scale(n, s));
+    (centre[0].is_finite() && centre[1].is_finite()).then_some((centre, s > 0.0))
+}
+
+/// Which way the arc from `start` through `middle` to `end` turns: counter-clockwise from
+/// `start` to `end` when `middle` is to the right of the chord from `start` to `end`.
+pub(super) fn counter_clockwise(start: Xy, middle: Xy, end: Xy) -> bool {
+    cross(sub(end, start), sub(middle, start)) < 0.0
+}
