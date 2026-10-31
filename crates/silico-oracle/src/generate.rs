@@ -763,7 +763,7 @@ impl Drawing {
             let (a, b) = (self.at(from), self.at(to));
             let length = libm::hypot(b[0] - a[0], b[1] - a[1]);
             // Far enough either way to flip the line, or take it to nothing, now and then, as
-            // the note's refusals need (:330, :337). `+ 0.0`: a thousandth rounded from just
+            // the note's refusals need (#se-refuse-a-result-of-size-1e, #se-a-drag-that-leaves-the-line). `+ 0.0`: a thousandth rounded from just
             // below 0 is -0, which an increment refuses as written.
             let by = if zero {
                 0.0
@@ -780,7 +780,7 @@ impl Drawing {
         let sweep =
             silico_protocol::arc_from_points(self.at(center), self.at(start), self.at(stop))
                 .map_or(90.0, |[_, from, to]| (to - from).to_degrees());
-        // Far enough to invert the arc or turn it a whole turn now and then (:330, :338).
+        // Far enough to invert the arc or turn it a whole turn now and then (#se-refuse-a-result-of-size-1e, #se-an-arc-swept-a-whole-turn).
         let by = if zero {
             0.0
         } else {

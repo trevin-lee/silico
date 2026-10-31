@@ -858,7 +858,7 @@ fn freecads_merge_refuses_points_already_joined_and_a_worse_solve_and_nothing_el
         });
     }
     assert_eq!(merge_refusal(&on_an_edge, &clean), None);
-    // Joined already by a coincidence of their places: refused (:64).
+    // Joined already by a coincidence of their places: refused (#se-points-already-coincident-even-through-other).
     let mut joined = p.clone();
     let Plan::Run { job, .. } = &mut joined.plan else {
         unreachable!()
@@ -871,12 +871,13 @@ fn freecads_merge_refuses_points_already_joined_and_a_worse_solve_and_nothing_el
         name: None,
     });
     assert!(
-        merge_refusal(&joined, &clean).is_some_and(|r| r.contains(":64")),
+        merge_refusal(&joined, &clean)
+            .is_some_and(|r| r.contains("#se-points-already-coincident-even-through-other")),
         "{:?}",
         merge_refusal(&joined, &clean)
     );
     // A solve worse than the one before: its code, or a constraint newly redundant,
-    // conflicting, or malformed, each alone (:66); the same lists as before aren't worse.
+    // conflicting, or malformed, each alone (#se-any-result-whose-solve-is-worse); the same lists as before aren't worse.
     let worse = |before: Diagnosis, after: Diagnosis| {
         let fc = FreecadEdited {
             before,
@@ -896,7 +897,10 @@ fn freecads_merge_refuses_points_already_joined_and_a_worse_solve_and_nothing_el
         diagnosis(0, &[], &[], &[2]),
     ] {
         let (refused, rolled) = worse(clean_solve(), after.clone());
-        assert!(refused.is_some_and(|r| r.contains(":66")), "{after:?}");
+        assert!(
+            refused.is_some_and(|r| r.contains("#se-any-result-whose-solve-is-worse")),
+            "{after:?}"
+        );
         assert!(rolled, "{after:?}");
     }
     let same = diagnosis(0, &[2], &[3], &[4]);
@@ -1433,4 +1437,99 @@ fn a_merges_placed_geometry_is_freecads_with_the_merged_points_at_the_kept_ones_
         }
     );
     assert_eq!(placed(&away(-3.0), &["p0000007", "p0000004"]).1, None);
+}
+
+/// The anchors `text` cites: each word that starts with the anchors' prefix, `se-`, where it
+/// isn't the tail of another word, read to its end.
+fn anchors_cited(text: &str) -> Vec<String> {
+    let prefix = concat!("s", "e-");
+    let bytes = text.as_bytes();
+    let word = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(at) = text[from..].find(prefix) {
+        let start = from + at;
+        from = start + prefix.len();
+        if start > 0 && (word(bytes[start - 1]) || bytes[start - 1].is_ascii_alphabetic()) {
+            continue;
+        }
+        let end = (start..bytes.len())
+            .find(|&i| !word(bytes[i]))
+            .unwrap_or(bytes.len());
+        let anchor = text[start..end].trim_end_matches('-');
+        if anchor.len() > prefix.len() {
+            out.push(anchor.to_owned());
+        }
+    }
+    out
+}
+
+#[test]
+fn every_anchor_the_harness_cites_is_in_the_note_exactly_once() {
+    // Each anchor the note defines, and how often.
+    let open = concat!("<a id=\"", "s", "e-");
+    let mut defined: BTreeMap<String, usize> = BTreeMap::new();
+    let mut from = 0;
+    while let Some(at) = NOTE_TEXT[from..].find(open) {
+        let start = from + at + "<a id=\"".len();
+        let end = start + NOTE_TEXT[start..].find('"').unwrap();
+        *defined.entry(NOTE_TEXT[start..end].to_owned()).or_default() += 1;
+        from = end;
+    }
+    let twice: Vec<_> = defined.iter().filter(|(_, n)| **n != 1).collect();
+    assert!(
+        twice.is_empty(),
+        "anchors defined more than once: {twice:?}"
+    );
+    // Every anchor cited anywhere the harness, its tests, FreeCAD's side, the generator, the
+    // case files, or the note cite one.
+    let sources = [
+        ("sketch_edit.rs", include_str!("sketch_edit.rs")),
+        ("sketch_edit_tests.rs", include_str!("sketch_edit_tests.rs")),
+        ("oracle.py", include_str!("oracle.py")),
+        ("generate.rs", include_str!("generate.rs")),
+        (
+            "tests/sketch_edit_oracle.rs",
+            include_str!("../tests/sketch_edit_oracle.rs"),
+        ),
+        (
+            "cases.json",
+            include_str!("../../../tests/oracle/sketch-edits/cases.json"),
+        ),
+        (
+            "sketches.silico",
+            include_str!("../../../tests/oracle/sketch-edits/sketches.silico"),
+        ),
+        ("sketch-edit.md", NOTE_TEXT),
+    ];
+    let mut cited = 0;
+    for (name, text) in sources {
+        for anchor in anchors_cited(text) {
+            cited += 1;
+            assert!(
+                defined.contains_key(&anchor),
+                "{name} cites #{anchor}, which the note hasn't"
+            );
+        }
+    }
+    // Hundreds are cited; the scan isn't vacuous.
+    assert!(
+        cited > 300 && defined.len() > 80,
+        "{cited} cited, {} defined",
+        defined.len()
+    );
+    // Every rule's anchors, and each resolves to a line.
+    for anchor in defined.keys() {
+        assert!(note_line(anchor).is_some(), "{anchor}");
+    }
+}
+
+#[test]
+fn a_cited_anchor_is_read_whole_and_only_where_it_starts_a_word() {
+    let p = concat!("s", "e-");
+    let text = format!("({p}a-b), {p}c-, x{p}d, ({p}e9)!, use-{p}f");
+    assert_eq!(
+        anchors_cited(&text),
+        [format!("{p}a-b"), format!("{p}c"), format!("{p}e9")]
+    );
 }
