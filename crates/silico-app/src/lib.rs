@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod dialog;
+pub mod export;
 pub mod missing;
 mod panes;
 pub mod tab;
