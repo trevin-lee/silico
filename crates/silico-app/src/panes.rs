@@ -249,11 +249,19 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 }
             });
         }
+        if selected != tab.selected
+            && let Some(id) = &selected
+        {
+            // A sketch chosen here fills an open dialog's selection box (section 9).
+            tab.pick(id);
+        }
         tab.selected = selected;
     }
 
     /// The timeline (section 8, *The timeline*): the features in order, left to right, each
-    /// with its health's mark and its text; suppressed and unknown ones dimmed.
+    /// with its health's mark and its text; suppressed and unknown ones dimmed. A double-click
+    /// on one, or Edit Feature in its context menu, opens its dialog (section 9), if a
+    /// dialog edits its type.
     fn timeline(&mut self, ui: &mut Ui) {
         let Some(tab) = self.tab.as_deref_mut() else {
             return;
@@ -267,6 +275,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             return;
         };
         let mut selected = tab.selected.clone();
+        let mut edit = None;
         egui::ScrollArea::horizontal().show(ui, |ui| {
             ui.horizontal(|ui| {
                 for entry in entries {
@@ -275,9 +284,23 @@ impl<P: Clients + 'static> Panes<'_, P> {
                         _ => RichText::new(&entry.name),
                     };
                     let chosen = selected.as_ref() == Some(&entry.id);
-                    if ui.selectable_label(chosen, text).clicked() {
+                    let response = ui.selectable_label(chosen, text);
+                    if response.clicked() {
                         selected = Some(entry.id.clone());
                     }
+                    let editable = crate::dialog::Kind::of(entry.kind).is_some();
+                    if response.double_clicked() {
+                        edit = Some(entry.id.clone());
+                    }
+                    response.context_menu(|ui| {
+                        if ui
+                            .add_enabled(editable, egui::Button::new("Edit Feature"))
+                            .clicked()
+                        {
+                            edit = Some(entry.id.clone());
+                            ui.close();
+                        }
+                    });
                     let said = tab.said.get(entry.id.as_str());
                     mark(ui, entry.health, said.map(|said| said.message.as_str()));
                     ui.separator();
@@ -285,6 +308,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
             });
         });
         tab.selected = selected;
+        if let Some(id) = edit {
+            tab.edit_feature(self.sessions, &id);
+            *self.started = true;
+        }
     }
 
     /// The property panel: the feature selected (its name, editable, which is an edit of
@@ -388,18 +415,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
 
 /// A feature's name as the document reads a string (`set_field`'s value).
 fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxError> {
-    let mut quoted = String::with_capacity(name.len() + 2);
-    quoted.push('"');
-    for c in name.chars() {
-        match c {
-            '"' => quoted.push_str("\\\""),
-            '\\' => quoted.push_str("\\\\"),
-            c if u32::from(c) < 0x20 => quoted.push_str(&format!("\\u{:04x}", u32::from(c))),
-            c => quoted.push(c),
-        }
-    }
-    quoted.push('"');
-    silico_core::document::json::read(quoted.as_bytes())
+    silico_core::document::json::read(crate::dialog::quoted(name).as_bytes())
 }
 
 /// A browser row: its eye (the tab's visibility, never saved), its name (selectable if

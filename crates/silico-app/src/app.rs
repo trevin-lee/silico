@@ -14,6 +14,7 @@ use silico_core::command::{Opened, RebuildState, Running, RunningCommand, Sessio
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
 
+use crate::dialog::{Action, Kind};
 use crate::panes::{self, Pane, Panes};
 use crate::tab::{DiskChoice, Tab, said};
 use crate::theme;
@@ -134,11 +135,12 @@ impl<P: Clients + 'static> App<P> {
             self.waker_set = true;
         }
         self.poll();
-        let mut started = self.keys(ui);
+        let (mut started, dialog_key) = self.keys(ui);
         self.app_bar(ui, &mut started);
-        self.toolbar(ui);
+        self.toolbar(ui, &mut started);
         self.status_bar(ui, &mut started);
         self.disk_banner(ui, &mut started);
+        self.dialog_panel(ui, &mut started, dialog_key);
         egui::CentralPanel::default().show(ui, |ui| {
             let active = self.active_place();
             let App {
@@ -217,11 +219,12 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// Whether Save As is offered: a tab shown, and not closing (its edits go with it).
+    /// Whether Save As is offered: a tab shown, not closing (its edits go with it), and no
+    /// dialog open on it (its OK or Cancel ends its edits first, as for Save).
     fn save_as_offered(&self) -> bool {
         self.active_place()
             .and_then(|at| self.tabs.get(at))
-            .is_some_and(|tab| !tab.closing())
+            .is_some_and(|tab| !tab.closing() && !tab.in_dialog())
     }
 
     /// The place among the tabs of the one shown, if one is.
@@ -230,12 +233,15 @@ impl<P: Clients + 'static> App<P> {
         self.tabs.iter().position(|tab| tab.id == active)
     }
 
-    /// Ctrl+S saves, Ctrl+Shift+S asks where to save as, Ctrl+W closes, Ctrl+Z and Ctrl+Y
-    /// undo and redo (docs/ux/solidworks.md, §6), and Esc stops what's running (§5,
-    /// *Rebuild*): whether a command was started.
-    fn keys(&mut self, ui: &mut Ui) -> bool {
+    /// Ctrl+S saves and Ctrl+Shift+S asks where to save as (neither while a dialog is
+    /// open), Ctrl+W closes, Ctrl+Z and Ctrl+Y undo and redo (docs/ux/solidworks.md, §6),
+    /// and Esc stops what's running (§5, *Rebuild*). With a dialog open, Enter and Esc are
+    /// the dialog's, taken here and given to it once its inputs have taken this frame's
+    /// typing ([`dialog_panel`](Self::dialog_panel)). Whether a command was started, and
+    /// the dialog's key.
+    fn keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         if self.asking.is_some() {
-            return false;
+            return (false, None);
         }
         // Before Ctrl+S, which a Ctrl+Shift+S also is, its Shift aside.
         let save_as = ui.input_mut(|input| {
@@ -246,8 +252,14 @@ impl<P: Clients + 'static> App<P> {
         });
         if save_as && self.save_as_offered() {
             self.asking = self.active.map(Asking::SaveAs);
-            return false;
+            return (false, None);
         }
+        let in_dialog = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .is_some_and(Tab::in_dialog);
+        let enter =
+            in_dialog && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
         let pressed = |key| {
             ui.input_mut(|input| {
                 input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))
@@ -261,10 +273,10 @@ impl<P: Clients + 'static> App<P> {
         );
         let stop = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
-            return false;
+            return (false, None);
         };
         let sessions = &self.sessions;
-        if save && tab.unsaved() {
+        if save && tab.unsaved() && !tab.in_dialog() {
             tab.save(sessions, false);
         }
         if undo && tab.undoable() {
@@ -273,13 +285,79 @@ impl<P: Clients + 'static> App<P> {
         if redo && tab.redoable() {
             tab.step(sessions, false);
         }
-        if stop {
+        let dialog_key = match (enter, stop && in_dialog) {
+            (true, _) => Some(Key::Enter),
+            (false, true) => Some(Key::Escape),
+            (false, false) => None,
+        };
+        if stop && !in_dialog {
             tab.stop(sessions);
         }
         if close && let Some(id) = self.active {
             self.close(id);
         }
-        save || undo || redo || stop || close
+        (save || undo || redo || stop || close || enter, dialog_key)
+    }
+
+    /// The open dialog, docked at the right (open item 27): drawn, what's changed in it sent,
+    /// and its OK or Cancel taken, or `key`: Enter is OK, if OK is on; Esc goes to the first
+    /// of these there is (section 3), a dialog's preview rebuilding, which it stops, the
+    /// dialog left open, or the dialog, which it cancels (one still being read too).
+    fn dialog_panel(&mut self, ui: &mut Ui, started: &mut bool, key: Option<Key>) {
+        let sessions = &self.sessions;
+        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
+            return;
+        };
+        if tab.dialog.is_none() {
+            if key == Some(Key::Escape) && tab.in_dialog() {
+                tab.close_dialog(sessions, false);
+            }
+            return;
+        }
+        let refused: Vec<&'static str> = tab
+            .dialog
+            .iter()
+            .flat_map(|dialog| dialog.inputs.iter().map(|input| input.part.field()))
+            .filter(|field| tab.field_refused(field))
+            .collect();
+        let said = tab.dialog_said();
+        let Some(mut dialog) = tab.dialog.take() else {
+            return;
+        };
+        let enabled = !tab.closing();
+        let mut action = Action::None;
+        egui::Panel::right("dialog")
+            .resizable(false)
+            .default_size(280.0)
+            .show(ui, |ui| {
+                let title = dialog.kind.title();
+                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                    node.set_role(egui::accesskit::Role::Dialog);
+                    node.set_label(title);
+                });
+                let rows = &tab.browser.sketches;
+                let named = |id: &silico_core::document::FeatureId| {
+                    rows.iter()
+                        .find(|row| &row.id == id)
+                        .map(|row| row.name.clone())
+                };
+                let refused = |field: &str| refused.contains(&field);
+                action = dialog.ui(ui, &said, &named, &refused, enabled);
+            });
+        tab.dialog = Some(dialog);
+        *started |= tab.dialog_changed(sessions);
+        match key {
+            Some(Key::Enter) if tab.can_ok() => action = Action::Ok,
+            Some(Key::Escape) if tab.preview_rebuilding() => tab.stop_preview(),
+            Some(Key::Escape) => action = Action::Cancel,
+            _ => {}
+        }
+        match action {
+            Action::None => {}
+            Action::Ok => tab.close_dialog(sessions, true),
+            Action::Cancel => tab.close_dialog(sessions, false),
+        }
+        *started |= action != Action::None;
     }
 
     /// Close the tab of session `id`: asking first if it holds edits (decision 1).
@@ -351,7 +429,10 @@ impl<P: Clients + 'static> App<P> {
                         }
                     });
                     let tab = self.active_place().and_then(|at| self.tabs.get_mut(at));
-                    let unsaved = tab.as_ref().is_some_and(|tab| tab.unsaved());
+                    // Off while a dialog is open: its OK or Cancel ends its edits first.
+                    let unsaved = tab
+                        .as_ref()
+                        .is_some_and(|tab| tab.unsaved() && !tab.in_dialog());
                     if ui.add_enabled(unsaved, egui::Button::new("Save")).clicked()
                         && let Some(tab) = tab
                     {
@@ -404,9 +485,14 @@ impl<P: Clients + 'static> App<P> {
             });
     }
 
-    /// The toolbar (section 8): the Design workspace's SOLID tab, its panels named; their
-    /// tools come with the feature dialogs (M5.8).
-    fn toolbar(&mut self, ui: &mut Ui) {
+    /// The toolbar (section 8): the Design workspace's SOLID tab, its panels named, and
+    /// CREATE's tools, each opening its feature's dialog (M5.8): the primitives, and the
+    /// features that sweep a sketch's profile (those that cut, only with a body to cut).
+    fn toolbar(&mut self, ui: &mut Ui, started: &mut bool) {
+        let sessions = &self.sessions;
+        let mut tab = self
+            .active
+            .and_then(|active| self.tabs.iter_mut().find(|tab| tab.id == active));
         egui::Panel::top("toolbar")
             .exact_size(theme::TITLE_BAR_HEIGHT * 2.0)
             .show(ui, |ui| {
@@ -414,7 +500,28 @@ impl<P: Clients + 'static> App<P> {
                     ui.label(RichText::new("DESIGN").strong());
                     ui.separator();
                     ui.label(RichText::new("SOLID").strong());
-                    for panel in ["CREATE", "MODIFY", "INSPECT", "SELECT"] {
+                    ui.separator();
+                    ui.label(RichText::new("CREATE").small());
+                    ui.scope_builder(egui::UiBuilder::new().id_salt("create"), |ui| {
+                        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                            node.set_role(egui::accesskit::Role::Toolbar);
+                            node.set_label("CREATE");
+                        });
+                        ui.horizontal(|ui| {
+                            for kind in Kind::ALL {
+                                let enabled = tab.as_ref().is_some_and(|tab| tab.can_open(kind));
+                                if ui
+                                    .add_enabled(enabled, egui::Button::new(kind.title()))
+                                    .clicked()
+                                    && let Some(tab) = tab.as_mut()
+                                {
+                                    tab.open_dialog(sessions, kind);
+                                    *started = true;
+                                }
+                            }
+                        });
+                    });
+                    for panel in ["MODIFY", "INSPECT", "SELECT"] {
                         ui.separator();
                         ui.label(RichText::new(panel).small());
                     }
