@@ -141,11 +141,11 @@ pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
     Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, DragBegun,
-    DragEnded, DragFrame, DragGrab, DragOpen, FieldSet, FrameEnd, ModelChoice, ModelRead, Moved,
-    NewMembers, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
+    DragEnded, DragFrame, DragGrab, DragOpen, ExtendBy, FieldSet, FrameEnd, ModelChoice, ModelRead,
+    Moved, NewMembers, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
     RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, SketchCut, SketchEdited, Status, Stepped, Stopper, Suppressed,
-    TextAnswer, TimelineAnswer, Transaction,
+    SessionId, SessionInfo, SketchCut, SketchEdited, SketchJoined, Status, Stepped, Stopper,
+    Suppressed, TextAnswer, TimelineAnswer, Transaction,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 use waking::Waker;

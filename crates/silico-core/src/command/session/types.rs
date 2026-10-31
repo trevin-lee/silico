@@ -18,7 +18,7 @@ use super::{Cancellable, Gated, Problems, ReadCommand, RunningCommand};
 use crate::document;
 use crate::document::chain::Rewired;
 use crate::document::json::{Node, Plain};
-use crate::document::{ElementId, Feature, FeatureId};
+use crate::document::{Angle, Coordinate, ElementId, Feature, FeatureId, Length};
 use crate::recompute::{Model, StepCount};
 use crate::timeline::{Entry, Excepted, Timeline, timeline};
 use crate::warnings::Warnings;
@@ -932,6 +932,18 @@ pub struct SketchEdited {
     pub commit: Option<Committed>,
 }
 
+/// How far a `sketch_extend` takes its curve's end, or to where (docs/design/m5.0-app.md,
+/// section 7, `sketch_extend`): a line's by a length along it; an arc's by an angle around
+/// its circle, in degrees; to a point on the curve's carrier, put there exactly; or to the
+/// next curve it meets past the end, which the core finds (`extend::next_crossing`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtendBy {
+    Length(Length),
+    Angle(Angle),
+    Point([Coordinate; 2]),
+    NextCurve,
+}
+
 /// What a drag grabs (docs/design/m5.0-app.md, `drag_begin`): a sketch's point, by its ID;
 /// or a curve's edge, by the curve's ID, with where the press on it landed, in the sketch's
 /// coordinates.
@@ -1019,6 +1031,22 @@ pub struct DragEnded {
 pub struct SketchCut {
     pub sketch: FeatureId,
     pub pieces: Vec<ElementId>,
+    pub added: Vec<ElementId>,
+    pub modified: Vec<ElementId>,
+    pub removed: Vec<ElementId>,
+    pub references: Vec<FeatureId>,
+    pub changed: bool,
+    pub commit: Option<Committed>,
+}
+
+/// What a join did (`sketch_join`: docs/design/m5.0-app.md, section 7): as
+/// [`SketchEdited`] says it (the joined curve, the start-side piece's ID, in `modified`, the
+/// other piece in `removed`), with the features that store a name made from either piece's
+/// ID or its points' IDs, in timeline order: one made from the kept piece then finds the
+/// whole joined curve, one from the other piece or the shared point nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchJoined {
+    pub sketch: FeatureId,
     pub added: Vec<ElementId>,
     pub modified: Vec<ElementId>,
     pub removed: Vec<ElementId>,

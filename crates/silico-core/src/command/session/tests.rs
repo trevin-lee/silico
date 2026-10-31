@@ -4114,6 +4114,25 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             ))
         }),
     ));
+    queued.push((
+        SessionCommand::SketchExtend,
+        Box::new(move || {
+            erased(s.sketch_extend(
+                at,
+                Revision::OPENED,
+                id("k7f2qx3m"),
+                member("na000001"),
+                crate::extend::End::End,
+                crate::command::ExtendBy::NextCurve,
+            ))
+        }),
+    ));
+    queued.push((
+        SessionCommand::SketchJoin,
+        Box::new(move || {
+            erased(s.sketch_join(at, Revision::OPENED, id("k7f2qx3m"), member("pa000002")))
+        }),
+    ));
     // M5.2's, after the sketch edits.
     queued.push((
         SessionCommand::Undo,

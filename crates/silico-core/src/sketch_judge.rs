@@ -1,6 +1,6 @@
 //! Whether an edit that writes geometry leaves its sketch's solve worse than the solve
 //! before it, and so is refused (SD7, refined: a conflict the sketch had already isn't the
-//! edit's; sketch-edit decision 10), by one rule for split, trim, unjoin, and merge, as
+//! edit's; sketch-edit decision 10), by one rule for split, trim, unjoin, merge, extend, and join, as
 //! FreeCAD main's Coincident command rolls one back (`shouldRejectCoincidentSolve`,
 //! `cb2780e2fa`). The sketch-edit commands judge their edits by it
 //! (`command::session::sketch_edits`), and so does the sketch-edit oracle, which compares
@@ -31,6 +31,14 @@ pub const TRIM: WritingEdit = WritingEdit {
 };
 pub const UNJOIN: WritingEdit = WritingEdit {
     name: "unjoin",
+    lever: None,
+};
+pub const EXTEND: WritingEdit = WritingEdit {
+    name: "extend",
+    lever: None,
+};
+pub const JOIN: WritingEdit = WritingEdit {
+    name: "join",
     lever: None,
 };
 /// A drag's end writes the sketch as its whole solve from the cursor left it

@@ -177,7 +177,9 @@ fn effect(command: Command) -> Effect {
         | Command::SketchSplit
         | Command::SketchTrim
         | Command::SketchUnjoin
-        | Command::SketchMerge => Effect::Changes { destructive: true },
+        | Command::SketchMerge
+        | Command::SketchExtend
+        | Command::SketchJoin => Effect::Changes { destructive: true },
         // A drag is held by the server, and its moves change no file.
         Command::DragBegin | Command::DragMove => Effect::Changes { destructive: false },
         // `replace: true` writes over a file at `to`, or at `path`.
@@ -311,9 +313,17 @@ fn words(command: Command) -> (&'static str, String) {
             "Unjoin a sketch point",
             "Pull one curve off a point it shares with others: it gets a new point at the same place, keeping its own constraints; the others keep the point and its constraints. `check` then warns of the two points as `ends_not_joined` until something moves them. `ids` is the new point's ID, a list of one, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
         ),
+        Command::SketchExtend => (
+            "Extend a sketch curve",
+            "Extend one line's or arc's `start` or `end`: `by` a length (a line's, in mm) or an angle (an arc's, in degrees), positive to lengthen; to a point on its line or circle; or to the next curve it meets past the end, which the core finds. A line's end moves through the solver's drag, so its constraints win and curves sharing the end follow; the end is then put exactly where named. Nothing is added to hold it there: to join it to the curve it meets, merge the two points (`sketch_merge`). Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's, but a line's end moves only in a sketch whose constraints agree; in one that conflicts it's refused `over_constrained`, naming the conflict, as a drag is. Give the revision the edit was made against.",
+        ),
         Command::SketchMerge => (
             "Merge sketch points",
             "Make two or more points of a sketch one: the first named survives at its own coordinates, and the others' curves and constraints move to it. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): name first the point the constraints hold. `silico fmt --merge-touching` merges every `ends_not_joined` cluster so. Give the revision the edit was made against.",
+        ),
+        Command::SketchJoin => (
+            "Join a split's pieces",
+            "Join the two pieces a split left at a point into one curve again, split's inverse: two lines held on one line by a `tangent_at` (`same`) at the point, or two arcs about one centre (a split circle's two arcs make its circle again). Name the point they share. The piece that ends there keeps its ID and takes the other's far end (it's the one curve in `modified`, the other piece in `removed`); the other piece, the point, and the constraints naming the point go, and constraints on the other piece move to the kept one. Nothing is retyped: a split's distance of the outer ends stays a distance. `references` lists the features whose stored names either piece reached. Refused for a piece's length, midpoint, or equal with another line, which would then measure the whole line: remove it, or dimension the outer ends. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
         ),
         Command::Text => (
             "Document text",
@@ -391,7 +401,9 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::SketchSplit
         | Command::SketchTrim
         | Command::SketchUnjoin
-        | Command::SketchMerge => &[IN_A_TRANSACTION, READ_CURRENT],
+        | Command::SketchMerge
+        | Command::SketchExtend
+        | Command::SketchJoin => &[IN_A_TRANSACTION, READ_CURRENT],
         Command::Check
         | Command::MassProperties
         | Command::Render

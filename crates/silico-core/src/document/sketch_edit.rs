@@ -6,7 +6,8 @@
 //! command, M5.10, which this doesn't hold).
 //!
 //! Here: removing members (the note's §2, decision 7), pulling a shared point apart (§5,
-//! decision 9), and merging points (§6, decision 10). Splitting and trimming follow.
+//! decision 9), and merging points (§6, decision 10). Splitting, joining a split's pieces
+//! again, and trimming follow.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,9 +18,11 @@ use super::{PROBLEMS_LISTED, nearest_ids, with_candidates};
 use crate::{Error, ErrorCode};
 
 mod add;
+mod join;
 mod split;
 mod trim;
 pub use add::{Members, add};
+pub use join::{Joined, join};
 pub use split::{Split, split, split_with};
 pub(crate) use trim::{Geo, crossings, end_ids};
 pub use trim::{Trim, trim, trim_with};

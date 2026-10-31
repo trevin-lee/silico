@@ -22,7 +22,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use super::{Gated, NewMembers, Problems};
+use super::{ExtendBy, Gated, NewMembers, Problems};
 use crate::document::chain::{self, Rewired};
 use crate::document::json::{self, Member, Node, Plain, Value};
 use crate::document::suppression;
@@ -32,8 +32,11 @@ use crate::document::{
     ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Reference, Sketch,
     sketch_edit,
 };
+use crate::drag::DragStop;
+use crate::extend;
 use crate::naming::{Maker, Name};
 use crate::references::CANDIDATES;
+use crate::sketch::SketchSolver;
 use crate::{Error, ErrorCode};
 
 /// The state an accepted edit gives a session's document: its canonical text, that text as
@@ -1091,6 +1094,101 @@ pub(super) fn sketch_merge(
     sketch_edited(document, index, sketch, edited)
 }
 
+/// `curve`'s `end` of the sketch `id` of `document` extended `by` (docs/design/m5.0-app.md,
+/// section 7, `sketch_extend`; open item 12c), on `solver` under `stop`: from the sketch as
+/// solved and written back (M3.4), as a drag begins, or from its file's coordinates if its
+/// solve fails otherwise; to the next curve as [`extend::next_crossing`] finds it there,
+/// placed as a point is. What it changed, and the state it leads to, through the gate. The
+/// session's solve then judges it (SD7). Refused for a feature that isn't a sketch, naming
+/// `sketch`; with what the extend refuses, or a next curve there's none of, naming the
+/// sketch; and, stopped, as `cancelled`.
+pub(super) fn sketch_extend(
+    document: &Checked,
+    id: &FeatureId,
+    curve: &ElementId,
+    end: extend::End,
+    by: ExtendBy,
+    solver: &mut dyn SketchSolver,
+    stop: &DragStop,
+) -> Result<(SketchChanges, Option<Candidate>), Problems> {
+    let (index, _, sketch) = sketch_of(document.document(), id)?;
+    let (from, _) = crate::drag::sketch::solved_or_drawn(document, id, sketch, solver, stop)
+        .map_err(|error| Problems::from(error.with_feature(id.as_str())))?;
+    let by = match by {
+        ExtendBy::Length(length) => extend::By::Length(length),
+        ExtendBy::Angle(angle) => extend::By::Angle(angle),
+        ExtendBy::Point(point) => extend::By::To(point),
+        ExtendBy::NextCurve => match extend::next_crossing(&from, curve, end) {
+            Ok(Some(crossing)) => extend::By::To(crossing.at),
+            Ok(None) => return Err(one(id, no_next_curve(&from, curve, end))),
+            Err(error) => return Err(one(id, error)),
+        },
+    };
+    let mut edited =
+        extend::extend_under(&from, curve, end, by, solver, stop).map_err(|e| one(id, e))?;
+    // Begun from the solve written back, the edit writes every value the solve moved too:
+    // each change is listed against the sketch the document held, not the solved copy.
+    edited.modified = extend::changed(sketch, &edited.sketch);
+    sketch_edited(document.document(), index, sketch, edited)
+}
+
+/// The refusal of a next curve for `curve`'s `end` of `sketch` to meet, where there's none.
+fn no_next_curve(sketch: &Sketch, curve: &ElementId, end: extend::End) -> Error {
+    let (noun, carrier, increment) = if sketch.arcs.iter().any(|a| &a.id == curve) {
+        ("arc", "circle", "an angle")
+    } else {
+        ("line", "line", "a length")
+    };
+    let which = match end {
+        extend::End::Start => "start",
+        extend::End::End => "end",
+    };
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("{noun} {curve} meets no other curve past its {which}"),
+    )
+    .with_elements([curve.to_string()])
+    .with_parameter("by")
+    .with_cause(format!(
+        "the next curve is the nearest that the {noun}, extended, crosses or touches past its {which}, as trim finds its cuts"
+    ))
+    .with_suggestion(format!(
+        "extend it by {increment}, or to a point on its {carrier}"
+    ))
+}
+
+/// What a join did (docs/design/m5.0-app.md, section 7, `sketch_join`): what it changed
+/// (the joined curve first among `modified`), and the features that store a name either
+/// piece reaches, in timeline order (*What a result lists*).
+pub(super) struct Join {
+    pub(super) changes: SketchChanges,
+    pub(super) references: Vec<FeatureId>,
+}
+
+/// The two pieces sharing `point`, of the sketch `id` of `document`, joined into one curve
+/// (docs/design/m5.0-app.md, section 7, `sketch_join`; open item 12b), by
+/// [`sketch_edit::join`], and the document put through the gate: what it changed, the
+/// features storing a name either piece reaches, and the state it leads to.
+/// Whether its solve is worse than the one before is the session's to judge. Refused as
+/// [`sketch_split`] is.
+pub(super) fn sketch_join(
+    document: &Document,
+    id: &FeatureId,
+    point: &ElementId,
+) -> Result<(Join, Option<Candidate>), Problems> {
+    let (index, _, sketch) = sketch_of(document, id)?;
+    let joined = sketch_edit::join(sketch, point).map_err(|e| one(id, e))?;
+    let references = referencing_any(document, id, sketch, &joined.pieces);
+    let (changes, candidate) = sketch_edited(document, index, sketch, joined.edited)?;
+    Ok((
+        Join {
+            changes,
+            references,
+        },
+        candidate,
+    ))
+}
+
 /// A sketch edit's one refusal, naming the sketch `id` if it names no feature.
 fn one(id: &FeatureId, error: Error) -> Problems {
     of_sketch(
@@ -1114,14 +1212,25 @@ fn referencing(
     sketch: &Sketch,
     curve: &ElementId,
 ) -> Vec<FeatureId> {
-    let mut reached: BTreeSet<&ElementId> = BTreeSet::from([curve]);
-    for line in sketch.lines.iter().filter(|l| &l.id == curve) {
+    referencing_any(document, id, sketch, std::slice::from_ref(curve))
+}
+
+/// [`referencing`] for any of `curves`: the features storing a name made from one of their
+/// IDs or one of their points', each once, in timeline order (a join's two pieces).
+fn referencing_any(
+    document: &Document,
+    id: &FeatureId,
+    sketch: &Sketch,
+    curves: &[ElementId],
+) -> Vec<FeatureId> {
+    let mut reached: BTreeSet<&ElementId> = curves.iter().collect();
+    for line in sketch.lines.iter().filter(|l| curves.contains(&l.id)) {
         reached.extend([&line.from, &line.to]);
     }
-    for circle in sketch.circles.iter().filter(|c| &c.id == curve) {
+    for circle in sketch.circles.iter().filter(|c| curves.contains(&c.id)) {
         reached.insert(&circle.center);
     }
-    for arc in sketch.arcs.iter().filter(|a| &a.id == curve) {
+    for arc in sketch.arcs.iter().filter(|a| curves.contains(&a.id)) {
         reached.extend([&arc.center, &arc.start, &arc.end]);
     }
     let features = &document.features;

@@ -45,8 +45,8 @@ use super::wire::schema::SchemaRequest;
 use super::wire::session::{CancelRequest, OpenRequest, VersionRequest};
 use super::wire::sketch::SketchRequest;
 use super::wire::sketch_edits::{
-    SketchAddRequest, SketchMergeRequest, SketchRemoveRequest, SketchSplitRequest,
-    SketchTrimRequest, SketchUnjoinRequest,
+    SketchAddRequest, SketchExtendRequest, SketchJoinRequest, SketchMergeRequest,
+    SketchRemoveRequest, SketchSplitRequest, SketchTrimRequest, SketchUnjoinRequest,
 };
 use super::wire::transaction::{CommitRequest, FormatRequest, SessionRequest, StepRequest};
 use super::wire::{self, Json, Layout, ToWire};
@@ -101,6 +101,8 @@ pub enum Command {
     SketchTrim,
     SketchUnjoin,
     SketchMerge,
+    SketchExtend,
+    SketchJoin,
     Undo,
     Redo,
 }
@@ -108,7 +110,7 @@ pub enum Command {
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
     /// 7).
-    pub const ALL: [Command; 42] = [
+    pub const ALL: [Command; 44] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -149,6 +151,8 @@ impl Command {
         Command::SketchTrim,
         Command::SketchUnjoin,
         Command::SketchMerge,
+        Command::SketchExtend,
+        Command::SketchJoin,
         Command::Undo,
         Command::Redo,
     ];
@@ -196,6 +200,8 @@ impl Command {
             Command::SketchTrim => "sketch_trim",
             Command::SketchUnjoin => "sketch_unjoin",
             Command::SketchMerge => "sketch_merge",
+            Command::SketchExtend => "sketch_extend",
+            Command::SketchJoin => "sketch_join",
             Command::Undo => "undo",
             Command::Redo => "redo",
         }
@@ -255,6 +261,8 @@ impl Command {
             | Command::SketchTrim
             | Command::SketchUnjoin
             | Command::SketchMerge
+            | Command::SketchExtend
+            | Command::SketchJoin
             | Command::Undo
             | Command::Redo => false,
         }
@@ -739,6 +747,12 @@ impl<P: Clients + 'static> Sessions<P> {
             }),
             Command::SketchMerge => typed(named, SketchMergeRequest::read(request), |r| {
                 self.sketch_merge(&r.session, r.revision, r.sketch, r.points)
+            }),
+            Command::SketchExtend => typed(named, SketchExtendRequest::read(request), |r| {
+                self.sketch_extend(&r.session, r.revision, r.sketch, r.curve, r.end, r.by)
+            }),
+            Command::SketchJoin => typed(named, SketchJoinRequest::read(request), |r| {
+                self.sketch_join(&r.session, r.revision, r.sketch, r.point)
             }),
             Command::Undo => typed(named, StepRequest::read(request), |r| {
                 self.undo(&r.session, r.revision, r.to)

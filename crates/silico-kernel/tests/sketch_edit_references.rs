@@ -1,4 +1,5 @@
-//! `sketch_remove` and `sketch_add` under a stored name, on the real kernel
+//! `sketch_remove`, `sketch_add`, `sketch_split`, and `sketch_join` under a stored name, on
+//! the real kernel
 //! (docs/design/m5.0-app.md, section 7, *What a result lists*): a fillet on
 //! tests/golden/plate-with-boss.silico (read, never written) stores
 //! `p0000001.pad.Edge(G s0000001.sketch.Edge.na000001)`, a name made from the plate
@@ -306,6 +307,11 @@ fn a_line_re_added_with_a_removed_ones_id_is_that_line_to_the_name_as_a_replace_
 
 /// The pad's element the fillet's name finds, in the current model: its start and its end.
 fn named_edge(f: &Fixture, session: &str) -> ([f64; 3], [f64; 3]) {
+    edge_named(f, session, NAME)
+}
+
+/// The pad's element `name` finds, in the current model: its start and its end.
+fn edge_named(f: &Fixture, session: &str, name: &str) -> ([f64; 3], [f64; 3]) {
     let listed = f.ran(
         "elements",
         &json!({"session": session, "model": "current", "feature": "p0000001", "after": null, "limit": 1000}).to_string(),
@@ -315,10 +321,10 @@ fn named_edge(f: &Fixture, session: &str) -> ([f64; 3], [f64; 3]) {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|e| e["name"] == NAME || e["aliases"].as_array().unwrap().iter().any(|a| a == NAME))
+        .filter(|e| e["name"] == name || e["aliases"].as_array().unwrap().iter().any(|a| a == name))
         .collect();
     let [edge] = found.as_slice() else {
-        panic!("{NAME}: {found:?}")
+        panic!("{name}: {found:?}")
     };
     assert_eq!(edge["kind"], "edge", "{edge}");
     let point = |key: &str| {
@@ -363,4 +369,126 @@ fn a_split_lists_the_fillet_whose_name_its_line_reaches_and_the_name_then_finds_
     );
     let saved = std::fs::read_to_string(f.path("plate.silico")).unwrap();
     assert_eq!(stored_edges(&saved), json!([NAME]));
+}
+
+/// The text of `session`'s document, as it holds it.
+fn text_of(f: &Fixture, session: &str) -> String {
+    f.ran(
+        "text",
+        &json!({"session": session, "feature": null}).to_string(),
+    )["text"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// A split of na000001 at (0, -15), whose IDs are given: the kept piece na000001 from
+/// (-30, -15) to pa000005, the other, na000005, on to (30, -15), held by ka000001.
+fn split_at_the_middle(f: &Fixture, session: &str) {
+    f.ran(
+        "sketch_split",
+        &json!({"session": session, "revision": 1, "sketch": "s0000001", "curve": "na000001", "at": [[0, -15]], "ids": ["pa000005", "na000005", "ka000001"]}).to_string(),
+    );
+}
+
+/// Its join at the split point, the result checked: na000001 whole again, na000005, the
+/// point, and the tangent_at gone, and the fillet listed.
+fn joined_at_the_middle(f: &Fixture, session: &str) {
+    let joined = f.ran(
+        "sketch_join",
+        &json!({"session": session, "revision": 2, "sketch": "s0000001", "point": "pa000005"})
+            .to_string(),
+    );
+    assert_eq!(
+        joined,
+        json!({"sketch": "s0000001", "added": [], "modified": ["na000001"], "removed": ["pa000005", "na000005", "ka000001"], "references": ["f0000001"], "changed": true, "commit": null})
+    );
+}
+
+#[test]
+fn a_name_the_kept_piece_made_finds_the_whole_edge_again_after_the_join() {
+    // The split leaves the name made from na000001 finding the edge from x = -30 to 0; the
+    // join makes na000001 run from (-30, -15) to (30, -15) again, so the name finds the
+    // whole edge, x from -30 to 30, and the fillet rounds the whole of it: the volume and
+    // centre of mass by hand, as unedited (by_hand(-15)), and the text as before the split.
+    let f = fixture();
+    let s = f.open("plate.silico", &golden());
+    f.ran("begin", &json!({"session": s}).to_string());
+    let before = text_of(&f, &s);
+    split_at_the_middle(&f, &s);
+    assert_eq!(f.problems(&s), Vec::<Value>::new());
+    let (start, end) = named_edge(&f, &s);
+    let mut xs = [start[0], end[0]];
+    xs.sort_by(f64::total_cmp);
+    assert_eq!(xs, [-30.0, 0.0], "{start:?} {end:?}");
+    joined_at_the_middle(&f, &s);
+    assert_eq!(f.problems(&s), Vec::<Value>::new());
+    assert_eq!(text_of(&f, &s), before);
+    let (start, end) = named_edge(&f, &s);
+    let mut xs = [start[0], end[0]];
+    xs.sort_by(f64::total_cmp);
+    assert_eq!(xs, [-30.0, 30.0], "{start:?} {end:?}");
+    assert_eq!((start[1], end[1]), (-15.0, -15.0));
+    assert_eq!(start[2], end[2]);
+    let (volume, at) = f.fillet(&s);
+    let (want, x, y) = by_hand(-15.0);
+    assert!((volume - want).abs() < 1e-5, "{volume} vs {want}");
+    assert!((at[1] - y).abs() < 1e-5, "{at:?} vs {y}");
+    assert!((at[0] - x).abs() < 1e-5, "{at:?} vs {x}");
+}
+
+#[test]
+fn a_name_the_dropped_piece_made_is_broken_by_the_join_never_re_pointed() {
+    // The fillet stores a name made from na000005, the piece the split makes and the join
+    // drops. Before the split it finds nothing; after it, the edge na000005 sweeps, x from
+    // 0 to 30; after the join, nothing again: `reference_broken` at the fillet's `edges.0`,
+    // naming it, and the name the save keeps is the one stored, never re-pointed to the
+    // joined line's edge.
+    const DROPPED: &str = "p0000001.pad.Edge(G s0000001.sketch.Edge.na000005)";
+    let golden = golden();
+    let text = golden.replacen(NAME, DROPPED, 1);
+    assert_ne!(text, golden);
+    let f = fixture();
+    let s = f.open("plate.silico", &text);
+    let broken = |f: &Fixture| {
+        let problems = f.problems(&s);
+        let broken: Vec<&Value> = problems
+            .iter()
+            .filter(|p| p["feature"] == "f0000001")
+            .collect();
+        let [broken] = broken.as_slice() else {
+            panic!("{problems:?}")
+        };
+        assert_eq!(
+            (
+                &broken["code"],
+                &broken["parameter"],
+                &broken["elements"],
+                &broken["elements_total"]
+            ),
+            (
+                &json!("reference_broken"),
+                &json!("edges.0"),
+                &json!([DROPPED]),
+                &json!(1)
+            ),
+            "{broken}"
+        );
+    };
+    broken(&f);
+    f.ran("begin", &json!({"session": s}).to_string());
+    split_at_the_middle(&f, &s);
+    assert_eq!(f.problems(&s), Vec::<Value>::new());
+    let (start, end) = edge_named(&f, &s, DROPPED);
+    let mut xs = [start[0], end[0]];
+    xs.sort_by(f64::total_cmp);
+    assert_eq!(xs, [0.0, 30.0], "{start:?} {end:?}");
+    joined_at_the_middle(&f, &s);
+    broken(&f);
+    f.ran(
+        "commit",
+        &json!({"session": s, "path": null, "replace": false}).to_string(),
+    );
+    let saved = std::fs::read_to_string(f.path("plate.silico")).unwrap();
+    assert_eq!(stored_edges(&saved), json!([DROPPED]));
 }
