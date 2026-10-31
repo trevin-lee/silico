@@ -2295,6 +2295,33 @@ fn save_as_held(
 }
 
 #[test]
+fn a_save_as_claims_its_path_before_it_writes_so_no_session_opens_it_meanwhile() {
+    // Held after its path is claimed and before it writes: an open of the path, making the
+    // file there, is refused as the Save As's session's; let go, the Save As writes it and
+    // holds it.
+    let f = opened(STORED);
+    let to = f.path.with_file_name("b.silico");
+    let mut refused = None;
+    let response = save_as_held(&f, &to, false, || {
+        refused = Some(f.sessions.open(&to, true).wait());
+    });
+    let refused = refused.unwrap();
+    let problems = refused.result.unwrap_err();
+    assert_eq!(problems.errors()[0].code(), ErrorCode::InvalidInput);
+    assert_eq!(
+        problems.errors()[0].message(),
+        format!("{} is already open in session {}", shown_path(&to), f.id)
+    );
+    let committed = response.result.unwrap();
+    assert!(committed.written);
+    assert_eq!(f.session().held.read().path, to.to_str().unwrap());
+    assert_eq!(
+        std::fs::read(&to).unwrap(),
+        f.session().held.read().text.as_slice()
+    );
+}
+
+#[test]
 fn a_save_as_whose_path_a_link_is_put_on_after_its_check_writes_nothing() {
     let f = opened(STORED);
     let (to, elsewhere) = (

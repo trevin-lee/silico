@@ -498,3 +498,24 @@ fn a_document_the_gate_refuses_is_refused_by_save_as_even_unchanged() {
     assert_eq!(f.status_of(S1)["session"]["path"], "part.silico");
     assert!(!f.work.join("copy.silico").exists());
 }
+
+#[test]
+fn a_hard_link_to_the_sessions_own_file_is_its_own_file() {
+    // Another name of the same file (a hard link, the same device and inode, which no
+    // link resolves): refused as the session's own, even with `replace`, its file as it was.
+    let f = fixture();
+    f.lengthened(50);
+    std::fs::hard_link(f.work.join("part.silico"), f.work.join("alias.silico")).unwrap();
+    let own = f.commit(r#""alias.silico""#, true);
+    assert_eq!(
+        f.refused(&own),
+        (
+            "invalid_input".to_owned(),
+            "\"alias.silico\" is this session's own file".to_owned(),
+            "path".to_owned(),
+            "give path null to save to it, or another path".to_owned()
+        )
+    );
+    assert_eq!(f.read("part.silico"), BOX);
+    assert_eq!(f.read("alias.silico"), BOX);
+}
