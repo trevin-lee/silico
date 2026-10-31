@@ -154,6 +154,61 @@ fn a_named_views_side_that_bound_its_fit_is_the_one_a_body_too_long_names() {
     }
 }
 
+/// The fixture's sessions drawing with a fake renderer, and the example opened.
+fn rendering() -> (Fixture, SessionId) {
+    let Fixture {
+        dir,
+        kernel,
+        sessions,
+    } = fixture();
+    let f = Fixture {
+        dir,
+        kernel,
+        sessions: sessions.rendering(silico_core::fake::FakeRenderer::new()),
+    };
+    let s = f.open("example.silico", EXAMPLE);
+    (f, s)
+}
+
+#[test]
+fn a_body_rendered_and_read_as_meshes_at_one_view_is_meshed_once_whichever_comes_first() {
+    // The sessions' one cache (M4.6's R1): the front, 80 mm over 1,000 pixels, 2⁻⁵.
+    let render = |f: &Fixture, s: &SessionId| {
+        answer(f.sessions.render(
+            s,
+            ModelChoice::Current,
+            silico_core::command::render::Render {
+                view: None,
+                camera: Some(front(80.0)),
+                width: 1000,
+                height: 1000,
+                highlight: vec![],
+                to: None,
+                replace: false,
+            },
+        ))
+        .result
+        .unwrap();
+    };
+    let read = |f: &Fixture, s: &SessionId| {
+        read_of(answer(f.sessions.meshes(
+            s,
+            ModelChoice::Current,
+            of(front(80.0), 1000, 1000),
+        )))
+    };
+    let (f, s) = rendering();
+    render(&f, &s);
+    assert_eq!(meshed(&f), 1);
+    assert_eq!(read(&f, &s).bodies[0].deflection, 0.03125);
+    assert_eq!(meshed(&f), 1);
+    let (f, s) = rendering();
+    assert_eq!(read(&f, &s).bodies[0].deflection, 0.03125);
+    assert_eq!(meshed(&f), 1);
+    render(&f, &s);
+    assert_eq!(meshed(&f), 1);
+}
+
 #[test]
 fn meshes_by_name_answers_the_typed_reads_envelope_byte_for_byte() {
     let f = fixture();
@@ -323,6 +378,23 @@ fn a_suppressed_feature_named_is_refused_as_the_contract_writes_it() {
         "{envelope}"
     );
     assert_eq!(envelope["total"], 1);
+    // Its words, by hand.
+    let e = &envelope["errors"][0];
+    assert_eq!(
+        e["message"],
+        "bbbbbbbb is suppressed, so it has no solid to mesh"
+    );
+    assert_eq!(
+        e["suggestion"],
+        "unsuppress it first, or name a feature that isn't suppressed"
+    );
+    assert_eq!(
+        (&e["parameter"], &e["feature"]),
+        (
+            &serde_json::json!("features.0"),
+            &serde_json::json!("bbbbbbbb")
+        )
+    );
 }
 
 #[test]
@@ -336,13 +408,14 @@ fn a_ninth_published_read_a_cached_meshes_is_refused_and_answers_once_one_ends()
         of(front(80.0), 1000, 1000),
     )));
     assert_eq!(meshed(&f), 1);
-    let (release, released) = mpsc::channel::<()>();
-    let released = Arc::new(Mutex::new(released));
     let (started, starts) = mpsc::channel::<()>();
-    // Eight held, the last of them a meshes.
+    // Eight held, each by its own release, the last of them a meshes.
+    let mut releases = Vec::new();
     let held: Vec<_> = (0..MAX_PUBLISHED_READS)
         .map(|at| {
-            let released = Arc::clone(&released);
+            let (release, released) = mpsc::channel::<()>();
+            releases.push(release);
+            let released = Mutex::new(released);
             let started = started.clone();
             let command = if at + 1 == MAX_PUBLISHED_READS {
                 ReadCommand::Meshes
@@ -384,10 +457,11 @@ fn a_ninth_published_read_a_cached_meshes_is_refused_and_answers_once_one_ends()
         ModelChoice::Current,
         of(front(80.0), 1000, 1000),
     )));
-    drop(release);
-    for read in held {
-        answer(read).result.unwrap();
-    }
+    // One released: its slot frees, and a published meshes answers while the seven others
+    // still hold theirs.
+    let mut held = held.into_iter();
+    releases.remove(0).send(()).unwrap();
+    answer(held.next().unwrap()).result.unwrap();
     let read = read_of(answer(f.sessions.meshes(
         &s,
         ModelChoice::Published,
@@ -395,6 +469,13 @@ fn a_ninth_published_read_a_cached_meshes_is_refused_and_answers_once_one_ends()
     )));
     assert_eq!(read.bodies[0].level, 0.03125);
     assert_eq!(meshed(&f), 1);
+    let reads = f.sessions.status(&s).result.unwrap().reads;
+    assert_eq!(reads.len(), MAX_PUBLISHED_READS - 1);
+    // The rest released.
+    drop(releases);
+    for read in held {
+        answer(read).result.unwrap();
+    }
 }
 
 #[test]
