@@ -1405,4 +1405,32 @@ fn a_merges_placed_geometry_is_freecads_with_the_merged_points_at_the_kept_ones_
     let p7 = elements.iter().position(|x| x == "p0000007").unwrap();
     assert_eq!(geometry[p7], FreecadGeometry::Point { at: [-5.0, 0.0] });
     assert_eq!(placed(&arc(-4.0), &["p0000007", "p0000004"]).1, None);
+    // About (1, 2) instead, radius 5, from (6, 2) to (1, 7): its end merged into (-4, 2), on
+    // its circle, placed, sweeping 0 to pi; into (-3, 2), 1 inside it, not placed.
+    let away = |x: f64| {
+        sketch_of(
+            &[
+                ("p0000001", 1.0, 2.0),
+                ("p0000002", 6.0, 2.0),
+                ("p0000004", 1.0, 7.0),
+                ("p0000007", x, 2.0),
+            ],
+            &[],
+            &[],
+            &[("a0000006", "p0000001", "p0000002", "p0000004")],
+            &[],
+        )
+    };
+    let (elements, geometry) = placed(&away(-4.0), &["p0000007", "p0000004"]);
+    let a = elements.iter().position(|x| x == "a0000006").unwrap();
+    assert_eq!(
+        geometry.unwrap()[a],
+        FreecadGeometry::Arc {
+            center: [1.0, 2.0],
+            radius: 5.0,
+            from: 0.0,
+            to: std::f64::consts::PI
+        }
+    );
+    assert_eq!(placed(&away(-3.0), &["p0000007", "p0000004"]).1, None);
 }

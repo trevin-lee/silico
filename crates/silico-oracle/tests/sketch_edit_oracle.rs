@@ -2651,6 +2651,14 @@ fn a_merge_from_apart_agrees_and_silicos_other_points_moved_before_the_solve_are
                 .starts_with("after the edit, before the solve, Silico's point p0000007 is at")),
             "{axis}: {v}"
         );
+        // Neither solve moves it from where it started, so after the solve it's compared,
+        // 1e-6 apart, and reported.
+        assert!(
+            v.how.iter().any(|h| h.starts_with(
+                "after the solve, Silico's point p0000007, which neither solve moved, is at"
+            )),
+            "{axis}: {v}"
+        );
     }
 }
 
@@ -4749,6 +4757,45 @@ fn a_trimmed_end_two_cutters_cut_at_one_place_is_excused_only_for_freecads_other
     }
     let v = verdict(&moved, theirs[0].as_ref());
     assert!(v.how.iter().any(|h| h.contains(joined)), "{v}");
+    // FreeCAD making the end tangency too (beside its edge one): the forms agree, so no tie,
+    // the join reported.
+    let both_forms = doctored(&theirs[0], |fc| {
+        let (upright, circle) = (index(fc, "n0000013"), index(fc, "c0000019"));
+        let end = fc
+            .constraints
+            .iter()
+            .find(|c| c.kind == "PointOnObject" && c.refs[1] == [upright, 0])
+            .unwrap()
+            .refs[0];
+        fc.constraints.push(FcConstraint {
+            kind: "Tangent".to_owned(),
+            refs: vec![end, [circle, 0]],
+            value: 0.0,
+            driving: true,
+            name: "s_k0000020".to_owned(),
+        });
+    });
+    let v = verdict(p, Some(&both_forms));
+    assert!(
+        v.excused.iter().all(|e| !e.starts_with("a trimmed end"))
+            && v.how.iter().any(|h| h.contains(joined)),
+        "{v}"
+    );
+    // Silico's end held on the upright too: FreeCAD's join is Silico's, no tie.
+    let held = changed(&case, p, |sketch| {
+        sketch.constraints.push(SketchConstraint {
+            id: id("k0000099"),
+            form: Form::On {
+                point: Reference::Element(id("w0000000")),
+                curve: Reference::Element(id("n0000013")),
+            },
+        });
+    });
+    let v = verdict(&held, theirs[0].as_ref());
+    assert!(
+        v.excused.iter().all(|e| !e.starts_with("a trimmed end")),
+        "{v}"
+    );
     // Another difference beside the join: FreeCAD's horizontal k0000009 gone, reported
     // still, the tie excused.
     let other = doctored(&theirs[0], |fc| {
