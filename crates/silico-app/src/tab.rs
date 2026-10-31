@@ -6,10 +6,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use silico_core::ErrorCode;
+use silico_core::command::export::{Export, Exported};
 use silico_core::command::{
-    Added, Begun, CheckAnswer, CheckModel, Closed, Committed, FieldSet, ModelChoice, Problems,
-    RebuildState, Response, Revision, RolledBack, Running, RunningCommand, SessionCommand,
-    SessionId, Sessions, Status, Stepped, TextAnswer, TimelineAnswer,
+    Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, FieldSet, ModelChoice,
+    Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId, Sessions, Status,
+    Stepped, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
@@ -277,6 +279,8 @@ pub struct Tab {
     /// A published timeline was refused, nothing being published: the next is read of the
     /// current model, which waits for its rebuild (off the UI thread).
     nothing_published: bool,
+    /// Whether the timeline read out is Rebuild's, until it answers.
+    rebuild_out: bool,
     /// What `check` says of each feature (read when the person opens a mark, section 3),
     /// and of the document (the gate's problems).
     pub said: BTreeMap<String, Said>,
@@ -289,6 +293,8 @@ pub struct Tab {
     under: Vec<Under>,
     /// How many saves it has sent: what a test counts.
     pub saves: u64,
+    /// How many Rebuilds it has sent: what a test counts.
+    pub rebuilds: u64,
     /// One more each time the document moved other than by the person's typing, with none
     /// of it waiting to be applied: an undo, a redo, or a revert done, or the session's own
     /// reload of its file (a revision the tab didn't ask for, with nothing of its own under
@@ -337,6 +343,20 @@ pub struct Tab {
     /// The commands it sent that change its transaction, in order, the newest
     /// [`SENT_KEPT`]: the call record.
     pub sent: Vec<Sent>,
+    /// The export running (M5.12), as it was asked, and its answer to come; each export the
+    /// tab sent, as sent (the call record); and the last one's answer, once it came.
+    exporting: Option<(Export, Running<Exported>)>,
+    /// The newest [`SENT_KEPT`] exports sent.
+    pub exports: Vec<Export>,
+    pub export_answer: Option<Result<Exported, Problems>>,
+    /// What the export dialog says: the last export's refusal, as said to the person; the
+    /// request whose path held a file, to ask whether to replace it; and whether the last
+    /// export wrote its file, until the window takes that (closing the dialog).
+    pub export_said: Option<String>,
+    pub export_replacing: Option<Export>,
+    exported: bool,
+    /// The export out was sent from a dialog since cancelled, not the one open now.
+    export_disowned: bool,
 }
 
 /// What a refusal says to the person: its first error's message and suggestion.
@@ -366,6 +386,7 @@ impl Tab {
             timeline_read: None,
             timeline_asked: None,
             nothing_published: false,
+            rebuild_out: false,
             said: BTreeMap::new(),
             document_problems: problems
                 .errors()
@@ -380,6 +401,7 @@ impl Tab {
             edits: Edits::default(),
             under: Vec::new(),
             saves: 0,
+            rebuilds: 0,
             resets: 0,
             beginning: false,
             disk_choice: DiskChoice::None,
@@ -399,6 +421,13 @@ impl Tab {
             restored: BTreeMap::new(),
             refused: std::collections::BTreeSet::new(),
             sent: Vec::new(),
+            exporting: None,
+            exports: Vec::new(),
+            export_answer: None,
+            export_said: None,
+            export_replacing: None,
+            exported: false,
+            export_disowned: false,
         }
     }
 
@@ -561,20 +590,18 @@ impl Tab {
     }
 
     fn take_answers<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        self.take_export();
         if let Some(read) = self.timeline_read.take() {
             match read.try_take() {
-                Ok(response) => match response.result {
-                    Ok(timeline) => self.took_timeline(timeline),
-                    Err(problems) => {
-                        // Nothing published yet: read the current model's, which waits for
-                        // its rebuild, next.
-                        self.nothing_published = problems
-                            .errors()
-                            .iter()
-                            .any(|error| error.parameter() == Some("model"));
-                        self.timeline_asked = None;
+                Ok(response) => {
+                    // Rebuild's read, if it was, has answered: Rebuild is on again if the
+                    // rebuild stops again.
+                    self.rebuild_out = false;
+                    match response.result {
+                        Ok(timeline) => self.took_timeline(timeline),
+                        Err(problems) => self.took_refusal(&problems),
                     }
-                },
+                }
                 Err(read) => self.timeline_read = Some(read),
             }
         }
@@ -604,6 +631,16 @@ impl Tab {
             });
         }
         self.advance(sessions);
+    }
+
+    /// A timeline read refused: what it says of the published model kept, and asked again
+    /// only if that changes what the tab would ask ([`after_refusal`]).
+    fn took_refusal(&mut self, problems: &Problems) {
+        let (nothing_published, ask_again) = after_refusal(self.nothing_published, problems);
+        self.nothing_published = nothing_published;
+        if ask_again {
+            self.timeline_asked = None;
+        }
     }
 
     /// A timeline read: kept, and the browser's rows worked out from it once.
@@ -1235,27 +1272,160 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// Whether the stop can stop what's running: a command a client sent, never the
-    /// session's own reload, which nothing cancels (section 3).
+    /// `export` of the session's current model, as `request` asks (M5.12), off the UI thread
+    /// as every command is, unless one is running. What the last one said is let go.
+    pub fn export<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, request: Export) {
+        if self.exporting.is_some() {
+            return;
+        }
+        self.export_said = None;
+        self.export_replacing = None;
+        self.export_answer = None;
+        self.exported = false;
+        self.exports.push(request.clone());
+        // One at a time, so never more than one past.
+        if self.exports.len() > SENT_KEPT {
+            self.exports.remove(0);
+        }
+        let running = sessions.export(&self.id, request.clone());
+        self.exporting = Some((request, running));
+    }
+
+    /// The export whose path held a file sent again, to replace it, as the person said.
+    pub fn replace_export<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if let Some(mut request) = self.export_replacing.take() {
+            request.replace = true;
+            self.export(sessions, request);
+        }
+    }
+
+    /// The export dialog's Cancel: the export stopped through its handle (it answers
+    /// `cancelled`, writing nothing), and a question about a file at its path let go.
+    pub fn stop_export(&mut self) {
+        self.export_replacing = None;
+        // Through its own handle: queued behind another command or running, it's this
+        // export stopped, never another client's; one that has answered has nothing left.
+        if let Some((_, running)) = &self.exporting {
+            running.cancel();
+        }
+    }
+
+    /// The export dialog opened: what the last one left (its refusal, its question) let
+    /// go, as the person's next action lets a refusal go.
+    pub fn export_opened(&mut self) {
+        self.export_said = None;
+        self.export_replacing = None;
+        self.message = None;
+        // An export still out (its dialog cancelled, its answer not in yet) isn't this
+        // dialog's: its answer neither closes it nor asks it anything.
+        self.export_disowned = self.exporting.is_some();
+    }
+
+    /// Whether an export is running.
+    pub fn exporting(&self) -> bool {
+        self.exporting.is_some()
+    }
+
+    /// Whether the last export wrote its file since this was last asked.
+    pub fn take_exported(&mut self) -> bool {
+        std::mem::take(&mut self.exported)
+    }
+
+    /// The export running polled: its answer kept; a file at its path, not to be replaced,
+    /// to ask about; any other refusal said, in the dialog and as every command's is (a
+    /// cancelled one, which the person asked for, said nowhere).
+    fn take_export(&mut self) {
+        let Some((asked, running)) = self.exporting.take() else {
+            return;
+        };
+        match running.try_take() {
+            Ok(response) => {
+                let disowned = std::mem::take(&mut self.export_disowned);
+                match &response.result {
+                    _ if disowned => {}
+                    Ok(_) => self.exported = true,
+                    Err(problems) => {
+                        let first = problems.errors().first();
+                        if first.and_then(|error| error.suggestion())
+                            == Some(silico_core::file::REPLACE_ADVICE)
+                        {
+                            self.export_replacing = Some(asked);
+                        } else if first.is_none_or(|error| error.code() != ErrorCode::Cancelled) {
+                            let said = said(problems);
+                            self.message = Some(said.clone());
+                            self.export_said = Some(said);
+                        }
+                    }
+                }
+                self.export_answer = Some(response.result);
+            }
+            Err(running) => self.exporting = Some((asked, running)),
+        }
+    }
+
+    /// Whether the stop is on: the session's rebuild running, as `status` says, whatever
+    /// command runs (section 3, *Stop*; decision 34 as amended). A command running with no
+    /// rebuild (an export meshing) is its own dialog's to stop, and the session's own
+    /// reload nothing's.
     pub fn stoppable(&self) -> bool {
         self.status
             .as_ref()
-            .and_then(|status| status.running)
-            .and_then(RunningCommand::command)
-            .is_some()
+            .is_some_and(|status| status.rebuild.state == RebuildState::Running)
     }
 
-    /// Stop what's running (`cancel`), if a command a client sent is: never the session's
-    /// own reload, which nothing cancels. A refusal is said.
+    /// The stop: `cancel` naming the rebuild, which stops it and the command waiting on it,
+    /// if one is (that one answers `cancelled`). One that comes after the rebuild ended is
+    /// refused, and the refusal is said.
     pub fn stop<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if let Some(command) = self
-            .status
-            .as_ref()
-            .and_then(|status| status.running)
-            .and_then(RunningCommand::command)
-            && let Err(problems) = sessions.cancel(&self.id, command).result
+        match sessions.cancel(&self.id, Cancellable::Rebuild).result {
+            Ok(_) => self.message = None,
+            Err(problems) => self.message = Some(said(&problems)),
+        }
+    }
+
+    /// Rebuild (Ctrl+B, docs/ux/solidworks.md, §5, *Rebuild*): the tab's revision's rebuild,
+    /// stopped, started again by a read of the current model (from the cache, so what was
+    /// built before the stop isn't built again), whose answer is the timeline. Only while
+    /// that rebuild is stopped.
+    pub fn rebuild<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if !self.can_rebuild() {
+            return;
+        }
+        // A read of the published model in flight answers at once: this one replaces it.
+        self.timeline_asked = Some((self.revision, self.published));
+        self.timeline_read = Some(sessions.timeline(&self.id, ModelChoice::Current));
+        self.rebuild_out = true;
+        self.rebuilds += 1;
+    }
+
+    /// Whether Rebuild is on: the tab's revision's rebuild stopped, and no read of the
+    /// current model of the tab's own already out (one Rebuild sent, not yet started by the
+    /// session, which a second would only queue behind).
+    pub fn can_rebuild(&self) -> bool {
+        self.rebuild_stopped() && !self.rebuild_out
+    }
+
+    /// Esc with no dialog open (section 3's order): the selection cleared, or, with none, a
+    /// rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)); with
+    /// neither, nothing.
+    pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if self.selected.is_some() {
+            self.selected = None;
+        } else if self.stoppable() {
+            self.stop_quietly(sessions);
+        }
+    }
+
+    /// The stop, from Esc or a dialog preview: as the button's ([`stop`](Self::stop)), but
+    /// a refusal (the rebuild finished since `status` said it ran, leaving nothing to stop)
+    /// says nothing. Only the Stop button says its refusal.
+    pub fn stop_quietly<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if sessions
+            .cancel(&self.id, Cancellable::Rebuild)
+            .result
+            .is_ok()
         {
-            self.message = Some(said(&problems));
+            self.message = None;
         }
     }
 
@@ -1280,7 +1450,16 @@ impl Tab {
         if self.timeline_read.is_some() || self.timeline_asked == Some(asked) {
             return;
         }
-        let current = (self.published.is_none() && self.nothing_published) || self.previews();
+        // Stopped with nothing published: a read of the published model is refused for
+        // that, and one of the current model would start the rebuild again. Nothing is read
+        // until the revision or the published model moves, or Rebuild asks.
+        if self.rebuild_stopped() && self.published.is_none() && self.nothing_published {
+            return;
+        }
+        // Never the current model of a revision whose rebuild was stopped: its read would
+        // start the rebuild again, undoing the stop. The stopped state shows until an edit.
+        let current = ((self.published.is_none() && self.nothing_published) || self.previews())
+            && !self.rebuild_stopped();
         let model = if current {
             ModelChoice::Current
         } else {
@@ -1291,41 +1470,35 @@ impl Tab {
     }
 
     /// Whether the timeline is read of the current model, as a dialog's preview: a dialog
-    /// open on its feature, and the revision's rebuild not stopped, as `status` says of the
-    /// tab's own revision (a read would start it again). That read waits for the
-    /// revision's rebuild, so its health is the preview's, and Esc's cancel of it stops the
-    /// rebuild (section 3).
+    /// open on its feature (unless the revision's rebuild was stopped: [`read_timeline`]).
+    /// That read waits for the revision's rebuild, so its health is the preview's, and the
+    /// stop, which Esc is, stops it (section 3).
+    ///
+    /// [`read_timeline`]: Self::read_timeline
     fn previews(&self) -> bool {
-        let stopped = self.status.as_ref().is_some_and(|status| {
-            status.rebuild.revision == self.revision
-                && status.rebuild.state == RebuildState::Stopped
-        });
         self.dialog
             .as_ref()
             .is_some_and(|dialog| dialog.feature.is_some())
-            && !stopped
     }
 
-    /// Whether a dialog's preview is rebuilding: its read of the current model is the
-    /// command the session runs, waiting for the rebuild. Esc stops it, the dialog left
-    /// open (section 3).
+    /// Whether the rebuild of the tab's revision was stopped, as `status` says: Rebuild is
+    /// on, and the panes say so where they'd say they're building.
+    pub fn rebuild_stopped(&self) -> bool {
+        self.status.as_ref().is_some_and(|status| {
+            status.rebuild.revision == self.revision
+                && status.rebuild.state == RebuildState::Stopped
+        })
+    }
+
+    /// Whether a dialog's preview is rebuilding: a dialog open on its feature (one that
+    /// isn't added yet has no preview) while the session's rebuild runs. Esc stops it, the
+    /// dialog left open (section 3), with the stop's own call ([`stop`](Self::stop)): the
+    /// preview's read of the current model is the rebuild's waiter, and answers `cancelled`.
     pub fn preview_rebuilding(&self) -> bool {
-        self.dialog.is_some()
-            && self.timeline_read.is_some()
-            && self
-                .status
-                .as_ref()
-                .and_then(|status| status.running)
-                .and_then(RunningCommand::command)
-                == Some(SessionCommand::Timeline)
-    }
-
-    /// The dialog's preview stopped: its read cancelled through its handle, which stops
-    /// the rebuild it waits for. One that has answered by then has nothing left to stop.
-    pub fn stop_preview(&mut self) {
-        if let Some(read) = &self.timeline_read {
-            read.cancel();
-        }
+        self.dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+            && self.stoppable()
     }
 
     /// Before the tab sends what changes the document: its timeline read in flight, of a
@@ -1334,7 +1507,9 @@ impl Tab {
     /// preview's, which waits for the rebuild (a read of the published model answers at
     /// once, so there's nothing of it to stop).
     fn supersede_preview(&mut self) {
-        self.stop_preview();
+        if let Some(read) = &self.timeline_read {
+            read.cancel();
+        }
     }
 
     /// A transaction begun if none is open or beginning (decision 1).
@@ -1707,6 +1882,25 @@ fn tip_of(entries: &[Entry]) -> Option<FeatureId> {
             stands.get(&entry.id).copied().unwrap_or(false) && !consumed.contains(&entry.id)
         })
         .map(|entry| entry.id.clone())
+}
+
+/// What a refused timeline read leaves, the tab having found nothing published before
+/// (`nothing_published`): whether nothing is published now (the refusal names `model`), and
+/// whether to ask again at once, which only a refusal that changes what the tab would ask
+/// does: nothing published found, or found no longer, or the read cancelled (its rebuild
+/// stopped, which the next read takes into account). Any other refusal (a rebuild that
+/// failed with nothing published) waits for the revision or the published model to move,
+/// so a read isn't sent again each frame.
+fn after_refusal(nothing_published: bool, problems: &Problems) -> (bool, bool) {
+    let now = problems
+        .errors()
+        .iter()
+        .any(|error| error.parameter() == Some("model"));
+    let cancelled = problems
+        .errors()
+        .iter()
+        .any(|error| error.code() == silico_core::ErrorCode::Cancelled);
+    (now, now != nothing_published || cancelled)
 }
 
 /// Whether a `check` of `timeline` is wanted, with `selected` the feature selected: for a
@@ -2099,6 +2293,159 @@ mod tests {
         tab.ended(Ok(()), false, &mut close);
         assert!(tab.groups.is_empty());
         assert!(tab.restored.is_empty());
+    }
+
+    #[test]
+    fn a_refused_timeline_asks_again_only_when_the_refusal_changes_what_it_would_ask() {
+        let refusal = |code: silico_core::ErrorCode, parameter: Option<&'static str>| {
+            let error = silico_core::Error::new(code, "refused");
+            Problems::from(match parameter {
+                Some(parameter) => error.with_parameter(parameter),
+                None => error,
+            })
+        };
+        let model = refusal(silico_core::ErrorCode::InvalidInput, Some("model"));
+        let failed = refusal(silico_core::ErrorCode::Internal, None);
+        let cancelled = refusal(silico_core::ErrorCode::Cancelled, None);
+        // Nothing published found: ask again (of the current model).
+        assert_eq!(after_refusal(false, &model), (true, true));
+        // Found again: nothing changes, nothing asked.
+        assert_eq!(after_refusal(true, &model), (true, false));
+        // Found no longer (a failure, say): ask again (of the published model).
+        assert_eq!(after_refusal(true, &failed), (false, true));
+        // A failure again: nothing asked until the revision or the model moves.
+        assert_eq!(after_refusal(false, &failed), (false, false));
+        // As a tab takes them.
+        let mut tab = tab();
+        let asked = Some((Revision::OPENED, None));
+        tab.timeline_asked = asked;
+        tab.took_refusal(&failed);
+        assert_eq!(tab.timeline_asked, asked);
+        tab.took_refusal(&model);
+        assert_eq!(tab.timeline_asked, None);
+        // A cancelled read: asked again, whatever it found.
+        assert_eq!(after_refusal(false, &cancelled), (false, true));
+        assert_eq!(after_refusal(true, &cancelled), (false, true));
+    }
+
+    #[test]
+    fn the_export_dialog_opened_lets_go_of_the_last_ones_refusal_question_and_message() {
+        use silico_core::command::export::ExportFormat;
+        let mut tab = tab();
+        tab.export_said = Some("refused".to_owned());
+        tab.message = Some("refused".to_owned());
+        tab.export_replacing = Some(Export {
+            format: ExportFormat::Step,
+            path: std::path::PathBuf::from("/work/part.step"),
+            replace: false,
+            features: None,
+        });
+        tab.export_opened();
+        assert_eq!(tab.export_said, None);
+        assert_eq!(tab.message, None);
+        assert_eq!(tab.export_replacing, None);
+    }
+
+    #[test]
+    fn an_export_answered_after_its_dialog_is_opened_again_closes_and_asks_nothing() {
+        use silico_core::command::export::ExportFormat;
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("part.silico");
+        std::fs::write(
+            &document,
+            r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}]}"#,
+        )
+        .unwrap();
+        // STEP written by the fake, as the STEP worker would.
+        let kernel = Arc::new(silico_core::fake::FakeKernel::new(1).unwrap());
+        let sessions = Arc::new(
+            Sessions::with_cache_opener(Arc::clone(&kernel), |dir| {
+                silico_core::cache::Cache::unsealed(dir)
+            })
+            .exporting_step(kernel),
+        );
+        let opened = sessions.open(&document, false).wait();
+        let id = opened.session.unwrap().id;
+        let mut tab = Tab::opened(
+            id,
+            document.to_str().unwrap().to_owned(),
+            &opened.result.unwrap().problems,
+        );
+        // A file at the path: the export is refused with replace's advice.
+        let out = dir.path().join("part.step");
+        std::fs::write(&out, "old").unwrap();
+        let asked = Export {
+            format: ExportFormat::Step,
+            path: out.clone(),
+            replace: false,
+            features: None,
+        };
+        tab.export(&sessions, asked.clone());
+        // Its answer is in once a command queued after it answers: then, before it's taken,
+        // its dialog is cancelled (too late to stop it) and opened again.
+        sessions.text(&id, None).wait().result.unwrap();
+        tab.stop_export();
+        tab.export_opened();
+        tab.take_export();
+        assert!(!tab.exporting());
+        assert_eq!(tab.export_replacing, None);
+        assert_eq!(tab.export_said, None);
+        assert!(!tab.take_exported());
+        // The next one, this dialog's own, asks.
+        tab.export(&sessions, asked);
+        sessions.text(&id, None).wait().result.unwrap();
+        tab.take_export();
+        assert!(tab.export_replacing.is_some());
+        // One written (nothing at its path) and answered late, the same way: it doesn't
+        // close the dialog opened since, nor say anything there.
+        let fresh = dir.path().join("fresh.step");
+        tab.stop_export();
+        tab.export(
+            &sessions,
+            Export {
+                format: ExportFormat::Step,
+                path: fresh.clone(),
+                replace: false,
+                features: None,
+            },
+        );
+        sessions.text(&id, None).wait().result.unwrap();
+        tab.stop_export();
+        tab.export_opened();
+        tab.take_export();
+        assert!(fresh.is_file());
+        assert!(tab.export_answer.as_ref().is_some_and(Result::is_ok));
+        assert!(!tab.take_exported());
+        assert_eq!(tab.export_said, None);
+    }
+
+    #[test]
+    fn the_exports_sent_keep_the_newest_it_holds() {
+        use silico_core::command::export::ExportFormat;
+        // A session that isn't open: each export answered at once, refused.
+        let sessions = Arc::new(Sessions::with_cache_opener(
+            Arc::new(silico_core::fake::FakeKernel::new(1).unwrap()),
+            |dir| silico_core::cache::Cache::unsealed(dir),
+        ));
+        let mut tab = tab();
+        for at in 0..SENT_KEPT + 10 {
+            tab.export(
+                &sessions,
+                Export {
+                    format: ExportFormat::Step,
+                    path: std::path::PathBuf::from(format!("/nowhere/{at}.step")),
+                    replace: false,
+                    features: None,
+                },
+            );
+            tab.take_export();
+            assert!(!tab.exporting());
+        }
+        assert_eq!(tab.exports.len(), SENT_KEPT);
+        assert_eq!(
+            tab.exports[0].path,
+            std::path::PathBuf::from("/nowhere/10.step")
+        );
     }
 
     #[test]
