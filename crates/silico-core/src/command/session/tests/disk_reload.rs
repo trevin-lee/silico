@@ -825,14 +825,13 @@ const TWO_BOXES: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution":
 
 #[test]
 fn each_step_of_a_held_rebuild_wakes_once_as_it_settles_then_its_end_and_its_answer() {
-    // Two boxes, one step each, each held by its own size.
+    // Two boxes, one step each, each held by its own size; the rebuild's watcher held
+    // before its first look. Its plan made and the block's step settled before it looks:
+    // that look tells both, once (the progress moved since the rebuild began); then the
+    // lug's step, the rebuild's end, and the check's answer, once each.
     let f = opened(TWO_BOXES);
     let count = counting(&f.sessions);
     let base = settled(&f, &count);
-    // The rebuild's watcher held before it first looks, until its plan is made: so the
-    // plan is never told (it was made before the watcher looked), and every wake after is
-    // a step's, the end's, or the answer's. Then held again once it has looked, so no
-    // step settles before its first look (which would fold that step's telling into it).
     let (watching, watched) = shut(&f.session().watching);
     let block = f
         .kernel
@@ -844,22 +843,23 @@ fn each_step_of_a_held_rebuild_wakes_once_as_it_settles_then_its_end_and_its_ans
         .sessions
         .check(&f.id, CheckModel::Current { fresh: false });
     assert!(f.kernel.wait_running(2, WAIT));
-    // Its plan made: two steps, none settled.
-    let progress = check.progress().unwrap();
-    assert_eq!((progress.done, progress.steps), (0, 2));
     watching.recv_timeout(WAIT).unwrap();
-    watched.send(()).unwrap();
-    watching.recv_timeout(WAIT).unwrap();
+    block.release();
+    let deadline = Instant::now() + WAIT;
+    while check.progress().unwrap().done < 1 {
+        assert!(Instant::now() < deadline, "the block's step never settled");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Settled before the watcher looked: nothing told yet.
+    assert_eq!(count.load(Ordering::SeqCst), base);
     watched.send(()).unwrap();
     drop(watched);
     open_gate(&f.session().watching);
-    assert_eq!(count.load(Ordering::SeqCst), base);
-    block.release();
     woken(&count, base + 1);
     lug.release();
     woken(&count, base + 2);
     check.wait().result.unwrap();
-    // The block's step, the lug's, the rebuild's end (its model published), and the
+    // The first look's, the lug's step, the rebuild's end (its model published), and the
     // check's answer; then `settled`'s own.
     assert_eq!(settled(&f, &count), base + 5);
 }

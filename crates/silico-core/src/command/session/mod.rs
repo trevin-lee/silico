@@ -221,8 +221,8 @@ struct Session<C: Kernel + 'static> {
     /// Where the session's own reload waits as it starts, in this crate's tests only.
     #[cfg(test)]
     reloading: Gate,
-    /// Where a rebuild's watcher waits before it first looks at the rebuild's progress, and
-    /// again once it has, in this crate's tests only.
+    /// Where a rebuild's watcher waits before it first looks at the rebuild's progress, in
+    /// this crate's tests only.
     #[cfg(test)]
     watching: Gate,
 }
