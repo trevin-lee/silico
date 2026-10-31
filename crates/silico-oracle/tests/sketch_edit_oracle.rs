@@ -777,6 +777,58 @@ fn a_case_freecad_answers_otherwise_run_to_run_is_known_only_by_its_rule_on_a_so
 }
 
 #[test]
+fn a_case_freecad_answers_otherwise_run_to_run_is_known_only_while_silico_makes_the_edit() {
+    let known = [sketch_edit::Known {
+        case: "c",
+        shows: sketch_edit::Shows::VariesMade,
+        why: "FreeCAD varies",
+    }];
+    // Agreeing or differing, Silico making the edit, it's shown as known, never a difference,
+    // and never stale.
+    for how in [Vec::new(), vec!["it differs".to_owned()]] {
+        let v = Verdict {
+            case: "c".to_owned(),
+            how: how.clone(),
+            made: true,
+            ..Verdict::default()
+        };
+        let (differ, shown, stale) = without_known(vec![v], &known);
+        assert!(differ.is_empty() && stale.is_empty(), "{how:?}");
+        assert_eq!(shown.len(), 1, "{how:?}");
+        assert!(shown[0].contains("varies run to run"), "{shown:?}");
+    }
+    // Silico refusing it (by a rule or none), or the case with a problem of its own though
+    // Silico made the edit: compared, and the known case a problem.
+    for (rule, problem) in [
+        (None, false),
+        (Some(Rule::MergeSolveFails), false),
+        (None, true),
+    ] {
+        let v = Verdict {
+            case: "c".to_owned(),
+            how: vec!["it differs".to_owned()],
+            rule: rule.clone(),
+            made: problem,
+            problem,
+            ..Verdict::default()
+        };
+        let (differ, shown, stale) = without_known(vec![v], &known);
+        assert_eq!(differ.len(), 1, "{rule:?} {problem}");
+        assert!(shown.is_empty(), "{rule:?} {problem}");
+        assert_eq!(stale.len(), 1, "{rule:?} {problem}");
+        assert!(stale[0].contains("no longer makes the edit"), "{stale:?}");
+    }
+    // A refusal agreeing with FreeCAD's, Silico not making the edit: still a problem.
+    let v = Verdict {
+        case: "c".to_owned(),
+        refused: true,
+        ..Verdict::default()
+    };
+    let (differ, shown, stale) = without_known(vec![v], &known);
+    assert!(differ.is_empty() && shown.is_empty() && stale.len() == 1);
+}
+
+#[test]
 fn a_generated_sweep_is_the_same_for_a_seed_and_every_sketch_is_drawn_as_it_solves() {
     let first = silico_oracle::generate::sketch_edit_cases(7, 30).unwrap();
     let again = silico_oracle::generate::sketch_edit_cases(7, 30).unwrap();
@@ -2242,7 +2294,10 @@ fn a_varying_case_is_shown_known_only_while_silicos_side_is_its_rules_refusal() 
         shows: sketch_edit::Shows::Varies(Rule::MergeHoldsOwn(String::new())),
         why: "varies here",
     }];
-    let (differ, shown, stale) = without_known(vec![verdict(p, theirs[0].as_ref())], &known);
+    let v = verdict(p, theirs[0].as_ref());
+    // Refused: Silico didn't make the edit.
+    assert!(!v.made, "{v:?}");
+    let (differ, shown, stale) = without_known(vec![v], &known);
     assert!(differ.is_empty() && stale.is_empty() && shown.len() == 1);
     let mut problem = p.clone();
     problem
@@ -2266,6 +2321,8 @@ fn a_varying_case_is_shown_known_only_while_silicos_side_is_its_rules_refusal() 
         ("a problem of its own", problem),
     ] {
         let v = verdict(&other, theirs[0].as_ref());
+        // Gated or refused, Silico made no edit.
+        assert!(!v.made, "{what}: {v:?}");
         let (differ, shown, stale) = without_known(vec![v], &known);
         assert!(
             differ.len() == 1 && shown.is_empty() && stale.len() == 1,
@@ -2665,7 +2722,10 @@ fn a_merge_from_apart_agrees_and_silicos_other_points_moved_before_the_solve_are
     let prepared = vec![prepare(&case, &mut worker).unwrap()];
     let p = &prepared[0];
     let theirs = freecad_outcomes(&prepared).unwrap();
-    agrees(&verdict(p, theirs[0].as_ref()));
+    let v = verdict(p, theirs[0].as_ref());
+    agrees(&v);
+    // Silico made the edit, as its side says.
+    assert!(v.made, "{v:?}");
     // The lone p0000007, which neither solve moves: Silico's solved place 0.9e-8 mm one way
     // and FreeCAD's 0.9e-8 the other, each within 1e-8 of where it started, agree (1.8e-8
     // apart, within twice that); 1.1e-8 each way, each solve has moved it, so it isn't
