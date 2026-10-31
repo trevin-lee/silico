@@ -508,13 +508,19 @@ fn normals_of_no_length_draw_unlit_and_inward_huge_or_tiny_ones_light_by_re_rend
         (c * 255.0).round()
     };
     // The front face's normal, by hand, from the front (back −y): none (unlit, the body's
-    // colour); inward, (0, 0, −1) in the camera's frame, 0.2 + 0.5 × 5/√35; and far longer
-    // or far shorter than a unit toward the eye, (0, 0, 1), 0.2 + 3/√14 clamped at 1 (in f32
-    // a normal of 1e30 or 1e-30 would overflow or underflow on the GPU: it's made unit
-    // length in f64 first).
+    // colour); inward, (0, 0, −1) in the camera's frame, 0.2 + 0.5 × 5/√35 = 0.6226, and
+    // so far longer or far shorter than a unit inward (in f32 a normal of 1e30 or 1e-30
+    // would overflow or underflow on the GPU: it's made unit length in f64 first, and a
+    // tiny one taken for none would draw unlit, at 1); and far longer or shorter toward the
+    // eye, (0, 0, 1), 0.2 + 3/√14 clamped at 1.
+    let inward = 0.2 + 0.5 * 5.0 / 35f64.sqrt();
     for (normal, light) in [
         ([0.0f32, 0.0, 0.0], 1.0),
-        ([0.0, 1.0, 0.0], 0.2 + 0.5 * 5.0 / 35f64.sqrt()),
+        ([0.0, 1.0, 0.0], inward),
+        ([0.0, 1e30, 0.0], inward),
+        ([0.0, 1e-30, 0.0], inward),
+        ([0.0, f32::MAX, 0.0], inward),
+        ([0.0, f32::from_bits(1), 0.0], inward),
         ([0.0, -1e30, 0.0], 1.0),
         ([0.0, -1e-30, 0.0], 1.0),
     ] {

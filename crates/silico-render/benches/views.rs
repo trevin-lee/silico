@@ -3,7 +3,9 @@
 //! that rebuilds every face's mesh shows against one that moves the bodies. The part is NIST's
 //! CTC 02 (the corpus's largest, 664 faces) in CI's bench, alone and as ten copies (6,640
 //! faces), meshed by a kernel worker at half a pixel of a 1080-pixel view of it, as the
-//! study measured it (docs/study/viewport.md, section 5).
+//! study measured it (docs/study/viewport.md, section 5). Each line gives a render's whole time
+//! and, of a view change, the CPU's part placing the faces and edges for the view (each
+//! face's anchor and transform, its instance, the edges' strips: `Renderer::placed`).
 //!
 //! Recorded, never budgeted: it fails on no time. Run with
 //! `SILICO_KERNEL_WORKER=target/release/silico-kernel-worker SILICO_BENCH_BREP=part.brep
@@ -67,17 +69,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             let first = time(&mut renderer, &scene(0))?;
             let uploaded = renderer.uploads();
             let mut changes = Vec::with_capacity(VIEWS);
+            let mut placed = Vec::with_capacity(VIEWS);
             for view in 1..=VIEWS {
                 changes.push(time(&mut renderer, &scene(view))?);
+                placed.push(renderer.placed());
             }
+            placed.sort();
             let reuploaded = renderer.uploads() - uploaded;
             changes.sort();
             let ms = |d: Duration| d.as_secs_f64() * 1e3;
             out += &format!(
-                "copies {copies} size {width}x{height} first_ms {:.2} view_change_median_ms {:.2} view_change_p95_ms {:.2} meshes_uploaded_by_view_changes {reuploaded}\n",
+                "copies {copies} size {width}x{height} first_ms {:.2} view_change_median_ms {:.2} view_change_p95_ms {:.2} placing_median_ms {:.3} placing_p95_ms {:.3} meshes_uploaded_by_view_changes {reuploaded}\n",
                 ms(first),
                 ms(changes[VIEWS / 2]),
                 ms(changes[VIEWS * 95 / 100]),
+                ms(placed[VIEWS / 2]),
+                ms(placed[VIEWS * 95 / 100]),
             );
         }
     }
