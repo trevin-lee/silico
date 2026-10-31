@@ -164,3 +164,79 @@ fn many_constraints_on_both_pieces_each_a_repeat_once_re_pointed_are_each_droppe
     assert_eq!(joined.edited.removed.len(), 3 + N);
     assert_eq!(joined.edited.modified, [id("a0000000")]);
 }
+
+/// Arcs about the origin, a0 from `r0` to `n0` and b0 from `n0` on to `r1`, with their
+/// sweeps and the joined one's, each as the document measures an arc: its ends' angles
+/// about the centre by `libm::atan2`, a turn added to the end's where it's below the
+/// start's (none, for the joined one, where its ends are at one angle).
+fn about_the_origin(r0: [f64; 2], n0: [f64; 2], r1: [f64; 2]) -> (Document, [Option<f64>; 3]) {
+    let document = doc(
+        &[
+            crate::fixture::point_debug("c0000000", 0.0, 0.0),
+            crate::fixture::point_debug("r0000000", r0[0], r0[1]),
+            crate::fixture::point_debug("n0000000", n0[0], n0[1]),
+            crate::fixture::point_debug("r0000001", r1[0], r1[1]),
+        ]
+        .join(", "),
+        "",
+        "",
+        &[
+            arc("a0000000", "c0000000", "r0000000", "n0000000"),
+            arc("b0000000", "c0000000", "n0000000", "r0000001"),
+        ]
+        .join(", "),
+        "",
+    );
+    let sweep = |from: [f64; 2], to: [f64; 2]| {
+        let (start, end) = (libm::atan2(from[1], from[0]), libm::atan2(to[1], to[0]));
+        let end = if end < start {
+            end + std::f64::consts::TAU
+        } else {
+            end
+        };
+        (end > start).then_some(end - start)
+    };
+    (document, [sweep(r0, n0), sweep(n0, r1), sweep(r0, r1)])
+}
+
+#[test]
+fn arcs_an_ulp_past_a_turn_by_libm_are_refused_and_just_short_of_it_join() {
+    // The review's case: r1 a few ulps of x past r0, which libm puts one ulp of angle past
+    // r0's, so the two pieces sweep a whole turn and a hair between them, and the joined
+    // arc, from r0 to r1, the hair alone, less than either piece: refused.
+    let r0 = [0.229_607_899_042_674_23, -4.994_725_238_959_317];
+    let n0 = [3.222_034_576_183_325_3, -3.823_413_813_580_625];
+    let past = [0.229_607_899_042_675_34, -4.994_725_238_959_317];
+    let (before, [a, b, joined]) = about_the_origin(r0, n0, past);
+    let (a, b, joined) = (a.unwrap(), b.unwrap(), joined.unwrap());
+    let ulp = |v: f64| f64::from_bits(v.abs().to_bits() + 1) - v.abs();
+    let start = libm::atan2(r0[1], r0[0]);
+    assert_eq!(libm::atan2(past[1], past[0]) - start, ulp(start));
+    assert_eq!(joined, ulp(start));
+    assert!(joined < a && joined < b, "{a} {b} {joined}");
+    let error = join(sketch_of(&before), &id("n0000000")).unwrap_err();
+    assert_eq!(
+        error.message(),
+        "arcs a0000000 and b0000000 sweep a whole turn or more between them, so one arc can't join them at point n0000000"
+    );
+    assert_eq!(error.elements(), ["n0000000", "a0000000", "b0000000"]);
+    // r1 2.5e-7 mm short of r0 in x, as near as the gate lets an arc's two ends be (more
+    // than 1e-7 mm apart), some 5e-8 of angle: the joined arc sweeps all but that, less
+    // than a turn, more than either piece, and it's one arc from r0 to r1.
+    let short = [r0[0] - 2.5e-7, r0[1]];
+    let (before, [a, b, joined]) = about_the_origin(r0, n0, short);
+    let (a, b, joined) = (a.unwrap(), b.unwrap(), joined.unwrap());
+    assert!(joined < std::f64::consts::TAU, "{joined}");
+    assert!(joined > a && joined > b, "{a} {b} {joined}");
+    let joined = join(sketch_of(&before), &id("n0000000")).unwrap();
+    let arcs = &joined.edited.sketch.arcs;
+    assert_eq!(arcs.len(), 1);
+    assert_eq!(
+        (
+            arcs[0].id.as_str(),
+            arcs[0].start.as_str(),
+            arcs[0].end.as_str()
+        ),
+        ("a0000000", "r0000000", "r0000001")
+    );
+}

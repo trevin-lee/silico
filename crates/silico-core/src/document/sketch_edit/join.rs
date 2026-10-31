@@ -5,7 +5,6 @@
 //! moves; a split circle's two arcs become its circle again, its radius its kept arc's.
 
 use std::collections::BTreeSet;
-use std::f64::consts::TAU;
 
 use silico_protocol::arc_from_points;
 
@@ -54,9 +53,12 @@ enum Role {
 /// that don't run on through the point, one ending there and the other starting there; lines
 /// no `tangent_at` (`same`) holds on one line there, and arcs with no centre in common (not
 /// held on one carrier); lines whose join would end at one point at both ends (a curve's own
-/// two ends, FreeCAD's refusal); arcs that sweep a turn or more between them, or one that
-/// sweeps no angle; a circle's two arcs whose other shared point another curve uses; a piece's `length`, `midpoint`, or line's `equal`, which the joined line
-/// wouldn't mean, naming the constraint; and a joined sketch the gate refuses.
+/// two ends, FreeCAD's refusal); arcs that sweep a turn or more between them (the joined
+/// arc's own sweep no more than a piece's: see [`one_arc`]), or one that sweeps no angle; a
+/// circle's two arcs whose other shared point another curve uses; a piece's `length`,
+/// `midpoint`, or line's `equal`, which the joined line wouldn't mean, naming the
+/// constraint; a constraint the join would make hold the joined curve's own point on it,
+/// other than an implied `on`; and a joined sketch the gate refuses.
 pub fn join(sketch: &Sketch, point: &ElementId) -> Result<Joined, Error> {
     let kinds = kinds_of(sketch);
     let p = point.to_string();
@@ -430,15 +432,14 @@ pub fn join(sketch: &Sketch, point: &ElementId) -> Result<Joined, Error> {
         }
         repointed.push(Some(form));
     }
-    // What a re-pointed constraint may repeat: one naming the kept piece already, or one
-    // re-pointed before it, each by its form written out, in a sorted set.
-    let names_kept = |form: &Form| form.references().iter().any(|(_, r, _)| **r == kept_ref);
+    // What a re-pointed constraint may repeat: any constraint of the sketch, or one
+    // re-pointed before it, each by its form written out, in a sorted set. Only one that
+    // names the kept piece and no point removed can be repeated, since a re-pointed form
+    // names the kept piece, never the other, and no point removed; the rest never match.
     let mut seen: BTreeSet<String> = sketch
         .constraints
         .iter()
-        .zip(&repointed)
-        .filter(|(c, again)| again.is_none() && !names_gone(&c.form) && names_kept(&c.form))
-        .map(|(c, _)| unordered(&c.form))
+        .map(|c| unordered(&c.form))
         .collect();
     let mut constraints = Vec::with_capacity(sketch.constraints.len());
     for (constraint, again) in sketch.constraints.iter().zip(repointed) {
@@ -491,31 +492,29 @@ pub fn join(sketch: &Sketch, point: &ElementId) -> Result<Joined, Error> {
 }
 
 /// Whether two arcs about `center`, of sweeps `swept`, one from `start` to the point they
-/// share and the other on from there to `end`, are one arc from `start` to `end`: less than
-/// a turn between them, and that arc sweeping more than either (so rounding near a whole
-/// turn never takes it to the sliver between `end` and `start`).
+/// share and the other on from there to `end`, are one arc from `start` to `end`, by one
+/// rule: that arc's own sweep, as the document measures it (the angles of `start` and `end`
+/// about `center`, by `libm::atan2`, as [`arc_from_points`] gives them), exceeds each
+/// piece's. Pieces whose sweeps sum to less than a turn make an arc sweeping their sum,
+/// which exceeds each; pieces sweeping a turn or more make, from those two ends, the sliver
+/// left over, or no arc at all, which never does, however rounding falls near a whole turn.
 fn one_arc(sketch: &Sketch, [center, start, end]: [&ElementId; 3], swept: &[(f64, f64)]) -> bool {
-    let total: f64 = swept.iter().map(|(_, sweep)| sweep).sum();
-    let widest = swept.iter().map(|(_, sweep)| *sweep).fold(0.0, f64::max);
     let joined = point_at(sketch, center)
         .zip(point_at(sketch, start))
         .zip(point_at(sketch, end))
         .and_then(|((c, s), e)| arc_from_points(c, s, e));
-    total < TAU && joined.is_some_and(|[_, from, to]| to - from > widest)
+    joined.is_some_and(|[_, from, to]| swept.iter().all(|(_, sweep)| to - from > *sweep))
 }
 
-/// `form` with the two members of a constraint whose order means nothing (two points level,
-/// two lines parallel, two curves equal) in one order, written out, so a repeat in the other
-/// order is found.
+/// `form` with the two curves of a constraint whose order means nothing (two lines parallel
+/// or perpendicular, two curves equal) in one order, written out, so a repeat in the other
+/// order is found. Only a constraint naming a curve is ever re-pointed, so only these, of
+/// the forms whose two members may be swapped, can come to repeat another (the points'
+/// forms, `horizontal_points`, `vertical_points`, and `distance`, never change).
 fn unordered(form: &Form) -> String {
     let mut form = form.clone();
     match &mut form {
-        Form::HorizontalPoints { a, b }
-        | Form::VerticalPoints { a, b }
-        | Form::Distance { a, b, .. }
-        | Form::Parallel { a, b }
-        | Form::Perpendicular { a, b }
-        | Form::Equal { a, b } => {
+        Form::Parallel { a, b } | Form::Perpendicular { a, b } | Form::Equal { a, b } => {
             if b < a {
                 std::mem::swap(a, b);
             }

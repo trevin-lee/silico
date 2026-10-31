@@ -1026,3 +1026,223 @@ fn arcs_with_no_centre_in_common_or_sweeping_a_turn_between_them_are_refused() {
         "arcs a0000000 and b0000000 both end at point n0000000: a join takes a piece that ends there and one that starts there"
     );
 }
+
+// ---- the review's cases
+
+#[test]
+fn an_on_re_pointed_onto_the_joined_lines_own_start_is_listed_only_as_removed() {
+    // k0 holds p0, a0's own start, on b1: re-pointed, it holds a0's start on a0, implied,
+    // so it goes, listed in `removed` alone, never in `modified` as well.
+    let before = pieces(
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "on", "point": "p0000000", "curve": "b1000000"}"#,
+    );
+    let joined = join(sketch_of(&before), &id("n0000000")).unwrap();
+    assert_eq!(joined.edited.modified, ids(&["a0000000"]));
+    assert_eq!(
+        joined.edited.removed,
+        ids(&["n0000000", "b1000000", "j0000000", "k0000000"])
+    );
+    assert!(joined.edited.sketch.constraints.is_empty());
+}
+
+#[test]
+fn a_point_line_distance_re_pointed_onto_the_joined_lines_own_start_is_refused_naming_it() {
+    // k0 holds p0, a0's own start, 1 from b1's line (stored, never solved here): re-pointed,
+    // it would hold a0's own point off a0 itself, which no curve's constraint may (the
+    // own-curve rule).
+    let before = pieces(
+        "",
+        "",
+        r#"{"id": "k0000000", "type": "point_line_distance", "point": "p0000000", "line": "b1000000", "value": 1, "side": "left", "driving": true}"#,
+    );
+    assert_eq!(
+        said(&refused(&before, "n0000000")),
+        (
+            "the join would make constraint k0000000 hold p0000000, a point of a0000000, on a0000000 itself",
+            Some("point"),
+            vec!["k0000000", "p0000000", "a0000000"],
+            None,
+            Some("remove the constraint first, or leave the pieces apart")
+        )
+    );
+}
+
+#[test]
+fn a_perpendicular_either_way_round_repeats_once_re_pointed_and_is_dropped() {
+    // g0, a vertical line from (8, 10) to (8, 20): k0 perpendicular g0, a0, k1
+    // perpendicular b1, g0, the same pair the other way round once b1 is a0: k1 removed.
+    let before = pieces(
+        &[point("g0000001", 8.0, 10.0), point("g0000002", 8.0, 20.0)].join(", "),
+        &line("g0000000", "g0000001", "g0000002"),
+        r#"{"id": "k0000000", "type": "perpendicular", "a": "g0000000", "b": "a0000000"}, {"id": "k0000001", "type": "perpendicular", "a": "b1000000", "b": "g0000000"}"#,
+    );
+    let joined = join(sketch_of(&before), &id("n0000000")).unwrap();
+    let kept: Vec<&str> = joined
+        .edited
+        .sketch
+        .constraints
+        .iter()
+        .map(|c| c.id.as_str())
+        .collect();
+    assert_eq!(kept, ["k0000000"]);
+    assert_eq!(joined.edited.modified, ids(&["a0000000"]));
+    assert_eq!(
+        joined.edited.removed,
+        ids(&["n0000000", "b1000000", "j0000000", "k0000001"])
+    );
+}
+
+#[test]
+fn an_arcs_equal_either_way_round_repeats_once_re_pointed_and_is_dropped() {
+    // The arc pieces about c0 (1, 2), a0 from r0 (4, 6) to n0 (−4, 2), b1 on to r1
+    // (1, −3), and a circle g9 of radius 5 about z9 (20, 2): k0 equal a0, g9 and k1 equal
+    // g9, b1, the same pair the other way round once b1 is a0: k1 removed; k2, a radius
+    // of b1, re-pointed to a0, modified.
+    let before = doc(
+        &[
+            point("c0000000", 1.0, 2.0),
+            point("r0000000", 4.0, 6.0),
+            point("n0000000", -4.0, 2.0),
+            point("r0000001", 1.0, -3.0),
+            point("z0000009", 20.0, 2.0),
+        ]
+        .join(", "),
+        "",
+        &circle("g0000009", "z0000009", 5.0),
+        &[
+            arc("a0000000", "c0000000", "r0000000", "n0000000"),
+            arc("b1000000", "c0000000", "n0000000", "r0000001"),
+        ]
+        .join(", "),
+        r#"{"id": "k0000000", "type": "equal", "a": "a0000000", "b": "g0000009"}, {"id": "k0000001", "type": "equal", "a": "g0000009", "b": "b1000000"}, {"id": "k0000002", "type": "radius", "curve": "b1000000", "value": 5, "driving": true}"#,
+    );
+    let joined = join(sketch_of(&before), &id("n0000000")).unwrap();
+    let after = with(&before, &joined.edited.sketch);
+    let kept: Vec<&str> = sketch_of(&after)
+        .constraints
+        .iter()
+        .map(|c| c.id.as_str())
+        .collect();
+    assert_eq!(kept, ["k0000000", "k0000002"]);
+    assert_eq!(
+        form(sketch_of(&after), "k0000002"),
+        &Form::Radius {
+            curve: element("a0000000"),
+            value: Length::parse("5").unwrap(),
+            driving: true,
+        }
+    );
+    assert_eq!(joined.edited.modified, ids(&["a0000000", "k0000002"]));
+    assert_eq!(
+        joined.edited.removed,
+        ids(&["n0000000", "b1000000", "k0000001"])
+    );
+}
+
+#[test]
+fn a_construction_circle_split_then_joined_is_construction_still_byte_for_byte() {
+    // A construction circle c0 of radius 3 about z0 (1, 2), split at (4, 2) and (−2, 2),
+    // exact in binary: two construction arcs, joined at the second point, c0 again,
+    // construction.
+    let before = doc(
+        &point("z0000000", 1.0, 2.0),
+        "",
+        &crate::fixture::circle_as("c0000000", "z0000000", 3.0, true),
+        "",
+        "",
+    );
+    let (split_doc, joined_doc, _) = split_then_join(
+        &before,
+        "c0000000",
+        &[[4.0, 2.0], [-2.0, 2.0]],
+        &["n0000000", "n0000001", "c1000000"],
+        "n0000001",
+    );
+    assert!(sketch_of(&split_doc).arcs.iter().all(|a| a.construction));
+    assert_eq!(sketch_of(&split_doc).arcs.len(), 2);
+    let circles = &sketch_of(&joined_doc).circles;
+    assert_eq!(circles.len(), 1);
+    assert!(circles[0].construction);
+    assert_eq!(text(&joined_doc), text(&before));
+}
+
+/// The ulp of 3: 2⁻⁵¹, the gap between 3 and the next double either way.
+const ULP_OF_3: f64 = 4.440_892_098_500_626e-16;
+
+#[test]
+fn a_circle_split_where_its_point_isnt_exact_comes_back_of_the_kept_arcs_radius_within_an_ulp() {
+    // the_circle (radius 3 about z0 (1, 2)) split at (1 − 3/√2, 2 − 3/√2), at 225°, which
+    // the split projects onto the circle as best a double can, and (4, 2): c0 runs from n0
+    // to n1, c1 from n1 to n0. Joined at n1, c0 is the circle again, of its own radius,
+    // from z0 to n0 as stored, which no longer need be 3 exactly: within one ulp of it.
+    let before = the_circle();
+    let (split_doc, joined_doc, joined) = split_then_join(
+        &before,
+        "c0000000",
+        &[
+            [-1.121_320_343_559_642_4, -0.121_320_343_559_642_39],
+            [4.0, 2.0],
+        ],
+        &["n0000000", "n0000001", "c1000000"],
+        "n0000001",
+    );
+    assert_eq!(joined.pieces, [id("c0000000"), id("c1000000")]);
+    let n0 = sketch_of(&split_doc)
+        .points
+        .iter()
+        .find(|p| p.id == id("n0000000"))
+        .unwrap();
+    let (x, y) = (n0.x.mm(), n0.y.mm());
+    // By hand: the root of the squared differences from the centre (1, 2).
+    let by_hand = ((x - 1.0) * (x - 1.0) + (y - 2.0) * (y - 2.0)).sqrt();
+    let circle = sketch_of(&joined_doc)
+        .circles
+        .iter()
+        .find(|c| c.id == id("c0000000"))
+        .unwrap();
+    assert_eq!(circle.radius.mm().to_bits(), by_hand.to_bits());
+    assert!(
+        (circle.radius.mm() - 3.0).abs() <= ULP_OF_3,
+        "{}",
+        circle.radius.mm()
+    );
+    assert_eq!(circle.center, id("z0000000"));
+    assert_eq!(joined.edited.modified[0], id("c0000000"));
+}
+
+#[test]
+fn a_circles_two_arcs_whose_shared_points_sit_at_two_distances_take_the_kept_arcs_radius() {
+    // Arcs about z0 (1, 2): c0 from n0 (4, 2), 3 from the centre, to n1 (−3, 2), 4 from
+    // it; c1 from n1 back to n0. Joined at n1, c0 is kept: the radius from z0 to its
+    // start, n0, 3. Joined at n0, c1 is: from z0 to n1, 4. Never the other arc's.
+    let before = doc(
+        &[
+            point("z0000000", 1.0, 2.0),
+            point("n0000000", 4.0, 2.0),
+            point("n0000001", -3.0, 2.0),
+        ]
+        .join(", "),
+        "",
+        "",
+        &[
+            arc("c0000000", "z0000000", "n0000000", "n0000001"),
+            arc("c1000000", "z0000000", "n0000001", "n0000000"),
+        ]
+        .join(", "),
+        "",
+    );
+    for (point, kept, radius) in [("n0000001", "c0000000", 3.0), ("n0000000", "c1000000", 4.0)] {
+        let joined = join(sketch_of(&before), &id(point)).unwrap();
+        let circles: Vec<_> = joined
+            .edited
+            .sketch
+            .circles
+            .iter()
+            .map(|c| (c.id.as_str(), c.center.as_str(), c.radius.mm()))
+            .collect();
+        assert_eq!(circles, [(kept, "z0000000", radius)], "{point}");
+        assert_eq!(joined.edited.modified, ids(&[kept]), "{point}");
+    }
+}
