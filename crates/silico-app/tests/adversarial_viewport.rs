@@ -516,6 +516,13 @@ fn advance(time: &Mutex<Instant>, by: Duration) {
     *now += by;
 }
 
+/// Frames until the core's waker has told of everything since `before` wakes: a read's
+/// answer wakes the app once its reply is sent, which may be after the frame that took it,
+/// and its frame asked at once would make a measured delay ZERO.
+fn woken(h: &mut AppHarness, before: u64) {
+    step_until(h, "the read's wake", |h| h.state().wakes() > before);
+}
+
 /// The frame the last one asked for, in time.
 fn repaint_delay(h: &AppHarness) -> Option<Duration> {
     h.output()
@@ -585,11 +592,13 @@ fn a_read_refused_while_the_kernel_fails_is_asked_again_on_its_backoff_and_a_new
     meshes_settled(&mut h, 0);
     failing.store(true, Ordering::SeqCst);
     let reads = view(&h).reads();
+    let wakes = h.state().wakes();
     let zoomed = the_small_cube_at_0_04(&h);
     view_mut(&mut h).set_camera(zoomed);
     step_until(&mut h, "the refused read", |h| {
         view(h).reads() > reads && !view(h).reading()
     });
+    woken(&mut h, wakes);
     assert_ne!(view(&h).bodies()[&1].level, 0.03125);
     let message = h.state().tabs()[0].message.clone().unwrap_or_default();
     assert!(
@@ -614,8 +623,10 @@ fn a_read_refused_while_the_kernel_fails_is_asked_again_on_its_backoff_and_a_new
     advance(&time, Duration::from_millis(249));
     assert_eq!(reads_over(&mut h, 10), 0);
     // Due: read once, refused again, and the next in 500 ms.
+    let wakes = h.state().wakes();
     advance(&time, Duration::from_millis(1));
     assert_eq!(reads_over(&mut h, 10), 1);
+    woken(&mut h, wakes);
     for _ in 0..3 {
         step(&mut h);
     }
@@ -663,11 +674,13 @@ fn a_due_retry_with_no_read_wanted_asks_for_no_frame_at_the_displays_rate() {
     let settled = view(&h).camera().clone();
     failing.store(true, Ordering::SeqCst);
     let reads = view(&h).reads();
+    let wakes = h.state().wakes();
     let zoomed = the_small_cube_at_0_04(&h);
     view_mut(&mut h).set_camera(zoomed);
     step_until(&mut h, "the refused read", |h| {
         view(h).reads() > reads && !view(h).reading()
     });
+    woken(&mut h, wakes);
     view_mut(&mut h).set_camera(settled);
     advance(&time, Duration::from_millis(300));
     // The first frame sees the view move and asks for the next; egui repaints once more
@@ -1308,5 +1321,60 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
     });
     step(&mut h);
     assert!(view_height(view(&h).camera()) > 1.9 * far);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_view_moving_while_a_new_revision_is_refused_for_the_moment_reads_nothing_until_it_settles() {
+    // The bodies are of an older revision, so any view of the new one would read; its read
+    // was refused for the moment. A pan of thirty frames, each another view, the time not
+    // moving: no read. Let go and settled: one, at once (refused again, its next half a
+    // second off, the backoff going on).
+    let f = fixture();
+    let failing = failing_kernel(&f);
+    let (time, clock) = hand_clock();
+    let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
+    meshes_settled(&mut h, 0);
+    failing.store(true, Ordering::SeqCst);
+    let id = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&id).session.unwrap().revision;
+    let reads = view(&h).reads();
+    let wakes = h.state().wakes();
+    f.sessions
+        .set_field(
+            &id,
+            revision,
+            FeatureId::new("k7f2qx3m").unwrap(),
+            "height".to_owned(),
+            json::read(b"60").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new revision's refused read", |h| {
+        view(h).reads() > reads && !view(h).reading()
+    });
+    woken(&mut h, wakes);
+    let refused = view(&h).reads();
+    assert_eq!(refused, reads + 1);
+    let at = rect(&h).center() - vec2(100.0, 0.0);
+    h.hover_at(at);
+    button(&h, at, PointerButton::Middle, true);
+    step(&mut h);
+    for i in 1..=30u8 {
+        h.hover_at(at + vec2(2.0 * f32::from(i), 0.0));
+        step(&mut h);
+    }
+    assert_eq!(view(&h).reads(), refused, "a read while the view moved");
+    button(&h, at + vec2(60.0, 0.0), PointerButton::Middle, false);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    step_until(&mut h, "no read out", |h| !view(h).reading());
+    assert_eq!(view(&h).reads(), refused + 1);
+    // Refused again: nothing more until half a second has passed.
+    assert_eq!(reads_over(&mut h, 20), 0);
+    advance(&time, Duration::from_millis(500));
+    assert_eq!(reads_over(&mut h, 5), 1);
     assert_eq!(never_waits::waits(), 0);
 }
