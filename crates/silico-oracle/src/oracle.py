@@ -577,19 +577,19 @@ def edit_delete(s, e, applied):
 def edit_unjoin(s, e, applied):
     g, pos = e["geometry"], e["position"]
     # An end-to-end tangency between the curve and another at the point: Silico removes it,
-    # since they no longer meet (sketch-edit.md:267); the vertex Delete keeps it, and with
+    # since they no longer meet (sketch-edit.md:272); the vertex Delete keeps it, and with
     # it the joint, which FreeCAD unjoins by deleting the tangency.
     ends = [i for i, c in enumerate(s.Constraints)
             if c.Type in ("Tangent", "Perpendicular") and c.FirstPos != 0 and c.SecondPos != 0
             and ((c.First == g and c.FirstPos == pos) or (c.Second == g and c.SecondPos == pos))]
     if ends:
         drop(s, ends)
-        applied.append(267)
+        applied.append(272)
     joined = any(c.Type == "Coincident" and [g, pos] in refs_of(c) for c in s.Constraints)
     if ends and not joined:
         return
     # The vertex Delete drops the curve's own length (0358ff7ce2), which Silico keeps
-    # (sketch-edit.md:261, 267): put back.
+    # (sketch-edit.md:266, 267): put back.
     lengths = [captured(s, i) for i, c in enumerate(s.Constraints)
                if c.Type in ("Distance", "DistanceX", "DistanceY") and c.First == g
                and c.FirstPos == 0 and c.Second == GEO_UNDEF]
@@ -597,7 +597,7 @@ def edit_unjoin(s, e, applied):
     for cap in lengths:
         if not named(s, cap["name"]):
             put_back(s, cap)
-            applied.append(268)
+            applied.append(273)
 
 
 def edit_vertex_delete(s, e, applied):
@@ -635,7 +635,7 @@ def edit_split(s, e, applied):
         return
     if kind == "circle" and len(at) != 2:
         # A circle split at one position: 1.1.3's one arc, whose ends aren't joined (:149),
-        # which Silico refuses (decision 3, :529).
+        # which Silico refuses (decision 3, :534).
         edit_call(s.split, g, at[0])
         return
     original = s.Geometry[g].copy()
@@ -646,7 +646,7 @@ def edit_split(s, e, applied):
     # `on` or point-to-line distance, which it drops (:167); a symmetric about the curve,
     # which it drops (:170); and a tangency at the curve's end, which it makes a Coincident
     # (:150, :171); a circle's or arc's edge tangency, which 1.1.3 drops (c823a6b270,
-    # :386); and a tangent_on onto the curve, which 1.1.3 puts on both of a line's pieces
+    # :391); and a tangent_on onto the curve, which 1.1.3 puts on both of a line's pieces
     # and drops from a round's (:172).
     held = []
     for i, c in enumerate(s.Constraints):
@@ -721,19 +721,19 @@ def edit_split(s, e, applied):
         span = lambda t: g if t <= ts else (piece if t <= last else g)
     if kind == "circle":
         # A circle splits at two positions into two arcs that meet at both (decision 3,
-        # sketch-edit.md:529); 1.1.3's first split leaves an arc whose ends aren't joined
+        # sketch-edit.md:534); 1.1.3's first split leaves an arc whose ends aren't joined
         # (:149).
         s.addConstraint(Sketcher.Constraint("Coincident", g, 1, piece, 2))
-        applied.append(529)
+        applied.append(534)
     if kind == "line":
         # Line pieces held collinear by an end-to-end Tangent at the split point, as main
-        # since 6d06b61c7e; 1.1.3 joins them with a Coincident (decision 1, :154-155, :527).
+        # since 6d06b61c7e; 1.1.3 joins them with a Coincident (decision 1, :154-155, :532).
         joint = [i for i, c in enumerate(s.Constraints) if c.Type == "Coincident"
                  and sorted(map(tuple, refs_of(c))) == sorted([(g, 2), (piece, 1)])]
         if joint:
             drop(s, joint)
             s.addConstraint(Sketcher.Constraint("Tangent", g, 2, piece, 1))
-            applied.append(527)
+            applied.append(532)
         # Direction constraints on the start-side piece only, which 1.1.3 copies to both
         # (decision 1, :161-162).
         on_g = {(c.Type, tuple(map(tuple, [r for r in refs_of(c) if r != [g, 0]])))
@@ -746,7 +746,7 @@ def edit_split(s, e, applied):
             drop(s, copies)
             applied.append(161)
     # An edge tangency, which 1.1.3 copies to both pieces, to the piece whose span holds the
-    # contact, else the start-side one (decision 2, :168, :528).
+    # contact, else the start-side one (decision 2, :168, :533).
     both = []
     for i, c in enumerate(s.Constraints):
         refs = refs_of(c)
@@ -793,13 +793,13 @@ def edit_split(s, e, applied):
             applied.append(170)
         elif rule == "round_tangent":
             # To the piece whose span holds the contact, else the start-side one (decision
-            # 2, :168, :528).
+            # 2, :168, :533).
             other = [r for r in refs if r[0] != g][0][0]
             point = contact(original, s.Geometry[other]) if other >= 0 else None
             holder = span(param(point)) if point is not None else g
             refs = [[holder, 0] if r == [g, 0] else r for r in refs]
             put_back(s, cap, refs)
-            applied.append(386)
+            applied.append(391)
         elif rule == "onto":
             # To the piece holding its point, as main's findPieceContainingPoint (:172).
             point = s.getPoint(refs[0][0], refs[0][1])
@@ -824,7 +824,7 @@ def edit_trim(s, e, applied):
     kind = curve_kind(geo)
     ends = [s.getPoint(g, pos) for pos in (1, 2)] if kind in ("line", "arc") else []
     # Cutter ends held on the curve, by a PointOnObject or an endpoint-to-edge Tangent: the
-    # only ones Silico's pieces share (decision 5, :238, :531).
+    # only ones Silico's pieces share (decision 5, :238, :536).
     held = set()
     for c in s.Constraints:
         if c.Type in ("PointOnObject", "Tangent") and c.FirstPos in (1, 2) and c.Second == g and c.SecondPos == 0:
@@ -841,7 +841,7 @@ def edit_trim(s, e, applied):
     pieces = {keep} | {gid(s, i) for i in range(len(s.Geometry)) if gid(s, i) not in ids_before}
     # A new end at a cut joined to the cutter's end by 1.1.3's 5e-5 mm test, where no
     # constraint held that end on the curve: Silico gives the piece a new point on the
-    # cutter instead (decision 5, :238, :531).
+    # cutter instead (decision 5, :238, :536).
     swap = []
     for i, c in enumerate(s.Constraints):
         if c.Type != "Coincident":
@@ -861,7 +861,7 @@ def edit_trim(s, e, applied):
         drop(s, [i for i, *_ in swap])
         for _, pg, pp, og in swap:
             s.addConstraint(Sketcher.Constraint("PointOnObject", pg, pp, og))
-        applied.append(531)
+        applied.append(536)
     # A cutter's perpendicular, which 1.1.3 makes an end-to-edge perpendicular at its cut
     # (:210): Silico's is the perpendicular between the directions and the new end's on
     # the cutter, which together are FreeCAD's (:246).
@@ -902,7 +902,7 @@ def edit_extend(s, e, applied):
     if e["target"] is None:
         return
     # A line's moving end, written at the request's target after the drag, as decision (3)
-    # writes Silico's (sketch-edit.md:328), at each of FreeCAD's places that are Silico's
+    # writes Silico's (sketch-edit.md:333), at each of FreeCAD's places that are Silico's
     # point, so both solves start alike; the rest of FreeCAD's drag frame as it left it. An
     # arc is set as Silico's model takes one from its points (arc_from_points): the radius
     # from its centre to its start, the angles of its start and end. The geometry list set
@@ -940,7 +940,7 @@ def edit_extend(s, e, applied):
     for i, was in enumerate(construction):
         if s.getConstruction(i) != was:
             s.setConstruction(i, was)
-    applied.append(328)
+    applied.append(333)
 
 
 SKETCH_EDITS = {
@@ -1006,7 +1006,7 @@ def built(doc, name, geometry, job):
 
 def placed_solve(doc, job):
     """For points merged from apart, the merge of the sketch with them placed where Silico's
-    merge places them (sketch-edit.md:298), solved: FreeCAD's solve from Silico's start, and
+    merge places them (sketch-edit.md:303), solved: FreeCAD's solve from Silico's start, and
     the geometry it leaves. None where FreeCAD refuses that merge."""
     p = built(doc, "Placed", job["edit"]["placed"], job)
     try:
