@@ -2540,7 +2540,10 @@ fn save_as(h: &mut AppHarness, path: &Path) {
         .last()
         .unwrap()
         .click_accesskit();
-    step(h);
+    step_until(h, "the Save As dialog gone", |h| {
+        h.query_by_label_contains("Save example.silico as")
+            .is_none()
+    });
 }
 
 #[test]
@@ -2740,5 +2743,205 @@ fn typing_while_a_save_as_runs_comes_after_it_in_a_new_transaction() {
     });
     assert!(h.state().tabs()[0].transaction);
     assert_eq!(names_in(&copy), ["Block", "xPin", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_refused_save_as_that_began_its_own_transaction_rolls_it_back() {
+    // No transaction open, then Save As to a file already there: the Save As began one,
+    // and, asked whether to replace and told Cancel, the tab holds none, so an agent's
+    // change to the file is reloaded as with no Save As tried.
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let there = f.file("there.silico", "an older copy");
+    save_as(&mut h, &there);
+    let asked = format!("{} already exists. Replace it?", there.to_str().unwrap());
+    step_until(&mut h, "the question", |h| anywhere(h, &asked));
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "rolled back", |h| {
+        !anywhere(h, &asked) && !h.state().tabs()[0].transaction && h.state().tabs()[0].edits.idle()
+    });
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), "an older copy");
+    std::fs::write(
+        &old,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#),
+    )
+    .unwrap();
+    step_until(&mut h, "the agent's change reloaded", |h| {
+        shows(h, "Timeline", "Drill")
+    });
+    assert!(!anywhere(&h, "example.silico *"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_as_takes_every_edit_before_it_and_none_after() {
+    // Two keystrokes before it (one in flight, one queued) and one after, all held behind
+    // the session's queue: the new file has the two, and the third is a new transaction's.
+    let f = fixture();
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the transaction begun", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "1");
+    type_name(&mut h, "2");
+    let before = name_field(&h).value().unwrap();
+    let copy = f.dir.path().join("copy.silico");
+    save_as(&mut h, &copy);
+    type_name(&mut h, "3");
+    let after = name_field(&h).value().unwrap();
+    assert_ne!(before, after);
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the last keystroke applied", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", &after)
+    });
+    step_until(&mut h, "unsaved on the new file", |h| {
+        anywhere(h, "copy.silico *")
+    });
+    assert_eq!(names_in(&copy), ["Block", before.as_str(), "Hole"]);
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_as_queued_behind_a_save_begins_again_and_writes() {
+    let f = fixture();
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    let copy = f.dir.path().join("copy.silico");
+    save_as(&mut h, &copy);
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the tab of the new file", |h| {
+        anywhere(h, "copy.silico") && !anywhere(h, "copy.silico *")
+    });
+    assert_eq!(names_in(&old), ["Block", "xPin", "Hole"]);
+    assert_eq!(names_in(&copy), ["Block", "xPin", "Hole"]);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_revert_after_a_queued_save_as_keeps_it_and_has_nothing_left_to_revert() {
+    let f = fixture();
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the transaction begun", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "y");
+    let typed = name_field(&h).value().unwrap();
+    let copy = f.dir.path().join("copy.silico");
+    save_as(&mut h, &copy);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Revert").click();
+    step(&mut h);
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the tab of the new file", |h| {
+        anywhere(h, "copy.silico") && !anywhere(h, "copy.silico *")
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(names_in(&copy), ["Block", typed.as_str(), "Hole"]);
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_replace_question_waits_for_another_question_to_be_answered() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    let there = f.file("there.silico", "an older copy");
+    let (hold, check) = hold_queue(&f, &h, 0);
+    save_as(&mut h, &there);
+    // Another question asked while the Save As waits.
+    h.get_by_label("File").click();
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "New…").click();
+    step_until(&mut h, "the New question", |h| anywhere(h, "New document"));
+    hold.release();
+    let _ = check.wait();
+    let asked = format!("{} already exists. Replace it?", there.to_str().unwrap());
+    for _ in 0..20 {
+        step(&mut h);
+        assert!(
+            anywhere(&h, "New document"),
+            "the New question was replaced"
+        );
+    }
+    assert!(!anywhere(&h, &asked));
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the Replace question", |h| anywhere(h, &asked));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_as_is_off_while_the_tab_closes() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_label("Close example.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step(&mut h);
+    assert!(h.state().tabs()[0].closing());
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Save As…")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    h.key_press_modifiers(
+        eframe::egui::Modifiers::COMMAND | eframe::egui::Modifiers::SHIFT,
+        eframe::egui::Key::S,
+    );
+    step(&mut h);
+    assert!(!anywhere(&h, "Save example.silico as"));
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
     assert_eq!(never_waits::waits(), 0);
 }

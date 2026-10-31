@@ -198,7 +198,10 @@ impl<P: Clients + 'static> App<P> {
         }
         for tab in &mut self.tabs {
             tab.poll(&self.sessions);
-            if let Some(path) = tab.take_replace_asked() {
+            // Asked once nothing else is: kept on the tab meanwhile.
+            if self.asking.is_none()
+                && let Some(path) = tab.take_replace_asked()
+            {
                 self.asking = Some(Asking::Replace(tab.id, path));
             }
             if tab.take_close_refused() && self.quitting {
@@ -212,6 +215,13 @@ impl<P: Clients + 'static> App<P> {
         if self.active_place().is_none() {
             self.active = self.tabs.last().map(|tab| tab.id);
         }
+    }
+
+    /// Whether Save As is offered: a tab shown, and not closing (its edits go with it).
+    fn save_as_offered(&self) -> bool {
+        self.active_place()
+            .and_then(|at| self.tabs.get(at))
+            .is_some_and(|tab| !tab.closing())
     }
 
     /// The place among the tabs of the one shown, if one is.
@@ -234,8 +244,8 @@ impl<P: Clients + 'static> App<P> {
                 Key::S,
             ))
         });
-        if save_as && let Some(id) = self.active {
-            self.asking = Some(Asking::SaveAs(id));
+        if save_as && self.save_as_offered() {
+            self.asking = self.active.map(Asking::SaveAs);
             return false;
         }
         let pressed = |key| {
@@ -312,7 +322,7 @@ impl<P: Clients + 'static> App<P> {
                             ui.close();
                         }
                         if ui
-                            .add_enabled(self.active.is_some(), egui::Button::new("Save As…"))
+                            .add_enabled(self.save_as_offered(), egui::Button::new("Save As…"))
                             .clicked()
                         {
                             if let Some(id) = self.active {

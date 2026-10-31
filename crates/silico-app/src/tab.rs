@@ -112,11 +112,13 @@ enum Under {
         then_close: bool,
     },
     Step(Running<Stepped>),
-    /// A Save As, and the path it was given, which the tab asks to replace if a file is
-    /// there.
+    /// A Save As, the path it was given, which the tab asks to replace if a file is
+    /// there, and whether the tab began the transaction it commits (rolled back if it's
+    /// refused, so no empty transaction stays open).
     SaveAs {
         running: Running<Committed>,
         path: String,
+        began: bool,
     },
     Close(Running<Closed>),
 }
@@ -208,6 +210,8 @@ pub struct Tab {
     /// A Save As found a file at the path it was given, and wasn't to replace it: the path,
     /// for the window to ask whether to ([`take_replace_asked`](Self::take_replace_asked)).
     replace_asked: Option<String>,
+    /// A Save As that began its own transaction was refused: it's rolled back next.
+    roll_back: bool,
     /// The session has closed: the tab goes.
     pub closed: bool,
 }
@@ -261,6 +265,7 @@ impl Tab {
             message: None,
             close_refused: false,
             replace_asked: None,
+            roll_back: false,
             closed: false,
         }
     }
@@ -451,6 +456,12 @@ impl Tab {
         if close {
             self.under.push(Under::Close(sessions.close(&self.id)));
         }
+        if std::mem::take(&mut self.roll_back) {
+            self.under.push(Under::Rollback {
+                running: sessions.rollback(&self.id),
+                then_close: false,
+            });
+        }
         self.advance(sessions);
     }
 
@@ -494,7 +505,11 @@ impl Tab {
                     then_close,
                 }),
             },
-            Under::SaveAs { running, path } => match running.try_take() {
+            Under::SaveAs {
+                running,
+                path,
+                began,
+            } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
                     match response.result {
@@ -504,6 +519,8 @@ impl Tab {
                             self.disk_choice = DiskChoice::None;
                         }
                         Err(problems) => {
+                            // Its own transaction, begun for it, ended: it held nothing.
+                            self.roll_back |= began;
                             if problems.errors().first().and_then(|e| e.suggestion())
                                 == Some(silico_core::file::REPLACE_ADVICE)
                             {
@@ -515,7 +532,11 @@ impl Tab {
                     }
                     None
                 }
-                Err(running) => Some(Under::SaveAs { running, path }),
+                Err(running) => Some(Under::SaveAs {
+                    running,
+                    path,
+                    began,
+                }),
             },
             Under::Rollback {
                 running,
@@ -645,7 +666,8 @@ impl Tab {
                 Queued::SaveAs { path, replace } => {
                     // A transaction begun first if none is open: a Save As commits one,
                     // and one with nothing changed writes the document all the same.
-                    if !self.transaction && !self.beginning {
+                    let began = !self.transaction && !self.beginning;
+                    if began {
                         self.beginning = true;
                         self.under.push(Under::Begin(sessions.begin(&self.id)));
                     }
@@ -653,6 +675,7 @@ impl Tab {
                     self.under.push(Under::SaveAs {
                         running: sessions.save_as(&self.id, path.clone(), replace),
                         path,
+                        began,
                     });
                 }
                 Queued::Save { then_close } => {
