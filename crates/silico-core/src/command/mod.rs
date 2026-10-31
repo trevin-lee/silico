@@ -112,6 +112,9 @@ pub struct Limits {
     pub sketch_seconds: u64,
     /// What a transaction's undo stack holds, in bytes, as its bound counts them.
     pub undo_bytes: usize,
+    /// The least time from one comparison of a session's file on disk ending to the next
+    /// one starting, in milliseconds.
+    pub disk_check_ms: u64,
 }
 
 /// What `version` answers.
@@ -143,6 +146,7 @@ pub const VERSION: Version = Version {
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
         undo_bytes: document::undo::UNDO_BYTES,
+        disk_check_ms: crate::disk::DISK_CHECK_MS,
     },
 };
 
