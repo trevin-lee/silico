@@ -180,21 +180,26 @@ pub fn meshes<K: Kernel>(
         .map(|h| (h.key, h.deflection.to_bits()))
         .collect();
     // A body the client holds at the deflection it would be meshed at is answered without
-    // the kernel, whether or not the shared cache still keeps its mesh: the cache keeps
-    // steps' floors apart from their meshes, so a body held at its floor is known to be.
-    // Once a floor has been dropped from them too, the body is meshed again to learn it,
-    // and answered as it would have been: only the time differs.
-    let planned: Vec<(f64, f64)> = solids
+    // the kernel, whether or not the shared cache still keeps its mesh, when the cache knows
+    // that deflection: the floor a mesh met, or a level a mesh was made at as asked (so the
+    // floor is no coarser), kept apart from the meshes. Otherwise, a level under a floor
+    // not known, or one dropped from the cache's floors, the body is meshed to learn it,
+    // and its held entry compared with the deflection the kernel used: answered as it
+    // would have been, so only the time differs.
+    let planned: Vec<(f64, Option<f64>)> = solids
         .iter()
         .map(|solid| {
             let level = level_of(&camera, request.height, solid);
-            (level, on.meshes.deflection_for(&solid.key, level))
+            (level, on.meshes.known(&solid.key, level))
         })
         .collect();
+    let held_known = |solid: &Body, known: Option<f64>| {
+        known.is_some_and(|deflection| held.contains(&(solid.key, deflection.to_bits())))
+    };
     let to_mesh: Vec<&Body> = solids
         .iter()
         .zip(&planned)
-        .filter(|(solid, (_, deflection))| !held.contains(&(solid.key, deflection.to_bits())))
+        .filter(|(solid, (_, known))| !held_known(solid, *known))
         .map(|(solid, _)| solid)
         .collect();
     let mut made = meshed(
@@ -210,26 +215,27 @@ pub fn meshes<K: Kernel>(
         .iter()
         .zip(&chosen)
         .zip(planned)
-        .map(|((solid, (_, number)), (level, deflection))| {
+        .map(|((solid, (_, number)), (level, known))| {
             let map = model
                 .element_map(solid.id)
                 .ok_or_else(|| unnamed(solid.id))?;
-            let (level, deflection, mesh) = if held.contains(&(solid.key, deflection.to_bits())) {
-                (level, deflection, None)
-            } else {
-                let Some(made) = made.next() else {
-                    return Err(Problems::from(
-                        Error::new(
-                            ErrorCode::Internal,
-                            format!("{} was asked to be meshed, and no mesh came", solid.id),
-                        )
-                        .with_feature(solid.id.as_str())
-                        .with_suggestion(SILICO_BUG),
-                    ));
+            let (level, deflection, mesh) =
+                if let Some(deflection) = known.filter(|_| held_known(solid, known)) {
+                    (level, deflection, None)
+                } else {
+                    let Some(made) = made.next() else {
+                        return Err(Problems::from(
+                            Error::new(
+                                ErrorCode::Internal,
+                                format!("{} was asked to be meshed, and no mesh came", solid.id),
+                            )
+                            .with_feature(solid.id.as_str())
+                            .with_suggestion(SILICO_BUG),
+                        ));
+                    };
+                    consistent(solid, map, &made.mesh, on.meshes, made.deflection)?;
+                    (made.level, made.deflection, Some(made.mesh))
                 };
-                consistent(solid, map, &made.mesh, on.meshes, made.deflection)?;
-                (made.level, made.deflection, Some(made.mesh))
-            };
             // Held at the deflection the kernel used (a floor it didn't know before): the
             // client has it too.
             let is_held = held.contains(&(solid.key, deflection.to_bits()));

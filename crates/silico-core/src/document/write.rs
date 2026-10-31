@@ -147,6 +147,11 @@ pub(crate) enum Out<'a> {
     Array(Vec<Out<'a>>),
     /// An array written an item to a line, whatever it holds.
     Lines(Vec<Out<'a>>),
+    /// An array written as [`Lines`](Out::Lines) is, each item made only as it's written and
+    /// dropped once it is: a list of large items (`meshes`' bodies), so no more than one
+    /// item's tree is held at once, and none past the writer's limit is made.
+    /// Its items own what they write (`Out<'static>`), so `Out` stays covariant in `'a`.
+    Each(Vec<Box<dyn Fn() -> Out<'static> + 'a>>),
     Object(Vec<(&'static str, Out<'a>)>),
     /// An object whose keys are known only when Silico runs (a JSON Schema's, or a value of
     /// a document's or a request's), in the order given.
@@ -159,7 +164,7 @@ impl Out<'_> {
         match self {
             Out::Raw(_) | Out::Str(_) | Out::Owned(_) => false,
             // Written over lines, as an object is.
-            Out::Object(_) | Out::Keyed(_) | Out::Lines(_) => true,
+            Out::Object(_) | Out::Keyed(_) | Out::Lines(_) | Out::Each(_) => true,
             Out::Array(items) => items.iter().any(Out::holds_object),
         }
     }
@@ -171,6 +176,7 @@ impl Out<'_> {
             Out::Raw(_) | Out::Str(_) | Out::Owned(_) => true,
             Out::Array(items) => !items.iter().any(Out::holds_object),
             Out::Lines(items) => items.is_empty(),
+            Out::Each(items) => items.is_empty(),
             Out::Object(members) => !members.iter().any(|(_, v)| v.holds_object()),
             Out::Keyed(members) => !members.iter().any(|(_, v)| v.holds_object()),
         }
@@ -780,6 +786,29 @@ impl Writer {
                         self.pad(indent + 1)?;
                         self.put(item, indent + 1)?;
                         self.push(if i + 1 < items.len() { ",\n" } else { "\n" })?;
+                    }
+                    self.pad(indent)?;
+                    self.push("]")
+                }
+            }
+            Out::Each(makes) => {
+                if makes.is_empty() {
+                    self.push("[]")
+                } else if self.one_line {
+                    self.push("[")?;
+                    for (i, make) in makes.iter().enumerate() {
+                        if i > 0 {
+                            self.push(", ")?;
+                        }
+                        self.put(&make(), indent)?;
+                    }
+                    self.push("]")
+                } else {
+                    self.push("[\n")?;
+                    for (i, make) in makes.iter().enumerate() {
+                        self.pad(indent + 1)?;
+                        self.put(&make(), indent + 1)?;
+                        self.push(if i + 1 < makes.len() { ",\n" } else { "\n" })?;
                     }
                     self.pad(indent)?;
                     self.push("]")

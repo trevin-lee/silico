@@ -159,6 +159,19 @@ impl<'a> Json<'a> {
         Json(Out::Array(items.into_iter().map(|j| j.0).collect()))
     }
 
+    /// An array written an item to a line, each item made by its closure only as it's
+    /// written and dropped once it is, none made past the response's limit: for a list of
+    /// large items (`meshes`' bodies), so a response holds one item's tree at a time.
+    /// Each item owns what it writes.
+    pub fn each<F: Fn() -> Json<'static> + 'a>(makes: impl IntoIterator<Item = F>) -> Self {
+        Json(Out::Each(
+            makes
+                .into_iter()
+                .map(|make| Box::new(move || make().0) as Box<dyn Fn() -> Out<'static> + 'a>)
+                .collect(),
+        ))
+    }
+
     /// An object, its members in the order given: schema order, never sorted.
     pub fn object(members: impl IntoIterator<Item = (&'static str, Json<'a>)>) -> Self {
         Json(Out::Object(
@@ -579,7 +592,18 @@ fn answer_within_or<T: ToWire>(
     if let Ok(written) = text(&self::response(response).0, layout, limit) {
         return (response.result.is_ok(), written);
     }
-    let too_long = Problems::from(too_long(response).unwrap_or_else(|| {
+    refused_too_long(response, layout, limit, too_long(response))
+}
+
+/// The refusal of `response`, too long to write within `limit`: for `error`, or, if it's
+/// none, as any response too long is refused; with the response's session and model.
+fn refused_too_long<T>(
+    response: &Response<T>,
+    layout: Layout,
+    limit: usize,
+    error: Option<Error>,
+) -> (bool, String) {
+    let too_long = Problems::from(error.unwrap_or_else(|| {
         Error::new(
             ErrorCode::InvalidInput,
             format!("the response would be more than the {limit} bytes a response may be"),

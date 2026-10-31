@@ -19,8 +19,11 @@
 //! (ask for fewer), or, when one body alone passes it, the side whose fewer pixels mesh it
 //! coarser: a camera's `height`, or the side that bound a named view's fit, as `render`
 //! names it for a scene past a frame. The session and model are kept, as any response too
-//! long keeps them. A Rust client takes the typed answer, whose meshes are shared, never
-//! written: only a response written is bounded.
+//! long keeps them. One certainly past it, by its meshes' lists' lengths alone
+//! ([`least_length`]), is refused before anything is built; any other is written a body at
+//! a time, each body's tree made as it's written and dropped before the next, and refused
+//! as soon as the text passes the bound. A Rust client takes the typed answer, whose meshes
+//! are shared, never written: only a response written is bounded.
 
 use schemars::JsonSchema;
 
@@ -30,7 +33,7 @@ use super::render::{
 };
 use super::{
     Json, Layout, MAX_RESPONSE_LEN, RequestFields, ToWire, answer_within_or, invalid, join,
-    wire_shape, written,
+    refused_too_long, wire_shape, written,
 };
 use crate::command::meshes::{Held, MeshElement, MeshedBody, Meshes, MeshesRead};
 use crate::command::session::SESSION_ID_PATTERN;
@@ -117,14 +120,15 @@ fn read_held(f: &mut RequestFields<'_>) -> Option<Held> {
             _ => None,
         };
         if deflection.is_none() {
-            let at = join(&f.path, "deflection");
-            f.refuse(
+            let path = &f.path;
+            f.refused.refuse_with(|| {
+                let at = join(path, "deflection");
                 invalid(
                     &at,
                     format!("{at} must be a positive number, got {}", written(node)),
                 )
-                .with_suggestion("give back the deflection a meshes result gave the mesh"),
-            );
+                .with_suggestion("give back the deflection a meshes result gave the mesh")
+            });
         }
         deflection
     });
@@ -175,7 +179,7 @@ impl ToWire for MeshesRequest {
 
 /// Each face or edge of a body: its name, its stability, and its count, `key` (`triangles`
 /// or `points`), with the geometry only (`null` when held).
-fn elements<'a>(elements: &'a [MeshElement], key: &'static str) -> Json<'a> {
+fn elements(elements: &[MeshElement], key: &'static str) -> Json<'static> {
     Json::array(elements.iter().map(move |e| {
         Json::object([
             ("name", Json::string(e.name.to_string())),
@@ -186,12 +190,21 @@ fn elements<'a>(elements: &'a [MeshElement], key: &'static str) -> Json<'a> {
 }
 
 impl ToWire for MeshedBody {
-    /// A body's mesh: what it's of, its level and what it serves, and, unless the client
-    /// holds it, its geometry, each face and edge named either way.
     fn to_wire(&self) -> Json<'_> {
+        self.owned_wire()
+    }
+}
+
+impl MeshedBody {
+    /// A body's mesh, owning its text, as a response writes one body at a time: what it's
+    /// of, its level and what it serves, and, unless the client holds it, its geometry, each
+    /// face and edge named either way.
+    fn owned_wire(&self) -> Json<'static> {
+        #[cfg(test)]
+        tests::BODIES_MADE.with(|made| made.set(made.get() + 1));
         let mesh = self.mesh.as_deref();
         Json::object([
-            ("feature", self.feature.to_wire()),
+            ("feature", Json::string(self.feature.as_str().to_owned())),
             ("body", Json::or_null(self.body, |n| Json::whole(n.into()))),
             ("key", Json::string(self.key.to_string())),
             ("level", Json::coordinate(self.level)),
@@ -246,9 +259,10 @@ impl ToWire for MeshesRead {
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("camera", answered_to_wire(&self.camera)),
+            // Each body's tree made as it's written: a response holds one at a time.
             (
                 "bodies",
-                Json::array(self.bodies.iter().map(ToWire::to_wire)),
+                Json::each(self.bodies.iter().map(|body| move || body.owned_wire())),
             ),
         ])
     }
@@ -267,6 +281,12 @@ pub(crate) fn answer_within(
     layout: Layout,
     limit: usize,
 ) -> (bool, String) {
+    // Refused at once, nothing built, if it's certainly too long: the same refusal.
+    if let Ok(read) = &response.result
+        && least_length(read) > u64::try_from(limit).unwrap_or(u64::MAX)
+    {
+        return refused_too_long(response, layout, limit, Some(too_long(read, limit)));
+    }
     answer_within_or(response, layout, limit, |response| {
         response
             .result
@@ -274,6 +294,30 @@ pub(crate) fn answer_within(
             .ok()
             .map(|read| too_long(read, limit))
     })
+}
+
+/// The fewest bytes `read`'s response can be written in, in either layout, by its meshes'
+/// lists alone: each point, normal, and triangle at least `[0, 0, 0]`, nine bytes, and two
+/// between each and the next (canonical layout only adds to that).
+pub(crate) fn least_length(read: &MeshesRead) -> u64 {
+    let list = |n: usize| {
+        let n = u64::try_from(n).unwrap_or(u64::MAX);
+        n.saturating_mul(11).saturating_sub(2)
+    };
+    read.bodies
+        .iter()
+        .filter_map(|body| body.mesh.as_deref())
+        .map(|m| {
+            [
+                list(m.positions.len()),
+                list(m.normals.len()),
+                list(m.triangles.len()),
+                list(m.edge_points.len()),
+            ]
+            .into_iter()
+            .fold(0u64, u64::saturating_add)
+        })
+        .fold(0u64, u64::saturating_add)
 }
 
 /// The refusal of `read`, whose response passes `limit`: naming `features` if it holds more
@@ -432,6 +476,16 @@ mod tests {
     use crate::command::render::AnsweredCamera;
     use crate::command::{ModelRead, Revision, SessionInfo};
     use crate::naming::{Maker, Name, OpCode};
+
+    thread_local! {
+        /// How many bodies' trees this thread has made to write: a response holds one at a
+        /// time, and one certainly too long makes none.
+        pub(super) static BODIES_MADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn made() -> usize {
+        BODIES_MADE.with(std::cell::Cell::get)
+    }
 
     fn name(text: &str) -> Arc<Name> {
         let maker = |f: &FeatureId| {
@@ -785,5 +839,105 @@ mod tests {
             assert_eq!(value["result"]["bodies"][0]["feature"], "k7f2qx3m");
             assert_eq!(value["result"]["bodies"][0]["held"], false);
         }
+    }
+
+    #[test]
+    fn the_least_length_is_the_lists_at_their_shortest_and_never_more_than_written() {
+        // The design's example, by hand: three positions and three normals, 3 · 9 + 2 · 2 =
+        // 31 each; one triangle, 9; two edge points, 20. 91, its camera and names aside.
+        let designs = MeshedBody {
+            mesh: Some(Arc::new(Mesh {
+                positions: vec![[0.0, 0.0, 0.0], [60.0, 0.0, 0.0], [60.0, 40.0, 0.0]],
+                normals: vec![[0.0, 0.0, -1.0]; 3],
+                triangles: vec![[0, 2, 1]],
+                face_triangles: vec![1],
+                valid: None,
+                edge_points: vec![[0.0, 0.0, 0.0], [60.0, 0.0, 0.0]],
+                edge_point_counts: vec![2],
+            })),
+            ..body("f0000001", 1)
+        };
+        let one = response(vec![designs], "height");
+        let Ok(read) = &one.result else { panic!() };
+        assert_eq!(least_length(read), 91);
+        // A held body has no lists: nothing.
+        let held = MeshedBody {
+            held: true,
+            mesh: None,
+            ..body("f0000002", 7)
+        };
+        let Ok(read) = &response(vec![held], "height").result else {
+            panic!()
+        };
+        assert_eq!(least_length(read), 0);
+        // Never more than the text, in either layout, however many triangles.
+        for triangles in [0, 1, 2, 10, 1000] {
+            let many = response(
+                vec![body("f0000001", triangles), body("f0000002", 3)],
+                "height",
+            );
+            let Ok(read) = &many.result else { panic!() };
+            for layout in [Layout::OneLine, Layout::Canonical] {
+                let text = super::super::write(&super::super::response(&many), layout).unwrap();
+                assert!(
+                    least_length(read) <= text.len() as u64,
+                    "{triangles} {layout:?}: {} over {}",
+                    least_length(read),
+                    text.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_response_certainly_too_long_is_refused_alike_making_no_bodys_tree() {
+        let two = response(vec![body("f0000001", 50), body("f0000002", 50)], "height");
+        let Ok(read) = &two.result else { panic!() };
+        let least = usize::try_from(least_length(read)).unwrap();
+        // Under the least it can be: refused before any body's tree is made, as written.
+        BODIES_MADE.with(|m| m.set(0));
+        let refused = refused_at(&two, least - 1);
+        assert_eq!(made(), 0);
+        assert_eq!(refused["errors"][0]["parameter"], "features");
+        assert_eq!(
+            refused["errors"][0]["message"],
+            format!(
+                "the meshes would make a response of more than the {} bytes a response may be",
+                least - 1
+            )
+        );
+        // At it, but under the whole text: written until it passes, then the same refusal.
+        let whole = super::super::write(&super::super::response(&two), Layout::OneLine).unwrap();
+        assert!(whole.len() > least);
+        BODIES_MADE.with(|m| m.set(0));
+        let late = refused_at(&two, least);
+        assert!(made() > 0);
+        assert_eq!(late["errors"][0]["parameter"], "features");
+        // Past the limit inside the first body: the second's tree is never made. A first body
+        // of 500 triangles and a second of 1: the least, 5,631 (5,498 + 31 + 31, then 9 +
+        // 31 + 31), is passed within the first body's 5,498 bytes of triangles and its
+        // envelope's.
+        let uneven = response(vec![body("f0000001", 500), body("f0000002", 1)], "height");
+        let Ok(r) = &uneven.result else { panic!() };
+        assert_eq!(least_length(r), 5631);
+        BODIES_MADE.with(|m| m.set(0));
+        refused_at(&uneven, 5631);
+        assert_eq!(made(), 1);
+        // At the text's own length: written whole, each body's tree made once.
+        BODIES_MADE.with(|m| m.set(0));
+        assert_eq!(
+            answer_within(&two, Layout::OneLine, whole.len()),
+            (true, whole.clone())
+        );
+        assert_eq!(made(), 2);
+        let value: serde_json::Value = serde_json::from_str(&whole).unwrap();
+        assert_eq!(value["result"]["bodies"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            value["result"]["bodies"][1]["triangles"]
+                .as_array()
+                .unwrap()
+                .len(),
+            50
+        );
     }
 }

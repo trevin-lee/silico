@@ -749,3 +749,97 @@ impl<P: Clients + 'static> Sessions<P> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use silico_protocol::{Camera, Mesh, Projection};
+
+    use super::*;
+    use crate::command::meshes::{MeshElement, MeshedBody};
+    use crate::command::render::AnsweredCamera;
+    use crate::document::FeatureId;
+    use crate::naming::{Maker, Name, OpCode};
+    use crate::recompute::Key;
+
+    /// `bodies` bodies sharing one mesh of `triangles` triangles: as long a response as
+    /// `bodies` times the mesh, for one mesh's memory.
+    fn read(bodies: usize, triangles: usize) -> Response<MeshesRead> {
+        let mesh = Arc::new(Mesh {
+            positions: vec![[0.0; 3]; 3],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            triangles: vec![[0, 1, 2]; triangles],
+            face_triangles: vec![u32::try_from(triangles).unwrap()],
+            valid: None,
+            edge_points: vec![],
+            edge_point_counts: vec![],
+        });
+        let name = Arc::new(
+            Name::parse("aaaaaaaa.cut.Face1", &|_: &FeatureId| {
+                Some(Maker::By(OpCode::Cut))
+            })
+            .unwrap(),
+        );
+        let body = MeshedBody {
+            feature: FeatureId::new("aaaaaaaa").unwrap(),
+            body: Some(1),
+            key: Key::parse(&"0".repeat(64)).unwrap(),
+            level: 0.03125,
+            deflection: 0.03125,
+            bounds: Some([[0.0; 3], [1.0; 3]]),
+            serves: [0.03125, 0.0625],
+            held: false,
+            mesh: Some(mesh),
+            faces: vec![MeshElement {
+                name,
+                stable: false,
+                count: Some(u32::try_from(triangles).unwrap()),
+            }],
+            edges: vec![],
+        };
+        let camera = AnsweredCamera::of(&Camera {
+            projection: Projection::Orthographic { view_height: 80.0 },
+            eye: [0.0, -100.0, 0.0],
+            target: [0.0; 3],
+            up: [0.0, 0.0, 1.0],
+        })
+        .unwrap();
+        Response {
+            session: None,
+            model: None,
+            result: Ok(MeshesRead {
+                camera,
+                bodies: vec![body; bodies],
+                coarser: "height",
+            }),
+        }
+    }
+
+    #[test]
+    fn meshes_by_name_is_refused_past_the_responses_limit_naming_features_as_meshes_says() {
+        // 1,000 bodies of 13,000 triangles each: at least 1,000 · (13,000 · 11 − 2 + 31 + 31)
+        // = 143,060,000 bytes, past the 134,217,728 a response may be. Refused as meshes'
+        // own refusal, naming `features`, never written whole and never the generic one.
+        let past = read(1000, 13_000);
+        let Ok(r) = &past.result else { panic!() };
+        assert_eq!(wire::meshes::least_length(r), 143_060_000);
+        const { assert!(143_060_000 > wire::MAX_RESPONSE_LEN) };
+        let answered = meshed(past);
+        assert!(!answered.ok);
+        let refused: serde_json::Value = serde_json::from_str(&answered.text).unwrap();
+        let e = &refused["errors"][0];
+        assert_eq!(e["parameter"], "features", "{refused}");
+        assert_eq!(
+            e["message"],
+            "the meshes would make a response of more than the 134217728 bytes a response may be"
+        );
+        assert!(answered.png.is_none());
+        // Within it: its envelope, on one line.
+        let small = read(2, 4);
+        let whole = wire::response_text(&small, Layout::OneLine);
+        let answered = meshed(small);
+        assert!(answered.ok);
+        assert_eq!(answered.text, whole);
+    }
+}
