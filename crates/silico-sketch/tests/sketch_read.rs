@@ -145,6 +145,7 @@ fn error(code: &str, message: &str, elements: &[&str], suggestion: &str) -> Valu
         "cause": null,
         "suggestion": suggestion,
         "candidates": [],
+        "advice": null,
     })
 }
 
@@ -684,6 +685,7 @@ fn a_feature_that_isnt_a_sketch_and_an_unknown_one_are_refused_naming_sketch() {
                 "cause": null,
                 "suggestion": "name a sketch of the document, by its ID",
                 "candidates": ["s0000001", "s0000002", "s0000003"],
+                "advice": null,
             }],
             "total": 1,
         })
@@ -705,7 +707,10 @@ fn a_feature_that_isnt_a_sketch_and_an_unknown_one_are_refused_naming_sketch() {
 #[test]
 fn a_malformed_sketch_request_is_refused_by_the_wires_reader() {
     let f = fixture();
-    f.open("bracket.silico", &bracket());
+    let path = f.open("bracket.silico", &bracket());
+    // A request that names the open session s1 is refused with its state (the contract
+    // lows' item 1); one that names none, or a session that isn't open, with null.
+    let s1 = json!({"id": "s1", "path": path.to_str().unwrap(), "revision": 1, "transaction": false, "reloaded": false});
     let refused = |arguments: &str| -> Value {
         let answer = f.call("sketch", arguments);
         assert!(!answer.ok, "{arguments}");
@@ -722,11 +727,12 @@ fn a_malformed_sketch_request_is_refused_by_the_wires_reader() {
             "cause": null,
             "suggestion": suggestion,
             "candidates": [],
+            "advice": null,
         })
     };
-    let unread = |errors: Vec<Value>| {
+    let unread = |session: &Value, errors: Vec<Value>| {
         let total = errors.len();
-        json!({"ok": false, "session": null, "model": null, "errors": errors, "total": total})
+        json!({"ok": false, "session": session, "model": null, "errors": errors, "total": total})
     };
     // A field it hasn't; a sketch's ID that isn't a string, or isn't an ID; a model that
     // isn't one; none of its fields; and two faults at once, each said, in field order.
@@ -735,43 +741,52 @@ fn a_malformed_sketch_request_is_refused_by_the_wires_reader() {
         refused(
             r#"{"session": "s1", "model": "current", "sketch": "s0000002", "feature": "s0000002"}"#
         ),
-        unread(vec![error(
-            "feature",
-            "feature isn't a field of this request",
-            leave_out.clone()
-        )])
+        unread(
+            &s1,
+            vec![error(
+                "feature",
+                "feature isn't a field of this request",
+                leave_out.clone()
+            )]
+        )
     );
     assert_eq!(
         refused(r#"{"session": "s1", "model": "current", "sketch": 2}"#),
-        unread(vec![error(
-            "sketch",
-            "sketch must be a feature's ID, got 2",
-            Value::Null
-        )])
+        unread(
+            &s1,
+            vec![error(
+                "sketch",
+                "sketch must be a feature's ID, got 2",
+                Value::Null
+            )]
+        )
     );
     assert_eq!(
         refused(r#"{"session": "s1", "model": "current", "sketch": "S0000002"}"#),
-        unread(vec![error(
-            "sketch",
-            r#"sketch must be a feature's ID, got "S0000002""#,
-            Value::Null
-        )])
+        unread(
+            &s1,
+            vec![error(
+                "sketch",
+                r#"sketch must be a feature's ID, got "S0000002""#,
+                Value::Null
+            )]
+        )
     );
     assert_eq!(
         refused(r#"{"session": "s1", "model": "current", "sketch": null}"#),
-        unread(vec![error(
-            "sketch",
-            "sketch must be a feature's ID, got null",
-            Value::Null
-        )])
+        unread(
+            &s1,
+            vec![error(
+                "sketch",
+                "sketch must be a feature's ID, got null",
+                Value::Null
+            )]
+        )
     );
     let model = refused(r#"{"session": "s1", "model": "latest", "sketch": "s0000002"}"#);
     assert_eq!(model["errors"][0]["parameter"], "model");
     assert_eq!(model["errors"][0]["code"], "invalid_input");
-    assert_eq!(
-        (&model["total"], &model["session"]),
-        (&json!(1), &Value::Null)
-    );
+    assert_eq!((&model["total"], &model["session"]), (&json!(1), &s1));
     let missing = |field: &str| {
         error(
             field,
@@ -781,34 +796,39 @@ fn a_malformed_sketch_request_is_refused_by_the_wires_reader() {
     };
     assert_eq!(
         refused("{}"),
-        unread(vec![
-            missing("session"),
-            missing("model"),
-            missing("sketch")
-        ])
+        unread(
+            &Value::Null,
+            vec![missing("session"), missing("model"), missing("sketch")]
+        )
     );
     assert_eq!(
         refused(r#"{"session": "s1", "sketch": 2, "model": "current", "x": 1}"#),
-        unread(vec![
-            error(
-                "sketch",
-                "sketch must be a feature's ID, got 2",
-                Value::Null
-            ),
-            error("x", "x isn't a field of this request", leave_out),
-        ])
+        unread(
+            &s1,
+            vec![
+                error(
+                    "sketch",
+                    "sketch must be a feature's ID, got 2",
+                    Value::Null
+                ),
+                error("x", "x isn't a field of this request", leave_out),
+            ]
+        )
     );
     // A session that isn't open: refused as every command is, naming no model.
     let closed = refused(r#"{"session": "s7", "model": "current", "sketch": "s0000002"}"#);
     assert_eq!(
         closed,
-        unread(vec![error(
-            "session",
-            "no session s7 is open",
-            json!(
-                "open the document again: a session ends when it's closed or its client goes away"
-            )
-        )])
+        unread(
+            &Value::Null,
+            vec![error(
+                "session",
+                "no session s7 is open",
+                json!(
+                    "open the document again: a session ends when it's closed or its client goes away"
+                )
+            )]
+        )
     );
 }
 
@@ -962,7 +982,10 @@ fn a_sketch_kept_from_an_earlier_rebuild_or_carried_by_a_save_reads_as_its_first
         json!({"session": "s1", "revision": 2, "feature": "b0000001", "field": "length", "value": 14}),
     );
     reads_alike(3, "the box edited in a transaction");
-    call("commit", json!({"session": "s1"}));
+    call(
+        "commit",
+        json!({"session": "s1", "path": null, "replace": false}),
+    );
     reads_alike(4, "committed");
     assert!(
         std::fs::read_to_string(&path)

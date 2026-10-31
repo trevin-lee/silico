@@ -41,10 +41,10 @@ pub use session::{
     FieldSet, MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED,
     NewMembers, Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild,
     RebuildState, Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running,
-    SessionId, SessionInfo, Sessions, SketchCut, SketchEdited, Status, Stepped, Stopper, TOO_LONG,
-    TextAnswer, TimelineAnswer, TryAgainBy, fault_suggestion,
+    SessionId, SessionInfo, Sessions, SketchCut, SketchEdited, Status, Stepped, Stopper,
+    Suppressed, TOO_LONG, TextAnswer, TimelineAnswer, Transaction, TryAgainBy, fault_suggestion,
 };
-pub use session_command::{ReadCommand, RunningCommand, SessionCommand};
+pub use session_command::{Cancellable, ReadCommand, RunningCommand, SessionCommand};
 
 pub use crate::warnings::Warnings;
 
@@ -110,6 +110,11 @@ pub struct Limits {
     pub kernel_seconds: u64,
     /// A sketch solve's time, in seconds.
     pub sketch_seconds: u64,
+    /// What a transaction's undo stack holds, in bytes, as its bound counts them.
+    pub undo_bytes: usize,
+    /// The least time from one comparison of a session's file on disk ending to the next
+    /// one starting, in milliseconds.
+    pub disk_check_ms: u64,
 }
 
 /// What `version` answers.
@@ -140,6 +145,8 @@ pub const VERSION: Version = Version {
         export_bytes: crate::export::MAX_ARCHIVE,
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
+        undo_bytes: document::undo::UNDO_BYTES,
+        disk_check_ms: crate::disk::DISK_CHECK_MS,
     },
 };
 
@@ -519,14 +526,16 @@ pub fn outline(document: &Document) -> String {
             operation,
             version: _,
             name,
+            suppressed,
             note,
             fingerprint,
         } = feature;
         let _ = write!(
             out,
-            "{} {} {}",
+            "{} {} {}{}",
             id,
             quoted(name.as_str()),
+            if *suppressed { "suppressed " } else { "" },
             operation.type_name()
         );
         let values = values(operation);
@@ -658,16 +667,15 @@ fn measures(f: &Fingerprint) -> String {
 /// The features that make a solid and that no later feature consumes, in timeline order:
 /// the solids the timeline ends with, if every feature builds.
 fn bodies(document: &Document) -> Vec<&document::FeatureId> {
-    let consumed: std::collections::BTreeSet<&document::FeatureId> = document
-        .features
-        .iter()
-        .flat_map(|f| f.operation.inputs().into_iter().map(|(_, id)| id))
-        .collect();
+    // A feature consumes what stands for each of its inputs, a suppressed one's base passed
+    // through, and a suppressed feature consumes nothing and is no body
+    // (`document::suppression`).
+    let consumed = document::suppression::consumed(&document.features, &|_| true);
     document
         .features
         .iter()
         // A sketch makes no solid, so it's no body.
-        .filter(|f| f.operation.makes_solid() && !consumed.contains(&f.id))
+        .filter(|f| f.operation.makes_solid() && !f.suppressed && !consumed.contains(&f.id))
         .map(|f| &f.id)
         .collect()
 }

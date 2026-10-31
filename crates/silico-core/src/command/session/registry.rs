@@ -287,6 +287,7 @@ pub(super) fn start<P: Clients + 'static>(
                 candidate: None,
                 watchers: Threads::new(),
                 last_number: 0,
+                stopped_for: None,
             }),
             rebuilt: Condvar::new(),
             reads: Mutex::new(Reads::new()),
@@ -304,6 +305,8 @@ pub(super) fn start<P: Clients + 'static>(
             settled: super::Gate::default(),
             #[cfg(test)]
             writing: super::Gate::default(),
+            #[cfg(test)]
+            watching: super::Gate::default(),
         });
         // Open from here: the commands sent while it opened are in its queue, ahead of any
         // sent after, and its published reads sent then start now, in the order sent,
@@ -677,6 +680,113 @@ pub(super) fn reclaim<P: Clients + 'static>(
             "the file a save wrote couldn't be claimed, so its claim is the file before: {error}"
         ),
     }
+}
+
+/// The path `target`, where session `id`'s Save As is about to write (M5.4), claimed for
+/// it before the write, so no session opens what it writes as it's written: refused,
+/// naming the session, if another holds or is opening the file there (by any path to it)
+/// or the path. The claim on the session's own file stands until [`moved`] lets it go;
+/// [`unreserve`] takes this one back if the write fails.
+pub(super) fn reserve<P: Clients + 'static>(
+    registry: &Registry<P>,
+    id: SessionId,
+    target: &Path,
+) -> Result<(), SessionId> {
+    let there = file_at(target);
+    let mut book = lock(&registry.book);
+    match held_in(&book, there, target, id) {
+        Some(holder) => Err(holder),
+        None => {
+            book.paths.insert(target.to_owned(), id);
+            Ok(())
+        }
+    }
+}
+
+/// The session other than `id` that holds or is opening the file at `target` (by any path
+/// to it) or the path, if one: what [`reserve`] refuses, looked up without claiming
+/// anything (a Save As's check before its rebuild).
+pub(super) fn holder<P: Clients + 'static>(
+    registry: &Registry<P>,
+    id: SessionId,
+    target: &Path,
+) -> Option<SessionId> {
+    let there = file_at(target);
+    held_in(&lock(&registry.book), there, target, id)
+}
+
+/// The file at `target`, if one can be opened there, opened without waiting, as a read is:
+/// a pipe put at the path wouldn't block it.
+fn file_at(target: &Path) -> Option<FileId> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(target)
+        .ok()
+        .and_then(|opened| FileId::of(&opened).ok())
+}
+
+/// The session other than `id` that `book` says holds the file `there` or the path
+/// `target`.
+fn held_in<C: Kernel + 'static>(
+    book: &Book<C>,
+    there: Option<FileId>,
+    target: &Path,
+    id: SessionId,
+) -> Option<SessionId> {
+    there
+        .and_then(|file| book.files.get(&file).map(|(holder, _)| *holder))
+        .into_iter()
+        .chain(book.paths.get(target).copied())
+        .find(|holder| *holder != id)
+}
+
+/// The claim [`reserve`] made on `target` for session `id` taken back: its Save As wrote
+/// nothing there.
+pub(super) fn unreserve<P: Clients + 'static>(
+    registry: &Registry<P>,
+    id: SessionId,
+    target: &Path,
+) {
+    let mut book = lock(&registry.book);
+    if book.paths.get(target) == Some(&id) {
+        book.paths.remove(target);
+    }
+}
+
+/// Session `id`'s claims moved to the file its Save As wrote at `resolved` (M5.4): that
+/// path and that file the session's, kept open as [`claim`] keeps one, and every path and
+/// file it claimed before let go, so another session may open its old file. If the new
+/// file can't be opened (removed since the save), its path alone claims it, said in the
+/// log.
+pub(super) fn moved<P: Clients + 'static>(
+    registry: &Weak<Registry<P>>,
+    id: SessionId,
+    resolved: &Path,
+) {
+    let Some(registry) = registry.upgrade() else {
+        return;
+    };
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(resolved)
+        .map_err(file::unreadable)
+        .and_then(|opened| Ok((FileId::of(&opened)?, opened)));
+    let mut book = lock(&registry.book);
+    book.paths.retain(|_, holder| *holder != id);
+    book.paths.insert(resolved.to_owned(), id);
+    book.files.retain(|_, (holder, _)| *holder != id);
+    match opened {
+        Ok((file, opened)) => {
+            book.files.insert(file, (id, opened));
+        }
+        Err(error) => tracing::warn!(
+            session = %id,
+            "the file a Save As wrote couldn't be claimed, so its path alone claims it: {error}"
+        ),
+    }
+    book.claims = book.claims.wrapping_add(1);
 }
 
 impl<P: Clients + 'static> Registry<P> {

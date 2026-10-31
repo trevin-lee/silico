@@ -632,7 +632,10 @@ fn an_end_held_on_an_axis_extended_past_it_saves_a_sketch_that_solves_to_its_fil
         // Made, not refused: the drag slides the end up the axis, so it moves.
         assert_eq!(envelope["ok"], true, "inside {inside}: {envelope}");
         if inside {
-            f.ran("commit", r#"{"session": "s1"}"#);
+            f.ran(
+                "commit",
+                r#"{"session": "s1", "path": null, "replace": false}"#,
+            );
         }
         assert_eq!(f.problems(), json!([]), "inside {inside}: {envelope}");
         f.close();

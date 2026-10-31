@@ -300,6 +300,16 @@ fn chosen<'m>(
             });
             continue;
         }
+        if let FeatureOutcome::Suppressed = outcome {
+            refused.push_with(|| {
+                invalid(
+                    format!("{id} is suppressed, so it has no solid to mesh"),
+                    "unsuppress it first, or name a feature that isn't suppressed",
+                )
+                .with_feature(id.as_str())
+            });
+            continue;
+        }
         if let Some(body) = bodies.get(id) {
             found.push((at, ((*body).clone(), Some(body.number))));
             continue;

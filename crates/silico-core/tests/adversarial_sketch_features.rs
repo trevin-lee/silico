@@ -540,6 +540,7 @@ proptest! {
                 operation,
                 version: FeatureVersion,
                 name: Name::new("X").unwrap(),
+                suppressed: false,
                 note: None,
                 fingerprint: None,
             }],

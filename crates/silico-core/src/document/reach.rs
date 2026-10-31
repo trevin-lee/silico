@@ -172,11 +172,14 @@ fn not_held<'a>(
 }
 
 /// The features of `after` whose own values differ from those of the feature of the same ID
-/// in `before` (its type and values, or its version: anything but its name, its note, and
-/// its fingerprint), and each it added (one whose ID `before` hasn't). A removed feature is
-/// none of them: a feature that used it either changed what it uses, and is one, or is
-/// refused by the gate. What uses them is reached too ([`with_users`]), as [`net_reach`]
-/// adds.
+/// in `before` (its type and values, or its version: anything but its name, its note, its
+/// fingerprint, and whether it's suppressed), each suppressed or unsuppressed since (M5.0's
+/// A10: every feature that uses it builds on another base now, and one unsuppressed is
+/// rebuilt; a suppressed one's stored fingerprint is carried as stored, never checked or
+/// rewritten, whatever reaches it), and each it
+/// added (one whose ID `before` hasn't). A removed feature is none of them: a feature that
+/// used it either changed what it uses, and is one, or is refused by the gate. What uses
+/// them is reached too ([`with_users`]), as [`net_reach`] adds.
 pub(crate) fn changed(before: &Document, after: &Document) -> BTreeSet<FeatureId> {
     let mut was: BTreeMap<&FeatureId, &Feature> = BTreeMap::new();
     for feature in &before.features {
@@ -187,15 +190,17 @@ pub(crate) fn changed(before: &Document, after: &Document) -> BTreeSet<FeatureId
         .features
         .iter()
         .filter(|feature| {
-            was.get(&feature.id)
-                .is_none_or(|before| !same_values(before, feature))
+            was.get(&feature.id).is_none_or(|before| {
+                !same_values(before, feature) || before.suppressed != feature.suppressed
+            })
         })
         .map(|feature| feature.id.clone())
         .collect()
 }
 
 /// Whether two features hold the same values of their own: every field but those an edit of
-/// which reaches nothing (the design's section 5), compared as canonical form writes them,
+/// which reaches nothing (the design's section 5; `suppressed`, whose change [`changed`]
+/// takes on its own), compared as canonical form writes them,
 /// so a sketch whose lists are only put in ID order (a file's, and its canonical text's)
 /// hasn't changed.
 fn same_values(before: &Feature, after: &Feature) -> bool {
@@ -206,6 +211,7 @@ fn same_values(before: &Feature, after: &Feature) -> bool {
         operation,
         version,
         name: _,
+        suppressed: _,
         note: _,
         fingerprint: _,
     } = before;

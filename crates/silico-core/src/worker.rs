@@ -1438,7 +1438,43 @@ pub(crate) enum Advice {
     Other(String),
 }
 
+crate::error::codes! {
+    /// Each word the error contract's `advice` says, one for each kind of a worker's advice
+    /// but [`Advice::Other`], whose advice is its words alone: the schema's enum is its
+    /// `ALL`, declared with it, and [`Advice::word`] gives one of them by an exhaustive
+    /// match, so a new kind of advice is a compile error until it's given a word (one here,
+    /// so in the schema) or none.
+    AdviceWord {
+        ChangeTheValues = "change_the_values",
+        SimplifyOrWait = "simplify_or_wait",
+        TryAgain = "try_again",
+        TryOnceMore = "try_once_more",
+    }
+}
+
 impl Advice {
+    /// The advice as the error contract's `advice` says it, for an agent to act on as data:
+    /// one word for each kind, `try_again` and `try_once_more` apart; none for
+    /// [`Advice::Other`], whose advice is its words alone.
+    pub(crate) fn word(&self) -> Option<&'static str> {
+        self.kind().map(AdviceWord::as_str)
+    }
+
+    /// Its kind, as [`word`](Self::word) says it: matched whole, so every kind says.
+    fn kind(&self) -> Option<AdviceWord> {
+        match self {
+            Advice::ChangeTheValues { .. } => Some(AdviceWord::ChangeTheValues),
+            Advice::SimplifyOrWait => Some(AdviceWord::SimplifyOrWait),
+            Advice::TryAgain {
+                once_more: false, ..
+            } => Some(AdviceWord::TryAgain),
+            Advice::TryAgain {
+                once_more: true, ..
+            } => Some(AdviceWord::TryOnceMore),
+            Advice::Other(_) => None,
+        }
+    }
+
     /// The advice as the worker client words it.
     pub(crate) fn words(&self) -> String {
         match self {
@@ -1894,6 +1930,92 @@ fn beside(exe: &Path, env: &str, binary: &str, noun: &str, build: &str) -> Resul
         "build it ({build}) or put it in {}, or name it in {env}",
         dir.display()
     )))
+}
+
+#[cfg(test)]
+mod advice_words {
+    use super::{Advice, AdviceWord};
+
+    /// An advice of the kind `word` says: matched whole, so a new word is a compile error
+    /// here until it's given its kind.
+    fn of(word: AdviceWord) -> Advice {
+        let why = "w".to_owned();
+        match word {
+            AdviceWord::ChangeTheValues => Advice::ChangeTheValues { why },
+            AdviceWord::SimplifyOrWait => Advice::SimplifyOrWait,
+            AdviceWord::TryAgain => Advice::TryAgain {
+                once_more: false,
+                why,
+            },
+            AdviceWord::TryOnceMore => Advice::TryAgain {
+                once_more: true,
+                why,
+            },
+        }
+    }
+
+    /// The kind of advice listed after `advice` (the first for none), none after the last:
+    /// matched whole on [`Advice`], so a new kind is a compile error here until it's given
+    /// its place in the list.
+    fn after(advice: Option<&Advice>) -> Option<Advice> {
+        let why = || "w".to_owned();
+        match advice {
+            None => Some(Advice::ChangeTheValues { why: why() }),
+            Some(Advice::ChangeTheValues { .. }) => Some(Advice::SimplifyOrWait),
+            Some(Advice::SimplifyOrWait) => Some(Advice::TryAgain {
+                once_more: false,
+                why: why(),
+            }),
+            Some(Advice::TryAgain {
+                once_more: false, ..
+            }) => Some(Advice::TryAgain {
+                once_more: true,
+                why: why(),
+            }),
+            Some(Advice::TryAgain {
+                once_more: true, ..
+            }) => Some(Advice::Other(why())),
+            Some(Advice::Other(_)) => None,
+        }
+    }
+
+    /// One advice of each kind, in [`after`]'s order.
+    fn kinds() -> Vec<Advice> {
+        let mut kinds: Vec<Advice> = Vec::new();
+        while let Some(next) = after(kinds.last()) {
+            // A list that came back on itself would never end.
+            assert!(!kinds.contains(&next), "{next:?} listed twice");
+            kinds.push(next);
+        }
+        kinds
+    }
+
+    #[test]
+    fn each_word_of_the_schema_is_one_kind_of_advice_and_each_kind_says_one_or_none() {
+        // Every kind of advice, listed by a match on `Advice` (`after`), gives the schema's
+        // words in order, each from exactly one kind, `Other` none: so a new kind that says
+        // a word another already says gives it twice, and fails here.
+        let given: Vec<&str> = kinds().iter().filter_map(Advice::word).collect();
+        let all: Vec<&str> = AdviceWord::ALL.iter().map(|w| w.as_str()).collect();
+        assert_eq!(given, all);
+        // And back: each word matched whole (`of`) is said by the kind it stands for. The
+        // words, in order, are the schema's, written out here.
+        for word in AdviceWord::ALL {
+            assert_eq!(of(*word).kind(), Some(*word), "{word}");
+            assert_eq!(of(*word).word(), Some(word.as_str()));
+        }
+        let words: Vec<&str> = AdviceWord::ALL.iter().map(|w| w.as_str()).collect();
+        assert_eq!(
+            words,
+            [
+                "change_the_values",
+                "simplify_or_wait",
+                "try_again",
+                "try_once_more"
+            ]
+        );
+        assert_eq!(Advice::Other("w".to_owned()).word(), None);
+    }
 }
 
 #[cfg(test)]

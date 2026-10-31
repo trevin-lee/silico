@@ -9,12 +9,6 @@ use super::call::Command;
 /// command but those answered at once, never running (`version`, `status`, `cancel`,
 /// `read_logs`, and `schema`), and `open`, which runs before its session is there to name
 /// it. Its name is the command's ([`command`](Self::command)), as requests and tools give it.
-///
-/// `undo` and `redo` (M5.2) run in a session as every other command does, so `status` says
-/// they're running and `cancel` stops them, but no transport names them yet: they're in no
-/// list a client reads ([`ALL`](Self::ALL), [`Command`]), whose change, with MCP's tools and
-/// the protected contracts, comes with M5.2's wire step (docs/design/m5.0-app.md, section
-/// 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SessionCommand {
     Close,
@@ -38,6 +32,7 @@ pub enum SessionCommand {
     Render,
     Export,
     MoveFeature,
+    SuppressFeature,
     Timeline,
     Sketch,
     SketchAdd,
@@ -52,9 +47,8 @@ pub enum SessionCommand {
 }
 
 impl SessionCommand {
-    /// Every command that runs in a session that a transport names, in the design's order
-    /// (M4.1's, then M5.0's): all but `undo` and `redo`, which none names yet.
-    pub const ALL: [SessionCommand; 30] = [
+    /// Every command that runs in a session, in the design's order (M4.1's, then M5.0's).
+    pub const ALL: [SessionCommand; 33] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -76,6 +70,7 @@ impl SessionCommand {
         SessionCommand::Render,
         SessionCommand::Export,
         SessionCommand::MoveFeature,
+        SessionCommand::SuppressFeature,
         SessionCommand::Timeline,
         SessionCommand::Sketch,
         SessionCommand::SketchAdd,
@@ -85,29 +80,13 @@ impl SessionCommand {
         SessionCommand::SketchUnjoin,
         SessionCommand::SketchMerge,
         SessionCommand::SketchExtend,
+        SessionCommand::Undo,
+        SessionCommand::Redo,
     ];
 
-    /// The command it is, of every command a transport names ([`Command`]): none for `undo`
-    /// and `redo`, which none names yet.
-    pub const fn command(self) -> Option<Command> {
-        match self.named() {
-            Ok(command) => Some(command),
-            Err(_) => None,
-        }
-    }
-
-    /// The command's name, as requests, `status`, and `cancel` give it.
-    pub const fn as_str(self) -> &'static str {
-        match self.named() {
-            Ok(command) => command.as_str(),
-            Err(name) => name,
-        }
-    }
-
-    /// The command it is, of every command a transport names; or, for one none names yet,
-    /// its name.
-    const fn named(self) -> Result<Command, &'static str> {
-        Ok(match self {
+    /// The command it is, of every command ([`Command`]).
+    pub const fn command(self) -> Command {
+        match self {
             SessionCommand::Close => Command::Close,
             SessionCommand::Begin => Command::Begin,
             SessionCommand::Commit => Command::Commit,
@@ -129,6 +108,7 @@ impl SessionCommand {
             SessionCommand::Render => Command::Render,
             SessionCommand::Export => Command::Export,
             SessionCommand::MoveFeature => Command::MoveFeature,
+            SessionCommand::SuppressFeature => Command::SuppressFeature,
             SessionCommand::Timeline => Command::Timeline,
             SessionCommand::Sketch => Command::Sketch,
             SessionCommand::SketchAdd => Command::SketchAdd,
@@ -138,9 +118,14 @@ impl SessionCommand {
             SessionCommand::SketchUnjoin => Command::SketchUnjoin,
             SessionCommand::SketchMerge => Command::SketchMerge,
             SessionCommand::SketchExtend => Command::SketchExtend,
-            SessionCommand::Undo => return Err("undo"),
-            SessionCommand::Redo => return Err("redo"),
-        })
+            SessionCommand::Undo => Command::Undo,
+            SessionCommand::Redo => Command::Redo,
+        }
+    }
+
+    /// The command's name, as requests, `status`, and `cancel` give it.
+    pub const fn as_str(self) -> &'static str {
+        self.command().as_str()
     }
 }
 
@@ -171,6 +156,61 @@ impl RunningCommand {
             RunningCommand::Command(command) => Some(command),
             RunningCommand::Reload => None,
         }
+    }
+}
+
+/// What `cancel` names (decision 34, docs/design/m4.1-command-api.md, section 6): whatever
+/// `status` reports as running, by the key it reports it under. A command a client sent, by
+/// its name (`status.running`, `status.reads`), or the session's rebuild running, `rebuild`
+/// (`status.rebuild.state` is `running`). A rebuild and the one command waiting on it stop
+/// together, whichever is named. The session's own reload is neither: nothing cancels it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Cancellable {
+    /// A command a client sent.
+    Command(SessionCommand),
+    /// The session's rebuild running.
+    Rebuild,
+}
+
+impl Cancellable {
+    /// Everything `cancel` names, in the design's order: every command that runs in a
+    /// session ([`SessionCommand::ALL`]), then the rebuild.
+    pub const ALL: [Cancellable; SessionCommand::ALL.len() + 1] = {
+        let mut all = [Cancellable::Rebuild; SessionCommand::ALL.len() + 1];
+        let mut at = 0;
+        while at < SessionCommand::ALL.len() {
+            all[at] = Cancellable::Command(SessionCommand::ALL[at]);
+            at += 1;
+        }
+        all
+    };
+
+    /// Its name, as `cancel`'s request and result give it: the command's, or `rebuild`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Cancellable::Command(command) => command.as_str(),
+            Cancellable::Rebuild => "rebuild",
+        }
+    }
+
+    /// The command a client sent, if it's one.
+    pub const fn command(self) -> Option<SessionCommand> {
+        match self {
+            Cancellable::Command(command) => Some(command),
+            Cancellable::Rebuild => None,
+        }
+    }
+}
+
+impl From<SessionCommand> for Cancellable {
+    fn from(command: SessionCommand) -> Self {
+        Cancellable::Command(command)
+    }
+}
+
+impl std::fmt::Display for Cancellable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -256,5 +296,25 @@ mod tests {
         }
         assert_eq!(RunningCommand::Reload.command(), None);
         assert_eq!(RunningCommand::Reload.as_str(), "reload");
+    }
+
+    #[test]
+    fn cancel_names_each_command_in_the_designs_order_then_the_rebuild() {
+        // Decision 34 as amended: whatever status reports running, by its key. Every
+        // command, as itself, then `rebuild`, last, which no command is named.
+        assert_eq!(Cancellable::ALL.len(), SessionCommand::ALL.len() + 1);
+        for (at, command) in SessionCommand::ALL.into_iter().enumerate() {
+            assert_eq!(Cancellable::ALL[at], Cancellable::Command(command));
+            assert_eq!(Cancellable::from(command).as_str(), command.as_str());
+            assert_eq!(Cancellable::from(command).command(), Some(command));
+        }
+        assert_eq!(Cancellable::ALL.last(), Some(&Cancellable::Rebuild));
+        assert_eq!(Cancellable::Rebuild.as_str(), "rebuild");
+        assert_eq!(Cancellable::Rebuild.command(), None);
+        assert!(
+            SessionCommand::ALL
+                .iter()
+                .all(|command| command.as_str() != "rebuild")
+        );
     }
 }

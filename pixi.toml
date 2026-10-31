@@ -64,6 +64,8 @@ planegcs-verify = { cmd = "bash third_party/planegcs/scripts/verify.sh", descrip
 test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "install-oracle", "shim-test", "test-guards", "test-cache", "planegcs-verify"] }
 oracle = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker --bin silico-step-worker && cargo build -p silico-sketch --bin silico-sketch-worker && cargo run -p silico-oracle -- run tests/oracle", depends-on = ["occt", "install-oracle"], description = "Compare every case in tests/oracle with FreeCAD" }
 oracle-sweep = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker && cargo run -p silico-oracle -- sweep --count 500", depends-on = ["occt", "install-oracle"], description = "Compare 500 generated cases with FreeCAD (pass --seed S to vary them)" }
+oracle-sketch-edit-sweep = { cmd = "cargo build -p silico-sketch --bin silico-sketch-worker && cargo run -p silico-oracle -- sketch-edit-sweep --count 500", depends-on = ["occt", "install-oracle"], description = "Compare 500 generated sketch edits with FreeCAD's (pass --seed S to vary them)" }
+oracle-sketch-extend-sweep = { cmd = "cargo build -p silico-sketch --bin silico-sketch-worker && cargo run -p silico-oracle -- sketch-extend-sweep --count 500", depends-on = ["occt", "install-oracle"], description = "Compare 500 generated sketch extends with FreeCAD's (pass --seed S to vary them)" }
 corpus = { cmd = "bash tests/corpus/run.sh", depends-on = ["occt", "install-oracle"], description = "Download real parts (NIST's STEP files) once, and compare them with FreeCAD" }
 # Every check on the committed tree; must pass before a merge.
 gate = { cmd = "bash tests/gate.sh", description = "Run every check on the committed tree" }

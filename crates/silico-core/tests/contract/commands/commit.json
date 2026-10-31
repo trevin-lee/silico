@@ -2,8 +2,19 @@
   "request": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`commit`'s request: end the session's transaction, saving its document.",
+    "description": "`commit`'s request: end the session's transaction, saving its document to its own\nfile, or, given a path, to the file there (Save As), which the session then holds.",
     "properties": {
+      "path": {
+        "description": "null to save to the session's own file. A path (relative to the workspace's root\nunder `silico serve`) to save to that file instead, written even if nothing changed:\nit must end in .silico, can't be the session's own file or one another session\nholds, and the session holds it from then on, letting its old file go.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "replace": {
+        "description": "Whether to replace a file already at `path`. Must be false when `path` is null.",
+        "type": "boolean"
+      },
       "session": {
         "description": "The session's ID, as `open` gave it.",
         "pattern": "^s[1-9][0-9]*$",
@@ -11,6 +22,8 @@
       }
     },
     "required": [
+      "path",
+      "replace",
       "session"
     ],
     "title": "CommitRequest",
@@ -22,6 +35,20 @@
         "additionalProperties": false,
         "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
         "properties": {
+          "advice": {
+            "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+            "enum": [
+              "change_the_values",
+              "simplify_or_wait",
+              "try_again",
+              "try_once_more",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "candidates": {
             "description": "What might have been meant, such as the names nearest one that found nothing.",
             "items": {
@@ -38,6 +65,24 @@
           },
           "code": {
             "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "enum": [
+              "invalid_input",
+              "kernel_failed",
+              "worker_crashed",
+              "worker_timeout",
+              "protocol_error",
+              "internal",
+              "invalid_result",
+              "resource_exhausted",
+              "drift",
+              "io_failed",
+              "reference_broken",
+              "over_constrained",
+              "solve_failed",
+              "conflict",
+              "worker_unavailable",
+              "cancelled"
+            ],
             "type": "string"
           },
           "elements": {
@@ -79,6 +124,7 @@
           }
         },
         "required": [
+          "advice",
           "candidates",
           "cause",
           "code",
@@ -102,7 +148,7 @@
     "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
     "properties": {
       "path": {
-        "description": "The document's path, as `open` was given it.",
+        "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
         "type": "string"
       },
       "problems": {

@@ -59,6 +59,12 @@ pub(super) struct Rebuilds<C: Kernel + 'static> {
     /// The number of the newest rebuild started ([`Label::number`]): as many as have
     /// started, 0 before the first.
     pub(super) last_number: u64,
+    /// The queued command running when `cancel` named the newest rebuild it stopped
+    /// ([`stop_running`](Rebuilds::stop_running)), if one was: it answers `cancelled` when
+    /// it next asks for a model, even if it wasn't waiting yet (still in its reload, say),
+    /// so it never starts the stopped rebuild again. Held weakly, so its allocation, and so
+    /// its address, stays its own while it's kept.
+    pub(super) stopped_for: Option<Weak<Ticket>>,
 }
 
 impl<C: Kernel + 'static> Rebuilds<C> {
@@ -67,16 +73,70 @@ impl<C: Kernel + 'static> Rebuilds<C> {
         self.running.as_ref().map(Label::revision)
     }
 
-    /// Whether the command `stop` stops was cancelled: if so, the rebuild it waits on,
-    /// `waited`, stopped ([`stop_waited`](Self::stop_waited)), and its `cancelled` answer.
+    /// Whether the command `stop` stops was cancelled, or the rebuild it waits on, `waited`,
+    /// was (`cancel` naming `rebuild`), or it was the queued command running when `cancel`
+    /// named the rebuild ([`stopped_for`](Self::stopped_for)): a rebuild and the one command
+    /// waiting on it stop together, whichever is named (decision 34). If so, that rebuild
+    /// stopped ([`stop_waited`](Self::stop_waited)), and the command's `cancelled` answer, as
+    /// if it had been named.
     fn stopped(&mut self, stop: &Ticket, waited: Option<&Label>) -> Result<(), Problems> {
-        if !stop.cancelled() {
+        let rebuild = waited.is_some_and(|label| label.cancelled.load(Ordering::SeqCst))
+            || self
+                .stopped_for
+                .as_ref()
+                .is_some_and(|running| std::ptr::eq(running.as_ptr(), stop));
+        if !stop.cancelled() && !rebuild {
             return Ok(());
         }
         if let Some(label) = waited {
             self.stop_waited(label);
         }
         Err(Problems::from(cancelled(stop.name())))
+    }
+
+    /// The rebuild running, if `status` reports it so for `revision`, the session's, whose
+    /// document the gate took if `gated` ([`reported`](Self::reported)), stopped as `cancel`
+    /// naming `rebuild` stops it (decision 34): as a cancelled waiter stops it
+    /// ([`stop_waited`](Self::stop_waited)), so the command waiting on it, if one is, answers
+    /// `cancelled` once it's told (`Session::rebuilt`); and so does `queued`, the queued
+    /// command running then, if one was, when it next asks for a model
+    /// ([`stopped_for`](Self::stopped_for)). Whether one was.
+    pub(super) fn stop_running(
+        &mut self,
+        revision: Revision,
+        gated: bool,
+        queued: Option<Weak<Ticket>>,
+    ) -> bool {
+        let running = self
+            .running
+            .clone()
+            .filter(|_| self.reported(revision, gated).state == RebuildState::Running);
+        if let Some(label) = &running {
+            self.stop_waited(label);
+            self.stopped_for = queued;
+        }
+        running.is_some()
+    }
+
+    /// What `status` reports of `revision`'s rebuild, the session's, whose document the gate
+    /// took if `gated`: [`state`](Self::state)'s, or, for a document the gate refused,
+    /// `none`, but for an edit's candidate running, which is built whatever the document
+    /// held is. Its progress is left for the caller to read ([`Newest::of`]).
+    pub(super) fn reported(&self, revision: Revision, gated: bool) -> Rebuild {
+        if gated
+            || self
+                .running
+                .as_ref()
+                .is_some_and(|running| running.candidate)
+        {
+            self.state(revision)
+        } else {
+            Rebuild {
+                revision,
+                state: RebuildState::Idle,
+                progress: None,
+            }
+        }
     }
 
     /// `label` numbered as the newest rebuild started, after every one started before it.
@@ -199,6 +259,12 @@ impl Newest {
         let count = progress.now();
         (label.revision() == revision || (label.candidate && !count.ended))
             .then(|| Progress::from(&count))
+    }
+
+    /// The newest rebuild's count, as it goes on, in this crate's tests only.
+    #[cfg(test)]
+    pub(super) fn counter(&self) -> Option<StepCounter> {
+        lock(&self.0).as_ref().map(|(_, progress)| progress.clone())
     }
 
     /// The progress of the newest rebuild, while it runs.
@@ -728,6 +794,9 @@ impl<C: Kernel + 'static> Session<C> {
                     .wait(rebuilds)
                     .unwrap_or_else(PoisonError::into_inner);
             };
+            // A candidate stopped (its edit, or the rebuild, named) ends superseded: so it
+            // answers `cancelled`, never started again, which would undo the stop.
+            rebuilds.stopped(stop, Some(&label))?;
             match outcome {
                 Ok(RunOutcome::Published(model)) => return Ok(model),
                 // Stopped (the sessions dropped, which the loop's start says), or superseded:
@@ -944,12 +1013,19 @@ fn stopped_unpublished(id: SessionId) -> Error {
 /// as running no more (one stopped and started again, or another's since, is left running).
 ///
 /// While it runs, the client is woken as each of its steps settles (its count's `done` or
-/// `steps` changes: `status`'s progress), and once more as its end is recorded, with no
-/// lock held.
+/// `steps` changes: `status`'s progress), counted from the rebuild's start, so what moved
+/// before the watcher first looks is told by that look, and once more as its end is
+/// recorded, with no lock held.
 pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Label, run: Run) {
+    #[cfg(test)]
+    if let Some(session) = session.upgrade() {
+        session.watching.pass();
+    }
     let waker = session.upgrade().map(|session| Arc::clone(&session.waker));
     let progress = run.progress();
-    let mut seen = progress.now();
+    // From the rebuild's start (no plan, nothing settled), not what the first look finds:
+    // a plan made or a step settled before the watcher looks is told by its first look.
+    let mut seen = crate::recompute::StepCount::default();
     while !seen.ended {
         let next = progress.changed_since(&seen);
         // Told as `done` or `steps` moves, a last step's settling with the end too; the end
@@ -983,6 +1059,11 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
         return;
     }
     match outcome {
+        // One a cancel stopped once its engine had published, before this recorded it: the
+        // cancel said it stopped, and its end was said then ([`Rebuilds::stop_waited`]), so
+        // its model is neither published nor kept, and status and every read agree with the
+        // cancel. Its steps are in the cache for whoever rebuilds it next.
+        Ok(RunOutcome::Published(_)) if label.cancelled.load(Ordering::SeqCst) => {}
         // A late model of an older revision never takes a newer one's place, nor one of a
         // transaction rolled back the restored state's, nor one of a rebuild superseded
         // (after its engine published) what a rebuild of its revision started after it said.
@@ -1045,6 +1126,7 @@ mod tests {
             candidate: None,
             watchers: Threads::new(),
             last_number: 0,
+            stopped_for: None,
         }
     }
 

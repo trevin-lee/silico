@@ -108,8 +108,8 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::edit::{self, FeatureIds};
 use super::logs::{LogBuffer, LogQuery, Logs};
-use super::{Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
-use crate::cache::Cache;
+use super::{Cancellable, Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
+use crate::cache::{Cache, Cleared};
 use crate::disk::{DISK_CHECK_INTERVAL, Disk, DiskWatch};
 use crate::document::json::Node;
 use crate::document::{self, FeatureId};
@@ -130,11 +130,12 @@ use rebuilds::{Newest, Rebuilds, Unbuilt, published_answer};
 pub use rebuilds::{TryAgainBy, fault_suggestion};
 pub(super) use rebuilds::{kept_fault, retried};
 use registry::{
-    Book, CacheOpener, Opening, Registry, Release, Started, claim, reclaim, serve, start,
+    Book, CacheOpener, Opening, Registry, Release, Started, claim, holder, moved, reclaim, reserve,
+    serve, start, unreserve,
 };
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
-use transaction::{Claim, Held, Reload, Rereads, transaction_open};
+use transaction::{Claim, Held, Open, Reload, Rereads, SaveTo, transaction_open};
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
@@ -142,7 +143,7 @@ pub use types::{
     FieldSet, ModelChoice, ModelRead, Moved, NewMembers, Opened, OutlineAnswer, Progress,
     Published, Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response,
     Revision, RolledBack, Running, SessionId, SessionInfo, SketchCut, SketchEdited, Status,
-    Stepped, Stopper, TextAnswer, TimelineAnswer,
+    Stepped, Stopper, Suppressed, TextAnswer, TimelineAnswer, Transaction,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 use waking::Waker;
@@ -170,8 +171,8 @@ pub struct Sessions<P: Clients + 'static> {
 /// Its locks, and the registry's, are taken in one order, each let go before one earlier in
 /// the order is taken: the registry's book, then a session's published reads (then those
 /// unanswered), then its held state, then its rebuilds, then its queue, then the command
-/// running, then its disk watch's, under which none is taken. The registry's `feature_ids`
-/// is taken alone.
+/// running, then its reloads, then its disk watch's, under which none is taken. The
+/// registry's `feature_ids` is taken alone.
 struct Session<C: Kernel + 'static> {
     id: SessionId,
     /// The sessions' workspace, if they have one: each re-read and save of the session's file
@@ -202,7 +203,8 @@ struct Session<C: Kernel + 'static> {
     disk: DiskWatch,
     /// Its own reload of its file, found changed on disk (A3): whether one is queued, and
     /// the bytes a reload last refused, so the same refusal isn't queued at each comparison.
-    /// Taken alone.
+    /// Taken before the disk watch's lock (whether a comparison is still current is asked
+    /// under it), and under none of the others.
     reloads: Mutex<Reloads>,
     /// The client's waker, the sessions' ([`Sessions::on_change`]).
     waker: Arc<Waker>,
@@ -219,6 +221,10 @@ struct Session<C: Kernel + 'static> {
     /// Where the session's own reload waits as it starts, in this crate's tests only.
     #[cfg(test)]
     reloading: Gate,
+    /// Where a rebuild's watcher waits before it first looks at the rebuild's progress, in
+    /// this crate's tests only.
+    #[cfg(test)]
+    watching: Gate,
 }
 
 /// A session's own reloads (A3): one queued, and what the last refused, if it was refused
@@ -409,9 +415,11 @@ impl<C: Kernel + 'static> Session<C> {
     /// session's own reload (A3): not inside a transaction (only `commit` reads the file
     /// there), nor while its own save has left the file part written (the next save says
     /// where its old text is), nor while one is queued, nor for the bytes a reload refused
-    /// last (a file another session holds, say), which would be refused again. If it should,
-    /// it's marked queued.
-    fn reload_wanted(&self, found: &[u8], claims: u64) -> bool {
+    /// last (a file another session holds, say), which would be refused again; nor for a
+    /// comparison made against `counter`, a count of the session's reads and writes no
+    /// longer its own (it read or wrote since: dropped, never reported). If it should, it's
+    /// marked queued.
+    fn reload_wanted(&self, found: &[u8], claims: u64, counter: u64) -> bool {
         {
             let held = self.held.read();
             if held.transaction.is_some() || held.part_written.is_some() {
@@ -419,7 +427,12 @@ impl<C: Kernel + 'static> Session<C> {
             }
         }
         let mut reloads = lock(&self.reloads);
-        if reloads.queued
+        // A comparison the session has read or written since (its own reload, taking these
+        // bytes) is dropped, never reported (the design's section 4): checked under the
+        // reloads' lock, as a reload moves the watch on before it clears `queued` there, so
+        // a comparison found current here either finds `queued` still set or is current.
+        if !self.disk.current(counter)
+            || reloads.queued
             || reloads
                 .refused
                 .is_some_and(|refused| refused == (digest(found), claims))
@@ -479,14 +492,14 @@ fn reloader<P: Clients + 'static>(
     registry: Weak<Registry<P>>,
     session: Weak<Session<P::Client>>,
 ) -> crate::disk::Changed {
-    Arc::new(move |found: &[u8]| {
+    Arc::new(move |found: &[u8], counter: u64| {
         let Some(session) = session.upgrade() else {
             return;
         };
         let claims = registry
             .upgrade()
             .map_or(0, |registry| lock(&registry.book).claims);
-        if session.reload_wanted(found, claims) {
+        if session.reload_wanted(found, claims, counter) {
             session.queue(reload_job(Weak::clone(&registry), digest(found)));
         }
     })
@@ -950,16 +963,22 @@ impl<P: Clients + 'static> Sessions<P> {
         read_logs_in(&self.registry, session, query)
     }
 
-    /// Stops `session`'s command named `command` (decision 34), answered at once on the
-    /// caller's thread, never queued and never reading the file: the queued command, if
-    /// it's the one running, and every published read of that name running. Each stops as
-    /// [`Running::cancel`] stops it, and answers too: `cancelled` if it left no trace, its
-    /// real result if it had done its work. The answer says which (`stopped`: whether any
-    /// was stopped before it had). Refused, naming `command`, if no command of that name is
-    /// running, what is given as candidates: so a cancel that comes late never stops the
-    /// command queued after the one it meant.
-    pub fn cancel(&self, session: &SessionId, command: SessionCommand) -> Response<Cancelled> {
-        cancel_in(&self.registry, session, command)
+    /// Stops what `session` is running that `named` names (decision 34), answered at once on
+    /// the caller's thread, never queued and never reading the file. A command: the queued
+    /// command, if it's the one running, and every published read of that name running.
+    /// Each stops as [`Running::cancel`] stops it, and answers too: `cancelled` if it left
+    /// no trace, its real result if it had done its work. The answer says which (`stopped`:
+    /// whether any was stopped before it had). The rebuild ([`Cancellable::Rebuild`]): the
+    /// one `status` reports running, stopped as a cancelled command's wait stops it, and the
+    /// command waiting on it, if one is, answers `cancelled` too. Refused, naming `command`,
+    /// if what it names isn't running, what is (as `status` reports it) given as candidates:
+    /// so a cancel that comes late never stops the command queued after the one it meant.
+    pub fn cancel(
+        &self,
+        session: &SessionId,
+        named: impl Into<Cancellable>,
+    ) -> Response<Cancelled> {
+        cancel_in(&self.registry, session, named.into())
     }
 
     /// What answers [`status`](Self::status) and [`cancel`](Self::cancel) later, on whichever
@@ -1144,8 +1163,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// changed neither refuses it nor moves the session's revision; and it runs inside a
     /// transaction too. In a workspace (decision 26), the directory is named from its root,
     /// and whether it leads out of it is checked by the cache as the clear opens it
-    /// ([`Cache::within`]): nothing is removed through one that does then (`removed` 0), and
-    /// one inside then is cleared, whatever it was as the session opened, through the handle
+    /// ([`Cache::within`]): nothing is removed through one that does then, and the clear is
+    /// refused, `invalid_input` naming no parameter, its cause the link; one inside then is
+    /// cleared, whatever it was as the session opened, through the handle
     /// the clear opened, so a link put on its way during the clear redirects nothing.
     pub fn cache_clear(&self, session: &SessionId) -> Running<CacheCleared> {
         self.queued_with(
@@ -1157,8 +1177,8 @@ impl<P: Clients + 'static> Sessions<P> {
                 // writes nothing if its directory led out of it as the session opened
                 // (`Registry::cache`). Whether this clear goes through is the cache's to
                 // check, as it opens the directory (decision 26: where a path resolves):
-                // nothing is removed through one that leads out then, and it says it removed
-                // none.
+                // nothing is removed through one that leads out then, and the clear is
+                // refused, saying so, never answered as an empty cache's.
                 let cache = lock(&session.rebuilds).cache.clone();
                 let path = session.held.read().path.clone();
                 let workspace = session.workspace.as_ref();
@@ -1166,8 +1186,13 @@ impl<P: Clients + 'static> Sessions<P> {
                 stop.settle()?;
                 #[cfg(test)]
                 session.settled.pass();
-                match cache.clear() {
-                    Ok(removed) => Ok(CacheCleared { directory, removed }),
+                match cache.clear_unless_out() {
+                    Ok(Cleared::Removed(removed)) => Ok(CacheCleared { directory, removed }),
+                    Ok(Cleared::LeadsOut) => Err(Problems::from(clearing::leads_out(
+                        workspace,
+                        &path,
+                        cache.directory(),
+                    ))),
                     Err(partly) => Err(partly_cleared_problems(
                         &directory,
                         cache.directory(),
@@ -1383,6 +1408,84 @@ impl<P: Clients + 'static> Sessions<P> {
                 let id = session.id;
                 session.commit(stop, reload.outside(), model, &|resolved| {
                     reclaim(&registry, id, resolved);
+                })
+            },
+        )
+    }
+
+    /// Ends `session`'s transaction, saving its document to the file at `path` (a Save As,
+    /// M5.4; docs/design/m5.0-app.md, open item 22): as [`commit`](Self::commit) saves,
+    /// but there, written even if the document is the one `begin` saw, and whatever the
+    /// session's own file holds now (a file changed on disk is left as it is). The session
+    /// then holds the new path, as given (in a workspace, relative to its root), and claims
+    /// its file, letting its old one go. Refused, the transaction left open and nothing
+    /// written, as `commit` is, for a document the gate refuses, and as a file a command
+    /// writes is (decision 35, as a document): not ending in `.silico`, out of the
+    /// workspace or through a link out of it, in a `.silico-cache/` directory, not a file,
+    /// or a file there without `replace`; and for the session's own file, one another
+    /// session holds or is opening, or a path that isn't UTF-8 (a response couldn't name
+    /// it exactly). Its rebuild cache stays the directory's it opened in until it's opened
+    /// again.
+    pub fn save_as(
+        &self,
+        session: &SessionId,
+        path: impl Into<PathBuf>,
+        replace: bool,
+    ) -> Running<Committed> {
+        let given = match path.into().into_os_string().into_string() {
+            Ok(given) => given,
+            Err(given) => {
+                return Running::answered(refused(
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "{} isn't UTF-8, so the API can't name it exactly",
+                            shown_path(Path::new(&given))
+                        ),
+                    )
+                    .with_parameter("path")
+                    .with_suggestion("give a path that is UTF-8"),
+                ));
+            }
+        };
+        let registry = Arc::downgrade(&self.registry);
+        self.queued_with(
+            session,
+            SessionCommand::Commit,
+            Rereads::OutsideTransaction,
+            move |session, stop, model, _| {
+                let id = session.id;
+                let reserve = |target: &Path| match registry.upgrade() {
+                    Some(registry) => reserve(&registry, id, target),
+                    // The sessions are being dropped: no claim is kept.
+                    None => Ok(()),
+                };
+                let unreserve = |target: &Path| {
+                    if let Some(registry) = registry.upgrade() {
+                        unreserve(&registry, id, target);
+                    }
+                };
+                let holder =
+                    |target: &Path| registry.upgrade().and_then(|r| holder(&r, id, target));
+                // The other sessions' documents, which it never writes over.
+                let held = registry.upgrade().map_or_else(Vec::new, |registry| {
+                    lock(&registry.book)
+                        .paths
+                        .iter()
+                        .filter(|(_, holder)| **holder != id)
+                        .map(|(path, _)| path.clone())
+                        .collect()
+                });
+                let to = SaveTo {
+                    given,
+                    replace,
+                    held,
+                    holder: &holder,
+                    reserve: &reserve,
+                    unreserve: &unreserve,
+                };
+                session.commit_as(stop, &to, model, &|resolved| {
+                    moved(&registry, id, resolved);
                 })
             },
         )
@@ -1669,6 +1772,51 @@ impl<P: Clients + 'static> Sessions<P> {
                     from: moved.from,
                     to: moved.to,
                     rewired: moved.rewired,
+                    changed: edited.changed,
+                    commit: edited.commit,
+                })
+            },
+        )
+    }
+
+    /// Suppresses `session`'s feature `feature` (`suppressed` true), with its dependents, or
+    /// unsuppresses it (false), with what it needs and lacks (docs/design/m5.0-app.md,
+    /// `suppress_feature`; `document::suppression`), as an edit made against `revision`.
+    /// A feature's dependents are those whose sketch it is, those that store names of its
+    /// elements, and those left with an input they need and nothing unsuppressed up its
+    /// chain (SolidWorks' children: docs/ux/solidworks.md, §5); a feature suppressed passes
+    /// its base through, so what consumes it builds on the nearest unsuppressed feature up
+    /// its chain, and its users are reached (M5.0's A10), its own stored fingerprint carried
+    /// as stored, never checked or rewritten. Unsuppressing a feature unsuppresses its sketch, each suppressed maker of a name
+    /// it stores, and, for an input it needs with nothing unsuppressed up its chain, that
+    /// chain's root, recursively; what depends on it stays suppressed. Suppressing a feature
+    /// suppressed already, or unsuppressing one that isn't, changes nothing: no new
+    /// revision, nothing written. Otherwise as [`add_feature`](Self::add_feature).
+    pub fn suppress_feature(
+        &self,
+        session: &SessionId,
+        revision: Revision,
+        feature: FeatureId,
+        suppressed: bool,
+    ) -> Running<Suppressed> {
+        let registry = Arc::downgrade(&self.registry);
+        self.queued(
+            session,
+            SessionCommand::SuppressFeature,
+            move |session, stop, model| {
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| edit::suppress_feature(base.checked()?, &feature, suppressed),
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                let done = edited.made;
+                Ok(Suppressed {
+                    feature,
+                    suppressed: done.suppressed,
+                    unsuppressed: done.unsuppressed,
                     changed: edited.changed,
                     commit: edited.commit,
                 })
@@ -1988,18 +2136,14 @@ fn status_in<P: Clients + 'static>(
     let running = found.running().and_then(|ticket| ticket.running());
     let held = found.held.read();
     let gated = matches!(*held.gated, Gated::Checked(_));
-    let rebuild = if gated {
-        let state = lock(&found.rebuilds).state(held.revision);
-        Rebuild {
-            progress: found.newest.of(held.revision),
-            ..state
-        }
-    } else {
-        Rebuild {
-            revision: held.revision,
-            state: RebuildState::Idle,
-            progress: None,
-        }
+    let rebuild = {
+        let state = lock(&found.rebuilds).reported(held.revision, gated);
+        let progress = if gated || state.state == RebuildState::Running {
+            found.newest.of(held.revision)
+        } else {
+            None
+        };
+        Rebuild { progress, ..state }
     };
     Response {
         session: Some(found.info_of(&held, false)),
@@ -2007,9 +2151,7 @@ fn status_in<P: Clients + 'static>(
         result: Ok(Status {
             features: held.gated.document().ok().map(|d| d.features.len()),
             gated,
-            transaction: held.transaction.as_ref().map(|open| Begun {
-                base: open.begun.revision,
-            }),
+            transaction: held.transaction.as_ref().map(Open::status),
             running,
             reads,
             rebuild,
@@ -2060,42 +2202,112 @@ fn command_span(
 fn cancel_in<P: Clients + 'static>(
     registry: &Registry<P>,
     session: &SessionId,
-    command: SessionCommand,
+    named: Cancellable,
 ) -> Response<Cancelled> {
     let Some(found) = find_in(registry, session) else {
         return refused(not_open(*session));
     };
     let _span = command_span(&found.logs, found.id, "cancel", None).entered();
-    let queued = found.running();
-    let reads: Vec<Arc<Ticket>> = {
-        let reads = lock(&found.reads);
-        lock(&reads.unanswered).tickets().cloned().collect()
-    };
-    let named: Vec<&Arc<Ticket>> = queued
-        .iter()
-        .chain(&reads)
-        .filter(|ticket| ticket.command() == Some(command))
-        .collect();
-    let result = if named.is_empty() {
-        // Each, as `status` lists them.
-        let running: Vec<SessionCommand> = queued
-            .iter()
-            .chain(&reads)
-            .filter_map(|ticket| ticket.command())
-            .collect();
-        Err(Problems::from(not_running(found.id, command, &running)))
-    } else {
-        // Every one stopped, none passed over once one is.
-        let stopped = named
-            .iter()
-            .fold(false, |stopped, ticket| ticket.cancel() | stopped);
-        tracing::info!(command = command.as_str(), stopped, "cancelled");
-        Ok(Cancelled { command, stopped })
+    let result = match named {
+        Cancellable::Command(command) => found.cancel_command(command),
+        Cancellable::Rebuild => found.cancel_rebuild(),
     };
     Response {
         session: Some(found.info(false)),
         model: None,
         result,
+    }
+}
+
+impl<C: Kernel + 'static> Session<C> {
+    /// `cancel` naming `command`: the queued command, if it's the one running, and every
+    /// published read of that name, each stopped; or, if none is, refused, naming what's
+    /// running.
+    fn cancel_command(&self, command: SessionCommand) -> Result<Cancelled, Problems> {
+        let running = self.running_tickets();
+        let named: Vec<&Arc<Ticket>> = running
+            .iter()
+            .filter(|ticket| ticket.command() == Some(command))
+            .collect();
+        if named.is_empty() {
+            return Err(self.not_running(Cancellable::Command(command), &running));
+        }
+        // Every one stopped, none passed over once one is.
+        let stopped = named
+            .iter()
+            .fold(false, |stopped, ticket| ticket.cancel() | stopped);
+        tracing::info!(command = command.as_str(), stopped, "cancelled");
+        Ok(Cancelled {
+            command: Cancellable::Command(command),
+            stopped,
+        })
+    }
+
+    /// `cancel` naming `rebuild`: the rebuild `status` reports running stopped, under the
+    /// rebuilds' lock, as a cancelled waiter stops it, and the command waiting on it, if
+    /// one is, told, so it answers `cancelled` (decision 34); the queued command running,
+    /// if it isn't waiting yet, answers so when it asks for a model. Refused, naming what's
+    /// running, if none is (it published, failed, or was superseded first).
+    fn cancel_rebuild(&self) -> Result<Cancelled, Problems> {
+        let stopped = {
+            let held = self.held.read();
+            let gated = matches!(*held.gated, Gated::Checked(_));
+            let mut rebuilds = lock(&self.rebuilds);
+            // The queued command running as the rebuild stops, read under the rebuilds'
+            // lock (the command's lock comes after it, and is taken alone): it answers
+            // `cancelled` too when it then asks for the model, waiting on the rebuild or
+            // not yet. A command that starts after this asks for the model only once the
+            // stop is recorded, and starts the rebuild again, as any command after does.
+            let queued = self.running().map(|ticket| Arc::downgrade(&ticket));
+            rebuilds.stop_running(held.revision, gated, queued)
+        };
+        if !stopped {
+            return Err(self.not_running(Cancellable::Rebuild, &self.running_tickets()));
+        }
+        // Told once the stop is recorded, so a waiter that saw none before it waited is
+        // waiting when it's told.
+        self.rebuilt.notify_all();
+        self.waker.wake();
+        tracing::info!(command = "rebuild", stopped, "cancelled");
+        Ok(Cancelled {
+            command: Cancellable::Rebuild,
+            stopped: true,
+        })
+    }
+
+    /// The stops of the commands running, as `status` lists them: the queued command, then
+    /// each published read.
+    fn running_tickets(&self) -> Vec<Arc<Ticket>> {
+        let queued = self.running();
+        let reads = lock(&self.reads);
+        let unanswered = lock(&reads.unanswered);
+        queued
+            .into_iter()
+            .chain(unanswered.tickets().cloned())
+            .collect()
+    }
+
+    /// The refusal of a `cancel` of `named`, which isn't running: what is, as `status`
+    /// reports it, the commands of `tickets` ([`running_tickets`](Self::running_tickets)),
+    /// then the rebuild, if `status.rebuild.state` is `running`.
+    fn not_running(&self, named: Cancellable, tickets: &[Arc<Ticket>]) -> Problems {
+        let mut running: Vec<Cancellable> = tickets
+            .iter()
+            .filter_map(|ticket| ticket.command())
+            .map(Cancellable::Command)
+            .collect();
+        if self.rebuild_running() {
+            running.push(Cancellable::Rebuild);
+        }
+        Problems::from(not_running(self.id, named, &running))
+    }
+
+    /// Whether `status` reports the session's rebuild `running`: its revision's, while the
+    /// gate takes its document, or an edit's candidate, whatever it holds.
+    fn rebuild_running(&self) -> bool {
+        let held = self.held.read();
+        let gated = matches!(*held.gated, Gated::Checked(_));
+        lock(&self.rebuilds).reported(held.revision, gated).state == RebuildState::Running
     }
 }
 
@@ -2114,6 +2326,14 @@ impl<P: Clients + 'static> WeakSessions<P> {
         }
     }
 
+    /// `session`'s state, as a refusal of one of its commands carries it: none if it isn't
+    /// open, or the sessions are dropped. Read as `status` reads it, on the asking thread,
+    /// from what the session holds, never taking a place in its queue.
+    pub(crate) fn info(&self, session: &SessionId) -> Option<SessionInfo> {
+        let registry = self.0.upgrade()?;
+        find_in(&registry, session).map(|found| found.info(false))
+    }
+
     /// [`Sessions::read_logs`].
     pub(crate) fn read_logs(&self, session: &SessionId, query: &LogQuery) -> Response<Logs> {
         match self.0.upgrade() {
@@ -2123,13 +2343,9 @@ impl<P: Clients + 'static> WeakSessions<P> {
     }
 
     /// [`Sessions::cancel`].
-    pub(crate) fn cancel(
-        &self,
-        session: &SessionId,
-        command: SessionCommand,
-    ) -> Response<Cancelled> {
+    pub(crate) fn cancel(&self, session: &SessionId, named: Cancellable) -> Response<Cancelled> {
         match self.0.upgrade() {
-            Some(registry) => cancel_in(&registry, session, command),
+            Some(registry) => cancel_in(&registry, session, named),
             None => refused(gone()),
         }
     }

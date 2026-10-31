@@ -13,7 +13,7 @@ use super::cancel::Ticket;
 use super::rebuilds::met_fault;
 use super::rebuilds::{Label, Newest};
 use super::transaction::{Checking, Reached};
-use super::{Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
+use super::{Cancellable, Gated, Problems, ReadCommand, RunningCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::chain::Rewired;
@@ -108,7 +108,7 @@ pub struct SessionInfo {
 }
 
 /// A command's answer: the session as the command left it (none for an `open` that failed,
-/// or a session that isn't open), the model it read, if it read one, and the command's
+/// a session that isn't open, or a request whose session can't be read), the model it read, if it read one, and the command's
 /// result, or every reason it was refused, in the order found, the first
 /// [`document::PROBLEMS_LISTED`] listed and all counted.
 #[derive(Debug, Clone, PartialEq)]
@@ -521,12 +521,16 @@ impl<T> Running<T> {
 
     /// Waits for the answer.
     pub fn wait(self) -> Response<T> {
+        #[cfg(feature = "fake")]
+        crate::fake::never_waits::waited();
         let lost = self.lost;
         self.answer.recv().unwrap_or_else(|_| unanswered(lost))
     }
 
     /// Waits up to `timeout` for the answer, or gives the handle back to wait on again.
     pub fn wait_timeout(self, timeout: Duration) -> Result<Response<T>, Self> {
+        #[cfg(feature = "fake")]
+        crate::fake::never_waits::waited();
         match self.answer.recv_timeout(timeout) {
             Ok(response) => Ok(response),
             Err(RecvTimeoutError::Timeout) => Err(self),
@@ -720,6 +724,22 @@ pub struct Begun {
     pub base: Revision,
 }
 
+/// A transaction open in a session, as `status` gives it (docs/design/m5.0-app.md, section
+/// 6): the revision it began from, which `rollback` returns to; whether its document
+/// differs from that revision's, as a commit finds it (a commit of one that doesn't writes
+/// nothing), worked out as each edit and each step of its undo stack is held; and its undo
+/// stack's counts, each kept as the stack changes: the edits it can undo and redo, those its
+/// bound has put out of undo's reach, and what it holds, as the bound counts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transaction {
+    pub base: Revision,
+    pub changed: bool,
+    pub undo: usize,
+    pub redo: usize,
+    pub dropped: usize,
+    pub bytes: usize,
+}
+
 /// What `commit` did (the design's section 7): whether it wrote the file (not if the
 /// document is the one `begin` saw), its path as `open` was given it, the features the
 /// transaction's edits reached whose fingerprints it wrote anew and the reached sketches
@@ -854,6 +874,21 @@ pub struct Moved {
     pub commit: Option<Committed>,
 }
 
+/// What `suppress_feature` did (docs/design/m5.0-app.md, section 7): the feature; the
+/// features the edit suppressed and unsuppressed, in timeline order, the feature itself
+/// among them; whether the document changed (not for a feature suppressed already, or one
+/// unsuppressed that isn't: then both lists are empty, there's no new revision, and nothing
+/// is written); and, outside a transaction, the commit's result, none inside one or if
+/// nothing changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Suppressed {
+    pub feature: FeatureId,
+    pub suppressed: Vec<FeatureId>,
+    pub unsuppressed: Vec<FeatureId>,
+    pub changed: bool,
+    pub commit: Option<Committed>,
+}
+
 /// What `replace_text` did (the design's section 7): whether the document changed (not if
 /// the text is the document the session holds, in whatever layout: then there's no new
 /// revision and nothing is written), its number of features, and, outside a transaction,
@@ -928,16 +963,17 @@ pub struct SketchCut {
 
 /// What `status` says of a session, from what it holds: how many features its document has
 /// (none if its text doesn't read as one), whether the gate took it, the transaction open,
-/// if one is (the revision it began from, which `rollback` returns to), what's running on
-/// its thread, if anything is (a queued command, or its own reload), the published reads
-/// running, in the order they started, its current revision's rebuild, and what the last
-/// comparison of its file on disk found (docs/design/m5.0-app.md, section 6): none before
-/// one has ended, while its own save runs, and after a save that failed until the next.
+/// if one is (the revision it began from, which `rollback` returns to, and its undo stack's
+/// counts), what's running on its thread, if anything is (a queued command, or its own
+/// reload), the published reads running, in the order they started, its current revision's
+/// rebuild, and what the last comparison of its file on disk found (docs/design/m5.0-app.md,
+/// section 6): none before one has ended, while its own save runs, and after a save that
+/// failed until the next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub features: Option<usize>,
     pub gated: bool,
-    pub transaction: Option<Begun>,
+    pub transaction: Option<Transaction>,
     pub running: Option<RunningCommand>,
     pub reads: Vec<ReadCommand>,
     pub rebuild: Rebuild,
@@ -1010,11 +1046,11 @@ impl RebuildState {
     }
 }
 
-/// What `cancel` answers (decision 34): the command it named, and whether it was stopped
-/// before it had done its work (false: it had, an edit already saved, say, and it answers
-/// with its real result).
+/// What `cancel` answers (decision 34): what it named, a command or the rebuild, and
+/// whether it was stopped before it had done its work (false: it had, an edit already
+/// saved, say, and it answers with its real result).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cancelled {
-    pub command: SessionCommand,
+    pub command: Cancellable,
     pub stopped: bool,
 }

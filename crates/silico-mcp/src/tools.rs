@@ -169,6 +169,7 @@ fn effect(command: Command) -> Effect {
         | Command::RemoveFeature
         | Command::ReplaceText
         | Command::MoveFeature
+        | Command::SuppressFeature
         | Command::SketchAdd
         | Command::SketchRemove
         | Command::SketchSplit
@@ -179,10 +180,15 @@ fn effect(command: Command) -> Effect {
         // `replace: true` writes over a file at `to`, or at `path`.
         Command::Render | Command::Export => Effect::Changes { destructive: true },
         // A new document is only made where nothing is; the rest change what the server
-        // holds, never a file.
-        Command::Open | Command::Close | Command::Cancel | Command::Begin | Command::Rollback => {
-            Effect::Changes { destructive: false }
-        }
+        // holds, never a file. An undo or a redo can drop the stack's oldest states past
+        // its bound, but it never touches a file, and `rollback` still reaches `begin`'s.
+        Command::Open
+        | Command::Close
+        | Command::Cancel
+        | Command::Begin
+        | Command::Rollback
+        | Command::Undo
+        | Command::Redo => Effect::Changes { destructive: false },
         // Removes only the cache's own entries, each a miss the next rebuild makes again.
         Command::CacheClear => Effect::Changes { destructive: false },
     }
@@ -212,7 +218,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Status => (
             "Session status",
-            "What a session holds, answered at once even while another of its commands runs: its features, whether a transaction is open, what's running, and how far its rebuild has got.",
+            "What a session holds, answered at once even while another of its commands runs: its features; the transaction open, if one is, with whether its document differs from the one it began from (unsaved), and the edits `undo` and `redo` can step through; what's running; and how far its rebuild has got.",
         ),
         Command::ReadLogs => (
             "Read logs",
@@ -220,7 +226,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Cancel => (
             "Cancel a command",
-            "Stop the command named, if it's running in the session. The command stopped answers too: `cancelled` if it left no trace, or its real result if it had already done its work.",
+            "Stop the command named, if it's running in the session, or, named `rebuild`, the session's rebuild while `status` says it's running, with the command waiting on it. The command stopped answers too: `cancelled` if it left no trace, or its real result if it had already done its work.",
         ),
         Command::Begin => (
             "Begin a transaction",
@@ -228,11 +234,19 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Commit => (
             "Commit",
-            "End the session's transaction, saving its document with the fingerprints of what its edits reached. Refused as `conflict` if the file changed outside the session since: roll back, or begin again from the file.",
+            "End the session's transaction, saving its document with the fingerprints of what its edits reached. Refused as `conflict` if the file changed outside the session since: roll back, or begin again from the file, or save elsewhere with `path`. With `path`, saves to that file instead (Save As), which the session then holds.",
         ),
         Command::Rollback => (
             "Roll back",
             "End the session's transaction, undoing every edit made in it. The file is never touched.",
+        ),
+        Command::Undo => (
+            "Undo",
+            "Inside a transaction, undo its last edit not undone, or with `to` (an earlier revision the session was at in it), every edit after that revision: its state restored byte for byte, at a new revision. Each edit is one step: to undo a run of edits as one, undo `to` the revision the run began at. The result says the edits left to undo and redo, and `dropped`, how many more edits the undo stack's bound (`version`'s `undo_bytes`) put out of reach; `rollback` still returns to the transaction's start. Outside a transaction each edit was saved as it was made, so there's nothing to undo. Give the revision the session's last answer says.",
+        ),
+        Command::Redo => (
+            "Redo",
+            "Inside a transaction, redo the last edit undone, or with `to` (a later revision the session was at in it), every edit undone up to that revision: its state restored byte for byte, at a new revision. An edit after an undo drops what was undone, which can't be redone. Give the revision the session's last answer says.",
         ),
         Command::Format => (
             "Format",
@@ -253,6 +267,10 @@ fn words(command: Command) -> (&'static str, String) {
         Command::MoveFeature => (
             "Move a feature",
             "Move one feature before another, or to the end (`before: null`), rewiring the chains it leaves and joins: its consumer takes its base, it builds on the last feature of its chain before the new place, and the next one builds on it, each change listed in `rewired`. Refused, naming both, where a child would come before its parent (its sketch, its tool, a feature whose elements it names). Give the revision the edit was made against.",
+        ),
+        Command::SuppressFeature => (
+            "Suppress a feature",
+            "Suppress one feature (`suppressed: true`) or unsuppress it (`false`). A suppressed feature isn't built: a feature that consumes it builds on the nearest unsuppressed feature up its chain, so suppressing a part's first hole leaves the part. Its dependents go with it: a feature whose sketch it is, one naming its elements, and one left with an input it needs and nothing unsuppressed up its chain. Unsuppressing a feature unsuppresses what it needs (its sketch, the features its names come from, its chain's first feature if every one is suppressed); what depends on it stays suppressed. Each list is in `suppressed` and `unsuppressed`, in timeline order. Give the revision the edit was made against.",
         ),
         Command::ReplaceText => (
             "Replace the text",
@@ -351,6 +369,7 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::RemoveFeature
         | Command::ReplaceText
         | Command::MoveFeature
+        | Command::SuppressFeature
         | Command::SketchAdd
         | Command::SketchRemove
         | Command::SketchSplit
@@ -362,7 +381,9 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::MassProperties
         | Command::Render
         | Command::Timeline
-        | Command::Sketch => &[READ_CURRENT],
+        | Command::Sketch
+        | Command::Undo
+        | Command::Redo => &[READ_CURRENT],
         Command::Elements | Command::Query | Command::Distance | Command::Angle => {
             &[READ_CURRENT, NAMES_FROM_ELEMENTS]
         }

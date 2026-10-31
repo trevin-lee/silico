@@ -481,7 +481,11 @@ fn record() -> Vec<String> {
             r#"{{"id": "f0000001", "type": "fillet", "name": "Inside corner", "base": "h0000002", "edges": [{corner}], "radius": {FILLET_R}}}"#
         ),
     );
-    r.call("commit: the file is saved", "commit", SESSION);
+    r.call(
+        "commit: the file is saved",
+        "commit",
+        r#"{"session": "s1", "path": null, "replace": false}"#,
+    );
     r.call("check the saved model", "check", CHECK);
     r.call("measure the bracket", "mass_properties", MASS);
     let face = r.call(
@@ -1170,6 +1174,362 @@ fn the_bracket_s_timeline_edits_through_serve_measure_as_by_hand() {
     );
     measured("the pocket back", &volume(&mut serve, &mut call), whole);
     call(&mut serve, "rollback", r#"{"session": "s1"}"#);
+    call(&mut serve, "close", r#"{"session": "s1"}"#);
+    serve.end();
+}
+
+#[test]
+fn the_bracket_s_suppressions_through_serve_measure_as_by_hand() {
+    // The design's suppression cases on the real kernel (docs/design/m5.0-app.md, section
+    // 7's `suppress_feature` and the test plan's *Suppress*), each inside a transaction from
+    // the formatted bracket, rolled back after it; each result the design's, and each
+    // volume by hand: the legs (21,000), a hole (π · 2.75² · 5), the fillet's spandrel.
+    use features::*;
+    let mut serve = Serve::start();
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        [
+            S0000001, P0000001, S0000002, H0000001, S0000003, H0000002, F0000001
+        ]
+        .join(", ")
+    );
+    std::fs::write(serve.work.join("bracket.silico"), text).unwrap();
+    serve.send(INITIALIZE).unwrap();
+    assert!(serve.send(INITIALIZED).is_none());
+    let mut id = 0;
+    let mut call = |serve: &mut Serve, tool: &str, arguments: &str| {
+        id += 1;
+        called(serve, id, tool, arguments)
+    };
+    let opened = call(
+        &mut serve,
+        "open",
+        r#"{"path": "bracket.silico", "create": false}"#,
+    );
+    assert_eq!(opened["ok"], true, "{opened}");
+    call(
+        &mut serve,
+        "format",
+        r#"{"session": "s1", "features": null, "write": true}"#,
+    );
+    // Fresh: every step built again, never read from the cache (the test plan's).
+    let cleared = call(&mut serve, "cache_clear", r#"{"session": "s1"}"#);
+    assert_eq!(cleared["ok"], true, "{cleared}");
+    let volume = |serve: &mut Serve, call: &mut dyn FnMut(&mut Serve, &str, &str) -> Value| {
+        let checked = call(
+            serve,
+            "check",
+            r#"{"session": "s1", "model": "current", "fresh": true}"#,
+        );
+        assert_eq!(checked["ok"], true, "{checked}");
+        let answer = call(
+            serve,
+            "mass_properties",
+            r#"{"session": "s1", "model": "current", "feature": null}"#,
+        );
+        answer["result"]["bodies"].clone()
+    };
+    let whole = bracket().volume;
+    let one_pocket = whole + 2.0 * HOLE;
+    let no_fillet = drilled().volume;
+    let no_pockets = legs(40.0).volume + bracket().volume - drilled().volume;
+    // By hand: 21,000 + 25 (1 − π/4) · 40.
+    assert!((no_pockets - (21000.0 + 25.0 * (1.0 - PI / 4.0) * 40.0)).abs() < 1e-9);
+
+    // Each case: the features suppressed, by one command each, and what's left.
+    let cases: [(&[&str], Option<f64>); 6] = [
+        // The first hole: the part, h0000002 on the pad (decision 3), 20,977.019.
+        (&["h0000001"], Some(one_pocket)),
+        (&["h0000002"], Some(one_pocket)),
+        // The fillet: the drilled legs, 20,524.834111.
+        (&["f0000001"], Some(no_fillet)),
+        // Both pockets: 21,214.602.
+        (&["h0000001", "h0000002"], Some(no_pockets)),
+        // The base holes' sketch: h0000001 with it, 20,977.019.
+        (&["s0000002"], Some(one_pocket)),
+        // The pad: all four solids; no body.
+        (&["p0000001"], None),
+    ];
+    for (suppressed, hand) in cases {
+        let begun = call(&mut serve, "begin", r#"{"session": "s1"}"#);
+        let mut at = begun["session"]["revision"].as_u64().unwrap();
+        for feature in suppressed {
+            let done = call(
+                &mut serve,
+                "suppress_feature",
+                &format!(
+                    r#"{{"session": "s1", "revision": {at}, "feature": "{feature}", "suppressed": true}}"#
+                ),
+            );
+            assert_eq!(done["result"]["changed"], true, "{done}");
+            at = done["session"]["revision"].as_u64().unwrap();
+        }
+        let bodies = volume(&mut serve, &mut call);
+        match hand {
+            Some(hand) => {
+                let bodies = bodies.as_array().unwrap();
+                assert_eq!(bodies.len(), 1, "{suppressed:?}: {bodies:?}");
+                measured(
+                    &format!("{suppressed:?} suppressed"),
+                    &bodies[0]["volume"],
+                    hand,
+                );
+            }
+            None => assert_eq!(bodies, serde_json::json!([]), "{suppressed:?}"),
+        }
+        call(&mut serve, "rollback", r#"{"session": "s1"}"#);
+    }
+
+    // The design's examples on the real kernel: the sketch, then h0000001 unsuppressed with
+    // it, the whole bracket again.
+    let begun = call(&mut serve, "begin", r#"{"session": "s1"}"#);
+    let at = begun["session"]["revision"].as_u64().unwrap();
+    let done = call(
+        &mut serve,
+        "suppress_feature",
+        &format!(
+            r#"{{"session": "s1", "revision": {at}, "feature": "s0000002", "suppressed": true}}"#
+        ),
+    );
+    assert_eq!(
+        done["result"],
+        core_example("suppress_feature/result-sketch")
+    );
+    let back = call(
+        &mut serve,
+        "suppress_feature",
+        &format!(
+            r#"{{"session": "s1", "revision": {}, "feature": "h0000001", "suppressed": false}}"#,
+            at + 1
+        ),
+    );
+    assert_eq!(
+        back["result"],
+        core_example("suppress_feature/result-unsuppress")
+    );
+    let bodies = volume(&mut serve, &mut call);
+    measured("unsuppressed again", &bodies[0]["volume"], whole);
+    call(&mut serve, "rollback", r#"{"session": "s1"}"#);
+    call(&mut serve, "close", r#"{"session": "s1"}"#);
+    serve.end();
+}
+
+#[test]
+fn a_suppressed_fillet_changes_the_shape_and_unsuppressed_gives_it_back() {
+    // FreeCAD's TestSuppressed.py::testSuppressChangesShape (main), ported with its values
+    // by hand where FreeCAD asserts only that they differ and come back: a 10 mm cube with a
+    // 1 mm fillet of one edge, 1000 − (1 − π/4) · 1² · 10 = 997.853982; suppressed, the cube,
+    // 1000; unsuppressed, 997.853982 again (FreeCAD 1.1.3, observed: 997.8539816339743,
+    // 999.9999999999998, 997.8539816339743).
+    let mut serve = Serve::start();
+    let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k0000001", "type": "box", "v": 1, "name": "Cube", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}, {"id": "f0000001", "type": "fillet", "v": 1, "name": "Fillet", "base": "k0000001", "edges": ["k0000001.box.Edge1"], "radius": 1}]}"#;
+    std::fs::write(serve.work.join("cube.silico"), text).unwrap();
+    serve.send(INITIALIZE).unwrap();
+    assert!(serve.send(INITIALIZED).is_none());
+    let mut id = 0;
+    let mut call = |serve: &mut Serve, tool: &str, arguments: &str| {
+        id += 1;
+        called(serve, id, tool, arguments)
+    };
+    call(
+        &mut serve,
+        "open",
+        r#"{"path": "cube.silico", "create": false}"#,
+    );
+    let volume = |serve: &mut Serve, call: &mut dyn FnMut(&mut Serve, &str, &str) -> Value| {
+        let answer = call(
+            serve,
+            "mass_properties",
+            r#"{"session": "s1", "model": "current", "feature": null}"#,
+        );
+        mass(&answer)["volume"].clone()
+    };
+    let filleted = 1000.0 - (1.0 - PI / 4.0) * 10.0;
+    measured("filleted", &volume(&mut serve, &mut call), filleted);
+    // Outside a transaction, each its own commit.
+    let off = call(
+        &mut serve,
+        "suppress_feature",
+        r#"{"session": "s1", "revision": 1, "feature": "f0000001", "suppressed": true}"#,
+    );
+    assert_eq!(off["result"]["suppressed"], serde_json::json!(["f0000001"]));
+    measured("suppressed", &volume(&mut serve, &mut call), 1000.0);
+    let rev = off["session"]["revision"].as_u64().unwrap();
+    let on = call(
+        &mut serve,
+        "suppress_feature",
+        &format!(
+            r#"{{"session": "s1", "revision": {rev}, "feature": "f0000001", "suppressed": false}}"#
+        ),
+    );
+    assert_eq!(
+        on["result"]["unsuppressed"],
+        serde_json::json!(["f0000001"])
+    );
+    measured("unsuppressed", &volume(&mut serve, &mut call), filleted);
+    call(&mut serve, "close", r#"{"session": "s1"}"#);
+    serve.end();
+}
+
+/// A square's sketch `id` on `xy`, its lower corner at the origin, of side `side`, its
+/// points and lines `<prefix>000001` on.
+fn square(id: &str, prefix: char, side: u32) -> String {
+    let p = |n: u32| format!("p{prefix}00000{n}");
+    let l = |n: u32| format!("n{prefix}00000{n}");
+    let corners = [(0, 0), (side, 0), (side, side), (0, side)];
+    let points: Vec<String> = corners
+        .iter()
+        .enumerate()
+        .map(|(i, (x, y))| {
+            format!(
+                r#"{{"id": "{}", "x": {x}, "y": {y}, "construction": false}}"#,
+                p(i as u32 + 1)
+            )
+        })
+        .collect();
+    let lines: Vec<String> = (1..=4)
+        .map(|i| {
+            format!(
+                r#"{{"id": "{}", "from": "{}", "to": "{}", "construction": false}}"#,
+                l(i),
+                p(i),
+                p(i % 4 + 1)
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "Square", "plane": "xy", "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
+        points.join(", "),
+        lines.join(", ")
+    )
+}
+
+/// `serve` started on `name` holding `features`, initialized and opened as s1, and a call
+/// that numbers its requests.
+fn served(
+    name: &str,
+    features: &[&str],
+) -> (Serve, impl FnMut(&mut Serve, &str, &str) -> Value + use<>) {
+    let mut serve = Serve::start();
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    );
+    std::fs::write(serve.work.join(name), text).unwrap();
+    serve.send(INITIALIZE).unwrap();
+    assert!(serve.send(INITIALIZED).is_none());
+    let mut id = 0;
+    let mut call = move |serve: &mut Serve, tool: &str, arguments: &str| {
+        id += 1;
+        called(serve, id, tool, arguments)
+    };
+    let opened = call(
+        &mut serve,
+        "open",
+        &format!(r#"{{"path": "{name}", "create": false}}"#),
+    );
+    assert_eq!(opened["ok"], true, "{opened}");
+    (serve, call)
+}
+
+/// The volume `mass_properties` gives `feature`'s solid, of the current model.
+fn volume_of(
+    serve: &mut Serve,
+    call: &mut impl FnMut(&mut Serve, &str, &str) -> Value,
+    feature: &str,
+) -> Value {
+    let answer = call(
+        serve,
+        "mass_properties",
+        &format!(r#"{{"session": "s1", "model": "current", "feature": "{feature}"}}"#),
+    );
+    mass(&answer)["volume"].clone()
+}
+
+/// `feature` suppressed or unsuppressed outside a transaction, at the session's revision.
+fn suppressed(
+    serve: &mut Serve,
+    call: &mut impl FnMut(&mut Serve, &str, &str) -> Value,
+    feature: &str,
+    on: bool,
+) -> Value {
+    let status = call(serve, "status", r#"{"session": "s1"}"#);
+    let at = status["session"]["revision"].as_u64().unwrap();
+    let done = call(
+        serve,
+        "suppress_feature",
+        &format!(
+            r#"{{"session": "s1", "revision": {at}, "feature": "{feature}", "suppressed": {on}}}"#
+        ),
+    );
+    assert_eq!(done["ok"], true, "{done}");
+    done
+}
+
+#[test]
+fn a_fillet_of_an_edge_a_suppressed_notch_shortened_fillets_the_whole_edge() {
+    // The port review's case: a 10 mm cube k, a notch n (2 along the edge, 3, and 2: 12 mm³)
+    // cut from the end of its Edge12 (y = 10, z = 10, along x), and a 1 mm fillet of that
+    // edge, which the cut keeps under its name, shortened to 8 mm. By hand: 1000 − 12 −
+    // (1 − π/4) · 8 = 986.283185. With the notch's cut suppressed, the fillet builds on the
+    // cube, its edge whole: 1000 − (1 − π/4) · 10 = 997.853982. Silico keeps the reference
+    // to an edge that still exists, as SolidWorks does; FreeCAD 1.1.3 fails the fillet
+    // ("Invalid edge link"), its name carrying the pocket's tag (docs/ports/suppression.md,
+    // *Departures*).
+    let k = r#"{"id": "k0000001", "type": "box", "v": 1, "name": "Cube", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#;
+    let n = r#"{"id": "n0000001", "type": "box", "v": 1, "name": "Notch", "position": [8, 7, 8], "length": 2, "width": 3, "height": 2}"#;
+    let j = r#"{"id": "j0000001", "type": "cut", "v": 1, "name": "Notched", "base": "k0000001", "tool": "n0000001"}"#;
+    let f = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "j0000001", "edges": ["k0000001.box.Edge12"], "radius": 1}"#;
+    let (mut serve, mut call) = served("notched.silico", &[k, n, j, f]);
+    let spandrel = 1.0 - PI / 4.0;
+    measured(
+        "notched",
+        &volume_of(&mut serve, &mut call, "f0000001"),
+        1000.0 - 12.0 - spandrel * 8.0,
+    );
+    let done = suppressed(&mut serve, &mut call, "j0000001", true);
+    // The fillet names the cube's edge, which reaches its base by the cut's base: not lost.
+    assert_eq!(
+        done["result"]["suppressed"],
+        serde_json::json!(["j0000001"])
+    );
+    measured(
+        "the notch suppressed",
+        &volume_of(&mut serve, &mut call, "f0000001"),
+        1000.0 - spandrel * 10.0,
+    );
+    call(&mut serve, "close", r#"{"session": "s1"}"#);
+    serve.end();
+}
+
+#[test]
+fn a_pocket_through_a_suppressed_pad_cuts_the_pad_beneath() {
+    // The port note's FreeCAD case (observed in 1.1.3: 984.292037): a 10 mm cube padded from
+    // a square, a 5 mm square padded 15 mm on it (fused: 125 mm³ more above it), and a
+    // pocket of a 1 mm circle 5 mm deep into them from below. By hand: 1125 − 5π; with the
+    // second pad suppressed, the pocket cuts the cube: 1000 − 5π = 984.292037.
+    let s1 = square("s0000001", 'a', 10);
+    let p1 = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Cube", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}"#;
+    let s2 = square("s0000002", 'b', 5);
+    let q1 = r#"{"id": "q0000001", "type": "pad", "v": 1, "name": "Post", "base": "p0000001", "sketch": "s0000002", "extent": {"type": "one_side", "length": 15, "reversed": false}}"#;
+    let s3 = r#"{"id": "s0000003", "type": "sketch", "v": 1, "name": "Hole", "plane": "xy", "points": [{"id": "pc000001", "x": 2.5, "y": 2.5, "construction": false}], "lines": [], "circles": [{"id": "cc000001", "center": "pc000001", "radius": 1, "construction": false}], "arcs": [], "constraints": []}"#;
+    let k1 = r#"{"id": "k0000001", "type": "pocket", "v": 1, "name": "Hole", "base": "q0000001", "sketch": "s0000003", "extent": {"type": "one_side", "length": 5, "reversed": true}}"#;
+    let (mut serve, mut call) = served("post.silico", &[&s1, p1, &s2, q1, s3, k1]);
+    measured(
+        "the pocket",
+        &volume_of(&mut serve, &mut call, "k0000001"),
+        1125.0 - 5.0 * PI,
+    );
+    let done = suppressed(&mut serve, &mut call, "q0000001", true);
+    assert_eq!(
+        done["result"]["suppressed"],
+        serde_json::json!(["q0000001"])
+    );
+    measured(
+        "the post suppressed",
+        &volume_of(&mut serve, &mut call, "k0000001"),
+        1000.0 - 5.0 * PI,
+    );
     call(&mut serve, "close", r#"{"session": "s1"}"#);
     serve.end();
 }

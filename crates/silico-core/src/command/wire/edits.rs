@@ -18,7 +18,9 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 use super::transaction::CommitResultSchema;
 use super::{Json, RequestFields, ToWire, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
-use crate::command::{Added, FieldSet, Moved, Problems, Removed, Replaced, Revision, SessionId};
+use crate::command::{
+    Added, FieldSet, Moved, Problems, Removed, Replaced, Revision, SessionId, Suppressed,
+};
 use crate::document::chain::Rewired;
 use crate::document::json::Node;
 use crate::document::{Feature, FeatureId};
@@ -107,6 +109,46 @@ impl ToWire for MoveFeatureRequest {
                 "before",
                 Json::or_null(self.before.as_ref(), ToWire::to_wire),
             ),
+        ])
+    }
+}
+
+/// A `suppress_feature` request: the session, the revision the edit was made against, the
+/// feature, and whether to suppress it (false: unsuppress it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuppressFeatureRequest {
+    pub session: SessionId,
+    pub revision: Revision,
+    pub feature: FeatureId,
+    pub suppressed: bool,
+}
+
+impl SuppressFeatureRequest {
+    /// The request `node` holds, or every reason its shape is refused.
+    pub fn read(node: &Node) -> Result<Self, Problems> {
+        RequestFields::read(node, |f| {
+            let session = f.session();
+            let revision = f.revision("revision");
+            let feature = f.feature("feature");
+            let suppressed = f.bool("suppressed");
+            Some(SuppressFeatureRequest {
+                session: session?,
+                revision: revision?,
+                feature: feature?,
+                suppressed: suppressed?,
+            })
+        })
+    }
+}
+
+impl ToWire for SuppressFeatureRequest {
+    /// The request as a client writes it, every field in the shape's order.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("session", self.session.to_wire()),
+            ("revision", self.revision.to_wire()),
+            ("feature", self.feature.to_wire()),
+            ("suppressed", Json::bool(self.suppressed)),
         ])
     }
 }
@@ -306,6 +348,23 @@ impl ToWire for Moved {
             ("from", Json::count(self.from)),
             ("to", Json::count(self.to)),
             ("rewired", rewired(&self.rewired)),
+            ("changed", Json::bool(self.changed)),
+            (
+                "commit",
+                Json::or_null(self.commit.as_ref(), ToWire::to_wire),
+            ),
+        ])
+    }
+}
+
+impl ToWire for Suppressed {
+    /// `suppress_feature`'s result: the feature, what it suppressed and unsuppressed, whether
+    /// the document changed, and the commit outside a transaction.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("feature", self.feature.to_wire()),
+            ("suppressed", Json::ids(&self.suppressed)),
+            ("unsuppressed", Json::ids(&self.unsuppressed)),
             ("changed", Json::bool(self.changed)),
             (
                 "commit",
@@ -680,5 +739,49 @@ pub struct MoveFeatureResultSchema {
     pub changed: bool,
     /// Outside a transaction, the commit that saved the edit; null inside one, or if
     /// nothing changed.
+    pub commit: Option<CommitResultSchema>,
+}
+
+/// `suppress_feature`'s request: suppress a feature with its dependents, or unsuppress it
+/// with what it needs.
+#[derive(JsonSchema)]
+#[schemars(rename = "SuppressFeatureRequest", transform = wire_shape)]
+pub struct SuppressFeatureRequestSchema {
+    /// The session's ID, as `open` gave it.
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
+    pub session: String,
+    /// The session's revision the edit was made against: an edit against another is
+    /// refused as a `conflict`.
+    #[schemars(range(min = 1))]
+    pub revision: u64,
+    /// The feature to suppress or unsuppress, by ID.
+    pub feature: FeatureId,
+    /// True to suppress it: it isn't built, and a feature that consumes it builds on the
+    /// nearest unsuppressed feature up its chain; its dependents go with it (a feature whose
+    /// sketch it is, one naming its elements, and one left with an input it needs and nothing
+    /// unsuppressed up its chain). False to unsuppress it, with its sketch, the makers of the
+    /// names it stores, and, for an input it needs with nothing unsuppressed up its chain,
+    /// that chain's first feature; what depends on it stays suppressed.
+    pub suppressed: bool,
+}
+
+/// `suppress_feature`'s result.
+#[derive(JsonSchema)]
+#[schemars(rename = "SuppressFeatureResult", transform = wire_shape)]
+pub struct SuppressFeatureResultSchema {
+    /// The feature, as the request named it.
+    pub feature: FeatureId,
+    /// The features the edit suppressed, in timeline order, the feature itself among them:
+    /// empty for an unsuppression, or for a feature suppressed already.
+    pub suppressed: Vec<FeatureId>,
+    /// The features the edit unsuppressed, in timeline order, the feature itself among them:
+    /// empty for a suppression, or for a feature that isn't suppressed.
+    pub unsuppressed: Vec<FeatureId>,
+    /// Whether the document changed: false for a feature suppressed already, or unsuppressed
+    /// that isn't, which makes no new revision and writes nothing.
+    pub changed: bool,
+    /// Outside a transaction, the commit that saved the edit (which carries a suppressed
+    /// feature's stored fingerprint as stored, never checked or rewritten, and writes a fresh
+    /// one for each feature that uses it); null inside one, or if nothing changed.
     pub commit: Option<CommitResultSchema>,
 }

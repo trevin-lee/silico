@@ -678,7 +678,7 @@ pub fn silico(cases: &Cases) -> Result<Vec<Ours>, String> {
                 None => return Err(format!("{} is broken, naming nothing", case.feature)),
             },
             Some(FeatureOutcome::Blocked { on }) => Ours::Blocked(on.clone()),
-            Some(FeatureOutcome::Sketch(_)) | None => {
+            Some(FeatureOutcome::Sketch(_) | FeatureOutcome::Suppressed) | None => {
                 return Err(format!("the rebuild has no solid for {}", case.feature));
             }
         };

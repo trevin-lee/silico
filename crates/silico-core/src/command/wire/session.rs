@@ -13,11 +13,11 @@ use schemars::{JsonSchema, Schema, SchemaGenerator};
 
 #[cfg(doc)]
 use super::COMMANDS;
-use super::transaction::BeginResultSchema;
+use super::transaction::TransactionSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
-    Cancelled, Closed, Limits, Opened, Problems, ReadCommand, Rebuild, RunningCommand,
+    Cancellable, Cancelled, Closed, Limits, Opened, Problems, ReadCommand, Rebuild, RunningCommand,
     SessionCommand, SessionId, Status, Version,
 };
 use crate::document::json::Node;
@@ -99,24 +99,36 @@ pub const PUBLISHED_READS: [&str; ReadCommand::ALL.len()] = {
     names
 };
 
-/// A `cancel` request: the session, and the command to stop, by its name: one of the
-/// commands that run in a session ([`SESSION_COMMANDS`]), never any other string.
+/// What `cancel` names, each by its name, in the design's order: every command that runs in
+/// a session ([`SESSION_COMMANDS`]), then `rebuild` ([`Cancellable::ALL`]).
+pub const CANCELLABLE: [&str; Cancellable::ALL.len()] = {
+    let mut names = [""; Cancellable::ALL.len()];
+    let mut at = 0;
+    while at < names.len() {
+        names[at] = Cancellable::ALL[at].as_str();
+        at += 1;
+    }
+    names
+};
+
+/// A `cancel` request: the session, and what to stop, by its name: one of the commands that
+/// run in a session, or `rebuild` ([`CANCELLABLE`]), never any other string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CancelRequest {
     pub session: SessionId,
-    pub command: SessionCommand,
+    pub command: Cancellable,
 }
 
 impl CancelRequest {
     /// The request `node` holds, or every reason its shape is refused: a `command` that
-    /// isn't the name of a command that runs in a session refused, with every such name as
-    /// candidates.
+    /// isn't the name of a command that runs in a session, nor `rebuild`, refused, with
+    /// every such name as candidates.
     pub fn read(node: &Node) -> Result<Self, Problems> {
         RequestFields::read(node, |f| {
             let session = f.session();
             let command = f.word(
                 "command",
-                &SessionCommand::ALL.map(|command| (command.as_str(), command)),
+                &Cancellable::ALL.map(|named| (named.as_str(), named)),
                 "commands",
             );
             Some(CancelRequest {
@@ -166,6 +178,8 @@ impl ToWire for Limits {
             ("export_bytes", Json::whole(self.export_bytes)),
             ("kernel_seconds", Json::whole(self.kernel_seconds)),
             ("sketch_seconds", Json::whole(self.sketch_seconds)),
+            ("undo_bytes", Json::count(self.undo_bytes)),
+            ("disk_check_ms", Json::whole(self.disk_check_ms)),
         ])
     }
 }
@@ -232,10 +246,10 @@ impl ToWire for Rebuild {
 
 impl ToWire for Status {
     /// `status`'s result: the number of features (`null` if the text doesn't read as a
-    /// document), whether the gate took it, the transaction open (`null` if none), what's
-    /// running on the session's thread (a queued command, or `reload`; `null` if nothing),
-    /// the published reads running, the rebuild, and what the last disk comparison found
-    /// (`null` if none has ended).
+    /// document), whether the gate took it, the transaction open and its undo stack's counts
+    /// (`null` if none), what's running on the session's thread (a queued command, or
+    /// `reload`; `null` if nothing), the published reads running, the rebuild, and what the
+    /// last disk comparison found (`null` if none has ended).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("features", Json::or_null(self.features, Json::count)),
@@ -272,10 +286,12 @@ impl ToWire for Cancelled {
     }
 }
 
-/// A command that runs in a session, by name ([`SESSION_COMMANDS`]), in the design's order.
-pub struct SessionCommandSchema;
+/// What `cancel` names ([`CANCELLABLE`]), in the design's order: a command that runs in a
+/// session, by name, or `rebuild`. Its schema keeps the name `cancel.json` gave it before
+/// `rebuild` was added, `SessionCommand`.
+pub struct CancellableSchema;
 
-impl JsonSchema for SessionCommandSchema {
+impl JsonSchema for CancellableSchema {
     fn schema_name() -> Cow<'static, str> {
         "SessionCommand".into()
     }
@@ -283,8 +299,9 @@ impl JsonSchema for SessionCommandSchema {
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         words(
             "A command that runs in a session, by name, as a tool is named: what `status` says \
-             is running, and `cancel` stops.",
-            SESSION_COMMANDS,
+             is running, and `cancel` stops; or `rebuild`, the session's rebuild, while \
+             `status.rebuild.state` is `running`, which stops with the command waiting on it.",
+            CANCELLABLE,
         )
     }
 }
@@ -411,6 +428,16 @@ pub struct LimitsSchema {
     pub kernel_seconds: u64,
     /// How long one sketch's solve may take, in seconds: past it, a `worker_timeout`.
     pub sketch_seconds: u64,
+    /// The most bytes a transaction's undo stack holds, counted as `status`'s
+    /// `transaction.bytes` counts them: not refused, the oldest states after the one the
+    /// transaction began from are dropped and counted (`transaction.dropped`), and undo then
+    /// stops at the oldest kept; `rollback` still returns to the start.
+    pub undo_bytes: u64,
+    /// The least time, in milliseconds, from the end of one comparison of a session's file
+    /// on disk to the start of the next: not refused. Only `status` starts one, when none is
+    /// running and the last ended at least this long ago, so `status`'s `disk`, a
+    /// diagnostic, is the last comparison's finding and may be older.
+    pub disk_check_ms: u64,
 }
 
 /// `version`'s result.
@@ -532,8 +559,9 @@ pub struct StatusResultSchema {
     pub features: Option<u64>,
     /// Whether the gate took the document.
     pub gated: bool,
-    /// The transaction open, as `begin` answered it: null if none is.
-    pub transaction: Option<BeginResultSchema>,
+    /// The transaction open, its base as `begin` answered it, with its undo and redo: null
+    /// if none is.
+    pub transaction: Option<TransactionSchema>,
     /// What's running on the session's thread: a queued command, which `cancel` can stop,
     /// or `reload`, its own reload of a file changed on disk; null if nothing is.
     pub running: Option<RunningCommandSchema>,
@@ -550,10 +578,11 @@ pub struct StatusResultSchema {
 }
 
 /// `cancel`'s request: stop the command named, if it's running in the session (its queued
-/// command, and every read of the published model of that name), answered at once. The
-/// command stopped answers too: `cancelled` if it left no trace, or its real result if it
-/// had done its work. Refused, naming what is running, if that command isn't, so a cancel
-/// that comes late never stops the command after it.
+/// command, and every read of the published model of that name), or, named `rebuild`, the
+/// session's rebuild running, answered at once. A rebuild and the command waiting on it stop
+/// together, whichever is named. The command stopped answers too: `cancelled` if it left
+/// no trace, or its real result if it had done its work. Refused, naming what is running,
+/// if what's named isn't, so a cancel that comes late never stops the command after it.
 #[derive(JsonSchema)]
 #[schemars(rename = "CancelRequest", transform = wire_shape)]
 pub struct CancelRequestSchema {
@@ -561,7 +590,7 @@ pub struct CancelRequestSchema {
     #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     /// The command to stop, as `status` names it.
-    pub command: SessionCommandSchema,
+    pub command: CancellableSchema,
 }
 
 /// `cancel`'s result.
@@ -569,7 +598,7 @@ pub struct CancelRequestSchema {
 #[schemars(rename = "CancelResult", transform = wire_shape)]
 pub struct CancelResultSchema {
     /// The command, as the request named it.
-    pub command: SessionCommandSchema,
+    pub command: CancellableSchema,
     /// Whether it was stopped before it had done its work: false means it had (an edit
     /// already saved), and it answers with its real result. Read `status` for the revision.
     pub stopped: bool,

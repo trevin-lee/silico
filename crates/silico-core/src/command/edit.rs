@@ -25,6 +25,7 @@ use std::sync::Arc;
 use super::{ExtendBy, Gated, NewMembers, Problems};
 use crate::document::chain::{self, Rewired};
 use crate::document::json::{self, Member, Node, Plain, Value};
+use crate::document::suppression;
 use crate::document::undo::Prepared;
 use crate::document::{
     self, Checked, Document, ElementId, ElementKind, Feature, FeatureId, FeatureVersion,
@@ -50,6 +51,11 @@ pub(super) struct Candidate {
 }
 
 impl Candidate {
+    /// Its text, and the gate's finding of it.
+    pub(super) fn parts(&self) -> (&[u8], &Gated) {
+        (&self.text, &self.gated)
+    }
+
     /// The gate's finding of its text.
     pub(super) fn gated(&self) -> &Gated {
         &self.gated
@@ -249,13 +255,21 @@ fn unsettable(field: &str) -> Option<(&'static str, &'static str)> {
 }
 
 /// The member `key` of `feature`, if it's one the feature may leave out
-/// ([`document::optional_members`]): one an edit may give it, and take away with `null`.
+/// ([`document::optional_members`], or `suppressed`, which every feature may): one an edit
+/// may give it, and take away with `null` (and `suppressed` with `false` too).
 fn optional(feature: &Feature, key: &str) -> Option<&'static str> {
+    if key == SUPPRESSED {
+        return Some(SUPPRESSED);
+    }
     document::optional_members(feature.operation.type_name())
         .iter()
         .find(|optional| **optional == key)
         .copied()
 }
+
+/// The member a suppressed feature has, and an unsuppressed one leaves out: so `set_field`
+/// takes `false` for it by removing it, as the reader refuses `false` (decision 4).
+const SUPPRESSED: &str = "suppressed";
 
 /// The sketch, and the kind of its members the list `key` holds, if `feature` is a sketch
 /// and `key` one of its lists of members.
@@ -518,10 +532,12 @@ fn found(tree: &Node, steps: &[Step]) -> Plain {
 
 /// `value` put where `steps` reach in `tree`, the tree of `feature`: in place of what's
 /// there, or as a member added; a member the feature may leave out (its note, a pad's
-/// base) set to `null` removed (the design's section 5).
+/// base) set to `null` removed (the design's section 5), and `suppressed` set to `false`.
 fn put(feature: &Feature, tree: &mut Node, steps: &[Step], value: Node) {
-    let removes =
-        |key: &str, value: &Node| value.value == Value::Null && optional(feature, key).is_some();
+    let removes = |key: &str, value: &Node| {
+        (value.value == Value::Null && optional(feature, key).is_some())
+            || (key == SUPPRESSED && value.value == Value::Bool(false))
+    };
     let Some((last, path)) = steps.split_last() else {
         return;
     };
@@ -897,6 +913,25 @@ pub(super) fn move_feature(
     }
     let candidate = candidate(&moved.document, "feature")?;
     Ok((moved, Some(candidate)))
+}
+
+/// The feature `id` of `checked` suppressed, with its dependents, or unsuppressed, with what
+/// it needs (docs/design/m5.0-app.md, `suppress_feature`: `document::suppression`): what it
+/// suppressed and unsuppressed, and the state it leads to, none for a feature suppressed
+/// already, or one unsuppressed that isn't. Refused for a feature the document hasn't, and
+/// with every error the gate finds in the document after it (none, by the rule it keeps).
+pub(super) fn suppress_feature(
+    checked: &Checked,
+    id: &FeatureId,
+    suppressed: bool,
+) -> Result<(suppression::Suppression, Option<Candidate>), Problems> {
+    place_of(checked.document(), id)?;
+    let done = suppression::set_suppressed(checked, id, suppressed)?;
+    if !done.changed() {
+        return Ok((done, None));
+    }
+    let candidate = candidate(&done.document, "feature")?;
+    Ok((done, Some(candidate)))
 }
 
 /// What a sketch edit changed, by member ID, as [`sketch_edit::Edited`] lists them.

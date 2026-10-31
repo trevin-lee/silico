@@ -252,3 +252,120 @@ crates/silico-render/src/lavapipe.rs | environment | replace && with || | #275
 # returns and ends the count itself. The guard covers a bug outside those, which nothing
 # can cause on purpose; without it a watcher would wait for a change that never comes.
 crates/silico-core/src/recompute.rs | <impl Drop for EndsCount>::drop | replace <impl Drop for EndsCount>::drop with () | #297
+crates/silico-core/src/document/undo.rs | Plan<K>::restored | replace Plan<K>::restored -> Option<K> with None | #300
+# A merge's gated refusal that names just the request's points has a point last, neither a
+# line its placement collapses nor a tangent_on: `>=` lets it through as named first, and
+# both checks after it still find no rule.
+crates/silico-oracle/src/sketch_edit.rs | rule | replace > with >= | #251
+# `standing` and `dependents` look a suppressed feature's base up in what stands for the
+# features before it, a list exactly `at` long when it's asked: a base at `at` itself (a
+# feature that uses itself) finds nothing there either way.
+crates/silico-core/src/document/suppression.rs | standing | replace < with <= | #304
+crates/silico-core/src/document/suppression.rs | dependents | replace < with <= | #304
+# An input at the consumer's own place is the consumer's own ID; an unsuppressed feature
+# with an input makes a solid, so it stands for itself: `<=` inserts that same ID.
+crates/silico-core/src/document/suppression.rs | consumed | replace < with <= | #304
+# `walk` only spares the search for a lost name, which finds one only past a suppressed
+# feature consuming a `tool`, which has a tool and which `walk` already counts (initially,
+# or as `dependents` flags it; `unsuppress` only clears flags). Each mutant only makes
+# `walk` true more often (every feature with a `tool` has a `base` too, so `!=` holds
+# wherever `==` did): the same search, finding nothing more.
+crates/silico-core/src/document/suppression.rs | any_tool_suppressed | replace any_tool_suppressed -> bool with true | #304
+crates/silico-core/src/document/suppression.rs | any_tool_suppressed | replace && with || | #304
+crates/silico-core/src/document/suppression.rs | has_tool | replace == with != | #304
+crates/silico-core/src/document/suppression.rs | has_tool | replace has_tool -> bool with true | #304
+# Only the gate's documents reach these (the rebuild's plan and a model's timeline, and
+# `unsuppress`, all of a Checked), with each ID once: a feature's base, tool, sketch, or a
+# name's maker at its own place is its own ID, which the gate refuses ("a feature can't use
+# itself"; a name of a feature not before it doesn't parse).
+crates/silico-core/src/document/suppression.rs | effective_inputs | replace < with <= | #304
+crates/silico-core/src/document/suppression.rs | unsuppress | replace < with <= | #304
+crates/silico-core/src/document/suppression.rs | unsuppress | replace < with <= | #304
+crates/silico-core/src/document/suppression.rs | unsuppress | replace < with <= | #304
+crates/silico-core/src/document/suppression.rs | suppressed_root | replace < with <= | #304
+# A base at the feature's own place: only a fillet or chamfer stores names, and its only
+# input is that base, itself, so no solid has it as consumer; the walk from each maker
+# (each before it) never reaches it and ends with no consumer or one past it, as `None`.
+crates/silico-core/src/document/suppression.rs | lost | replace < with <= | #304
+# In a document the gate took, no unsuppressed feature lacks its sketch, a name's maker, a
+# lost name's boolean, or a chain's root (the gate's own rule), and fewer suppressed lack
+# fewer; a feature already unsuppressed in this call was looked at already, and its needs
+# found then are unsuppressed now. So the features the guard skips, looked at again, add
+# nothing: the same flags.
+crates/silico-core/src/document/suppression.rs | unsuppress | replace match guard *flag with true | #304
+# An arc's placed end off its circle by exactly the f64 1e-8: the two distances it's the
+# difference of are within a few ulps of the radius, so it's a multiple of the radius's
+# ulp, at least 2^-76 for any radius the gate takes (over 1e-7 mm), and fl(1e-8) is an odd
+# multiple of 2^-78: no input reaches the edge exactly.
+crates/silico-oracle/src/sketch_edit.rs | placed_geometry | replace > with >= | #316
+# The app's drawing (#298): sizes, margins, gaps, and shapes the painter draws, and the
+# theme's fonts and spacing, which no accessibility node or state holds; the harness
+# reads the window through its accessibility tree (the marks' and rows' text, roles, and
+# states are tested there), so a pixel's size or a mark's shape is a visual review's.
+crates/silico-app/src/app.rs | App<P>::toolbar | replace App<P>::toolbar with () | #298
+crates/silico-app/src/app.rs | App<P>::toolbar | replace * with + | #298
+crates/silico-app/src/app.rs | App<P>::toolbar | replace * with / | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::pane_ui | replace / with % | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::pane_ui | replace / with * | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width -> f32 with -1.0 | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::gap_width -> f32 with 0.0 | #298
+crates/silico-app/src/panes.rs | viewport | replace viewport with () | #298
+crates/silico-app/src/panes.rs | mark | replace - with + | #298
+crates/silico-app/src/panes.rs | mark | replace - with / | #298
+crates/silico-app/src/panes.rs | mark | delete match arm Health::Error | #298
+crates/silico-app/src/panes.rs | mark | replace / with % | #298
+crates/silico-app/src/panes.rs | mark | replace / with * | #298
+crates/silico-app/src/panes.rs | mark | replace * with + | #298
+crates/silico-app/src/panes.rs | mark | replace * with / | #298
+crates/silico-app/src/panes.rs | row | replace - with + | #298
+crates/silico-app/src/panes.rs | row | replace - with / | #298
+crates/silico-app/src/panes.rs | row | replace / with % | #298
+crates/silico-app/src/panes.rs | row | replace / with * | #298
+crates/silico-app/src/panes.rs | row | replace / with % | #298
+crates/silico-app/src/panes.rs | row | replace / with * | #298
+crates/silico-app/src/panes.rs | Panes<'_, P>::timeline | delete match arm Health::Suppressed | Health::Unknown | #298
+crates/silico-app/src/panes.rs | Panes<'_, P>::properties | delete match arm Health::Error | #298
+crates/silico-app/src/theme.rs | apply | replace apply with () | #298
+crates/silico-app/src/theme.rs | style | replace - with + | #298
+crates/silico-app/src/theme.rs | style | replace - with / | #298
+# The window's tiles are linear containers only (`panes::layout`), so no pane has a tab
+# bar: a pane's tab title is never drawn, and `all_panes_must_have_tabs: false` is
+# egui_tiles' default.
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::tab_title_for_pane | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::tab_title_for_pane -> egui::WidgetText with Default::default() | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::simplification_options | replace <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::simplification_options -> egui_tiles::SimplificationOptions with Default::default() | #298
+crates/silico-app/src/panes.rs | <impl egui_tiles::Behavior<Pane> for Panes<'_, P>>::simplification_options | delete field all_panes_must_have_tabs from struct egui_tiles::SimplificationOptions expression | #298
+# The native entry points (#298): `main`, its window options, and each eframe::App's
+# `ui`, which only the native runner calls; the harness drives `App::frame` and
+# `Missing::frame` themselves, headless.
+crates/silico-app/src/main.rs | main | replace main -> ExitCode with Default::default() | #298
+crates/silico-app/src/main.rs | options | replace options -> eframe::NativeOptions with Default::default() | #298
+crates/silico-app/src/main.rs | options | delete field renderer from struct eframe::NativeOptions expression | #298
+crates/silico-app/src/main.rs | options | delete field viewport from struct eframe::NativeOptions expression | #298
+crates/silico-app/src/app.rs | <impl eframe::App for App<P>>::ui | replace <impl eframe::App for App<P>>::ui with () | #298
+crates/silico-app/src/missing.rs | <impl eframe::App for Missing>::ui | replace <impl eframe::App for Missing>::ui with () | #298
+# `keys`' answer only asks egui for the next frame at once, which egui asks for itself
+# after any input event (each key press is one), so no frame comes later for it (#298).
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
+# Equivalent (#298). `name_value`: U+0020 escaped as   reads back as the same space.
+# `NameField::keeps`: a name the document moves to other than by this field's own edits
+# resets the field by the tab's count of resets (an undo, a redo, a revert, a reload), so
+# keeping it for any typed text other than the name keeps nothing more. `properties`: the
+# typed list pushed each frame, not each change, holds the same texts (the field's text,
+# typed). `Tab::save`: a save queued after a save waiting, not merged, comes up with no
+# transaction open once the first has saved, and closes the tab if it was to, as the
+# merged one does. `read_timeline`: the published model is read first either way while
+# none is published (refused at once, then the current read), and `nothing_published` is
+# never true while one is.
+crates/silico-app/src/panes.rs | NameField::keeps | replace == with != | #298
+crates/silico-app/src/panes.rs | Panes<'_, P>::properties | replace != with == | #298
+crates/silico-app/src/tab.rs | Tab::save | delete match arm Some(Queued::Save{then_close:last}) | #298
+crates/silico-app/src/tab.rs | Tab::read_timeline | replace && with || | #298
+crates/silico-app/src/dialog.rs | Dialog::load | replace match guard input.part == Part::Axis with true | #325
+crates/silico-app/src/dialog.rs | Dialog::form_is | replace match guard input.part == Part::ExtentType with true | #325
+crates/silico-app/src/dialog.rs | quoted | replace < with <= | #325
+crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #325
+crates/silico-app/src/app.rs | App<P>::dialog_panel | replace |= with &= | #325
+crates/silico-app/src/app.rs | App<P>::dialog_panel | replace |= with &= | #325

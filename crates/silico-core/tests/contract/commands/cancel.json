@@ -2,7 +2,7 @@
   "request": {
     "$defs": {
       "SessionCommand": {
-        "description": "A command that runs in a session, by name, as a tool is named: what `status` says is running, and `cancel` stops.",
+        "description": "A command that runs in a session, by name, as a tool is named: what `status` says is running, and `cancel` stops; or `rebuild`, the session's rebuild, while `status.rebuild.state` is `running`, which stops with the command waiting on it.",
         "enum": [
           "close",
           "begin",
@@ -25,6 +25,7 @@
           "render",
           "export",
           "move_feature",
+          "suppress_feature",
           "timeline",
           "sketch",
           "sketch_add",
@@ -33,14 +34,17 @@
           "sketch_trim",
           "sketch_unjoin",
           "sketch_merge",
-          "sketch_extend"
+          "sketch_extend",
+          "undo",
+          "redo",
+          "rebuild"
         ],
         "type": "string"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`cancel`'s request: stop the command named, if it's running in the session (its queued\ncommand, and every read of the published model of that name), answered at once. The\ncommand stopped answers too: `cancelled` if it left no trace, or its real result if it\nhad done its work. Refused, naming what is running, if that command isn't, so a cancel\nthat comes late never stops the command after it.",
+    "description": "`cancel`'s request: stop the command named, if it's running in the session (its queued\ncommand, and every read of the published model of that name), or, named `rebuild`, the\nsession's rebuild running, answered at once. A rebuild and the command waiting on it stop\ntogether, whichever is named. The command stopped answers too: `cancelled` if it left\nno trace, or its real result if it had done its work. Refused, naming what is running,\nif what's named isn't, so a cancel that comes late never stops the command after it.",
     "properties": {
       "command": {
         "$ref": "#/$defs/SessionCommand",
@@ -62,7 +66,7 @@
   "result": {
     "$defs": {
       "SessionCommand": {
-        "description": "A command that runs in a session, by name, as a tool is named: what `status` says is running, and `cancel` stops.",
+        "description": "A command that runs in a session, by name, as a tool is named: what `status` says is running, and `cancel` stops; or `rebuild`, the session's rebuild, while `status.rebuild.state` is `running`, which stops with the command waiting on it.",
         "enum": [
           "close",
           "begin",
@@ -85,6 +89,7 @@
           "render",
           "export",
           "move_feature",
+          "suppress_feature",
           "timeline",
           "sketch",
           "sketch_add",
@@ -93,7 +98,10 @@
           "sketch_trim",
           "sketch_unjoin",
           "sketch_merge",
-          "sketch_extend"
+          "sketch_extend",
+          "undo",
+          "redo",
+          "rebuild"
         ],
         "type": "string"
       }

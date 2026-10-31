@@ -56,6 +56,27 @@ pub struct Block {
 }
 
 /// A JSON-RPC error's code, ID, and its data's first error.
+/// The replies to `ids` (each JSON text) among the lines `next` gives, read until each has
+/// come, in the order of `ids`, whatever order they came in.
+pub fn replies_in(mut next: impl FnMut() -> String, ids: &[&str]) -> Vec<String> {
+    let wanted: Vec<Value> = ids
+        .iter()
+        .map(|id| serde_json::from_str(id).unwrap())
+        .collect();
+    let mut got: Vec<Option<String>> = vec![None; ids.len()];
+    while got.iter().any(Option::is_none) {
+        let line = next();
+        let message: Value = serde_json::from_str(&line).unwrap();
+        if message.get("method").is_some() {
+            continue;
+        }
+        if let Some(at) = wanted.iter().position(|id| message.get("id") == Some(id)) {
+            got[at] = Some(line);
+        }
+    }
+    got.into_iter().flatten().collect()
+}
+
 pub fn rpc_error(message: &Value) -> (i64, Value, Value) {
     assert!(message.get("result").is_none(), "{message}");
     (
@@ -165,6 +186,28 @@ impl Client {
         reader: impl std::io::BufRead + Send + 'static,
         solver: Option<FakeSketches>,
     ) -> Client {
+        Client::reading_adjusted(reader, solver, |sessions| sessions)
+    }
+
+    /// A server, initialized, its sessions given what `adjust` gives them as they're made
+    /// (a disk watch's stand-ins, say).
+    pub fn initialized_with(
+        adjust: impl FnOnce(Sessions<Arc<FakeKernel>>) -> Sessions<Arc<FakeKernel>>,
+    ) -> Client {
+        let (reader, input) = std::io::pipe().unwrap();
+        let mut client = Client::reading_adjusted(BufReader::new(reader), None, adjust);
+        client.input = Some(input);
+        client.initialize();
+        client
+    }
+
+    /// A server, not yet initialized, reading `reader`, its sketches solved by `solver` if
+    /// it's given, else by the sketch worker, its sessions as `adjust` gives them.
+    fn reading_adjusted(
+        reader: impl std::io::BufRead + Send + 'static,
+        solver: Option<FakeSketches>,
+        adjust: impl FnOnce(Sessions<Arc<FakeKernel>>) -> Sessions<Arc<FakeKernel>>,
+    ) -> Client {
         let dir = tempfile::tempdir().unwrap();
         let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
         std::fs::create_dir(&work).unwrap();
@@ -180,7 +223,7 @@ impl Client {
         .rendering(FakeRenderer::new())
         .in_workspace(&work)
         .unwrap();
-        let server = Server::new(sessions).unwrap();
+        let server = Server::new(adjust(sessions)).unwrap();
         let stop = server.stopper();
         let (to, lines) = mpsc::channel();
         let fail = Arc::new(AtomicBool::new(false));
@@ -283,6 +326,14 @@ impl Client {
             }
             before.push(message);
         }
+    }
+
+    /// The replies to the requests `ids` (each JSON text), each its line, in the order of
+    /// `ids`, however the server ordered them: it answers each call when that call is done,
+    /// so calls sent together needn't be answered in the order sent. Every other message
+    /// written meanwhile is dropped.
+    pub fn replies(&mut self, ids: &[&str]) -> Vec<String> {
+        replies_in(|| self.line(), ids)
     }
 
     /// Sends the request `method` with `params` (JSON text) as `id`, and gives its reply.

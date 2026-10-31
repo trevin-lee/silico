@@ -1,1 +1,1 @@
-{"code": "invalid_input", "message": "tolerance must be given for a 3mf export, got null", "feature": null, "elements": [], "elements_total": 0, "parameter": "tolerance", "cause": null, "suggestion": "give the mesh's tolerance in mm; 0.1 mm is FreeCAD's default", "candidates": []}
+{"code": "invalid_input", "message": "tolerance must be given for a 3mf export, got null", "feature": null, "elements": [], "elements_total": 0, "parameter": "tolerance", "cause": null, "suggestion": "give the mesh's tolerance in mm; 0.1 mm is FreeCAD's default", "candidates": [], "advice": null}

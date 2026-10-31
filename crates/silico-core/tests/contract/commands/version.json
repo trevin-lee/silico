@@ -16,6 +16,11 @@
         "additionalProperties": false,
         "description": "The limits every command holds to (the design's section 6), each the value the commands\nuse. A request past one is refused, as `invalid_input`, unless its description says\notherwise.",
         "properties": {
+          "disk_check_ms": {
+            "description": "The least time, in milliseconds, from the end of one comparison of a session's file\non disk to the start of the next: not refused. Only `status` starts one, when none is\nrunning and the last ended at least this long ago, so `status`'s `disk`, a\ndiagnostic, is the last comparison's finding and may be older.",
+            "minimum": 0,
+            "type": "integer"
+          },
           "document_bytes": {
             "description": "The most bytes a document's canonical text may be: past it, an edit, a commit, or an\n`open` is refused.",
             "minimum": 0,
@@ -129,9 +134,15 @@
             "description": "How long one sketch's solve may take, in seconds: past it, a `worker_timeout`.",
             "minimum": 0,
             "type": "integer"
+          },
+          "undo_bytes": {
+            "description": "The most bytes a transaction's undo stack holds, counted as `status`'s\n`transaction.bytes` counts them: not refused, the oldest states after the one the\ntransaction began from are dropped and counted (`transaction.dropped`), and undo then\nstops at the oldest kept; `rollback` still returns to the start.",
+            "minimum": 0,
+            "type": "integer"
           }
         },
         "required": [
+          "disk_check_ms",
           "document_bytes",
           "elements",
           "export_bytes",
@@ -153,7 +164,8 @@
           "request_depth",
           "response_bytes",
           "sessions",
-          "sketch_seconds"
+          "sketch_seconds",
+          "undo_bytes"
         ],
         "type": "object"
       }

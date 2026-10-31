@@ -226,7 +226,7 @@ fn a_cancel_naming_the_call_by_another_spelling_of_its_id_cancels_it() {
 
 /// The refusal a call past the bound gets, as the note words it.
 fn past_the_bound() -> Value {
-    json!({"ok": false, "session": null, "model": null, "errors": [{"code": "invalid_input", "message": "64 calls are already running in this server, the most it runs at once", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": "wait for one to answer, or cancel one, and call again", "candidates": []}], "total": 1})
+    json!({"ok": false, "session": null, "model": null, "errors": [{"code": "invalid_input", "message": "64 calls are already running in this server, the most it runs at once", "feature": null, "elements": [], "elements_total": 0, "parameter": null, "cause": null, "suggestion": "wait for one to answer, or cancel one, and call again", "candidates": [], "advice": null}], "total": 1})
 }
 
 #[test]
@@ -325,7 +325,7 @@ fn calls_back_to_back_on_one_session_run_in_the_order_sent() {
         (11, "set_field", r#"{"session": "s1", "revision": 1, "feature": "k7f2qx3m", "field": "length", "value": 41}"#.to_owned()),
         (12, "set_field", r#"{"session": "s1", "revision": 2, "feature": "k7f2qx3m", "field": "length", "value": 42}"#.to_owned()),
         (13, "text", r#"{"session": "s1", "feature": "k7f2qx3m"}"#.to_owned()),
-        (14, "commit", r#"{"session": "s1"}"#.to_owned()),
+        (14, "commit", r#"{"session": "s1", "path": null, "replace": false}"#.to_owned()),
     ];
     for (id, name, arguments) in &calls {
         c.send_call(*id, name, arguments);

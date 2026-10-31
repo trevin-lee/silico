@@ -291,3 +291,76 @@ fn a_conflict_is_no_kernel_fault() {
     assert_eq!(ErrorCode::Conflict.as_str(), "conflict");
     assert!(!ErrorCode::Conflict.is_kernel_fault());
 }
+
+/// The codes a `.txt` contract lists, in order.
+fn listed(name: &str) -> Vec<serde_json::Value> {
+    contract(name)
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .map(|code| serde_json::Value::String(code.to_owned()))
+        .collect()
+}
+
+/// Every `code` property's `enum` of every definition named `def` in `schema`, at any
+/// depth, by the path it's at.
+fn code_enums(
+    schema: &serde_json::Value,
+    def: &str,
+    at: &str,
+    found: &mut Vec<(String, serde_json::Value)>,
+) {
+    match schema {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                let here = format!("{at}/{key}");
+                if key == "$defs"
+                    && let Some(defined) = value.get(def)
+                {
+                    found.push((
+                        format!("{here}/{def}"),
+                        defined["properties"]["code"]["enum"].clone(),
+                    ));
+                }
+                code_enums(value, def, &here, found);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                code_enums(item, def, &format!("{at}/{i}"), found);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn every_schemas_codes_are_the_contracts_lists_in_their_order() {
+    // An agent reads the codes from the schema it's given (`tools/list`, `schema`), never
+    // from the repository: each `Error`'s `code` is an enum of error-codes.txt's codes, and
+    // each `Warning`'s of warning-codes.txt's, in each file's order, in every schema the
+    // core generates that holds one (each command's, and the envelope's).
+    use silico_core::command::wire::{COMMANDS, snapshot_value};
+    let errors = serde_json::Value::Array(listed("error-codes.txt"));
+    let warnings = serde_json::Value::Array(listed("warning-codes.txt"));
+    let mut holding = Vec::new();
+    let names = COMMANDS.iter().map(|(name, _)| *name).chain(["envelope"]);
+    for name in names {
+        let schema = snapshot_value(name).unwrap();
+        for (def, expected) in [("Error", &errors), ("Warning", &warnings)] {
+            let mut found = Vec::new();
+            code_enums(&schema, def, name, &mut found);
+            for (at, codes) in found {
+                assert_eq!(&codes, expected, "{at}");
+                holding.push(at);
+            }
+        }
+    }
+    // The envelope's Error, and check's Error and Warning, at least.
+    for at in [
+        "envelope/$defs/Error",
+        "check/result/$defs/Error",
+        "check/result/$defs/Warning",
+    ] {
+        assert!(holding.iter().any(|held| held == at), "{at}: {holding:?}");
+    }
+}

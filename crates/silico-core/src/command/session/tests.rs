@@ -62,6 +62,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             candidate: None,
             watchers: Threads::new(),
             last_number: 0,
+            stopped_for: None,
         }),
         rebuilt: Condvar::new(),
         reads: Mutex::new(Reads::new()),
@@ -81,6 +82,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         settled: Gate::default(),
         writing: Gate::default(),
         reloading: Gate::default(),
+        watching: Gate::default(),
     });
     (session, jobs)
 }
@@ -1049,7 +1051,9 @@ fn a_commit_over_a_file_changed_outside_is_a_conflict_writing_nothing_and_leavin
     // The design's words (section 7's commit example).
     assert_eq!(
         conflict.suggestion(),
-        Some("nothing was written: roll back, then begin again from the file as it is now")
+        Some(
+            "nothing was written: roll back, then begin again from the file as it is now; or save elsewhere with path"
+        )
     );
     // Found before the command, so the commit rebuilt nothing.
     assert!(f.kernel.calls().is_empty(), "{:?}", f.kernel.calls());
@@ -2235,6 +2239,135 @@ fn a_save_this_session_left_part_written_refuses_the_next_saying_where_the_text_
 }
 
 #[test]
+fn a_save_as_from_a_file_left_part_written_writes_and_says_where_its_old_text_is() {
+    // The session's own file left part written: a Save As writes elsewhere all the same,
+    // and, the session holding the new file now, lists the old one's mark among its
+    // problems, so where the old text is isn't lost.
+    let f = opened(STORED);
+    let old = f.path.with_file_name(".a.silico.fmt-1");
+    // Marked inside the transaction, where nothing reads the file again (a read that finds
+    // it as the session wrote it clears the mark).
+    f.sessions.begin(&f.id).wait().result.unwrap();
+    f.session().held.session_changing().part_written = Some(old.clone());
+    let to = f.path.with_file_name("b.silico");
+    let response = f.sessions.save_as(&f.id, &to, false).wait();
+    let committed = response.result.unwrap();
+    assert!(committed.written);
+    assert!(to.exists());
+    // Beside STORED's drift, one: the old file's, last.
+    let io: Vec<_> = committed
+        .problems
+        .errors()
+        .iter()
+        .filter(|e| e.code() == ErrorCode::IoFailed)
+        .collect();
+    assert_eq!(io.len(), 1);
+    let problem = committed.problems.errors().last().unwrap();
+    assert_eq!(problem.code(), ErrorCode::IoFailed);
+    assert_eq!(problem.parameter(), Some("path"));
+    assert_eq!(
+        problem.message(),
+        format!(
+            "{} was left part written by this session's own save, which couldn't put its text back: its text before is in {}",
+            shown_path(&f.path),
+            shown_path(&old)
+        )
+    );
+    assert_eq!(f.session().held.read().part_written, None);
+}
+
+/// `f`'s Save As to `to` started and held just before it writes, `meanwhile` done, then
+/// let through: its answer.
+fn save_as_held(
+    f: &Fixture,
+    to: &Path,
+    replace: bool,
+    meanwhile: impl FnOnce(),
+) -> Response<Committed> {
+    f.sessions.begin(&f.id).wait().result.unwrap();
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    f.session().writing.shut(started, wait);
+    let saving = f.sessions.save_as(&f.id, to, replace);
+    was_started.recv_timeout(WAIT).unwrap();
+    meanwhile();
+    through.send(()).unwrap();
+    saving.wait()
+}
+
+#[test]
+fn a_save_as_claims_its_path_before_it_writes_so_no_session_opens_it_meanwhile() {
+    // Held after its path is claimed and before it writes: an open of the path, making the
+    // file there, is refused as the Save As's session's; let go, the Save As writes it and
+    // holds it.
+    let f = opened(STORED);
+    let to = f.path.with_file_name("b.silico");
+    let mut refused = None;
+    let response = save_as_held(&f, &to, false, || {
+        refused = Some(f.sessions.open(&to, true).wait());
+    });
+    let refused = refused.unwrap();
+    let problems = refused.result.unwrap_err();
+    assert_eq!(problems.errors()[0].code(), ErrorCode::InvalidInput);
+    assert_eq!(
+        problems.errors()[0].message(),
+        format!("{} is already open in session {}", shown_path(&to), f.id)
+    );
+    let committed = response.result.unwrap();
+    assert!(committed.written);
+    assert_eq!(f.session().held.read().path, to.to_str().unwrap());
+    assert_eq!(
+        std::fs::read(&to).unwrap(),
+        f.session().held.read().text.as_slice()
+    );
+}
+
+#[test]
+fn a_save_as_whose_path_a_link_is_put_on_after_its_check_writes_nothing() {
+    let f = opened(STORED);
+    let (to, elsewhere) = (
+        f.path.with_file_name("b.silico"),
+        f.path.with_file_name("c.silico"),
+    );
+    std::fs::write(&elsewhere, "another file").unwrap();
+    let response = save_as_held(&f, &to, true, || {
+        std::os::unix::fs::symlink(&elsewhere, &to).unwrap();
+    });
+    let problems = response.result.unwrap_err();
+    assert_eq!(problems.errors()[0].code(), ErrorCode::Conflict);
+    assert_eq!(problems.errors()[0].parameter(), Some("path"));
+    assert_eq!(
+        problems.errors()[0].suggestion(),
+        Some("nothing was written: commit again")
+    );
+    assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "another file");
+    assert_eq!(f.session().held.read().path, f.path.to_str().unwrap());
+}
+
+#[test]
+fn a_save_as_whose_path_becomes_another_sessions_document_after_its_check_writes_nothing() {
+    let f = opened(STORED);
+    let theirs = f.path.with_file_name("theirs.silico");
+    std::fs::write(&theirs, BOX).unwrap();
+    f.sessions.open(&theirs, false).wait().result.unwrap();
+    let to = f.path.with_file_name("b.silico");
+    let response = save_as_held(&f, &to, true, || {
+        std::fs::hard_link(&theirs, &to).unwrap();
+    });
+    let problems = response.result.unwrap_err();
+    assert_eq!(problems.errors()[0].code(), ErrorCode::InvalidInput);
+    assert!(
+        problems.errors()[0]
+            .message()
+            .ends_with("is a document a session holds: a commit never writes over one"),
+        "{:?}",
+        problems.errors()[0]
+    );
+    assert_eq!(std::fs::read_to_string(&to).unwrap(), BOX);
+    assert_eq!(f.session().held.read().path, f.path.to_str().unwrap());
+}
+
+#[test]
 fn a_file_this_sessions_own_save_left_part_written_isnt_reloaded() {
     let f = opened(STORED);
     let old = f.path.with_file_name(".a.silico.fmt-1");
@@ -2740,7 +2873,7 @@ fn a_cancel_after_the_command_kept_its_work_says_so_and_it_answers_its_result() 
             .result
             .unwrap(),
         Cancelled {
-            command: SessionCommand::Text,
+            command: SessionCommand::Text.into(),
             stopped: false
         }
     );
@@ -3873,6 +4006,10 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         SessionCommand::MoveFeature,
         Box::new(|| erased(s.move_feature(at, Revision::OPENED, id("k7f2qx3m"), None))),
     ));
+    queued.push((
+        SessionCommand::SuppressFeature,
+        Box::new(|| erased(s.suppress_feature(at, Revision::OPENED, id("k7f2qx3m"), true))),
+    ));
     queued.extend(
         m5_reads
             .into_iter()
@@ -3965,6 +4102,15 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             ))
         }),
     ));
+    // M5.2's, after the sketch edits.
+    queued.push((
+        SessionCommand::Undo,
+        Box::new(|| erased(s.undo(at, Revision::OPENED, None))),
+    ));
+    queued.push((
+        SessionCommand::Redo,
+        Box::new(|| erased(s.redo(at, Revision::OPENED, None))),
+    ));
     // `cache_clear`, which reads no model, after `check`, as the design lists it.
     let after_check = queued
         .iter()
@@ -3998,7 +4144,7 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         assert_eq!(
             s.cancel(at, command).result.unwrap(),
             Cancelled {
-                command,
+                command: command.into(),
                 stopped: true
             },
             "{command}"
@@ -4023,6 +4169,34 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
     for (read, start) in &reads(ModelChoice::Published) {
         stops(SessionCommand::from(*read), start, None, vec![*read]);
     }
+    // And the rebuild, which status reports by its key, `rebuild`: started by a published
+    // read (which passes no gate and waits on nothing), its box held, no command running and
+    // no read, and cancel by that name stops it.
+    let hold = f.kernel.hold(is_box);
+    assert!(s.published(at).result.is_err());
+    assert!(f.kernel.wait_running(1, WAIT));
+    let status = s.status(at).result.unwrap();
+    assert_eq!(
+        (status.running, status.reads, status.rebuild.state),
+        (None, vec![], RebuildState::Running)
+    );
+    assert_eq!(
+        s.cancel(at, Cancellable::Rebuild).result.unwrap(),
+        Cancelled {
+            command: Cancellable::Rebuild,
+            stopped: true
+        }
+    );
+    assert!(
+        f.kernel.wait_idle(WAIT),
+        "the stopped rebuild's box still runs"
+    );
+    let status = s.status(at).result.unwrap();
+    assert_eq!(
+        (status.running, status.reads, status.rebuild.state),
+        (None, vec![], RebuildState::Stopped)
+    );
+    drop(hold);
     // Nothing was done: the file is as it was, the session open at its first revision, and
     // nothing drawn.
     assert_eq!(f.file(), BOX);
@@ -4070,7 +4244,7 @@ fn a_cancel_after_cache_clear_settles_comes_too_late_and_the_clear_answers_with_
         .unwrap();
     assert_eq!(
         (cancelled.command, cancelled.stopped),
-        (SessionCommand::CacheClear, false)
+        (SessionCommand::CacheClear.into(), false)
     );
     assert_eq!(entries(), 1);
     through.send(()).unwrap();
@@ -4337,7 +4511,10 @@ fn asked_without_pause_through_many_commits_the_sessions_own_saves_never_read_as
     disk_reaches(&f, Disk::Unchanged);
 }
 
+mod cancel_rebuild;
 mod disk_reload;
 mod timeline;
 mod undo;
 mod undo_adversarial;
+mod undo_format;
+mod undo_status;

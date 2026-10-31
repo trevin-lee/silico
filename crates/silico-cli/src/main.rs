@@ -342,43 +342,18 @@ fn serve(workspace: Option<&Path>) -> Ended {
     // The workers, found before the handshake, all four or none: a missing one is a broken
     // install, said here, every one of them at once, rather than met by the agent at the
     // command that first needs it.
-    let pool = KernelPool::start();
-    let mut missing = Vec::new();
-    if let Some(why) = pool.refused() {
-        missing.push(format!(
-            "silico serve: there's no kernel worker it can use, so nothing can be built: {why}"
-        ));
-    }
-    if let Err(e) = silico_core::sketch::worker_path() {
-        missing.push(format!(
-            "silico serve: there's no sketch worker, so no sketch can be solved: {e}"
-        ));
-    }
-    if let Err(e) = silico_core::step_worker::worker_path() {
-        missing.push(format!(
-            "silico serve: there's no STEP worker, so nothing can be exported as STEP: {e}"
-        ));
-    }
-    let renderer = silico_core::render::worker_path().and_then(|exe| {
-        silico_core::render::RenderClient::start(
-            &exe,
-            silico_core::render::RenderSettings::default(),
-        )
-    });
-    let renderer = match renderer {
-        Ok(renderer) => Some(renderer),
-        Err(e) => {
-            missing.push(format!(
-                "silico serve: there's no render worker, so nothing can be rendered: {e}"
-            ));
-            None
+    let workers = match silico_core::workers::find() {
+        Ok(workers) => workers,
+        Err(missing) => {
+            let said: Vec<String> = missing
+                .iter()
+                .map(|why| format!("silico serve: {why}"))
+                .collect();
+            say!("{}", said.join("\n"));
+            return Ended::Failed;
         }
     };
-    let (Some(renderer), true) = (renderer, missing.is_empty()) else {
-        say!("{}", missing.join("\n"));
-        return Ended::Failed;
-    };
-    let sessions = Sessions::new(pool).rendering(renderer);
+    let sessions = Sessions::new(workers.kernel).rendering(workers.renderer);
     let sessions = match sessions.in_workspace(&root) {
         Ok(sessions) => sessions,
         Err(e) => {
@@ -661,23 +636,59 @@ impl Refusal {
     }
 
     /// The error that stopped the command, if it couldn't run: a reason that says so, or
-    /// else the kernel fault, or else the first reason.
-    fn stopped(&self) -> Option<&Error> {
+    /// else the kernel fault, or else the first reason; and its place among the reasons,
+    /// none for the fault, which isn't one of them.
+    fn stopped(&self) -> Option<(&Error, Option<usize>)> {
+        if let Some(at) = self.errors.iter().position(couldnt_run) {
+            return self.errors.get(at).map(|error| (error, Some(at)));
+        }
+        if let Some(fault) = &self.fault {
+            return Some((fault, None));
+        }
         self.errors
-            .iter()
-            .find(|error| couldnt_run(error))
-            .or(self.fault.as_ref())
-            .or_else(|| self.errors.first().filter(|_| self.failed))
+            .first()
+            .filter(|_| self.failed)
+            .map(|error| (error, Some(0)))
     }
 
-    /// `check --json`'s line for `file`: the reason it couldn't run, or the problems.
+    /// `check --json`'s line for `file`: the reason it couldn't run, with the reasons found
+    /// beside it, or the problems.
     fn line(&self, file: &Path) -> Ended {
-        match self.stopped() {
-            Some(error) => failed_line(file, error),
-            None => {
-                problems_line(file, &self.errors, self.total);
+        let none = Warnings::none();
+        match self.line_of(file, &none) {
+            Ok(failed) => {
+                line(&failed);
+                Ended::Failed
+            }
+            Err(problems) => {
+                line(&problems);
                 Ended::Problems
             }
+        }
+    }
+
+    /// [`line`](Self::line)'s line: the reason it couldn't run, the reasons beside it its
+    /// problems, counted without it; or, if it could, the problems. Its warnings `none`: a
+    /// refusal has none, they're a model's.
+    fn line_of<'a>(
+        &'a self,
+        file: &Path,
+        none: &'a Warnings,
+    ) -> Result<FailedLine<'a>, ProblemsLine<'a>> {
+        match self.stopped() {
+            Some((error, at)) => {
+                let beside: Vec<&Error> = self
+                    .errors
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| Some(i) != at)
+                    .map(|(_, error)| error)
+                    .collect();
+                // The stopping reason, if it's one of them, is counted among them too.
+                let total = self.total.saturating_sub(u64::from(at.is_some()));
+                Ok(FailedLine::new(file, error, &beside, total, none))
+            }
+            None => Err(ProblemsLine::new(file, &self.errors, self.total, none)),
         }
     }
 }
@@ -689,7 +700,8 @@ impl Refusal {
 /// again.
 fn with_retry(fault: &Error, command: &str) -> Error {
     let suggestion = command::fault_suggestion(fault, command::TryAgainBy::Running(command));
-    fault.clone().with_suggestion(suggestion)
+    // Its advice kept: the words still say it, and the line's `advice` says it as data.
+    fault.clone().reworded(suggestion)
 }
 
 /// `silico check FILE`: open, the session's `check` of its current revision, close. Its
@@ -697,10 +709,11 @@ fn with_retry(fault: &Error, command: &str) -> Error {
 /// solves), each on stderr, then its warnings, each marked `warning:` (they never change
 /// the exit code), and a kernel fault the rebuild met after them; or, with
 /// `--json`, its warnings on stderr as without it, and one line of JSON on stdout for each
-/// file: `{"file", "ok", "problems", "total"}`,
-/// each problem an error as the core's error contract has it, or, for a file that couldn't
-/// be checked (a refusal that says it couldn't run, or a kernel fault), `{"file", "ok":
-/// false, "error"}`, the error that stopped it, in the same shape
+/// file: `{"file", "ok", "problems", "total", "warnings", "warnings_total"}`,
+/// each problem and warning as the core's error contract has it, or, for a file that
+/// couldn't be checked (a refusal that says it couldn't run, or a kernel fault), `{"error",
+/// "file", "ok": false, "problems", "total", "warnings", "warnings_total"}`, the error that
+/// stopped it, in the same shape, beside the problems and warnings found with it
 /// (tests/contract/check-line.json).
 fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) -> Ended {
     let refused = |refusal: Refusal| {
@@ -726,7 +739,8 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) 
             let fault = with_retry(&fault, "check");
             if json {
                 print_warnings(file, &warnings);
-                return failed_line(file, &fault);
+                let beside: Vec<&Error> = problems.errors().iter().collect();
+                return failed_line(file, &fault, &beside, problems.total(), &warnings);
             }
             print_problems(file, problems.errors(), problems.total());
             print_warnings(file, &warnings);
@@ -734,10 +748,9 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) 
             return Ended::Failed;
         }
         if json {
-            // The line is a contract with no warnings in it: they're said on stderr, as
-            // without `--json`.
+            // In the line, and said on stderr too, as without `--json`.
             print_warnings(file, &warnings);
-            problems_line(file, problems.errors(), problems.total());
+            problems_line(file, problems.errors(), problems.total(), &warnings);
         } else {
             print_problems(file, problems.errors(), problems.total());
             print_warnings(file, &warnings);
@@ -747,14 +760,23 @@ fn check(sessions: &Sessions<KernelPool>, file: &Path, json: bool, fresh: bool) 
     })
 }
 
-/// `check --json`'s line for a file it checked: `{"file", "ok", "problems", "total"}`.
-fn problems_line(file: &Path, errors: &[Error], total: u64) {
-    line(&ProblemsLine::new(file, errors, total));
+/// `check --json`'s line for a file it checked: `{"file", "ok", "problems", "total",
+/// "warnings", "warnings_total"}`.
+fn problems_line(file: &Path, errors: &[Error], total: u64, warnings: &Warnings) {
+    line(&ProblemsLine::new(file, errors, total, warnings));
 }
 
-/// `check --json`'s line for a file it couldn't check: `{"file", "ok": false, "error"}`.
-fn failed_line(file: &Path, error: &Error) -> Ended {
-    line(&FailedLine::new(file, error));
+/// `check --json`'s line for a file it couldn't check: `{"error", "file", "ok": false,
+/// "problems", "total", "warnings", "warnings_total"}`, `error` what stopped it, `beside`
+/// the first of the `total` problems found beside it.
+fn failed_line(
+    file: &Path,
+    error: &Error,
+    beside: &[&Error],
+    total: u64,
+    warnings: &Warnings,
+) -> Ended {
+    line(&FailedLine::new(file, error, beside, total, warnings));
     Ended::Failed
 }
 
@@ -768,15 +790,19 @@ struct ProblemsLine<'a> {
     ok: bool,
     problems: Vec<LineError<'a>>,
     total: u64,
+    warnings: Vec<LineError<'a>>,
+    warnings_total: u64,
 }
 
 impl<'a> ProblemsLine<'a> {
-    fn new(file: &Path, errors: &'a [Error], total: u64) -> Self {
+    fn new(file: &Path, errors: &'a [Error], total: u64, warnings: &'a Warnings) -> Self {
         ProblemsLine {
             file: named(file),
             ok: total == 0,
             problems: errors.iter().map(LineError::new).collect(),
             total,
+            warnings: line_warnings(warnings),
+            warnings_total: warnings.total(),
         }
     }
 }
@@ -787,22 +813,46 @@ struct FailedLine<'a> {
     error: LineError<'a>,
     file: String,
     ok: bool,
+    problems: Vec<LineError<'a>>,
+    total: u64,
+    warnings: Vec<LineError<'a>>,
+    warnings_total: u64,
 }
 
 impl<'a> FailedLine<'a> {
-    fn new(file: &Path, error: &'a Error) -> Self {
+    fn new(
+        file: &Path,
+        error: &'a Error,
+        beside: &[&'a Error],
+        total: u64,
+        warnings: &'a Warnings,
+    ) -> Self {
         FailedLine {
             error: LineError::new(error),
             file: named(file),
             ok: false,
+            problems: beside.iter().map(|error| LineError::new(error)).collect(),
+            total,
+            warnings: line_warnings(warnings),
+            warnings_total: warnings.total(),
         }
     }
+}
+
+/// The warnings listed, each in the error contract's shape, as a line holds them.
+fn line_warnings(warnings: &Warnings) -> Vec<LineError<'_>> {
+    warnings
+        .listed()
+        .iter()
+        .map(|warning| LineError::of(warning.said()))
+        .collect()
 }
 
 /// An error in the core's error contract, as a `check --json` line holds it: every field
 /// the error writes, its keys sorted.
 #[derive(Serialize)]
 struct LineError<'a> {
+    advice: Option<&'static str>,
     candidates: &'a [String],
     cause: Option<&'a str>,
     code: &'static str,
@@ -818,6 +868,11 @@ impl<'a> LineError<'a> {
     /// `error`'s every field, taken whole ([`Said`]), so a field an error gains is one this
     /// must write.
     fn new(error: &'a Error) -> Self {
+        Self::of(error.said())
+    }
+
+    /// An error's or a warning's every field, as [`Said`] gives them.
+    fn of(said: Said<'a>) -> Self {
         let Said {
             code,
             message,
@@ -828,8 +883,10 @@ impl<'a> LineError<'a> {
             cause,
             suggestion,
             candidates,
-        } = error.said();
+            advice,
+        } = said;
         LineError {
+            advice,
             candidates,
             cause,
             code,
@@ -1358,8 +1415,8 @@ mod tests {
     use std::os::unix::ffi::OsStringExt as _;
     use std::path::{Path, PathBuf};
 
-    use silico_core::command::{NOT_RELOADED, Problems};
-    use silico_core::{Error, ErrorCode};
+    use silico_core::command::{NOT_RELOADED, Problems, Warnings};
+    use silico_core::{Error, ErrorCode, Warning, WarningCode};
 
     use super::{Ended, FailedLine, LineError, ProblemsLine, Refusal, with_retry};
 
@@ -1416,35 +1473,121 @@ mod tests {
         // in the workspace's build.
         let error = every_field();
         let errors = [error.clone(), Error::new(ErrorCode::InvalidInput, "n")];
-        let problems =
-            serde_json::to_string(&ProblemsLine::new(Path::new("a b.silico"), &errors, 7)).unwrap();
+        let warnings = warnings();
+        let problems = serde_json::to_string(&ProblemsLine::new(
+            Path::new("a b.silico"),
+            &errors,
+            7,
+            &warnings,
+        ))
+        .unwrap();
         assert_eq!(
             problems,
             concat!(
                 r#"{"file":"a b.silico","ok":false,"problems":["#,
-                r#"{"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
+                r#"{"advice":null,"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
                 r#""elements":["Edge1","Edge2"],"elements_total":5,"feature":"k7f2qx3m","#,
                 r#""message":"m \"q\"","parameter":"edges","suggestion":"s"},"#,
-                r#"{"candidates":[],"cause":null,"code":"invalid_input","elements":[],"#,
+                r#"{"advice":null,"candidates":[],"cause":null,"code":"invalid_input","elements":[],"#,
                 r#""elements_total":0,"feature":null,"message":"n","parameter":null,"#,
-                r#""suggestion":null}],"total":7}"#,
+                r#""suggestion":null}],"total":7,"warnings":["#,
+                r#"{"advice":null,"candidates":[],"cause":"w","code":"ends_not_joined","#,
+                r#""elements":["pa000001","pa000002"],"elements_total":3,"feature":"s0000001","#,
+                r#""message":"apart","parameter":null,"suggestion":"join"}],"#,
+                r#""warnings_total":1}"#,
             )
         );
-        let none =
-            serde_json::to_string(&ProblemsLine::new(Path::new("ok.silico"), &[], 0)).unwrap();
+        let none = Warnings::none();
+        let clean =
+            serde_json::to_string(&ProblemsLine::new(Path::new("ok.silico"), &[], 0, &none))
+                .unwrap();
         assert_eq!(
-            none,
-            r#"{"file":"ok.silico","ok":true,"problems":[],"total":0}"#
+            clean,
+            r#"{"file":"ok.silico","ok":true,"problems":[],"total":0,"warnings":[],"warnings_total":0}"#
         );
-        let failed =
-            serde_json::to_string(&FailedLine::new(Path::new("m.silico"), &error)).unwrap();
+        let beside = Error::new(ErrorCode::Drift, "d").with_feature("m0000002");
+        let failed = serde_json::to_string(&FailedLine::new(
+            Path::new("m.silico"),
+            &error,
+            &[&beside],
+            4,
+            &warnings,
+        ))
+        .unwrap();
         assert_eq!(
             failed,
             concat!(
-                r#"{"error":{"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
+                r#"{"error":{"advice":null,"candidates":["Edge3"],"cause":"c","code":"reference_broken","#,
                 r#""elements":["Edge1","Edge2"],"elements_total":5,"feature":"k7f2qx3m","#,
                 r#""message":"m \"q\"","parameter":"edges","suggestion":"s"},"#,
-                r#""file":"m.silico","ok":false}"#,
+                r#""file":"m.silico","ok":false,"problems":["#,
+                r#"{"advice":null,"candidates":[],"cause":null,"code":"drift","elements":[],"#,
+                r#""elements_total":0,"feature":"m0000002","message":"d","parameter":null,"#,
+                r#""suggestion":null}],"total":4,"warnings":["#,
+                r#"{"advice":null,"candidates":[],"cause":"w","code":"ends_not_joined","#,
+                r#""elements":["pa000001","pa000002"],"elements_total":3,"feature":"s0000001","#,
+                r#""message":"apart","parameter":null,"suggestion":"join"}],"#,
+                r#""warnings_total":1}"#,
+            )
+        );
+    }
+
+    /// One warning, with every field a warning has set.
+    fn warnings() -> Warnings {
+        Warnings::of([Warning::new(WarningCode::EndsNotJoined, "apart")
+            .with_feature("s0000001")
+            .with_elements(["pa000001", "pa000002"])
+            .with_elements_total(3)
+            .with_cause("w")
+            .with_suggestion("join")])
+    }
+
+    #[test]
+    fn a_refusals_line_holds_the_reasons_beside_the_one_that_stopped_it() {
+        // A refusal that couldn't run: the reason that says so is the line's `error`, the
+        // rest its problems, counted without it; a fault beside a refusal is the `error`, and
+        // every reason a problem; an unreadable file's line has none; a refusal of the
+        // document's own is its problems' line; and a refusal has no warnings (written out
+        // by hand).
+        let path = Path::new("p.silico");
+        let none = Warnings::none();
+        let text = |refusal: &Refusal| match refusal.line_of(path, &none) {
+            Ok(failed) => serde_json::to_string(&failed).unwrap(),
+            Err(problems) => serde_json::to_string(&problems).unwrap(),
+        };
+        let invalid = Error::new(ErrorCode::InvalidInput, "bad");
+        let io = Error::new(ErrorCode::IoFailed, "gone");
+        let bad = r#"{"advice":null,"candidates":[],"cause":null,"code":"invalid_input","elements":[],"elements_total":0,"feature":null,"message":"bad","parameter":null,"suggestion":null}"#;
+        let gone = r#"{"advice":null,"candidates":[],"cause":null,"code":"io_failed","elements":[],"elements_total":0,"feature":null,"message":"gone","parameter":null,"suggestion":null}"#;
+        // Three reasons, two listed, the second the one that stopped it.
+        let refusal = Refusal::of(vec![invalid.clone(), io.clone()], 3, false);
+        assert_eq!(
+            text(&refusal),
+            format!(
+                r#"{{"error":{gone},"file":"p.silico","ok":false,"problems":[{bad}],"total":2,"warnings":[],"warnings_total":0}}"#
+            )
+        );
+        let fault = Error::new(ErrorCode::WorkerCrashed, "crashed");
+        let faulted = Refusal::of(vec![invalid.clone()], 1, false).with_fault(Some(fault), "check");
+        let line: serde_json::Value = serde_json::from_str(&text(&faulted)).unwrap();
+        assert_eq!(line["error"]["code"], "worker_crashed");
+        assert_eq!(
+            line["problems"],
+            serde_json::json!([serde_json::from_str::<serde_json::Value>(bad).unwrap()])
+        );
+        assert_eq!(line["total"], 1);
+        let unread = Refusal::of_open(path, &Problems::from(io));
+        assert_eq!(
+            text(&unread),
+            format!(
+                r#"{{"error":{gone},"file":"p.silico","ok":false,"problems":[],"total":0,"warnings":[],"warnings_total":0}}"#
+            )
+        );
+        let documents = Refusal::of_command("check", &Problems::from(invalid));
+        assert_eq!(
+            text(&documents),
+            format!(
+                r#"{{"file":"p.silico","ok":false,"problems":[{bad}],"total":1,"warnings":[],"warnings_total":0}}"#
             )
         );
     }
@@ -1466,7 +1609,7 @@ mod tests {
         let core = keys(serde_json::to_string(&error).unwrap());
         let line = keys(serde_json::to_string(&LineError::new(&error)).unwrap());
         assert_eq!(line, core);
-        assert_eq!(core.len(), 9);
+        assert_eq!(core.len(), 10);
         // And each value as the core writes it.
         let core: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&error).unwrap()).unwrap();
@@ -1572,7 +1715,7 @@ mod tests {
         assert!(plain.stopped().is_none());
         let faulted = Refusal::of_command("fmt", &too_long).with_fault(Some(fault.clone()), "fmt");
         assert!(failed(&faulted.ended()));
-        let stopped = faulted.stopped().unwrap();
+        let (stopped, _) = faulted.stopped().unwrap();
         assert_eq!(
             (stopped.code(), stopped.suggestion()),
             (
@@ -1582,7 +1725,7 @@ mod tests {
         );
         let cancelled = Problems::from(Error::new(ErrorCode::Cancelled, "cancelled"));
         let both = Refusal::of_command("check", &cancelled).with_fault(Some(fault), "check");
-        assert_eq!(both.stopped().unwrap().code(), ErrorCode::Cancelled);
+        assert_eq!(both.stopped().unwrap().0.code(), ErrorCode::Cancelled);
     }
 
     #[test]

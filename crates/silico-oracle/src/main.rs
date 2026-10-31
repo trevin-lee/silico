@@ -8,22 +8,33 @@
 //!   measure cases (`measures/`), pairs of elements of a document's solids measured by the
 //!   core's `distance` and `angle` and by FreeCAD's Measure, compared by the decision's
 //!   rules and with the case's values.
+//!   And its sketch-edit cases (`sketch-edits/`), each a sketch and one edit, made by
+//!   Silico's `sketch_edit` and by FreeCAD's Sketcher, solved by each, and compared modulo
+//!   what docs/ports/sketch-edit.md says Silico does otherwise.
 //! - `silico-oracle sweep [--count N] [--seed S]`: N generated cases (default 500) from seed
 //!   S (default 1).
+//! - `silico-oracle sketch-edit-sweep [--count N] [--seed S]`: N generated sketch-edit cases
+//!   (default 500) from seed S (default 1): random sketches, each with a random edit.
+//!   `--only INDEX` takes the one case of them at INDEX (from 0); `--dump DIR` writes each
+//!   case taken to DIR as `<name>.json`: its sketch, its edit, and Silico's edited sketch
+//!   ([`sketch_edit::dump`]).
+//! - `silico-oracle sketch-extend-sweep`, with the same options: the same random sketches,
+//!   each with one of its lines or arcs extended (`silico_core::extend`).
 //! - `silico-oracle corpus DIR`: the STEP files in DIR, as FreeCAD reads them, each as it is
 //!   and moved; Silico also meshes each (`pixi run corpus` fetches them first).
 //!
 //! Prints each case that differs, and exits 1 if any does. Needs the kernel worker beside
 //! it (`pixi run oracle` and `pixi run oracle-sweep` build it), the sketch worker for sketch
-//! cases (`pixi run oracle` builds it), and the FreeCAD oracle (`pixi install -e oracle`).
+//! and sketch-edit cases (`pixi run oracle` and `pixi run oracle-sketch-edit-sweep` build it),
+//! and the FreeCAD oracle (`pixi install -e oracle`).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use silico_oracle::{Case, corpus, generate, load, run, sketch};
+use silico_oracle::{Case, corpus, generate, load, run, sketch, sketch_edit};
 
-const USAGE: &str = "usage: silico-oracle run [DIR] | silico-oracle sweep [--count N] [--seed S] | silico-oracle corpus DIR";
+const USAGE: &str = "usage: silico-oracle run [DIR] | silico-oracle sweep [--count N] [--seed S] | silico-oracle sketch-edit-sweep [--count N] [--seed S] [--only INDEX] [--dump DIR] | silico-oracle sketch-extend-sweep [the same] | silico-oracle corpus DIR";
 
 /// The most cases a sweep runs: a few hours' worth (500 take about 10 s), a few hundred
 /// megabytes of cases.
@@ -31,9 +42,10 @@ const MAX_SWEEP: usize = 1_000_000;
 
 fn main() -> ExitCode {
     let mut out = std::io::stdout().lock();
-    let ran = cases().and_then(|(cases, corpus, sketches, features, measures)| {
-        // A directory may hold sketch, sketch-feature, or measure cases alone.
-        let others = !sketches.is_empty() || features.is_some() || measures.is_some();
+    let ran = cases().and_then(|(cases, corpus, sketches, features, measures, edits)| {
+        // A directory may hold sketch, sketch-feature, measure, or sketch-edit cases alone.
+        let others =
+            !sketches.is_empty() || features.is_some() || measures.is_some() || !edits.is_empty();
         let mut report = if cases.is_empty() && others {
             silico_oracle::Report::default()
         } else {
@@ -64,6 +76,18 @@ fn main() -> ExitCode {
                     .map(|c| c.to_string()),
             );
         }
+        let verdicts = sketch_edit::run(&edits)?;
+        let mut excused: Vec<String> = verdicts
+            .iter()
+            .flat_map(|v| {
+                v.excused
+                    .iter()
+                    .map(move |why| format!("excused: {}: {why}", v.case))
+            })
+            .collect();
+        let (differ, shown, stale) = sketch_edit::without_known(verdicts, sketch_edit::KNOWN);
+        sketch_differences.extend(differ.iter().map(ToString::to_string));
+        excused.extend(shown);
         let (mut problems, mut notes) = (Vec::new(), Vec::new());
         let known;
         if let Some(CorpusNotes { unread, breps }) = corpus {
@@ -95,8 +119,10 @@ fn main() -> ExitCode {
             );
             problems.extend(missing);
         }
+        notes.extend(excused);
+        problems.extend(stale);
         Ok((
-            cases.len() + sketches.len() + feature_count + measure_count,
+            cases.len() + sketches.len() + feature_count + measure_count + edits.len(),
             report,
             problems,
             known,
@@ -153,13 +179,15 @@ struct CorpusNotes {
 }
 
 /// The cases the command line asks for, for the corpus its files FreeCAD couldn't read and
-/// the B-reps it wrote, the sketch cases, the sketch-feature cases, and the measure cases.
+/// the B-reps it wrote, the sketch cases, the sketch-feature cases, the measure cases, and
+/// the sketch-edit cases.
 type Asked = (
     Vec<Case>,
     Option<CorpusNotes>,
     Vec<sketch::SketchCase>,
     Option<silico_oracle::features::Cases>,
     Option<silico_oracle::measures::Cases>,
+    Vec<sketch_edit::EditCase>,
 );
 
 fn cases() -> Result<Asked, String> {
@@ -178,6 +206,7 @@ fn cases() -> Result<Asked, String> {
                 sketch::load(&dir)?,
                 silico_oracle::features::load(&dir)?,
                 silico_oracle::measures::load(&dir)?,
+                sketch_edit::load(&dir)?,
             ))
         }
         Some("corpus") => match &args[1..] {
@@ -187,12 +216,22 @@ fn cases() -> Result<Asked, String> {
                     unread: corpus.unread,
                     breps: corpus.breps,
                 };
-                Ok((corpus.cases, Some(notes), Vec::new(), None, None))
+                Ok((
+                    corpus.cases,
+                    Some(notes),
+                    Vec::new(),
+                    None,
+                    None,
+                    Vec::new(),
+                ))
             }
             _ => Err(format!("corpus takes one directory\n{USAGE}")),
         },
-        Some("sweep") => {
+        Some(sweep @ ("sweep" | "sketch-edit-sweep" | "sketch-extend-sweep")) => {
+            let extends = sweep == "sketch-extend-sweep";
+            let edits = sweep == "sketch-edit-sweep" || extends;
             let (mut count, mut seed) = (500usize, 1u64);
+            let (mut dump, mut only): (Option<PathBuf>, Option<usize>) = (None, None);
             let mut rest = args[1..].iter();
             while let Some(flag) = rest.next() {
                 let value = rest
@@ -209,13 +248,52 @@ fn cases() -> Result<Asked, String> {
                             .parse()
                             .map_err(|e| format!("--seed {value}: {e}\n{USAGE}"))?;
                     }
+                    "--dump" if edits => dump = Some(PathBuf::from(value)),
+                    "--only" if edits => {
+                        only = Some(
+                            value
+                                .parse()
+                                .map_err(|e| format!("--only {value}: {e}\n{USAGE}"))?,
+                        );
+                    }
                     _ => return Err(format!("unknown argument {flag}\n{USAGE}")),
                 }
             }
             if count > MAX_SWEEP {
                 return Err(format!("--count {count}: at most {MAX_SWEEP}\n{USAGE}"));
             }
-            Ok((generate::cases(seed, count), None, Vec::new(), None, None))
+            if edits {
+                let mut cases = if extends {
+                    generate::sketch_extend_cases(seed, count)?
+                } else {
+                    generate::sketch_edit_cases(seed, count)?
+                };
+                if let Some(index) = only {
+                    if index >= cases.len() {
+                        return Err(format!(
+                            "--only {index}: the sweep makes cases 0 to {}\n{USAGE}",
+                            cases.len().saturating_sub(1)
+                        ));
+                    }
+                    cases = vec![cases.swap_remove(index)];
+                }
+                if let Some(dir) = &dump {
+                    let mut worker =
+                        silico_core::sketch::SketchWorker::start().map_err(|e| e.to_string())?;
+                    for case in &cases {
+                        sketch_edit::dump(case, dir, &mut worker)?;
+                    }
+                }
+                return Ok((Vec::new(), None, Vec::new(), None, None, cases));
+            }
+            Ok((
+                generate::cases(seed, count),
+                None,
+                Vec::new(),
+                None,
+                None,
+                Vec::new(),
+            ))
         }
         _ => Err(USAGE.to_owned()),
     }

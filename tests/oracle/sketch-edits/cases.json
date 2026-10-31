@@ -1,0 +1,1856 @@
+[
+  {
+    "name": "split_line_at_freecads_position",
+    "note": "testSplitLineSegment as FreeCAD writes it: (2, 3.1) is 0.07 mm off the line; FreeCAD splits at its projection, Silico refuses it (decision 4).",
+    "sketch": "freecad_line",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            2,
+            3.1
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_line_at_projection",
+    "note": "testSplitLineSegment at the projection of FreeCAD's position: one line added, the pieces held collinear (decision 1).",
+    "sketch": "freecad_line",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            2.05,
+            3.05
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_line_at_end",
+    "note": "A split at the line's end: Silico refuses it (82633fb5df's rule); FreeCAD 1.1.3 splits at the position's projection, a hair inside the end, and makes a piece 6.28e-16 mm long.",
+    "sketch": "freecad_line",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            3,
+            4
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_line_beyond_end",
+    "note": "A split past the line's end: both refuse.",
+    "sketch": "freecad_line",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            3.5,
+            4.5
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_line_without_intersection",
+    "note": "testTrimWithoutIntersection: no cut, so the line is deleted.",
+    "sketch": "freecad_line",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          2,
+          3.1
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_circle_at_one_position",
+    "note": "testSplitCircle: FreeCAD makes one arc whose ends are at one place; Silico refuses a circle split at one position (decision 3).",
+    "sketch": "freecad_circle",
+    "edit": {
+      "split": {
+        "curve": "c0000002",
+        "at": [
+          [
+            2,
+            3.1
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_circle_at_two_positions",
+    "note": "A circle split at 0 and 90 degrees: two arcs sharing both ends and the centre (decision 3); FreeCAD splits twice and the first split's ends are joined.",
+    "sketch": "freecad_circle",
+    "edit": {
+      "split": {
+        "curve": "c0000002",
+        "at": [
+          [
+            4,
+            2
+          ],
+          [
+            1,
+            5
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_arc_at_freecads_position",
+    "note": "testSplitArcOfCircle as FreeCAD writes it: (-2, 3.1) is 0.2 mm off the arc; FreeCAD splits at its projection, Silico refuses it (decision 4).",
+    "sketch": "freecad_arc",
+    "edit": {
+      "split": {
+        "curve": "a0000004",
+        "at": [
+          [
+            -2,
+            3.1
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_arc_on_it",
+    "note": "testSplitArcOfCircle at the projection of FreeCAD's position: one arc added, sharing the split point and the centre.",
+    "sketch": "freecad_arc",
+    "edit": {
+      "split": {
+        "curve": "a0000004",
+        "at": [
+          [
+            -1.8166289476598259,
+            3.03276394747527
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_level_line",
+    "note": "Its horizontal on the start-side piece only, its length the distance between the outer ends (decision 1, 4d6b1f3eb8): one freedom more, the split point's slide.",
+    "sketch": "level_line",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            4,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_level_line_within_1e-8_of_start",
+    "note": "A split 1e-8 mm from the start: Silico refuses it (within 1e-7 mm of an end); FreeCAD 1.1.3 makes a 1e-8 mm piece.",
+    "sketch": "level_line",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            1e-08,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_level_line_1e-6_from_end",
+    "note": "A split 1e-6 mm from the end, past the 1e-7 mm floor: both split.",
+    "sketch": "level_line",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            9.999999,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_line_with_direction_constraints",
+    "note": "Direction constraints on the start-side piece only (decision 1; 1.1.3 copies them to both, and one is redundant); a perpendicular to a line neither piece touches kept (main drops it).",
+    "sketch": "line_with_directions",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            4,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_line_with_angle",
+    "note": "An angle on the split line survives on the start-side piece (78e5729520; 1.1.3 segfaults, main's bbbff1f8f1).",
+    "sketch": "line_with_angle",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            4,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_line_points_on_each_half",
+    "note": "Each on goes to the piece holding its point, the one past the end to the end piece, and the distance to the second piece (bbbff1f8f1; 1.1.3 drops them, #28240).",
+    "sketch": "line_with_points_on",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            4,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_line_tangent_symmetric_midpoint",
+    "note": "The tangent to the piece touching the circle, the symmetric about the start-side piece (decision 2), the midpoint a symmetric of the outer ends.",
+    "sketch": "line_tangent_symmetric_midpoint",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            4,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_line_at_tangent_contact_side",
+    "note": "The contact at x 3 is on the second piece now: the tangent goes there (decision 2).",
+    "sketch": "line_tangent_symmetric_midpoint",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            2,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_line_at_held_point",
+    "note": "A split at a point held on the line: the pieces share it, and its on goes (as implied).",
+    "sketch": "line_held_point",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            4,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_line_tangent_on_second_half",
+    "note": "A tangent_on onto the split line goes to the piece holding its point, the second (main's findPieceContainingPoint; 1.1.3 not probed by the note).",
+    "sketch": "line_tangent_on_onto",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            3,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_arc_keeps_end_tangents",
+    "note": "Both tangent_ats kept at the outer ends (6d06b61c7e; 1.1.3 makes them coincidences), the radius on one piece.",
+    "sketch": "arc_with_end_tangents",
+    "edit": {
+      "split": {
+        "curve": "a0000006",
+        "at": [
+          [
+            2.121320343559643,
+            0.8786796564403576
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_circle_with_constraints",
+    "note": "A circle split at 60 and 240 degrees: the on at 30 and the tangent at 270 degrees go to the second arc, the radius to the first.",
+    "sketch": "circle_with_constraints",
+    "edit": {
+      "split": {
+        "curve": "c0000002",
+        "at": [
+          [
+            2.5000000000000004,
+            4.330127018922193
+          ],
+          [
+            -2.500000000000002,
+            -4.330127018922192
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_circle_tangent_on",
+    "note": "A circle split at 10 and 170 degrees: the tangent_on onto it goes to the first arc, counter-clockwise from 10 to 170 degrees, which holds its point at 90 (main's findPieceContainingPoint).",
+    "sketch": "circle_tangent_on",
+    "edit": {
+      "split": {
+        "curve": "c0000002",
+        "at": [
+          [
+            4.92403876506104,
+            0.8682408883346516
+          ],
+          [
+            -4.92403876506104,
+            0.8682408883346514
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_away_end_two_share",
+    "note": "Trimming away an end two other lines share: they keep it, joined to each other (FreeCAD's model has the trimmed line's end as the hub of their coincidences).",
+    "sketch": "trim_hub_end",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          8,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_point",
+    "note": "Splitting a point: Silico refuses it; FreeCAD 1.1.3 segfaults.",
+    "sketch": "point_alone",
+    "edit": {
+      "split": {
+        "curve": "p0000001",
+        "at": [
+          [
+            2,
+            2
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_point",
+    "note": "Trimming a point: Silico refuses it (5efb8e5e76); FreeCAD 1.1.3 deletes it.",
+    "sketch": "point_alone",
+    "edit": {
+      "trim": {
+        "curve": "p0000001",
+        "pick": [
+          2,
+          2
+        ]
+      }
+    }
+  },
+  {
+    "name": "remove_point_alone",
+    "note": "A point no curve uses: deleted on both.",
+    "sketch": "point_alone",
+    "edit": {
+      "remove": {
+        "members": [
+          "p0000001"
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_line_end_as_drawn",
+    "note": "testTrimLineSegmentEnd as drawn: FreeCAD joins the new end to the cutter's start (its 5e-5 mm test); Silico gives it a new point on the cutter (decision 5).",
+    "sketch": "trim_line_end_drawn",
+    "edit": {
+      "trim": {
+        "curve": "n0000006",
+        "pick": [
+          1.4,
+          2.4
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_line_end_held",
+    "note": "testTrimLineSegmentEnd with the cutter's start held on the line: the line's new start is the cutter's start.",
+    "sketch": "trim_line_end_held",
+    "edit": {
+      "trim": {
+        "curve": "n0000006",
+        "pick": [
+          1.4,
+          2.4
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_line_mid_as_drawn",
+    "note": "testTrimLineSegmentMid as drawn: two lines, each end at a cut a new point on its cutter (decision 5).",
+    "sketch": "trim_line_mid_drawn",
+    "edit": {
+      "trim": {
+        "curve": "n0000009",
+        "pick": [
+          2.0,
+          3.0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_line_mid_held",
+    "note": "testTrimLineSegmentMid with the first cutter's start held: the first piece's end is that point; the second's a new point on the crossing cutter.",
+    "sketch": "trim_line_mid_held",
+    "edit": {
+      "trim": {
+        "curve": "n0000009",
+        "pick": [
+          2.0,
+          3.0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_circle_one_cut",
+    "note": "testTrimCircleEnd: one cut, so the circle is deleted.",
+    "sketch": "trim_circle_one_cutter",
+    "edit": {
+      "trim": {
+        "curve": "c0000005",
+        "pick": [
+          1.9270509831248424,
+          4.853169548885461
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_circle_mid_as_drawn",
+    "note": "testTrimCircleMid as drawn: one arc, from the crossing to the cutter's start, each end a new point on its cutter (decision 5).",
+    "sketch": "trim_circle_two_cutters",
+    "edit": {
+      "trim": {
+        "curve": "c0000008",
+        "pick": [
+          -2.0,
+          2.0000000000000004
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_construction_circle",
+    "note": "testTrimEffectOnConstruction: the arc left is construction, and so are its new points (23ecf94ab6).",
+    "sketch": "trim_construction_circle",
+    "edit": {
+      "trim": {
+        "curve": "c0000008",
+        "pick": [
+          -2.0,
+          2.0000000000000004
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_arc_end_as_drawn",
+    "note": "testTrimArcOfCircleEnd as drawn: the arc shortened to the cutter's start, its new end a point on the cutter (decision 5).",
+    "sketch": "trim_arc_one_cutter",
+    "edit": {
+      "trim": {
+        "curve": "a0000007",
+        "pick": [
+          0.37626492754672203,
+          4.934442802201417
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_arc_mid_as_drawn",
+    "note": "testTrimArcOfCircleMid as drawn: two arcs sharing the centre, each end at a cut a new point on its cutter.",
+    "sketch": "trim_arc_two_cutters",
+    "edit": {
+      "trim": {
+        "curve": "a0000010",
+        "pick": [
+          -1.897777478867205,
+          2.7764571353075618
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_drops_full_length",
+    "note": "testTrimEndEffectOnFullLengthConstraints: one end trimmed away, so the length goes (2779f0b29f).",
+    "sketch": "trim_full_length",
+    "edit": {
+      "trim": {
+        "curve": "n0000006",
+        "pick": [
+          1.8,
+          2
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_drops_symmetric_of_ends",
+    "note": "testTrimEndEffectOnSymmetricConstraints: a symmetric naming both ends goes when one end does (f0d30cb570).",
+    "sketch": "trim_symmetric_ends",
+    "edit": {
+      "trim": {
+        "curve": "n0000006",
+        "pick": [
+          1.4,
+          2.4
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_keeps_unrelated_tangent",
+    "note": "testTrimEndEffectOnUnrelatedTangent: the tangency to the circle that isn't the cutter stays edge to edge (08a66afbc8).",
+    "sketch": "trim_unrelated_tangent",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          1,
+          -1.2
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_worked_example",
+    "note": "The note's worked example: pieces (0,0)-(3,0) and (7,0)-(10,0), horizontal on both, the length a distance of the outer ends, the second piece's start the cutter's, the first's end a point on the crossing cutter, the point at 9 on the second piece; equal and the point at 5's on dropped.",
+    "sketch": "trim_worked_example",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          5,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_tangent_cutter_becomes_end_tangency",
+    "note": "The circle cuts where it touches (tangency counts), and the edge tangency becomes an end tangency at the first piece's new end (dec01d1df0, decision 8).",
+    "sketch": "trim_tangent_cutter",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          5.5,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_circle_at_tangent_contact",
+    "note": "A tangent line cuts the circle where it touches (3cbe309330): the arc left runs from the crossing at -53 degrees to the contact at 90, where its end takes the tangency.",
+    "sketch": "trim_circle_by_tangent_line",
+    "edit": {
+      "trim": {
+        "curve": "c0000002",
+        "pick": [
+          -2.499999999999999,
+          4.330127018922194
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_arc_pick_outside_sweep",
+    "note": "A pick at 315 degrees, outside the arc's sweep: Silico trims at the nearer end, FreeCAD 1.1.3 removes 90 to 180 degrees.",
+    "sketch": "trim_arc_three_quarters",
+    "edit": {
+      "trim": {
+        "curve": "a0000004",
+        "pick": [
+          3.535533905932737,
+          -3.5355339059327386
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_arc_between_cuts",
+    "note": "A pick at 135 degrees: two arcs, 0 to 90 and 180 to 270, sharing the centre.",
+    "sketch": "trim_arc_three_quarters",
+    "edit": {
+      "trim": {
+        "curve": "a0000004",
+        "pick": [
+          -3.5355339059327373,
+          3.5355339059327378
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_at_centre",
+    "note": "A pick at the arc's centre: Silico refuses it; FreeCAD 1.1.3 throws.",
+    "sketch": "trim_arc_three_quarters",
+    "edit": {
+      "trim": {
+        "curve": "a0000004",
+        "pick": [
+          0,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_symmetric_about_line_into_two",
+    "note": "Two pieces, neither of which is the line: Silico refuses the trim, naming the symmetric (decision 2); FreeCAD drops it.",
+    "sketch": "trim_symmetric_about_line",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          5,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_symmetric_about_line_shortened",
+    "note": "One piece, the same line: the symmetric kept (FreeCAD 1.1.3 drops it).",
+    "sketch": "trim_symmetric_about_line",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          1,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_arc_tangent_no_piece_touches",
+    "note": "Two arcs, neither touching the line: Silico refuses the trim, naming the tangent (decision 2); FreeCAD drops it.",
+    "sketch": "trim_arc_tangent_away",
+    "edit": {
+      "trim": {
+        "curve": "a0000004",
+        "pick": [
+          0,
+          5
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_arc_tangent_contact_removed",
+    "note": "The contact at 90 degrees is on the part removed (the short line doesn't reach it, so doesn't cut): no piece touches the line, so Silico refuses the trim, naming the tangent (decision 2); FreeCAD drops it.",
+    "sketch": "trim_arc_tangent_removed",
+    "edit": {
+      "trim": {
+        "curve": "a0000004",
+        "pick": [
+          0,
+          5
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_perpendicular_cutter",
+    "note": "The line trimmed back to the cutter it's perpendicular to: the perpendicular stays (it's between directions, D4), and the new end is a point on the cutter.",
+    "sketch": "trim_perpendicular_cutter",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          8,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_perpendicular_cutter_into_two",
+    "note": "The line trimmed between its cuts at x 3 and 6: two pieces, each horizontal; the perpendicular to the upright on every piece (#se-constraints-on-the-curve-itself).",
+    "sketch": "trim_perpendicular_cutter_two",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          4.5,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_by_construction_line",
+    "note": "Construction cuts (715f98d1f3): the line trimmed back to x 5.",
+    "sketch": "trim_construction_cutter",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          8,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_point_does_not_cut",
+    "note": "A point doesn't cut: no cut, so the line is deleted, and the point's on with it.",
+    "sketch": "trim_point_on_line",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          8,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_away_shared_end",
+    "note": "Trimming away an end the neighbour shares: the neighbour keeps the point and its lock; the line's new end is a point on the cutter.",
+    "sketch": "trim_shared_end",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          8,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "remove_middle_of_chain",
+    "note": "Deleting the middle of a chain: A and B free; the lock on D's start stays on the point A keeps.",
+    "sketch": "chain",
+    "edit": {
+      "remove": {
+        "members": [
+          "n0000006"
+        ]
+      }
+    }
+  },
+  {
+    "name": "remove_batch_with_duplicate",
+    "note": "A batch with a member named twice: the same as one by one (41c91574cf).",
+    "sketch": "chain",
+    "edit": {
+      "remove": {
+        "members": [
+          "n0000006",
+          "n0000007",
+          "n0000006"
+        ]
+      }
+    }
+  },
+  {
+    "name": "remove_constraint",
+    "note": "Removing a constraint by ID.",
+    "sketch": "chain",
+    "edit": {
+      "remove": {
+        "members": [
+          "k0000010"
+        ]
+      }
+    }
+  },
+  {
+    "name": "unjoin_chain_end",
+    "note": "Unjoining A from D at their shared point: the lock stays with D, which keeps the point.",
+    "sketch": "chain",
+    "edit": {
+      "unjoin": {
+        "point": "p0000002",
+        "curve": "n0000005"
+      }
+    }
+  },
+  {
+    "name": "unjoin_unshared_point",
+    "note": "Unjoining a point no other curve shares: Silico refuses it; FreeCAD 1.1.3's vertex Delete raises \"Not able to delete a constraint on point\" (#se-on-a-point-with-no-coincidence), where main's does nothing (bc4d463cdf).",
+    "sketch": "chain",
+    "edit": {
+      "unjoin": {
+        "point": "p0000001",
+        "curve": "n0000005"
+      }
+    }
+  },
+  {
+    "name": "remove_hub_of_three",
+    "note": "Deleting one curve at a three-way joint: the others stay joined (0358ff7ce2).",
+    "sketch": "three_way_joint",
+    "edit": {
+      "remove": {
+        "members": [
+          "n0000006"
+        ]
+      }
+    }
+  },
+  {
+    "name": "unjoin_one_of_three",
+    "note": "Unjoining one curve of three: the other two stay joined.",
+    "sketch": "three_way_joint",
+    "edit": {
+      "unjoin": {
+        "point": "p0000002",
+        "curve": "n0000006"
+      }
+    }
+  },
+  {
+    "name": "unjoin_keeps_length",
+    "note": "Unjoining A, which has a length: it keeps it (FreeCAD's vertex Delete drops it, 0358ff7ce2).",
+    "sketch": "three_way_joint",
+    "edit": {
+      "unjoin": {
+        "point": "p0000002",
+        "curve": "n0000005"
+      }
+    }
+  },
+  {
+    "name": "remove_circle_sharing_centre",
+    "note": "Deleting a circle whose centre two arcs share: the arcs' centres stay one point.",
+    "sketch": "arcs_through_circle_centre",
+    "edit": {
+      "remove": {
+        "members": [
+          "c0000008"
+        ]
+      }
+    }
+  },
+  {
+    "name": "remove_point_curves_use",
+    "note": "Deleting a point curves use: Silico refuses it (decision 7); FreeCAD has no such edit.",
+    "sketch": "arcs_through_circle_centre",
+    "edit": {
+      "remove": {
+        "members": [
+          "p0000001"
+        ]
+      }
+    }
+  },
+  {
+    "name": "remove_tangent_neighbour",
+    "note": "Deleting the arc tangent at a joint of three: its tangent_at goes with it, never onto a neighbour (9ce5756011), and the lines stay joined.",
+    "sketch": "tangent_neighbour_at_joint",
+    "edit": {
+      "remove": {
+        "members": [
+          "a0000006"
+        ]
+      }
+    }
+  },
+  {
+    "name": "unjoin_tangent_neighbour",
+    "note": "Unjoining the arc: its tangent_at goes, since they no longer meet; the lines stay joined.",
+    "sketch": "tangent_neighbour_at_joint",
+    "edit": {
+      "unjoin": {
+        "point": "p0000001",
+        "curve": "a0000006"
+      }
+    }
+  },
+  {
+    "name": "remove_tangent_on_curve",
+    "note": "Deleting a line tangent on a circle at an end another line shares: the tangent_on goes with it (1.1.3 leaves a malformed coincidence).",
+    "sketch": "tangent_on_shared_end",
+    "edit": {
+      "remove": {
+        "members": [
+          "n0000005"
+        ]
+      }
+    }
+  },
+  {
+    "name": "unjoin_tangent_on_curve",
+    "note": "Unjoining the tangent line: its tangent_on goes with it, to its new point.",
+    "sketch": "tangent_on_shared_end",
+    "edit": {
+      "unjoin": {
+        "point": "p0000003",
+        "curve": "n0000005"
+      }
+    }
+  },
+  {
+    "name": "remove_line_with_angle",
+    "note": "Deleting one of two lines with an angle: the angle goes (e66849378b).",
+    "sketch": "lines_with_angle",
+    "edit": {
+      "remove": {
+        "members": [
+          "n0000005"
+        ]
+      }
+    }
+  },
+  {
+    "name": "remove_symmetric_about_line",
+    "note": "Deleting a symmetric's about line drops the symmetric (0016d6f2f8).",
+    "sketch": "symmetric_about_line",
+    "edit": {
+      "remove": {
+        "members": [
+          "n0000003"
+        ]
+      }
+    }
+  },
+  {
+    "name": "remove_line_with_midpoint",
+    "note": "Deleting a line with a midpoint whose ends the sides keep: the midpoint becomes a symmetric of the ends about the point, as FreeCAD keeps its Symmetric (#se-a-deleted-line-s-midpoint-becomes).",
+    "sketch": "midpoint_of_side",
+    "edit": {
+      "remove": {
+        "members": [
+          "n0000005"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_touching_ends",
+    "note": "testSingleMissingCoincidentCase's fix: two ends at one place made one point.",
+    "sketch": "touching_ends",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000002",
+          "p0000003"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_touching_ends_other_first",
+    "note": "The same, the other point kept.",
+    "sketch": "touching_ends",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000003",
+          "p0000002"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_line_ends",
+    "note": "Merging a line's two ends: Silico refuses it; FreeCAD's Coincident command refuses a collapse (#20771).",
+    "sketch": "touching_ends",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000001",
+          "p0000002"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_named_twice",
+    "note": "A point named twice: already one point, refused by both (cb2780e2fa).",
+    "sketch": "touching_ends",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000002",
+          "p0000002"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_apart",
+    "note": "Merging the upright line's top with a loose point 1 mm from it: Silico places it at the loose point, FreeCAD's coincidence is solved.",
+    "sketch": "touching_ends",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000009",
+          "p0000005"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_apart_onto_a_lines_other_end",
+    "note": "The lone point at the line's start merged with the line's end, the lone point named first: Silico places the merged point at (0, 0), the line left with no length, which the gate refuses, so the merge is refused (#se-the-merged-sketch-is-gated). FreeCAD 1.1.3's solve of the coincidence fails (-1, no conflicting or redundant constraint), so its Coincident command rolls the merge back (#se-any-result-whose-solve-is-worse): both refuse.",
+    "sketch": "line_and_point_at_its_start",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000004",
+          "p0000002"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_closes_triangle",
+    "note": "The missing corner's two points made one: a closed triangle.",
+    "sketch": "three_lines_one_gap",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000003",
+          "p0000004"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_collapses_through_chain",
+    "note": "Merging a line's two ends through a third point: refused (084379651a).",
+    "sketch": "three_lines_one_gap",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000001",
+          "p0000004",
+          "p0000002"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_with_constraint_between",
+    "note": "A horizontal_points between the merged points would name one point twice: Silico refuses; FreeCAD's coincidence makes it redundant, and its command rolls that back.",
+    "sketch": "touching_with_horizontal_points",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000002",
+          "p0000003"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_leaves_edge_tangent",
+    "note": "Merging the touching ends: the edge tangent there becomes a tangent_at, its stored side kept (#se-an-edge-tangent-between-two-curves), as FreeCAD's Coincident command puts an end tangency in its place (180d722a53).",
+    "sketch": "touching_with_edge_tangent",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000001",
+          "p0000002"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_two_locked_ends",
+    "note": "Merging two ends each locked at the same place: the locks agree, so Silico merges (its solve keeps redundant constraints that agree); FreeCAD's Coincident command rolls back a solve that finds them redundant.",
+    "sketch": "touching_both_locked",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000002",
+          "p0000003"
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_holds_own_point_on_line",
+    "note": "The sweep's edit_32_490 in small: merging the line's end into a point held on it, 6 mm away, would make the on hold the line's own point on it. Silico's merge refuses that (the own-curve refusal, pending decision 13b of docs/design/m5.0-app.md, #222); FreeCAD's coincidence makes it.",
+    "sketch": "point_on_line",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000004",
+          "p0000002"
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_circle_mid_held",
+    "note": "testTrimCircleMid, held: one arc, one end the held cutter's start, the other a new point on the crossing cutter.",
+    "sketch": "trim_circle_two_cutters_held",
+    "edit": {
+      "trim": {
+        "curve": "c0000008",
+        "pick": [
+          -2.0,
+          2.0000000000000004
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_arc_end_held",
+    "note": "testTrimArcOfCircleEnd, held: the arc shortened to the cutter's start, which is its new end.",
+    "sketch": "trim_arc_one_cutter_held",
+    "edit": {
+      "trim": {
+        "curve": "a0000007",
+        "pick": [
+          0.37626492754672203,
+          4.934442802201417
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_arc_mid_held",
+    "note": "testTrimArcOfCircleMid, held: two arcs sharing the centre, the first's end the held cutter's start, the second's start a new point on the crossing cutter.",
+    "sketch": "trim_arc_two_cutters_held",
+    "edit": {
+      "trim": {
+        "curve": "a0000010",
+        "pick": [
+          -1.897777478867205,
+          2.7764571353075618
+        ]
+      }
+    }
+  },
+  {
+    "name": "merge_conflicting_coincident",
+    "note": "test_conflicting_coincident_selection_is_rejected: the merge's solve conflicts, so Silico refuses it (#se-no-automatic-fix-up), as FreeCAD's command rolls it back.",
+    "sketch": "conflicting_coincident",
+    "edit": {
+      "merge": {
+        "points": [
+          "p0000002",
+          "p0000003"
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_circle_crossed_twice",
+    "note": "07cf5b10d7: the arc between the line's two meetings with the circle removed; each new end is a point on the line, at its own crossing (the line's end only drawn there).",
+    "sketch": "circle_crossed_twice",
+    "edit": {
+      "trim": {
+        "curve": "c0000002",
+        "pick": [
+          0,
+          5
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_overlap_end",
+    "note": "3cbe309330: the overlap's end at x 6 cuts: the line trimmed to (6, 0)-(10, 0), its new start a point on the other line.",
+    "sketch": "overlapping_lines",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          3,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_circle_line_1e-10_off",
+    "note": "A line 1e-10 mm off tangent: Silico counts the contact as a cut (within 1e-7 mm), FreeCAD 1.1.3's intersector doesn't (it cuts at 1e-12, not 1e-10); decision 6.",
+    "sketch": "tangent_gap_1e-10",
+    "edit": {
+      "trim": {
+        "curve": "c0000002",
+        "pick": [
+          -2.499999999999999,
+          4.330127018922194
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_construction_circle",
+    "note": "A construction circle split at 0 and 90 degrees: both of Silico's arcs are construction, as every piece keeps it; 1.1.3's aren't, its circle split dropping it (#se-the-start-side-piece-keeps-the).",
+    "sketch": "construction_circle",
+    "edit": {
+      "split": {
+        "curve": "c0000002",
+        "at": [
+          [
+            5,
+            0
+          ],
+          [
+            0,
+            5
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_construction_line",
+    "note": "A construction line split at (4, 0): both pieces are construction on both sides, as 1.1.3's split of a line keeps it (GeomTrimmedCurve::createArc copies the curve).",
+    "sketch": "construction_line",
+    "edit": {
+      "split": {
+        "curve": "n0000003",
+        "at": [
+          [
+            4,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_construction_arc",
+    "note": "A construction arc split at 45 degrees: both pieces are construction on both sides, as 1.1.3's split of an arc keeps it.",
+    "sketch": "construction_arc",
+    "edit": {
+      "split": {
+        "curve": "a0000004",
+        "at": [
+          [
+            3.5355339059327378,
+            3.5355339059327378
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "split_construction_circle_beside_line",
+    "note": "A construction circle split at 0 and 90 degrees beside a normal line: only the circle's pieces differ in construction, as #se-the-start-side-piece-keeps-the has it; the line is normal on both sides.",
+    "sketch": "construction_circle_beside_line",
+    "edit": {
+      "split": {
+        "curve": "c0000002",
+        "at": [
+          [
+            5,
+            0
+          ],
+          [
+            0,
+            5
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "name": "extend_probe_line_end_by_5",
+    "note": "The probe, by hand: the drag pulls the end toward (15, 0); the length holds 10 and horizontal holds y, so the start, free along x, follows to (5, 0): (5, 0)-(15, 0), as 1.1.3's drag gives it.",
+    "sketch": "extend_probe_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": 5
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_probe_line_start_by_5",
+    "note": "The start by 5: the drag pulls it toward (-5, 0), and the line slides to (-5, 0)-(5, 0).",
+    "sketch": "extend_probe_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "start",
+        "by": {
+          "length": 5
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_probe_line_end_by_minus_3",
+    "note": "A negative length: the end pulled back toward (7, 0), and the line slides to (-3, 0)-(7, 0).",
+    "sketch": "extend_probe_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": -3
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_probe_line_by_0",
+    "note": "By 0: Silico refuses it, as changing nothing (#se-an-increment-of-0-since-it); FreeCAD reports success with nothing moved.",
+    "sketch": "extend_probe_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_line_with_reference_length",
+    "note": "A reference length holds nothing, so the drag takes the end to (14, 0) and the start stays: (0, 0)-(14, 0), the reference re-measured 14.",
+    "sketch": "extend_reference_length",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": 4
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_line_beside_a_reference",
+    "note": "The horizontal line's end by 4, a reference length on another line no constraint joins to it: the drag is compared as any, (0, 0)-(14, 0) on both sides.",
+    "sketch": "extend_line_beside_a_reference",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": 4
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_line_joined_to_a_reference",
+    "note": "The horizontal line's end by 4, a reference length on a second line that shares its start: the reference reaches it through the shared point, so FreeCAD's drag is a harness limit, compared but for the places it settles.",
+    "sketch": "extend_line_joined_to_a_reference",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": 4
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_free_line_end",
+    "note": "A free line's end by 5: (0, 0)-(15, 0).",
+    "sketch": "extend_free_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": 5
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_free_line_start",
+    "note": "Its start by 2.5: (-2.5, 0)-(10, 0).",
+    "sketch": "extend_free_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "start",
+        "by": {
+          "length": 2.5
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_free_line_start_by_minus_2.5",
+    "note": "Its start by -2.5, back along the line: (2.5, 0)-(10, 0).",
+    "sketch": "extend_free_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "start",
+        "by": {
+          "length": -2.5
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_slanted_line_end",
+    "note": "The slanted line's end by 1 along it: (3 + 1/sqrt2, 4 + 1/sqrt2).",
+    "sketch": "extend_free_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000006",
+        "end": "end",
+        "by": {
+          "length": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_free_line_flipped",
+    "note": "By -15 on a 10 mm line: 1.1.3 flips it to (0, 0)-(-5, 0) (section 7's probe); the request's own target flips it, so Silico refuses it before any drag (#se-refuse-a-result-of-size-1e, #se-an-increment-whose-target-is-1e).",
+    "sketch": "extend_free_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": -15
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_free_line_to_nothing",
+    "note": "By -10 on a 10 mm line: nothing left, which Silico refuses (#se-refuse-a-result-of-size-1e).",
+    "sketch": "extend_free_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": -10
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_probe_line_end_by_minus_15",
+    "note": "The probe's line, horizontal and 10 long, its end by -15: the request's own target flips it, so Silico refuses it before any drag (#se-refuse-a-result-of-size-1e, #se-an-increment-whose-target-is-1e); FreeCAD drags the end toward (-5, 0), the length and the horizontal sliding the line to (-15, 0)-(-5, 0).",
+    "sketch": "extend_probe_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": -15
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_held_end",
+    "note": "An end its constraints hold: Silico refuses it as changing nothing (#se-each-result-is-checked-by-the); FreeCAD's drag reports success with the end where it was.",
+    "sketch": "extend_held_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": 5
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_line_held_by_dimensions",
+    "note": "Its start held in x, its length and direction held: the end can't move along the line, so Silico refuses it (#se-each-result-is-checked-by-the), where FreeCAD reports success.",
+    "sketch": "extend_line_held_by_dimensions",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": 5
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_upright_line_start",
+    "note": "Its start by 2: the drag pulls it toward (2, -1), and the 6 mm line slides to (2, -1)-(2, 5).",
+    "sketch": "extend_upright_line",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "start",
+        "by": {
+          "length": 2
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_line_at_angle",
+    "note": "The 45-degree line's end by 2 along it: the angle holds, the end at (16 + sqrt2, 4 + sqrt2).",
+    "sketch": "extend_line_at_angle",
+    "edit": {
+      "extend": {
+        "curve": "n0000007",
+        "end": "end",
+        "by": {
+          "length": 2
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_shared_end",
+    "note": "A's end, which B shares, by 5: the point goes to (15, 0), and B, its start there, follows.",
+    "sketch": "extend_shared_end",
+    "edit": {
+      "extend": {
+        "curve": "n0000004",
+        "end": "end",
+        "by": {
+          "length": 5
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_onto_another_end",
+    "note": "Extended by 3 onto the other line's start: two points at (8, 0), not joined (no merge).",
+    "sketch": "extend_onto_a_point",
+    "edit": {
+      "extend": {
+        "curve": "n0000003",
+        "end": "end",
+        "by": {
+          "length": 3
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_collapses_neighbour",
+    "note": "A's end by 5 onto B's far end: B left with no length, which Silico refuses (#se-a-frame-that-isn-t-a, #se-each-result-is-checked-by-the); FreeCAD 1.1.3's drag fails, leaves the sketch as it was, and still returns success (#se-extend-unchecked).",
+    "sketch": "extend_collapses_neighbour",
+    "edit": {
+      "extend": {
+        "curve": "n0000004",
+        "end": "end",
+        "by": {
+          "length": 5
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_end_by_30",
+    "note": "Its end turned 30 degrees on: to 120 degrees, (-2.5, 4.330127).",
+    "sketch": "extend_arc",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "end",
+        "by": {
+          "angle": 30
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_start_by_30",
+    "note": "Its start turned 30 degrees back: to -30 degrees, (4.330127, -2.5).",
+    "sketch": "extend_arc",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "start",
+        "by": {
+          "angle": 30
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_end_by_minus_30",
+    "note": "A negative angle: its end back to 60 degrees.",
+    "sketch": "extend_arc",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "end",
+        "by": {
+          "angle": -30
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_start_by_minus_30",
+    "note": "Its start turned 30 degrees on, a negative increment at the start: to 30 degrees, (4.330127, 2.5).",
+    "sketch": "extend_arc",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "start",
+        "by": {
+          "angle": -30
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_to_nothing",
+    "note": "By -90 degrees: no sweep left, which Silico refuses (#se-refuse-a-result-of-size-1e); 1.1.3 raises Geom_TrimmedCurve::U1 == U2 and extends nothing (#se-extend-unchecked).",
+    "sketch": "extend_arc",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "end",
+        "by": {
+          "angle": -90
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_inverted",
+    "note": "By -120 degrees, the note's probe: the sweep -30, an inverted arc, which Silico refuses (#se-refuse-a-result-of-size-1e); 1.1.3's range wraps to 330 degrees (#se-extend-unchecked).",
+    "sketch": "extend_arc",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "end",
+        "by": {
+          "angle": -120
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_whole_turn",
+    "note": "By 270 degrees: a whole turn, which Silico refuses (#se-an-arc-swept-a-whole-turn); 1.1.3's range wraps.",
+    "sketch": "extend_arc",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "end",
+        "by": {
+          "angle": 270
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_past_a_whole_turn",
+    "note": "By 300 degrees: a sweep of 390, past a whole turn, which Silico refuses (#se-an-arc-swept-a-whole-turn); 1.1.3's range wraps to 30 degrees (#se-extend-unchecked).",
+    "sketch": "extend_arc",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "end",
+        "by": {
+          "angle": 300
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_by_0",
+    "note": "By 0 degrees: Silico refuses it (#se-an-increment-of-0-since-it).",
+    "sketch": "extend_arc",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "start",
+        "by": {
+          "angle": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_end_with_tangent_start",
+    "note": "The arc's free end turned 45 degrees on: the tangency at its start holds, nothing else moves.",
+    "sketch": "extend_arc_tangent_neighbour",
+    "edit": {
+      "extend": {
+        "curve": "a0000006",
+        "end": "end",
+        "by": {
+          "angle": 45
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_start_with_tangent",
+    "note": "The arc's start, which the line shares and is tangent at, turned 30 degrees back: the line's end goes with it, and the solve settles the tangency.",
+    "sketch": "extend_arc_tangent_neighbour",
+    "edit": {
+      "extend": {
+        "curve": "a0000006",
+        "end": "start",
+        "by": {
+          "angle": 30
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_with_edge_tangent",
+    "note": "Its start turned 60 degrees back, to -60: the tangency, to its circle, still holds.",
+    "sketch": "extend_arc_edge_tangent",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "start",
+        "by": {
+          "angle": 60
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_collapses_neighbour",
+    "note": "The arc's end, which the line shares, turned 90 degrees on to (-5, 0), the line's far end: the line left with no length, a sketch the gate refuses, so Silico refuses the extend (#se-each-result-is-checked-by-the); FreeCAD's setRange moves only the arc's end, and its solve (line first, #se-a-line-s-end-goes-through) collapses the line in some runs and settles without it in others, each excused.",
+    "sketch": "extend_arc_into_neighbour",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "end",
+        "by": {
+          "angle": 90
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_order_probe",
+    "note": "The note's arc-order probe (#se-a-line-s-end-goes-through), its line-first order, as the harness gives FreeCAD the line before the arc: the arc's end, which the line shares, turned 30 degrees on. Silico's write moves the shared point, and the line's end with it, to (-5, 8.660254), the note's arc-first result; FreeCAD's setRange moves only the arc's end and its solve settles the two otherwise, the difference #se-a-line-s-end-goes-through excuses, so only what both settle alike is compared.",
+    "sketch": "extend_arc_order_probe",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "end",
+        "by": {
+          "angle": 30
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_arc_turn_too_small",
+    "note": "A turn of 1e-9 degrees, 1.7e-11 mm, below the coordinates' last bit there: Silico refuses it as changing nothing (#se-each-result-is-checked-by-the); FreeCAD reports success.",
+    "sketch": "extend_far_arc",
+    "edit": {
+      "extend": {
+        "curve": "a0000004",
+        "end": "end",
+        "by": {
+          "angle": 1e-09
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_circle",
+    "note": "A circle: refused by both (#se-refuse-anything-but-a-line-or, as 1.1 did).",
+    "sketch": "extend_other_kinds",
+    "edit": {
+      "extend": {
+        "curve": "c0000002",
+        "end": "end",
+        "by": {
+          "length": 1
+        }
+      }
+    }
+  },
+  {
+    "name": "extend_point",
+    "note": "A point: refused by both.",
+    "sketch": "extend_other_kinds",
+    "edit": {
+      "extend": {
+        "curve": "p0000003",
+        "end": "end",
+        "by": {
+          "length": 1
+        }
+      }
+    }
+  }
+]

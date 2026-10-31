@@ -91,7 +91,7 @@ pub(crate) fn solid<'m>(
                 .or(built.measure_refused())
                 .or(model.unmeasured(id))
             {
-                Some(refused) => worded(refused),
+                Some(refused) => worded(&impossible_named(model, id, refused)),
                 None => Error::new(
                     ErrorCode::KernelFailed,
                     format!("{id}'s solid couldn't be described, so its elements aren't known"),
@@ -104,6 +104,34 @@ pub(crate) fn solid<'m>(
     }
 }
 
+/// `refused`, the kernel's refusal of the feature `id`'s solid's description: if it's for an
+/// element described as no element is (`DescriptionImpossible`, the element as data), with
+/// that element named as the feature's element map names it (or as FreeCAD numbers it,
+/// without one), as other refusals of a shape's elements name theirs; any other, as it is.
+fn impossible_named(model: &Model, id: &FeatureId, refused: &Error) -> Error {
+    let Some((_, failure)) = refused.worker_failure() else {
+        return refused.clone();
+    };
+    let silico_protocol::Refusal::DescriptionImpossible { kind, number, .. } = failure.refusal
+    else {
+        return refused.clone();
+    };
+    let element = silico_protocol::ElementRef {
+        kind,
+        index: number,
+    };
+    let name = model
+        .element_map(id)
+        .and_then(|map| map.name(element))
+        .map_or_else(
+            || ElementName::numbered(element),
+            |name| ElementName::from(&*name),
+        );
+    refused
+        .clone()
+        .with_elements_as([crate::references::cut_short(name.as_str())])
+}
+
 /// `error`, naming the request's `feature` if `asked`.
 fn named(asked: bool, error: Error) -> Error {
     if asked {
@@ -114,7 +142,7 @@ fn named(asked: bool, error: Error) -> Error {
 }
 
 /// The feature `id`'s built solid, or why it has none: a feature the document doesn't
-/// have, a sketch, or one that failed (its failure, as `check` reports it, a kernel fault
+/// have, a sketch, one suppressed, or one that failed (its failure, as `check` reports it, a kernel fault
 /// as the revision keeps it) or was blocked (on a kernel fault, refused with the fault);
 /// naming the request's `feature` if `asked`, as [`entries`] names it. Every read of a
 /// feature's solid (`elements`, `query`, `mass_properties`) refuses one alike.
@@ -140,6 +168,17 @@ pub(crate) fn built<'m>(
             )
             .with_feature(id.as_str())
             .with_suggestion("name a feature that makes a solid"),
+        )
+        .into()),
+        Some(FeatureOutcome::Suppressed) => Err(named(
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!("{id} is suppressed, so it has no solid"),
+            )
+            .with_feature(id.as_str())
+            .with_suggestion(format!(
+                "unsuppress {id} first (suppress_feature with suppressed false), or name a feature that isn't suppressed"
+            )),
         )
         .into()),
         Some(FeatureOutcome::Failed(error)) => Err(worded(error).into()),

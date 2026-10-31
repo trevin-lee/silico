@@ -916,6 +916,17 @@ fn version_gives_the_designs_numbers_and_limits() {
     );
     assert_eq!(limits.export_triangles, 10_000_000);
     assert_eq!(limits.export_bytes, 4_294_967_295);
+    // A transaction's undo stack: 256 MiB (docs/design/m5.0-app.md, section 6), the bound
+    // the stack holds to.
+    assert_eq!(limits.undo_bytes, 256 * 1024 * 1024);
+    assert_eq!(limits.undo_bytes, silico_core::document::undo::UNDO_BYTES);
+    // A session's file compared on disk at most once a second (docs/design/m5.0-app.md,
+    // section 4), in milliseconds.
+    assert_eq!(limits.disk_check_ms, 1000);
+    assert_eq!(
+        Duration::from_millis(limits.disk_check_ms),
+        silico_core::disk::DISK_CHECK_INTERVAL
+    );
 }
 
 #[test]

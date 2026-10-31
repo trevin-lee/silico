@@ -210,6 +210,7 @@ pub(crate) fn feature(feature: &Feature) -> Out<'_> {
         operation,
         version: FeatureVersion,
         name,
+        suppressed,
         note,
         fingerprint,
     } = feature;
@@ -219,6 +220,11 @@ pub(crate) fn feature(feature: &Feature) -> Out<'_> {
         ("v", Out::Raw(FeatureVersion::NUMBER.to_string())),
         ("name", Out::Str(name.as_str())),
     ];
+    // Right after its name, and only when true (decision 4): a feature that isn't
+    // suppressed is written as it was before the field existed.
+    if *suppressed {
+        members.push(("suppressed", boolean(true)));
+    }
     members.extend(fields(operation));
     if let Some(note) = note {
         members.push(("note", Out::Str(note)));
