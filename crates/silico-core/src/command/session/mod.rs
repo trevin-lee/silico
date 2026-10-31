@@ -170,8 +170,8 @@ pub struct Sessions<P: Clients + 'static> {
 /// Its locks, and the registry's, are taken in one order, each let go before one earlier in
 /// the order is taken: the registry's book, then a session's published reads (then those
 /// unanswered), then its held state, then its rebuilds, then its queue, then the command
-/// running, then its disk watch's, under which none is taken. The registry's `feature_ids`
-/// is taken alone.
+/// running, then its reloads, then its disk watch's, under which none is taken. The
+/// registry's `feature_ids` is taken alone.
 struct Session<C: Kernel + 'static> {
     id: SessionId,
     /// The sessions' workspace, if they have one: each re-read and save of the session's file
@@ -202,7 +202,8 @@ struct Session<C: Kernel + 'static> {
     disk: DiskWatch,
     /// Its own reload of its file, found changed on disk (A3): whether one is queued, and
     /// the bytes a reload last refused, so the same refusal isn't queued at each comparison.
-    /// Taken alone.
+    /// Taken before the disk watch's lock (whether a comparison is still current is asked
+    /// under it), and under none of the others.
     reloads: Mutex<Reloads>,
     /// The client's waker, the sessions' ([`Sessions::on_change`]).
     waker: Arc<Waker>,
@@ -219,6 +220,10 @@ struct Session<C: Kernel + 'static> {
     /// Where the session's own reload waits as it starts, in this crate's tests only.
     #[cfg(test)]
     reloading: Gate,
+    /// Where a rebuild's watcher waits before it first looks at the rebuild's progress, in
+    /// this crate's tests only.
+    #[cfg(test)]
+    watching: Gate,
 }
 
 /// A session's own reloads (A3): one queued, and what the last refused, if it was refused
@@ -409,9 +414,11 @@ impl<C: Kernel + 'static> Session<C> {
     /// session's own reload (A3): not inside a transaction (only `commit` reads the file
     /// there), nor while its own save has left the file part written (the next save says
     /// where its old text is), nor while one is queued, nor for the bytes a reload refused
-    /// last (a file another session holds, say), which would be refused again. If it should,
-    /// it's marked queued.
-    fn reload_wanted(&self, found: &[u8], claims: u64) -> bool {
+    /// last (a file another session holds, say), which would be refused again; nor for a
+    /// comparison made against `counter`, a count of the session's reads and writes no
+    /// longer its own (it read or wrote since: dropped, never reported). If it should, it's
+    /// marked queued.
+    fn reload_wanted(&self, found: &[u8], claims: u64, counter: u64) -> bool {
         {
             let held = self.held.read();
             if held.transaction.is_some() || held.part_written.is_some() {
@@ -419,7 +426,12 @@ impl<C: Kernel + 'static> Session<C> {
             }
         }
         let mut reloads = lock(&self.reloads);
-        if reloads.queued
+        // A comparison the session has read or written since (its own reload, taking these
+        // bytes) is dropped, never reported (the design's section 4): checked under the
+        // reloads' lock, as a reload moves the watch on before it clears `queued` there, so
+        // a comparison found current here either finds `queued` still set or is current.
+        if !self.disk.current(counter)
+            || reloads.queued
             || reloads
                 .refused
                 .is_some_and(|refused| refused == (digest(found), claims))
@@ -479,14 +491,14 @@ fn reloader<P: Clients + 'static>(
     registry: Weak<Registry<P>>,
     session: Weak<Session<P::Client>>,
 ) -> crate::disk::Changed {
-    Arc::new(move |found: &[u8]| {
+    Arc::new(move |found: &[u8], counter: u64| {
         let Some(session) = session.upgrade() else {
             return;
         };
         let claims = registry
             .upgrade()
             .map_or(0, |registry| lock(&registry.book).claims);
-        if session.reload_wanted(found, claims) {
+        if session.reload_wanted(found, claims, counter) {
             session.queue(reload_job(Weak::clone(&registry), digest(found)));
         }
     })

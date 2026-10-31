@@ -947,6 +947,10 @@ fn stopped_unpublished(id: SessionId) -> Error {
 /// `steps` changes: `status`'s progress), and once more as its end is recorded, with no
 /// lock held.
 pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Label, run: Run) {
+    #[cfg(test)]
+    if let Some(session) = session.upgrade() {
+        session.watching.pass();
+    }
     let waker = session.upgrade().map(|session| Arc::clone(&session.waker));
     let progress = run.progress();
     let mut seen = progress.now();
