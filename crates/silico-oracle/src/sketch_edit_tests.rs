@@ -1266,6 +1266,19 @@ fn an_extend_refused_for_what_it_reaches_is_excused_by_freecads_degenerate_curve
     let frame = |fc| excused(&p, &Rule::ExtendFrame, fc).unwrap_or_default();
     assert!(frame(&tiny).ends_with("FreeCAD's drag makes it, a curve 1e-7 mm or less"));
     assert!(frame(&untouched).contains("FreeCAD 1.1.3's drag fails, leaves the sketch as it was"));
+    // An extend that moves nothing, FreeCAD's sketch untouched: excused, citing the note by
+    // the anchor of its rule, never by a line number.
+    for (rule, anchor) in [
+        (Rule::ExtendZero, "#se-an-increment-of-0-since-it)"),
+        (
+            Rule::ExtendTurnTooSmall,
+            "#se-each-result-is-checked-by-the)",
+        ),
+        (Rule::ExtendHeld, "#se-each-result-is-checked-by-the)"),
+    ] {
+        let why = excused(&p, &rule, &untouched).unwrap_or_default();
+        assert!(why.contains(&format!("{NOTE}{anchor}")), "{rule:?}: {why}");
+    }
     // The gate's: FreeCAD's result with the circle 1e-8 across.
     assert!(
         excused(&p, &Rule::ExtendGated, &tiny)

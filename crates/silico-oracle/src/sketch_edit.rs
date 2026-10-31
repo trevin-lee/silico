@@ -2590,8 +2590,12 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
             let still = fc_untouched(p, fc);
             still.then(|| {
                 format!(
-                    "an extend that moves nothing: Silico refuses it ({NOTE}:{}), FreeCAD reports success with nothing moved",
-                    if *rule == Rule::ExtendZero { 298 } else { 304 }
+                    "an extend that moves nothing: Silico refuses it ({NOTE}#{}), FreeCAD reports success with nothing moved",
+                    if *rule == Rule::ExtendZero {
+                        "se-an-increment-of-0-since-it"
+                    } else {
+                        "se-each-result-is-checked-by-the"
+                    }
                 )
             })
         }
