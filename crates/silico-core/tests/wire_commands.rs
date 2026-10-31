@@ -792,6 +792,9 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "move_feature",
                 "suppress_feature",
                 "timeline",
+                "drag_begin",
+                "drag_move",
+                "drag_end",
                 "sketch",
                 "sketch_add",
                 "sketch_remove",
@@ -799,6 +802,7 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "sketch_trim",
                 "sketch_unjoin",
                 "sketch_merge",
+                "sketch_extend",
                 "sketch_join",
                 "undo",
                 "redo"

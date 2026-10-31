@@ -141,6 +141,16 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "drag_move_seconds": {
+                "description": "How long one move of a drag may take, in seconds: past it, the drag's worker is\nstopped, a `worker_timeout`, and the drag ends. A drag's whole solves (its begin's,\nits end's) take a sketch's solve's time.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "drag_unknowns": {
+                "description": "The most unknowns the part of a sketch a drag moves may have (two a free point, one a\nfree radius): past it, `drag_begin` is refused, naming `point`, or `curve`.",
+                "minimum": 0,
+                "type": "integer"
+              },
               "elements": {
                 "description": "The most entries an `elements` call lists: its `limit` at most.",
                 "minimum": 0,
@@ -259,6 +269,8 @@
             "required": [
               "disk_check_ms",
               "document_bytes",
+              "drag_move_seconds",
+              "drag_unknowns",
               "elements",
               "export_bytes",
               "export_tolerance",
@@ -1206,6 +1218,10 @@
       "name": "status",
       "outputSchema": {
         "$defs": {
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          },
           "Disk": {
             "description": "What a comparison of a session's file on disk found, as `status` gives it.",
             "oneOf": [
@@ -1230,6 +1246,62 @@
                 "type": "string"
               }
             ]
+          },
+          "DragOpen": {
+            "additionalProperties": false,
+            "description": "What a drag grabbed, as the request named it.",
+            "properties": {
+              "curve": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The curve whose edge is dragged, by its ID; null for a point."
+              },
+              "point": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ElementId"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The point dragged, by its ID; null for a curve's edge."
+              },
+              "press": {
+                "description": "Where the press on the curve's edge landed, in the sketch's coordinates; null for a\npoint.",
+                "items": {
+                  "$ref": "#/$defs/Coordinate"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "sketch": {
+                "$ref": "#/$defs/FeatureId",
+                "description": "The sketch, by its feature's ID."
+              }
+            },
+            "required": [
+              "curve",
+              "point",
+              "press",
+              "sketch"
+            ],
+            "type": "object"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
           },
           "Error": {
             "additionalProperties": false,
@@ -1336,6 +1408,11 @@
               "suggestion"
             ],
             "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
           },
           "Model": {
             "additionalProperties": false,
@@ -1537,6 +1614,9 @@
               "move_feature",
               "suppress_feature",
               "timeline",
+              "drag_begin",
+              "drag_move",
+              "drag_end",
               "sketch",
               "sketch_add",
               "sketch_remove",
@@ -1544,6 +1624,7 @@
               "sketch_trim",
               "sketch_unjoin",
               "sketch_merge",
+              "sketch_extend",
               "sketch_join",
               "undo",
               "redo",
@@ -1667,6 +1748,17 @@
                     ],
                     "description": "What the last comparison of the session's file on disk found, against the bytes the\nsession last read or wrote: a diagnostic, never a result, and it reloads nothing\nitself. `status` starts the next comparison, off its caller's thread, once the last\nended a second ago or more. Null before one has ended, while the session's own save\nruns, and after a save that failed until the next comparison ends."
                   },
+                  "drag": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/DragOpen"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The drag open (`drag_begin`): its sketch, and what it grabbed, as the request named\nthem; null if none is, once it has ended however it ended (`drag_end`, a new revision,\nits worker's failure, a cancel of its move). A diagnostic."
+                  },
                   "features": {
                     "description": "How many features the document has: null if its text doesn't read as a document.",
                     "minimum": 0,
@@ -1714,6 +1806,7 @@
                 },
                 "required": [
                   "disk",
+                  "drag",
                   "features",
                   "gated",
                   "reads",
@@ -1787,6 +1880,9 @@
               "move_feature",
               "suppress_feature",
               "timeline",
+              "drag_begin",
+              "drag_move",
+              "drag_end",
               "sketch",
               "sketch_add",
               "sketch_remove",
@@ -1794,6 +1890,7 @@
               "sketch_trim",
               "sketch_unjoin",
               "sketch_merge",
+              "sketch_extend",
               "sketch_join",
               "undo",
               "redo",
@@ -2085,6 +2182,9 @@
               "move_feature",
               "suppress_feature",
               "timeline",
+              "drag_begin",
+              "drag_move",
+              "drag_end",
               "sketch",
               "sketch_add",
               "sketch_remove",
@@ -2092,6 +2192,7 @@
               "sketch_trim",
               "sketch_unjoin",
               "sketch_merge",
+              "sketch_extend",
               "sketch_join",
               "undo",
               "redo",
@@ -17415,6 +17516,1306 @@
     },
     {
       "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Begin a drag"
+      },
+      "description": "Begin dragging one sketch's point (`point`), or a curve's edge (`curve`, and `press`, where on it the press landed, in the sketch's coordinates), the other null: a line's edge moves the line whole, a circle's or an arc's sizes it through the cursor. Every point dragged is pinned below every constraint, so dimensions hold. The result lists the points of the part that moves. One drag is open in a session at once; it ends at `drag_end`, at any edit, undo, or reload of the session, or if its worker fails. A sketch whose constraints conflict can't be dragged.",
+      "inputSchema": {
+        "$defs": {
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`drag_begin`'s request: begin a drag of a sketch's point, or of a curve's edge, on a\nsketch worker of its own. It queues behind the session's commands before it, and drags\nthe sketch as the session holds it when it runs. One drag is open in a session at once.",
+        "properties": {
+          "curve": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ElementId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The curve whose edge to drag, by its ID: a line moves whole, a circle or an arc is\nsized through the cursor. Null to drag a point."
+          },
+          "point": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ElementId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The point to drag, by its ID (a line's end, an arc's start, end, or centre, a\ncircle's centre, a lone point); null to drag a curve's edge."
+          },
+          "press": {
+            "description": "Where the press on the curve's edge landed, `[x, y]` in the sketch's coordinates:\neach move's offset is from it, and a release there is a click, which changes\nnothing. Null to drag a point.",
+            "items": {
+              "$ref": "#/$defs/Coordinate"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "curve",
+          "point",
+          "press",
+          "session",
+          "sketch"
+        ],
+        "title": "DragBeginRequest",
+        "type": "object"
+      },
+      "name": "drag_begin",
+      "outputSchema": {
+        "$defs": {
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "advice",
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`drag_begin`'s result.",
+                "properties": {
+                  "curve": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/ElementId"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The curve whose edge is dragged, as the request named it; null for a point."
+                  },
+                  "dofs": {
+                    "description": "The sketch's degrees of freedom left as it began. A point no constraint leaves free\nstill begins a drag, and its frames don't move it.",
+                    "type": "integer"
+                  },
+                  "moves": {
+                    "description": "The points of the part of the sketch the drag moves, by ID: every other point stays\nwhere it began. A diagnostic.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "point": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/ElementId"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The point dragged, as the request named it; null for a curve's edge."
+                  },
+                  "press": {
+                    "description": "The press, as the request gave it; null for a point.",
+                    "items": {
+                      "$ref": "#/$defs/Coordinate"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": [
+                      "array",
+                      "null"
+                    ]
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch, as the request named it."
+                  }
+                },
+                "required": [
+                  "curve",
+                  "dofs",
+                  "moves",
+                  "point",
+                  "press",
+                  "sketch"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Begin a drag"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Move a drag"
+      },
+      "description": "Move the open drag's cursor to `to`, in the sketch's coordinates, and get the frame: the part's points and free radii where the solve put them (`solved`), or none (`failed`, `invalid`, or `dropped` when a newer move replaced it before it was solved). Send moves only once `drag_begin` has answered. A frame changes nothing: only `drag_end` edits the document.",
+      "inputSchema": {
+        "$defs": {
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`drag_move`'s request: move the drag's cursor. It runs beside the session's queue, and\nonly the newest move is solved: one replaced before it's solved answers `dropped`. Send\nmoves only once `drag_begin` has answered.",
+        "properties": {
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "to": {
+            "description": "The cursor, `[x, y]` in the sketch's coordinates.",
+            "items": {
+              "$ref": "#/$defs/Coordinate"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          }
+        },
+        "required": [
+          "session",
+          "to"
+        ],
+        "title": "DragMoveRequest",
+        "type": "object"
+      },
+      "name": "drag_move",
+      "outputSchema": {
+        "$defs": {
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "advice",
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FrameEnd": {
+            "description": "How the frame ended: solved (the cursor solved for, the part's points and free radii given); failed (the solver didn't reach the cursor; the drag goes on); invalid (it reached geometry that can't be built); or dropped (a newer move replaced it before it was solved). Only solved gives values: otherwise keep the last frame.",
+            "enum": [
+              "solved",
+              "failed",
+              "invalid",
+              "dropped"
+            ],
+            "type": "string"
+          },
+          "FramePoint": {
+            "additionalProperties": false,
+            "description": "A point of a drag's frame.",
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/ElementId",
+                "description": "The point's ID."
+              },
+              "x": {
+                "$ref": "#/$defs/Coordinate"
+              },
+              "y": {
+                "$ref": "#/$defs/Coordinate"
+              }
+            },
+            "required": [
+              "id",
+              "x",
+              "y"
+            ],
+            "type": "object"
+          },
+          "FrameRadius": {
+            "additionalProperties": false,
+            "description": "A free radius of a drag's frame.",
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/ElementId",
+                "description": "The circle's or arc's ID."
+              },
+              "radius": {
+                "$ref": "#/$defs/Coordinate"
+              }
+            },
+            "required": [
+              "id",
+              "radius"
+            ],
+            "type": "object"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`drag_move`'s result: a frame, a diagnostic, never a result (which moves are solved\ndepends on the worker's speed).",
+                "properties": {
+                  "frame": {
+                    "$ref": "#/$defs/FrameEnd"
+                  },
+                  "points": {
+                    "description": "With solved, every point of the part the drag moves, by ID; otherwise empty.",
+                    "items": {
+                      "$ref": "#/$defs/FramePoint"
+                    },
+                    "type": "array"
+                  },
+                  "radii": {
+                    "description": "With solved, each circle and arc of the part whose radius is free, by ID; otherwise\nempty.",
+                    "items": {
+                      "$ref": "#/$defs/FrameRadius"
+                    },
+                    "type": "array"
+                  },
+                  "to": {
+                    "description": "The cursor solved for, as the request gave it.",
+                    "items": {
+                      "$ref": "#/$defs/Coordinate"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "frame",
+                  "points",
+                  "radii",
+                  "to"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Move a drag"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "End a drag"
+      },
+      "description": "End the open drag: with `to`, the sketch moved there from where the drag began and solved as a whole, its points saved as one edit (`kept: cursor`); with `to: null`, or if the move or the solve fails, the sketch is left as it began (`kept: begin`), with no edit. Refused, the sketch as it was, if its solve then flags a redundant constraint the solve before the drag didn't: a problem the sketch had already isn't the drag's. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`drag_end`'s request: end the drag at the final cursor, one edit at a new revision\n(undoable inside a transaction, saved outside one), or with `to` null, with no edit\n(Esc). It queues behind the session's commands before it.",
+        "properties": {
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "to": {
+            "description": "The final cursor, `[x, y]` in the sketch's coordinates: the sketch is moved there\nfrom where the drag began, then solved as a whole. Null to end the drag with no edit.",
+            "items": {
+              "$ref": "#/$defs/Coordinate"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "session",
+          "to"
+        ],
+        "title": "DragEndRequest",
+        "type": "object"
+      },
+      "name": "drag_end",
+      "outputSchema": {
+        "$defs": {
+          "CommitResult": {
+            "additionalProperties": false,
+            "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+            "properties": {
+              "path": {
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "problems_total": {
+                "description": "How many problems there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refingerprinted": {
+                "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "resolved": {
+                "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "written": {
+                "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "problems",
+              "problems_total",
+              "refingerprinted",
+              "resolved",
+              "written"
+            ],
+            "type": "object"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "advice",
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Kept": {
+            "description": "Which state the drag's end kept: cursor (the sketch moved to the final cursor and solved as a whole); or begin (the sketch as the drag began: to null, a release where the drag began, or a final move or solve that failed).",
+            "enum": [
+              "cursor",
+              "begin"
+            ],
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`drag_end`'s result.",
+                "properties": {
+                  "changed": {
+                    "description": "Whether the document changed: one edit, at a new revision.",
+                    "type": "boolean"
+                  },
+                  "commit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/CommitResult"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Outside a transaction, the commit that saved the edit; null inside one, or if\nnothing changed."
+                  },
+                  "kept": {
+                    "$ref": "#/$defs/Kept"
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch dragged."
+                  }
+                },
+                "required": [
+                  "changed",
+                  "commit",
+                  "kept",
+                  "sketch"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "End a drag"
+    },
+    {
+      "annotations": {
         "openWorldHint": false,
         "readOnlyHint": true,
         "title": "Read a sketch"
@@ -22382,6 +23783,568 @@
         "type": "object"
       },
       "title": "Merge sketch points"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Extend a sketch curve"
+      },
+      "description": "Extend one line's or arc's `start` or `end`: `by` a length (a line's, in mm) or an angle (an arc's, in degrees), positive to lengthen; to a point on its line or circle; or to the next curve it meets past the end, which the core finds. A line's end moves through the solver's drag, so its constraints win and curves sharing the end follow; the end is then put exactly where named. Nothing is added to hold it there: to join it to the curve it meets, merge the two points (`sketch_merge`). Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's, but a line's end moves only in a sketch whose constraints agree; in one that conflicts it's refused `over_constrained`, naming the conflict, as a drag is. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "Angle": {
+            "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
+          "Coordinate": {
+            "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+            "type": "number"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "ExtendBy": {
+            "description": "How far a `sketch_extend` takes the end, or to where, by its `type`.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "A line's end along it, in millimetres: a positive length lengthens the line, a\nnegative one shortens it.",
+                "properties": {
+                  "length": {
+                    "$ref": "#/$defs/Length"
+                  },
+                  "type": {
+                    "const": "length",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "length",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An arc's end around its circle, in degrees: its start turned back, its end on, so a\npositive angle lengthens the arc, a negative one shortens it.",
+                "properties": {
+                  "angle": {
+                    "$ref": "#/$defs/Angle"
+                  },
+                  "type": {
+                    "const": "angle",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "angle",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "To a point on the curve's line or circle, on the end's side of its other end\n(within 1e-7 mm of the carrier), in the sketch's coordinates: past the end\nlengthens, short of it shortens, and the end is put there exactly.",
+                "properties": {
+                  "point": {
+                    "items": {
+                      "$ref": "#/$defs/Coordinate"
+                    },
+                    "maxItems": 2,
+                    "minItems": 2,
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "point",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "point",
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "To the nearest curve the line or arc, extended, meets past its end (SolidWorks'\nExtend Entities): the core finds it as trim finds its cuts, every other curve,\nconstruction too, and puts the end there exactly.",
+                "properties": {
+                  "type": {
+                    "const": "next_curve",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "ExtendEnd": {
+            "description": "Which end of the curve a `sketch_extend` moves.",
+            "enum": [
+              "start",
+              "end"
+            ],
+            "type": "string"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Length": {
+            "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`sketch_extend`'s request: extend a line's or an arc's end, its other end staying.",
+        "properties": {
+          "by": {
+            "$ref": "#/$defs/ExtendBy",
+            "description": "How far, or to where."
+          },
+          "curve": {
+            "$ref": "#/$defs/ElementId",
+            "description": "The line or arc, by ID. A line's end moves through the solver's drag, so its\nconstraints win (a line with a length slides rather than grows) and every curve\nsharing the end follows; an arc's end is turned. Nothing is added to hold the end\nwhere it lands."
+          },
+          "end": {
+            "$ref": "#/$defs/ExtendEnd",
+            "description": "Which end moves: its start or its end, as the curve runs."
+          },
+          "revision": {
+            "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "by",
+          "curve",
+          "end",
+          "revision",
+          "session",
+          "sketch"
+        ],
+        "title": "SketchExtendRequest",
+        "type": "object"
+      },
+      "name": "sketch_extend",
+      "outputSchema": {
+        "$defs": {
+          "CommitResult": {
+            "additionalProperties": false,
+            "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+            "properties": {
+              "path": {
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "problems_total": {
+                "description": "How many problems there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refingerprinted": {
+                "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "resolved": {
+                "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "written": {
+                "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "problems",
+              "problems_total",
+              "refingerprinted",
+              "resolved",
+              "written"
+            ],
+            "type": "object"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "advice",
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`sketch_extend`'s result.",
+                "properties": {
+                  "added": {
+                    "description": "Always empty: an extend makes no member.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "changed": {
+                    "description": "Whether the document changed: always, for an extend it makes.",
+                    "type": "boolean"
+                  },
+                  "commit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/CommitResult"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Outside a transaction, the commit that saved the edit; null inside one."
+                  },
+                  "modified": {
+                    "description": "The members changed in place: the points moved, then a circle whose radius the move\nchanged, then a reference dimension it re-measured, each by ID; and with them what\nthe write-back of the starting solve changed (its points, radii, and reference\nvalues), since the edit starts from the sketch as solved.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "removed": {
+                    "description": "Always empty: an extend removes no member.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch, as the request named it."
+                  }
+                },
+                "required": [
+                  "added",
+                  "changed",
+                  "commit",
+                  "modified",
+                  "removed",
+                  "sketch"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Extend a sketch curve"
     },
     {
       "annotations": {

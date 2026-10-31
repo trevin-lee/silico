@@ -14,6 +14,8 @@ use silico_core::command::{Opened, RebuildState, Running, RunningCommand, Sessio
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
 
+use crate::dialog::{Action, Kind};
+use crate::export::{self, ExportForm, Shown};
 use crate::panes::{self, Pane, Panes};
 use crate::tab::{DiskChoice, Tab, said};
 use crate::theme;
@@ -27,6 +29,42 @@ pub const IDLE_MARGIN: Duration = Duration::from_millis(100);
 /// The delay of the frame the app asks for when nothing it waits on has answered: one each
 /// [`DISK_CHECK_INTERVAL`], whose `status` starts the next comparison (section 3, *Idle*).
 pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN);
+
+/// Whether Enter, pressed this frame, is an open dialog's OK, taking it if so: while typing
+/// in a field or with nothing focused (a focused button's or checkbox's Enter is its own
+/// click), and only a fresh press, never the system's repeat of one held down (an Enter held
+/// on the menu item that opened the dialog would otherwise go on to be its OK).
+fn enter_is_ok(ui: &mut Ui) -> bool {
+    // Only a focus inside the dialog counts: one left on a widget no longer drawn (the
+    // menu item that opened it), or behind a modal (the menu button it went back to), takes
+    // no Enter of its own.
+    let focused = ui.memory(|memory| memory.focused()).filter(|id| {
+        ui.ctx().read_response(*id).is_some_and(|response| {
+            ui.memory(|memory| memory.allows_interaction(response.layer_id))
+        })
+    });
+    if !focused.is_none_or(|id| egui::TextEdit::load_state(ui.ctx(), id).is_some()) {
+        return false;
+    }
+    ui.input_mut(|input| {
+        let mut pressed = false;
+        input.events.retain(|event| {
+            let fresh = matches!(
+                event,
+                egui::Event::Key {
+                    key: Key::Enter,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } if modifiers.matches_logically(Modifiers::NONE)
+            );
+            pressed |= fresh;
+            !fresh
+        });
+        pressed
+    })
+}
 
 /// What the app is asking the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +80,8 @@ enum Asking {
     SaveAs(SessionId),
     /// Whether to replace the file a Save As of session's document found at its path.
     Replace(SessionId, String),
+    /// What to export of session's document, and where (M5.12): the form is `export`.
+    Export(SessionId),
 }
 
 /// The app's state: everything the window draws, and what it's waiting for.
@@ -52,8 +92,12 @@ pub struct App<P: Clients + 'static> {
     active: Option<SessionId>,
     opening: Vec<(String, Running<Opened>)>,
     asking: Option<Asking>,
-    /// The path field's text, while a path is asked for.
-    path: String,
+    /// The Open (and New) dialog's path field, kept from the last time it was open; and
+    /// Save As's, empty each time it opens.
+    open_path: String,
+    save_as_path: String,
+    /// The export dialog's form, while it's open.
+    export: Option<ExportForm>,
     tree: egui_tiles::Tree<Pane>,
     /// The property panel's name field, while it's typed in.
     name: Option<panes::NameField>,
@@ -66,6 +110,9 @@ pub struct App<P: Clients + 'static> {
     /// Times the core's waker asked for a frame.
     wakes: Arc<AtomicU64>,
     waker_set: bool,
+    /// Enter or Esc pressed this frame with a modal already open at its start: the modal's
+    /// OK or Cancel, taken before anything else could read it.
+    modal_key: Option<Key>,
 }
 
 impl<P: Clients + 'static> App<P> {
@@ -77,7 +124,9 @@ impl<P: Clients + 'static> App<P> {
             active: None,
             opening: Vec::new(),
             asking: None,
-            path: String::new(),
+            open_path: String::new(),
+            save_as_path: String::new(),
+            export: None,
             tree: panes::layout(),
             name: None,
             message: None,
@@ -85,7 +134,13 @@ impl<P: Clients + 'static> App<P> {
             frames: 0,
             wakes: Arc::new(AtomicU64::new(0)),
             waker_set: false,
+            modal_key: None,
         }
+    }
+
+    /// The last refusal said that isn't a tab's (an open's).
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
     }
 
     /// Frames drawn so far.
@@ -134,11 +189,12 @@ impl<P: Clients + 'static> App<P> {
             self.waker_set = true;
         }
         self.poll();
-        let mut started = self.keys(ui);
+        let (mut started, dialog_key) = self.keys(ui);
         self.app_bar(ui, &mut started);
-        self.toolbar(ui);
+        self.toolbar(ui, &mut started);
         self.status_bar(ui, &mut started);
         self.disk_banner(ui, &mut started);
+        self.dialog_panel(ui, &mut started, dialog_key);
         egui::CentralPanel::default().show(ui, |ui| {
             let active = self.active_place();
             let App {
@@ -168,6 +224,13 @@ impl<P: Clients + 'static> App<P> {
             ui.ctx()
                 .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             if !self.quitting {
+                // An export dialog it replaces is cancelled, as its Cancel would.
+                if let Some(Asking::Export(id)) = self.asking
+                    && let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id)
+                {
+                    tab.stop_export();
+                }
+                self.export = None;
                 self.asking = Some(Asking::Quit);
             }
         }
@@ -204,6 +267,11 @@ impl<P: Clients + 'static> App<P> {
             {
                 self.asking = Some(Asking::Replace(tab.id, path));
             }
+            // An export written: its dialog closes.
+            if tab.take_exported() && self.asking == Some(Asking::Export(tab.id)) {
+                self.asking = None;
+                self.export = None;
+            }
             if tab.take_close_refused() && self.quitting {
                 // A tab's save or revert was refused: it stays, holding its edits, and the
                 // quit stops, said.
@@ -217,11 +285,12 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// Whether Save As is offered: a tab shown, and not closing (its edits go with it).
+    /// Whether Save As is offered: a tab shown, not closing (its edits go with it), and no
+    /// dialog open on it (its OK or Cancel ends its edits first, as for Save).
     fn save_as_offered(&self) -> bool {
         self.active_place()
             .and_then(|at| self.tabs.get(at))
-            .is_some_and(|tab| !tab.closing())
+            .is_some_and(|tab| !tab.closing() && !tab.in_dialog())
     }
 
     /// The place among the tabs of the one shown, if one is.
@@ -230,12 +299,27 @@ impl<P: Clients + 'static> App<P> {
         self.tabs.iter().position(|tab| tab.id == active)
     }
 
-    /// Ctrl+S saves, Ctrl+Shift+S asks where to save as, Ctrl+W closes, Ctrl+Z and Ctrl+Y
-    /// undo and redo (docs/ux/solidworks.md, §6), and Esc stops what's running (§5,
-    /// *Rebuild*): whether a command was started.
-    fn keys(&mut self, ui: &mut Ui) -> bool {
+    /// Ctrl+S saves and Ctrl+Shift+S asks where to save as (neither while a dialog is
+    /// open), Ctrl+W closes, Ctrl+Z and Ctrl+Y undo and redo (docs/ux/solidworks.md, §6),
+    /// Esc stops what's running and Ctrl+B rebuilds what was stopped (§5, *Rebuild*). With a dialog open, Enter and Esc are
+    /// the dialog's, taken here and given to it once its inputs have taken this frame's
+    /// typing ([`dialog_panel`](Self::dialog_panel)). Whether a command was started, and
+    /// the dialog's key.
+    fn keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
+        self.modal_key = None;
         if self.asking.is_some() {
-            return false;
+            // A modal open since the last frame: Esc is its Cancel, and Enter its OK unless
+            // a button or a checkbox of its has focus, whose own click Enter then is. Taken
+            // only now, so an Enter that opened the modal (on a focused menu item) isn't
+            // also its OK.
+            let escape = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+            let enter = !escape && enter_is_ok(ui);
+            self.modal_key = match (escape, enter) {
+                (true, _) => Some(Key::Escape),
+                (false, true) => Some(Key::Enter),
+                (false, false) => None,
+            };
+            return (escape || enter, None);
         }
         // Before Ctrl+S, which a Ctrl+Shift+S also is, its Shift aside.
         let save_as = ui.input_mut(|input| {
@@ -245,26 +329,34 @@ impl<P: Clients + 'static> App<P> {
             ))
         });
         if save_as && self.save_as_offered() {
+            self.save_as_path.clear();
             self.asking = self.active.map(Asking::SaveAs);
-            return false;
+            return (false, None);
         }
+        let in_dialog = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .is_some_and(Tab::in_dialog);
+        // A feature dialog's OK, as a modal's is (a focused button's Enter its own click).
+        let enter = in_dialog && enter_is_ok(ui);
         let pressed = |key| {
             ui.input_mut(|input| {
                 input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))
             })
         };
-        let (save, close, undo, redo) = (
+        let (save, close, undo, redo, rebuild) = (
             pressed(Key::S),
             pressed(Key::W),
             pressed(Key::Z),
             pressed(Key::Y),
+            pressed(Key::B),
         );
         let stop = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
-            return false;
+            return (false, None);
         };
         let sessions = &self.sessions;
-        if save && tab.unsaved() {
+        if save && tab.unsaved() && !tab.in_dialog() {
             tab.save(sessions, false);
         }
         if undo && tab.undoable() {
@@ -273,13 +365,87 @@ impl<P: Clients + 'static> App<P> {
         if redo && tab.redoable() {
             tab.step(sessions, false);
         }
-        if stop {
-            tab.stop(sessions);
+        if rebuild {
+            tab.rebuild(sessions);
+        }
+        let dialog_key = match (enter, stop && in_dialog) {
+            (true, _) => Some(Key::Enter),
+            (false, true) => Some(Key::Escape),
+            (false, false) => None,
+        };
+        // Esc, with no dialog open: the selection cleared first, then a rebuild running
+        // stopped, as the stop does (section 3's order); with neither, nothing.
+        if stop && !in_dialog {
+            tab.escape(sessions);
         }
         if close && let Some(id) = self.active {
             self.close(id);
         }
-        save || undo || redo || stop || close
+        (
+            save || undo || redo || stop || close || enter || rebuild,
+            dialog_key,
+        )
+    }
+
+    /// The open dialog, docked at the right (open item 27): drawn, what's changed in it sent,
+    /// and its OK or Cancel taken, or `key`: Enter is OK, if OK is on; Esc goes to the first
+    /// of these there is (section 3), a dialog's preview rebuilding, which it stops, the
+    /// dialog left open, or the dialog, which it cancels (one still being read too).
+    fn dialog_panel(&mut self, ui: &mut Ui, started: &mut bool, key: Option<Key>) {
+        let sessions = &self.sessions;
+        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
+            return;
+        };
+        if tab.dialog.is_none() {
+            if key == Some(Key::Escape) && tab.in_dialog() {
+                tab.close_dialog(sessions, false);
+            }
+            return;
+        }
+        let refused: Vec<&'static str> = tab
+            .dialog
+            .iter()
+            .flat_map(|dialog| dialog.inputs.iter().map(|input| input.part.field()))
+            .filter(|field| tab.field_refused(field))
+            .collect();
+        let said = tab.dialog_said();
+        let Some(mut dialog) = tab.dialog.take() else {
+            return;
+        };
+        let enabled = !tab.closing();
+        let mut action = Action::None;
+        egui::Panel::right("dialog")
+            .resizable(false)
+            .default_size(280.0)
+            .show(ui, |ui| {
+                let title = dialog.kind.title();
+                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                    node.set_role(egui::accesskit::Role::Dialog);
+                    node.set_label(title);
+                });
+                let rows = &tab.browser.sketches;
+                let named = |id: &silico_core::document::FeatureId| {
+                    rows.iter()
+                        .find(|row| &row.id == id)
+                        .map(|row| row.name.clone())
+                };
+                let refused = |field: &str| refused.contains(&field);
+                action = dialog.ui(ui, &said, &named, &refused, enabled);
+            });
+        tab.dialog = Some(dialog);
+        *started |= tab.dialog_changed(sessions);
+        match key {
+            Some(Key::Enter) if tab.can_ok() => action = Action::Ok,
+            Some(Key::Escape) if tab.preview_rebuilding() => tab.stop_quietly(sessions),
+            Some(Key::Escape) => action = Action::Cancel,
+            _ => {}
+        }
+        match action {
+            Action::None => {}
+            Action::Ok => tab.close_dialog(sessions, true),
+            Action::Cancel => tab.close_dialog(sessions, false),
+        }
+        *started |= action != Action::None;
     }
 
     /// Close the tab of session `id`: asking first if it holds edits (decision 1).
@@ -326,7 +492,22 @@ impl<P: Clients + 'static> App<P> {
                             .clicked()
                         {
                             if let Some(id) = self.active {
+                                self.save_as_path.clear();
                                 self.asking = Some(Asking::SaveAs(id));
+                            }
+                            ui.close();
+                        }
+                        // Off while the tab closes, as Save As is.
+                        if ui
+                            .add_enabled(self.save_as_offered(), egui::Button::new("Export…"))
+                            .clicked()
+                        {
+                            if let Some(tab) =
+                                self.active_place().and_then(|at| self.tabs.get_mut(at))
+                            {
+                                tab.export_opened();
+                                self.export = Some(ExportForm::new(tab.id, &tab.path));
+                                self.asking = Some(Asking::Export(tab.id));
                             }
                             ui.close();
                         }
@@ -351,7 +532,10 @@ impl<P: Clients + 'static> App<P> {
                         }
                     });
                     let tab = self.active_place().and_then(|at| self.tabs.get_mut(at));
-                    let unsaved = tab.as_ref().is_some_and(|tab| tab.unsaved());
+                    // Off while a dialog is open: its OK or Cancel ends its edits first.
+                    let unsaved = tab
+                        .as_ref()
+                        .is_some_and(|tab| tab.unsaved() && !tab.in_dialog());
                     if ui.add_enabled(unsaved, egui::Button::new("Save")).clicked()
                         && let Some(tab) = tab
                     {
@@ -404,9 +588,14 @@ impl<P: Clients + 'static> App<P> {
             });
     }
 
-    /// The toolbar (section 8): the Design workspace's SOLID tab, its panels named; their
-    /// tools come with the feature dialogs (M5.8).
-    fn toolbar(&mut self, ui: &mut Ui) {
+    /// The toolbar (section 8): the Design workspace's SOLID tab, its panels named, and
+    /// CREATE's tools, each opening its feature's dialog (M5.8): the primitives, and the
+    /// features that sweep a sketch's profile (those that cut, only with a body to cut).
+    fn toolbar(&mut self, ui: &mut Ui, started: &mut bool) {
+        let sessions = &self.sessions;
+        let mut tab = self
+            .active
+            .and_then(|active| self.tabs.iter_mut().find(|tab| tab.id == active));
         egui::Panel::top("toolbar")
             .exact_size(theme::TITLE_BAR_HEIGHT * 2.0)
             .show(ui, |ui| {
@@ -414,7 +603,28 @@ impl<P: Clients + 'static> App<P> {
                     ui.label(RichText::new("DESIGN").strong());
                     ui.separator();
                     ui.label(RichText::new("SOLID").strong());
-                    for panel in ["CREATE", "MODIFY", "INSPECT", "SELECT"] {
+                    ui.separator();
+                    ui.label(RichText::new("CREATE").small());
+                    ui.scope_builder(egui::UiBuilder::new().id_salt("create"), |ui| {
+                        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                            node.set_role(egui::accesskit::Role::Toolbar);
+                            node.set_label("CREATE");
+                        });
+                        ui.horizontal(|ui| {
+                            for kind in Kind::ALL {
+                                let enabled = tab.as_ref().is_some_and(|tab| tab.can_open(kind));
+                                if ui
+                                    .add_enabled(enabled, egui::Button::new(kind.title()))
+                                    .clicked()
+                                    && let Some(tab) = tab.as_mut()
+                                {
+                                    tab.open_dialog(sessions, kind);
+                                    *started = true;
+                                }
+                            }
+                        });
+                    });
+                    for panel in ["MODIFY", "INSPECT", "SELECT"] {
                         ui.separator();
                         ui.label(RichText::new(panel).small());
                     }
@@ -423,7 +633,8 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The status bar: the rebuild (`status.rebuild`) or the session's own reload, the stop
-    /// button (`cancel`, off while only a reload runs, section 3), and the last refusal.
+    /// button (`cancel` naming the rebuild, on while it runs, whatever command runs: section
+    /// 3, *Stop*), and the last refusal.
     fn status_bar(&mut self, ui: &mut Ui, started: &mut bool) {
         egui::Panel::bottom("status_bar")
             .exact_size(theme::TITLE_BAR_HEIGHT)
@@ -462,6 +673,14 @@ impl<P: Clients + 'static> App<P> {
                         .clicked()
                     {
                         tab.stop(&self.sessions);
+                        *started = true;
+                    }
+                    // Rebuild (Ctrl+B), on while the tab's revision's rebuild is stopped.
+                    if ui
+                        .add_enabled(tab.can_rebuild(), egui::Button::new("Rebuild"))
+                        .clicked()
+                    {
+                        tab.rebuild(&self.sessions);
                         *started = true;
                     }
                     for message in [message, tab.message.clone()].into_iter().flatten() {
@@ -510,6 +729,10 @@ impl<P: Clients + 'static> App<P> {
         let Some(asking) = self.asking.clone() else {
             return;
         };
+        // Enter and Esc are the dialog's own, as keys took them: its OK and its Cancel
+        // (section 3).
+        let key = self.modal_key.take();
+        let (enter, escape) = (key == Some(Key::Enter), key == Some(Key::Escape));
         let mut done = false;
         egui::Modal::new(egui::Id::new("asking")).show(ui.ctx(), |ui| match asking {
             Asking::Path { create } => {
@@ -520,18 +743,19 @@ impl<P: Clients + 'static> App<P> {
                 });
                 ui.horizontal(|ui| {
                     let label = ui.label("Path");
-                    ui.add(egui::TextEdit::singleline(&mut self.path))
+                    ui.add(egui::TextEdit::singleline(&mut self.open_path))
                         .labelled_by(label.id);
                 });
                 ui.horizontal(|ui| {
                     let word = if create { "Create" } else { "Open" };
-                    if ui.button(word).clicked() && !self.path.is_empty() {
-                        let path = std::mem::take(&mut self.path);
+                    // The path as typed; only an empty one (spaces aside) opens nothing.
+                    if (ui.button(word).clicked() || enter) && !self.open_path.trim().is_empty() {
+                        let path = std::mem::take(&mut self.open_path);
                         self.open(&path, create);
                         *started = true;
                         done = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button("Cancel").clicked() || escape {
                         done = true;
                     }
                 });
@@ -548,22 +772,71 @@ impl<P: Clients + 'static> App<P> {
                 ));
                 ui.horizontal(|ui| {
                     let label = ui.label("Path");
-                    ui.add(egui::TextEdit::singleline(&mut self.path))
+                    ui.add(egui::TextEdit::singleline(&mut self.save_as_path))
                         .labelled_by(label.id);
                 });
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() && !self.path.is_empty() {
-                        let path = std::mem::take(&mut self.path);
+                    if (ui.button("Save").clicked() || enter)
+                        && !self.save_as_path.trim().is_empty()
+                    {
+                        let typed = std::mem::take(&mut self.save_as_path);
                         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                            // A relative path is in the document's folder.
+                            let path = export::beside(&tab.path, &typed)
+                                .to_string_lossy()
+                                .into_owned();
                             tab.save_as(&self.sessions, path, false);
                         }
                         *started = true;
                         done = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button("Cancel").clicked() || escape {
                         done = true;
                     }
                 });
+            }
+            Asking::Export(id) => {
+                let sessions = &self.sessions;
+                let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+                    done = true;
+                    return;
+                };
+                let Some(form) = self.export.as_mut().filter(|form| form.session == id) else {
+                    done = true;
+                    return;
+                };
+                ui.heading(format!("Export {}", tab.name()));
+                let replacing = tab
+                    .export_replacing
+                    .as_ref()
+                    .map(|asked| asked.path.clone());
+                let said = tab.export_said.clone();
+                let shown = Shown {
+                    running: tab.exporting(),
+                    replacing: replacing.as_deref(),
+                    said: said.as_deref(),
+                };
+                let action = match form.ui(ui, &tab.browser.bodies, &shown) {
+                    export::Action::None if escape => export::Action::Cancel,
+                    export::Action::None if enter => form.enter(&tab.browser.bodies, &shown),
+                    action => action,
+                };
+                match action {
+                    export::Action::None => {}
+                    export::Action::Export(request) => {
+                        tab.export(sessions, request);
+                        *started = true;
+                    }
+                    export::Action::Replace => {
+                        tab.replace_export(sessions);
+                        *started = true;
+                    }
+                    export::Action::Cancel => {
+                        tab.stop_export();
+                        *started = true;
+                        done = true;
+                    }
+                }
             }
             Asking::Replace(id, path) => {
                 ui.label(format!("{path} already exists. Replace it?"));
@@ -575,7 +848,7 @@ impl<P: Clients + 'static> App<P> {
                         *started = true;
                         done = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button("Cancel").clicked() || escape {
                         done = true;
                     }
                 });
@@ -606,7 +879,7 @@ impl<P: Clients + 'static> App<P> {
                         *started = true;
                         done = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button("Cancel").clicked() || escape {
                         done = true;
                     }
                 });
@@ -638,13 +911,16 @@ impl<P: Clients + 'static> App<P> {
                         *started = true;
                         done = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button("Cancel").clicked() || escape {
                         done = true;
                     }
                 });
             }
         });
         if done {
+            if matches!(self.asking, Some(Asking::Export(_))) {
+                self.export = None;
+            }
             self.asking = None;
         }
     }

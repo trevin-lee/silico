@@ -1,0 +1,380 @@
+{
+  "request": {
+    "$defs": {
+      "Angle": {
+        "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      },
+      "Coordinate": {
+        "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+        "type": "number"
+      },
+      "ElementId": {
+        "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "ExtendBy": {
+        "description": "How far a `sketch_extend` takes the end, or to where, by its `type`.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "A line's end along it, in millimetres: a positive length lengthens the line, a\nnegative one shortens it.",
+            "properties": {
+              "length": {
+                "$ref": "#/$defs/Length"
+              },
+              "type": {
+                "const": "length",
+                "type": "string"
+              }
+            },
+            "required": [
+              "length",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "An arc's end around its circle, in degrees: its start turned back, its end on, so a\npositive angle lengthens the arc, a negative one shortens it.",
+            "properties": {
+              "angle": {
+                "$ref": "#/$defs/Angle"
+              },
+              "type": {
+                "const": "angle",
+                "type": "string"
+              }
+            },
+            "required": [
+              "angle",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "To a point on the curve's line or circle, on the end's side of its other end\n(within 1e-7 mm of the carrier), in the sketch's coordinates: past the end\nlengthens, short of it shortens, and the end is put there exactly.",
+            "properties": {
+              "point": {
+                "items": {
+                  "$ref": "#/$defs/Coordinate"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "type": {
+                "const": "point",
+                "type": "string"
+              }
+            },
+            "required": [
+              "point",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "To the nearest curve the line or arc, extended, meets past its end (SolidWorks'\nExtend Entities): the core finds it as trim finds its cuts, every other curve,\nconstruction too, and puts the end there exactly.",
+            "properties": {
+              "type": {
+                "const": "next_curve",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ExtendEnd": {
+        "description": "Which end of the curve a `sketch_extend` moves.",
+        "enum": [
+          "start",
+          "end"
+        ],
+        "type": "string"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "Length": {
+        "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`sketch_extend`'s request: extend a line's or an arc's end, its other end staying.",
+    "properties": {
+      "by": {
+        "$ref": "#/$defs/ExtendBy",
+        "description": "How far, or to where."
+      },
+      "curve": {
+        "$ref": "#/$defs/ElementId",
+        "description": "The line or arc, by ID. A line's end moves through the solver's drag, so its\nconstraints win (a line with a length slides rather than grows) and every curve\nsharing the end follows; an arc's end is turned. Nothing is added to hold the end\nwhere it lands."
+      },
+      "end": {
+        "$ref": "#/$defs/ExtendEnd",
+        "description": "Which end moves: its start or its end, as the curve runs."
+      },
+      "revision": {
+        "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      },
+      "sketch": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The sketch, by its feature's ID."
+      }
+    },
+    "required": [
+      "by",
+      "curve",
+      "end",
+      "revision",
+      "session",
+      "sketch"
+    ],
+    "title": "SketchExtendRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "CommitResult": {
+        "additionalProperties": false,
+        "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+        "properties": {
+          "path": {
+            "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
+            "type": "string"
+          },
+          "problems": {
+            "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+            "items": {
+              "$ref": "#/$defs/Error"
+            },
+            "maxItems": 100,
+            "type": "array"
+          },
+          "problems_total": {
+            "description": "How many problems there are, listed or not.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refingerprinted": {
+            "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": "array"
+          },
+          "resolved": {
+            "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": "array"
+          },
+          "written": {
+            "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "problems",
+          "problems_total",
+          "refingerprinted",
+          "resolved",
+          "written"
+        ],
+        "type": "object"
+      },
+      "ElementId": {
+        "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "Error": {
+        "additionalProperties": false,
+        "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+        "properties": {
+          "advice": {
+            "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+            "enum": [
+              "change_the_values",
+              "simplify_or_wait",
+              "try_again",
+              "try_once_more",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidates": {
+            "description": "What might have been meant, such as the names nearest one that found nothing.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cause": {
+            "description": "What lay under it, such as the kernel's own failure, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "enum": [
+              "invalid_input",
+              "kernel_failed",
+              "worker_crashed",
+              "worker_timeout",
+              "protocol_error",
+              "internal",
+              "invalid_result",
+              "resource_exhausted",
+              "drift",
+              "io_failed",
+              "reference_broken",
+              "over_constrained",
+              "solve_failed",
+              "conflict",
+              "worker_unavailable",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          "elements": {
+            "description": "The elements at fault, by name: the first of them, if there are many.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "elements_total": {
+            "description": "How many elements are at fault, listed or not.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feature": {
+            "description": "The ID of the feature at fault, if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "What went wrong, in a sentence.",
+            "type": "string"
+          },
+          "parameter": {
+            "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggestion": {
+            "description": "What to do about it, if Silico can say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "advice",
+          "candidates",
+          "cause",
+          "code",
+          "elements",
+          "elements_total",
+          "feature",
+          "message",
+          "parameter",
+          "suggestion"
+        ],
+        "type": "object"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`sketch_extend`'s result.",
+    "properties": {
+      "added": {
+        "description": "Always empty: an extend makes no member.",
+        "items": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "type": "array"
+      },
+      "changed": {
+        "description": "Whether the document changed: always, for an extend it makes.",
+        "type": "boolean"
+      },
+      "commit": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/CommitResult"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Outside a transaction, the commit that saved the edit; null inside one."
+      },
+      "modified": {
+        "description": "The members changed in place: the points moved, then a circle whose radius the move\nchanged, then a reference dimension it re-measured, each by ID; and with them what\nthe write-back of the starting solve changed (its points, radii, and reference\nvalues), since the edit starts from the sketch as solved.",
+        "items": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "type": "array"
+      },
+      "removed": {
+        "description": "Always empty: an extend removes no member.",
+        "items": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "type": "array"
+      },
+      "sketch": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The sketch, as the request named it."
+      }
+    },
+    "required": [
+      "added",
+      "changed",
+      "commit",
+      "modified",
+      "removed",
+      "sketch"
+    ],
+    "title": "SketchExtendResult",
+    "type": "object"
+  }
+}

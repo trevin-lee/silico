@@ -1,0 +1,159 @@
+{
+  "request": {
+    "$defs": {
+      "Coordinate": {
+        "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+        "type": "number"
+      },
+      "ElementId": {
+        "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`drag_begin`'s request: begin a drag of a sketch's point, or of a curve's edge, on a\nsketch worker of its own. It queues behind the session's commands before it, and drags\nthe sketch as the session holds it when it runs. One drag is open in a session at once.",
+    "properties": {
+      "curve": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ElementId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The curve whose edge to drag, by its ID: a line moves whole, a circle or an arc is\nsized through the cursor. Null to drag a point."
+      },
+      "point": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ElementId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The point to drag, by its ID (a line's end, an arc's start, end, or centre, a\ncircle's centre, a lone point); null to drag a curve's edge."
+      },
+      "press": {
+        "description": "Where the press on the curve's edge landed, `[x, y]` in the sketch's coordinates:\neach move's offset is from it, and a release there is a click, which changes\nnothing. Null to drag a point.",
+        "items": {
+          "$ref": "#/$defs/Coordinate"
+        },
+        "maxItems": 2,
+        "minItems": 2,
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      },
+      "sketch": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The sketch, by its feature's ID."
+      }
+    },
+    "required": [
+      "curve",
+      "point",
+      "press",
+      "session",
+      "sketch"
+    ],
+    "title": "DragBeginRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Coordinate": {
+        "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+        "type": "number"
+      },
+      "ElementId": {
+        "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`drag_begin`'s result.",
+    "properties": {
+      "curve": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ElementId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The curve whose edge is dragged, as the request named it; null for a point."
+      },
+      "dofs": {
+        "description": "The sketch's degrees of freedom left as it began. A point no constraint leaves free\nstill begins a drag, and its frames don't move it.",
+        "type": "integer"
+      },
+      "moves": {
+        "description": "The points of the part of the sketch the drag moves, by ID: every other point stays\nwhere it began. A diagnostic.",
+        "items": {
+          "$ref": "#/$defs/ElementId"
+        },
+        "type": "array"
+      },
+      "point": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ElementId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The point dragged, as the request named it; null for a curve's edge."
+      },
+      "press": {
+        "description": "The press, as the request gave it; null for a point.",
+        "items": {
+          "$ref": "#/$defs/Coordinate"
+        },
+        "maxItems": 2,
+        "minItems": 2,
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "sketch": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The sketch, as the request named it."
+      }
+    },
+    "required": [
+      "curve",
+      "dofs",
+      "moves",
+      "point",
+      "press",
+      "sketch"
+    ],
+    "title": "DragBeginResult",
+    "type": "object"
+  }
+}

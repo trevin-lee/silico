@@ -2348,7 +2348,9 @@ fn extend_rule(
         let [radius, from, to] = arc_from_points(c, s, e)?;
         Some((radius, to - from, by.amount().to_radians()))
     };
-    if r.message.contains("changes nothing") {
+    // An increment of 0, or a turn too small to move the end: refused as input. (A line its
+    // constraints hold also "changes nothing", but as a result: below.)
+    if r.code == "invalid_input" && r.message.contains("changes nothing") {
         if by.amount() == 0.0 {
             return Some(Rule::ExtendZero);
         }
@@ -2365,7 +2367,10 @@ fn extend_rule(
         if !(member.kind == "line" && names_end) {
             return None;
         }
-        if r.message.contains("its constraints hold it where it is") {
+        // "extending line … changes nothing: its constraints hold its end … where it is" (#309).
+        if r.message
+            .contains("changes nothing: its constraints hold its end")
+        {
             return Some(Rule::ExtendHeld);
         }
         return (r.message.contains("the drag")).then_some(Rule::ExtendFrame);

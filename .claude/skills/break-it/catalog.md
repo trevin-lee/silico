@@ -99,6 +99,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Rules that take two halves of one answer apart (a solve's diagnosis and its outcome): hand over a pair that disagree (a solution beside a listed conflict) and check every invariant the rules promise still holds
 - A state rule keyed on a constraint's kind (a dimension over-defines, a relation doesn't) fed by a solver whose redundancy contest ignores kinds: a dependent group of a relation and a dimension, in both tag orders, and the solver naming a third constraint more popular than both (a perpendicular and a 90° angle at one corner make PlaneGCS name the corner's vertical)
 - A rule comparing a solve before an edit with one after (FreeCAD's coincident rollback, `shouldRejectCoincidentSolve`): give the before a failed or conflicting solve that still diagnosed a redundancy (FreeCAD keeps `lastRedundant` whatever `solve()` returns); reading redundancies only from a solve that succeeded makes the same one look new after
+- Edits begun from the sketch as solved and written back (a drag's begin), their changed list diffed against that solved copy, not the stored sketch: in a file whose coordinates drift, points the begin's solve moved are written unlisted, and the save, finding the text already solved, says `resolved: []`; open a drifted file, edit a free curve, and diff the file
 
 ## Features
 
@@ -230,6 +231,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Malformed JSON, wrong types, missing fields, unexpected extra fields, out-of-range enum values
 - Huge strings and arrays
 - Many concurrent calls, calls made during recompute, cancellation partway through an operation
+- An anchor a UI takes from a pick, given freely by an agent (a drag's press off its curve, at a circle's centre): the pick's guarantee (the press lies on the edge) is gone, so the shortcuts built on it (a release at the press is a click, keeping the begin state) disagree with what a move to the same cursor showed
 - Element references by stale, misspelled, or made-up names
 - Calls in the wrong order (editing before opening a document, committing a transaction that was never started)
 - One call wrong in many ways at once (a field of every kind wrong, a list of 150 bad members, a kind that makes the others meaningless, a bad limit with a feature that's a sketch): check every reason is given, the first hundred listed and all counted, none hidden behind an early return or behind the one checked first
@@ -253,6 +255,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Per-name reasons that copy a shared one (each name of a failed feature given the feature's whole failure, up to its hundred listed errors): 10,000 names of one broken fillet's faces are a million errors, 300 MB from a 250 KB selection; count what the answer holds, not only its time
 - Parser words written for a document reused by a request with no place in a timeline ("no feature b0000001 before this one" for a selected name): read each refusal of a shared parser from every caller
 - A result that copies the first hundred of a helper's refusals (`Refused::errors()`) without its count (`total()`): 202 profile refusals read as 100, with nothing saying there are more, though `check` words the count
+- Tagged objects read by returning at a bad tag (`type: "lenght"`): the tag's own fields go unread and are refused too as fields the request hasn't ("leave it out"), sending the caller to delete the value it got right; misspell each tag beside its fields
 
 ## Kernel worker and IPC
 
@@ -311,6 +314,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A watch that drops findings against a superseded counter, told of the session's own write after it lands or before: a comparison that reads the new bytes and ends between the write and `held` (or reads the old ones between `held` and the write) is kept as changed; gate a stand-in reader and try both orders
 - A save bracketed for a watch, ended every way a save ends (a conflict, a cancel before it writes, a directory that won't take the file, a file it can't read to check): after each, the finding goes back to what's on disk, never stuck unknown and never the session's own text where nothing was written; then a save that works is its own
 - A background job's "running" flag cleared only after a callback returns (a reader, a solver): a callback that panics leaves it set, and no job ever starts again
+- A command of several phases whose stop reaches only some (a drag release's final move on the drag's thread, then its whole solve under the command's stop): hold each phase in turn and cancel, then close the session; a cancel that says `stopped` but answers only when the uncovered phase ends, and a close that waits on it
 - A change made in two locked sections with slow work between (an undo's stack stepped, then the restored text gated, then the document and revision set): a `status` that reads both under the lock sees the first half's counts beside the second's old revision; poll it from a thread through steps of a long document and check each answer is one revision's
 
 - Reads that redo work a model already did (a sketch read solving its sketch again) on a shared pool whose take starts a worker whenever none is idle: N reads at once start N workers, kept idle for ever; count the starts against the design's bound on workers

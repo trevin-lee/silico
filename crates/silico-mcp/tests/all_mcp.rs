@@ -12,6 +12,7 @@ mod adversarial_timeline_commands;
 mod adversarial_undo_commands;
 mod calls;
 mod contract;
+mod drag_commands;
 mod errors;
 mod exact;
 mod handshake;

@@ -17,9 +17,11 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
 use silico_app::app::IDLE_FRAME;
+use silico_app::tab::Sent;
 use silico_core::cache::Cache;
 use silico_core::command::{CheckAnswer, CheckModel, ModelChoice, Running, Sessions};
 use silico_core::disk::{Clock, Found, Reader};
+use silico_core::document::json::{self, Plain};
 use silico_core::fake::never_waits;
 use silico_core::fake::{FakeKernel, FakeSketches, Hold};
 use silico_core::kernel::{Op, Primitive};
@@ -67,11 +69,13 @@ fn fixture_reading(read: Option<Reader>) -> Fixture {
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
     let sketches = FakeSketches::new();
     let solver = sketches.clone();
+    // STEP written by the fake, as the STEP worker would (M5.12's export dialog).
     let sessions = Sessions::with_stand_ins(
         Arc::clone(&kernel),
         move |cache| Cache::with_secret(cache, &secret),
         move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
-    );
+    )
+    .exporting_step(Arc::clone(&kernel));
     let sessions = match read {
         None => sessions,
         Some(read) => {
@@ -359,6 +363,13 @@ fn a_document_the_gate_refuses_opens_with_its_problems_shown() {
     for name in ["Block", "Pin", "Hole"] {
         assert!(features.contains(&name.to_owned()), "{name}: {features:?}");
     }
+    // No feature can be made in it: only `replace_text` mends it.
+    assert!(
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Box")
+            .accesskit_node()
+            .is_disabled()
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -711,11 +722,7 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
 
 /// The names `path`'s file holds, in order.
 fn names_in(path: &Path) -> Vec<String> {
-    let text = std::fs::read_to_string(path).unwrap();
-    text.split(r#""name": ""#)
-        .skip(1)
-        .map(|rest| rest.split('"').next().unwrap().to_owned())
-        .collect()
+    names_of(&std::fs::read_to_string(path).unwrap())
 }
 
 /// [`step_until`], the Name field showing `shown` on every frame until then.
@@ -1257,10 +1264,10 @@ fn a_waiting_command_on_another_marked_thread_isnt_this_ones() {
 
 #[test]
 fn stop_says_a_cancel_the_core_refuses() {
-    // Asked to stop a command that has answered since status said it ran: the core's
-    // refusal is said in the tab.
+    // Asked to stop a rebuild that has ended since status said it ran: the core's refusal
+    // is said in the tab.
     use silico_app::tab::Tab;
-    use silico_core::command::{RunningCommand, SessionCommand};
+    use silico_core::command::{RebuildState, RunningCommand, SessionCommand};
     let f = fixture();
     let path = f.file("example.silico", EXAMPLE);
     let opened = f.sessions.open(&path, false).wait();
@@ -1271,17 +1278,45 @@ fn stop_says_a_cancel_the_core_refuses() {
         &opened.result.unwrap().problems,
     );
     let mut status = f.sessions.status(&id).result.unwrap();
-    status.running = Some(RunningCommand::Command(SessionCommand::Check));
+    status.rebuild.state = RebuildState::Running;
     tab.status = Some(status);
     assert!(tab.stoppable());
     tab.stop(&f.sessions);
     let said = tab.message.clone().unwrap();
-    assert!(said.contains("no check is running in session"), "{said}");
-    // The session's own reload running: nothing to stop, the stop off.
-    if let Some(status) = &mut tab.status {
-        status.running = Some(RunningCommand::Reload);
+    assert!(said.contains("no rebuild is running in session"), "{said}");
+    // Esc's stop, or a dialog preview's, too late says nothing: there was nothing left to
+    // stop. With a selection, Esc clears it first, and stops nothing.
+    tab.message = None;
+    tab.stop_quietly(&f.sessions);
+    assert_eq!(tab.message, None);
+    tab.escape(&f.sessions);
+    assert_eq!(tab.message, None);
+    tab.selected = Some(silico_core::document::FeatureId::new("a91cw0de").unwrap());
+    tab.escape(&f.sessions);
+    assert_eq!(tab.selected, None);
+    assert_eq!(tab.message, None);
+    // No rebuild running: the stop off, whatever command runs (a command with no rebuild
+    // is its own dialog's to stop), and the session's own reload among them; in every
+    // state but running.
+    for state in [
+        RebuildState::Idle,
+        RebuildState::Done,
+        RebuildState::Faulted,
+        RebuildState::Stopped,
+    ] {
+        for running in [
+            Some(RunningCommand::Command(SessionCommand::Check)),
+            Some(RunningCommand::Command(SessionCommand::Export)),
+            Some(RunningCommand::Reload),
+            None,
+        ] {
+            if let Some(status) = &mut tab.status {
+                status.rebuild.state = state;
+                status.running = running;
+            }
+            assert!(!tab.stoppable(), "{state:?} {running:?}");
+        }
     }
-    assert!(!tab.stoppable());
 }
 
 #[test]
@@ -1688,6 +1723,13 @@ fn the_name_field_is_off_while_its_tab_closes() {
     step(&mut h);
     assert!(h.state().tabs()[0].closing(), "not closing");
     assert!(name_field(&h).accesskit_node().is_disabled());
+    // Nor can a dialog open: what it sent would come after the close.
+    assert!(
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Box")
+            .accesskit_node()
+            .is_disabled()
+    );
     let before = name_field(&h).value();
     name_field(&h).type_text("z");
     step(&mut h);
@@ -2994,5 +3036,3474 @@ fn save_as_is_off_while_the_tab_closes() {
     hold.release();
     let _ = check.wait();
     step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Feature dialogs (M5.8; section 9, *Feature dialogs*) ----
+
+/// A washer and a plate, and a triangle sketched on XY (the M4.5 measures' padded
+/// triangle's sketch), not yet swept: the plate, made last, is the tip.
+const SKETCHED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000002", "type": "box", "v": 1, "name": "Washer", "position": [50, 0, 0], "length": 5, "width": 5, "height": 1},
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+/// The open dialog.
+fn dialog(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.get_by_role(Role::Dialog)
+}
+
+/// Whether a dialog is open.
+fn dialog_open(h: &AppHarness) -> bool {
+    h.query_by_role(Role::Dialog).is_some()
+}
+
+/// The dialog of `kind` opened from the toolbar's CREATE.
+fn create(h: &mut AppHarness, kind: &str) {
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label(kind)
+        .click();
+    step_until(h, "the dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, kind).is_some()
+    });
+}
+
+/// The dialog's input labelled `label`.
+fn input<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
+    dialog(h).get_by_role_and_label(Role::TextInput, label)
+}
+
+/// Typed into the dialog's input `label`, one keystroke a frame, at its start.
+fn type_into(h: &mut AppHarness, label: &str, text: &str) {
+    input(h, label).focus();
+    step(h);
+    for c in text.chars() {
+        input(h, label).type_text(&c.to_string());
+        step(h);
+    }
+}
+
+/// `pane`'s node labelled `label` double-clicked: both clicks in one frame, as the
+/// harness's own clicks each take frames of their own, a quarter second apart, which egui
+/// counts as two single clicks.
+fn double_click(h: &mut AppHarness, pane: &str, label: &str) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let pos = h
+        .get_by_role_and_label(Role::Pane, pane)
+        .get_by_label(label)
+        .rect()
+        .center();
+    h.input_mut().events.push(Event::PointerMoved(pos));
+    step(h);
+    for pressed in [true, false, true, false] {
+        h.input_mut().events.push(Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        });
+    }
+    step(h);
+}
+
+/// Whether the dialog's OK is on.
+fn ok_enabled(h: &AppHarness) -> bool {
+    !dialog(h)
+        .get_by_role_and_label(Role::Button, "OK")
+        .accesskit_node()
+        .is_disabled()
+}
+
+/// The session's document text, as `text` gives it.
+fn text_of(f: &Fixture, h: &AppHarness) -> String {
+    let id = h.state().tabs()[0].id;
+    f.sessions.text(&id, None).wait().result.unwrap().text
+}
+
+/// The fields of the feature named `name` in `text`, but its `id`, `v`, and `fingerprint`,
+/// each as JSON writes it: none if no feature has that name.
+fn fields_of(text: &str, name: &str) -> Option<Vec<(String, Plain)>> {
+    let root = json::read(text.as_bytes()).unwrap();
+    let Plain::Object(members) = Plain::of(&root) else {
+        panic!("not an object");
+    };
+    let (_, Plain::Array(features)) = members.into_iter().find(|(key, _)| key == "features")?
+    else {
+        panic!("no features");
+    };
+    features.into_iter().find_map(|feature| {
+        let Plain::Object(fields) = feature else {
+            return None;
+        };
+        fields
+            .iter()
+            .any(|(key, value)| key == "name" && *value == Plain::String(name.to_owned()))
+            .then(|| sorted_fields(fields))
+    })
+}
+
+/// `fields`, but `id`, `v`, and `fingerprint`, sorted by key.
+fn sorted_fields(fields: Vec<(String, Plain)>) -> Vec<(String, Plain)> {
+    let mut fields: Vec<(String, Plain)> = fields
+        .into_iter()
+        .filter(|(key, _)| !["id", "v", "fingerprint"].contains(&key.as_str()))
+        .collect();
+    fields.sort_by(|a, b| a.0.cmp(&b.0));
+    fields
+}
+
+/// The fields `json` writes, as [`fields_of`] gives them.
+fn expected(json_text: &str) -> Vec<(String, Plain)> {
+    let Plain::Object(fields) = Plain::of(&json::read(json_text.as_bytes()).unwrap()) else {
+        panic!("not an object");
+    };
+    sorted_fields(fields)
+}
+
+/// Stepped until nothing of the tab's is under way and its last answer's revision is read.
+fn settled(h: &mut AppHarness) {
+    step_until(h, "everything answered", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.edits.idle() && !tab.unsettled() && tab.dialog.as_ref().is_none_or(|d| !d.adding)
+    });
+}
+
+#[test]
+fn each_kinds_dialog_adds_its_feature_with_its_defaults_on_ok() {
+    // The defaults are the dialog's (the M5.8 brief: a 10 mm cube, a cylinder of radius 5
+    // and height 10, ...), each written here; a sweep takes the sketch selected and the
+    // body last on the timeline as its base.
+    let cases: [(&str, &str); 9] = [
+        (
+            "Box",
+            r#"{"type": "box", "name": "Box", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#,
+        ),
+        (
+            "Cylinder",
+            r#"{"type": "cylinder", "name": "Cylinder", "position": [0, 0, 0], "radius": 5, "height": 10}"#,
+        ),
+        (
+            "Sphere",
+            r#"{"type": "sphere", "name": "Sphere", "position": [0, 0, 0], "radius": 5}"#,
+        ),
+        (
+            "Cone",
+            r#"{"type": "cone", "name": "Cone", "position": [0, 0, 0], "radius1": 5, "radius2": 0, "height": 10}"#,
+        ),
+        (
+            "Torus",
+            r#"{"type": "torus", "name": "Torus", "position": [0, 0, 0], "radius1": 10, "radius2": 2}"#,
+        ),
+        (
+            "Pad",
+            r#"{"type": "pad", "name": "Pad", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}"#,
+        ),
+        (
+            "Pocket",
+            r#"{"type": "pocket", "name": "Pocket", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#,
+        ),
+        (
+            "Revolve",
+            r#"{"type": "revolve", "name": "Revolve", "base": "b0000001", "sketch": "s0000001", "axis": "y_axis", "extent": {"type": "one_side", "angle": 360, "reversed": false}}"#,
+        ),
+        (
+            "Groove",
+            r#"{"type": "groove", "name": "Groove", "base": "b0000001", "sketch": "s0000001", "axis": "y_axis", "extent": {"type": "one_side", "angle": 360, "reversed": false}}"#,
+        ),
+    ];
+    for (kind, want) in cases {
+        let f = fixture();
+        let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+        step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+        h.get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label("Triangle")
+            .click();
+        step(&mut h);
+        create(&mut h, kind);
+        step_until(&mut h, "its add answered", |h| {
+            h.state().tabs()[0]
+                .dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.feature.is_some())
+        });
+        assert!(ok_enabled(&h), "{kind}");
+        dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+        step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+        settled(&mut h);
+        let text = text_of(&f, &h);
+        assert_eq!(fields_of(&text, kind), Some(expected(want)), "{kind}");
+        // The earlier features as they were.
+        assert_eq!(
+            fields_of(&text, "Plate"),
+            fields_of(SKETCHED, "Plate"),
+            "{kind}"
+        );
+        assert_eq!(
+            h.state().tabs()[0].sent[..2],
+            [Sent::Begin, Sent::Add],
+            "{kind}"
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn a_sweeps_ok_waits_for_a_sketch_chosen_in_the_browser_and_adds_nothing_before() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    // A body selected, not a sketch: the Pad's selection box is empty, OK off, nothing
+    // added; nor does a body chosen in the browser fill it.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Washer")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pad");
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Plate")
+        .click();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!ok_enabled(&h));
+    assert!(dialog(&h).query_by_label("Select in the browser").is_some());
+    assert!(h.state().tabs()[0].sent.is_empty());
+    // The sketch chosen in the browser fills it: added, OK on.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    assert!(dialog(&h).query_by_label("Triangle").is_some());
+    assert!(ok_enabled(&h));
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pad"),
+        Some(expected(
+            r#"{"type": "pad", "name": "Pad", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}"#
+        ))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pocket");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    assert!(
+        dialog(&h)
+            .query_by_role_and_label(Role::TextInput, "Length 2")
+            .is_none()
+    );
+    dialog(&h).get_by_label("Two sides").click();
+    step_until(&mut h, "two sides", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::TextInput, "Length 2")
+            .is_some()
+    });
+    assert!(dialog(&h).query_by_label("Reversed").is_none());
+    type_into(&mut h, "Length 2", "1");
+    settled(&mut h);
+    let pocket = fields_of(&text_of(&f, &h), "Pocket").unwrap();
+    let extent = pocket.iter().find(|(key, _)| key == "extent").unwrap();
+    assert_eq!(
+        extent.1,
+        Plain::of(&json::read(br#"{"type": "two_sides", "length": 5, "length2": 15}"#).unwrap())
+    );
+    dialog(&h).get_by_label("Through all").click();
+    step_until(&mut h, "through all", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::TextInput, "Length")
+            .is_none()
+    });
+    assert!(dialog(&h).query_by_label("Reversed").is_some());
+    settled(&mut h);
+    let pocket = fields_of(&text_of(&f, &h), "Pocket").unwrap();
+    let extent = pocket.iter().find(|(key, _)| key == "extent").unwrap();
+    assert_eq!(
+        extent.1,
+        Plain::of(&json::read(br#"{"type": "through_all", "reversed": false}"#).unwrap())
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    let sent = h.state().tabs()[0].edits.sent;
+    // The session's queue held: the first keystroke's edit waits in it, and the next two
+    // wait in the tab, the last replacing the one before.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_into(&mut h, "Length", "123");
+    hold.release();
+    check.wait();
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].edits.sent, sent + 2);
+    assert_eq!(
+        h.state().tabs()[0].sent[h.state().tabs()[0].sent.len() - 2..],
+        [
+            Sent::Edit("length".to_owned()),
+            Sent::Edit("length".to_owned())
+        ]
+    );
+    // The field's text, three digits and the 10 (the harness places each keystroke's
+    // cursor as it does), is the document's.
+    let typed = input(&h, "Length").value().unwrap();
+    assert_eq!(typed.len(), 5);
+    let text = text_of(&f, &h);
+    let fields = fields_of(&text, "Box").unwrap();
+    assert!(
+        fields.contains(&("length".to_owned(), Plain::Number(typed.clone()))),
+        "{typed}: {fields:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_unparseable_value_is_red_sends_nothing_and_keeps_ok_off() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Sphere");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    let sent = h.state().tabs()[0].edits.sent;
+    type_into(&mut h, "Radius", "x");
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("x5"));
+    assert!(!ok_enabled(&h));
+    assert_eq!(h.state().tabs()[0].edits.sent, sent);
+    // Enter is OK only when OK is on.
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Sphere");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    // "-5": a number, sent, and refused by the gate (a radius is above 0).
+    type_into(&mut h, "Radius", "-");
+    settled(&mut h);
+    // Said in the dialog, as the core words it.
+    let said = h.state().tabs()[0].message.clone().unwrap();
+    assert!(dialog(&h).query_by_label(&said).is_some(), "{said}");
+    assert!(!ok_enabled(&h));
+    // "5" again: taken, OK on.
+    h.key_press(eframe::egui::Key::Home);
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("5"));
+    assert!(ok_enabled(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    // An edit before the dialog, in the transaction.
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let before = text_of(&f, &h);
+    assert!(before.contains(r#""name": "KPin""#));
+    let opened_at = h.state().tabs()[0].revision;
+    create(&mut h, "Box");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    type_into(&mut h, "Height", "2");
+    settled(&mut h);
+    assert!(text_of(&f, &h).contains(r#""height": 210"#));
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    let tab = &h.state().tabs()[0];
+    assert!(tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
+    assert!(!tab.sent.contains(&Sent::Rollback));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_failed_preview_shows_the_cores_error_in_the_dialog_and_ok_keeps_the_feature() {
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Cone { .. }))
+            .then(|| Error::new(ErrorCode::KernelFailed, "the cone came apart"))
+    });
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Cone");
+    step_until(&mut h, "the error in the dialog", |h| {
+        dialog(h)
+            .query_all_by_label_contains("the cone came apart")
+            .next()
+            .is_some()
+    });
+    assert!(ok_enabled(&h));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    let text = text_of(&f, &h);
+    assert_eq!(
+        fields_of(&text, "Cone"),
+        Some(expected(
+            r#"{"type": "cone", "name": "Cone", "position": [0, 0, 0], "radius1": 5, "radius2": 0, "height": 10}"#
+        ))
+    );
+    assert!(
+        !h.state().tabs()[0]
+            .sent
+            .iter()
+            .any(|sent| matches!(sent, Sent::Undo(_) | Sent::Rollback))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_dialog_second() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    // The new box's build held: its preview's rebuild runs until released.
+    let hold = f.kernel.hold(is_box);
+    create(&mut h, "Box");
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    // A refusal said before: the stop, succeeding, clears it.
+    h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the rebuild stopped", |h| {
+        h.state().tabs()[0].status.as_ref().is_some_and(|status| {
+            status.rebuild.state == silico_core::command::RebuildState::Stopped
+        })
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(dialog_open(&h));
+    assert!(!h.state().tabs()[0].preview_rebuilding());
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert!(!h.state().tabs()[0].sent.contains(&Sent::Undo(None)));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    // Its own add began the transaction: rolled back, nothing before it to keep.
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let hold = f.kernel.hold(is_box);
+    create(&mut h, "Box");
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    // The rebuild still held: the edit lands all the same, the old preview's read stopped.
+    type_into(&mut h, "Width", "3");
+    step_until(&mut h, "the width applied", |h| {
+        h.state().tabs()[0].edits.idle() && !h.state().tabs()[0].unsettled()
+    });
+    // Answered with the rebuild still held (the next preview's read waits for it, and a
+    // read of the text would wait behind that).
+    assert!(f.kernel.wait_running(1, WAIT));
+    hold.release();
+    let text = text_of(&f, &h);
+    assert!(text.contains(r#""width": 310"#), "{text}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_is_ok_and_esc_is_cancel() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    create(&mut h, "Torus");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    // One dialog at a time: CREATE's tools off.
+    assert!(
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Box")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // Undo and redo are the dialog's Cancel's while it's open: off.
+    let sent = h.state().tabs()[0].sent.clone();
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Undo")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    create(&mut h, "Torus");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert!(fields_of(&text_of(&f, &h), "Torus").is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let before = text_of(&f, &h);
+    let opened_at = h.state().tabs()[0].revision;
+    create(&mut h, "Cylinder");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    // Two edits, each its own step on the stack: the add, the radius, the height.
+    type_into(&mut h, "Radius", "1");
+    settled(&mut h);
+    type_into(&mut h, "Height", "2");
+    settled(&mut h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    let after = text_of(&f, &h);
+    let ok_at = h.state().tabs()[0].revision;
+    assert!(after.contains(r#""radius": 15"#) && after.contains(r#""height": 210"#));
+    step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Undo(Some(opened_at)))
+    );
+    step_until(&mut h, "redoable", |h| h.state().tabs()[0].redoable());
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), after);
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Redo(Some(ok_at)))
+    );
+    // And once more: the group's ends include the redo's revision.
+    step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    // KPin, made before the dialog, stays: one more undo takes it back alone.
+    assert!(before.contains(r#""name": "KPin""#));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_feature_from_a_double_click_loads_the_features_values_and_ok_applies_a_change() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    double_click(&mut h, "Timeline", "Pin");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    // The Pin's values, as EXAMPLE writes them.
+    for (label, value) in [
+        ("X", "20"),
+        ("Y", "10"),
+        ("Z", "-1"),
+        ("Radius", "2.5"),
+        ("Height", "12"),
+    ] {
+        assert_eq!(input(&h, label).value().as_deref(), Some(value), "{label}");
+    }
+    // Loaded, nothing sent.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs()[0].sent.is_empty());
+    type_into(&mut h, "Height", "3");
+    settled(&mut h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Pin"),
+        Some(expected(
+            r#"{"type": "cylinder", "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 312}"#
+        ))
+    );
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [Sent::Begin, Sent::Edit("height".to_owned())]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Block")
+        .click_secondary();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_label("Edit Feature").click();
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Box").is_some()
+    });
+    for (label, value) in [("Length", "40"), ("Width", "20"), ("Height", "10")] {
+        assert_eq!(input(&h, label).value().as_deref(), Some(value), "{label}");
+    }
+    // The cut has no dialog: its Edit Feature is off.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Hole")
+        .click_secondary();
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        h.get_by_label("Edit Feature")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(h.state().tabs()[0].sent.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_cutting_sweeps_are_off_with_no_body_to_cut() {
+    let f = fixture();
+    let only_sketch = SKETCHED
+        .lines()
+        .filter(|line| !line.contains(r#""type": "box""#))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (mut h, _) = f.opened("sketch.silico", &only_sketch);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    let create = h.get_by_role_and_label(Role::Toolbar, "CREATE");
+    let off = |kind: &str| create.get_by_label(kind).accesskit_node().is_disabled();
+    for kind in ["Pocket", "Groove"] {
+        assert!(off(kind), "{kind}");
+    }
+    for kind in [
+        "Box", "Cylinder", "Sphere", "Cone", "Torus", "Pad", "Revolve",
+    ] {
+        assert!(!off(kind), "{kind}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_refused_values_mark_goes_with_its_dialog() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    double_click(&mut h, "Timeline", "Pin");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    type_into(&mut h, "Radius", "-");
+    settled(&mut h);
+    assert!(!ok_enabled(&h));
+    // Nor is Enter OK.
+    h.key_press(eframe::egui::Key::Enter);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(dialog_open(&h));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // Nothing of its was taken, nor anything before it: rolled back, nothing undone.
+    assert!(
+        !h.state().tabs()[0]
+            .sent
+            .iter()
+            .any(|sent| matches!(sent, Sent::Undo(_)))
+    );
+    assert!(!h.state().tabs()[0].transaction);
+    // Opened again on the same feature: its radius is the document's, and OK on.
+    double_click(&mut h, "Timeline", "Pin");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("2.5"));
+    assert!(ok_enabled(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waiting_for_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let hold = f.kernel.hold(is_box);
+    let rebuilding = |h: &mut AppHarness| {
+        step_until(h, "the preview rebuilding", |h| {
+            h.state().tabs()[0].preview_rebuilding()
+        });
+    };
+    // Cancel: its rollback lands with the rebuild held.
+    create(&mut h, "Box");
+    rebuilding(&mut h);
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
+    // OK'd with its preview still rebuilding, then Ctrl+Z: its undo lands too.
+    create(&mut h, "Box");
+    rebuilding(&mut h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert!(matches!(
+        h.state().tabs()[0].sent.last(),
+        Some(Sent::Undo(Some(_)))
+    ));
+    // OK'd with its preview still rebuilding, then another dialog: its add lands.
+    create(&mut h, "Box");
+    rebuilding(&mut h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    create(&mut h, "Sphere");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    // And File > Revert with the sphere's preview rebuilding: its rollback lands too.
+    rebuilding(&mut h);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_label("Revert").click();
+    step_until(&mut h, "reverted", |h| {
+        !h.state().tabs()[0].transaction && !h.state().tabs()[0].unsettled()
+    });
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
+    hold.release();
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_while_edit_feature_reads_the_feature_opens_no_dialog() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let (hold, check) = hold_queue(&f, &h, 0);
+    double_click(&mut h, "Timeline", "Pin");
+    assert!(h.state().tabs()[0].in_dialog());
+    // Reading it, one dialog at a time: CREATE's tools off (drawn before the timeline
+    // took the double-click, so from the next frame).
+    step(&mut h);
+    assert!(
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Box")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    hold.release();
+    check.wait();
+    settled(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!dialog_open(&h));
+    assert!(h.state().tabs()[0].dialog.is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dialog_and_create_are_off_while_the_tab_closes() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    create(&mut h, "Box");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_label("Close example.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    step(&mut h);
+    assert!(h.state().tabs()[0].closing());
+    assert!(!ok_enabled(&h));
+    assert!(
+        dialog(&h)
+            .get_by_role_and_label(Role::Button, "Cancel")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // Nor does Esc cancel it: its undo would come after the close.
+    let sent = h.state().tabs()[0].sent.clone();
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert!(input(&h, "Height").accesskit_node().is_disabled());
+    hold.release();
+    check.wait();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_feature_of_a_revolve_about_a_sketch_line_keeps_that_axis() {
+    let f = fixture();
+    let revolve = r#"    {"id": "r0000001", "type": "revolve", "v": 1, "name": "Turned", "sketch": "s0000001", "axis": "nc000000", "extent": {"type": "symmetric", "angle": 90}}"#;
+    let text = SKETCHED.replace("\n  ]\n}", &format!(",\n{revolve}\n  ]\n}}"));
+    let (mut h, _) = f.opened("turned.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Turned"));
+    double_click(&mut h, "Timeline", "Turned");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Revolve").is_some()
+    });
+    // The line is offered as itself, chosen; the form and angle as written; the sketch's
+    // name in its box.
+    let chosen = |h: &AppHarness, label: &str| {
+        dialog(h)
+            .get_by_role_and_label(Role::Button, label)
+            .accesskit_node()
+            .toggled()
+            == Some(eframe::egui::accesskit::Toggled::True)
+    };
+    assert!(chosen(&h, "nc000000"));
+    assert!(!chosen(&h, "Y axis"));
+    assert!(chosen(&h, "Symmetric"));
+    assert_eq!(input(&h, "Angle").value().as_deref(), Some("90"));
+    assert!(dialog(&h).query_by_label("Triangle").is_some());
+    type_into(&mut h, "Angle", "1");
+    settled(&mut h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Turned"),
+        Some(expected(
+            r#"{"type": "revolve", "name": "Turned", "sketch": "s0000001", "axis": "nc000000", "extent": {"type": "symmetric", "angle": 190}}"#
+        ))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_is_off_while_a_dialog_is_open() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "redoable", |h| h.state().tabs()[0].redoable());
+    double_click(&mut h, "Timeline", "Block");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Box").is_some()
+    });
+    assert!(!h.state().tabs()[0].redoable());
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Redo")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    step_until(&mut h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+    settled(&mut h);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_label("Revert").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert!(h.state().tabs()[0].dialog.is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_cancel_before_the_add_answers_waits_for_it_and_rolls_it_back() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    // The add waits in the session's queue: the Cancel waits behind it in the tab's.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    create(&mut h, "Box");
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    hold.release();
+    check.wait();
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [Sent::Begin, Sent::Add, Sent::Rollback]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_cancel_with_nothing_of_the_dialogs_after_the_file_reloaded_undoes_nothing() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    double_click(&mut h, "Timeline", "Pin");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    settled(&mut h);
+    // Changed on disk by another client, no edit held: the session reloads it.
+    let theirs = EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
+    std::fs::write(&path, &theirs).unwrap();
+    step_until(&mut h, "the reload", |h| shows(h, "Timeline", "Theirs"));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs()[0].sent.is_empty());
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_name_typed_after_a_dialog_opened_is_its_cancels_to_undo_never_before_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    // "a" waits in the session's queue, "b" in the tab's; then the dialog opens on the
+    // Pin, and "c" is typed: it comes after the dialog's opening, not in place of "b".
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "a");
+    type_name(&mut h, "b");
+    double_click(&mut h, "Timeline", "Pin");
+    type_name(&mut h, "c");
+    hold.release();
+    check.wait();
+    settled(&mut h);
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    let typed = text_of(&f, &h);
+    let name = names_of(&typed)[1].clone();
+    assert_eq!(name.len(), "cbaPin".len(), "{name}");
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // Undone back to the two letters typed before the dialog.
+    let kept = names_of(&text_of(&f, &h))[1].clone();
+    assert_eq!(kept.len(), "baPin".len(), "{kept}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The features' names in `text`, in order.
+fn names_of(text: &str) -> Vec<String> {
+    text.split(r#""name": ""#)
+        .skip(1)
+        .map(|rest| rest.split('"').next().unwrap().to_owned())
+        .collect()
+}
+
+// ---- Feature dialogs: #325's review ----
+
+/// The dialog's feature's add answered.
+fn added(h: &mut AppHarness) {
+    step_until(h, "its add answered", |h| {
+        h.state().tabs()[0]
+            .dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+    });
+}
+
+#[test]
+fn esc_after_typing_coalesced_behind_a_held_preview_stays_stopped() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let hold = f.kernel.hold(is_box);
+    create(&mut h, "Box");
+    added(&mut h);
+    // Two keystrokes, one a frame: the preview's read asked while an edit is in flight
+    // runs at the revision that edit comes to.
+    type_into(&mut h, "Length", "12");
+    settled(&mut h);
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    let stopped = |h: &AppHarness| {
+        h.state().tabs()[0].status.as_ref().is_some_and(|status| {
+            status.rebuild.state == silico_core::command::RebuildState::Stopped
+        })
+    };
+    step_until(&mut h, "the rebuild stopped", stopped);
+    for _ in 0..30 {
+        step(&mut h);
+        assert!(stopped(&h), "the stop was undone");
+        assert!(!h.state().tabs()[0].preview_rebuilding());
+    }
+    assert!(dialog_open(&h));
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sweeps_body_is_the_documents_tip_even_where_the_model_has_none_there() {
+    // The plate's cut by the washer fails: the model's bodies are the washer and the plate,
+    // but the plate is the cut's, and the document's tip is the cut.
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, Op::Boolean { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "the cut came apart"))
+    });
+    let cut = r#"    {"id": "c0000001", "type": "cut", "v": 1, "name": "Notch", "base": "b0000001", "tool": "b0000002"}"#;
+    let text = SKETCHED.replace("\n  ]\n}", &format!(",\n{cut}\n  ]\n}}"));
+    let (mut h, _) = f.opened("notched.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    step_until(&mut h, "the cut's failure", |h| {
+        showing(h, "Timeline", "error").is_some()
+    });
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    // Every build held from before the pocket's add: its preview waits, so the tab's own
+    // timeline never lists the pocket until the release.
+    let hold = f.kernel.hold(|_| true);
+    create(&mut h, "Pocket");
+    added(&mut h);
+    let pocket_id = h.state().tabs()[0]
+        .dialog
+        .as_ref()
+        .unwrap()
+        .feature
+        .clone()
+        .unwrap();
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    // OK'd with its preview held (unbuilt): the next sweep's tip is the pocket.
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert!(
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_ref())
+            .is_some_and(|features| features.iter().all(|entry| entry.id != pocket_id)),
+        "the tab's timeline lists the pocket already: nothing was held"
+    );
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pad");
+    added(&mut h);
+    settled(&mut h);
+    hold.release();
+    let text = text_of(&f, &h);
+    let pocket = fields_of(&text, "Pocket").unwrap();
+    assert!(
+        pocket.contains(&("base".to_owned(), Plain::String("c0000001".to_owned()))),
+        "{pocket:?}"
+    );
+    let pad = fields_of(&text, "Pad").unwrap();
+    assert!(
+        pad.contains(&(
+            "base".to_owned(),
+            Plain::String(pocket_id.as_str().to_owned())
+        )),
+        "{pad:?}"
+    );
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn typing_while_the_add_is_unanswered_makes_one_feature_and_edits_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let (hold, check) = hold_queue(&f, &h, 0);
+    create(&mut h, "Box");
+    type_into(&mut h, "Length", "12");
+    let typed = input(&h, "Length").value().unwrap();
+    hold.release();
+    check.wait();
+    settled(&mut h);
+    let text = text_of(&f, &h);
+    assert_eq!(text.matches(r#""type": "box""#).count(), 2, "{text}");
+    let fields = fields_of(&text, "Box").unwrap();
+    assert!(
+        fields.contains(&("length".to_owned(), Plain::Number(typed.clone()))),
+        "{typed}: {fields:?}"
+    );
+    assert_eq!(
+        h.state().tabs()[0]
+            .sent
+            .iter()
+            .filter(|sent| **sent == Sent::Add)
+            .count(),
+        1
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_reload_under_edit_feature_reads_the_feature_again_and_cancel_undoes_from_there() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    double_click(&mut h, "Timeline", "Pin");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    settled(&mut h);
+    let theirs = EXAMPLE.replace(r#""radius": 2.5"#, r#""radius": 3"#);
+    std::fs::write(&path, &theirs).unwrap();
+    step_until(&mut h, "the reloaded radius", |h| {
+        dialog_open(h) && input(h, "Radius").value().as_deref() == Some("3")
+    });
+    type_into(&mut h, "Height", "1");
+    settled(&mut h);
+    assert!(text_of(&f, &h).contains(r#""height": 112"#));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), theirs);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert!(!h.state().tabs()[0].transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_reload_under_a_new_sweeps_dialog_opens_it_at_the_reloaded_revision() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    let sketched = text_of(&f, &h);
+    // A KPlate typed first, saved: a transaction with something before the dialog is
+    // then the reload's to make, not the dialog's.
+    select(&mut h, "Plate");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "saved", |h| !h.state().tabs()[0].unsaved());
+    assert_ne!(text_of(&f, &h), sketched);
+    // The Pad's dialog, with nothing to add yet (no sketch chosen).
+    create(&mut h, "Pad");
+    let theirs = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace(r#""name": "Washer""#, r#""name": "Theirs""#);
+    std::fs::write(&path, &theirs).unwrap();
+    step_until(&mut h, "the reload", |h| shows(h, "Browser", "Theirs"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    added(&mut h);
+    settled(&mut h);
+    // OK'd, then one undo: back to the reloaded file, the dialog's edits whole.
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), theirs);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_suppressed_feature_is_never_a_sweeps_body() {
+    let f = fixture();
+    let ghost = r#"    {"id": "g0000001", "type": "box", "v": 1, "name": "Ghost", "suppressed": true, "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}"#;
+    let text = SKETCHED.replace("\n  ]\n}", &format!(",\n{ghost}\n  ]\n}}"));
+    let (mut h, _) = f.opened("ghost.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Ghost"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pad");
+    added(&mut h);
+    settled(&mut h);
+    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    assert!(
+        pad.contains(&("base".to_owned(), Plain::String("b0000001".to_owned()))),
+        "{pad:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn two_dialogs_okd_are_undone_and_redone_each_whole() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let before = text_of(&f, &h);
+    let mut texts = vec![before.clone()];
+    for (kind, label) in [("Box", "Length"), ("Sphere", "Radius")] {
+        create(&mut h, kind);
+        added(&mut h);
+        type_into(&mut h, label, "1");
+        settled(&mut h);
+        dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+        step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+        settled(&mut h);
+        texts.push(text_of(&f, &h));
+    }
+    let key = |h: &mut AppHarness, undo: bool| {
+        let (key, able): (_, fn(&AppHarness) -> bool) = if undo {
+            (eframe::egui::Key::Z, |h| h.state().tabs()[0].undoable())
+        } else {
+            (eframe::egui::Key::Y, |h| h.state().tabs()[0].redoable())
+        };
+        step_until(h, "able", able);
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+        step(h);
+        settled(h);
+    };
+    // Z, Z: each dialog's edits whole.
+    key(&mut h, true);
+    assert_eq!(text_of(&f, &h), texts[1]);
+    key(&mut h, true);
+    assert_eq!(text_of(&f, &h), texts[0]);
+    // Y, Y: each whole again.
+    key(&mut h, false);
+    assert_eq!(text_of(&f, &h), texts[1]);
+    key(&mut h, false);
+    assert_eq!(text_of(&f, &h), texts[2]);
+    // And Z, Z once more.
+    key(&mut h, true);
+    assert_eq!(text_of(&f, &h), texts[1]);
+    key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_is_off_while_a_dialog_is_open() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    assert!(h.state().tabs()[0].unsaved());
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Save")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    // OK'd: Save on.
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    step_until(&mut h, "Save on", |h| {
+        !h.get_by_role_and_label(Role::Button, "Save")
+            .accesskit_node()
+            .is_disabled()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_features_read_comes_after_the_edits_asked_before_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    double_click(&mut h, "Timeline", "Pin");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    settled(&mut h);
+    // The queue held: one radius in the session's queue, the next in the tab's, then OK and
+    // Edit Feature again.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_into(&mut h, "Radius", "12");
+    let typed = input(&h, "Radius").value().unwrap();
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    double_click(&mut h, "Timeline", "Pin");
+    hold.release();
+    check.wait();
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    assert_eq!(input(&h, "Radius").value(), Some(typed));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_of_a_dialog_that_began_the_transaction_leaves_none_open_so_outside_writes_reload() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    assert!(h.state().tabs()[0].transaction);
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].transaction);
+    let theirs = EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
+    std::fs::write(&path, &theirs).unwrap();
+    step_until(&mut h, "the reload", |h| shows(h, "Timeline", "Theirs"));
+    assert_eq!(text_of(&f, &h), theirs);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_add_answered_after_its_dialog_was_cancelled_never_becomes_the_next_dialogs() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    let before = text_of(&f, &h);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    create(&mut h, "Box");
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    // A Pad's, with no sketch chosen: nothing of its own to add.
+    create(&mut h, "Pad");
+    hold.release();
+    check.wait();
+    settled(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].dialog.as_ref().unwrap().feature, None);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_digit_typed_in_the_frame_enter_is_pressed_is_in_what_ok_keeps() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    input(&h, "Height").focus();
+    step(&mut h);
+    {
+        use eframe::egui::{Event, Key, Modifiers};
+        let events = &mut h.input_mut().events;
+        events.push(Event::Text("7".to_owned()));
+        events.push(Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    step(&mut h);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    let fields = fields_of(&text_of(&f, &h), "Box").unwrap();
+    assert!(
+        fields.contains(&("height".to_owned(), Plain::Number("710".to_owned()))),
+        "{fields:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Feature dialogs: #325's second round ----
+
+/// The Pad's base, made from `text` opened, its triangle sketch chosen.
+fn pads_base(text: &str) -> Plain {
+    let f = fixture();
+    let (mut h, _) = f.opened("based.silico", text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pad");
+    added(&mut h);
+    settled(&mut h);
+    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    assert_eq!(never_waits::waits(), 0);
+    pad.into_iter()
+        .find(|(key, _)| key == "base")
+        .map(|(_, base)| base)
+        .unwrap_or(Plain::Null)
+}
+
+#[test]
+fn a_suppressed_feature_whose_chain_stands_is_the_tip_and_a_consumed_one_never_is() {
+    // A pocket of the plate, suppressed: nothing consumes it, and the plate stands for it,
+    // so it's the tip (the gate takes it as a base, and it builds on the plate).
+    let hollow = r#"    {"id": "h0000001", "type": "pocket", "v": 1, "name": "Hollow", "suppressed": true, "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 1, "reversed": false}}"#;
+    let text = SKETCHED.replace("\n  ]\n}", &format!(",\n{hollow}\n  ]\n}}"));
+    assert_eq!(pads_base(&text), Plain::String("h0000001".to_owned()));
+    // The plate, then the washer, last of the bodies that stand, but a suppressed cut
+    // (of a suppressed box, so it stands for nothing) consumes it: the tip is the plate.
+    let consumed = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
+    {"id": "b0000002", "type": "box", "v": 1, "name": "Washer", "position": [50, 0, 0], "length": 5, "width": 5, "height": 1},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "g0000001", "type": "box", "v": 1, "name": "Ghost", "suppressed": true, "position": [0, 0, 0], "length": 1, "width": 1, "height": 1},
+    {"id": "c0000002", "type": "cut", "v": 1, "name": "Snip", "suppressed": true, "base": "g0000001", "tool": "b0000002"}
+  ]
+}
+"#;
+    assert_eq!(pads_base(consumed), Plain::String("b0000001".to_owned()));
+}
+
+/// Ctrl+Z (`undo`) or Ctrl+Y, once it's on, and everything answered.
+fn step_key(h: &mut AppHarness, undo: bool) {
+    if undo {
+        step_until(h, "undoable", |h| h.state().tabs()[0].undoable());
+    } else {
+        step_until(h, "redoable", |h| h.state().tabs()[0].redoable());
+    }
+    let key = if undo {
+        eframe::egui::Key::Z
+    } else {
+        eframe::egui::Key::Y
+    };
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+    step(h);
+    settled(h);
+}
+
+/// A `kind` dialog: added, `label` typed into, and OK'd.
+fn made(h: &mut AppHarness, kind: &str, label: &str) {
+    create(h, kind);
+    added(h);
+    type_into(h, label, "1");
+    settled(h);
+    dialog(h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(h, "the dialog closed", |h| !dialog_open(h));
+    settled(h);
+}
+
+#[test]
+fn a_dialog_undone_then_another_made_lets_the_other_be_redone_whole() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let before = text_of(&f, &h);
+    made(&mut h, "Box", "Length");
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    // The box's edits are the redo branch the sphere's add drops.
+    made(&mut h, "Sphere", "Radius");
+    let sphere = text_of(&f, &h);
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    step_key(&mut h, false);
+    assert_eq!(text_of(&f, &h), sphere);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dialog_undone_then_a_name_typed_lets_the_name_be_redone() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let before = text_of(&f, &h);
+    made(&mut h, "Box", "Length");
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    // A name typed in the property panel drops the box's edits.
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let named = text_of(&f, &h);
+    assert!(named.contains(r#""name": "KPin""#));
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    step_key(&mut h, false);
+    assert_eq!(text_of(&f, &h), named);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Redo(None)));
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ok_and_enter_wait_for_the_add_so_what_was_typed_meanwhile_is_kept() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let (hold, check) = hold_queue(&f, &h, 0);
+    create(&mut h, "Box");
+    type_into(&mut h, "Length", "12");
+    let typed = input(&h, "Length").value().unwrap();
+    // The add unanswered: OK off, and Enter does nothing.
+    assert!(!ok_enabled(&h));
+    h.key_press(eframe::egui::Key::Enter);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(dialog_open(&h));
+    hold.release();
+    check.wait();
+    added(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "OK on", ok_enabled);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    let fields = fields_of(&text_of(&f, &h), "Box").unwrap();
+    assert!(
+        fields.contains(&("length".to_owned(), Plain::Number(typed.clone()))),
+        "{typed}: {fields:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_feature_opens_at_the_revision_its_read_found_when_the_session_moved_under_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let id = h.state().tabs()[0].id;
+    // The queue held: another client's edit of the Pin (outside a transaction, saved as
+    // its own), then Edit Feature's read, behind it.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let pin = silico_core::document::FeatureId::new("a91cw0de").unwrap();
+    let theirs = f.sessions.set_field(
+        &id,
+        h.state().tabs()[0].revision,
+        pin,
+        "height".to_owned(),
+        json::read(b"15").unwrap(),
+    );
+    double_click(&mut h, "Timeline", "Pin");
+    hold.release();
+    check.wait();
+    theirs.wait().result.unwrap();
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    assert_eq!(input(&h, "Height").value().as_deref(), Some("15"));
+    settled(&mut h);
+    let moved = text_of(&f, &h);
+    // A change, OK, then one undo: back to what the read found, not refused.
+    type_into(&mut h, "Radius", "1");
+    settled(&mut h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), moved);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_as_is_off_while_a_dialog_is_open() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    // File > Save As… off, and Ctrl+Shift+S asks nothing.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Save As…")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // The menu closed by its own button (Esc is the dialog's Cancel).
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.key_press_modifiers(
+        eframe::egui::Modifiers::COMMAND | eframe::egui::Modifiers::SHIFT,
+        eframe::egui::Key::S,
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(!anywhere(&h, "Save example.silico as"));
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert!(dialog_open(&h));
+    // OK'd: Save As offered again.
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    h.key_press_modifiers(
+        eframe::egui::Modifiers::COMMAND | eframe::egui::Modifiers::SHIFT,
+        eframe::egui::Key::S,
+    );
+    step_until(&mut h, "the Save As dialog", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Feature dialogs: #325's third round ----
+
+#[test]
+fn a_refused_edit_after_an_undone_dialog_leaves_its_redo_whole() {
+    let f = fixture();
+    let one_letter = EXAMPLE.replace(r#""name": "Pin""#, r#""name": "P""#);
+    let (mut h, _) = f.opened("example.silico", &one_letter);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "P"));
+    made(&mut h, "Box", "Length");
+    let boxed = text_of(&f, &h);
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), one_letter);
+    // The one-letter name emptied: refused, so the box's edits stay the redo branch.
+    select(&mut h, "P");
+    name_field(&h).focus();
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    step_until(&mut h, "the empty name refused", |h| {
+        h.state().tabs()[0].message.as_deref() == Some("name is empty (give the feature a name)")
+            && !h.state().tabs()[0].unsettled()
+    });
+    settled(&mut h);
+    step_key(&mut h, false);
+    assert_eq!(text_of(&f, &h), boxed);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sweeps_body_read_before_the_session_moved_is_read_again() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    // The Pad's dialog, no sketch chosen: nothing to add yet.
+    create(&mut h, "Pad");
+    settled(&mut h);
+    let id = h.state().tabs()[0].id;
+    // Another client's box, the document's tip once it's added, held in the session's
+    // queue.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let theirs = f.sessions.add_feature(
+        &id,
+        h.state().tabs()[0].revision,
+        None,
+        json::read(
+            br#"{"type": "box", "name": "Theirs", "position": [90, 0, 0], "length": 2, "width": 2, "height": 2}"#,
+        )
+        .unwrap(),
+    );
+    // The sketch chosen with no frame drawn (a frame would take the read's answer): the
+    // Pad's body is read, beside the queue, at the revision before the box.
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.pick(&silico_core::document::FeatureId::new("s0000001").unwrap());
+        tab.dialog_changed(&sessions);
+        assert!(tab.reading_body());
+    }
+    // Answered (no published read is left running), not taken: the session then moves.
+    let deadline = Instant::now() + WAIT;
+    while !f.sessions.status(&id).result.unwrap().reads.is_empty() {
+        assert!(Instant::now() < deadline, "the body's read never answered");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(h.state().tabs()[0].reading_body());
+    hold.release();
+    check.wait();
+    let theirs = theirs.wait().result.unwrap().feature.id;
+    added(&mut h);
+    settled(&mut h);
+    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    assert!(
+        pad.contains(&("base".to_owned(), Plain::String(theirs.as_str().to_owned()))),
+        "{pad:?}"
+    );
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    made(&mut h, "Box", "Length");
+    let boxed = text_of(&f, &h);
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    // The Pin's radius made "-2.5" (refused), then "2.5" again: a set_field of the value
+    // the document holds, which changes nothing.
+    double_click(&mut h, "Timeline", "Pin");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    type_into(&mut h, "Radius", "-");
+    settled(&mut h);
+    let sent = h.state().tabs()[0].edits.sent;
+    h.key_press(eframe::egui::Key::Home);
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("2.5"));
+    assert_eq!(h.state().tabs()[0].edits.sent, sent + 1);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    step_key(&mut h, false);
+    assert_eq!(text_of(&f, &h), boxed);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_redo() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    made(&mut h, "Box", "Length");
+    let boxed = text_of(&f, &h);
+    step_key(&mut h, true);
+    select(&mut h, "KPin");
+    // The queue held: another client's undo (of KPin), then a name typed here against the
+    // revision before it, refused as stale, the session's revision moved by the undo,
+    // which drops no redo branch.
+    let id = h.state().tabs()[0].id;
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let theirs = f.sessions.undo(&id, h.state().tabs()[0].revision, None);
+    type_name(&mut h, "Q");
+    hold.release();
+    check.wait();
+    theirs.wait().result.unwrap();
+    step_until(&mut h, "the stale name refused", |h| {
+        h.state().tabs()[0].message.is_some() && !h.state().tabs()[0].unsettled()
+    });
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    // Redo: KPin, then the box's edits whole.
+    step_key(&mut h, false);
+    step_key(&mut h, false);
+    assert_eq!(text_of(&f, &h), boxed);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_refused_body_read_is_read_again_and_no_add_goes_until_it_answers() {
+    use silico_core::command::{MAX_PUBLISHED_READS, ReadCommand};
+    use std::sync::mpsc;
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    // The Pad's dialog, no sketch chosen: nothing to add yet.
+    create(&mut h, "Pad");
+    settled(&mut h);
+    let id = h.state().tabs()[0].id;
+    // As many published reads as a session runs at once, each held until released: a body's
+    // read past them is refused (too many reads).
+    let (release, released) = mpsc::channel::<()>();
+    let released = Arc::new(Mutex::new(released));
+    let (started, starts) = mpsc::channel::<()>();
+    let held: Vec<_> = (0..MAX_PUBLISHED_READS)
+        .map(|_| {
+            let released = Arc::clone(&released);
+            let started = started.clone();
+            f.sessions
+                .read_model(&id, ReadCommand::Check, ModelChoice::Published, move |_| {
+                    started.send(()).unwrap();
+                    let _ = released.lock().unwrap().recv();
+                    Ok(())
+                })
+        })
+        .collect();
+    for _ in 0..MAX_PUBLISHED_READS {
+        starts.recv_timeout(WAIT).unwrap();
+    }
+    // The sketch chosen: the body's read is sent, and refused.
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.pick(&silico_core::document::FeatureId::new("s0000001").unwrap());
+        tab.dialog_changed(&sessions);
+        assert!(tab.reading_body());
+    }
+    // Refused each time it's read: no add sent, the dialog still adding.
+    for _ in 0..20 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!h.state().tabs()[0].sent.contains(&Sent::Add));
+    assert!(h.state().tabs()[0].dialog.as_ref().unwrap().adding);
+    assert!(h.state().tabs()[0].reading_body());
+    // Released: read, and added on the document's tip, the plate.
+    drop(release);
+    for read in held {
+        read.wait().result.unwrap();
+    }
+    added(&mut h);
+    settled(&mut h);
+    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    assert!(
+        pad.contains(&("base".to_owned(), Plain::String("b0000001".to_owned()))),
+        "{pad:?}"
+    );
+    assert_eq!(
+        h.state().tabs()[0]
+            .sent
+            .iter()
+            .filter(|s| **s == Sent::Add)
+            .count(),
+        1
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The stop: `cancel` naming the rebuild (decision 34, as amended) ----
+
+/// The Block made 41 long, through the tab, with every box held: its rebuild runs, started
+/// by the frame's published read, no command waiting on it.
+fn edit_the_block_held(f: &Fixture, h: &mut AppHarness) -> Hold {
+    let hold = f.kernel.hold(is_box);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.edit(
+            &sessions,
+            silico_app::tab::Edit {
+                feature: silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+                field: "length".to_owned(),
+                value: json::read(b"41").unwrap(),
+            },
+        );
+    }
+    step_until(h, "the rebuild running, no command waiting", |h| {
+        h.state().tabs()[0].transaction
+            && h.state().tabs()[0].status.as_ref().is_some_and(|status| {
+                status.rebuild.state == silico_core::command::RebuildState::Running
+                    && status.running.is_none()
+            })
+    });
+    hold
+}
+
+fn rebuild_stopped(h: &AppHarness) -> bool {
+    h.state().tabs()[0]
+        .status
+        .as_ref()
+        .is_some_and(|status| status.rebuild.state == silico_core::command::RebuildState::Stopped)
+}
+
+#[test]
+fn stop_is_on_while_a_rebuild_runs_with_no_command_and_stops_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let hold = edit_the_block_held(&f, &mut h);
+    let stop = |h: &AppHarness| {
+        h.query_all_by_role_and_label(Role::Button, "Stop")
+            .last()
+            .unwrap()
+            .accesskit_node()
+            .is_disabled()
+    };
+    step_until(&mut h, "Stop on", |h| !stop(h));
+    // A refusal said before: a stop that succeeds clears it.
+    h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
+    h.query_all_by_role_and_label(Role::Button, "Stop")
+        .last()
+        .unwrap()
+        .click();
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    // Frames climb, the stop holds, and nothing was refused.
+    let before = h.state().frames();
+    for _ in 0..30 {
+        step(&mut h);
+        assert!(rebuild_stopped(&h));
+    }
+    assert_eq!(h.state().frames(), before + 30);
+    assert!(stop(&h));
+    assert_eq!(h.state().tabs()[0].message, None);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_stops_a_rebuild_running_with_no_command_and_with_none_does_nothing() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    // Nothing running: Esc says nothing.
+    h.key_press(eframe::egui::Key::Escape);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].message, None);
+    let hold = edit_the_block_held(&f, &mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(rebuild_stopped(&h));
+    assert_eq!(h.state().tabs()[0].message, None);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #325's mutants: the frame asked for, a toggle loaded, a pick at once ----
+
+/// Whether the last frame asked for the next at once (`request_repaint`), not the idle one.
+fn asked_at_once(h: &AppHarness) -> bool {
+    h.output()
+        .viewport_output
+        .get(&eframe::egui::ViewportId::ROOT)
+        .is_some_and(|viewport| viewport.repaint_delay == Duration::ZERO)
+}
+
+/// Frames stepped until one asks for none at once (nothing pending answers into it).
+fn idle(h: &mut AppHarness) {
+    step_until(h, "an idle frame", |h| !asked_at_once(h));
+}
+
+#[test]
+fn an_open_dialog_with_nothing_to_send_asks_for_no_frame_at_once() {
+    // A frame with input in it is asked for again by egui itself; one with none, while a
+    // dialog sits open with nothing changed, asks for no frame at once (only the idle one).
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    quiet_wakes(&mut h);
+    idle(&mut h);
+    // A frame the core's waker asked for (an answer coming in late) may ask for the next;
+    // one it didn't, mustn't.
+    for _ in 0..10 {
+        let woken = h.state().wakes();
+        step(&mut h);
+        assert!(!asked_at_once(&h) || h.state().wakes() != woken);
+    }
+    assert!(dialog_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_feature_of_a_reversed_pad_loads_it_reversed_and_sends_nothing() {
+    let f = fixture();
+    let raised = r#"    {"id": "r0000002", "type": "pad", "v": 1, "name": "Raised", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 3, "reversed": true}}"#;
+    let text = SKETCHED.replace("\n  ]\n}", &format!(",\n{raised}\n  ]\n}}"));
+    let (mut h, _) = f.opened("raised.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Raised"));
+    double_click(&mut h, "Timeline", "Raised");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
+    });
+    assert_eq!(
+        dialog(&h)
+            .get_by_role(Role::CheckBox)
+            .accesskit_node()
+            .toggled(),
+        Some(eframe::egui::accesskit::Toggled::True)
+    );
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("3"));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs()[0].sent.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_chosen_in_the_browser_fills_the_box_in_the_frame_it_was_chosen() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    create(&mut h, "Pad");
+    settled(&mut h);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    let dialog = h.state().tabs()[0].dialog.clone().unwrap();
+    let sketch = silico_core::document::FeatureId::new("s0000001").unwrap();
+    assert_eq!(
+        dialog.inputs[dialog.active.unwrap()].value,
+        silico_app::dialog::Value::Selection(Some(sketch))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tab_is_unsettled_while_anything_of_its_is_under_way() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].unsettled());
+    select(&mut h, "Pin");
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "K");
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(h.state().tabs()[0].unsettled());
+    }
+    hold.release();
+    check.wait();
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].unsettled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Every request held from the open: the first rebuild runs, and Stop clicked stops it,
+/// nothing published.
+fn first_rebuild_stopped(f: &Fixture) -> (AppHarness, Hold) {
+    first_rebuild_stopped_in(f, f.app())
+}
+
+/// [`first_rebuild_stopped`], in `h`.
+fn first_rebuild_stopped_in(f: &Fixture, mut h: AppHarness) -> (AppHarness, Hold) {
+    let hold = f.kernel.hold(|_| true);
+    let path = f.file("example.silico", EXAMPLE);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    let stop = |h: &AppHarness| {
+        h.query_all_by_role_and_label(Role::Button, "Stop")
+            .last()
+            .is_some_and(|stop| !stop.accesskit_node().is_disabled())
+    };
+    step_until(&mut h, "Stop on", stop);
+    h.query_all_by_role_and_label(Role::Button, "Stop")
+        .last()
+        .unwrap()
+        .click();
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    (h, hold)
+}
+
+/// Stepped until the core has nothing more to tell the app: its wakes flat over ten frames,
+/// each given a little while for an answer to come.
+fn quiet_wakes(h: &mut AppHarness) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let before = h.state().wakes();
+        for _ in 0..10 {
+            step(h);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if h.state().wakes() == before {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the wakes never settled");
+    }
+}
+
+/// How many times the fake was asked for a box.
+fn boxes_asked(f: &Fixture) -> usize {
+    f.kernel
+        .calls()
+        .iter()
+        .filter(|call| is_box(&call.op))
+        .count()
+}
+
+#[test]
+fn a_stop_of_the_first_rebuild_holds_with_nothing_published() {
+    // The first rebuild stopped, nothing published: its timeline isn't read of the current
+    // model again (which would start the rebuild again), so the stop holds until an edit,
+    // or Rebuild.
+    let f = fixture();
+    let (mut h, hold) = first_rebuild_stopped(&f);
+    quiet_wakes(&mut h);
+    assert!(rebuild_stopped(&h));
+    assert_eq!(boxes_asked(&f), 1);
+    assert_eq!(h.state().tabs()[0].message, None);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_stopped_rebuild_with_nothing_published_reads_nothing_more_and_asks_for_no_frame() {
+    // A read of the published model is refused for want of one, and one of the current model
+    // would undo the stop: nothing is read, nothing wakes the app, and the frame asked for is
+    // the idle one.
+    let f = fixture();
+    // Time barely moves from frame to frame, so the frame asked for reads as it was asked.
+    let h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0, 800.0))
+            .with_step_dt(0.001)
+            .build_ui_state(
+                |ui, app: &mut App<Fake>| app.frame(ui),
+                App::new(Arc::clone(&f.sessions)),
+            )
+    };
+    let (mut h, hold) = first_rebuild_stopped_in(&f, h);
+    quiet_wakes(&mut h);
+    let woken = h.state().wakes();
+    for _ in 0..30 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(h.state().wakes(), woken);
+    let delay = h
+        .output()
+        .viewport_output
+        .get(&eframe::egui::ViewportId::ROOT)
+        .map(|viewport| viewport.repaint_delay);
+    assert!(
+        delay.is_some_and(|delay| {
+            delay > silico_core::disk::DISK_CHECK_INTERVAL && delay <= IDLE_FRAME
+        }),
+        "{delay:?}"
+    );
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// From the first rebuild stopped: the panes say so, `rebuild` (Rebuild clicked, or Ctrl+B)
+/// starts it again, from a read of the current model, and once it's built the timeline
+/// shows and Rebuild is off.
+fn rebuilt_after_the_stop(rebuild: impl Fn(&mut AppHarness)) {
+    let f = fixture();
+    let (mut h, hold) = first_rebuild_stopped(&f);
+    quiet_wakes(&mut h);
+    let rebuild_on = |h: &AppHarness| {
+        !h.get_by_role_and_label(Role::Button, "Rebuild")
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(rebuild_on(&h));
+    assert!(shows(&h, "Timeline", "Rebuild stopped"));
+    assert!(shows(&h, "Browser", "Rebuild stopped"));
+    assert_eq!(boxes_asked(&f), 1);
+    rebuild(&mut h);
+    step_until(&mut h, "the box asked again", |_| boxes_asked(&f) == 2);
+    hold.release();
+    step_until(&mut h, "the timeline", |h| shows(h, "Timeline", "Hole"));
+    assert!(!rebuild_on(&h));
+    assert!(!rebuild_stopped(&h));
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn rebuild_clicked_after_a_stop_rebuilds_and_shows_the_timeline() {
+    rebuilt_after_the_stop(|h| {
+        h.get_by_role_and_label(Role::Button, "Rebuild").click();
+        step(h);
+    });
+}
+
+#[test]
+fn ctrl_b_after_a_stop_rebuilds_and_shows_the_timeline() {
+    rebuilt_after_the_stop(|h| {
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::B);
+        step(h);
+    });
+}
+
+#[test]
+fn esc_clears_the_selection_before_it_stops_the_rebuild() {
+    // Section 3's order: with a selection held and a rebuild held, Esc clears the selection;
+    // a second Esc stops the rebuild.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    let hold = edit_the_block_held(&f, &mut h);
+    h.state_mut().tabs_mut()[0].selected =
+        Some(silico_core::document::FeatureId::new("a91cw0de").unwrap());
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].selected, None);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(!rebuild_stopped(&h));
+    assert!(h.state().tabs()[0].stoppable());
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_b_while_a_rebuild_runs_reads_nothing() {
+    // Rebuild is only for a stopped rebuild: with one running, Ctrl+B asks nothing (a read
+    // of the current model would be the command running, waiting on it).
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let hold = edit_the_block_held(&f, &mut h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::B);
+    for _ in 0..10 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(2));
+        assert_eq!(
+            h.state().tabs()[0]
+                .status
+                .as_ref()
+                .and_then(|status| status.running),
+            None
+        );
+    }
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn rebuild_twice_before_the_session_starts_it_sends_one_read() {
+    let f = fixture();
+    let (mut h, hold) = first_rebuild_stopped(&f);
+    quiet_wakes(&mut h);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        assert!(tab.can_rebuild());
+        tab.rebuild(&sessions);
+        // Its read out: Rebuild off, and a second sends nothing.
+        assert!(!tab.can_rebuild());
+        tab.rebuild(&sessions);
+        assert_eq!(tab.rebuilds, 1);
+    }
+    step(&mut h);
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Rebuild")
+            .accesskit_node()
+            .is_disabled()
+    );
+    hold.release();
+    step_until(&mut h, "the timeline", |h| shows(h, "Timeline", "Hole"));
+    assert_eq!(h.state().tabs()[0].rebuilds, 1);
+    // Stopped again (an edit's rebuild): Rebuild is on again.
+    let hold = edit_the_block_held(&f, &mut h);
+    h.query_all_by_role_and_label(Role::Button, "Stop")
+        .last()
+        .unwrap()
+        .click();
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    step_until(&mut h, "Rebuild on", |h| {
+        !h.get_by_role_and_label(Role::Button, "Rebuild")
+            .accesskit_node()
+            .is_disabled()
+    });
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The export dialog (M5.12; M4.1's `export`) ----
+
+/// File > Export…, its dialog open on the tab's document.
+fn open_export(h: &mut AppHarness) {
+    h.get_by_label("File").click();
+    step(h);
+    step(h);
+    h.get_by_role_and_label(Role::Button, "Export…").click();
+    step_until(h, "the export dialog", |h| {
+        anywhere(h, "Export example.silico")
+    });
+}
+
+/// The export dialog's field `label` emptied (its cursor at its start once focused, a
+/// Delete for each character), then `text` typed at once.
+fn set_field(h: &mut AppHarness, label: &str, text: &str) {
+    h.get_by_role_and_label(Role::TextInput, label).focus();
+    step(h);
+    let length = h
+        .get_by_role_and_label(Role::TextInput, label)
+        .value()
+        .unwrap()
+        .chars()
+        .count();
+    for _ in 0..length {
+        h.key_press(eframe::egui::Key::Delete);
+        step(h);
+    }
+    h.get_by_role_and_label(Role::TextInput, label)
+        .type_text(text);
+    step(h);
+    assert_eq!(
+        h.get_by_role_and_label(Role::TextInput, label)
+            .value()
+            .as_deref(),
+        Some(text)
+    );
+}
+
+/// The export dialog's button `label` clicked, through the accessibility tree (a modal's
+/// layout moves as its content changes, so a click at its last place can miss).
+fn press(h: &mut AppHarness, label: &str) {
+    h.get_by_role_and_label(Role::Button, label)
+        .click_accesskit();
+    step(h);
+    // Drawn again as what it did leaves it (a line said, a row gone): the next press finds
+    // its button where it is, its ID among them.
+    step(h);
+}
+
+/// Whether the export dialog is open.
+fn exporting_dialog(h: &AppHarness) -> bool {
+    anywhere(h, "Export example.silico")
+}
+
+fn is_step(op: &Op) -> bool {
+    matches!(op, Op::ExportStep(_))
+}
+
+#[test]
+fn an_export_held_leaves_frames_climbing_and_the_dialog_saying_so() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let hold = f.kernel.hold(is_step);
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    assert!(f.kernel.wait_running(1, WAIT));
+    let before = h.state().frames();
+    for _ in 0..100 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().frames(), before + 100);
+    assert!(anywhere(&h, "Exporting…"));
+    assert!(h.state().tabs()[0].exporting());
+    // Not the status bar's to stop: no rebuild runs.
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Stop")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // One at a time: Export off, and the tab sends no second.
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Export")
+            .accesskit_node()
+            .is_disabled()
+    );
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        let again = tab.exports[0].clone();
+        tab.export(&sessions, again);
+        assert_eq!(tab.exports.len(), 1);
+    }
+    hold.release();
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(path.with_extension("step").is_file());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn each_format_sends_its_request_its_tolerance_and_its_features() {
+    use silico_core::command::export::{Export, ExportFormat};
+    use silico_core::document::{FeatureId, Length};
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // A 3MF at 0.25 mm, of every body. The fake can't mesh: what it answers is its own
+    // refusal, said in the dialog, which stays open, and no file is written. A 3MF written
+    // is M5.12's scripted slice's, on a real kernel worker.
+    open_export(&mut h);
+    set_field(&mut h, "Tolerance", "0.25");
+    press(&mut h, "Export");
+    step_until(&mut h, "its answer", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    assert_eq!(
+        h.state().tabs()[0].exports,
+        [Export {
+            format: ExportFormat::ThreeMf {
+                tolerance: Length::from_nm(250_000)
+            },
+            path: path.with_extension("3mf"),
+            replace: false,
+            features: None,
+        }]
+    );
+    let refused = h.state().tabs()[0]
+        .export_answer
+        .clone()
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        refused.errors()[0]
+            .message()
+            .contains("the fake kernel doesn't do ExportMesh"),
+        "{refused:?}"
+    );
+    step(&mut h);
+    assert!(exporting_dialog(&h));
+    assert!(!path.with_extension("3mf").exists());
+    // A STEP of the Hole alone (the model's one body), chosen.
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, "Tolerance")
+            .is_none()
+    );
+    h.get_by_role_and_label(Role::CheckBox, "All bodies")
+        .click_accesskit();
+    step_until(&mut h, "the bodies listed", |h| {
+        h.query_by_role_and_label(Role::CheckBox, "Hole").is_some()
+    });
+    h.get_by_role_and_label(Role::CheckBox, "Hole")
+        .click_accesskit();
+    step(&mut h);
+    press(&mut h, "Export");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert_eq!(
+        h.state().tabs()[0].exports.last(),
+        Some(&Export {
+            format: ExportFormat::Step,
+            path: path.with_extension("step"),
+            replace: false,
+            features: Some(vec![FeatureId::new("m3tq8v0z").unwrap()]),
+        })
+    );
+    assert!(path.with_extension("step").is_file());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tolerance_out_of_range_is_refused_by_the_core_and_said_in_the_dialog() {
+    use silico_core::command::export::{Export, ExportFormat};
+    use silico_core::document::Length;
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // What the core says of a 3MF at 0 mm, below its least (1e-5 mm), asked directly.
+    let id = h.state().tabs()[0].id;
+    let core = f
+        .sessions
+        .export(
+            &id,
+            Export {
+                format: ExportFormat::ThreeMf {
+                    tolerance: Length::from_nm(0),
+                },
+                path: path.with_extension("3mf"),
+                replace: false,
+                features: None,
+            },
+        )
+        .wait()
+        .result
+        .unwrap_err();
+    let error = &core.errors()[0];
+    assert_eq!(error.parameter(), Some("tolerance"));
+    let want = match error.suggestion() {
+        Some(suggestion) => format!("{} ({suggestion})", error.message()),
+        None => error.message().to_owned(),
+    };
+    open_export(&mut h);
+    set_field(&mut h, "Tolerance", "0");
+    press(&mut h, "Export");
+    // Said in the dialog, and in the status bar, as every command's refusal is.
+    step_until(&mut h, "the refusal said", |h| {
+        h.query_all_by_label(&want).count() == 2
+    });
+    assert!(exporting_dialog(&h));
+    assert!(!path.with_extension("3mf").exists());
+    // A tolerance that doesn't read as a length: Export off, nothing sent.
+    set_field(&mut h, "Tolerance", "fine");
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Export")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert_eq!(h.state().tabs()[0].exports.len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_file_at_the_path_is_asked_about_then_replaced() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let out = path.with_extension("step");
+    std::fs::write(&out, "old").unwrap();
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    let asked = format!("{} already exists. Replace it?", out.display());
+    step_until(&mut h, "the question", |h| anywhere(h, &asked));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "old");
+    assert_eq!(h.state().tabs()[0].message, None);
+    // Cancelled at the question: nothing written, and asked nothing when opened again.
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "old");
+    open_export(&mut h);
+    assert!(!anywhere(&h, &asked));
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    step_until(&mut h, "the question", |h| anywhere(h, &asked));
+    press(&mut h, "Replace");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    // The fake's STEP, as the STEP worker would write it.
+    assert!(
+        std::fs::read_to_string(&out)
+            .unwrap()
+            .starts_with("FAKE STEP\n")
+    );
+    let exports = &h.state().tabs()[0].exports;
+    assert_eq!(exports.len(), 3);
+    assert!(!exports[0].replace && !exports[1].replace);
+    assert!(exports[2].replace);
+    assert_eq!(exports[2].path, out);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_while_an_export_runs_answers_cancelled_and_writes_no_file() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let hold = f.kernel.hold(is_step);
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    assert!(f.kernel.wait_running(1, WAIT));
+    step_until(&mut h, "running", |h| anywhere(h, "Exporting…"));
+    press(&mut h, "Cancel");
+    step_until(&mut h, "its answer", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    assert!(!exporting_dialog(&h));
+    let answer = h.state().tabs()[0].export_answer.clone().unwrap();
+    assert_eq!(answer.unwrap_err().errors()[0].code(), ErrorCode::Cancelled);
+    assert!(!path.with_extension("step").exists());
+    assert_eq!(h.state().tabs()[0].message, None);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_step_export_to_a_stp_path_is_written_there() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    let stp = path.with_extension("stp");
+    set_field(&mut h, "Path", stp.to_str().unwrap());
+    press(&mut h, "Export");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(stp.is_file());
+    assert!(!path.with_extension("step").exists());
+    assert_eq!(h.state().tabs()[0].exports[0].path, stp);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_export_over_the_document_itself_is_refused_by_the_core_and_the_document_kept() {
+    use silico_core::command::export::{Export, ExportFormat};
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // What the core says of a STEP written over the open document, asked directly.
+    let id = h.state().tabs()[0].id;
+    let core = f
+        .sessions
+        .export(
+            &id,
+            Export {
+                format: ExportFormat::Step,
+                path: path.clone(),
+                replace: true,
+                features: None,
+            },
+        )
+        .wait()
+        .result
+        .unwrap_err();
+    let error = &core.errors()[0];
+    assert_eq!(error.parameter(), Some("path"));
+    let want = match error.suggestion() {
+        Some(suggestion) => format!("{} ({suggestion})", error.message()),
+        None => error.message().to_owned(),
+    };
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    set_field(&mut h, "Path", path.to_str().unwrap());
+    press(&mut h, "Export");
+    step_until(&mut h, "the refusal said", |h| {
+        h.query_all_by_label(&want).count() == 2
+    });
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The export dialog: #330's review ----
+
+#[test]
+fn cancel_of_an_export_queued_behind_a_commit_stops_it_and_writes_no_file() {
+    // The export waits in the session's queue behind a commit, itself waiting on a held
+    // rebuild: its Cancel stops it there (through its own handle, not by name, which only
+    // reaches a command running), and nothing is written once the commit goes through.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let hold = edit_the_block_applied_held(&f, &mut h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    assert!(h.state().tabs()[0].exporting());
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    hold.release();
+    step_until(&mut h, "its answer", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    let answer = h.state().tabs()[0].export_answer.clone().unwrap();
+    assert_eq!(answer.unwrap_err().errors()[0].code(), ErrorCode::Cancelled);
+    step_until(&mut h, "saved", |h| !h.state().tabs()[0].unsaved());
+    assert!(!path.with_extension("step").exists());
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The Block made 41 long, through the tab, with every box held: its rebuild runs.
+fn edit_the_block_applied_held(f: &Fixture, h: &mut AppHarness) -> Hold {
+    let hold = f.kernel.hold(is_box);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.edit(
+            &sessions,
+            silico_app::tab::Edit {
+                feature: silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+                field: "length".to_owned(),
+                value: json::read(b"41").unwrap(),
+            },
+        );
+    }
+    step_until(h, "the edit applied", |h| {
+        h.state().tabs()[0].transaction && !h.state().tabs()[0].unsettled()
+    });
+    hold
+}
+
+#[test]
+fn a_refusal_and_a_question_are_let_go_when_the_dialog_opens_again_and_a_quit_cancels_it() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    // A refusal, Cancel, and the dialog again: the refusal isn't said.
+    open_export(&mut h);
+    set_field(&mut h, "Tolerance", "0");
+    press(&mut h, "Export");
+    let said = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .export_said
+            .clone()
+            .is_some_and(|said| h.query_all_by_label(&said).count() > 0)
+    };
+    step_until(&mut h, "the refusal said", said);
+    let refusal = h.state().tabs()[0].export_said.clone().unwrap();
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    open_export(&mut h);
+    assert_eq!(h.query_all_by_label(&refusal).count(), 0);
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    // A question about a file at the path; a quit asked meanwhile (edits held) cancels the
+    // dialog; the quit cancelled, the dialog opens on its form, not the old question.
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let out = path.with_extension("step");
+    std::fs::write(&out, "old").unwrap();
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    let asked = format!("{} already exists. Replace it?", out.display());
+    step_until(&mut h, "the question", |h| anywhere(h, &asked));
+    close_window(&mut h);
+    step_until(&mut h, "the quit's question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    assert!(h.state().tabs()[0].export_replacing.is_none());
+    h.query_all_by_role_and_label(Role::Button, "Cancel")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step(&mut h);
+    open_export(&mut h);
+    assert!(!anywhere(&h, &asked));
+    assert!(h.query_by_role_and_label(Role::Button, "Replace").is_none());
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "old");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn export_is_off_while_a_feature_dialog_is_open_or_the_tab_closes() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let export_off = |h: &mut AppHarness| {
+        h.get_by_label("File").click();
+        step(h);
+        step(h);
+        let off = h
+            .get_by_role_and_label(Role::Button, "Export…")
+            .accesskit_node()
+            .is_disabled();
+        h.get_by_label("File").click();
+        step(h);
+        step(h);
+        off
+    };
+    assert!(!export_off(&mut h));
+    // A name typed (so the close asks), then a feature dialog open: off.
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    create(&mut h, "Box");
+    assert!(export_off(&mut h));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // Closing, its save held: off.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_label("Close example.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    step(&mut h);
+    assert!(h.state().tabs()[0].closing());
+    assert!(export_off(&mut h));
+    hold.release();
+    check.wait();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_export_again_lets_go_of_the_last_refusal_and_answer() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    open_export(&mut h);
+    set_field(&mut h, "Tolerance", "0");
+    press(&mut h, "Export");
+    step_until(&mut h, "the refusal", |h| {
+        h.state().tabs()[0].export_said.is_some()
+    });
+    // STEP now, its writing held: the refusal gone from the dialog, and no answer yet.
+    let hold = f.kernel.hold(is_step);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    assert!(f.kernel.wait_running(1, WAIT));
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].export_said, None);
+    assert!(h.state().tabs()[0].export_answer.is_none());
+    hold.release();
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(path.with_extension("step").is_file());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn only_its_own_tabs_export_closes_a_dialog() {
+    use silico_core::command::export::{Export, ExportFormat};
+    let f = fixture();
+    let (mut h, a) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let b = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(b.to_str().unwrap(), false);
+    step_until(&mut h, "two tabs", |h| {
+        h.state().tabs().len() == 2 && h.state().tabs()[1].timeline.is_some()
+    });
+    // The first tab's export held, sent without its dialog; the second's dialog open.
+    let hold = f.kernel.hold(is_step);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.export(
+            &sessions,
+            Export {
+                format: ExportFormat::Step,
+                path: a.with_extension("step"),
+                replace: false,
+                features: None,
+            },
+        );
+    }
+    assert!(f.kernel.wait_running(1, WAIT));
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Export…").click();
+    step_until(&mut h, "the second's dialog", |h| {
+        anywhere(h, "Export other.silico")
+    });
+    hold.release();
+    step_until(&mut h, "the first's export written", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(a.with_extension("step").is_file());
+    assert!(anywhere(&h, "Export other.silico"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_exports_and_esc_cancels_the_export_dialog() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    open_export(&mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(h.state().tabs()[0].exports.is_empty());
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(path.with_extension("step").is_file());
+    assert_eq!(h.state().tabs()[0].exports.len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_bare_name_is_written_in_the_documents_folder_for_export_and_save_as() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let folder = path.parent().unwrap();
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    set_field(&mut h, "Path", "bare.step");
+    press(&mut h, "Export");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(folder.join("bare.step").is_file());
+    assert_eq!(
+        h.state().tabs()[0].exports[0].path,
+        folder.join("bare.step")
+    );
+    // Save As, Enter its Save.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Save As…").click();
+    step_until(&mut h, "the Save As dialog", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("bare.silico");
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the tab of the new file", |h| {
+        h.state().tabs()[0].path == folder.join("bare.silico").to_str().unwrap()
+    });
+    assert!(folder.join("bare.silico").is_file());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_cancels_save_as_and_open_and_enter_opens() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Save As…").click();
+    step_until(&mut h, "the Save As dialog", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "Save As closed", |h| {
+        !anywhere(h, "Save example.silico as")
+    });
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Open…").click();
+    step_until(&mut h, "the Open dialog", |h| anywhere(h, "Open document"));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "Open closed", |h| !anywhere(h, "Open document"));
+    assert_eq!(h.state().tabs().len(), 1);
+    // Enter is Open's Open.
+    let other = f.file("other.silico", EXAMPLE);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Open…").click();
+    step_until(&mut h, "the Open dialog", |h| anywhere(h, "Open document"));
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text(other.to_str().unwrap());
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the second tab", |h| h.state().tabs().len() == 2);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Enter and Esc in the modals (#330's second round) ----
+
+/// File > `item` focused and Enter pressed: its own click.
+fn menu_item_by_enter(h: &mut AppHarness, item: &str) {
+    h.get_by_label("File").click();
+    step(h);
+    step(h);
+    h.get_by_role_and_label(Role::Button, item).focus();
+    step(h);
+    h.key_press(eframe::egui::Key::Enter);
+    step(h);
+    step(h);
+}
+
+/// The open modal's Cancel focused and Enter pressed: Cancel's own click, never the OK.
+fn cancel_by_enter(h: &mut AppHarness) {
+    h.query_all_by_role_and_label(Role::Button, "Cancel")
+        .last()
+        .unwrap()
+        .focus();
+    step(h);
+    h.key_press(eframe::egui::Key::Enter);
+    step(h);
+    step(h);
+}
+
+#[test]
+fn enter_on_a_focused_menu_item_opens_its_dialog_and_does_nothing_more() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // Export…: the dialog open, nothing exported.
+    menu_item_by_enter(&mut h, "Export…");
+    assert!(exporting_dialog(&h));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs()[0].exports.is_empty());
+    assert!(!path.with_extension("3mf").exists());
+    // Enter on its focused Cancel: cancelled, nothing written.
+    cancel_by_enter(&mut h);
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(h.state().tabs()[0].exports.is_empty());
+    // Open…, a path left in its field from before: open, nothing opened.
+    let other = f.file("other.silico", EXAMPLE);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Open…").click();
+    step_until(&mut h, "the Open dialog", |h| anywhere(h, "Open document"));
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text(other.to_str().unwrap());
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "Open closed", |h| !anywhere(h, "Open document"));
+    menu_item_by_enter(&mut h, "Open…");
+    assert!(anywhere(&h, "Open document"));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    cancel_by_enter(&mut h);
+    step_until(&mut h, "Open closed", |h| !anywhere(h, "Open document"));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    // Save As…: likewise, its path typed, then Cancel by Enter.
+    menu_item_by_enter(&mut h, "Save As…");
+    assert!(anywhere(&h, "Save example.silico as"));
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("copy.silico");
+    step(&mut h);
+    cancel_by_enter(&mut h);
+    step_until(&mut h, "Save As closed", |h| {
+        !anywhere(h, "Save example.silico as")
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert!(!path.with_file_name("copy.silico").exists());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_path_is_sent_as_typed_spaces_and_all() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let folder = path.parent().unwrap().to_owned();
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    set_field(&mut h, "Path", " spaced.step");
+    press(&mut h, "Export");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(folder.join(" spaced.step").is_file());
+    assert!(!folder.join("spaced.step").exists());
+    // Save As likewise.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Save As…").click();
+    step_until(&mut h, "the Save As dialog", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text(" spaced.silico");
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "saved there", |h| {
+        h.state().tabs()[0].path == folder.join(" spaced.silico").to_str().unwrap()
+    });
+    assert!(folder.join(" spaced.silico").is_file());
+    // Open: spaces alone are no path; Enter opens nothing, and nothing is refused.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Open…").click();
+    step_until(&mut h, "the Open dialog", |h| anywhere(h, "Open document"));
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("   ");
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Enter);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, "Open document"));
+    assert_eq!(h.state().message(), None);
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #330's third round ----
+
+#[test]
+fn enter_held_on_export_opens_the_dialog_and_its_repeats_export_nothing() {
+    use eframe::egui::{Event, Key, Modifiers};
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Export…").focus();
+    step(&mut h);
+    for repeat in [false, true, true, true, true, true] {
+        h.input_mut().events.push(Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+    }
+    assert!(exporting_dialog(&h));
+    assert!(h.state().tabs()[0].exports.is_empty());
+    assert!(!path.with_extension("3mf").exists());
+    // Let go, then a fresh press: its OK.
+    h.input_mut().events.push(Event::Key {
+        key: Key::Enter,
+        physical_key: None,
+        pressed: false,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its answer", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    assert_eq!(h.state().tabs()[0].exports.len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_is_no_on_the_replace_close_and_quit_questions() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    // Save As over a file there: asked, and Esc writes nothing.
+    let there = path.with_file_name("there.silico");
+    std::fs::write(&there, "theirs").unwrap();
+    save_as(&mut h, &there);
+    let asked = format!("{} already exists. Replace it?", there.display());
+    step_until(&mut h, "the replace question", |h| anywhere(h, &asked));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "no question", |h| !anywhere(h, &asked));
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), "theirs");
+    // Close: asked, and Esc keeps the tab.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::W);
+    step_until(&mut h, "the close question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "no question", |h| {
+        !anywhere(h, "Save changes to example.silico before closing?")
+    });
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    // Quit: asked, and Esc keeps the window and the tab.
+    close_window(&mut h);
+    step_until(&mut h, "the quit question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "no question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_none()
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!told(&h, true));
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn open_and_save_as_each_keep_their_own_path() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let menu = |h: &mut AppHarness, item: &str| {
+        h.get_by_label("File").click();
+        step(h);
+        step(h);
+        h.get_by_role_and_label(Role::Button, item).click();
+        step(h);
+        step(h);
+    };
+    // Open, a path typed, cancelled.
+    menu(&mut h, "Open…");
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("typed-in-open.silico");
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "Open closed", |h| !anywhere(h, "Open document"));
+    // Save As opens with a field of its own: empty, not Open's.
+    menu(&mut h, "Save As…");
+    assert_eq!(
+        h.get_by_role_and_label(Role::TextInput, "Path")
+            .value()
+            .as_deref(),
+        Some("")
+    );
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("typed-in-save-as.silico");
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "Save As closed", |h| {
+        !anywhere(h, "Save example.silico as")
+    });
+    // Open again: its own last; Save As again: empty.
+    menu(&mut h, "Open…");
+    assert_eq!(
+        h.get_by_role_and_label(Role::TextInput, "Path")
+            .value()
+            .as_deref(),
+        Some("typed-in-open.silico")
+    );
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "Open closed", |h| !anywhere(h, "Open document"));
+    menu(&mut h, "Save As…");
+    assert_eq!(
+        h.get_by_role_and_label(Role::TextInput, "Path")
+            .value()
+            .as_deref(),
+        Some("")
+    );
+    // And by Ctrl+Shift+S, after something typed in it: empty again.
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("typed-again.silico");
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "Save As closed", |h| {
+        !anywhere(h, "Save example.silico as")
+    });
+    h.key_press_modifiers(
+        eframe::egui::Modifiers::COMMAND | eframe::egui::Modifiers::SHIFT,
+        eframe::egui::Key::S,
+    );
+    step_until(&mut h, "Save As again", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    assert_eq!(
+        h.get_by_role_and_label(Role::TextInput, "Path")
+            .value()
+            .as_deref(),
+        Some("")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_right_after_a_menu_item_opened_the_dialog_by_enter_is_its_ok() {
+    // The focus left on the menu item, no longer drawn, is no focus: a fresh Enter in the
+    // very next frame is the dialog's OK.
+    use eframe::egui::{Event, Key, Modifiers};
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Export…").focus();
+    step(&mut h);
+    let enter = |pressed: bool| Event::Key {
+        key: Key::Enter,
+        physical_key: None,
+        pressed,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    };
+    h.input_mut().events.push(enter(true));
+    step(&mut h);
+    assert!(exporting_dialog(&h));
+    h.input_mut().events.push(enter(false));
+    h.input_mut().events.push(enter(true));
+    step(&mut h);
+    step_until(&mut h, "its answer", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    assert_eq!(h.state().tabs()[0].exports.len(), 1);
+    assert!(!path.with_extension("step").exists());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_on_a_feature_dialogs_focused_cancel_cancels() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .focus();
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_format_chosen_is_the_one_marked_chosen() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let chosen = |h: &AppHarness, word: &str| {
+        h.get_by_role_and_label(Role::Button, word)
+            .accesskit_node()
+            .toggled()
+            == Some(eframe::egui::accesskit::Toggled::True)
+    };
+    open_export(&mut h);
+    assert!(chosen(&h, "3MF") && !chosen(&h, "STEP"));
+    press(&mut h, "STEP");
+    assert!(chosen(&h, "STEP") && !chosen(&h, "3MF"));
+    press(&mut h, "3MF");
+    assert!(chosen(&h, "3MF") && !chosen(&h, "STEP"));
     assert_eq!(never_waits::waits(), 0);
 }
