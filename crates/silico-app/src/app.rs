@@ -583,7 +583,7 @@ impl<P: Clients + 'static> App<P> {
                     }
                     // Rebuild (Ctrl+B), on while the tab's revision's rebuild is stopped.
                     if ui
-                        .add_enabled(tab.rebuild_stopped(), egui::Button::new("Rebuild"))
+                        .add_enabled(tab.can_rebuild(), egui::Button::new("Rebuild"))
                         .clicked()
                     {
                         tab.rebuild(&self.sessions);

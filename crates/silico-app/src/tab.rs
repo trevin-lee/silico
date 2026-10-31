@@ -277,6 +277,8 @@ pub struct Tab {
     /// A published timeline was refused, nothing being published: the next is read of the
     /// current model, which waits for its rebuild (off the UI thread).
     nothing_published: bool,
+    /// Whether the timeline read out is Rebuild's, until it answers.
+    rebuild_out: bool,
     /// What `check` says of each feature (read when the person opens a mark, section 3),
     /// and of the document (the gate's problems).
     pub said: BTreeMap<String, Said>,
@@ -289,6 +291,8 @@ pub struct Tab {
     under: Vec<Under>,
     /// How many saves it has sent: what a test counts.
     pub saves: u64,
+    /// How many Rebuilds it has sent: what a test counts.
+    pub rebuilds: u64,
     /// One more each time the document moved other than by the person's typing, with none
     /// of it waiting to be applied: an undo, a redo, or a revert done, or the session's own
     /// reload of its file (a revision the tab didn't ask for, with nothing of its own under
@@ -366,6 +370,7 @@ impl Tab {
             timeline_read: None,
             timeline_asked: None,
             nothing_published: false,
+            rebuild_out: false,
             said: BTreeMap::new(),
             document_problems: problems
                 .errors()
@@ -380,6 +385,7 @@ impl Tab {
             edits: Edits::default(),
             under: Vec::new(),
             saves: 0,
+            rebuilds: 0,
             resets: 0,
             beginning: false,
             disk_choice: DiskChoice::None,
@@ -563,18 +569,15 @@ impl Tab {
     fn take_answers<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if let Some(read) = self.timeline_read.take() {
             match read.try_take() {
-                Ok(response) => match response.result {
-                    Ok(timeline) => self.took_timeline(timeline),
-                    Err(problems) => {
-                        // Nothing published yet: read the current model's, which waits for
-                        // its rebuild, next.
-                        self.nothing_published = problems
-                            .errors()
-                            .iter()
-                            .any(|error| error.parameter() == Some("model"));
-                        self.timeline_asked = None;
+                Ok(response) => {
+                    // Rebuild's read, if it was, has answered: Rebuild is on again if the
+                    // rebuild stops again.
+                    self.rebuild_out = false;
+                    match response.result {
+                        Ok(timeline) => self.took_timeline(timeline),
+                        Err(problems) => self.took_refusal(&problems),
                     }
-                },
+                }
                 Err(read) => self.timeline_read = Some(read),
             }
         }
@@ -604,6 +607,16 @@ impl Tab {
             });
         }
         self.advance(sessions);
+    }
+
+    /// A timeline read refused: what it says of the published model kept, and asked again
+    /// only if that changes what the tab would ask ([`after_refusal`]).
+    fn took_refusal(&mut self, problems: &Problems) {
+        let (nothing_published, ask_again) = after_refusal(self.nothing_published, problems);
+        self.nothing_published = nothing_published;
+        if ask_again {
+            self.timeline_asked = None;
+        }
     }
 
     /// A timeline read: kept, and the browser's rows worked out from it once.
@@ -1260,12 +1273,21 @@ impl Tab {
     /// built before the stop isn't built again), whose answer is the timeline. Only while
     /// that rebuild is stopped.
     pub fn rebuild<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if !self.rebuild_stopped() {
+        if !self.can_rebuild() {
             return;
         }
         // A read of the published model in flight answers at once: this one replaces it.
         self.timeline_asked = Some((self.revision, self.published));
         self.timeline_read = Some(sessions.timeline(&self.id, ModelChoice::Current));
+        self.rebuild_out = true;
+        self.rebuilds += 1;
+    }
+
+    /// Whether Rebuild is on: the tab's revision's rebuild stopped, and no read of the
+    /// current model of the tab's own already out (one Rebuild sent, not yet started by the
+    /// session, which a second would only queue behind).
+    pub fn can_rebuild(&self) -> bool {
+        self.rebuild_stopped() && !self.rebuild_out
     }
 
     /// Esc with no dialog open (section 3's order): the selection cleared, or, with none, a
@@ -1747,6 +1769,25 @@ fn tip_of(entries: &[Entry]) -> Option<FeatureId> {
         .map(|entry| entry.id.clone())
 }
 
+/// What a refused timeline read leaves, the tab having found nothing published before
+/// (`nothing_published`): whether nothing is published now (the refusal names `model`), and
+/// whether to ask again at once, which only a refusal that changes what the tab would ask
+/// does: nothing published found, or found no longer, or the read cancelled (its rebuild
+/// stopped, which the next read takes into account). Any other refusal (a rebuild that
+/// failed with nothing published) waits for the revision or the published model to move,
+/// so a read isn't sent again each frame.
+fn after_refusal(nothing_published: bool, problems: &Problems) -> (bool, bool) {
+    let now = problems
+        .errors()
+        .iter()
+        .any(|error| error.parameter() == Some("model"));
+    let cancelled = problems
+        .errors()
+        .iter()
+        .any(|error| error.code() == silico_core::ErrorCode::Cancelled);
+    (now, now != nothing_published || cancelled)
+}
+
 /// Whether a `check` of `timeline` is wanted, with `selected` the feature selected: for a
 /// document the gate refused (`gate`, true), of the current model, its problems all the
 /// document's; or for a selected feature `timeline` marks, of the published model (the
@@ -2136,6 +2177,39 @@ mod tests {
         tab.ended(Ok(()), false, &mut close);
         assert!(tab.groups.is_empty());
         assert!(tab.restored.is_empty());
+    }
+
+    #[test]
+    fn a_refused_timeline_asks_again_only_when_the_refusal_changes_what_it_would_ask() {
+        let refusal = |code: silico_core::ErrorCode, parameter: Option<&'static str>| {
+            let error = silico_core::Error::new(code, "refused");
+            Problems::from(match parameter {
+                Some(parameter) => error.with_parameter(parameter),
+                None => error,
+            })
+        };
+        let model = refusal(silico_core::ErrorCode::InvalidInput, Some("model"));
+        let failed = refusal(silico_core::ErrorCode::Internal, None);
+        let cancelled = refusal(silico_core::ErrorCode::Cancelled, None);
+        // Nothing published found: ask again (of the current model).
+        assert_eq!(after_refusal(false, &model), (true, true));
+        // Found again: nothing changes, nothing asked.
+        assert_eq!(after_refusal(true, &model), (true, false));
+        // Found no longer (a failure, say): ask again (of the published model).
+        assert_eq!(after_refusal(true, &failed), (false, true));
+        // A failure again: nothing asked until the revision or the model moves.
+        assert_eq!(after_refusal(false, &failed), (false, false));
+        // As a tab takes them.
+        let mut tab = tab();
+        let asked = Some((Revision::OPENED, None));
+        tab.timeline_asked = asked;
+        tab.took_refusal(&failed);
+        assert_eq!(tab.timeline_asked, asked);
+        tab.took_refusal(&model);
+        assert_eq!(tab.timeline_asked, None);
+        // A cancelled read: asked again, whatever it found.
+        assert_eq!(after_refusal(false, &cancelled), (false, true));
+        assert_eq!(after_refusal(true, &cancelled), (false, true));
     }
 
     #[test]

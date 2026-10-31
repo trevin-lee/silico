@@ -5132,10 +5132,14 @@ fn an_open_dialog_with_nothing_to_send_asks_for_no_frame_at_once() {
     create(&mut h, "Box");
     added(&mut h);
     settled(&mut h);
+    quiet_wakes(&mut h);
     idle(&mut h);
+    // A frame the core's waker asked for (an answer coming in late) may ask for the next;
+    // one it didn't, mustn't.
     for _ in 0..10 {
+        let woken = h.state().wakes();
         step(&mut h);
-        assert!(!asked_at_once(&h));
+        assert!(!asked_at_once(&h) || h.state().wakes() != woken);
     }
     assert!(dialog_open(&h));
     assert_eq!(never_waits::waits(), 0);
@@ -5402,6 +5406,46 @@ fn ctrl_b_while_a_rebuild_runs_reads_nothing() {
             None
         );
     }
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn rebuild_twice_before_the_session_starts_it_sends_one_read() {
+    let f = fixture();
+    let (mut h, hold) = first_rebuild_stopped(&f);
+    quiet_wakes(&mut h);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        assert!(tab.can_rebuild());
+        tab.rebuild(&sessions);
+        // Its read out: Rebuild off, and a second sends nothing.
+        assert!(!tab.can_rebuild());
+        tab.rebuild(&sessions);
+        assert_eq!(tab.rebuilds, 1);
+    }
+    step(&mut h);
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Rebuild")
+            .accesskit_node()
+            .is_disabled()
+    );
+    hold.release();
+    step_until(&mut h, "the timeline", |h| shows(h, "Timeline", "Hole"));
+    assert_eq!(h.state().tabs()[0].rebuilds, 1);
+    // Stopped again (an edit's rebuild): Rebuild is on again.
+    let hold = edit_the_block_held(&f, &mut h);
+    h.query_all_by_role_and_label(Role::Button, "Stop")
+        .last()
+        .unwrap()
+        .click();
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    step_until(&mut h, "Rebuild on", |h| {
+        !h.get_by_role_and_label(Role::Button, "Rebuild")
+            .accesskit_node()
+            .is_disabled()
+    });
     hold.release();
     assert_eq!(never_waits::waits(), 0);
 }
