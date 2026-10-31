@@ -236,9 +236,19 @@ proptest! {
 /// forget of the mesh at a deflection; and what the cache says it knows of a level.
 #[derive(Debug, Clone)]
 enum Known {
-    Put { key: u8, asked: f64, triangles: usize },
-    Forget { key: u8, deflection: f64 },
-    Ask { key: u8, level: f64 },
+    Put {
+        key: u8,
+        asked: f64,
+        triangles: usize,
+    },
+    Forget {
+        key: u8,
+        deflection: f64,
+    },
+    Ask {
+        key: u8,
+        level: f64,
+    },
 }
 
 fn level() -> impl Strategy<Value = f64> {

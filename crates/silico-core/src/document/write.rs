@@ -147,10 +147,11 @@ pub(crate) enum Out<'a> {
     Array(Vec<Out<'a>>),
     /// An array written an item to a line, whatever it holds.
     Lines(Vec<Out<'a>>),
-    /// An array written as [`Lines`](Out::Lines) is, each item made only as it's written and
-    /// dropped once it is: a list of large items (`meshes`' bodies), so no more than one
-    /// item's tree is held at once, and none past the writer's limit is made.
-    /// Its items own what they write (`Out<'static>`), so `Out` stays covariant in `'a`.
+    /// An array of objects, written as an array of them is (an item to a line), each item
+    /// made only as it's written and dropped once it is: a list of large items (`meshes`'
+    /// bodies), so no more than one item's tree is held at once, and none past the writer's
+    /// limit is made. Its items own what they write (`Out<'static>`), so `Out` stays
+    /// covariant in `'a`.
     Each(Vec<Box<dyn Fn() -> Out<'static> + 'a>>),
     Object(Vec<(&'static str, Out<'a>)>),
     /// An object whose keys are known only when Silico runs (a JSON Schema's, or a value of
@@ -164,7 +165,10 @@ impl Out<'_> {
         match self {
             Out::Raw(_) | Out::Str(_) | Out::Owned(_) => false,
             // Written over lines, as an object is.
-            Out::Object(_) | Out::Keyed(_) | Out::Lines(_) | Out::Each(_) => true,
+            Out::Object(_) | Out::Keyed(_) | Out::Lines(_) => true,
+            // Its items are objects, made only as they're written: it holds one if it has
+            // any, as an array of them does.
+            Out::Each(items) => !items.is_empty(),
             Out::Array(items) => items.iter().any(Out::holds_object),
         }
     }
