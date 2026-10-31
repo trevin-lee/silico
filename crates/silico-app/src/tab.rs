@@ -1844,6 +1844,7 @@ mod tests {
                 progress: None,
             },
             disk: None,
+            drag: None,
         }
     }
 

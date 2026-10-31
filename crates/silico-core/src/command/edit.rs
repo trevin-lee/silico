@@ -980,6 +980,26 @@ pub(super) fn sketch_remove(
     sketch_edited(document, index, sketch, edited)
 }
 
+/// The sketch `id` of `document` replaced by `after`, its points where a drag's release
+/// solved them (docs/design/m5.0-app.md, `drag_end`): the state it leads to, none if the
+/// sketch is the same, through the gate otherwise. Refused, naming `sketch`, for a feature
+/// that isn't a sketch, and with every problem the gate finds.
+pub(super) fn sketch_replaced(
+    document: &Document,
+    id: &FeatureId,
+    after: Sketch,
+) -> Result<Option<Candidate>, Problems> {
+    let (index, _, sketch) = sketch_of(document, id)?;
+    if after == *sketch {
+        return Ok(None);
+    }
+    let mut edited = document.clone();
+    if let Some(feature) = edited.features.get_mut(index) {
+        feature.operation = Operation::Sketch(after);
+    }
+    Ok(Some(candidate(&edited, "sketch")?))
+}
+
 /// What a split or a trim did (docs/design/m5.0-app.md, section 7, `sketch_split` and
 /// `sketch_trim`): what it changed, the curve's pieces left (the start-side one first,
 /// which keeps the curve's ID), and the features that store a name its curve reaches, in

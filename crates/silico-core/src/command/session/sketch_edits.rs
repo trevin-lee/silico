@@ -448,7 +448,7 @@ fn with_ids<T>(
 /// the edit was made to ([`judge`]): refused then, as `edit`'s. An edit that changes nothing
 /// isn't solved, nor is `before` where the edit's solve is clean. Its solves are stopped by
 /// the command `stop`, of the session `session` ([`solved`]).
-fn judged<T>(
+pub(super) fn judged<T>(
     solvers: &SketchSolvers,
     stop: &Ticket,
     session: SessionId,

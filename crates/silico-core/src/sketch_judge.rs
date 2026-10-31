@@ -37,6 +37,15 @@ pub const EXTEND: WritingEdit = WritingEdit {
     name: "extend",
     lever: None,
 };
+/// A drag's end writes the sketch as its whole solve from the cursor left it
+/// (docs/design/m5.0-app.md, `drag_end`): judged as every edit that writes geometry is, so a
+/// release into a configuration the solve finds worse (a redundancy the sketch hadn't) is
+/// refused, the document as it was. A solve that fails there already kept the begin state,
+/// with no edit, so there's no lever to suggest.
+pub const DRAG: WritingEdit = WritingEdit {
+    name: "drag",
+    lever: None,
+};
 /// A merge's solve starts from the kept point's place, by the request's order (Fable,
 /// 2026-10-29): the lever is the request's.
 pub const MERGE: WritingEdit = WritingEdit {

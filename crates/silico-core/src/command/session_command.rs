@@ -34,6 +34,9 @@ pub enum SessionCommand {
     MoveFeature,
     SuppressFeature,
     Timeline,
+    DragBegin,
+    DragMove,
+    DragEnd,
     Sketch,
     SketchAdd,
     SketchRemove,
@@ -48,7 +51,7 @@ pub enum SessionCommand {
 
 impl SessionCommand {
     /// Every command that runs in a session, in the design's order (M4.1's, then M5.0's).
-    pub const ALL: [SessionCommand; 33] = [
+    pub const ALL: [SessionCommand; 36] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -72,6 +75,9 @@ impl SessionCommand {
         SessionCommand::MoveFeature,
         SessionCommand::SuppressFeature,
         SessionCommand::Timeline,
+        SessionCommand::DragBegin,
+        SessionCommand::DragMove,
+        SessionCommand::DragEnd,
         SessionCommand::Sketch,
         SessionCommand::SketchAdd,
         SessionCommand::SketchRemove,
@@ -110,6 +116,9 @@ impl SessionCommand {
             SessionCommand::MoveFeature => Command::MoveFeature,
             SessionCommand::SuppressFeature => Command::SuppressFeature,
             SessionCommand::Timeline => Command::Timeline,
+            SessionCommand::DragBegin => Command::DragBegin,
+            SessionCommand::DragMove => Command::DragMove,
+            SessionCommand::DragEnd => Command::DragEnd,
             SessionCommand::Sketch => Command::Sketch,
             SessionCommand::SketchAdd => Command::SketchAdd,
             SessionCommand::SketchRemove => Command::SketchRemove,

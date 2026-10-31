@@ -170,6 +170,7 @@ fn effect(command: Command) -> Effect {
         | Command::ReplaceText
         | Command::MoveFeature
         | Command::SuppressFeature
+        | Command::DragEnd
         | Command::SketchAdd
         | Command::SketchRemove
         | Command::SketchSplit
@@ -177,6 +178,8 @@ fn effect(command: Command) -> Effect {
         | Command::SketchUnjoin
         | Command::SketchMerge
         | Command::SketchExtend => Effect::Changes { destructive: true },
+        // A drag is held by the server, and its moves change no file.
+        Command::DragBegin | Command::DragMove => Effect::Changes { destructive: false },
         // `replace: true` writes over a file at `to`, or at `path`.
         Command::Render | Command::Export => Effect::Changes { destructive: true },
         // A new document is only made where nothing is; the rest change what the server
@@ -284,6 +287,18 @@ fn words(command: Command) -> (&'static str, String) {
             "Remove from a sketch",
             "Remove members of one sketch by ID: a constraint; a curve, with its points no other curve uses and every constraint on what goes; a point only if no curve uses it. A sketch left under or over defined, or unsolvable, isn't refused: `check` reports it. Give the revision the edit was made against.",
         ),
+        Command::DragBegin => (
+            "Begin a drag",
+            "Begin dragging one sketch's point (`point`), or a curve's edge (`curve`, and `press`, where on it the press landed, in the sketch's coordinates), the other null: a line's edge moves the line whole, a circle's or an arc's sizes it through the cursor. Every point dragged is pinned below every constraint, so dimensions hold. The result lists the points of the part that moves. One drag is open in a session at once; it ends at `drag_end`, at any edit, undo, or reload of the session, or if its worker fails. A sketch whose constraints conflict can't be dragged.",
+        ),
+        Command::DragMove => (
+            "Move a drag",
+            "Move the open drag's cursor to `to`, in the sketch's coordinates, and get the frame: the part's points and free radii where the solve put them (`solved`), or none (`failed`, `invalid`, or `dropped` when a newer move replaced it before it was solved). Send moves only once `drag_begin` has answered. A frame changes nothing: only `drag_end` edits the document.",
+        ),
+        Command::DragEnd => (
+            "End a drag",
+            "End the open drag: with `to`, the sketch moved there from where the drag began and solved as a whole, its points saved as one edit (`kept: cursor`); with `to: null`, or if the move or the solve fails, the sketch is left as it began (`kept: begin`), with no edit. Refused, the sketch as it was, if its solve then flags a redundant constraint the solve before the drag didn't: a problem the sketch had already isn't the drag's.",
+        ),
         Command::SketchSplit => (
             "Split a sketch curve",
             "Split one line or arc of a sketch at a position on it (within 1e-7 mm), or a circle at two, into pieces sharing a new point; the piece on the curve's start side keeps its ID, and `references` lists the features whose stored names the curve reached, which now find only that piece. Constraints on the curve follow the pieces (a length becomes a distance of the outer ends). `ids` gives the new members' IDs in `added`'s order, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
@@ -370,6 +385,7 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::ReplaceText
         | Command::MoveFeature
         | Command::SuppressFeature
+        | Command::DragEnd
         | Command::SketchAdd
         | Command::SketchRemove
         | Command::SketchSplit
@@ -399,7 +415,9 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::Outline
         | Command::Schema
         | Command::CacheClear
-        | Command::Export => &[],
+        | Command::Export
+        | Command::DragBegin
+        | Command::DragMove => &[],
     };
     let mut description = what.to_owned();
     for tip in tips {

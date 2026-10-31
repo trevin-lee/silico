@@ -369,3 +369,23 @@ crates/silico-app/src/dialog.rs | quoted | replace < with <= | #325
 crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #325
 crates/silico-app/src/app.rs | App<P>::dialog_panel | replace |= with &= | #325
 crates/silico-app/src/app.rs | App<P>::dialog_panel | replace |= with &= | #325
+# A release (`drag_end`) runs as a queued command, so a session's close while it runs
+# closes its ticket: `close` either finds the command recorded and closes it, or the
+# command, recorded after `close` ended the queue, finds the session closed and closes its
+# own ticket. The release registers its stop with that ticket before it moves or solves
+# (at once stopped, if the ticket is closed already) and keeps it until both are done, and
+# that stop is the very `DragStop` `stop_release` stops: with it gone, the close still
+# stops the release's move and solve, at the same point.
+crates/silico-core/src/command/session/drag.rs | Session<C>::stop_release | replace Session<C>::stop_release with () | #307
+# Between a begin putting its drag in the slot and checking whether its session closed,
+# only the session's own thread puts a drag there (begins, releases, and the drag's end at
+# a new revision all run in turn on it), and whatever else touches the slot meanwhile (a
+# close, a move's cancel) takes the drag out or leaves it: the slot holds this begin's drag
+# or none, so its number always matches.
+crates/silico-core/src/command/session/drag.rs | Session<C>::begin_drag | replace match guard open.number == number with true | #307
+# An end that kept its begin state always has `changed` false, so the release returns
+# before the edit either way for it; with `&&`, an unchanged end kept at its cursor goes on
+# to the edit, but `changed` compares the solve with the document's own sketch at the
+# drag's revision, the edit's base, so `sketch_replaced` makes no candidate, no solve runs,
+# and the edit answers unchanged with no commit: the same result, nothing written.
+crates/silico-core/src/command/session/drag.rs | Session<C>::end_drag_with | replace || with && | #307

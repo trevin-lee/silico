@@ -128,6 +128,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "export",
         "move_feature",
         "suppress_feature",
+        "drag_end",
         "sketch_add",
         "sketch_remove",
         "sketch_split",
@@ -180,6 +181,8 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
     assert!(said("query", "only as `elements` or `query` gives it"));
     assert!(said("sketch_add", "Edit inside a transaction"));
     assert!(said("sketch_remove", "`model: \"current\"`"));
+    assert!(said("drag_end", "Edit inside a transaction"));
+    assert!(said("drag_begin", "One drag is open in a session at once"));
     for name in [
         "sketch_split",
         "sketch_trim",
@@ -369,13 +372,13 @@ fn every_example_holds_to_its_tools_schemas() {
     // export's 8 (#182), cache_clear's 2 (#183), STEP export's 4 (#186), check's
     // warning (#189), and read_logs' 3 and version's result (#194); M5.1's 11:
     // add_feature's 4 for `before`, remove_feature's result with `rewired`, move_feature's
-    // 4, and timeline's 2; and suppress_feature's 6; M5.10's 8: sketch's 2, sketch_add's 2,
-    // and sketch_remove's 4; its geometry edits' 14: sketch_split's 4, sketch_trim's 3,
-    // sketch_unjoin's 3, and sketch_merge's 3; and sketch_extend's 9; cache_clear's refusal of
-    // a cache that leads out of the workspace (the contract lows); M5.2's 10: undo's 6, and
-    // redo's 4; and M5.4's Save As, commit's 3: its request, its result, and a file already
-    // there.
-    assert_eq!(seen, 169);
+    // 4, and timeline's 2; and suppress_feature's 6; M5.3's 13: drag_begin's 6, drag_move's
+    // 4, and drag_end's 3; M5.10's 8: sketch's 2, sketch_add's 2, and sketch_remove's 4; its
+    // geometry edits' 13: sketch_split's 4, sketch_trim's 3, sketch_unjoin's 3, and
+    // sketch_merge's 3; and sketch_extend's 9; cache_clear's refusal of a cache that leads out
+    // of the workspace (the contract lows); M5.2's 10: undo's 6, and redo's 4; and M5.4's Save
+    // As, commit's 3: its request, its result, and a file already there.
+    assert_eq!(seen, 182);
 }
 
 #[test]

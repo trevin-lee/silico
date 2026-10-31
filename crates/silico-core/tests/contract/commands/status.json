@@ -18,6 +18,10 @@
   },
   "result": {
     "$defs": {
+      "Coordinate": {
+        "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
+        "type": "number"
+      },
       "Disk": {
         "description": "What a comparison of a session's file on disk found, as `status` gives it.",
         "oneOf": [
@@ -42,6 +46,67 @@
             "type": "string"
           }
         ]
+      },
+      "DragOpen": {
+        "additionalProperties": false,
+        "description": "What a drag grabbed, as the request named it.",
+        "properties": {
+          "curve": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ElementId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The curve whose edge is dragged, by its ID; null for a point."
+          },
+          "point": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ElementId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The point dragged, by its ID; null for a curve's edge."
+          },
+          "press": {
+            "description": "Where the press on the curve's edge landed, in the sketch's coordinates; null for a\npoint.",
+            "items": {
+              "$ref": "#/$defs/Coordinate"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "curve",
+          "point",
+          "press",
+          "sketch"
+        ],
+        "type": "object"
+      },
+      "ElementId": {
+        "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
       },
       "PublishedRead": {
         "description": "A command that reads the published model, by name, as a tool is named: what `status` lists among its reads, and `cancel` stops.",
@@ -151,6 +216,9 @@
           "move_feature",
           "suppress_feature",
           "timeline",
+          "drag_begin",
+          "drag_move",
+          "drag_end",
           "sketch",
           "sketch_add",
           "sketch_remove",
@@ -225,6 +293,17 @@
         ],
         "description": "What the last comparison of the session's file on disk found, against the bytes the\nsession last read or wrote: a diagnostic, never a result, and it reloads nothing\nitself. `status` starts the next comparison, off its caller's thread, once the last\nended a second ago or more. Null before one has ended, while the session's own save\nruns, and after a save that failed until the next comparison ends."
       },
+      "drag": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/DragOpen"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The drag open (`drag_begin`): its sketch, and what it grabbed, as the request named\nthem; null if none is, once it has ended however it ended (`drag_end`, a new revision,\nits worker's failure, a cancel of its move). A diagnostic."
+      },
       "features": {
         "description": "How many features the document has: null if its text doesn't read as a document.",
         "minimum": 0,
@@ -272,6 +351,7 @@
     },
     "required": [
       "disk",
+      "drag",
       "features",
       "gated",
       "reads",
