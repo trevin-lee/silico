@@ -187,6 +187,18 @@ fn open_gate(gate: &Gate) {
     *lock(&gate.0) = None;
 }
 
+/// Waits until a comparison that found the file changed has told the session (and so
+/// queued its reload, if one was wanted): it does so after its finding is kept, so a
+/// finding of `changed` alone doesn't say it has.
+#[track_caller]
+fn told(f: &Fixture) {
+    let deadline = Instant::now() + WAIT;
+    while f.session().disk.changed_told() == 0 {
+        assert!(Instant::now() < deadline, "no comparison told the session");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn length(value: &str) -> Node {
     crate::document::json::read(value.as_bytes()).unwrap()
 }
@@ -361,6 +373,8 @@ fn changes_found_while_the_reload_waits_queue_no_second_and_make_one_revision() 
         assert_eq!(f.status().disk, Some(Disk::Changed));
         std::thread::sleep(Duration::from_millis(1));
     }
+    // The reload queued before the command ahead runs (and reads the file itself).
+    told(&f);
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     // The command ahead reloads it itself (decision 2): revision 2.
@@ -496,19 +510,24 @@ fn with_edits_held_nothing_is_reloaded_and_the_commit_is_a_conflict_until_rolled
 fn a_reload_queued_behind_a_begin_that_reloaded_the_file_makes_no_revision() {
     let f = opened(BOX);
     f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
+    let (reload_started, reload_through) = shut(&f.session().reloading);
     let (started, through) = shut(&f.session().gate);
     let begin = f.sessions.begin(&f.id);
     started.recv_timeout(WAIT).unwrap();
     std::fs::write(&f.path, SPHERE).unwrap();
     // Found, its reload queued behind the begin.
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    told(&f);
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     // The begin reloads the file itself, at revision 2, then opens its transaction.
     let begun = begin.wait();
     assert!(begun.session.as_ref().unwrap().reloaded);
     assert_eq!(begun.result.unwrap().base, Revision(2));
-    // The reload runs inside it: no revision, and the finding stale, so unchanged.
+    // The reload queued runs inside it: no revision, and the finding stale, so unchanged.
+    reload_started.recv_timeout(WAIT).unwrap();
+    open_gate(&f.session().reloading);
+    reload_through.send(()).unwrap();
     f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged) && status.running.is_none());
     f.status_stays(Duration::from_millis(200), |status, revision| {
         revision == Revision(2) && status.transaction.is_some()
@@ -528,14 +547,7 @@ fn a_file_changed_again_after_that_begin_stays_changed() {
     // Its reload queued (behind the begin) before the begin runs: the comparison tells the
     // session after its finding is kept, and once the begin has read the file the
     // comparison is the session's no longer, and queues nothing.
-    let deadline = Instant::now() + WAIT;
-    while f.session().disk.changed_told() == 0 {
-        assert!(
-            Instant::now() < deadline,
-            "the comparison never told the session"
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    told(&f);
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     assert_eq!(begin.wait().result.unwrap().base, Revision(2));

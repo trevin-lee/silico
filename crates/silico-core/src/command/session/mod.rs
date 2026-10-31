@@ -170,8 +170,8 @@ pub struct Sessions<P: Clients + 'static> {
 /// Its locks, and the registry's, are taken in one order, each let go before one earlier in
 /// the order is taken: the registry's book, then a session's published reads (then those
 /// unanswered), then its held state, then its rebuilds, then its queue, then the command
-/// running, then its disk watch's, under which none is taken. The registry's `feature_ids`
-/// is taken alone.
+/// running, then its reloads, then its disk watch's, under which none is taken. The
+/// registry's `feature_ids` is taken alone.
 struct Session<C: Kernel + 'static> {
     id: SessionId,
     /// The sessions' workspace, if they have one: each re-read and save of the session's file
@@ -202,7 +202,8 @@ struct Session<C: Kernel + 'static> {
     disk: DiskWatch,
     /// Its own reload of its file, found changed on disk (A3): whether one is queued, and
     /// the bytes a reload last refused, so the same refusal isn't queued at each comparison.
-    /// Taken alone.
+    /// Taken before the disk watch's lock (whether a comparison is still current is asked
+    /// under it), and under none of the others.
     reloads: Mutex<Reloads>,
     /// The client's waker, the sessions' ([`Sessions::on_change`]).
     waker: Arc<Waker>,
