@@ -817,6 +817,81 @@ fn faces_are_made_symbolically_with_their_areas_by_formula() {
 }
 
 #[test]
+fn faces_on_a_face_frame_are_placed_on_it_and_read_back_as_written() {
+    use silico_protocol::FaceFrame;
+    let kernel = FakeKernel::new(1).unwrap();
+    // A reversed top face's frame at z = 7: x −X, y +Y, n −Z. The 4 × 3 rectangle from the
+    // sketch's origin is x −4..0, y 0..3 at z = 7, 12 mm²: its box's low corner is where
+    // the sketch's high x lands, so the box is taken in model space, not of the sketch's
+    // low and high corners placed.
+    let frame = FaceFrame {
+        origin: [0.0, 0.0, 7.0],
+        x: [-1.0, 0.0, 0.0],
+        y: [0.0, 1.0, 0.0],
+        normal: [0.0, 0.0, -1.0],
+    };
+    let faces = regions(
+        SketchPlane::Face(frame),
+        vec![(rectangle(4.0, 3.0), vec![])],
+    );
+    let built = run(&kernel, KernelRequest::make_faces(&faces).unwrap());
+    assert_eq!(
+        std::str::from_utf8(built.shape.brep().as_bytes()).unwrap(),
+        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 0 0 -1 region loop line 0 0 4 0 \
+         line 4 0 4 3 line 4 3 0 3 line 0 3 0 0\n"
+    );
+    assert_eq!(
+        FakeKernel::describe(&built.shape).as_deref(),
+        Some("faces(frame, 1 regions, 4 curves)")
+    );
+    let summary = run(&kernel, KernelRequest::summarize(&built.shape));
+    assert_eq!(summary.area, 12.0);
+    assert_eq!(summary.bounds, Some([[-4.0, 0.0, 7.0], [0.0, 3.0, 7.0]]));
+    // The same request, the same bytes, on another fake kernel; and swept 2 along n, down,
+    // 24 mm³ from z = 5 to 7.
+    let other = FakeKernel::new(1).unwrap();
+    assert_eq!(
+        run(&other, KernelRequest::make_faces(&faces).unwrap()),
+        built
+    );
+    let pad = run(
+        &other,
+        KernelRequest::prism(&built.shape, [0.0; 3], [0.0, 0.0, -2.0]).unwrap(),
+    );
+    let summary = run(&other, KernelRequest::summarize(&pad.shape));
+    assert_eq!(summary.volume, 24.0);
+    assert_eq!(summary.bounds, Some([[-4.0, 0.0, 5.0], [0.0, 3.0, 7.0]]));
+    // Along the frame's x, in its plane, no pad: refused as the kernel refuses it.
+    let flat = kernel
+        .submit(
+            Generation(0),
+            KernelRequest::prism(&built.shape, [0.0; 3], [-1.0, 0.0, 0.0]).unwrap(),
+        )
+        .wait();
+    let Outcome::Done(Err(error)) = flat else {
+        panic!("{flat:?}")
+    };
+    assert_eq!(error.parameter(), Some("vector"));
+    // A frame the protocol refuses doesn't read back: left-handed, or short of its twelve
+    // numbers.
+    for text in [
+        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 0 0 1 region loop circle 0 0 1\n",
+        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 0 0 region loop circle 0 0 1\n",
+        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 0 0 nan region loop circle 0 0 1\n",
+    ] {
+        let shape = ShapeData::checked(Blob::inline(text.as_bytes().to_vec()), true);
+        assert_eq!(FakeKernel::describe(&shape), None, "{text}");
+    }
+    let good =
+        "silico fake shape 1\nfaces frame 0 0 7 -1 0 0 0 1 0 0 0 -1 region loop circle 0 0 1\n";
+    let shape = ShapeData::checked(Blob::inline(good.as_bytes().to_vec()), true);
+    assert_eq!(
+        FakeKernel::describe(&shape).as_deref(),
+        Some("faces(frame, 1 regions, 1 curves)")
+    );
+}
+
+#[test]
 fn faces_boxes_reach_as_far_as_their_circles_and_arcs_go() {
     use std::f64::consts::PI;
     let kernel = FakeKernel::new(1).unwrap();

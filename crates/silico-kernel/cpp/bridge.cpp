@@ -1247,13 +1247,15 @@ TopoDS_Edge make_arc_edge(const gp_Ax2 &frame, double radius, TopoDS_Vertex from
 }
 } // namespace
 
-std::unique_ptr<Shape> make_faces(Point3 normal, Point3 x_axis, rust::Slice<const Point3> points,
+std::unique_ptr<Shape> make_faces(FacePlane plane, rust::Slice<const Point3> points,
                                   rust::Slice<const FaceCurve> curves,
                                   rust::Slice<const uint32_t> loop_curves,
                                   rust::Slice<const uint32_t> region_loops,
                                   rust::Vec<HistoryEntry> &history) {
   const double tolerance = Precision::Confusion();
-  const gp_Dir x(x_axis.x, x_axis.y, x_axis.z);
+  const Point3 &origin = plane.origin;
+  const Point3 &normal = plane.normal;
+  const gp_Dir x(plane.x_axis.x, plane.x_axis.y, plane.x_axis.z);
   BRep_Builder builder;
   std::vector<TopoDS_Vertex> vertices;
   vertices.reserve(points.size());
@@ -1317,7 +1319,10 @@ std::unique_ptr<Shape> make_faces(Point3 normal, Point3 x_axis, rust::Slice<cons
   if (next != edges.size()) {
     throw Standard_OutOfRange("a curve is in no loop");
   }
-  const gp_Ax3 axes(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(normal.x, normal.y, normal.z), x);
+  // The sketch's plane, through its origin: the model's origin for an origin plane, a face
+  // frame's own for a face's.
+  const gp_Ax3 axes(gp_Pnt(origin.x, origin.y, origin.z), gp_Dir(normal.x, normal.y, normal.z),
+                    x);
   std::vector<TopoDS_Face> faces;
   next = 0;
   for (uint32_t count : region_loops) {

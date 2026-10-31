@@ -10,6 +10,8 @@ mod test_programs;
 mod adversarial_describe;
 #[path = "adversarial_export.rs"]
 mod adversarial_export;
+#[path = "adversarial_face_frame.rs"]
+mod adversarial_face_frame;
 #[path = "adversarial_parts.rs"]
 mod adversarial_parts;
 #[path = "adversarial_profile.rs"]

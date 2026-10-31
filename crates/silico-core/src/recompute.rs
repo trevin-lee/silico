@@ -1941,9 +1941,11 @@ impl Step {
     }
 }
 
-/// A faces step's line (design S3): `faces` and its plane, then, region by region and loop
-/// by loop (each region's outer loop, then its holes), each curve as sent, every number by
-/// its bits: `line x0 y0 x1 y1`, `arc cx cy sx sy ex ey r a0 a1`, `circle cx cy r`. Each
+/// A faces step's line (design S3): `faces` and its plane (an origin plane's word, or
+/// `frame` and a face frame's twelve numbers by their bits, its origin, x, y, and normal,
+/// so a face that moves moves the key: docs/ports/attacher.md, M5.9), then, region by
+/// region and loop by loop (each region's outer loop, then its holes), each curve as sent,
+/// every number by its bits: `line x0 y0 x1 y1`, `arc cx cy sx sy ex ey r a0 a1`, `circle cx cy r`. Each
 /// region starts `region` and each loop `loop`, so regions and holes of the same curves
 /// are other lines. No ID: two sketches of one profile share the step, and a construction
 /// line toggled, added, or moved leaves it alone. The bits are as sent, a zero of either
@@ -1956,8 +1958,17 @@ fn faces_line(regions: &FaceRegions) -> String {
             silico_protocol::SketchPlane::Xy => "xy",
             silico_protocol::SketchPlane::Xz => "xz",
             silico_protocol::SketchPlane::Yz => "yz",
+            silico_protocol::SketchPlane::Face(_) => "frame",
         }
     );
+    if let silico_protocol::SketchPlane::Face(frame) = regions.plane {
+        for v in [frame.origin, frame.x, frame.y, frame.normal]
+            .into_iter()
+            .flatten()
+        {
+            let _ = write!(line, " {:016x}", v.to_bits());
+        }
+    }
     for region in &regions.regions {
         line.push_str(" region");
         for curves in region.loops() {
@@ -5475,6 +5486,61 @@ mod tests {
             holes: vec![circle.clone()],
         };
         assert_ne!(key(vec![holed]), key(vec![one(square(0.0)), one(circle)]));
+    }
+
+    /// An origin plane's faces line is its word, as before face frames (so no key moves);
+    /// a face frame's is `frame` and its twelve numbers' bits, origin, x, y, normal, so two
+    /// frames a bit apart are two steps. Spelled out by hand from the doc.
+    #[test]
+    fn a_faces_line_holds_its_plane_s_word_or_its_frame_s_bits() {
+        use silico_protocol::{Curve, FaceFrame, Region, SketchPlane};
+        let on = |plane| FaceRegions {
+            plane,
+            regions: vec![Region {
+                outer: vec![Curve::Circle {
+                    center: [0.0, -2.0],
+                    radius: 1.0,
+                }],
+                holes: Vec::new(),
+            }],
+        };
+        assert_eq!(
+            faces_line(&on(SketchPlane::Xz)),
+            "faces xz region loop circle 0000000000000000 c000000000000000 3ff0000000000000"
+        );
+        let top = FaceFrame {
+            origin: [0.0, 0.0, 10.0],
+            x: [1.0, 0.0, 0.0],
+            y: [0.0, 1.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+        };
+        assert_eq!(
+            faces_line(&on(SketchPlane::Face(top))),
+            "faces frame \
+             0000000000000000 0000000000000000 4024000000000000 \
+             3ff0000000000000 0000000000000000 0000000000000000 \
+             0000000000000000 3ff0000000000000 0000000000000000 \
+             0000000000000000 0000000000000000 3ff0000000000000 \
+             region loop circle 0000000000000000 c000000000000000 3ff0000000000000"
+        );
+        // Each of the twelve a bit off: another line, another key.
+        let key = |frame| Step::Faces(Arc::new(on(SketchPlane::Face(frame)))).key();
+        for k in 0..12 {
+            let mut off = top;
+            let v = match k / 3 {
+                0 => &mut off.origin,
+                1 => &mut off.x,
+                2 => &mut off.y,
+                _ => &mut off.normal,
+            };
+            v[k % 3] = f64::from_bits(v[k % 3].to_bits() + 1);
+            assert_ne!(
+                faces_line(&on(SketchPlane::Face(off))),
+                faces_line(&on(SketchPlane::Face(top))),
+                "{k}"
+            );
+            assert_ne!(key(off), key(top), "{k}");
+        }
     }
 
     /// Keys outlive a run, so their spelling is pinned: computed by hand with Python's

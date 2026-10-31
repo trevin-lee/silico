@@ -63,8 +63,8 @@ use std::time::{Duration, Instant};
 use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{
     Algorithm, DESCRIBE_BATCH, Description, DragBegin, EdgeCurve, EdgeDescription, FaceDescription,
-    Moved, PointPlace, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Surface, Tag,
-    area_and_perimeter, loop_area,
+    FaceFrame, Moved, PointPlace, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Surface,
+    Tag, area_and_perimeter, loop_area,
 };
 
 use crate::kernel::{
@@ -2360,11 +2360,19 @@ impl Measured {
                 }
             }
         }
+        // On an origin plane, whose axes point along model space's, the box of the curves in
+        // the sketch's coordinates, its corners placed; on a face frame, in model space.
+        let bounds = match regions.plane {
+            SketchPlane::Xy | SketchPlane::Xz | SketchPlane::Yz => {
+                [regions.plane.place(low), regions.plane.place(high)]
+            }
+            SketchPlane::Face(frame) => frame_box(frame, regions),
+        };
         Measured {
             volume: 0.0,
             area,
             moment: [0.0; 3],
-            bounds: [regions.plane.place(low), regions.plane.place(high)],
+            bounds,
         }
     }
 
@@ -2796,23 +2804,100 @@ impl FacesLayout {
     }
 }
 
-/// A plane's word in a shape's bytes: `xy`, `xz`, `yz`.
+/// The box in model space around faces' curves on a face frame, whose axes may point any
+/// way: each line's and arc's ends placed, and each circle's or arc's furthest reach along
+/// each axis k. About its centre a placed, a round is a + r(x cos t + y sin t), whose k-th
+/// coordinate reaches a_k ± r·√(x_k² + y_k²) at t = φ_k and φ_k + π, φ_k the angle of
+/// (x_k, y_k): a circle reaches both, an arc those it passes.
+fn frame_box(frame: FaceFrame, regions: &FaceRegions) -> [[f64; 3]; 2] {
+    let plane = SketchPlane::Face(frame);
+    let (mut low, mut high) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    let mut include = |k: usize, v: f64| {
+        low[k] = low[k].min(v);
+        high[k] = high[k].max(v);
+    };
+    // Whether `angle`, a turn on or back any number of times, is from `from` to `to`.
+    let passes = |angle: f64, from: f64, to: f64| {
+        let turns = libm::ceil((from - angle) / std::f64::consts::TAU);
+        angle + turns * std::f64::consts::TAU <= to
+    };
+    for curve in regions.curves() {
+        let (center, radius, sweep) = match *curve {
+            Curve::Line { start, end } => {
+                for p in [start, end] {
+                    let p = plane.place(p);
+                    (0..3).for_each(|k| include(k, p[k]));
+                }
+                continue;
+            }
+            Curve::Circle { center, radius } => (center, radius, None),
+            Curve::Arc {
+                center,
+                start,
+                end,
+                radius,
+                start_angle,
+                end_angle,
+            } => {
+                for p in [start, end] {
+                    let p = plane.place(p);
+                    (0..3).for_each(|k| include(k, p[k]));
+                }
+                (
+                    center,
+                    radius,
+                    Some((start_angle.min(end_angle), start_angle.max(end_angle))),
+                )
+            }
+        };
+        let a = plane.place(center);
+        for (k, a_k) in a.into_iter().enumerate() {
+            let reach = radius * libm::hypot(frame.x[k], frame.y[k]);
+            let phase = libm::atan2(frame.y[k], frame.x[k]);
+            for (angle, sign) in [(phase, 1.0), (phase + std::f64::consts::PI, -1.0)] {
+                if sweep.is_none_or(|(from, to)| passes(angle, from, to)) {
+                    include(k, a_k + sign * reach);
+                }
+            }
+        }
+    }
+    [low, high]
+}
+
+/// A plane's word in a shape's bytes and expressions: `xy`, `xz`, `yz`, or `frame` for a
+/// face's frame, whose numbers follow it in a shape's bytes ([`plane_line`]).
 fn plane_word(plane: SketchPlane) -> &'static str {
-    // The document's word for it (D6).
+    // An origin plane's is the document's word for it (D6).
     use crate::document::Plane;
     match plane {
-        SketchPlane::Xy => Plane::Xy,
-        SketchPlane::Xz => Plane::Xz,
-        SketchPlane::Yz => Plane::Yz,
+        SketchPlane::Xy => Plane::Xy.as_str(),
+        SketchPlane::Xz => Plane::Xz.as_str(),
+        SketchPlane::Yz => Plane::Yz.as_str(),
+        SketchPlane::Face(_) => "frame",
     }
-    .as_str()
+}
+
+/// A plane in a shape's bytes: its word, and a face frame's twelve numbers after it, its
+/// origin, x, y, and normal, each as Rust writes it (a zero of either sign as 0, as a
+/// curve's numbers are).
+fn plane_line(plane: SketchPlane) -> String {
+    let mut line = plane_word(plane).to_owned();
+    if let SketchPlane::Face(frame) = plane {
+        for value in [frame.origin, frame.x, frame.y, frame.normal]
+            .into_iter()
+            .flatten()
+        {
+            line.push_str(&format!(" {}", value + 0.0));
+        }
+    }
+    line
 }
 
 /// Faces as a line of a shape's bytes: `faces xy region loop line 0 0 4 0 ... loop circle 2
 /// 1.5 0.5`, every number as Rust writes it, which reads back as the same number (a zero of
 /// either sign written as 0).
 fn faces_line(regions: &FaceRegions) -> String {
-    let mut line = format!("faces {}", plane_word(regions.plane));
+    let mut line = format!("faces {}", plane_line(regions.plane));
     for region in &regions.regions {
         line.push_str(" region");
         for curves in region.loops() {
@@ -2873,11 +2958,29 @@ fn faces_text(regions: &FaceRegions) -> String {
 /// The regions a `faces` line's words (after `faces`) say, if the protocol's check accepts
 /// them: the fake reads only what a request could have made.
 fn parse_faces(words: &[&str]) -> Option<FaceRegions> {
-    let (plane, rest) = words.split_first()?;
-    let plane = SketchPlane::ALL
-        .into_iter()
-        .find(|p| plane_word(*p) == *plane)?;
     let number = |w: &str| w.parse::<f64>().ok().filter(|v| v.is_finite());
+    let (plane, rest) = match words.split_first()? {
+        (&"frame", rest) => {
+            let (values, rest) = rest.split_first_chunk::<12>()?;
+            let mut values = values.iter().map(|w| number(w));
+            let mut next = || -> Option<[f64; 3]> {
+                Some([values.next()??, values.next()??, values.next()??])
+            };
+            let frame = FaceFrame {
+                origin: next()?,
+                x: next()?,
+                y: next()?,
+                normal: next()?,
+            };
+            (SketchPlane::Face(frame), rest)
+        }
+        (plane, rest) => (
+            SketchPlane::ALL
+                .into_iter()
+                .find(|p| plane_word(*p) == *plane)?,
+            rest,
+        ),
+    };
     let point = |x: &str, y: &str| Some([number(x)?, number(y)?]);
     let mut regions = Vec::new();
     // Each region's words, after the "region" that starts it.

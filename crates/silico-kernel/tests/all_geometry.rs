@@ -71,6 +71,8 @@ mod adversarial_describe;
 mod adversarial_distance;
 #[path = "adversarial_export.rs"]
 mod adversarial_export;
+#[path = "adversarial_face_frames.rs"]
+mod adversarial_face_frames;
 #[path = "adversarial_faces.rs"]
 mod adversarial_faces;
 #[path = "adversarial_fillet.rs"]
@@ -113,6 +115,8 @@ mod distance;
 mod export;
 #[path = "extruded_bsplines.rs"]
 mod extruded_bsplines;
+#[path = "face_frames.rs"]
+mod face_frames;
 #[path = "faces.rs"]
 mod faces;
 #[path = "fillet.rs"]

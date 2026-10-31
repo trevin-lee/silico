@@ -216,6 +216,14 @@ mod ffi {
         Circle,
     }
 
+    /// A sketch's plane in model space, for `make_faces`: through `origin`, facing along
+    /// `normal`, its x along `x_axis`.
+    struct FacePlane {
+        origin: Point3,
+        normal: Point3,
+        x_axis: Point3,
+    }
+
     /// One curve of a profile's loop, in model space, for `make_faces`: a line from point
     /// `start` to point `end` (numbered from 0 in the points given); an arc of the circle of
     /// `radius` about `center`, turning counter-clockwise about `axis` from the plane's x
@@ -384,8 +392,7 @@ mod ffi {
         ) -> Result<UniquePtr<Shape>>;
         fn make_polygon_face(points: &[Point3]) -> Result<UniquePtr<Shape>>;
         fn make_faces(
-            normal: Point3,
-            x_axis: Point3,
+            plane: FacePlane,
             points: &[Point3],
             curves: &[FaceCurve],
             loop_curves: &[u32],
@@ -548,9 +555,9 @@ mod ffi {
 
 pub use silico_protocol::{
     Axis, BooleanOp, ChamferSize, CopiesOp, Curve, ElementCounts, ElementFate, ElementKind,
-    ElementRef, Ends, ExportMesh, FaceRegions, History, InputHistory, LENGTH_TOLERANCE, MAX_LENGTH,
-    MIN_RELATIVE_DEFLECTION, Mesh, MeshAt, Placement, PointPlace, Primitive, Profile, Refusal,
-    Region, Reported, ShapeSummary, SketchPlane, Topology, mesh_floor,
+    ElementRef, Ends, ExportMesh, FaceFrame, FaceRegions, History, InputHistory, LENGTH_TOLERANCE,
+    MAX_LENGTH, MIN_RELATIVE_DEFLECTION, Mesh, MeshAt, Placement, PointPlace, Primitive, Profile,
+    Refusal, Region, Reported, ShapeSummary, SketchPlane, Topology, mesh_floor,
 };
 use silico_protocol::{
     BrepDefect, FailureKind, HistoryDefect, MAX_EXPORT_TRIANGLES, Operation, Returned, Role,
@@ -1573,7 +1580,8 @@ pub fn revolution(
     swept(faces, solid, Operation::Revolve, &entries)
 }
 
-/// A face for each of `regions`' regions, on its sketch's plane, as the core sends them
+/// A face for each of `regions`' regions, on its sketch's plane (an origin plane, or a
+/// face's frame, through the frame's origin), as the core sends them
 /// (docs/design/m3.5-profile.md): each curve one edge, each point one vertex the curves that
 /// meet there share, each loop a wire of its curves in the order and direction given, and
 /// each region a face of its outer loop and its holes, as FreeCAD's FaceMakerBullseye builds
@@ -1589,7 +1597,12 @@ pub fn make_faces(regions: &FaceRegions) -> Result<Built, KernelError> {
     regions.check().map_err(|invalid| refused(None, invalid))?;
     let plane = regions.plane;
     let point3 = |[x, y, z]: [f64; 3]| ffi::Point3 { x, y, z };
-    let normal = plane.normal();
+    // The plane the points are placed on: through the plane's origin, spanned by its x and y
+    // axes, so its normal is x × y (OCCT makes it a unit vector). An origin plane's is its
+    // normal exactly. A face frame's is within the frame's tolerance of its normal: placed
+    // along x and y a kilometre out, a point stays on this plane where it would be up to
+    // 1e-6 off one built from the frame's normal, past OCCT's tolerance.
+    let normal = silico_protocol::vec3::cross(plane.x_axis(), plane.y_axis());
     let reversed = normal.map(|c| -c);
     let mut points = Vec::new();
     let mut curves = Vec::new();
@@ -1665,8 +1678,11 @@ pub fn make_faces(regions: &FaceRegions) -> Result<Built, KernelError> {
     }
     let mut entries = Vec::new();
     let made = ffi::make_faces(
-        point3(normal),
-        point3(plane.x_axis()),
+        ffi::FacePlane {
+            origin: point3(plane.origin()),
+            normal: point3(normal),
+            x_axis: point3(plane.x_axis()),
+        },
         &points,
         &curves,
         &loop_curves,
