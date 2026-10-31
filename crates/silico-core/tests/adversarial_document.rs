@@ -73,6 +73,7 @@ fn a_box(id: &str, name: &str) -> Feature {
         },
         version: FeatureVersion,
         name: Name::new(name).unwrap(),
+        suppressed: false,
         note: None,
         fingerprint: None,
     }
@@ -928,12 +929,14 @@ fn any_document() -> impl Strategy<Value = Document> {
         any_operation(),
         any_text().prop_filter("a name isn't empty", |s| !s.is_empty()),
         prop::option::of(any_text()),
+        any::<bool>(),
     )
-        .prop_map(|(id, operation, name, note)| Feature {
+        .prop_map(|(id, operation, name, note, suppressed)| Feature {
             id,
             operation,
             version: FeatureVersion,
             name: Name::new(name).unwrap(),
+            suppressed,
             note,
             fingerprint: None,
         });

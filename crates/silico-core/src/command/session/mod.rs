@@ -143,7 +143,7 @@ pub use types::{
     ModelChoice, ModelRead, Moved, NewMembers, Opened, OutlineAnswer, Progress, Published, Read,
     ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
     RolledBack, Running, SessionId, SessionInfo, SketchCut, SketchEdited, SketchJoined, Status,
-    Stepped, Stopper, TextAnswer, TimelineAnswer, Transaction,
+    Stepped, Stopper, Suppressed, TextAnswer, TimelineAnswer, Transaction,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 use waking::Waker;
@@ -1766,6 +1766,51 @@ impl<P: Clients + 'static> Sessions<P> {
                     from: moved.from,
                     to: moved.to,
                     rewired: moved.rewired,
+                    changed: edited.changed,
+                    commit: edited.commit,
+                })
+            },
+        )
+    }
+
+    /// Suppresses `session`'s feature `feature` (`suppressed` true), with its dependents, or
+    /// unsuppresses it (false), with what it needs and lacks (docs/design/m5.0-app.md,
+    /// `suppress_feature`; `document::suppression`), as an edit made against `revision`.
+    /// A feature's dependents are those whose sketch it is, those that store names of its
+    /// elements, and those left with an input they need and nothing unsuppressed up its
+    /// chain (SolidWorks' children: docs/ux/solidworks.md, §5); a feature suppressed passes
+    /// its base through, so what consumes it builds on the nearest unsuppressed feature up
+    /// its chain, and its users are reached (M5.0's A10), its own stored fingerprint carried
+    /// as stored, never checked or rewritten. Unsuppressing a feature unsuppresses its sketch, each suppressed maker of a name
+    /// it stores, and, for an input it needs with nothing unsuppressed up its chain, that
+    /// chain's root, recursively; what depends on it stays suppressed. Suppressing a feature
+    /// suppressed already, or unsuppressing one that isn't, changes nothing: no new
+    /// revision, nothing written. Otherwise as [`add_feature`](Self::add_feature).
+    pub fn suppress_feature(
+        &self,
+        session: &SessionId,
+        revision: Revision,
+        feature: FeatureId,
+        suppressed: bool,
+    ) -> Running<Suppressed> {
+        let registry = Arc::downgrade(&self.registry);
+        self.queued(
+            session,
+            SessionCommand::SuppressFeature,
+            move |session, stop, model| {
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| edit::suppress_feature(base.checked()?, &feature, suppressed),
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                let done = edited.made;
+                Ok(Suppressed {
+                    feature,
+                    suppressed: done.suppressed,
+                    unsuppressed: done.unsuppressed,
                     changed: edited.changed,
                     commit: edited.commit,
                 })

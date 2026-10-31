@@ -149,6 +149,7 @@
           "render",
           "export",
           "move_feature",
+          "suppress_feature",
           "timeline",
           "sketch",
           "sketch_add",

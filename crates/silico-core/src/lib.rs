@@ -41,6 +41,7 @@ mod references;
 pub mod render;
 pub mod selection;
 pub mod sketch;
+pub mod sketch_judge;
 pub mod sketch_states;
 pub mod step_worker;
 pub mod sweep;

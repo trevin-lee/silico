@@ -37,6 +37,7 @@ fn feature(identity: &str, name: &str, operation: Operation) -> Feature {
         operation,
         version: FeatureVersion,
         name: Name::new(name).unwrap(),
+        suppressed: false,
         note: None,
         fingerprint: None,
     }
@@ -872,6 +873,7 @@ fn valid_features(n: u64) -> Document {
             },
             version: FeatureVersion,
             name: Name::new("F").unwrap(),
+            suppressed: false,
             note: None,
             fingerprint: None,
         })

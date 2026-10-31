@@ -12,7 +12,8 @@
 //! without consuming (any number of features may sweep one sketch), goes a length above 0
 //! and at most a kilometre or turns an angle above 0° and at most 360°, and turns about the
 //! sketch's x or y axis or a line of the sketch. What only a solve can tell (an axis whose
-//! ends the solve brings together) is the rebuild's.
+//! ends the solve brings together) is the rebuild's. A feature that depends on a suppressed
+//! one is suppressed too (`suppression`).
 
 use silico_protocol::{ChamferSize, MAX_LENGTH, check_fillet_radius, check_offset, format_number};
 
@@ -138,6 +139,16 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
             .filter(|&&(k, _)| k == key)
             .map(|&(_, kind)| kind)
     };
+
+    // Every feature that has to be suppressed with those the text suppresses, to a fixed
+    // point, so a hand edit's every dependent is refused in one check, by place.
+    let links = super::suppression::Links::of(features);
+    let (_, dependents) = super::suppression::dependents(
+        features,
+        &links,
+        features.iter().map(|f| f.suppressed).collect(),
+    );
+    let mut dependents = dependents.into_iter().peekable();
 
     let mut problems = Problems::default();
     // The feature that consumed each feature's solid, if one has.
@@ -467,6 +478,28 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                     None => consumer[used] = Some(index),
                 }
             }
+        }
+
+        // A feature that depends on a suppressed one is suppressed with it (the M5.0
+        // design's `suppress_feature`): its sketch, a maker of a name it stores, or an input
+        // it needs with nothing unsuppressed up its chain; or one of those has to be.
+        while dependents.next_if(|d| d.at < index).is_some() {}
+        if let Some(dependent) = dependents.next_if(|d| d.at == index)
+            && let (Some(parent), Some(origin)) = (
+                features.get(dependent.parent),
+                features.get(dependent.origin),
+            )
+        {
+            problems.add(|| {
+                let (parameter, message, suggestion) = super::suppression::unsuppressed_dependent(
+                    features,
+                    feature,
+                    parent,
+                    dependent.cause,
+                    origin,
+                );
+                refuse(&parameter, message, suggestion)
+            });
         }
 
         // The sketch a sweep uses: a sketch before it. It isn't consumed, so any number of

@@ -4005,6 +4005,10 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         SessionCommand::MoveFeature,
         Box::new(|| erased(s.move_feature(at, Revision::OPENED, id("k7f2qx3m"), None))),
     ));
+    queued.push((
+        SessionCommand::SuppressFeature,
+        Box::new(|| erased(s.suppress_feature(at, Revision::OPENED, id("k7f2qx3m"), true))),
+    ));
     queued.extend(
         m5_reads
             .into_iter()

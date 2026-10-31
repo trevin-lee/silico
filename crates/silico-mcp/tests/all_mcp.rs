@@ -18,5 +18,6 @@ mod handshake;
 mod hostile;
 mod lines;
 mod sketch_edits;
+mod suppress_commands;
 mod timeline_commands;
 mod undo_commands;

@@ -247,6 +247,7 @@ fn with_fingerprint(fingerprint: Option<Fingerprint>) -> Document {
             },
             version: FeatureVersion,
             name: Name::new("S").unwrap(),
+            suppressed: false,
             note: None,
             fingerprint,
         }],

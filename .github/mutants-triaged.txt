@@ -257,3 +257,44 @@ crates/silico-core/src/document/undo.rs | Plan<K>::restored | replace Plan<K>::r
 # line its placement collapses nor a tangent_on: `>=` lets it through as named first, and
 # both checks after it still find no rule.
 crates/silico-oracle/src/sketch_edit.rs | rule | replace > with >= | #251
+# `standing` and `dependents` look a suppressed feature's base up in what stands for the
+# features before it, a list exactly `at` long when it's asked: a base at `at` itself (a
+# feature that uses itself) finds nothing there either way.
+crates/silico-core/src/document/suppression.rs | standing | replace < with <= | #304
+crates/silico-core/src/document/suppression.rs | dependents | replace < with <= | #304
+# An input at the consumer's own place is the consumer's own ID; an unsuppressed feature
+# with an input makes a solid, so it stands for itself: `<=` inserts that same ID.
+crates/silico-core/src/document/suppression.rs | consumed | replace < with <= | #304
+# `walk` only spares the search for a lost name, which finds one only past a suppressed
+# feature consuming a `tool`, which has a tool and which `walk` already counts (initially,
+# or as `dependents` flags it; `unsuppress` only clears flags). Each mutant only makes
+# `walk` true more often (every feature with a `tool` has a `base` too, so `!=` holds
+# wherever `==` did): the same search, finding nothing more.
+crates/silico-core/src/document/suppression.rs | any_tool_suppressed | replace any_tool_suppressed -> bool with true | #304
+crates/silico-core/src/document/suppression.rs | any_tool_suppressed | replace && with || | #304
+crates/silico-core/src/document/suppression.rs | has_tool | replace == with != | #304
+crates/silico-core/src/document/suppression.rs | has_tool | replace has_tool -> bool with true | #304
+# Only the gate's documents reach these (the rebuild's plan and a model's timeline, and
+# `unsuppress`, all of a Checked), with each ID once: a feature's base, tool, sketch, or a
+# name's maker at its own place is its own ID, which the gate refuses ("a feature can't use
+# itself"; a name of a feature not before it doesn't parse).
+crates/silico-core/src/document/suppression.rs | effective_inputs | replace < with <= | #304
+crates/silico-core/src/document/suppression.rs | unsuppress | replace < with <= | #304
+crates/silico-core/src/document/suppression.rs | unsuppress | replace < with <= | #304
+crates/silico-core/src/document/suppression.rs | unsuppress | replace < with <= | #304
+crates/silico-core/src/document/suppression.rs | suppressed_root | replace < with <= | #304
+# A base at the feature's own place: only a fillet or chamfer stores names, and its only
+# input is that base, itself, so no solid has it as consumer; the walk from each maker
+# (each before it) never reaches it and ends with no consumer or one past it, as `None`.
+crates/silico-core/src/document/suppression.rs | lost | replace < with <= | #304
+# In a document the gate took, no unsuppressed feature lacks its sketch, a name's maker, a
+# lost name's boolean, or a chain's root (the gate's own rule), and fewer suppressed lack
+# fewer; a feature already unsuppressed in this call was looked at already, and its needs
+# found then are unsuppressed now. So the features the guard skips, looked at again, add
+# nothing: the same flags.
+crates/silico-core/src/document/suppression.rs | unsuppress | replace match guard *flag with true | #304
+# An arc's placed end off its circle by exactly the f64 1e-8: the two distances it's the
+# difference of are within a few ulps of the radius, so it's a multiple of the radius's
+# ulp, at least 2^-76 for any radius the gate takes (over 1e-7 mm), and fl(1e-8) is an odd
+# multiple of 2^-78: no input reaches the edge exactly.
+crates/silico-oracle/src/sketch_edit.rs | placed_geometry | replace > with >= | #316

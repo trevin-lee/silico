@@ -1129,7 +1129,7 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
         assert_eq!(cancel["properties"]["command"]["$ref"], command["$ref"]);
         assert_eq!(
             cancel["$defs"]["SessionCommand"]["enum"],
-            serde_json::json!(SESSION_COMMANDS)
+            serde_json::json!(SESSION_COMMANDS.as_slice())
         );
     }
     let base = |running: &str, reads: &str| {
