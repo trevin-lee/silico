@@ -944,8 +944,9 @@ fn stopped_unpublished(id: SessionId) -> Error {
 /// as running no more (one stopped and started again, or another's since, is left running).
 ///
 /// While it runs, the client is woken as each of its steps settles (its count's `done` or
-/// `steps` changes: `status`'s progress), and once more as its end is recorded, with no
-/// lock held.
+/// `steps` changes: `status`'s progress), counted from the rebuild's start, so what moved
+/// before the watcher first looks is told by that look, and once more as its end is
+/// recorded, with no lock held.
 pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Label, run: Run) {
     #[cfg(test)]
     if let Some(session) = session.upgrade() {
@@ -953,7 +954,9 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
     }
     let waker = session.upgrade().map(|session| Arc::clone(&session.waker));
     let progress = run.progress();
-    let mut seen = progress.now();
+    // From the rebuild's start (no plan, nothing settled), not what the first look finds:
+    // a plan made or a step settled before the watcher looks is told by its first look.
+    let mut seen = crate::recompute::StepCount::default();
     while !seen.ended {
         let next = progress.changed_since(&seen);
         // Told as `done` or `steps` moves, a last step's settling with the end too; the end
