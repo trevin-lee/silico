@@ -915,14 +915,18 @@ mod tests {
     use silico_core::command::{Rebuild, RebuildState, Transaction};
 
     fn status(revision: Revision, changed: bool) -> Status {
+        counted(revision, changed, 1, 0)
+    }
+
+    fn counted(revision: Revision, changed: bool, undo: usize, redo: usize) -> Status {
         Status {
             features: Some(1),
             gated: true,
             transaction: Some(Transaction {
                 base: Revision::OPENED,
                 changed,
-                undo: 1,
-                redo: 0,
+                undo,
+                redo,
                 dropped: 0,
                 bytes: 0,
             }),
@@ -968,5 +972,25 @@ mod tests {
         tab.status = Some(status(three, false));
         tab.status_revision = three;
         assert!(!tab.unsaved());
+    }
+
+    #[test]
+    fn undo_and_redo_are_off_while_an_answer_is_newer_than_the_status() {
+        // A status of revision 2 counts one edit to undo and one to redo; an answer since
+        // (a step's, say) brought the tab to revision 3: those counts aren't its own, so
+        // neither is offered until a status of revision 3 is read.
+        let two = Revision::from_number(2).unwrap();
+        let three = Revision::from_number(3).unwrap();
+        let mut tab = tab();
+        tab.status = Some(counted(two, true, 1, 1));
+        tab.status_revision = two;
+        tab.revision = two;
+        assert!(tab.undoable() && tab.redoable());
+        tab.revision = three;
+        assert!(!tab.undoable());
+        assert!(!tab.redoable());
+        tab.status = Some(counted(three, true, 1, 1));
+        tab.status_revision = three;
+        assert!(tab.undoable() && tab.redoable());
     }
 }
