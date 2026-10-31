@@ -87,12 +87,23 @@ enum Queued {
     },
 }
 
-/// A new sweep's body: not yet read, or read from the document as it is when the add is
-/// sent (its tip, [`tip_of`]), none if it has none.
+/// A new sweep's body: not yet read, or read from the document at a revision (its tip,
+/// [`tip_of`], none if it has none), which the add is sent with only if the session is still
+/// at that revision, and read again otherwise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Body {
     Unread,
-    Read(Option<FeatureId>),
+    Read(Option<FeatureId>, Revision),
+}
+
+/// What changes the document as it's sent (an edit, an add): the revision it's sent
+/// against, and the state the session is at then ([`Tab::state_of`]). Once it's applied (it
+/// answers, and the session's revision moved past the one it was sent against), the
+/// dialogs' groups past that state are let go: the redo branch the change dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Sending {
+    against: Revision,
+    state: Revision,
 }
 
 /// How many of the commands it sent a tab keeps in its record ([`Tab::sent`]): the newest.
@@ -125,8 +136,8 @@ struct Group {
 /// ([`Queued`]).
 #[derive(Default)]
 pub struct Edits {
-    /// The edit in flight: its feature and field, and its answer to come.
-    in_flight: Option<((FeatureId, String), Running<FieldSet>)>,
+    /// The edit in flight: its feature and field, as it was sent, and its answer to come.
+    in_flight: Option<((FeatureId, String), Sending, Running<FieldSet>)>,
     queue: std::collections::VecDeque<Queued>,
     /// How many edits it has sent: what a test counts.
     pub sent: u64,
@@ -189,9 +200,10 @@ enum Under {
         began: bool,
     },
     Close(Running<Closed>),
-    /// A dialog's add, of the dialog numbered `serial`.
+    /// A dialog's add, of the dialog numbered `serial`, as it was sent.
     Add {
         serial: u64,
+        sending: Sending,
         running: Running<Added>,
     },
     /// The document's features read for a new sweep's body, at the revision its add is
@@ -702,9 +714,14 @@ impl Tab {
                 }
                 Err(running) => Some(Under::Step(running)),
             },
-            Under::Add { serial, running } => match running.try_take() {
+            Under::Add {
+                serial,
+                sending,
+                running,
+            } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
+                    self.applied(sending, &response);
                     let dialog = self
                         .dialog
                         .as_mut()
@@ -728,7 +745,11 @@ impl Tab {
                     }
                     None
                 }
-                Err(running) => Some(Under::Add { serial, running }),
+                Err(running) => Some(Under::Add {
+                    serial,
+                    sending,
+                    running,
+                }),
             },
             Under::Base {
                 serial,
@@ -737,18 +758,22 @@ impl Tab {
                 running,
             } => match running.try_take() {
                 Ok(response) => {
-                    // The document's tip as the session holds it now; the tab's own timeline's
-                    // if the read was refused (nothing published yet).
-                    let base = match response.result {
-                        Ok(timeline) => timeline.features.as_deref().and_then(tip_of),
-                        Err(_) => self.tip(),
+                    // The document's tip at the revision it was read at; read again if the read
+                    // was refused (it names no model when none is published, so it's refused
+                    // only as every read is).
+                    let body = match response.result {
+                        Ok(timeline) => Body::Read(
+                            timeline.features.as_deref().and_then(tip_of),
+                            timeline.revision,
+                        ),
+                        Err(_) => Body::Unread,
                     };
                     // Sent next, before anything queued after it.
                     self.edits.queue.push_front(Queued::Add {
                         serial,
                         kind,
                         members,
-                        body: Body::Read(base),
+                        body,
                     });
                     None
                 }
@@ -848,10 +873,11 @@ impl Tab {
     /// revert that comes up with no transaction open (a save before it took every edit, or a
     /// revert ended it) has nothing to do: closes, if it was to close, or else is dropped.
     fn advance<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if let Some((field, running)) = self.edits.in_flight.take() {
+        if let Some((field, sending, running)) = self.edits.in_flight.take() {
             match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
+                    self.applied(sending, &response);
                     // Said, the field keeping what the person typed (#298's review): a
                     // conflict's too, whose next edit is sent against the reloaded revision.
                     match response.result {
@@ -865,7 +891,7 @@ impl Tab {
                     }
                 }
                 Err(running) => {
-                    self.edits.in_flight = Some((field, running));
+                    self.edits.in_flight = Some((field, sending, running));
                     return;
                 }
             }
@@ -878,10 +904,10 @@ impl Tab {
                 Queued::Edit(edit) => {
                     self.begin_if_none(sessions);
                     self.supersede_preview();
-                    self.prune_groups();
                     self.edits.sent += 1;
                     self.record(Sent::Edit(edit.field.clone()));
                     let field = (edit.feature.clone(), edit.field.clone());
+                    let sending = self.sending();
                     let running = sessions.set_field(
                         &self.id,
                         self.revision,
@@ -889,7 +915,21 @@ impl Tab {
                         edit.field,
                         edit.value,
                     );
-                    self.edits.in_flight = Some((field, running));
+                    self.edits.in_flight = Some((field, sending, running));
+                }
+                // A sweep's body read at another revision than the session's now: read again.
+                Queued::Add {
+                    serial,
+                    kind,
+                    members,
+                    body: Body::Read(_, read_at),
+                } if kind.sweeps() && read_at != self.revision => {
+                    self.edits.queue.push_front(Queued::Add {
+                        serial,
+                        kind,
+                        members,
+                        body: Body::Unread,
+                    });
                 }
                 Queued::Add {
                     serial,
@@ -912,7 +952,7 @@ impl Tab {
                     body,
                 } => {
                     let base = match body {
-                        Body::Read(base) => base,
+                        Body::Read(base, _) => base,
                         Body::Unread => None,
                     };
                     let Some(feature) = feature_node(kind, &members, base.as_ref()) else {
@@ -929,10 +969,11 @@ impl Tab {
                     };
                     self.begin_if_none(sessions);
                     self.supersede_preview();
-                    self.prune_groups();
                     self.record(Sent::Add);
+                    let sending = self.sending();
                     self.under.push(Under::Add {
                         serial,
+                        sending,
                         running: sessions.add_feature(&self.id, self.revision, None, feature),
                     });
                 }
@@ -1320,12 +1361,28 @@ impl Tab {
         self.restored.get(&revision).copied().unwrap_or(revision)
     }
 
-    /// Before an edit or an add is sent: the dialogs' groups past the session's state let
-    /// go, as the edit drops the redo branch they're on (a group ending after the state the
-    /// session is at was undone to reach it).
-    fn prune_groups(&mut self) {
-        let state = self.state_of(self.revision);
-        self.groups.retain(|group| group.end <= state);
+    /// An edit or an add about to be sent, as it's sent: against the tab's revision, at the
+    /// state the session is at.
+    fn sending(&self) -> Sending {
+        Sending {
+            against: self.revision,
+            state: self.state_of(self.revision),
+        }
+    }
+
+    /// An edit's or an add's answer, `response`, to what was `sending`: if it was applied
+    /// (taken, and the session's revision moved past the one it was sent against), the
+    /// dialogs' groups past the state it was made at let go, as it dropped the redo branch
+    /// they're on (a group ending after that state was undone to reach it). A refused
+    /// change, or one that changed nothing, leaves the redo branch whole, and them with it.
+    fn applied<T>(&mut self, sending: Sending, response: &Response<T>) {
+        let moved = response
+            .session
+            .as_ref()
+            .is_some_and(|session| session.revision != sending.against);
+        if response.result.is_ok() && moved {
+            self.groups.retain(|group| group.end <= sending.state);
+        }
     }
 
     /// The tip of the document as the tab's timeline last listed it ([`tip_of`]): whether a
@@ -1949,6 +2006,50 @@ mod tests {
         tab.took_timeline(timeline(0, None, vec![entry("a0000001", 0, 0)]));
         assert!(tab.said.is_empty());
         assert!(tab.document_problems.is_empty());
+    }
+
+    /// A timeline entry of feature `id`, of `kind`, suppressed or not, naming `inputs`.
+    fn feature(id: &str, kind: &'static str, suppressed: bool, inputs: &[&str]) -> Entry {
+        Entry {
+            id: FeatureId::new(id).unwrap(),
+            kind,
+            name: id.to_owned(),
+            suppressed,
+            inputs: inputs.iter().map(|i| FeatureId::new(i).unwrap()).collect(),
+            health: Health::Healthy,
+            problems: 0,
+            warnings: 0,
+        }
+    }
+
+    #[test]
+    fn the_tip_is_what_stands_at_the_end_of_a_suppressed_chain_and_nothing_stands_for_none() {
+        let id = |text: &str| Some(FeatureId::new(text).unwrap());
+        // A box, a suppressed fillet of it, and a suppressed chamfer of the fillet: the
+        // chamfer stands for the box, two links up, and nothing consumes it.
+        let chain = [
+            feature("b0000001", "box", false, &[]),
+            feature("f0000001", "fillet", true, &["b0000001"]),
+            feature("f0000002", "chamfer", true, &["f0000001"]),
+        ];
+        assert_eq!(tip_of(&chain), id("f0000002"));
+        // A suppressed pad with no base, its sketch its first input: it stands for nothing,
+        // and the box, which nothing consumes, is the tip.
+        let pad = [
+            feature("b0000001", "box", false, &[]),
+            feature("s0000001", "sketch", false, &[]),
+            feature("p0000001", "pad", true, &["s0000001"]),
+        ];
+        assert_eq!(tip_of(&pad), id("b0000001"));
+        // A suppressed box, and a suppressed fuse of it with another box: the fuse stands
+        // for nothing (its base doesn't), and the other box is consumed: no tip.
+        let fused = [
+            feature("b0000001", "box", true, &[]),
+            feature("b0000002", "box", false, &[]),
+            feature("u0000001", "fuse", true, &["b0000001", "b0000002"]),
+        ];
+        assert_eq!(tip_of(&fused), None);
+        assert_eq!(tip_of(&[]), None);
     }
 
     #[test]

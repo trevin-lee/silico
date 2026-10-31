@@ -4765,3 +4765,70 @@ fn save_as_is_off_while_a_dialog_is_open() {
     });
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- Feature dialogs: #325's third round ----
+
+#[test]
+fn a_refused_edit_after_an_undone_dialog_leaves_its_redo_whole() {
+    let f = fixture();
+    let one_letter = EXAMPLE.replace(r#""name": "Pin""#, r#""name": "P""#);
+    let (mut h, _) = f.opened("example.silico", &one_letter);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "P"));
+    made(&mut h, "Box", "Length");
+    let boxed = text_of(&f, &h);
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), one_letter);
+    // The one-letter name emptied: refused, so the box's edits stay the redo branch.
+    select(&mut h, "P");
+    name_field(&h).focus();
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    step_until(&mut h, "the empty name refused", |h| {
+        h.state().tabs()[0].message.as_deref() == Some("name is empty (give the feature a name)")
+            && !h.state().tabs()[0].unsettled()
+    });
+    settled(&mut h);
+    step_key(&mut h, false);
+    assert_eq!(text_of(&f, &h), boxed);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sweeps_body_read_before_the_session_moved_is_read_again() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    let id = h.state().tabs()[0].id;
+    // Another client's box, the document's tip once it's added, held in the session's
+    // queue; the Pad's body is read now, beside the queue, at the revision before it.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let theirs = f.sessions.add_feature(
+        &id,
+        h.state().tabs()[0].revision,
+        None,
+        json::read(
+            br#"{"type": "box", "name": "Theirs", "position": [90, 0, 0], "length": 2, "width": 2, "height": 2}"#,
+        )
+        .unwrap(),
+    );
+    create(&mut h, "Pad");
+    // Its read answered, not yet taken: the session then moves.
+    std::thread::sleep(Duration::from_millis(200));
+    hold.release();
+    check.wait();
+    let theirs = theirs.wait().result.unwrap().feature.id;
+    added(&mut h);
+    settled(&mut h);
+    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    assert!(
+        pad.contains(&("base".to_owned(), Plain::String(theirs.as_str().to_owned()))),
+        "{pad:?}"
+    );
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
