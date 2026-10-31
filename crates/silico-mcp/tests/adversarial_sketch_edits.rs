@@ -85,14 +85,19 @@ fn an_add_and_a_remove_at_one_revision_sent_together_are_one_edit_and_one_confli
         "sketch_remove",
         r#"{"session": "s1", "revision": 1, "sketch": "k7f2qx3m", "members": ["n0000001"]}"#,
     );
-    let envelope = |c: &mut Client, id: &str| -> Value {
-        let (line, _) = c.reply_line(id);
-        let reply: Value = serde_json::from_str(&line).unwrap();
-        reply["result"]["structuredContent"].clone()
-    };
-    let added = envelope(&mut c, "3");
-    let removed = envelope(&mut c, "4");
-    // A session runs its commands in turn, in the order they came: the add first.
+    // The session runs its commands in turn, in the order they came, but each call's reply
+    // is written when its call is done, so the remove's may come first: read both, in any
+    // order (reading 3's alone would drop a 4 written before it, and wait for it forever).
+    let envelopes: Vec<Value> = c
+        .replies(&["3", "4"])
+        .iter()
+        .map(|line| {
+            let reply: Value = serde_json::from_str(line).unwrap();
+            reply["result"]["structuredContent"].clone()
+        })
+        .collect();
+    let (added, removed) = (&envelopes[0], &envelopes[1]);
+    // The add first.
     assert_eq!(added["ok"], true, "{added}");
     assert_eq!(removed["ok"], false, "{removed}");
     assert_eq!(removed["errors"][0]["code"], "conflict", "{removed}");
@@ -104,4 +109,18 @@ fn an_add_and_a_remove_at_one_revision_sent_together_are_one_edit_and_one_confli
     );
     // Nothing reached the file: the transaction holds the edit.
     assert_eq!(c.read_file("part.silico"), LINE);
+}
+
+#[test]
+fn replies_sent_together_are_read_whichever_the_server_wrote_first() {
+    // The reader the test above relies on, with the remove's reply (4) written before the
+    // add's (3), a notification between: each is given its own, and nothing waits.
+    let lines = [
+        r#"{"jsonrpc": "2.0", "id": 4, "result": {"which": "remove"}}"#,
+        r#"{"jsonrpc": "2.0", "method": "notifications/message", "params": {}}"#,
+        r#"{"jsonrpc": "2.0", "id": 3, "result": {"which": "add"}}"#,
+    ];
+    let mut next = lines.iter().map(|line| (*line).to_owned());
+    let got = crate::client::replies_in(|| next.next().unwrap(), &["3", "4"]);
+    assert_eq!(got, [lines[2], lines[0]]);
 }

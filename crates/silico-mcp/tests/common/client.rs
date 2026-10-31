@@ -56,6 +56,27 @@ pub struct Block {
 }
 
 /// A JSON-RPC error's code, ID, and its data's first error.
+/// The replies to `ids` (each JSON text) among the lines `next` gives, read until each has
+/// come, in the order of `ids`, whatever order they came in.
+pub fn replies_in(mut next: impl FnMut() -> String, ids: &[&str]) -> Vec<String> {
+    let wanted: Vec<Value> = ids
+        .iter()
+        .map(|id| serde_json::from_str(id).unwrap())
+        .collect();
+    let mut got: Vec<Option<String>> = vec![None; ids.len()];
+    while got.iter().any(Option::is_none) {
+        let line = next();
+        let message: Value = serde_json::from_str(&line).unwrap();
+        if message.get("method").is_some() {
+            continue;
+        }
+        if let Some(at) = wanted.iter().position(|id| message.get("id") == Some(id)) {
+            got[at] = Some(line);
+        }
+    }
+    got.into_iter().flatten().collect()
+}
+
 pub fn rpc_error(message: &Value) -> (i64, Value, Value) {
     assert!(message.get("result").is_none(), "{message}");
     (
@@ -305,6 +326,14 @@ impl Client {
             }
             before.push(message);
         }
+    }
+
+    /// The replies to the requests `ids` (each JSON text), each its line, in the order of
+    /// `ids`, however the server ordered them: it answers each call when that call is done,
+    /// so calls sent together needn't be answered in the order sent. Every other message
+    /// written meanwhile is dropped.
+    pub fn replies(&mut self, ids: &[&str]) -> Vec<String> {
+        replies_in(|| self.line(), ids)
     }
 
     /// Sends the request `method` with `params` (JSON text) as `id`, and gives its reply.
