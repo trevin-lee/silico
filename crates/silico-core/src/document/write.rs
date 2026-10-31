@@ -897,3 +897,71 @@ impl Writer {
 fn escaped(c: char) -> bool {
     matches!(c as u32, 0x7f..=0x9f | 0x2028 | 0x2029) || super::json::bidi_control(c)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Layout, Out, text};
+
+    /// An object of a number and an array of numbers, `n` its number: an item of the kind
+    /// `meshes` writes a body at a time.
+    fn item(n: usize) -> Out<'static> {
+        Out::Object(vec![
+            ("n", Out::Raw(n.to_string())),
+            (
+                "list",
+                Out::Array(vec![Out::Raw("1".to_owned()), Out::Raw("2".to_owned())]),
+            ),
+        ])
+    }
+
+    /// `items` items, as an array and as one made an item at a time, in an object, as a
+    /// result holds its bodies.
+    fn both(items: usize) -> (Out<'static>, Out<'static>) {
+        let array = Out::Object(vec![("bodies", Out::Array((0..items).map(item).collect()))]);
+        let each = Out::Object(vec![(
+            "bodies",
+            Out::Each(
+                (0..items)
+                    .map(|n| Box::new(move || item(n)) as Box<dyn Fn() -> Out<'static>>)
+                    .collect(),
+            ),
+        )]);
+        (array, each)
+    }
+
+    #[test]
+    fn an_array_made_an_item_at_a_time_is_written_as_the_array_of_its_items() {
+        for items in 0..=3 {
+            let (array, each) = both(items);
+            for layout in [Layout::Canonical, Layout::OneLine] {
+                assert_eq!(
+                    text(&each, layout, usize::MAX),
+                    text(&array, layout, usize::MAX),
+                    "{items} items, {layout:?}"
+                );
+            }
+        }
+        // By hand, one line: items between ", ", no line broken.
+        let (_, each) = both(2);
+        let line = text(&each, Layout::OneLine, usize::MAX).unwrap();
+        assert_eq!(
+            line,
+            r#"{"bodies": [{"n": 0, "list": [1, 2]}, {"n": 1, "list": [1, 2]}]}"#
+        );
+        assert!(!line.contains('\n'));
+        // Canonical: an item to a line.
+        assert_eq!(
+            text(&each, Layout::Canonical, usize::MAX).unwrap(),
+            "{\n  \"bodies\": [\n    {\"n\": 0, \"list\": [1, 2]},\n    {\"n\": 1, \"list\": [1, 2]}\n  ]\n}"
+        );
+        // Stopped at the limit, as the array is.
+        let (array, each) = both(3);
+        for limit in [0, 10, 40, 60] {
+            assert_eq!(
+                text(&each, Layout::OneLine, limit).is_err(),
+                text(&array, Layout::OneLine, limit).is_err(),
+                "{limit}"
+            );
+        }
+    }
+}
