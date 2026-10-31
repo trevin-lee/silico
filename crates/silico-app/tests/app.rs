@@ -1262,10 +1262,10 @@ fn a_waiting_command_on_another_marked_thread_isnt_this_ones() {
 
 #[test]
 fn stop_says_a_cancel_the_core_refuses() {
-    // Asked to stop a command that has answered since status said it ran: the core's
-    // refusal is said in the tab.
+    // Asked to stop a rebuild that has ended since status said it ran: the core's refusal
+    // is said in the tab.
     use silico_app::tab::Tab;
-    use silico_core::command::{RunningCommand, SessionCommand};
+    use silico_core::command::{RebuildState, RunningCommand, SessionCommand};
     let f = fixture();
     let path = f.file("example.silico", EXAMPLE);
     let opened = f.sessions.open(&path, false).wait();
@@ -1276,17 +1276,45 @@ fn stop_says_a_cancel_the_core_refuses() {
         &opened.result.unwrap().problems,
     );
     let mut status = f.sessions.status(&id).result.unwrap();
-    status.running = Some(RunningCommand::Command(SessionCommand::Check));
+    status.rebuild.state = RebuildState::Running;
     tab.status = Some(status);
     assert!(tab.stoppable());
     tab.stop(&f.sessions);
     let said = tab.message.clone().unwrap();
-    assert!(said.contains("no check is running in session"), "{said}");
-    // The session's own reload running: nothing to stop, the stop off.
-    if let Some(status) = &mut tab.status {
-        status.running = Some(RunningCommand::Reload);
+    assert!(said.contains("no rebuild is running in session"), "{said}");
+    // Esc's stop, or a dialog preview's, too late says nothing: there was nothing left to
+    // stop. With a selection, Esc clears it first, and stops nothing.
+    tab.message = None;
+    tab.stop_quietly(&f.sessions);
+    assert_eq!(tab.message, None);
+    tab.escape(&f.sessions);
+    assert_eq!(tab.message, None);
+    tab.selected = Some(silico_core::document::FeatureId::new("a91cw0de").unwrap());
+    tab.escape(&f.sessions);
+    assert_eq!(tab.selected, None);
+    assert_eq!(tab.message, None);
+    // No rebuild running: the stop off, whatever command runs (a command with no rebuild
+    // is its own dialog's to stop), and the session's own reload among them; in every
+    // state but running.
+    for state in [
+        RebuildState::Idle,
+        RebuildState::Done,
+        RebuildState::Faulted,
+        RebuildState::Stopped,
+    ] {
+        for running in [
+            Some(RunningCommand::Command(SessionCommand::Check)),
+            Some(RunningCommand::Command(SessionCommand::Export)),
+            Some(RunningCommand::Reload),
+            None,
+        ] {
+            if let Some(status) = &mut tab.status {
+                status.rebuild.state = state;
+                status.running = running;
+            }
+            assert!(!tab.stoppable(), "{state:?} {running:?}");
+        }
     }
-    assert!(!tab.stoppable());
 }
 
 #[test]
@@ -3506,6 +3534,8 @@ fn esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_dialog_second() {
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
+    // A refusal said before: the stop, succeeding, clears it.
+    h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the rebuild stopped", |h| {
         h.state().tabs()[0].status.as_ref().is_some_and(|status| {
@@ -3517,6 +3547,7 @@ fn esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_dialog_second() {
     }
     assert!(dialog_open(&h));
     assert!(!h.state().tabs()[0].preview_rebuilding());
+    assert_eq!(h.state().tabs()[0].message, None);
     assert!(!h.state().tabs()[0].sent.contains(&Sent::Undo(None)));
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -4984,6 +5015,98 @@ fn a_refused_body_read_is_read_again_and_no_add_goes_until_it_answers() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- The stop: `cancel` naming the rebuild (decision 34, as amended) ----
+
+/// The Block made 41 long, through the tab, with every box held: its rebuild runs, started
+/// by the frame's published read, no command waiting on it.
+fn edit_the_block_held(f: &Fixture, h: &mut AppHarness) -> Hold {
+    let hold = f.kernel.hold(is_box);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.edit(
+            &sessions,
+            silico_app::tab::Edit {
+                feature: silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+                field: "length".to_owned(),
+                value: json::read(b"41").unwrap(),
+            },
+        );
+    }
+    step_until(h, "the rebuild running, no command waiting", |h| {
+        h.state().tabs()[0].transaction
+            && h.state().tabs()[0].status.as_ref().is_some_and(|status| {
+                status.rebuild.state == silico_core::command::RebuildState::Running
+                    && status.running.is_none()
+            })
+    });
+    hold
+}
+
+fn rebuild_stopped(h: &AppHarness) -> bool {
+    h.state().tabs()[0]
+        .status
+        .as_ref()
+        .is_some_and(|status| status.rebuild.state == silico_core::command::RebuildState::Stopped)
+}
+
+#[test]
+fn stop_is_on_while_a_rebuild_runs_with_no_command_and_stops_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let hold = edit_the_block_held(&f, &mut h);
+    let stop = |h: &AppHarness| {
+        h.query_all_by_role_and_label(Role::Button, "Stop")
+            .last()
+            .unwrap()
+            .accesskit_node()
+            .is_disabled()
+    };
+    step_until(&mut h, "Stop on", |h| !stop(h));
+    // A refusal said before: a stop that succeeds clears it.
+    h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
+    h.query_all_by_role_and_label(Role::Button, "Stop")
+        .last()
+        .unwrap()
+        .click();
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    // Frames climb, the stop holds, and nothing was refused.
+    let before = h.state().frames();
+    for _ in 0..30 {
+        step(&mut h);
+        assert!(rebuild_stopped(&h));
+    }
+    assert_eq!(h.state().frames(), before + 30);
+    assert!(stop(&h));
+    assert_eq!(h.state().tabs()[0].message, None);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_stops_a_rebuild_running_with_no_command_and_with_none_does_nothing() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    // Nothing running: Esc says nothing.
+    h.key_press(eframe::egui::Key::Escape);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].message, None);
+    let hold = edit_the_block_held(&f, &mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(rebuild_stopped(&h));
+    assert_eq!(h.state().tabs()[0].message, None);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- #325's mutants: the frame asked for, a toggle loaded, a pick at once ----
 
 /// Whether the last frame asked for the next at once (`request_repaint`), not the idle one.
@@ -5009,10 +5132,14 @@ fn an_open_dialog_with_nothing_to_send_asks_for_no_frame_at_once() {
     create(&mut h, "Box");
     added(&mut h);
     settled(&mut h);
+    quiet_wakes(&mut h);
     idle(&mut h);
+    // A frame the core's waker asked for (an answer coming in late) may ask for the next;
+    // one it didn't, mustn't.
     for _ in 0..10 {
+        let woken = h.state().wakes();
         step(&mut h);
-        assert!(!asked_at_once(&h));
+        assert!(!asked_at_once(&h) || h.state().wakes() != woken);
     }
     assert!(dialog_open(&h));
     assert_eq!(never_waits::waits(), 0);
@@ -5082,5 +5209,243 @@ fn a_tab_is_unsettled_while_anything_of_its_is_under_way() {
     check.wait();
     settled(&mut h);
     assert!(!h.state().tabs()[0].unsettled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Every request held from the open: the first rebuild runs, and Stop clicked stops it,
+/// nothing published.
+fn first_rebuild_stopped(f: &Fixture) -> (AppHarness, Hold) {
+    first_rebuild_stopped_in(f, f.app())
+}
+
+/// [`first_rebuild_stopped`], in `h`.
+fn first_rebuild_stopped_in(f: &Fixture, mut h: AppHarness) -> (AppHarness, Hold) {
+    let hold = f.kernel.hold(|_| true);
+    let path = f.file("example.silico", EXAMPLE);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    let stop = |h: &AppHarness| {
+        h.query_all_by_role_and_label(Role::Button, "Stop")
+            .last()
+            .is_some_and(|stop| !stop.accesskit_node().is_disabled())
+    };
+    step_until(&mut h, "Stop on", stop);
+    h.query_all_by_role_and_label(Role::Button, "Stop")
+        .last()
+        .unwrap()
+        .click();
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    (h, hold)
+}
+
+/// Stepped until the core has nothing more to tell the app: its wakes flat over ten frames,
+/// each given a little while for an answer to come.
+fn quiet_wakes(h: &mut AppHarness) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let before = h.state().wakes();
+        for _ in 0..10 {
+            step(h);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if h.state().wakes() == before {
+            return;
+        }
+        assert!(Instant::now() < deadline, "the wakes never settled");
+    }
+}
+
+/// How many times the fake was asked for a box.
+fn boxes_asked(f: &Fixture) -> usize {
+    f.kernel
+        .calls()
+        .iter()
+        .filter(|call| is_box(&call.op))
+        .count()
+}
+
+#[test]
+fn a_stop_of_the_first_rebuild_holds_with_nothing_published() {
+    // The first rebuild stopped, nothing published: its timeline isn't read of the current
+    // model again (which would start the rebuild again), so the stop holds until an edit,
+    // or Rebuild.
+    let f = fixture();
+    let (mut h, hold) = first_rebuild_stopped(&f);
+    quiet_wakes(&mut h);
+    assert!(rebuild_stopped(&h));
+    assert_eq!(boxes_asked(&f), 1);
+    assert_eq!(h.state().tabs()[0].message, None);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_stopped_rebuild_with_nothing_published_reads_nothing_more_and_asks_for_no_frame() {
+    // A read of the published model is refused for want of one, and one of the current model
+    // would undo the stop: nothing is read, nothing wakes the app, and the frame asked for is
+    // the idle one.
+    let f = fixture();
+    // Time barely moves from frame to frame, so the frame asked for reads as it was asked.
+    let h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0, 800.0))
+            .with_step_dt(0.001)
+            .build_ui_state(
+                |ui, app: &mut App<Fake>| app.frame(ui),
+                App::new(Arc::clone(&f.sessions)),
+            )
+    };
+    let (mut h, hold) = first_rebuild_stopped_in(&f, h);
+    quiet_wakes(&mut h);
+    let woken = h.state().wakes();
+    for _ in 0..30 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(h.state().wakes(), woken);
+    let delay = h
+        .output()
+        .viewport_output
+        .get(&eframe::egui::ViewportId::ROOT)
+        .map(|viewport| viewport.repaint_delay);
+    assert!(
+        delay.is_some_and(|delay| {
+            delay > silico_core::disk::DISK_CHECK_INTERVAL && delay <= IDLE_FRAME
+        }),
+        "{delay:?}"
+    );
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// From the first rebuild stopped: the panes say so, `rebuild` (Rebuild clicked, or Ctrl+B)
+/// starts it again, from a read of the current model, and once it's built the timeline
+/// shows and Rebuild is off.
+fn rebuilt_after_the_stop(rebuild: impl Fn(&mut AppHarness)) {
+    let f = fixture();
+    let (mut h, hold) = first_rebuild_stopped(&f);
+    quiet_wakes(&mut h);
+    let rebuild_on = |h: &AppHarness| {
+        !h.get_by_role_and_label(Role::Button, "Rebuild")
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(rebuild_on(&h));
+    assert!(shows(&h, "Timeline", "Rebuild stopped"));
+    assert!(shows(&h, "Browser", "Rebuild stopped"));
+    assert_eq!(boxes_asked(&f), 1);
+    rebuild(&mut h);
+    step_until(&mut h, "the box asked again", |_| boxes_asked(&f) == 2);
+    hold.release();
+    step_until(&mut h, "the timeline", |h| shows(h, "Timeline", "Hole"));
+    assert!(!rebuild_on(&h));
+    assert!(!rebuild_stopped(&h));
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn rebuild_clicked_after_a_stop_rebuilds_and_shows_the_timeline() {
+    rebuilt_after_the_stop(|h| {
+        h.get_by_role_and_label(Role::Button, "Rebuild").click();
+        step(h);
+    });
+}
+
+#[test]
+fn ctrl_b_after_a_stop_rebuilds_and_shows_the_timeline() {
+    rebuilt_after_the_stop(|h| {
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::B);
+        step(h);
+    });
+}
+
+#[test]
+fn esc_clears_the_selection_before_it_stops_the_rebuild() {
+    // Section 3's order: with a selection held and a rebuild held, Esc clears the selection;
+    // a second Esc stops the rebuild.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    let hold = edit_the_block_held(&f, &mut h);
+    h.state_mut().tabs_mut()[0].selected =
+        Some(silico_core::document::FeatureId::new("a91cw0de").unwrap());
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].selected, None);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(!rebuild_stopped(&h));
+    assert!(h.state().tabs()[0].stoppable());
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_b_while_a_rebuild_runs_reads_nothing() {
+    // Rebuild is only for a stopped rebuild: with one running, Ctrl+B asks nothing (a read
+    // of the current model would be the command running, waiting on it).
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let hold = edit_the_block_held(&f, &mut h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::B);
+    for _ in 0..10 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(2));
+        assert_eq!(
+            h.state().tabs()[0]
+                .status
+                .as_ref()
+                .and_then(|status| status.running),
+            None
+        );
+    }
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn rebuild_twice_before_the_session_starts_it_sends_one_read() {
+    let f = fixture();
+    let (mut h, hold) = first_rebuild_stopped(&f);
+    quiet_wakes(&mut h);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        assert!(tab.can_rebuild());
+        tab.rebuild(&sessions);
+        // Its read out: Rebuild off, and a second sends nothing.
+        assert!(!tab.can_rebuild());
+        tab.rebuild(&sessions);
+        assert_eq!(tab.rebuilds, 1);
+    }
+    step(&mut h);
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Rebuild")
+            .accesskit_node()
+            .is_disabled()
+    );
+    hold.release();
+    step_until(&mut h, "the timeline", |h| shows(h, "Timeline", "Hole"));
+    assert_eq!(h.state().tabs()[0].rebuilds, 1);
+    // Stopped again (an edit's rebuild): Rebuild is on again.
+    let hold = edit_the_block_held(&f, &mut h);
+    h.query_all_by_role_and_label(Role::Button, "Stop")
+        .last()
+        .unwrap()
+        .click();
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    step_until(&mut h, "Rebuild on", |h| {
+        !h.get_by_role_and_label(Role::Button, "Rebuild")
+            .accesskit_node()
+            .is_disabled()
+    });
+    hold.release();
     assert_eq!(never_waits::waits(), 0);
 }
