@@ -1,18 +1,18 @@
 //! Hostile scenes for the point each face is drawn about (`/break-it` on
 //! crates/silico-render/src/render.rs at 2ec921e6: each face uploaded about its own box's
 //! centre, `View::anchor` choosing per face and per view between that centre and the
-//! camera's point by the corner's sec²; `settle` dropping a face's meshes about another
-//! point or in the colour it isn't drawn in; and the edges built each view about the
-//! camera's point). Its cases at the check's own limits (a field of view of 0.001°, the
-//! least orthographic zoom on a kilometre slab, a near plane a millionth of a kilometre's
-//! reach), which fail as M4.6's renderer failed them, wait on the maintainer, on the
-//! branch `break-it-render-check-limits`.
+//! camera's point by the corner's sec² and, orthographic, the target's distance against the
+//! face's half diagonal; `settle` dropping a face's meshes about another point or in the
+//! colour it isn't drawn in; and the edges built each view about the camera's point).
 //!
 //! What's drawn is checked against a projection or a ray cast by hand in f64 here, or
 //! against a fresh worker's drawing byte for byte, never against a stored image.
 
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 
+use proptest::prelude::*;
+use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use silico_core::worker::{Worker, WorkerKind};
 use silico_protocol::{
     Camera, EDGE_BIT, Generation, MIN_VIEW_HEIGHT_OF_REACH, Mesh, Op, PixelId, Projection,
@@ -160,6 +160,68 @@ fn cast(scene: &RenderScene, low: [f64; 3], size: [f64; 3], u: f64, v: f64) -> P
     }
 }
 
+/// The ray through the pixel at `(u, v)`: its origin and unit direction.
+fn ray(scene: &RenderScene, u: f64, v: f64) -> ([f64; 3], [f64; 3]) {
+    let c = &scene.camera;
+    let (forward, right, up) = basis(c);
+    let (w, h) = (f64::from(scene.width), f64::from(scene.height));
+    let (x, y) = (2.0 * u / w - 1.0, 1.0 - 2.0 * v / h);
+    match c.projection {
+        Projection::Orthographic { view_height } => {
+            let half = view_height / 2.0;
+            let on = along(along(c.target, right, x * half * w / h), up, y * half);
+            (along(on, forward, -1e7), forward)
+        }
+        Projection::Perspective { field_of_view } => {
+            let t = libm::tan((field_of_view / 2.0).to_radians());
+            (
+                c.eye,
+                unit(along(along(forward, right, x * t * w / h), up, y * t)),
+            )
+        }
+    }
+}
+
+/// The face the ray through the pixel at `(u, v)` leaves the box at `low` of `size` by, and
+/// how far it is from the face it enters by, along the ray.
+fn exit(scene: &RenderScene, low: [f64; 3], size: [f64; 3], u: f64, v: f64) -> Option<(u32, f64)> {
+    let (origin, dir) = ray(scene, u, v);
+    let origin = sub(origin, low);
+    let (mut near, mut far, mut face) = (f64::NEG_INFINITY, f64::INFINITY, 0);
+    for k in 0..3 {
+        if dir[k] == 0.0 {
+            continue;
+        }
+        let (t0, t1) = ((0.0 - origin[k]) / dir[k], (size[k] - origin[k]) / dir[k]);
+        let (enter, leave, side) = if t0 < t1 { (t0, t1, 1) } else { (t1, t0, 0) };
+        near = near.max(enter);
+        if leave < far {
+            far = leave;
+            face = 2 * u32::try_from(k).unwrap() + 1 + side;
+        }
+    }
+    (near <= far).then_some((face, far - near))
+}
+
+/// The misses of [`cast_misses`] that aren't a face behind the one in front less than
+/// `depth` behind it along the ray, where f32's depth can't tell them apart.
+fn misses_past_depth(
+    scene: &RenderScene,
+    low: [f64; 3],
+    size: [f64; 3],
+    misses: Vec<Miss>,
+    depth: f64,
+) -> Vec<Miss> {
+    misses
+        .into_iter()
+        .filter(|&((col, row), got, _)| {
+            let centre = |n: i64| n as f64 + 0.5;
+            !exit(scene, low, size, centre(col), centre(row))
+                .is_some_and(|(face, behind)| got == [1, face] && behind < depth)
+        })
+        .collect()
+}
+
 /// Whether the pixel at `(col, row)` is within 2.5 pixels of where the edge `edge` of
 /// `scene`'s first body projects: an edge is drawn 2 pixels wide however thin its faces
 /// are, so beside a body thinner than the casts' half pixel its pixels are the edge's.
@@ -263,7 +325,7 @@ fn rod_from_the_front(y: f64) -> RenderScene {
 
 #[test]
 fn an_orthographic_target_far_along_the_ray_from_a_long_face_draws_its_end_where_it_is() {
-    // Was a break: a target 6e5 in front of (or behind) the rod's front face is farther from the
+    // BREAKS: a target 6e5 in front of (or behind) the rod's front face is farther from the
     // face's box than its half diagonal (5e5), so `View::anchor` keeps the face about its
     // centre (5e5, 0, 0.5) though f32 about it misses (5e5 × 2^-22 = 0.12 mm against an
     // eighth of a 2.85e-3 mm pixel). The centre's offset from the target across the view,
@@ -297,7 +359,7 @@ fn an_orthographic_target_far_along_the_ray_from_a_long_face_draws_its_end_where
 
 #[test]
 fn an_orthographic_image_doesnt_depend_on_where_along_its_ray_the_target_is() {
-    // Was a break (as above, the same cause): every pixel clear of a boundary is the same with
+    // BREAKS (as above, the same cause): every pixel clear of a boundary is the same with
     // the target on the rod's face and 6e5 along the ray either way, as the design says of
     // an orthographic view (only the eye's direction counts).
     let mut w = worker();
@@ -397,6 +459,71 @@ fn edges_off_their_projection(
 }
 
 #[test]
+fn at_the_narrowest_field_of_view_the_edges_lie_where_the_box_projects_them() {
+    // BREAKS: the edges are built about the eye, each point's offset from it (some 3e4 to
+    // 7e4 mm on each axis) in f32, rounded to 1/256 or 1/128 mm on each, and rotated by the
+    // view's rotation in f32 (each entry to 2^-25): by a model of that f32 arithmetic, the
+    // box's corners move 2 to 16 pixels across the view (a pixel is 4.26e-4 mm), so its
+    // edges are drawn up to 16 pixels from where they project. The faces, each about its
+    // own centre (0.1 mm across, far inside the precision rule), no longer move with them:
+    // M4.6 drew the faces about the eye too, so faces and edges were off together; now they
+    // part, and the ID buffer gives an edge across a face.
+    let mut w = worker();
+    let scene = far_narrow_view(1e-3, 0.1);
+    let (_, ids) = draw(&mut w, &scene);
+    let off = edges_off_their_projection(&scene, &ids, &SEEN_FROM_BELOW);
+    // Where each edge missed is drawn instead: its nearest pixel to the projection, in
+    // pixels (none if it isn't drawn at all, as hidden behind a face).
+    let nearest: Vec<(u32, u32, Option<f64>)> = off
+        .iter()
+        .map(|&(edge, k, col, row)| {
+            let d = (0..ids.len())
+                .filter(|&i| ids[i] == [1, EDGE_BIT | edge])
+                .map(|i| {
+                    let (c, r) = ((i % 384) as f64 + 0.5, (i / 384) as f64 + 0.5);
+                    ((c - col) * (c - col) + (r - row) * (r - row)).sqrt()
+                })
+                .fold(None, |m: Option<f64>, d| Some(m.map_or(d, |m| m.min(d))));
+            (edge, k, d)
+        })
+        .collect();
+    assert!(
+        off.is_empty(),
+        "{} tenths of the 9 edges in view drawn off their projection by hand (edge, tenth, \
+         nearest pixel of its ID, in pixels): {:?}",
+        off.len(),
+        nearest
+    );
+}
+
+#[test]
+fn at_the_narrowest_field_of_view_no_face_behind_the_box_is_drawn() {
+    // BREAKS (f32's depth, from M4.6, not this change): from (+x, +y, −z), a box shows its
+    // faces 2, 4, and 5 alone, and every other pixel clear of a boundary is what a ray cast
+    // by hand sees. Drawn 99,999 mm off at 0.001°, the depths are f32 at 1e5 mm (a step of
+    // 1/128 mm, the depth buffer's 6e-3 mm) while a pixel is 4.26e-4 mm across, so two faces
+    // meeting at an edge are told apart only some 14 pixels from it: Face6 (z high, behind)
+    // is drawn over Face4 along their edge. The check allows the angle whatever the image's
+    // height: narrowest at 4096 rows, depth and position in f32 are 13 pixels coarse.
+    let mut w = worker();
+    let scene = far_narrow_view(1e-3, 0.1);
+    let (_, ids) = draw(&mut w, &scene);
+    let behind: usize = [1, 3, 6]
+        .iter()
+        .map(|f| ids.iter().filter(|id| **id == [1, *f]).count())
+        .sum();
+    let (wrong, on) = cast_misses(&scene, [0.0; 3], [0.1; 3], &ids, 2);
+    assert!(on > 5_000, "the box is checked at only {on} pixels");
+    assert!(
+        behind == 0 && wrong.is_empty(),
+        "{behind} pixels of faces 1, 3, and 6, behind the box; {} pixels clear of a boundary \
+         aren't what a ray cast sees, the first {:?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(5)]
+    );
+}
+
+#[test]
 fn at_a_usual_field_of_view_the_same_box_draws_its_faces_and_edges_where_they_are() {
     // The helpers' own check: the same box from the same direction 20 mm off at 1°, 256 by
     // 256 (a pixel 20 × 2 tan 0.5° / 256 = 1.36e-3 mm, the box about 70 pixels across):
@@ -417,6 +544,42 @@ fn at_a_usual_field_of_view_the_same_box_draws_its_faces_and_edges_where_they_ar
     for hidden in [3, 4, 12] {
         assert!(!ids.contains(&[1, EDGE_BIT | hidden]), "Edge{hidden} drawn");
     }
+}
+
+// ---------------------------------------------------------------------------------------
+// The near plane: a millionth of the scene's reach from the eye.
+
+#[test]
+fn a_close_look_at_a_small_box_beside_a_body_a_kilometre_off_still_sees_the_box() {
+    // BREAKS (from M4.6, in `View::of`, not this change): the near plane is a millionth of
+    // the farthest point's distance from the eye, so a second body 1e6 mm off (the
+    // document's largest length) puts it 1 mm out, past the box's front face 0.5 mm in
+    // front of the eye: the face is clipped whole and the eye sees the box's back face
+    // from inside. By hand, the eye 0.5 mm in front of the front face's centre looking at
+    // it, 60° across: the whole image is the front face (it spans ±0.5 mm, the view at 0.5
+    // mm ±0.29 mm high). The box alone (reach 1.5 mm, near plane 1.5e-6 mm) is drawn so.
+    let mut w = worker();
+    let scene = |bodies: Vec<RenderBody>| RenderScene {
+        bodies,
+        camera: Camera {
+            projection: Projection::Perspective {
+                field_of_view: 60.0,
+            },
+            eye: [0.5, -0.5, 0.5],
+            target: [0.5, 0.0, 0.5],
+            up: [0.0, 0.0, 1.0],
+        },
+        width: 64,
+        height: 48,
+        ids: true,
+    };
+    let the_box = || body(1, box_mesh([0.0; 3], [1.0; 3]));
+    let (_, alone) = draw(&mut w, &scene(vec![the_box()]));
+    assert!(alone.iter().all(|id| *id == FRONT), "alone: {:?}", alone[0]);
+    let far = body(2, box_mesh([1e6, 0.0, 0.0], [1.0; 3]));
+    let (_, ids) = draw(&mut w, &scene(vec![the_box(), far]));
+    let centre = at(&ids, 64, 32, 24);
+    assert_eq!(centre, FRONT, "with a body 1e6 off");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -471,6 +634,339 @@ fn a_sequence_that_moves_faces_between_their_centres_and_the_eye_draws_as_a_fres
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Random long slabs seen close, perspective, and orthographic at their least zoom with the
+// target anywhere along the ray, two views each from one worker, every clear pixel against
+// a ray cast by hand.
+
+/// A slab: one side long (up to the document's largest length), two short, at an offset
+/// biased to where f32 runs out.
+fn slab() -> impl Strategy<Value = ([f64; 3], [f64; 3])> {
+    let long = prop_oneof![Just(1e6), Just(1e5), 1e3..1e6f64, 10.0..1e3f64];
+    let short = || prop_oneof![Just(1.0), 0.5..20.0f64];
+    let offset = prop_oneof![Just(0.0), Just(1e9), Just(-1e9), -1e6..1e6f64];
+    (
+        0..3usize,
+        long,
+        short(),
+        short(),
+        prop::array::uniform3(offset),
+    )
+        .prop_map(|(axis, long, a, b, low)| {
+            let mut size = [a, b, a];
+            size[axis] = long;
+            size[(axis + 1) % 3] = a;
+            size[(axis + 2) % 3] = b;
+            (low, size)
+        })
+}
+
+/// A place along a side, as a fraction: its ends and next to them, its middle, or anywhere.
+fn fraction() -> impl Strategy<Value = f64> {
+    prop_oneof![
+        Just(0.0),
+        Just(1e-6),
+        Just(0.5),
+        Just(1.0 - 1e-6),
+        Just(1.0),
+        0.0..1.0f64
+    ]
+}
+
+/// How a slab is seen: from which of its faces, where on it, how far, how tilted, and the
+/// projection's numbers; and a second view's move.
+#[derive(Debug, Clone)]
+struct Look {
+    face: usize,
+    u: f64,
+    v: f64,
+    distance: f64,
+    tilt: [f64; 2],
+    up: [f64; 3],
+    perspective: bool,
+    fov: f64,
+    zoom: f64,
+    along: f64,
+    tall: bool,
+    step: [f64; 3],
+}
+
+fn look() -> impl Strategy<Value = Look> {
+    (
+        (
+            0..6usize,
+            fraction(),
+            fraction(),
+            prop_oneof![Just(1e-2), 1e-2..50.0f64, 50.0..1e4f64],
+            prop::array::uniform2(prop_oneof![Just(0.0), -1.5..1.5f64]),
+            prop::array::uniform3(-1.0..1.0f64),
+        ),
+        (
+            any::<bool>(),
+            prop_oneof![Just(0.5), 0.5..120.0f64],
+            prop_oneof![Just(1.0001), 1.0..10.0f64, 10.0..1e4f64],
+            prop_oneof![Just(0.0), Just(-1.0), Just(1.0), -1.0..1.0f64],
+            any::<bool>(),
+            prop::array::uniform3(prop_oneof![Just(0.0), -1e-2..1e-2f64, -1.0..1.0f64]),
+        ),
+    )
+        .prop_map(
+            |((face, u, v, distance, tilt, up), (perspective, fov, zoom, along, tall, step))| {
+                Look {
+                    face,
+                    u,
+                    v,
+                    distance,
+                    tilt,
+                    up,
+                    perspective,
+                    fov,
+                    zoom,
+                    along,
+                    tall,
+                    step,
+                }
+            },
+        )
+}
+
+/// The scene of the slab at `low` of `size` from `look`, its eye moved by `step` (the
+/// second view), or none where the numbers make no view, or one whose near plane (a
+/// millionth of the reach) could clip what's seen (that's the near plane's test above).
+fn scene_of(low: [f64; 3], size: [f64; 3], look: &Look, step: [f64; 3]) -> Option<RenderScene> {
+    let axis = look.face / 2;
+    let high = look.face % 2 == 1;
+    let (a, b) = ((axis + 1) % 3, (axis + 2) % 3);
+    let mut point = low;
+    point[axis] += if high { size[axis] } else { 0.0 };
+    point[a] += size[a] * look.u;
+    point[b] += size[b] * look.v;
+    let mut outward = [0.0; 3];
+    outward[axis] = if high { 1.0 } else { -1.0 };
+    let mut toward = outward.map(|c| -c);
+    toward[a] += look.tilt[0];
+    toward[b] += look.tilt[1];
+    let toward = unit(toward);
+    let (eye, target, projection) = if look.perspective {
+        let eye = along(along(point, outward, look.distance), step, 1.0);
+        let target = along(eye, toward, 10.0);
+        (
+            eye,
+            target,
+            Projection::Perspective {
+                field_of_view: look.fov,
+            },
+        )
+    } else {
+        // The target on the face's point, then anywhere along the ray up to the slab's
+        // length either way.
+        let longest = size.iter().fold(0.0f64, |m, s| m.max(*s));
+        let target = along(along(point, toward, look.along * longest), step, 1.0);
+        let eye = along(target, toward, -10.0);
+        (eye, target, Projection::Orthographic { view_height: 1.0 })
+    };
+    let (width, height) = if look.tall { (40, 2048) } else { (64, 48) };
+    let mut scene = RenderScene {
+        bodies: vec![body(1, box_mesh(low, size))],
+        camera: Camera {
+            projection,
+            eye,
+            target,
+            up: look.up,
+        },
+        width,
+        height,
+        ids: true,
+    };
+    if scene.camera.check().is_err() {
+        return None;
+    }
+    match look.perspective {
+        true => {
+            let reach = scene.reach(eye).max(look.distance + 10.0);
+            if look.distance < 8e-6 * reach {
+                return None;
+            }
+        }
+        false => {
+            let reach = scene.reach(target);
+            scene.camera.projection = Projection::Orthographic {
+                view_height: (reach * MIN_VIEW_HEIGHT_OF_REACH * look.zoom).max(1e-6),
+            };
+        }
+    }
+    scene.check().is_ok().then_some(scene)
+}
+
+/// [`random_close_looks_at_long_slabs_draw_every_clear_pixel_as_a_ray_cast_by_hand_sees_it`],
+/// in perspective alone if `perspective`.
+fn random_close_looks(perspective: bool) {
+    let w = RefCell::new(worker());
+    let mut runner = TestRunner::new_with_rng(
+        Config {
+            cases: 1000,
+            failure_persistence: None,
+            // Each shrink draws again: a few dozen find the smallest case well enough.
+            max_shrink_iters: 64,
+            ..Config::default()
+        },
+        TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+    );
+    let drawn = Cell::new(0usize);
+    let seen = Cell::new(0usize);
+    runner
+        .run(&(slab(), look()), |((low, size), mut look)| {
+            look.perspective |= perspective;
+            for (k, step) in [[0.0; 3], look.step].into_iter().enumerate() {
+                let Some(scene) = scene_of(low, size, &look, step) else {
+                    continue;
+                };
+                let (_, ids) = draw(&mut w.borrow_mut(), &scene);
+                drawn.set(drawn.get() + 1);
+                let (wrong, on) = cast_misses(&scene, low, size, &ids, 1);
+                // f32's depth over the scene's depth (orthographic: the camera its reach
+                // and more behind the target; perspective: positions from the eye) can't
+                // tell a face from one this near behind it: that's
+                // `a_long_slab_seen_from_its_end_...`'s break, not the anchor's.
+                let from = match scene.camera.projection {
+                    Projection::Orthographic { .. } => scene.camera.target,
+                    Projection::Perspective { .. } => scene.camera.eye,
+                };
+                let depth = 4.0 * scene.reach(from) * f64::from(f32::EPSILON);
+                // The edges, about the camera's point, are off on their own (the tests of
+                // the edges above): only the faces are held to the cast here.
+                let wrong: Vec<_> = misses_past_depth(&scene, low, size, wrong, depth)
+                    .into_iter()
+                    .filter(|&(_, got, _)| got[1] & EDGE_BIT == 0)
+                    .collect();
+                if on > 0 {
+                    seen.set(seen.get() + 1);
+                }
+                prop_assert!(
+                    wrong.is_empty(),
+                    "view {k} of the slab at {low:?} of {size:?}, {}x{}: {:?}: {} pixels \
+                     clear of a boundary differ (at, got, want), the first {:?}",
+                    scene.width,
+                    scene.height,
+                    scene.camera,
+                    wrong.len(),
+                    &wrong[..wrong.len().min(5)]
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert!(drawn.get() > 1200, "only {} views drawn", drawn.get());
+    assert!(
+        seen.get() * 2 > drawn.get(),
+        "the slab seen clear of its boundaries in only {} of {} views",
+        seen.get(),
+        drawn.get()
+    );
+}
+
+#[test]
+fn random_close_looks_at_long_slabs_draw_every_clear_pixel_as_a_ray_cast_by_hand_sees_it() {
+    // BREAKS (the orthographic anchor, as in
+    // `an_orthographic_target_far_along_the_ray_from_a_long_face_draws_its_end_where_it_is`):
+    // its smallest case is the slab 1 × 1 × 1e6 from the origin seen level along
+    // (1, −1.164, 0), the target 1e6 mm along the ray toward the eye from its corner and
+    // 0.73 mm aside, at the least height (14.14 mm over 2048 rows): Face1 (x low, 1 × 1e6,
+    // half diagonal 5e5) is farther from the target than its half diagonal, so it's drawn
+    // about its centre, its corners ±5e5 along z rotated in f32, and lands some 3 pixels
+    // off: 22 pixels clear of a boundary are Face1 where the cast sees nothing.
+    random_close_looks(false);
+}
+
+#[test]
+fn random_close_perspective_looks_at_long_slabs_draw_every_clear_face_pixel_as_a_ray_cast_sees_it()
+{
+    // The perspective half alone, so the orthographic break above doesn't end the run
+    // before it: each face about its centre or the eye by the corner's sec².
+    //
+    // BREAKS (the rasterizer, on the eye's path from M4.6): its smallest case is
+    // `a_long_face_seen_close_from_before_its_middle_at_a_narrow_angle_is_drawn_whole`'s.
+    random_close_looks(true);
+}
+
+/// The proptest's smallest failing case: the slab 679401.37 × 1 × 1 from the origin, seen
+/// orthographic from its end, the target its corner (0, 0, 0), from (−x, below) 20° up
+/// ((1, 0, 0.364) along the view), up nearly −z, at 1.0001 times the least height its reach
+/// allows (6.795 mm over 2048 rows); with its top (Face6) as `box_mesh` meshes it, two
+/// triangles 679 m long, or as a strip of `pieces` along x.
+fn slab_seen_from_its_end(pieces: u32) -> RenderScene {
+    let length = 679_401.368_106_674_8;
+    let mut mesh = box_mesh([0.0; 3], [length, 1.0, 1.0]);
+    if pieces > 1 {
+        mesh.triangles.truncate(10);
+        mesh.face_triangles[5] = 2 * pieces;
+        for k in 0..pieces {
+            let x = |k: u32| length * f64::from(k) / f64::from(pieces);
+            let base = u32::try_from(mesh.positions.len()).unwrap();
+            mesh.positions.extend([
+                [x(k), 0.0, 1.0],
+                [x(k + 1), 0.0, 1.0],
+                [x(k + 1), 1.0, 1.0],
+                [x(k), 1.0, 1.0],
+            ]);
+            mesh.normals.extend([[0.0, 0.0, 1.0]; 4]);
+            mesh.triangles
+                .extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
+        }
+    }
+    let toward = unit([1.0, 0.0, 0.363_841_726_542_431_6]);
+    let mut scene = RenderScene {
+        bodies: vec![body(1, mesh)],
+        camera: Camera {
+            projection: Projection::Orthographic { view_height: 1.0 },
+            eye: along([0.0; 3], toward, -10.0),
+            target: [0.0; 3],
+            up: [0.0, 0.0, -0.038_032_593_566_032_88],
+        },
+        width: 40,
+        height: 2048,
+        ids: true,
+    };
+    let reach = scene.reach([0.0; 3]);
+    scene.camera.projection = Projection::Orthographic {
+        view_height: reach * MIN_VIEW_HEIGHT_OF_REACH * 1.0001,
+    };
+    scene
+}
+
+#[test]
+fn a_long_slab_seen_from_its_end_at_the_least_zoom_shows_its_end_not_its_hidden_top() {
+    // BREAKS (f32's depth, from M4.6: the top is drawn about the target, as M4.6 drew every
+    // face, and the camera sits the scene's reach and more behind the target): from below
+    // its end, the slab shows its end (Face1) and its bottom (Face5); its top (Face6) is
+    // behind both. By hand, the end projects 0.94 mm down from the target, rows 1024 to
+    // 1308.6, and every pixel clear of a boundary there is the end; drawn, Face6 shows
+    // through it in the 12 rows above their shared edge (141 pixels clear of a boundary),
+    // where the ray leaves by the top less than 0.12 mm behind the end. Every depth is
+    // about 6.9e5 mm from the camera, f32 to 1/16 mm, and the depth buffer spans 1.37e6 mm:
+    // at the least height the check allows (1e-5 of the reach), a pixel is 3.3e-3 mm, and
+    // a face less than some 0.1 mm behind another is drawn through it. Meshed as a strip of
+    // 1000 pieces, each 679 mm long, the top is drawn through it the same: not the
+    // triangles' size.
+    let mut w = worker();
+    let mut misses = vec![];
+    for pieces in [1000, 1] {
+        let scene = slab_seen_from_its_end(pieces);
+        let (_, ids) = draw(&mut w, &scene);
+        let size = [679_401.368_106_674_8, 1.0, 1.0];
+        let (wrong, on) = cast_misses(&scene, [0.0; 3], size, &ids, 1);
+        assert!(on > 1_000, "{pieces} pieces: {on}");
+        if !wrong.is_empty() {
+            misses.push((pieces, wrong.len(), wrong[0]));
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "the top in pieces: how many pixels clear of a boundary differ, and the first (at, \
+         got, want): {misses:?}"
+    );
+}
+
 /// The pixels of `ids` drawn as an edge of `scene`'s first body more than 2.5 pixels from
 /// where that edge projects.
 fn edge_pixels_off(scene: &RenderScene, ids: &[PixelId]) -> Vec<(i64, i64, u32)> {
@@ -492,7 +988,7 @@ fn edge_pixels_off(scene: &RenderScene, ids: &[PixelId]) -> Vec<(i64, i64, u32)>
 #[test]
 fn an_oblique_orthographic_view_with_its_target_a_kilometre_along_the_ray_draws_its_edges_where_they_are()
  {
-    // Was a break (the edges about the camera's point; M4.6 drew the faces so too): the
+    // BREAKS (the edges about the camera's point; M4.6 drew the faces so too): the
     // proptest's smallest case. A slab 1 × 1 × 1e6 from the origin, seen level along
     // (1, −1.164, 0), the target 1e6 mm along the ray from its corner and 0.73 mm aside, at
     // the least height the reach allows (14.14 mm over 2048 rows, a pixel 6.9e-3 mm). Each
@@ -543,5 +1039,74 @@ fn an_oblique_orthographic_view_with_its_target_a_kilometre_along_the_ray_draws_
          (column, row, edge), the first {:?}",
         off.len(),
         &off[..off.len().min(6)]
+    );
+}
+
+/// The perspective proptest's smallest case: the slab 636410.35 × 1 × 1 from the origin,
+/// the eye 48.37 mm below its bottom's centre looking up, 0.5° across, up +y, 40 by 2048;
+/// its bottom (Face5) as `box_mesh` meshes it, or as a strip of `pieces` along x.
+fn slab_seen_from_below(pieces: u32) -> RenderScene {
+    let length = 636_410.347_555_590_1;
+    let mut mesh = box_mesh([0.0; 3], [length, 1.0, 1.0]);
+    if pieces > 1 {
+        let top: Vec<[u32; 3]> = mesh.triangles.split_off(8).split_off(2);
+        mesh.face_triangles[4] = 2 * pieces;
+        for k in 0..pieces {
+            let x = |k: u32| length * f64::from(k) / f64::from(pieces);
+            let base = u32::try_from(mesh.positions.len()).unwrap();
+            mesh.positions.extend([
+                [x(k), 0.0, 0.0],
+                [x(k), 1.0, 0.0],
+                [x(k + 1), 1.0, 0.0],
+                [x(k + 1), 0.0, 0.0],
+            ]);
+            mesh.normals.extend([[0.0, 0.0, -1.0]; 4]);
+            mesh.triangles
+                .extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
+        }
+        mesh.triangles.extend(top);
+    }
+    let eye = [length / 2.0, 0.5, -48.374_580_540_203_375];
+    RenderScene {
+        bodies: vec![body(1, mesh)],
+        camera: Camera {
+            projection: Projection::Perspective { field_of_view: 0.5 },
+            eye,
+            target: [eye[0], eye[1], eye[2] + 10.0],
+            up: [0.0, 0.665_472_384_913_471_3, 0.0],
+        },
+        width: 40,
+        height: 2048,
+        ids: true,
+    }
+}
+
+#[test]
+fn a_long_face_seen_close_from_before_its_middle_at_a_narrow_angle_is_drawn_whole() {
+    // BREAKS (the eye's path, as M4.6 drew every face): the slab's bottom fills the view (it
+    // is 1 mm across y, the view 2 × 48.37 × tan 0.25° = 0.42 mm high, and 318 m long either
+    // way across x), so by hand every pixel is Face5. Its half diagonal (318205) is far past
+    // the precision rule at 48 mm, so it's drawn about the eye, as it should be; drawn, half
+    // the image is background (40960 pixels clear of a boundary). Its two triangles' far
+    // corners are 318 m off at 48 mm deep, some 1e8 pixels off the image. Meshed as a strip
+    // of 10,000 pieces (each 64 m, the same face, so drawn about the same point), it's
+    // drawn whole: the rasterizer loses triangles so far past the image (lavapipe's clipping
+    // in f32), and an OCCT mesh of a long planar face is two triangles.
+    let mut w = worker();
+    let mut misses = vec![];
+    for pieces in [10_000, 1] {
+        let scene = slab_seen_from_below(pieces);
+        let (_, ids) = draw(&mut w, &scene);
+        let size = [636_410.347_555_590_1, 1.0, 1.0];
+        let (wrong, on) = cast_misses(&scene, [0.0; 3], size, &ids, 1);
+        assert!(on > 40_000, "{pieces} pieces: {on}");
+        if !wrong.is_empty() {
+            misses.push((pieces, wrong.len(), wrong[0]));
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "the bottom in pieces: how many pixels clear of a boundary differ, and the first (at, \
+         got, want): {misses:?}"
     );
 }
