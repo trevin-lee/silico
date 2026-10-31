@@ -202,10 +202,9 @@ pub struct Pick {
     pub hit: Element,
     /// The pixel it was found at, in the frame.
     pub pixel: [u32; 2],
-    /// The point seen at the pixel's top-left corner, at the depth there, in the
-    /// document's coordinates (re_renderer's, from the picking layer's depth: in f32 about
-    /// the camera's point, then back to the document in f64); none if the depth wasn't
-    /// read back.
+    /// The point seen at the pixel's centre, in the document's coordinates: the centre
+    /// unprojected at the picking layer's depth there, in f64 (the depth itself is the GPU's
+    /// f32); none if the depth wasn't read back.
     pub point: Option<[f64; 3]>,
 }
 
@@ -325,8 +324,9 @@ impl Renderer {
     /// `frame` built and drawn into `re_renderer`'s own target, never waiting for the GPU:
     /// the command buffer to submit (egui_wgpu's `prepare` returns it), which
     /// [`Renderer::composite`] then composites. Each body's faces are moved into the view
-    /// and its edges placed in it in f64, as [`Renderer::render`] draws them; highlighted
-    /// faces are tinted and outlined, highlighted edges wider and blue; the picking
+    /// and its edges placed in it in f64, as [`Renderer::render`] draws them; each
+    /// highlighted face's and edge's instance is outlined in the highlight's blue, its mesh
+    /// and colour as uploaded, so a highlight uploads nothing ([`Highlight::Outline`]); the picking
     /// rectangle, if any, is read back for [`Renderer::take_picking`]. One frame for each of
     /// egui's frames: it begins `re_renderer`'s frame.
     ///
@@ -361,6 +361,7 @@ impl Renderer {
                     frame: view.frame,
                     origin: view.origin,
                     depth: view.depth,
+                    projection: view.projection,
                 },
             );
             (rect_int(rect), id)
@@ -557,10 +558,12 @@ impl Renderer {
                 let hit = pending
                     .nearest(&result.picking_id_data, extent)
                     .map(|(i, mut pick)| {
-                        // The depth at the pixel's top-left corner, in the fixed camera's world.
-                        if result.picking_depth_data.len() == result.picking_id_data.len() {
-                            let at = glam::UVec2::new(i % extent.x, i / extent.x);
-                            pick.point = pending.document_point(result.picked_world_position(at));
+                        if result.picking_depth_data.len() == result.picking_id_data.len()
+                            && let Some(&depth) = usize::try_from(i)
+                                .ok()
+                                .and_then(|i| result.picking_depth_data.get(i))
+                        {
+                            pick.point = pending.point_at(pick.pixel, depth);
                         }
                         pick
                     });
@@ -651,8 +654,8 @@ impl Renderer {
 
     /// The view `view` of the bodies `drawn` (each uploaded, with its highlights), in a
     /// frame `re_renderer`'s already begun: each face an instance moved into the view, its
-    /// mesh uploaded where it has none; each edge a strip placed in the view; highlighted
-    /// faces tinted and outlined; the picking rectangle and its readback's identifier, and
+    /// mesh uploaded where it has none; each edge a strip placed in the view; highlights
+    /// drawn in each body's [`Lit::style`]; the picking rectangle and its readback's identifier, and
     /// the image's, if asked. The command buffer that draws it into the view's target, and
     /// the view, to composite.
     fn build(
@@ -776,6 +779,26 @@ fn farthest((low, high): Bounds, from: [f64; 3]) -> f64 {
     dot(d, d).sqrt()
 }
 
+/// How highlights are drawn. The worker's renders tint a highlighted face (its mesh
+/// uploaded in the tint) and outline it, and draw a highlighted edge wider and blue: the
+/// agents' PNG look (docs/design/m4.6-render.md). The app's frames outline each highlighted
+/// face's and edge's instance alone, with `re_renderer`'s per-instance outline masks, as
+/// Rerun's viewer draws hover and selection, and leave its mesh and colour as uploaded: so a
+/// highlight, which moves with the pointer, never uploads anything, and changes no pixel of
+/// the picking layer (docs/design/m5.0-app.md section 10, "outlines by instance").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Highlight {
+    Tint,
+    /// A frame's: and a body's with no highlights, which looks the same either way.
+    #[default]
+    Outline,
+}
+
+/// The outline mask a highlighted instance is drawn with: the outline config's first layer.
+fn outlined() -> OutlineMaskPreference {
+    OutlineMaskPreference::some(1, 0)
+}
+
 /// A frame's picking request, waiting for its answer: its rectangle, the frame's size, and
 /// the view it was drawn in, to take its depth back to the document.
 struct PendingPick {
@@ -784,6 +807,7 @@ struct PendingPick {
     frame: CameraFrame,
     origin: [f64; 3],
     depth: f64,
+    projection: ViewProjection,
 }
 
 impl PendingPick {
@@ -838,14 +862,29 @@ impl PendingPick {
         nearest.map(|(_, i, pick)| (i, pick))
     }
 
-    /// `p`, a point in the fixed camera's world, in the document: taken back through the
-    /// view in f64 (the inverse of [`View::place`], d = right x + up y + back (z + depth));
-    /// none if it isn't finite (no depth there).
-    fn document_point(&self, p: glam::Vec3) -> Option<[f64; 3]> {
+    /// The point seen at the centre of the frame's pixel `pixel`, at the picking layer's
+    /// `depth` there, in the document: the pixel's centre and the depth unprojected through
+    /// the frame's own projection (the picking rectangle's crop moves and scales x and y
+    /// alone, so its depth is the frame's), in f64, then taken back through the view (the
+    /// inverse of [`View::place`], d = right x + up y + back (z + depth)); none if it isn't
+    /// finite.
+    fn point_at(&self, pixel: [u32; 2], depth: f32) -> Option<[f64; 3]> {
+        let [width, height] = self.size.map(f64::from);
+        let ndc = glam::DVec3::new(
+            (f64::from(pixel[0]) + 0.5) / width * 2.0 - 1.0,
+            1.0 - (f64::from(pixel[1]) + 0.5) / height * 2.0,
+            f64::from(depth),
+        );
+        let view_from_projection = self
+            .projection
+            .projection_from_view(self.size)
+            .as_dmat4()
+            .inverse();
+        let p = view_from_projection.project_point3(ndc);
         if !p.is_finite() {
             return None;
         }
-        let v = [f64::from(p.x), f64::from(p.y), f64::from(p.z) + self.depth];
+        let v = [p.x, p.y, p.z + self.depth];
         let f = &self.frame;
         Some(std::array::from_fn(|k| {
             self.origin[k] + f.right[k] * v[0] + f.up[k] * v[1] + f.back[k] * v[2]
@@ -1067,11 +1106,12 @@ struct Uploaded {
 }
 
 /// What of a body is highlighted: its faces' and edges' numbers from 1, ascending, each
-/// once.
+/// once; and how.
 #[derive(Default)]
 struct Lit {
     faces: Vec<u32>,
     edges: Vec<u32>,
+    style: Highlight,
 }
 
 impl Lit {
@@ -1081,6 +1121,7 @@ impl Lit {
         Lit {
             faces: numbers(&body.highlight_faces),
             edges: numbers(&body.highlight_edges),
+            style: Highlight::Tint,
         }
     }
 
@@ -1155,7 +1196,8 @@ impl Uploaded {
     }
 
     /// Each face's point for `view`, and what it won't draw dropped: its meshes about
-    /// another point, and the colour `lit` doesn't draw it in.
+    /// another point, and the colour it isn't drawn in (tinted where `lit` highlights it
+    /// in [`Highlight::Tint`], plain otherwise).
     fn settle(&mut self, view: &View, lit: &Lit) {
         for face in &mut self.faces {
             let anchor = view.anchor(face.bounds);
@@ -1164,7 +1206,7 @@ impl Uploaded {
                 face.plain = None;
                 face.tinted = None;
             }
-            if lit.face(face.span.number) {
+            if lit.style == Highlight::Tint && lit.face(face.span.number) {
                 face.plain = None;
             } else {
                 face.tinted = None;
@@ -1174,8 +1216,8 @@ impl Uploaded {
 
     /// Each face as a mesh instance of its own, moved into `view` by its own transform, its
     /// picking ID the body's number `body` and the face's; a highlighted one (in `lit`)
-    /// tinted and outlined. A face's mesh is uploaded where it has none (counted in
-    /// `uploads`).
+    /// outlined, and tinted in [`Highlight::Tint`]. A face's mesh is uploaded where it has
+    /// none (counted in `uploads`).
     fn faces(
         &mut self,
         ctx: &RenderContext,
@@ -1196,7 +1238,8 @@ impl Uploaded {
         for face in &mut self.faces {
             let number = face.span.number;
             let highlighted = lit.face(number);
-            let held = if highlighted {
+            let tinted = lit.style == Highlight::Tint && highlighted;
+            let held = if tinted {
                 &mut face.tinted
             } else {
                 &mut face.plain
@@ -1204,8 +1247,7 @@ impl Uploaded {
             let gpu_mesh = match held {
                 Some(mesh) => Arc::clone(mesh),
                 None => {
-                    let cpu =
-                        face_cpu_mesh(ctx, body, &self.mesh, face.anchor, face.span, highlighted)?;
+                    let cpu = face_cpu_mesh(ctx, body, &self.mesh, face.anchor, face.span, tinted)?;
                     let gpu = GpuMesh::new(ctx, &cpu).map_err(|e| format!("Face{number}: {e}"))?;
                     *uploads += 1;
                     Arc::clone(held.insert(Arc::new(gpu)))
@@ -1218,7 +1260,7 @@ impl Uploaded {
                 // alpha, so this leaves the face's own colour.
                 additive_tint: Color32::BLACK,
                 outline_mask_ids: if highlighted {
-                    OutlineMaskPreference::some(1, 0)
+                    outlined()
                 } else {
                     OutlineMaskPreference::NONE
                 },
@@ -1237,7 +1279,8 @@ impl Uploaded {
 /// view in f64 ([`View::place`]: each point's offset from the camera's point and its
 /// rotation into the view, so precise across the view at every distance and angle), built
 /// for each view: its picking ID the body's number and the edge's with [`EDGE_BIT`]; a
-/// highlighted one (in `lit`) wider, in the highlight's blue.
+/// highlighted one (in `lit`) wider, in the highlight's blue, in [`Highlight::Tint`], or
+/// outlined, as it is otherwise, in [`Highlight::Outline`].
 fn edges(lines: &mut LineDrawableBuilder<'_>, body: u32, mesh: &Mesh, lit: &Lit, view: &View) {
     let mut batch = lines
         .batch(format!("Body{body}"))
@@ -1260,16 +1303,21 @@ fn edges(lines: &mut LineDrawableBuilder<'_>, body: u32, mesh: &Mesh, lit: &Lit,
             continue;
         }
         let highlighted = lit.edge(number);
-        let (width, colour) = if highlighted {
-            (HIGHLIGHTED_EDGE_WIDTH, HIGHLIGHT)
-        } else {
-            (EDGE_WIDTH, EDGE)
+        let (width, colour, outline) = match (highlighted, lit.style) {
+            (true, Highlight::Tint) => (
+                HIGHLIGHTED_EDGE_WIDTH,
+                HIGHLIGHT,
+                OutlineMaskPreference::NONE,
+            ),
+            (true, Highlight::Outline) => (EDGE_WIDTH, EDGE, outlined()),
+            (false, _) => (EDGE_WIDTH, EDGE, OutlineMaskPreference::NONE),
         };
         batch
             .add_strip(points.iter().map(|p| view.place(*p)))
             .radius(Size::new_ui_points(width / 2.0))
             .color(Color32::from_rgb(colour[0], colour[1], colour[2]))
-            .picking_instance_id(PickingLayerInstanceId(u64::from(EDGE_BIT | number)));
+            .picking_instance_id(PickingLayerInstanceId(u64::from(EDGE_BIT | number)))
+            .outline_mask_ids(outline);
     }
 }
 

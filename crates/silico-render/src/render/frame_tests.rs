@@ -115,6 +115,10 @@ const ON_THE_TOP_EDGE: PixelRect = PixelRect {
     size: [1, 1],
 };
 
+/// The front face's point at the centre of pixel (32, 26), by hand: (21 + 0.5 × 11/12, 0,
+/// 7 − 2.5 × 11/12).
+const CENTRE_OF_32_26: [f64; 3] = [21.0 + 5.5 / 12.0, 0.0, 7.0 - 27.5 / 12.0];
+
 fn assert_point(pick: &Pick, want: [f64; 3], within: [f64; 3]) {
     let got = pick.point.expect("no point");
     for k in 0..3 {
@@ -145,19 +149,23 @@ fn a_picking_rectangle_finds_the_face_and_the_edge_under_it_a_frame_later() {
                 (found.body, found.hit, found.pixel),
                 (1, Element::Face(3), [32, 26])
             );
-            // The point at the pixel's top-left corner, (32, 26): x = 21 + 0 × 11/12 = 21, z =
-            // 7 − 2 × 11/12 = 5.1667, on the face (y = 0).
-            assert_point(&found, [21.0, 0.0, 7.0 - 22.0 / 12.0], [1e-3, 1e-3, 1e-3]);
+            // The point at the pixel's centre, (32.5, 26.5): x = 21 + 0.5 × 11/12 = 21.4583,
+            // z = 7 − 2.5 × 11/12 = 4.7083, on the face (y = 0).
+            assert_point(&found, CENTRE_OF_32_26, [1e-3, 1e-3, 1e-3]);
             // The top edge, in front of the back face's (Edge7, along the same line 20 mm
-            // behind it): its point at the corner (32, 20), z = 7 + 4 × 11/12 = 10.667, at
-            // the edge's depth less its offset toward the eye.
+            // behind it): its point at the centre (32.5, 20.5), x = 21.4583 and z = 7 + 3.5 ×
+            // 11/12 = 10.2083, at the edge's depth less its offset toward the eye.
             let edge = pick(r, &frame(&camera, &[1], &[], Some(ON_THE_TOP_EDGE)));
             let found = edge.hit.unwrap();
             assert_eq!(
                 (found.body, found.hit, found.pixel),
                 (1, Element::Edge(3), [32, 20])
             );
-            assert_point(&found, [21.0, 0.0, 7.0 + 44.0 / 12.0], [1e-3, 0.05, 1e-3]);
+            assert_point(
+                &found,
+                [21.0 + 5.5 / 12.0, 0.0, 7.0 + 38.5 / 12.0],
+                [1e-3, 0.05, 1e-3],
+            );
             // The background, above the box (row 5, z = 24.4): no hit, answered as such.
             let above = pick(r, &frame(&camera, &[1], &[], Some(rect([30, 3], [5, 5]))));
             assert_eq!(above.hit, None);
@@ -218,7 +226,8 @@ fn a_body_forgotten_is_drawn_no_more_and_one_replaced_is_uploaded_again() {
             let both = pick(r, &frame(&camera, &[1, 2], &[], Some(ON_THE_FACE)));
             let found = both.hit.unwrap();
             assert_eq!((found.body, found.hit), (2, Element::Face(3)));
-            assert_point(&found, [21.0, -30.0, 7.0 - 22.0 / 12.0], [1e-3, 1e-3, 1e-3]);
+            let [x, _, z] = CENTRE_OF_32_26;
+            assert_point(&found, [x, -30.0, z], [1e-3, 1e-3, 1e-3]);
             // Left out of a frame, it isn't drawn; forgotten, it can't be.
             let found = hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE)));
             assert_eq!(found, Some((1, Element::Face(3), [32, 26])));
@@ -271,6 +280,12 @@ fn highlights_change_no_picking_id() {
                 assert!(plain.is_some());
                 assert_eq!(highlighted, plain);
             }
+            // Row 19 (its centre 19.5, 1.23 from the edge's line): past the edge's 1-point
+            // half width, inside the worker's highlighted 2. A frame's highlight is an
+            // outline alone, so its edge is no wider: the background still.
+            let beside = Some(rect([32, 19], [1, 1]));
+            assert_eq!(hit(r, &frame(&camera, &[1], &[], beside)), None);
+            assert_eq!(hit(r, &frame(&camera, &[1], &lit, beside)), None);
             // The whole ID buffer, drawn by the same path for the worker, with the face and
             // the edge highlighted: every pixel the same but those the highlighted edge, 4
             // points wide where it was 2, now covers (Edge3, over what was the face, the
@@ -693,6 +708,111 @@ fn of_many_frames_picking_and_none_taken_the_newest_answer_is_given_once() {
                 assert_eq!(r.take_picking(), None);
             }
             assert!(r.pending.is_empty());
+        },
+    );
+}
+
+#[test]
+fn a_hover_moving_across_every_face_and_edge_uploads_nothing() {
+    on_lavapipe(
+        "render::frame_tests::a_hover_moving_across_every_face_and_edge_uploads_nothing",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            draw(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 6);
+            // Each of the six faces and twelve edges highlighted in turn, then several at
+            // once, then none: an outline, never a tinted mesh.
+            let mut hovers: Vec<Vec<(u32, Element)>> = (1..=6)
+                .map(|n| vec![(1, Element::Face(n))])
+                .chain((1..=12).map(|n| vec![(1, Element::Edge(n))]))
+                .collect();
+            hovers.push(vec![
+                (1, Element::Face(3)),
+                (1, Element::Face(6)),
+                (1, Element::Edge(3)),
+            ]);
+            hovers.push(vec![]);
+            for hover in &hovers {
+                draw(r, &frame(&camera, &[1], hover, Some(ON_THE_FACE)));
+            }
+            assert_eq!(r.uploads(), 6);
+            assert!(
+                r.bodies[&1]
+                    .faces
+                    .iter()
+                    .all(|f| f.tinted.is_none() && f.plain.is_some())
+            );
+        },
+    );
+}
+
+/// The distance from the centre of pixel `i` (of a frame `WIDTH` wide) to the segment from
+/// `a` to `b`, in pixels.
+fn from_segment(i: usize, a: [f64; 2], b: [f64; 2]) -> f64 {
+    let i = u32::try_from(i).unwrap();
+    let p = [f64::from(i % WIDTH) + 0.5, f64::from(i / WIDTH) + 0.5];
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let t = (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1]))
+        .clamp(0.0, 1.0);
+    let q = [a[0] + t * d[0] - p[0], a[1] + t * d[1] - p[1]];
+    (q[0] * q[0] + q[1] * q[1]).sqrt()
+}
+
+#[test]
+fn a_highlight_outlines_its_instance_alone_and_changes_nothing_else() {
+    // The front face's corners in pixels, by hand (the module's mapping): columns 9.09 and
+    // 52.73, rows 20.73 and 31.64. The outline is 1.5 points wide; a pixel it changes lies
+    // within 3.5 of the face's border, allowing for its antialiasing (a loose check: pixels
+    // aren't results).
+    let (left, right) = (32.0 - 21.0 * 12.0 / 11.0, 32.0 + 19.0 * 12.0 / 11.0);
+    let (top, bottom) = (24.0 - 3.0 * 12.0 / 11.0, 24.0 + 7.0 * 12.0 / 11.0);
+    on_lavapipe(
+        "render::frame_tests::a_highlight_outlines_its_instance_alone_and_changes_nothing_else",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let mut image = |lit: &[(u32, Element)]| {
+                let commands = r.prepare(&frame(&camera, &[1], lit, None)).unwrap();
+                composited(r, Some(commands))
+            };
+            let plain = image(&[]);
+            let border = [
+                ([left, top], [right, top]),
+                ([right, top], [right, bottom]),
+                ([right, bottom], [left, bottom]),
+                ([left, bottom], [left, top]),
+            ];
+            let near_the_face = |i: usize| {
+                border
+                    .iter()
+                    .map(|&(a, b)| from_segment(i, a, b))
+                    .fold(f64::INFINITY, f64::min)
+            };
+            let face = image(&[(1, Element::Face(3))]);
+            let changed: Vec<usize> = (0..plain.len()).filter(|&i| face[i] != plain[i]).collect();
+            // Round its border (about 2 × (43.6 + 10.9) = 109 pixels long), and nowhere else.
+            assert!(changed.len() > 50, "{} pixels changed", changed.len());
+            for &i in &changed {
+                assert!(
+                    near_the_face(i) <= 3.5,
+                    "pixel {i}, {} from the face",
+                    near_the_face(i)
+                );
+            }
+            // Its inside, as uploaded: the centre's colour is the plain frame's.
+            let centre = usize::try_from(26 * WIDTH + 32).unwrap();
+            assert_eq!(face[centre], plain[centre]);
+            // The top edge alone: about its line, row 20.73 from column 9.09 to 52.73.
+            let edge = image(&[(1, Element::Edge(3))]);
+            let changed: Vec<usize> = (0..plain.len()).filter(|&i| edge[i] != plain[i]).collect();
+            assert!(changed.len() > 20, "{} pixels changed", changed.len());
+            for &i in &changed {
+                let off = from_segment(i, [left, top], [right, top]);
+                assert!(off <= 3.5, "pixel {i}, {off} from the edge");
+            }
+            // And none: the plain frame again.
+            assert_eq!(image(&[]), plain);
         },
     );
 }
