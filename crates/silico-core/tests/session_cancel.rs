@@ -150,7 +150,7 @@ fn cancel_naming_the_running_check_stops_its_rebuild_and_the_check_answers_cance
     assert_eq!(
         stop.result.unwrap(),
         Cancelled {
-            command: SessionCommand::Check,
+            command: SessionCommand::Check.into(),
             stopped: true
         }
     );
@@ -209,7 +209,8 @@ fn cancel_naming_another_command_is_refused_with_whats_running_as_the_candidate(
     let f = opened();
     // The edit, outside a transaction, waits for its commit's rebuild, its box held.
     let (_hold, edit) = f.running_held(|| f.longer());
-    // The design's example, word for word.
+    // The design's example, with the rebuild running too: what status reports running, the
+    // queued command, then the rebuild (decision 34 as amended).
     let refused = f.sessions.cancel(&f.id, SessionCommand::Check);
     let problems = refused.result.unwrap_err();
     assert_eq!(problems.total(), 1);
@@ -224,10 +225,10 @@ fn cancel_naming_another_command_is_refused_with_whats_running_as_the_candidate(
         ),
         (
             ErrorCode::InvalidInput,
-            "no check is running in session s1: set_field is",
+            "no check is running in session s1: set_field, rebuild are",
             Some("command"),
             Some("cancel names the command it means; read status to see what's running"),
-            &["set_field".to_owned()][..]
+            &["set_field".to_owned(), "rebuild".to_owned()][..]
         )
     );
     // The edit runs on, its commit's rebuild of the block 41 long, one step, held: none
@@ -290,7 +291,7 @@ fn a_cancel_of_nothing_running_or_that_comes_late_is_refused_and_stops_nothing_a
     let late = f.sessions.cancel(&f.id, SessionCommand::Check);
     assert_eq!(
         late.result.unwrap_err().errors()[0].candidates(),
-        ["set_field".to_owned()]
+        ["set_field".to_owned(), "rebuild".to_owned()]
     );
     hold.release();
     // Saved, 41 long.
@@ -422,7 +423,7 @@ fn a_published_read_is_stopped_by_name_and_answers_cancelled() {
     assert_eq!(
         stop,
         Cancelled {
-            command: SessionCommand::Distance,
+            command: SessionCommand::Distance.into(),
             stopped: true
         }
     );
@@ -538,16 +539,21 @@ fn cancel_stops_every_read_of_its_name_and_its_refusal_names_each_command_runnin
     was_started.recv_timeout(HANG).unwrap();
     // And the queued command, an edit whose commit's box is held.
     let (hold, edit) = f.running_held(|| f.longer());
-    // A command none is: the queued command, then each read, as status lists them.
+    // A command none is: the queued command, then each read, then the rebuild, as status
+    // lists them.
     let refused = f.sessions.cancel(&f.id, SessionCommand::Check);
     let problems = refused.result.unwrap_err();
     let error = &problems.errors()[0];
     assert_eq!(
         (error.message(), error.candidates()),
         (
-            "no check is running in session s1: set_field, distance, distance are",
+            "no check is running in session s1: set_field, distance, distance, rebuild are",
             // Names to pick from: each once, the queued command first.
-            &["set_field".to_owned(), "distance".to_owned()][..]
+            &[
+                "set_field".to_owned(),
+                "distance".to_owned(),
+                "rebuild".to_owned()
+            ][..]
         )
     );
     // One cancel stops both reads, and not the edit.
@@ -557,7 +563,7 @@ fn cancel_stops_every_read_of_its_name_and_its_refusal_names_each_command_runnin
             .result
             .unwrap(),
         Cancelled {
-            command: SessionCommand::Distance,
+            command: SessionCommand::Distance.into(),
             stopped: true
         }
     );

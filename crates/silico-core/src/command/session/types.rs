@@ -13,7 +13,7 @@ use super::cancel::Ticket;
 use super::rebuilds::met_fault;
 use super::rebuilds::{Label, Newest};
 use super::transaction::{Checking, Reached};
-use super::{Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
+use super::{Cancellable, Gated, Problems, ReadCommand, RunningCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::chain::Rewired;
@@ -1034,11 +1034,11 @@ impl RebuildState {
     }
 }
 
-/// What `cancel` answers (decision 34): the command it named, and whether it was stopped
-/// before it had done its work (false: it had, an edit already saved, say, and it answers
-/// with its real result).
+/// What `cancel` answers (decision 34): what it named, a command or the rebuild, and
+/// whether it was stopped before it had done its work (false: it had, an edit already
+/// saved, say, and it answers with its real result).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cancelled {
-    pub command: SessionCommand,
+    pub command: Cancellable,
     pub stopped: bool,
 }

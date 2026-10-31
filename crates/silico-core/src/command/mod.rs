@@ -44,7 +44,7 @@ pub use session::{
     SessionInfo, Sessions, SketchCut, SketchEdited, Status, Stepped, Stopper, Suppressed, TOO_LONG,
     TextAnswer, TimelineAnswer, Transaction, TryAgainBy, fault_suggestion,
 };
-pub use session_command::{ReadCommand, RunningCommand, SessionCommand};
+pub use session_command::{Cancellable, ReadCommand, RunningCommand, SessionCommand};
 
 pub use crate::warnings::Warnings;
 

@@ -156,6 +156,61 @@ impl RunningCommand {
     }
 }
 
+/// What `cancel` names (decision 34, docs/design/m4.1-command-api.md, section 6): whatever
+/// `status` reports as running, by the key it reports it under. A command a client sent, by
+/// its name (`status.running`, `status.reads`), or the session's rebuild running, `rebuild`
+/// (`status.rebuild.state` is `running`). A rebuild and the one command waiting on it stop
+/// together, whichever is named. The session's own reload is neither: nothing cancels it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Cancellable {
+    /// A command a client sent.
+    Command(SessionCommand),
+    /// The session's rebuild running.
+    Rebuild,
+}
+
+impl Cancellable {
+    /// Everything `cancel` names, in the design's order: every command that runs in a
+    /// session ([`SessionCommand::ALL`]), then the rebuild.
+    pub const ALL: [Cancellable; SessionCommand::ALL.len() + 1] = {
+        let mut all = [Cancellable::Rebuild; SessionCommand::ALL.len() + 1];
+        let mut at = 0;
+        while at < SessionCommand::ALL.len() {
+            all[at] = Cancellable::Command(SessionCommand::ALL[at]);
+            at += 1;
+        }
+        all
+    };
+
+    /// Its name, as `cancel`'s request and result give it: the command's, or `rebuild`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Cancellable::Command(command) => command.as_str(),
+            Cancellable::Rebuild => "rebuild",
+        }
+    }
+
+    /// The command a client sent, if it's one.
+    pub const fn command(self) -> Option<SessionCommand> {
+        match self {
+            Cancellable::Command(command) => Some(command),
+            Cancellable::Rebuild => None,
+        }
+    }
+}
+
+impl From<SessionCommand> for Cancellable {
+    fn from(command: SessionCommand) -> Self {
+        Cancellable::Command(command)
+    }
+}
+
+impl std::fmt::Display for Cancellable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl std::fmt::Display for SessionCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -238,5 +293,25 @@ mod tests {
         }
         assert_eq!(RunningCommand::Reload.command(), None);
         assert_eq!(RunningCommand::Reload.as_str(), "reload");
+    }
+
+    #[test]
+    fn cancel_names_each_command_in_the_designs_order_then_the_rebuild() {
+        // Decision 34 as amended: whatever status reports running, by its key. Every
+        // command, as itself, then `rebuild`, last, which no command is named.
+        assert_eq!(Cancellable::ALL.len(), SessionCommand::ALL.len() + 1);
+        for (at, command) in SessionCommand::ALL.into_iter().enumerate() {
+            assert_eq!(Cancellable::ALL[at], Cancellable::Command(command));
+            assert_eq!(Cancellable::from(command).as_str(), command.as_str());
+            assert_eq!(Cancellable::from(command).command(), Some(command));
+        }
+        assert_eq!(Cancellable::ALL.last(), Some(&Cancellable::Rebuild));
+        assert_eq!(Cancellable::Rebuild.as_str(), "rebuild");
+        assert_eq!(Cancellable::Rebuild.command(), None);
+        assert!(
+            SessionCommand::ALL
+                .iter()
+                .all(|command| command.as_str() != "rebuild")
+        );
     }
 }
