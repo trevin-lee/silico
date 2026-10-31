@@ -287,6 +287,7 @@ pub(super) fn start<P: Clients + 'static>(
                 candidate: None,
                 watchers: Threads::new(),
                 last_number: 0,
+                stopped_for: None,
             }),
             rebuilt: Condvar::new(),
             reads: Mutex::new(Reads::new()),

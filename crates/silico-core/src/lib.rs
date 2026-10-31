@@ -41,6 +41,7 @@ mod references;
 pub mod render;
 pub mod selection;
 pub mod sketch;
+pub mod sketch_judge;
 pub mod sketch_states;
 pub mod step_worker;
 pub mod sweep;
@@ -48,6 +49,7 @@ pub mod timeline;
 pub mod views;
 pub mod warnings;
 pub mod worker;
+pub mod workers;
 
 pub use error::{Error, ErrorCode, Said, Warning, WarningCode};
 

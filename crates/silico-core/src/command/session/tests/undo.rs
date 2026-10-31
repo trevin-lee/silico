@@ -760,7 +760,7 @@ fn an_undo_is_named_by_status_and_stopped_by_cancel_before_it_changes_anything()
             .result
             .unwrap(),
         Cancelled {
-            command: SessionCommand::Undo,
+            command: SessionCommand::Undo.into(),
             stopped: true
         }
     );

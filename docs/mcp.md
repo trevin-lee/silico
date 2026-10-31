@@ -65,7 +65,7 @@ The server's `instructions`, which every client is given at `initialize`, say th
 | See it | `render`: a named `view` or a `camera`, `width` and `height`, elements to `highlight`, and `to`, a PNG path in the workspace or `null`. The PNG comes back as an image beside the result. |
 | Export | `export`: `format` `3mf` with a `tolerance` in mm (FreeCAD's is 0.1), or `step` with `tolerance: null`; `path`; `replace`; `features` (`null` for every body). It reads the current model. |
 | Diagnose | `read_logs`: the session's recent events of a `level` and every level more severe, of one `feature` or all, `after` the last read's `next`, at most `limit`. It answers at once, even while a rebuild runs. |
-| Long work | A call whose `_meta` has a `progressToken` gets MCP progress notifications while it rebuilds. MCP's `notifications/cancelled`, or the `cancel` tool, stops a call. `status` says what's running. |
+| Long work | A call whose `_meta` has a `progressToken` gets MCP progress notifications while it rebuilds. MCP's `notifications/cancelled`, or the `cancel` tool, stops a call. `status` says what's running. `cancel` with `rebuild` stops the session's rebuild while `status.rebuild.state` is `running`, and the call waiting on it, if one is, answers `cancelled`. |
 | Finish | `close`. It's refused while a transaction is open. |
 
 Feature IDs: `add_feature`'s feature may give its `id`, or leave it out, and the core makes one. Sketch members (points, lines, circles, arcs, constraints) always give theirs, unique within the sketch. An ID is 8 lower-case Crockford base32 characters (digits and letters but i, l, o, and u), such as `s0000001` or `pa000001`.

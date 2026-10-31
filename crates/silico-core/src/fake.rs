@@ -3034,6 +3034,53 @@ mod tests {
     }
 }
 
+// --- A thread that never waits ----------------------------------------------------------
+
+/// A thread marked as one that must never wait on a command (the app's UI thread, M5.0's
+/// section 3, *How this is tested*): a [`Running::wait`](crate::command::Running::wait) or
+/// [`wait_timeout`](crate::command::Running::wait_timeout) called on it is counted, however
+/// short, so a test fails on the rule itself, not on a frame counter that a short wait
+/// wouldn't stop.
+pub mod never_waits {
+    use std::cell::Cell;
+
+    thread_local! {
+        static MARKED: Cell<bool> = const { Cell::new(false) };
+        /// Waits called on this thread while it was marked: each thread its own count, so
+        /// tests in one process never see one another's.
+        static WAITED: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Marks the calling thread until the guard is dropped: a wait called on it meanwhile
+    /// is counted.
+    pub fn marked() -> Marked {
+        MARKED.with(|marked| marked.set(true));
+        Marked(std::marker::PhantomData)
+    }
+
+    /// The calling thread marked, until it's dropped ([`marked`]).
+    #[must_use = "the thread is marked only while this is held"]
+    pub struct Marked(std::marker::PhantomData<*const ()>);
+
+    impl Drop for Marked {
+        fn drop(&mut self) {
+            MARKED.with(|marked| marked.set(false));
+        }
+    }
+
+    /// How many waits the calling thread called while it was marked.
+    pub fn waits() -> usize {
+        WAITED.with(Cell::get)
+    }
+
+    /// A wait was called: counted, if on a marked thread.
+    pub(crate) fn waited() {
+        if MARKED.with(Cell::get) {
+            WAITED.with(|waited| waited.set(waited.get() + 1));
+        }
+    }
+}
+
 // --- Renders ----------------------------------------------------------------------------
 
 /// A renderer for the core's tests (docs/design/m4.6-render.md, Tests, the boundary rule):

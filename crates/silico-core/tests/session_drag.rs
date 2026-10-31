@@ -22,8 +22,8 @@ use silico_core::cache::Cache;
 use silico_core::command::wire::drag::{DragBeginRequest, DragEndRequest, DragMoveRequest};
 use silico_core::command::wire::{Layout, ToWire, response_text, write};
 use silico_core::command::{
-    Answered, Call, Cancelled, DragEnded, DragFrame, DragGrab, DragOpen, FrameEnd, Response,
-    Revision, SessionCommand, SessionId, Sessions,
+    Answered, Call, Cancellable, Cancelled, DragEnded, DragFrame, DragGrab, DragOpen, FrameEnd,
+    Response, Revision, SessionCommand, SessionId, Sessions,
 };
 use silico_core::document::json::{Node, read};
 use silico_core::document::{ElementId, FeatureId, Reference};
@@ -1160,7 +1160,7 @@ fn a_cancel_of_drag_move_stops_the_move_solving_and_ends_the_drag() {
             .result
             .unwrap(),
         Cancelled {
-            command: SessionCommand::DragMove,
+            command: Cancellable::Command(SessionCommand::DragMove),
             stopped: true,
         }
     );
@@ -2094,7 +2094,7 @@ fn a_cancel_of_drag_move_returns_without_waiting_on_the_drags_thread() {
     assert_eq!(
         cancelled.result.unwrap(),
         Cancelled {
-            command: SessionCommand::DragMove,
+            command: Cancellable::Command(SessionCommand::DragMove),
             stopped: true,
         }
     );

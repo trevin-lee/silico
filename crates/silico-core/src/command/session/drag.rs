@@ -25,7 +25,7 @@ use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, Weak};
 
 use super::cancel::{Interrupt, Ticket, Why, cancelled};
-use super::sketch_edits::{DRAG, judged};
+use super::sketch_edits::judged;
 use super::{
     DragBegun, DragEnded, DragFrame, DragGrab, DragOpen, FrameEnd, Gated, Problems, Response,
     Revision, Running, Session, SessionCommand, SessionId, SessionInfo, Sessions, command_span,
@@ -40,6 +40,7 @@ use crate::drag::sketch::{
 use crate::drag::{Kept, Notify};
 use crate::kernel::{Clients, Kernel};
 use crate::recompute::SketchSolvers;
+use crate::sketch_judge::DRAG;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 

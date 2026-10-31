@@ -62,6 +62,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             candidate: None,
             watchers: Threads::new(),
             last_number: 0,
+            stopped_for: None,
         }),
         rebuilt: Condvar::new(),
         reads: Mutex::new(Reads::new()),
@@ -2874,7 +2875,7 @@ fn a_cancel_after_the_command_kept_its_work_says_so_and_it_answers_its_result() 
             .result
             .unwrap(),
         Cancelled {
-            command: SessionCommand::Text,
+            command: SessionCommand::Text.into(),
             stopped: false
         }
     );
@@ -4164,7 +4165,7 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         assert_eq!(
             s.cancel(at, command).result.unwrap(),
             Cancelled {
-                command,
+                command: command.into(),
                 stopped: true
             },
             "{command}"
@@ -4189,6 +4190,34 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
     for (read, start) in &reads(ModelChoice::Published) {
         stops(SessionCommand::from(*read), start, None, vec![*read]);
     }
+    // And the rebuild, which status reports by its key, `rebuild`: started by a published
+    // read (which passes no gate and waits on nothing), its box held, no command running and
+    // no read, and cancel by that name stops it.
+    let hold = f.kernel.hold(is_box);
+    assert!(s.published(at).result.is_err());
+    assert!(f.kernel.wait_running(1, WAIT));
+    let status = s.status(at).result.unwrap();
+    assert_eq!(
+        (status.running, status.reads, status.rebuild.state),
+        (None, vec![], RebuildState::Running)
+    );
+    assert_eq!(
+        s.cancel(at, Cancellable::Rebuild).result.unwrap(),
+        Cancelled {
+            command: Cancellable::Rebuild,
+            stopped: true
+        }
+    );
+    assert!(
+        f.kernel.wait_idle(WAIT),
+        "the stopped rebuild's box still runs"
+    );
+    let status = s.status(at).result.unwrap();
+    assert_eq!(
+        (status.running, status.reads, status.rebuild.state),
+        (None, vec![], RebuildState::Stopped)
+    );
+    drop(hold);
     // Nothing was done: the file is as it was, the session open at its first revision, and
     // nothing drawn.
     assert_eq!(f.file(), BOX);
@@ -4236,7 +4265,7 @@ fn a_cancel_after_cache_clear_settles_comes_too_late_and_the_clear_answers_with_
         .unwrap();
     assert_eq!(
         (cancelled.command, cancelled.stopped),
-        (SessionCommand::CacheClear, false)
+        (SessionCommand::CacheClear.into(), false)
     );
     assert_eq!(entries(), 1);
     through.send(()).unwrap();
@@ -4503,6 +4532,7 @@ fn asked_without_pause_through_many_commits_the_sessions_own_saves_never_read_as
     disk_reaches(&f, Disk::Unchanged);
 }
 
+mod cancel_rebuild;
 mod disk_reload;
 mod drag;
 mod timeline;
