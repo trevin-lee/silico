@@ -113,13 +113,13 @@ pub(crate) enum Placed {
 /// order: only they can hold it (a name's element is in no solid but those made from its
 /// feature), so only they are searched, waited for while one isn't built, or block the
 /// sketch where one failed; `others`, the rest of the live solids built, are read only for
-/// a broken name's candidates. `makers` says what each feature a name mentions is, as the
-/// gate read the name.
-pub(crate) fn place(
+/// a broken name's candidates, so they're asked for (and named) only then. `makers` says
+/// what each feature a name mentions is, as the gate read the name.
+pub(crate) fn place<'a>(
     sketch: &FeatureId,
     plane: &FacePlane,
-    related: &[Live<'_>],
-    others: &[Live<'_>],
+    related: &[Live<'a>],
+    others: &dyn Fn() -> Vec<Live<'a>>,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
 ) -> Resolved {
     match placed(sketch, plane, related, others, makers) {
@@ -129,11 +129,11 @@ pub(crate) fn place(
 }
 
 /// [`place`]'s finding: placed, or the feature whose solid it waits for.
-fn placed(
+fn placed<'a>(
     sketch: &FeatureId,
     plane: &FacePlane,
-    related: &[Live<'_>],
-    others: &[Live<'_>],
+    related: &[Live<'a>],
+    others: &dyn Fn() -> Vec<Live<'a>>,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
 ) -> Result<Placed, FeatureId> {
     let text = plane.face.as_str();
@@ -186,7 +186,7 @@ fn placed(
                 &format!(
                     "names a face that isn't planar: OCCT types its surface a {what}, and a sketch sits only on a face typed a plane"
                 ),
-                planar_faces(&name, related, others),
+                planar_faces(&name, related, &others()),
             ));
         };
         return Ok(match frame(normal, origin, plane.x, plane.reversed) {
@@ -207,9 +207,10 @@ fn placed(
     }) {
         return Ok(Placed::Blocked(root));
     }
+    let others = others();
     let maps: Vec<&ElementMap> = built(related)
         .into_iter()
-        .chain(built(others))
+        .chain(built(&others))
         .map(|(map, _)| map)
         .collect();
     let why = match retyped(&name, makers) {
@@ -705,7 +706,7 @@ mod tests {
             &id("s0000001"),
             &face_plane("b0000001.box.Face6", PlusX, false),
             &live,
-            &[],
+            &Vec::new,
             &makers,
         );
         let Resolved::Placed(Placed::Frame(f)) = placed else {
@@ -734,7 +735,7 @@ mod tests {
             &id("s0000001"),
             &face_plane("b0000001.box.Face7", PlusX, false),
             &live,
-            &[],
+            &Vec::new,
             &makers,
         ) else {
             panic!();
@@ -763,7 +764,7 @@ mod tests {
             &id("s0000001"),
             &face_plane("b0000001.box.Edge3", PlusX, false),
             &live,
-            &[],
+            &Vec::new,
             &makers,
         ) else {
             panic!();
@@ -788,7 +789,7 @@ mod tests {
             &id("s0000001"),
             &face_plane("b0000001.box.Face6", PlusX, false),
             &live,
-            &[],
+            &Vec::new,
             &makers,
         ) else {
             panic!();
@@ -818,7 +819,7 @@ mod tests {
             &id("s0000001"),
             &face_plane("b0000001.box.Face6", MinusZ, false),
             &live,
-            &[],
+            &Vec::new,
             &makers,
         ) else {
             panic!();
@@ -847,7 +848,7 @@ mod tests {
                 &sketch,
                 &plane,
                 &[Live::Failed(id("b0000002")), Live::Waits(id("p0000001"))],
-                &[],
+                &Vec::new,
                 &makers
             ),
             Resolved::Waits(id("p0000001"))
@@ -857,7 +858,7 @@ mod tests {
                 &sketch,
                 &plane,
                 &[Live::Failed(id("b0000002"))],
-                &[],
+                &Vec::new,
                 &makers
             ),
             Resolved::Placed(Placed::Blocked(id("b0000002")))
@@ -868,7 +869,12 @@ mod tests {
             &sketch,
             &face_plane("b0000001.box.Face6", PlusX, false),
             &[],
-            std::slice::from_ref(&built),
+            &|| {
+                vec![Live::Built {
+                    map: &map,
+                    description: Ok(&described),
+                }]
+            },
             &makers,
         );
         let Resolved::Placed(Placed::Broken(e)) = unrelated else {
@@ -884,7 +890,7 @@ mod tests {
                 built,
                 Live::Failed(id("b0000002")),
             ],
-            &[],
+            &Vec::new,
             &makers,
         );
         assert!(
@@ -905,7 +911,7 @@ mod tests {
             &id("s0000001"),
             &face_plane("b0000001.box.Face6", PlusX, false),
             &live,
-            &[],
+            &Vec::new,
             &makers,
         );
         let Resolved::Placed(Placed::Failed(e)) = placed else {
@@ -928,7 +934,7 @@ mod tests {
             &id("s0000001"),
             &face_plane("c0000001.box.Face6", PlusX, false),
             &live,
-            &[],
+            &Vec::new,
             &makers,
         ) else {
             panic!();

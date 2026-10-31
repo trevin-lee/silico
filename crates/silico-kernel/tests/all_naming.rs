@@ -23,6 +23,8 @@ mod sweeps;
 #[path = "common/wait.rs"]
 mod wait;
 
+#[path = "adversarial_face_plane_rounds.rs"]
+mod adversarial_face_plane_rounds;
 #[path = "adversarial_naming.rs"]
 mod adversarial_naming;
 #[path = "adversarial_references.rs"]

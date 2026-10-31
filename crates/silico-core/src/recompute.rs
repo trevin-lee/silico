@@ -2690,6 +2690,33 @@ impl Plan {
         else {
             return SweepPlan::Waits;
         };
+        // A revolve's or groove's axis placed on a face's frame, within reach, as its
+        // profile is: refused naming the axis as the document does, not by the revolution
+        // request's check of a point the document never wrote.
+        if let (Some((origin, _)), silico_protocol::SketchPlane::Face(_)) = (axis, plane) {
+            let at = plane.place(origin);
+            if !at
+                .iter()
+                .all(|c| c.is_finite() && c.abs() <= silico_protocol::MAX_LENGTH)
+            {
+                let named = operation.axis().map_or("axis", |a| a.as_str());
+                return SweepPlan::Refused(
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "axis {named}, placed on its sketch's face, passes through {at:?}: past 1e6 mm (a kilometre) of the model's origin, as far as an axis may be"
+                        ),
+                    )
+                    .with_feature(feature.id.as_str())
+                    .with_parameter("axis")
+                    .with_element(named)
+                    .with_suggestion(format!(
+                        "turn the {} about a line of the sketch nearer its face's origin",
+                        kind.word()
+                    )),
+                );
+            }
+        }
         let faces = self.add(Step::Faces(Arc::new(profile.faces(plane))), &feature.id);
         let step = match sweep_step(feature, kind, plane, axis, faces, base.map(|b| b.1)) {
             Ok(step) => step,
@@ -4356,6 +4383,66 @@ fn placed_faces(
     use crate::face_plane::{Live, Placed, Resolved};
     let features = &document.document().features;
     let mut faces = Faces::default();
+    if !plan
+        .features
+        .iter()
+        .any(|planned| matches!(planned.on_face, OnFace::Waits))
+    {
+        return faces;
+    }
+    // Once a round: what stands for each feature's solid, and each solid's first consumer
+    // (by place, through what stands for each input), so a solid is live at a sketch's
+    // place exactly when none consumes it before the sketch. Each a function of earlier
+    // features alone, so the same for every sketch's place.
+    let place = |id: &FeatureId| document.place(id);
+    let standing = crate::document::suppression::standing(features, &place);
+    let inputs =
+        |j: usize| crate::document::suppression::effective_inputs(features, &standing, &place, j);
+    let mut consumer: Vec<Option<usize>> = vec![None; features.len()];
+    for (c, feature) in features.iter().enumerate() {
+        if feature.suppressed {
+            continue;
+        }
+        for (_, stands) in inputs(c) {
+            if let Some(slot) = stands.and_then(|s| consumer.get_mut(s))
+                && slot.is_none()
+            {
+                *slot = Some(c);
+            }
+        }
+    }
+    // The feature `j`'s solid as the round has it.
+    let live = |j: usize, feature: &crate::document::Feature| -> Option<Result<Live<'_>, ()>> {
+        if plan.waits.contains(&j) {
+            return Some(Ok(Live::Waits(feature.id.clone())));
+        }
+        match model.outcome(&feature.id)? {
+            FeatureOutcome::Built { built, .. } => {
+                // A built feature's map is named from its history: none is a bug's.
+                let Some(map) = model.element_map(&feature.id) else {
+                    return Some(Err(()));
+                };
+                let description = match built.description() {
+                    Some(description) => Ok(description),
+                    None => Err(built
+                        .why_undescribed()
+                        .or_else(|| model.unmeasured(&feature.id))
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            silico_bug("a live solid built, but it wasn't described")
+                                .with_feature(feature.id.as_str())
+                        })),
+                };
+                Some(Ok(Live::Built { map, description }))
+            }
+            FeatureOutcome::Failed(_) | FeatureOutcome::Broken { .. } => {
+                Some(Ok(Live::Failed(feature.id.clone())))
+            }
+            FeatureOutcome::Blocked { on } => Some(Ok(Live::Failed(on.clone()))),
+            // Not live: a sketch makes no solid, and a suppressed feature is left out.
+            FeatureOutcome::Sketch(_) | FeatureOutcome::Suppressed => None,
+        }
+    };
     for (at, planned) in plan.features.iter().enumerate() {
         if !matches!(planned.on_face, OnFace::Waits) {
             continue;
@@ -4367,75 +4454,57 @@ fn placed_faces(
         let Some(face) = face else {
             continue;
         };
-        let before = features.get(..at).unwrap_or_default();
-        let place = |id: &FeatureId| document.place(id).filter(|&p| p < at);
-        // The features built from one of the name's makers, by place: a maker, or a feature
-        // whose effective input is one (each input after what it consumes).
+        // The face's own feature waits: so does every solid made from it, the only ones
+        // its face can be in, and the sketch with them, with no walk of the timeline (in a
+        // chain of sketches each on the last pad's face, every sketch but the next one waits
+        // so, each round).
+        if let Some(own) = face.feature()
+            && document
+                .place(&own)
+                .is_some_and(|p| p < at && plan.waits.contains(&p))
+        {
+            faces.waiting.insert(planned.id.clone(), own);
+            continue;
+        }
+        // The features before it built from one of the name's makers, by place: a maker, or
+        // a feature whose effective input is one (each input after what it consumes).
         let makers: BTreeSet<usize> =
             crate::naming::Name::parse(face.face.as_str(), &|f| plan.maker(f))
-                .map(|name| name.features().into_iter().filter_map(place).collect())
+                .map(|name| {
+                    name.features()
+                        .into_iter()
+                        .filter_map(|id| document.place(id).filter(|&p| p < at))
+                        .collect()
+                })
                 .unwrap_or_default();
-        let standing = crate::document::suppression::standing(before, &place);
-        let mut descends = vec![false; before.len()];
-        for j in 0..before.len() {
+        let mut descends = vec![false; at];
+        for j in 0..at {
             let from_maker = makers.contains(&j)
-                || crate::document::suppression::effective_inputs(before, &standing, &place, j)
+                || inputs(j)
                     .iter()
                     .any(|(_, stands)| stands.is_some_and(|s| descends.get(s) == Some(&true)));
             if let Some(slot) = descends.get_mut(j) {
                 *slot = from_maker;
             }
         }
-        let consumed = crate::document::suppression::consumed(before, &|_| true);
-        let (mut related, mut others) = (Vec::new(), Vec::new());
+        let is_live = |j: usize, feature: &crate::document::Feature| {
+            !feature.suppressed
+                && feature.operation.makes_solid()
+                && consumer.get(j).copied().flatten().is_none_or(|c| c >= at)
+        };
+        let mut related = Vec::new();
         let mut unnamed = None;
-        for (j, feature) in before.iter().enumerate() {
-            if feature.suppressed
-                || !feature.operation.makes_solid()
-                || consumed.contains(&feature.id)
-            {
+        for (j, feature) in features.iter().enumerate().take(at) {
+            if !is_live(j, feature) || descends.get(j) != Some(&true) {
                 continue;
             }
-            let holds = descends.get(j) == Some(&true);
-            let solid = if plan.waits.contains(&j) {
-                Live::Waits(feature.id.clone())
-            } else {
-                match model.outcome(&feature.id) {
-                    Some(FeatureOutcome::Built { built, .. }) => {
-                        let Some(map) = model.element_map(&feature.id) else {
-                            if holds {
-                                unnamed = Some(&feature.id);
-                                break;
-                            }
-                            continue;
-                        };
-                        let description = match built.description() {
-                            Some(description) => Ok(description),
-                            None => Err(built
-                                .why_undescribed()
-                                .or_else(|| model.unmeasured(&feature.id))
-                                .cloned()
-                                .unwrap_or_else(|| {
-                                    silico_bug("a live solid built, but it wasn't described")
-                                        .with_feature(feature.id.as_str())
-                                })),
-                        };
-                        Live::Built { map, description }
-                    }
-                    Some(FeatureOutcome::Failed(_) | FeatureOutcome::Broken { .. }) => {
-                        Live::Failed(feature.id.clone())
-                    }
-                    Some(FeatureOutcome::Blocked { on }) => Live::Failed(on.clone()),
-                    // Not live: a sketch makes no solid, and a suppressed feature is left out.
-                    Some(FeatureOutcome::Sketch(_) | FeatureOutcome::Suppressed) | None => {
-                        continue;
-                    }
+            match live(j, feature) {
+                Some(Ok(solid)) => related.push(solid),
+                Some(Err(())) => {
+                    unnamed = Some(&feature.id);
+                    break;
                 }
-            };
-            if holds {
-                related.push(solid);
-            } else if matches!(solid, Live::Built { .. }) {
-                others.push(solid);
+                None => {}
             }
         }
         if let Some(solid) = unnamed {
@@ -4450,19 +4519,22 @@ fn placed_faces(
             );
             continue;
         }
+        // The rest of the live solids built, read only for a broken name's candidates.
+        let others = || {
+            features
+                .iter()
+                .enumerate()
+                .take(at)
+                .filter(|(j, feature)| is_live(*j, feature) && descends.get(*j) != Some(&true))
+                .filter_map(|(j, feature)| match live(j, feature) {
+                    Some(Ok(solid @ Live::Built { .. })) => Some(solid),
+                    _ => None,
+                })
+                .collect()
+        };
         match crate::face_plane::place(&planned.id, face, &related, &others, &|f| plan.maker(f)) {
             Resolved::Placed(Placed::Frame(frame)) => {
-                // Its profile, if a feature sweeps it, placed on the frame: within reach.
-                let beyond = swept
-                    .get(&planned.id)
-                    .and_then(|swept| swept.profile.as_ref().ok())
-                    .and_then(|profile| {
-                        crate::face_plane::beyond_reach(
-                            &planned.id,
-                            &profile.faces(silico_protocol::SketchPlane::Face(frame)),
-                        )
-                    });
-                let placed = match beyond {
+                let placed = match placeable(&planned.id, frame, swept.get(&planned.id)) {
                     Some(error) => Placed::Failed(error),
                     None => Placed::Frame(frame),
                 };
@@ -4477,6 +4549,38 @@ fn placed_faces(
         }
     }
     faces
+}
+
+/// Why the sketch `sketch`, its face's frame resolved as `frame`, can't be placed there, if
+/// it can't: a frame the kernel's check of it refuses (an origin past its bound, which a
+/// slanted face far out can give), or a profile (`swept`'s, if a feature sweeps it) placed
+/// past a kilometre ([`beyond_reach`](crate::face_plane::beyond_reach)). Each `invalid_input`
+/// on the sketch's `plane`, in the document's terms, so no later request is refused naming
+/// a value the document never wrote.
+fn placeable(
+    sketch: &FeatureId,
+    frame: silico_protocol::FaceFrame,
+    swept: Option<&Swept>,
+) -> Option<Error> {
+    let plane = silico_protocol::SketchPlane::Face(frame);
+    if let Err(invalid) = plane.check() {
+        return Some(
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "the sketch's face's frame can't place a sketch: {}",
+                    invalid.message
+                ),
+            )
+            .with_feature(sketch.as_str())
+            .with_parameter("plane")
+            .with_suggestion(
+                "put the sketch on a face nearer the model's origin: a face's frame is placed from the origin projected onto its plane",
+            ),
+        );
+    }
+    let profile = swept?.profile.as_ref().ok()?;
+    crate::face_plane::beyond_reach(sketch, &profile.faces(plane))
 }
 
 /// What became of each feature of `source`, from its steps' results, and the bodies.
