@@ -1097,9 +1097,12 @@ pub struct Verdict {
     pub crashed: bool,
     /// The note's rule Silico's refusal is, if it refused by one.
     pub rule: Option<Rule>,
-    /// Silico made the edit: its result through the gate, and (a merge, or an arc extend
-    /// whose solve failing refuses it) its solve not refusing it.
+    /// Silico made the edit: its result through the gate, and its solve succeeding.
     pub made: bool,
+    /// FreeCAD's merge failed (-1) and was rolled back, its sketch as the case drew it
+    /// ([`rolled_back()`]): the one outcome of FreeCAD's that a [`Shows::VariesMade`] case
+    /// leaves uncompared.
+    pub rolled_back: bool,
     /// The case itself has a problem, or the harness: its sketch not drawn as it solves or
     /// not solving, FreeCAD's model of it malformed or conflicting before the edit, or the
     /// harness's own code around FreeCAD's edit failing.
@@ -1139,10 +1142,12 @@ pub enum Shows {
     /// is shown as known, its report with it, never as an agreement or a difference. Silico's
     /// side otherwise is compared, and the known case a problem.
     Varies(Rule),
-    /// Whatever it shows, where Silico makes the edit ([`Verdict::made`]) and the case itself
-    /// has no problem: FreeCAD 1.1.3 doesn't answer the case the same every run, so its answer
-    /// is no oracle, and the case is shown as known, its report with it, never as an agreement
-    /// or a difference. A refusal on Silico's side is compared, and the known case a problem.
+    /// A merge Silico makes ([`Verdict::made`]), the case itself without a problem, where
+    /// FreeCAD 1.1.3's solve from the points apart fails in some runs and not others: where
+    /// it failed and its merge was rolled back ([`Verdict::rolled_back`]), the case is shown
+    /// as known, its report with it, never as a difference; where FreeCAD made the merge too,
+    /// or crashed, hung, or raised, the two are compared as in any case. Silico not making the
+    /// edit, or a problem of the case's, is compared, and the known case a problem.
     VariesMade,
 }
 
@@ -1231,7 +1236,7 @@ pub const KNOWN: &[Known] = &[
     Known {
         case: "edit_78_52",
         shows: Shows::VariesMade,
-        why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, the arc a0000016's end p0000015 onto the circle c0000026's centre p0000025, 31 mm away. Silico places the end at the kept point's place (#se-the-first-point-the-request-names), 27.75 mm from the arc's centre where its radius is 3.475, and its solve from there is clean (the arc's radius 22.05, every constraint held), so it makes the merge; FreeCAD's arc can't hold an end off its circle, so no placed solve compares FreeCAD's from that start, and FreeCAD's own, from the points apart, fails (-1) in 1 of 2 whole sweeps and 1 of 6 runs alone, which its Coincident command rolls back (#se-any-result-whose-solve-is-worse), and is clean in the rest, agreeing: the reverse the note gives (#se-the-reverse-comes-too-points-merged), but an answer that varies is no oracle",
+        why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, the arc a0000016's end p0000015 onto the circle c0000026's centre p0000025, 31 mm away. Silico places the end at the kept point's place (#se-the-first-point-the-request-names), 27.75 mm from the arc's centre where its radius is 3.475, and its solve from there is clean (the arc's radius 22.05, every constraint held), so it makes the merge; FreeCAD's arc can't hold an end off its circle, so no placed solve compares FreeCAD's from that start, and FreeCAD's own, from the points apart, fails (-1) in 1 of 2 whole sweeps and 1 of 6 runs alone, which its Coincident command rolls back (#se-any-result-whose-solve-is-worse), and is clean in the rest, agreeing: the reverse the note gives (#se-the-reverse-comes-too-points-merged), but an answer that varies is no oracle; where FreeCAD makes the merge, the two are compared",
     },
     // `sketch-edit-sweep --seed 84 --count 500`'s case 352.
     Known {
@@ -1251,13 +1256,20 @@ fn same_kind(v: &Verdict, want: &Rule) -> bool {
 }
 
 /// Whether a [`Shows::Varies`] or [`Shows::VariesMade`] case's Silico side, in `v`, is still
-/// the one its entry holds it to: so it's shown as known, whatever FreeCAD answered.
+/// the one its entry holds it to, so the entry isn't stale, whatever FreeCAD answered.
 fn still_varies(shows: &Shows, v: &Verdict) -> bool {
     match shows {
         Shows::Difference(_) => false,
         Shows::Varies(rule) => same_kind(v, rule),
         Shows::VariesMade => !v.problem && v.made,
     }
+}
+
+/// Whether `v` is shown as a varying case's known outcome, not compared: a [`Shows::Varies`]
+/// case whatever FreeCAD answered, a [`Shows::VariesMade`] one only where FreeCAD's merge
+/// was rolled back.
+fn shown_as_varying(shows: &Shows, v: &Verdict) -> bool {
+    still_varies(shows, v) && (!matches!(shows, Shows::VariesMade) || v.rolled_back)
 }
 
 /// `verdicts` less the [`KNOWN`] differences that showed: the cases that differ, a line for
@@ -1316,7 +1328,7 @@ pub fn without_known(
     }
     for v in verdicts {
         match known.iter().find(|k| k.case == v.case) {
-            Some(k) if still_varies(&k.shows, &v) => {
+            Some(k) if shown_as_varying(&k.shows, &v) => {
                 let report = if v.how.is_empty() {
                     "agreed this run".to_owned()
                 } else {
@@ -1576,7 +1588,8 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         case: p.name.clone(),
         how: p.problems.clone(),
         rule: rule(p),
-        made: matches!(p.silico, SilicoSide::Edited(_)) && silico_refused(p).is_none(),
+        made: matches!(&p.silico, SilicoSide::Edited(s) if s.ours.outcome.is_ok()),
+        rolled_back: rolled_back(p, theirs),
         problem: !p.problems.is_empty(),
         ..Verdict::default()
     };
