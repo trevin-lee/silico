@@ -394,8 +394,8 @@ fn a_published_distance_held_in_the_kernel_survives_a_cancel_of_the_rebuild_and_
     longer_by_field(&f, Revision::OPENED).wait().result.unwrap();
     assert!(f.kernel.wait_idle(WAIT));
     // Both held before the read is sent: a published read starts the revision's rebuild
-    // as it starts (decision 13), so the distance's own read starts revision 2's, whose box
-    // may reach the kernel before the distance does.
+    // as it starts (decision 13), so the distance's own read starts revision 2's, and a
+    // request is held only if its hold exists when the request starts.
     let measuring = f.kernel.hold(|op| op.name() == "Distance");
     let _boxes = f.kernel.hold(is_box);
     let distance = f
