@@ -49,7 +49,10 @@ use crate::worker::lock;
 
 /// The least time from one comparison's end to the next one's start (the design's
 /// `DISK_CHECK_INTERVAL`): the app's idle frame asks once a second.
-pub const DISK_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+pub const DISK_CHECK_INTERVAL: Duration = Duration::from_millis(DISK_CHECK_MS);
+
+/// [`DISK_CHECK_INTERVAL`] in milliseconds, as `version`'s `limits.disk_check_ms` gives it.
+pub const DISK_CHECK_MS: u64 = 1000;
 
 /// How long a comparison may read its file before it's logged as stalled (a network mount
 /// that stopped answering, say): the finding before it stands while it runs.

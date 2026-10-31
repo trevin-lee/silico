@@ -632,11 +632,12 @@ fn version_is_answered_with_every_limit_as_the_design_gives_them_and_no_session(
             kernel_seconds: 21,
             sketch_seconds: 22,
             undo_bytes: 33,
+            disk_check_ms: 34,
         },
     };
     assert_eq!(
         one_line(&other),
-        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "highlight": 23, "render_side": 24, "render_seconds": 25, "log_read_events": 26, "log_read_bytes": 27, "log_events": 28, "log_bytes": 29, "export_tolerance": [0.000001, 30], "export_triangles": 31, "export_bytes": 32, "kernel_seconds": 21, "sketch_seconds": 22, "undo_bytes": 33}}"#
+        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "highlight": 23, "render_side": 24, "render_seconds": 25, "log_read_events": 26, "log_read_bytes": 27, "log_events": 28, "log_bytes": 29, "export_tolerance": [0.000001, 30], "export_triangles": 31, "export_bytes": 32, "kernel_seconds": 21, "sketch_seconds": 22, "undo_bytes": 33, "disk_check_ms": 34}}"#
     );
     holds(&schema_of("version", "result"), &written(&other), "another");
 }
