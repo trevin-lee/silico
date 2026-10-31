@@ -1060,32 +1060,56 @@ fn bytes_a_reload_refused_come_back_after_another_reload_and_are_tried_again() {
     let other = f.path.with_file_name("b.silico");
     std::fs::write(&other, SPHERE).unwrap();
     let _second = f.sessions.open(&other, false).wait().session.unwrap().id;
-    let (started, through) = shut(&f.session().reloading);
     let link = || {
         let _ = std::fs::remove_file(&f.path);
         std::os::unix::fs::symlink(&other, &f.path).unwrap();
     };
+    // Asked until a reload starts at the gate: a finding of `changed` from before (the
+    // refused bytes still there) answers at once, and a comparison running then may have
+    // read the bytes before, so each `status` may start the comparison that finds them.
+    let reload_starts = |started: &Receiver<()>| {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            f.status();
+            if started.try_recv().is_ok() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    // A reload let through, then the gate opened until nothing runs (a stale comparison's
+    // reload, asked for after one took its bytes, finds them as held), and shut again.
+    let through_then_settle = |through: Sender<()>, want: &dyn Fn(&Status, Revision) -> bool| {
+        through.send(()).unwrap();
+        drop(through);
+        open_gate(&f.session().reloading);
+        f.status_reaches(|status, revision| want(status, revision) && status.running.is_none());
+    };
+    let (started, through) = shut(&f.session().reloading);
     link();
-    f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
-    started.recv_timeout(WAIT).unwrap();
-    through.send(()).unwrap();
-    f.status_reaches(|status, _| status.running.is_none());
+    assert!(
+        reload_starts(&started),
+        "the link to s2's file queued no reload"
+    );
+    through_then_settle(through, &|_, _| true);
     // Other bytes of its own: reloaded.
+    let (started, through) = shut(&f.session().reloading);
     std::fs::remove_file(&f.path).unwrap();
     std::fs::write(&f.path, BOX.replace("Block", "Brick")).unwrap();
-    f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
-    started.recv_timeout(WAIT).unwrap();
-    through.send(()).unwrap();
-    f.status_reaches(|status, revision| {
+    assert!(reload_starts(&started), "the new bytes queued no reload");
+    through_then_settle(through, &|status, revision| {
         revision == Revision(2) && status.disk == Some(Disk::Unchanged)
     });
     // Any reload taken forgets the refusal.
     assert!(lock(&f.session().reloads).refused.is_none());
     // The refused bytes back: tried again, not passed over.
+    let (started, through) = shut(&f.session().reloading);
     link();
-    f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
     assert!(
-        started.recv_timeout(WAIT).is_ok(),
+        reload_starts(&started),
         "the bytes refused before weren't tried again"
     );
     open_gate(&f.session().reloading);
