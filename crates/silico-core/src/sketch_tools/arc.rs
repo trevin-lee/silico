@@ -34,6 +34,13 @@ struct Drawn {
 }
 
 impl Drawn {
+    /// Whether its radius is one the solver takes: at most a kilometre, from its centre to
+    /// its start, measured as the gate measures it.
+    fn sized(&self) -> bool {
+        silico_protocol::squared_distance(self.center, self.start).sqrt()
+            <= silico_protocol::MAX_LENGTH
+    }
+
     /// The arc about `center` from the gesture's `from` to its `to`, counter-clockwise if
     /// `ccw`, otherwise written from `to` back to `from`.
     fn new(center: Xy, from: Xy, to: Xy, ccw: bool) -> Self {
@@ -265,6 +272,13 @@ impl Centerpoint {
             };
             return Outcome::nothing();
         }
+        if one_place(start.at, centre.at) {
+            self.state = CenterState::Centre {
+                centre,
+                pressed: false,
+            };
+            return Outcome::said(Message::TooSmall);
+        }
         if !reach(&[&start]) {
             self.state = CenterState::Centre {
                 centre,
@@ -360,10 +374,14 @@ fn finish_centerpoint(
     if on_top(step, start, &end) || swept == 0.0 {
         return Outcome::nothing();
     }
-    if one_place(start.at, end.at) {
+    // An end the pointer put on the centre (a point there, with a tolerance past the
+    // radius), or at the start's place: no arc.
+    let on_centre = centre.shared().is_some() && centre.shared() == end.shared();
+    if on_centre || one_place(end.at, centre.at) || one_place(start.at, end.at) {
         return Outcome::said(Message::TooSmall);
     }
-    if !reach(&[&end]) {
+    let drawn = oriented(centre.at, start.at, end.at, swept);
+    if !reach(&[&end]) || !drawn.sized() {
         return Outcome::said(Message::TooFar);
     }
     let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
@@ -371,7 +389,7 @@ fn finish_centerpoint(
         let c = builder.point(centre, false)?;
         let s = builder.point(start, false)?;
         let e = builder.point(&end, false)?;
-        if swept < 0.0 {
+        if drawn.reversed {
             builder.arc(&c, &e, &s)?;
         } else {
             builder.arc(&c, &s, &e)?;
@@ -585,8 +603,7 @@ fn finish_three(step: &mut Step<'_, '_, '_>, start: &Placed, end: &Placed, at: X
     let Some(drawn) = through_three(start.at, end.at, at) else {
         return Outcome::said(Message::InLine);
     };
-    let radius = distance(drawn.center, start.at);
-    if radius > silico_protocol::MAX_LENGTH || !within_reach(drawn.center) {
+    if !drawn.sized() || !within_reach(drawn.center) {
         return Outcome::said(Message::TooFar);
     }
     let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
@@ -790,8 +807,7 @@ fn finish_tangent(step: &mut Step<'_, '_, '_>, base: &Base, at: Xy) -> Option<Ou
     let Some(drawn) = tangent_from(base, end.at) else {
         return Some(Outcome::said(Message::InLine));
     };
-    let radius = distance(drawn.center, base.at);
-    if radius > silico_protocol::MAX_LENGTH || !within_reach(drawn.center) || !reach(&[&end]) {
+    if !drawn.sized() || !within_reach(drawn.center) || !reach(&[&end]) {
         return Some(Outcome::said(Message::TooFar));
     }
     let mut builder = Builder::new(&mut *step.ids, step.pointer.view);

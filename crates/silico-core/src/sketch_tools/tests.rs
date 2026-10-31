@@ -284,8 +284,10 @@ fn a_click_click_chain_shares_each_join_and_a_double_click_ends_it() {
             sorted(&["point (60, 5)", "line #(40, 30)-(60, 5)"]),
         ]
     );
-    // The second segment's start is the first's end, by ID.
+    // The second segment's start is the first's end, by ID; and the double-click's second
+    // click said nothing.
     assert_eq!(d.made[1].lines[0].from, d.made[0].lines[0].to);
+    assert!(d.messages.is_empty(), "{:?}", d.messages);
     assert!(!d.tool.busy());
     assert!(!d.left, "a double-click keeps the tool");
     d.to(80.0, 80.0);
@@ -602,6 +604,27 @@ fn a_point_of_the_sketch_at_the_origin_is_shared_not_placed_there_again() {
         d.adds(),
         [sorted(&["point (20, 30)", "line #(0, 0)-(20, 30)"])]
     );
+}
+
+#[test]
+fn the_origin_nearer_than_a_point_wins() {
+    // A point at (0.4, 0), and a click at (0.1, 0): 0.3 mm from the point, 0.1 from the
+    // origin, both within 0.5. The nearer is the origin (#278's A).
+    let mut s = empty();
+    s.points.push(point("q0000001", 0.4, 0.0));
+    let mut d = Drive::new(ToolKind::Point, s);
+    d.click(0.1, 0.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (0, 0)",
+            "horizontal_points (0, 0) origin",
+            "vertical_points (0, 0) origin",
+        ])]
+    );
+    // 0.3 from the origin, 0.1 from the point: the point, so nothing (#278's D).
+    d.click(0.3, 0.0);
+    assert_eq!(d.messages, [Message::PointThere(id("q0000001"))]);
 }
 
 // --- #278's B: tangent arcs only --------------------------------------------------------
@@ -1031,6 +1054,37 @@ fn a_centrepoint_arc_runs_the_way_the_pointer_swept() {
 }
 
 #[test]
+fn a_centrepoint_arcs_preview_runs_the_way_the_pointer_sweeps() {
+    // The same arcs, before their last click: counter-clockwise through (13, 20) toward
+    // (4, 18), the arc from the start (18, 16) to (4, 18); clockwise through (19, 6) toward
+    // (16, 2), the arc from (16, 2) to the start.
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.drag([10.0, 10.0], [18.0, 16.0])
+        .to(13.0, 20.0)
+        .to(4.0, 18.0);
+    assert_eq!(
+        d.tool.preview().arcs,
+        [PreviewArc {
+            center: [10.0, 10.0],
+            start: [18.0, 16.0],
+            end: [4.0, 18.0],
+        }]
+    );
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.drag([10.0, 10.0], [18.0, 16.0])
+        .to(19.0, 6.0)
+        .to(16.0, 2.0);
+    assert_eq!(
+        d.tool.preview().arcs,
+        [PreviewArc {
+            center: [10.0, 10.0],
+            start: [16.0, 2.0],
+            end: [18.0, 16.0],
+        }]
+    );
+}
+
+#[test]
 fn a_centrepoint_arcs_end_is_on_the_circle_its_start_sets() {
     // The end clicked at (−2, 26), 20 from the centre toward (−0.6, 0.8): on the circle of
     // radius 10, at (4, 18).
@@ -1267,5 +1321,214 @@ fn the_members_are_what_new_members_writes() {
     );
     for empty in [&new.circles, &new.arcs, &new.constraints] {
         assert_eq!(Plain::of(empty), plain("[]"));
+    }
+}
+
+#[test]
+fn a_centrepoint_arcs_end_put_on_its_own_centre_draws_nothing() {
+    // Found by the property below: with a pick tolerance past the radius, the end's place on
+    // the circle snapped back to the centre, a point of the sketch, and the arc's end was its
+    // centre, which the gate refuses. Centre the point (20, 10), start the point (0, 0),
+    // radius √500 ≈ 22.4; the end toward (25, 12) is at (40.8, 18.3), 22.4 from the centre
+    // and 44.8 from the start, so with a 30 mm tolerance it snaps to the centre: nothing,
+    // too small.
+    let mut s = empty();
+    s.points.push(point("q0000001", 20.0, 10.0));
+    s.points.push(point("q0000002", 0.0, 0.0));
+    let mut d = Drive::new(ToolKind::CenterpointArc, s);
+    d.tolerance = 30.0;
+    d.click(20.0, 10.0)
+        .click(0.0, 0.0)
+        .to(-5.0, 30.0)
+        .click(25.0, 12.0);
+    assert!(d.adds().is_empty());
+    assert_eq!(d.messages, [Message::TooSmall]);
+}
+
+#[test]
+fn an_arcs_radius_at_a_kilometre_is_measured_as_the_gate_measures_it() {
+    // Found by the property below: a centrepoint arc of radius 1e6 mm, swept clockwise, is
+    // written from its end, placed on the circle by the pointer's direction; that point's
+    // distance from the centre, as the gate measures it (the square root of the squares'
+    // sum), can be a rounding past 1e6, which the gate refuses. Centre at the origin, start
+    // (1e6, 0) on the x axis: find a direction whose point on the circle is past 1e6 that
+    // way, and sweep to it. The arc is refused as too far, never sent for the gate to refuse.
+    let radius = 1e6;
+    let past = (1..2000)
+        .map(|k| -f64::from(k) * 0.0007)
+        .map(|angle| [libm::cos(angle), libm::sin(angle)])
+        .find(|direction| {
+            let length = libm::hypot(direction[0], direction[1]);
+            let p = [
+                direction[0] / length * radius,
+                direction[1] / length * radius,
+            ];
+            (p[0] * p[0] + p[1] * p[1]).sqrt() > radius
+        })
+        .expect("a direction whose point is a rounding past the radius");
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.click(0.1, 0.1).click(1e6, 0.2);
+    let toward = [past[0] * 5e5, past[1] * 5e5];
+    d.to(toward[0], toward[1]).click(toward[0], toward[1]);
+    assert!(d.adds().is_empty(), "{:?}", d.adds());
+    assert_eq!(d.messages, [Message::TooFar]);
+}
+
+/// An ID source that has none to give.
+struct Dry;
+
+impl NewIds for Dry {
+    fn next(&mut self, _: &dyn Fn(&ElementId) -> bool) -> Result<ElementId, Error> {
+        Err(Error::new(ErrorCode::IoFailed, "no randomness"))
+    }
+}
+
+#[test]
+fn a_source_with_no_ids_adds_nothing_and_says_why() {
+    let sketch = empty();
+    let context = Context {
+        sketch: &sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+    };
+    let mut tool = SketchTool::new(ToolKind::Line);
+    let keys = Modifiers::default();
+    for event in [Event::Press([10.0, 10.0]), Event::Move([40.0, 30.0])] {
+        assert_eq!(
+            tool.handle(&context, &mut Dry, event, keys),
+            Outcome::default()
+        );
+    }
+    let outcome = tool.handle(&context, &mut Dry, Event::Release([40.0, 30.0]), keys);
+    assert_eq!(outcome.add, None);
+    assert_eq!(
+        outcome.message,
+        Some(Message::NoId(Error::new(
+            ErrorCode::IoFailed,
+            "no randomness"
+        )))
+    );
+    assert_eq!(
+        outcome.message.map(|m| m.text()).as_deref(),
+        Some("no new ID could be made: no randomness")
+    );
+}
+
+#[test]
+fn the_systems_ids_are_fresh_and_none_taken() {
+    let mut ids = SystemIds::new();
+    let mut drawn: Vec<ElementId> = Vec::new();
+    for _ in 0..64 {
+        let id = ids.next(&|id| drawn.contains(id)).unwrap();
+        assert!(!drawn.contains(&id));
+        drawn.push(id);
+    }
+}
+
+// --- Any events at all ---------------------------------------------------------------------
+
+mod property {
+    use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
+
+    use super::*;
+
+    /// A sketch with something of every kind to snap to: a line, an arc, a circle, and a lone
+    /// point, a point at the origin, and two points a hair (1e-8 mm) apart.
+    fn busy() -> Sketch {
+        let mut s = one_line();
+        s.points.push(point("c0000001", 50.0, 50.0));
+        s.points.push(point("q0000003", 60.0, 50.0));
+        s.points.push(point("q0000004", 50.0, 60.0));
+        s.arcs.push(crate::document::SketchArc {
+            id: id("a0000001"),
+            center: id("c0000001"),
+            start: id("q0000003"),
+            end: id("q0000004"),
+            construction: false,
+        });
+        s.points.push(point("c0000002", -20.0, 30.0));
+        s.circles.push(crate::document::SketchCircle {
+            id: id("k0000001"),
+            center: id("c0000002"),
+            radius: Coordinate::new(7.0).unwrap(),
+            construction: false,
+        });
+        s.points.push(point("q0000005", 0.0, 0.0));
+        s.points.push(point("q0000006", 30.0, -30.0));
+        s.points.push(point("q0000007", 30.0 + 1e-8, -30.0));
+        s
+    }
+
+    /// A coordinate: mostly near the sketch's members, some at its edges, some not numbers.
+    fn coordinate() -> impl Strategy<Value = f64> {
+        prop_oneof![
+            8 => -70.0..70.0f64,
+            2 => prop::sample::select(vec![0.0, 10.0, 20.0, 30.0, 50.0, 60.0, -20.0, -30.0]),
+            1 => prop::sample::select(vec![
+                30.0 + 1e-8,
+                30.0 + 5e-9,
+                1e6,
+                -1e6,
+                1e6 + 1.0,
+                1e300,
+                f64::NAN,
+                f64::INFINITY,
+                f64::MIN_POSITIVE,
+            ]),
+        ]
+    }
+
+    fn event() -> impl Strategy<Value = (Event, Modifiers)> {
+        let at = || (coordinate(), coordinate()).prop_map(|(x, y)| [x, y]);
+        let event = prop_oneof![
+            4 => at().prop_map(Event::Press),
+            4 => at().prop_map(Event::Move),
+            4 => at().prop_map(Event::Release),
+            1 => at().prop_map(Event::DoubleClick),
+            1 => Just(Event::EndChain),
+            1 => Just(Event::Escape),
+            1 => Just(Event::Enter),
+        ];
+        (event, any::<bool>(), any::<bool>())
+            .prop_map(|(event, shift, ctrl)| (event, Modifiers { shift, ctrl }))
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 600,
+            failure_persistence: None,
+            rng_seed: RngSeed::Fixed(0x5c_7001),
+            ..ProptestConfig::default()
+        })]
+
+        /// Whatever the events, the tolerance, and the setting: nothing panics, and every
+        /// `sketch_add` a tool makes is one the gate takes (`Drive::send` puts each through
+        /// it, the next event against the sketch it leaves), writes as a request's lists, and
+        /// places each new point finite and within a kilometre.
+        #[test]
+        fn any_events_make_only_adds_the_gate_takes(
+            kind in prop::sample::select(ToolKind::ALL.to_vec()),
+            events in prop::collection::vec(event(), 0..48),
+            tolerance in prop::sample::select(vec![0.0, 1e-9, 0.5, 5.0, 1e3, f64::NAN, -1.0]),
+            automatic in any::<bool>(),
+        ) {
+            let mut d = Drive::new(kind, busy());
+            d.tolerance = tolerance;
+            d.automatic = automatic;
+            for (event, keys) in events {
+                d.keys = keys;
+                d.send(event);
+            }
+            for members in &d.made {
+                prop_assert!(crate::command::NewMembers::of(members).is_ok());
+                for p in &members.points {
+                    prop_assert!(within_reach([p.x.mm(), p.y.mm()]), "{p:?}");
+                }
+                for c in &members.circles {
+                    prop_assert!(c.radius.mm() > 0.0 && c.radius.mm() <= 1e6, "{c:?}");
+                }
+            }
+        }
     }
 }
