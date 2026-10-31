@@ -2249,13 +2249,17 @@ impl<C: Kernel + 'static> Session<C> {
     /// if it isn't waiting yet, answers so when it asks for a model. Refused, naming what's
     /// running, if none is (it published, failed, or was superseded first).
     fn cancel_rebuild(&self) -> Result<Cancelled, Problems> {
-        // The queued command running, taken first, under no other lock: it answers
-        // `cancelled` too, waiting on the rebuild or not yet.
-        let queued = self.running().map(|ticket| Arc::downgrade(&ticket));
         let stopped = {
             let held = self.held.read();
             let gated = matches!(*held.gated, Gated::Checked(_));
-            lock(&self.rebuilds).stop_running(held.revision, gated, queued)
+            let mut rebuilds = lock(&self.rebuilds);
+            // The queued command running as the rebuild stops, read under the rebuilds'
+            // lock (the command's lock comes after it, and is taken alone): it answers
+            // `cancelled` too when it then asks for the model, waiting on the rebuild or
+            // not yet. A command that starts after this asks for the model only once the
+            // stop is recorded, and starts the rebuild again, as any command after does.
+            let queued = self.running().map(|ticket| Arc::downgrade(&ticket));
+            rebuilds.stop_running(held.revision, gated, queued)
         };
         if !stopped {
             return Err(self.not_running(Cancellable::Rebuild, &self.running_tickets()));
