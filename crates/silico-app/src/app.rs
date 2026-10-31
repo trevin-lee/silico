@@ -219,11 +219,12 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// Whether Save As is offered: a tab shown, and not closing (its edits go with it).
+    /// Whether Save As is offered: a tab shown, not closing (its edits go with it), and no
+    /// dialog open on it (its OK or Cancel ends its edits first, as for Save).
     fn save_as_offered(&self) -> bool {
         self.active_place()
             .and_then(|at| self.tabs.get(at))
-            .is_some_and(|tab| !tab.closing())
+            .is_some_and(|tab| !tab.closing() && !tab.in_dialog())
     }
 
     /// The place among the tabs of the one shown, if one is.

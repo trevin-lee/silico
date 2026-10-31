@@ -4704,7 +4704,8 @@ fn edit_feature_opens_at_the_revision_its_read_found_when_the_session_moved_unde
     check.wait();
     theirs.wait().result.unwrap();
     step_until(&mut h, "its dialog", |h| {
-        h.query_by_role_and_label(Role::Dialog, "Cylinder").is_some()
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
     });
     assert_eq!(input(&h, "Height").value().as_deref(), Some("15"));
     settled(&mut h);
@@ -4718,5 +4719,49 @@ fn edit_feature_opens_at_the_revision_its_read_found_when_the_session_moved_unde
     step_key(&mut h, true);
     assert_eq!(text_of(&f, &h), moved);
     assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_as_is_off_while_a_dialog_is_open() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    // File > Save As… off, and Ctrl+Shift+S asks nothing.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Save As…")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // The menu closed by its own button (Esc is the dialog's Cancel).
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.key_press_modifiers(
+        eframe::egui::Modifiers::COMMAND | eframe::egui::Modifiers::SHIFT,
+        eframe::egui::Key::S,
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(!anywhere(&h, "Save example.silico as"));
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert!(dialog_open(&h));
+    // OK'd: Save As offered again.
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    h.key_press_modifiers(
+        eframe::egui::Modifiers::COMMAND | eframe::egui::Modifiers::SHIFT,
+        eframe::egui::Key::S,
+    );
+    step_until(&mut h, "the Save As dialog", |h| {
+        anywhere(h, "Save example.silico as")
+    });
     assert_eq!(never_waits::waits(), 0);
 }

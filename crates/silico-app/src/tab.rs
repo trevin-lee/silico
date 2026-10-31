@@ -917,8 +917,10 @@ impl Tab {
                     };
                     let Some(feature) = feature_node(kind, &members, base.as_ref()) else {
                         // Never: the dialog's members are JSON it wrote.
-                        if let Some(dialog) =
-                            self.dialog.as_mut().filter(|dialog| dialog.serial == serial)
+                        if let Some(dialog) = self
+                            .dialog
+                            .as_mut()
+                            .filter(|dialog| dialog.serial == serial)
                         {
                             dialog.adding = false;
                         }
