@@ -954,6 +954,11 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
     let waker = session.upgrade().map(|session| Arc::clone(&session.waker));
     let progress = run.progress();
     let mut seen = progress.now();
+    // And again once it has looked: a test then knows each step settled after is told.
+    #[cfg(test)]
+    if let Some(session) = session.upgrade() {
+        session.watching.pass();
+    }
     while !seen.ended {
         let next = progress.changed_since(&seen);
         // Told as `done` or `steps` moves, a last step's settling with the end too; the end

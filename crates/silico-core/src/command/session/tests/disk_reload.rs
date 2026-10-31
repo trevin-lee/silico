@@ -831,7 +831,8 @@ fn each_step_of_a_held_rebuild_wakes_once_as_it_settles_then_its_end_and_its_ans
     let base = settled(&f, &count);
     // The rebuild's watcher held before it first looks, until its plan is made: so the
     // plan is never told (it was made before the watcher looked), and every wake after is
-    // a step's, the end's, or the answer's.
+    // a step's, the end's, or the answer's. Then held again once it has looked, so no
+    // step settles before its first look (which would fold that step's telling into it).
     let (watching, watched) = shut(&f.session().watching);
     let block = f
         .kernel
@@ -846,6 +847,8 @@ fn each_step_of_a_held_rebuild_wakes_once_as_it_settles_then_its_end_and_its_ans
     // Its plan made: two steps, none settled.
     let progress = check.progress().unwrap();
     assert_eq!((progress.done, progress.steps), (0, 2));
+    watching.recv_timeout(WAIT).unwrap();
+    watched.send(()).unwrap();
     watching.recv_timeout(WAIT).unwrap();
     watched.send(()).unwrap();
     drop(watched);
