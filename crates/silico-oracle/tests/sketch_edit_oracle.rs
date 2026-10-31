@@ -850,7 +850,7 @@ fn a_merge_the_gate_refuses_is_the_notes_where_its_placement_collapses_a_line() 
     );
     let v = verdict(p, theirs[0].as_ref());
     agrees(&v);
-    assert!(v.refused && v.modulo == [305], "{v:?}");
+    assert!(v.refused && v.modulo == [310], "{v:?}");
     let SilicoSide::Refused(r) = &p.silico else {
         panic!("Silico made the merge: {:?}", p.silico);
     };
@@ -2700,7 +2700,7 @@ fn a_merge_dropping_an_implied_on_is_excused_only_where_freecad_rolls_back_just_
         assert!(
             v.excused.len() == 1
                 && v.excused[0].starts_with("a merge that drops the `on`")
-                && v.modulo == [66, 303],
+                && v.modulo == [66, 308],
             "{v:?}"
         );
     }
@@ -4028,7 +4028,7 @@ fn a_lines_drag_that_moves_a_circles_centre_compares_its_solved_radius_and_misse
     let Some(Theirs::Edited(fc)) = &theirs[0] else {
         panic!("{:?}", theirs[0]);
     };
-    assert!(fc.applied.contains(&328), "{fc:?}");
+    assert!(fc.applied.contains(&333), "{fc:?}");
     let (line, circle) = (solved(fc, "n0000002"), solved(fc, "c0000004"));
     for g in &fc.edited {
         if g.id == line {
@@ -4396,7 +4396,7 @@ fn a_line_extends_end_an_arc_shares_is_written_at_the_target_in_freecads_arc_too
     let Some(Theirs::Edited(fc)) = &theirs[0] else {
         panic!("{:?}", theirs[0]);
     };
-    assert!(fc.applied.contains(&328), "{fc:?}");
+    assert!(fc.applied.contains(&333), "{fc:?}");
     let start = edited_geometry(p, &mut fc.as_ref().clone(), "a0000006").points["1"];
     assert!(
         (start[0] - 12.0).abs() <= 1e-12 && start[1].abs() <= 1e-12,

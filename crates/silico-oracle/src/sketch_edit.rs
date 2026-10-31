@@ -1623,10 +1623,10 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         (None, Some(theirs_why)) => {
             if let Some(excuse) = implied_on(p, theirs) {
                 v.excused.push(excuse);
-                v.modulo.extend([303, 66]);
+                v.modulo.extend([308, 66]);
             } else if let Some(excuse) = started_otherwise(p, theirs) {
                 v.excused.push(excuse);
-                v.modulo.extend([298, 307]);
+                v.modulo.extend([303, 312]);
             } else {
                 v.how.push(format!(
                     "FreeCAD refused ({theirs_why}); Silico made the edit"
