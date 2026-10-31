@@ -183,8 +183,6 @@ pub struct Dialog {
     /// Whether it makes its feature (a new feature's), rather than editing one there.
     pub made: bool,
     pub inputs: Vec<Input>,
-    /// The body a new one's add takes as its `base`.
-    base: Option<FeatureId>,
     /// Each field's text, as the document holds it as far as the dialog knows: as loaded,
     /// as added, or as last sent. A field whose text differs is sent.
     sent: BTreeMap<&'static str, String>,
@@ -216,13 +214,9 @@ fn options(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
 
 impl Dialog {
     /// A new feature's dialog, its inputs at their defaults, sweeping `sketch` if it's one
-    /// that does and one is given, and taking `base` as its body if it's one that can.
-    pub fn new(
-        kind: Kind,
-        sketch: Option<FeatureId>,
-        base: Option<FeatureId>,
-        serial: u64,
-    ) -> Self {
+    /// that does and one is given. Its body, a sweep's `base`, is the tab's to give when the
+    /// add is sent ([`feature_node`]).
+    pub fn new(kind: Kind, sketch: Option<FeatureId>, serial: u64) -> Self {
         let position = || {
             ["X", "Y", "Z"]
                 .into_iter()
@@ -323,7 +317,6 @@ impl Dialog {
             feature: None,
             made: true,
             inputs,
-            base: base.filter(|_| kind.sweeps()),
             sent: BTreeMap::new(),
             adding: false,
             active,
@@ -335,7 +328,7 @@ impl Dialog {
     /// the feature as the document writes it (`text` of it): none if it isn't one a
     /// dialog of `kind` reads. Nothing is sent until an input changes.
     pub fn load(kind: Kind, id: FeatureId, node: &Node, serial: u64) -> Option<Self> {
-        let mut dialog = Dialog::new(kind, None, None, serial);
+        let mut dialog = Dialog::new(kind, None, serial);
         let extent = member(node, "extent");
         for input in &mut dialog.inputs {
             let found = match input.part {
@@ -483,11 +476,12 @@ impl Dialog {
         self.fields().values().all(Option::is_some)
     }
 
-    /// The new feature's add, as the document writes a feature (no `id`, for the core to
-    /// give it one), if it's to be sent now: none once its feature is there, while one is
-    /// under way (what changes meanwhile is sent as edits once it has answered), while the
-    /// inputs aren't valid, or while they're what the last add, refused, sent.
-    pub fn add(&mut self) -> Option<Node> {
+    /// The new feature's add, as the members of the feature the document writes (no `id`,
+    /// for the core to give it one, and no `base`, the tab's to give: [`feature_node`]), if
+    /// it's to be sent now: none once its feature is there, while one is under way (what
+    /// changes meanwhile is sent as edits once it has answered), while the inputs aren't
+    /// valid, or while they're what the last add, refused, sent.
+    pub fn add(&mut self) -> Option<Vec<String>> {
         if self.feature.is_some() || self.adding || !self.valid() {
             return None;
         }
@@ -503,18 +497,14 @@ impl Dialog {
             format!("\"type\": {}", quoted(self.kind.type_name())),
             format!("\"name\": {}", quoted(self.kind.title())),
         ];
-        if let Some(base) = &self.base {
-            members.push(format!("\"base\": {}", quoted(base.as_str())));
-        }
         members.extend(
             fields
                 .iter()
                 .map(|(field, text)| format!("{}: {text}", quoted(field))),
         );
-        let node = json::read(format!("{{{}}}", members.join(", ")).as_bytes()).ok()?;
         self.sent = fields;
         self.adding = true;
-        Some(node)
+        Some(members)
     }
 
     /// The edits the inputs ask of the feature: each field whose text differs from what
@@ -646,7 +636,8 @@ impl Dialog {
         ui.separator();
         let mut action = Action::None;
         ui.horizontal(|ui| {
-            let ok = enabled && self.valid() && !any_refused;
+            // Off while its add is unanswered: what's typed meanwhile is sent after it.
+            let ok = enabled && self.valid() && !any_refused && !self.adding;
             if ui.add_enabled(ok, egui::Button::new("OK")).clicked() {
                 action = Action::Ok;
             }
@@ -659,6 +650,17 @@ impl Dialog {
         });
         action
     }
+}
+
+/// A new feature of `kind` as `add_feature` takes it: the `members` its dialog's
+/// [`Dialog::add`] gave, and, for a sweep, `base`, the body it builds on, if it has one (a
+/// primitive takes none). None if they don't read as a feature's JSON, which they always do.
+pub fn feature_node(kind: Kind, members: &[String], base: Option<&FeatureId>) -> Option<Node> {
+    let mut members = members.to_vec();
+    if let Some(base) = base.filter(|_| kind.sweeps()) {
+        members.push(format!("\"base\": {}", quoted(base.as_str())));
+    }
+    json::read(format!("{{{}}}", members.join(", ")).as_bytes()).ok()
 }
 
 /// `text` as a JSON string.
@@ -712,7 +714,7 @@ mod tests {
 
     #[test]
     fn an_add_answered_without_a_feature_isnt_sent_again_until_an_input_changes() {
-        let mut dialog = Dialog::new(Kind::Box, None, None, 1);
+        let mut dialog = Dialog::new(Kind::Box, None, 1);
         assert!(dialog.add().is_some());
         // Under way: none.
         assert!(dialog.add().is_none());
@@ -737,7 +739,7 @@ mod tests {
         assert!(dialog.add().is_none());
         dialog.feature = None;
         length(&mut dialog, "11");
-        let again = dialog.add().unwrap();
+        let again = feature_node(Kind::Box, &dialog.add().unwrap(), None).unwrap();
         assert_eq!(
             json::Plain::of(&again),
             json::Plain::of(
@@ -751,7 +753,7 @@ mod tests {
 
     #[test]
     fn an_input_is_readable_if_its_number_reads_or_its_selection_is_made_or_its_hidden() {
-        let mut pocket = Dialog::new(Kind::Pocket, None, None, 1);
+        let mut pocket = Dialog::new(Kind::Pocket, None, 1);
         let at = |dialog: &Dialog, label: &str| {
             dialog
                 .inputs
@@ -766,7 +768,7 @@ mod tests {
         let length = at(&pocket, "Length");
         pocket.inputs[length].value = Value::Length("5x".to_owned());
         assert!(!readable(&pocket, "Length"));
-        let angle = Dialog::new(Kind::Revolve, None, None, 2);
+        let angle = Dialog::new(Kind::Revolve, None, 2);
         assert!(readable(&angle, "Angle"));
         // Hidden by the form (through all): never in the way.
         let form = at(&pocket, "Extent");
@@ -779,7 +781,7 @@ mod tests {
 
     #[test]
     fn a_pick_fills_only_the_active_selection_box() {
-        let mut pad = Dialog::new(Kind::Pad, None, None, 1);
+        let mut pad = Dialog::new(Kind::Pad, None, 1);
         assert_eq!(pad.active, Some(0));
         // A second box, as M5.7's dialogs will have: the pick goes to the active one alone.
         pad.inputs.push(Input {
@@ -797,7 +799,7 @@ mod tests {
         assert_eq!(pad.inputs[0].value, Value::Selection(Some(sketch)));
         assert_eq!(pad.inputs[5].value, Value::Selection(Some(other)));
         // A primitive has none: a pick does nothing.
-        let mut cube = Dialog::new(Kind::Box, None, None, 2);
+        let mut cube = Dialog::new(Kind::Box, None, 2);
         assert_eq!(cube.active, None);
         let before = cube.clone();
         cube.pick(&FeatureId::new("s0000001").unwrap());
@@ -807,13 +809,17 @@ mod tests {
     #[test]
     fn a_sweep_with_no_sketch_isnt_valid_and_a_primitive_takes_no_base() {
         let base = FeatureId::new("b0000001").unwrap();
-        let mut pad = Dialog::new(Kind::Pad, None, Some(base.clone()), 1);
+        let mut pad = Dialog::new(Kind::Pad, None, 1);
         assert!(!pad.valid());
         assert!(pad.add().is_none());
         pad.pick(&FeatureId::new("s0000001").unwrap());
         assert!(pad.valid());
-        let mut cube = Dialog::new(Kind::Box, None, Some(base), 2);
-        let added = cube.add().unwrap();
+        let members = pad.add().unwrap();
+        let swept = feature_node(Kind::Pad, &members, Some(&base)).unwrap();
+        assert!(format!("{:?}", json::Plain::of(&swept)).contains("b0000001"));
+        let mut cube = Dialog::new(Kind::Box, None, 2);
+        let members = cube.add().unwrap();
+        let added = feature_node(Kind::Box, &members, Some(&base)).unwrap();
         assert!(!format!("{:?}", json::Plain::of(&added)).contains("b0000001"));
     }
 }

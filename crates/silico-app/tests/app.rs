@@ -4175,16 +4175,11 @@ fn a_sweeps_body_is_the_documents_tip_even_where_the_model_has_none_there() {
         .get_by_label("Triangle")
         .click();
     step(&mut h);
+    // Every build held from before the pocket's add: its preview waits, so the tab's own
+    // timeline never lists the pocket until the release.
+    let hold = f.kernel.hold(|_| true);
     create(&mut h, "Pocket");
     added(&mut h);
-    settled(&mut h);
-    let pocket = fields_of(&text_of(&f, &h), "Pocket").unwrap();
-    assert!(
-        pocket.contains(&("base".to_owned(), Plain::String("c0000001".to_owned()))),
-        "{pocket:?}"
-    );
-    assert_eq!(h.state().tabs()[0].message, None);
-    // OK'd with its preview held (unbuilt), the next sweep's tip is the pocket.
     let pocket_id = h.state().tabs()[0]
         .dialog
         .as_ref()
@@ -4192,10 +4187,21 @@ fn a_sweeps_body_is_the_documents_tip_even_where_the_model_has_none_there() {
         .feature
         .clone()
         .unwrap();
-    let hold = f.kernel.hold(|_| true);
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    // OK'd with its preview held (unbuilt): the next sweep's tip is the pocket.
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
+    assert!(
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_ref())
+            .is_some_and(|features| features.iter().all(|entry| entry.id != pocket_id)),
+        "the tab's timeline lists the pocket already: nothing was held"
+    );
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label("Triangle")
         .click();
@@ -4204,7 +4210,13 @@ fn a_sweeps_body_is_the_documents_tip_even_where_the_model_has_none_there() {
     added(&mut h);
     settled(&mut h);
     hold.release();
-    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    let text = text_of(&f, &h);
+    let pocket = fields_of(&text, "Pocket").unwrap();
+    assert!(
+        pocket.contains(&("base".to_owned(), Plain::String("c0000001".to_owned()))),
+        "{pocket:?}"
+    );
+    let pad = fields_of(&text, "Pad").unwrap();
     assert!(
         pad.contains(&(
             "base".to_owned(),
@@ -4212,6 +4224,7 @@ fn a_sweeps_body_is_the_documents_tip_even_where_the_model_has_none_there() {
         )),
         "{pad:?}"
     );
+    assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -4515,5 +4528,195 @@ fn a_digit_typed_in_the_frame_enter_is_pressed_is_in_what_ok_keeps() {
         fields.contains(&("height".to_owned(), Plain::Number("710".to_owned()))),
         "{fields:?}"
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Feature dialogs: #325's second round ----
+
+/// The Pad's base, made from `text` opened, its triangle sketch chosen.
+fn pads_base(text: &str) -> Plain {
+    let f = fixture();
+    let (mut h, _) = f.opened("based.silico", text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    create(&mut h, "Pad");
+    added(&mut h);
+    settled(&mut h);
+    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    assert_eq!(never_waits::waits(), 0);
+    pad.into_iter()
+        .find(|(key, _)| key == "base")
+        .map(|(_, base)| base)
+        .unwrap_or(Plain::Null)
+}
+
+#[test]
+fn a_suppressed_feature_whose_chain_stands_is_the_tip_and_a_consumed_one_never_is() {
+    // A pocket of the plate, suppressed: nothing consumes it, and the plate stands for it,
+    // so it's the tip (the gate takes it as a base, and it builds on the plate).
+    let hollow = r#"    {"id": "h0000001", "type": "pocket", "v": 1, "name": "Hollow", "suppressed": true, "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 1, "reversed": false}}"#;
+    let text = SKETCHED.replace("\n  ]\n}", &format!(",\n{hollow}\n  ]\n}}"));
+    assert_eq!(pads_base(&text), Plain::String("h0000001".to_owned()));
+    // The plate, then the washer, last of the bodies that stand, but a suppressed cut
+    // (of a suppressed box, so it stands for nothing) consumes it: the tip is the plate.
+    let consumed = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
+    {"id": "b0000002", "type": "box", "v": 1, "name": "Washer", "position": [50, 0, 0], "length": 5, "width": 5, "height": 1},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "g0000001", "type": "box", "v": 1, "name": "Ghost", "suppressed": true, "position": [0, 0, 0], "length": 1, "width": 1, "height": 1},
+    {"id": "c0000002", "type": "cut", "v": 1, "name": "Snip", "suppressed": true, "base": "g0000001", "tool": "b0000002"}
+  ]
+}
+"#;
+    assert_eq!(pads_base(consumed), Plain::String("b0000001".to_owned()));
+}
+
+/// Ctrl+Z (`undo`) or Ctrl+Y, once it's on, and everything answered.
+fn step_key(h: &mut AppHarness, undo: bool) {
+    if undo {
+        step_until(h, "undoable", |h| h.state().tabs()[0].undoable());
+    } else {
+        step_until(h, "redoable", |h| h.state().tabs()[0].redoable());
+    }
+    let key = if undo {
+        eframe::egui::Key::Z
+    } else {
+        eframe::egui::Key::Y
+    };
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+    step(h);
+    settled(h);
+}
+
+/// A `kind` dialog: added, `label` typed into, and OK'd.
+fn made(h: &mut AppHarness, kind: &str, label: &str) {
+    create(h, kind);
+    added(h);
+    type_into(h, label, "1");
+    settled(h);
+    dialog(h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(h, "the dialog closed", |h| !dialog_open(h));
+    settled(h);
+}
+
+#[test]
+fn a_dialog_undone_then_another_made_lets_the_other_be_redone_whole() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let before = text_of(&f, &h);
+    made(&mut h, "Box", "Length");
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    // The box's edits are the redo branch the sphere's add drops.
+    made(&mut h, "Sphere", "Radius");
+    let sphere = text_of(&f, &h);
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    step_key(&mut h, false);
+    assert_eq!(text_of(&f, &h), sphere);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dialog_undone_then_a_name_typed_lets_the_name_be_redone() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let before = text_of(&f, &h);
+    made(&mut h, "Box", "Length");
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    // A name typed in the property panel drops the box's edits.
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let named = text_of(&f, &h);
+    assert!(named.contains(r#""name": "KPin""#));
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), before);
+    step_key(&mut h, false);
+    assert_eq!(text_of(&f, &h), named);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Redo(None)));
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ok_and_enter_wait_for_the_add_so_what_was_typed_meanwhile_is_kept() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let (hold, check) = hold_queue(&f, &h, 0);
+    create(&mut h, "Box");
+    type_into(&mut h, "Length", "12");
+    let typed = input(&h, "Length").value().unwrap();
+    // The add unanswered: OK off, and Enter does nothing.
+    assert!(!ok_enabled(&h));
+    h.key_press(eframe::egui::Key::Enter);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(dialog_open(&h));
+    hold.release();
+    check.wait();
+    added(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "OK on", ok_enabled);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    let fields = fields_of(&text_of(&f, &h), "Box").unwrap();
+    assert!(
+        fields.contains(&("length".to_owned(), Plain::Number(typed.clone()))),
+        "{typed}: {fields:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_feature_opens_at_the_revision_its_read_found_when_the_session_moved_under_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let id = h.state().tabs()[0].id;
+    // The queue held: another client's edit of the Pin (outside a transaction, saved as
+    // its own), then Edit Feature's read, behind it.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let pin = silico_core::document::FeatureId::new("a91cw0de").unwrap();
+    let theirs = f.sessions.set_field(
+        &id,
+        h.state().tabs()[0].revision,
+        pin,
+        "height".to_owned(),
+        json::read(b"15").unwrap(),
+    );
+    double_click(&mut h, "Timeline", "Pin");
+    hold.release();
+    check.wait();
+    theirs.wait().result.unwrap();
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder").is_some()
+    });
+    assert_eq!(input(&h, "Height").value().as_deref(), Some("15"));
+    settled(&mut h);
+    let moved = text_of(&f, &h);
+    // A change, OK, then one undo: back to what the read found, not refused.
+    type_into(&mut h, "Radius", "1");
+    settled(&mut h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    step_key(&mut h, true);
+    assert_eq!(text_of(&f, &h), moved);
+    assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
 }

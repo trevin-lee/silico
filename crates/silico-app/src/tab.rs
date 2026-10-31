@@ -17,7 +17,7 @@ use silico_core::document::json::Node;
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 
-use crate::dialog::{Dialog, Kind};
+use crate::dialog::{Dialog, Kind, feature_node};
 
 /// What a feature's mark says: its first problem's (or warning's) message, and its
 /// suggestion, from a `check` of the model the timeline's marks came from.
@@ -58,10 +58,14 @@ enum Queued {
     Step {
         undo: bool,
     },
-    /// A dialog's new feature (`add_feature`), of the dialog numbered `serial`.
+    /// A dialog's new feature (`add_feature`), of `kind`, of the dialog numbered `serial`:
+    /// the members its dialog gave ([`Dialog::add`]), and, for a sweep, the body it builds
+    /// on, read from the document when the add comes up ([`Body`]).
     Add {
         serial: u64,
-        feature: Node,
+        kind: Kind,
+        members: Vec<String>,
+        body: Body,
     },
     /// A dialog opened: the revision it opens at is the one everything asked before it
     /// comes to, which its Cancel undoes back to and its OK groups from.
@@ -81,6 +85,14 @@ enum Queued {
     Closed {
         ok: bool,
     },
+}
+
+/// A new sweep's body: not yet read, or read from the document as it is when the add is
+/// sent (its tip, [`tip_of`]), none if it has none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Body {
+    Unread,
+    Read(Option<FeatureId>),
 }
 
 /// How many of the commands it sent a tab keeps in its record ([`Tab::sent`]): the newest.
@@ -181,6 +193,16 @@ enum Under {
     Add {
         serial: u64,
         running: Running<Added>,
+    },
+    /// The document's features read for a new sweep's body, at the revision its add is
+    /// sent against: a `timeline` of the published model, which answers at once beside the
+    /// queue (a preview's read of the current model may wait on its rebuild) and lists the
+    /// session's document as it is. Its add is sent once it answers.
+    Base {
+        serial: u64,
+        kind: Kind,
+        members: Vec<String>,
+        running: Running<TimelineAnswer>,
     },
     /// An existing feature's text, read for its dialog (Edit Feature), of `kind`, numbered
     /// `serial`.
@@ -708,6 +730,35 @@ impl Tab {
                 }
                 Err(running) => Some(Under::Add { serial, running }),
             },
+            Under::Base {
+                serial,
+                kind,
+                members,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    // The document's tip as the session holds it now; the tab's own timeline's
+                    // if the read was refused (nothing published yet).
+                    let base = match response.result {
+                        Ok(timeline) => timeline.features.as_deref().and_then(tip_of),
+                        Err(_) => self.tip(),
+                    };
+                    // Sent next, before anything queued after it.
+                    self.edits.queue.push_front(Queued::Add {
+                        serial,
+                        kind,
+                        members,
+                        body: Body::Read(base),
+                    });
+                    None
+                }
+                Err(running) => Some(Under::Base {
+                    serial,
+                    kind,
+                    members,
+                    running,
+                }),
+            },
             Under::Load {
                 serial,
                 kind,
@@ -717,6 +768,17 @@ impl Tab {
                 Ok(response) => {
                     if self.loading == Some(serial) {
                         self.loading = None;
+                        // The session moved between the dialog's opening and its read (its
+                        // reload of a file changed on disk): it opens at the revision it read,
+                        // nothing of the tab's having been sent in between.
+                        if let Some(session) = &response.session
+                            && self
+                                .dialog_base
+                                .is_some_and(|base| base != session.revision)
+                        {
+                            self.dialog_base = Some(session.revision);
+                            self.dialog_began = !session.transaction;
+                        }
                         let node = response
                             .result
                             .map_err(|problems| said(&problems))
@@ -816,6 +878,7 @@ impl Tab {
                 Queued::Edit(edit) => {
                     self.begin_if_none(sessions);
                     self.supersede_preview();
+                    self.prune_groups();
                     self.edits.sent += 1;
                     self.record(Sent::Edit(edit.field.clone()));
                     let field = (edit.feature.clone(), edit.field.clone());
@@ -828,9 +891,43 @@ impl Tab {
                     );
                     self.edits.in_flight = Some((field, running));
                 }
-                Queued::Add { serial, feature } => {
+                Queued::Add {
+                    serial,
+                    kind,
+                    members,
+                    body: Body::Unread,
+                } if kind.sweeps() => {
+                    let running = sessions.timeline(&self.id, ModelChoice::Published);
+                    self.under.push(Under::Base {
+                        serial,
+                        kind,
+                        members,
+                        running,
+                    });
+                }
+                Queued::Add {
+                    serial,
+                    kind,
+                    members,
+                    body,
+                } => {
+                    let base = match body {
+                        Body::Read(base) => base,
+                        Body::Unread => None,
+                    };
+                    let Some(feature) = feature_node(kind, &members, base.as_ref()) else {
+                        // Never: the dialog's members are JSON it wrote.
+                        if let Some(dialog) =
+                            self.dialog.as_mut().filter(|dialog| dialog.serial == serial)
+                        {
+                            dialog.adding = false;
+                        }
+                        self.message = Some(format!("The {} couldn't be written", kind.title()));
+                        continue;
+                    };
                     self.begin_if_none(sessions);
                     self.supersede_preview();
+                    self.prune_groups();
                     self.record(Sent::Add);
                     self.under.push(Under::Add {
                         serial,
@@ -957,7 +1054,8 @@ impl Tab {
         }
     }
 
-    /// Whether what's queued waits: an edit, a save, a revert, or a step running.
+    /// Whether what's queued waits: an edit, a save, a revert, a step, or a dialog's add (or
+    /// its body's read) running.
     fn blocked(&self) -> bool {
         self.edits.in_flight.is_some()
             || self.under.iter().any(|under| {
@@ -968,6 +1066,7 @@ impl Tab {
                         | Under::Rollback { .. }
                         | Under::Step(_)
                         | Under::Add { .. }
+                        | Under::Base { .. }
                 )
             })
     }
@@ -1219,23 +1318,19 @@ impl Tab {
         self.restored.get(&revision).copied().unwrap_or(revision)
     }
 
-    /// The body a new sweep takes as its base, as FreeCAD's PartDesign takes its body's
-    /// tip, from the document as the timeline lists it: the last feature in timeline order
-    /// that makes a solid (not a sketch), isn't suppressed, and that no feature consumes
-    /// (as the gate counts consumers: built or not, suppressed or not).
+    /// Before an edit or an add is sent: the dialogs' groups past the session's state let
+    /// go, as the edit drops the redo branch they're on (a group ending after the state the
+    /// session is at was undone to reach it).
+    fn prune_groups(&mut self) {
+        let state = self.state_of(self.revision);
+        self.groups.retain(|group| group.end <= state);
+    }
+
+    /// The tip of the document as the tab's timeline last listed it ([`tip_of`]): whether a
+    /// sweep that cuts has a body to cut, for CREATE's tools. A sweep's add takes its body
+    /// from the document as it is when it's sent.
     fn tip(&self) -> Option<FeatureId> {
-        let entries = self.timeline.as_ref()?.features.as_ref()?;
-        let consumed: std::collections::BTreeSet<&FeatureId> = entries
-            .iter()
-            .flat_map(|entry| entry.inputs.iter())
-            .collect();
-        entries
-            .iter()
-            .rev()
-            .find(|entry| {
-                entry.kind != "sketch" && !entry.suppressed && !consumed.contains(&entry.id)
-            })
-            .map(|entry| entry.id.clone())
+        tip_of(self.timeline.as_ref()?.features.as_ref()?)
     }
 
     /// Whether the timeline lists a sketch of ID `id`.
@@ -1265,7 +1360,7 @@ impl Tab {
         }
         let serial = self.opening();
         let sketch = self.selected.clone().filter(|id| self.is_sketch(id));
-        self.dialog = Some(Dialog::new(kind, sketch, self.tip(), serial));
+        self.dialog = Some(Dialog::new(kind, sketch, serial));
         self.dialog_changed(sessions);
         self.advance(sessions);
     }
@@ -1327,7 +1422,10 @@ impl Tab {
         match (dialog.made, dialog.feature.clone()) {
             (false, Some(feature)) => self.load(sessions, dialog.kind, feature),
             (true, None) => {
+                // A session reloads only with no transaction open: the dialog's own edits
+                // will begin one.
                 self.dialog_base = Some(self.revision);
+                self.dialog_began = true;
                 self.dialog = Some(dialog);
             }
             (_, _) => {
@@ -1358,9 +1456,14 @@ impl Tab {
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
         };
-        if let Some(feature) = dialog.add() {
-            let serial = dialog.serial;
-            self.edits.queue.push_back(Queued::Add { serial, feature });
+        if let Some(members) = dialog.add() {
+            let (serial, kind) = (dialog.serial, dialog.kind);
+            self.edits.queue.push_back(Queued::Add {
+                serial,
+                kind,
+                members,
+                body: Body::Unread,
+            });
             self.advance(sessions);
             return true;
         }
@@ -1412,11 +1515,13 @@ impl Tab {
         }
     }
 
-    /// Whether the dialog's inputs let it be OK'd: valid, and no edit of one refused (while
-    /// the tab closes, [`close_dialog`](Self::close_dialog) takes neither OK nor Cancel).
+    /// Whether the dialog's inputs let it be OK'd: valid, no edit of one refused, and its
+    /// add not unanswered (what's typed meanwhile is sent after it). While the tab closes,
+    /// [`close_dialog`](Self::close_dialog) takes neither OK nor Cancel.
     pub fn can_ok(&self) -> bool {
         self.dialog.as_ref().is_some_and(|dialog| {
-            dialog.valid()
+            !dialog.adding
+                && dialog.valid()
                 && !dialog
                     .inputs
                     .iter()
@@ -1496,6 +1601,51 @@ impl Tab {
         self.said = by_feature;
         self.document_problems = document;
     }
+}
+
+/// The body a new sweep builds on, as FreeCAD's PartDesign takes its body's tip, from a
+/// document's features as `timeline` lists them, in order: the last that stands for a solid
+/// and that no feature consumes. A feature stands for a solid if it makes one (it isn't a
+/// sketch) and isn't suppressed, or if it's suppressed and its base stands for one (its
+/// chain passes it through, as `document::suppression`'s `standing` has it). A feature is
+/// consumed if any feature names it as an input, as the gate counts consumers: built or
+/// not, suppressed or not.
+fn tip_of(entries: &[Entry]) -> Option<FeatureId> {
+    let sketches: std::collections::BTreeSet<&FeatureId> = entries
+        .iter()
+        .filter(|entry| entry.kind == "sketch")
+        .map(|entry| &entry.id)
+        .collect();
+    let consumed: std::collections::BTreeSet<&FeatureId> = entries
+        .iter()
+        .flat_map(|entry| entry.inputs.iter())
+        .filter(|input| !sketches.contains(input))
+        .collect();
+    let mut stands: BTreeMap<&FeatureId, bool> = BTreeMap::new();
+    for entry in entries {
+        let standing = if entry.kind == "sketch" {
+            false
+        } else if !entry.suppressed {
+            true
+        } else {
+            // Its base: its first input that isn't a sketch (a boolean's base before its
+            // tool; a sweep's sketch is no base).
+            entry
+                .inputs
+                .iter()
+                .find(|input| !sketches.contains(input))
+                .and_then(|base| stands.get(base).copied())
+                .unwrap_or(false)
+        };
+        stands.insert(&entry.id, standing);
+    }
+    entries
+        .iter()
+        .rev()
+        .find(|entry| {
+            stands.get(&entry.id).copied().unwrap_or(false) && !consumed.contains(&entry.id)
+        })
+        .map(|entry| entry.id.clone())
 }
 
 /// Whether a `check` of `timeline` is wanted, with `selected` the feature selected: for a
