@@ -1320,3 +1320,89 @@ fn a_place_is_shown_to_the_nanometre_and_never_as_minus_zero() {
     let zero = shown([-1e-12, 0.0]);
     assert!(zero[0] == 0.0 && zero[0].is_sign_positive(), "{zero:?}");
 }
+
+#[test]
+fn a_merges_placed_geometry_is_freecads_with_the_merged_points_at_the_kept_ones_place() {
+    // The circle c0000004 about p0000003 (5, 5), radius 2, merged into the line n0000002's end
+    // p0000001 (1, 2): its centre placed there, the line as drawn.
+    let sketch = sketch_of(
+        &[
+            ("p0000001", 1.0, 2.0),
+            ("p0000005", 0.0, 0.0),
+            ("p0000003", 5.0, 5.0),
+        ],
+        &[("n0000002", "p0000005", "p0000001")],
+        &[("c0000004", "p0000003", 2.0)],
+        &[],
+        &[],
+    );
+    let placed = |sketch: &Sketch, points: &[&str]| {
+        let translation = Translation::new(sketch).unwrap();
+        let model = sketch::freecad_sketch(sketch, &translation).unwrap();
+        let points: Vec<String> = points.iter().map(|p| (*p).to_owned()).collect();
+        let geometry = placed_geometry(&model, &Shape::of(sketch), &points);
+        (model.elements, geometry)
+    };
+    let (elements, geometry) = placed(&sketch, &["p0000001", "p0000003"]);
+    let at = |e: &str| elements.iter().position(|x| x == e).unwrap();
+    let geometry = geometry.unwrap();
+    assert_eq!(
+        geometry[at("n0000002")],
+        FreecadGeometry::Line {
+            start: [0.0, 0.0],
+            end: [1.0, 2.0]
+        }
+    );
+    assert_eq!(
+        geometry[at("c0000004")],
+        FreecadGeometry::Circle {
+            center: [1.0, 2.0],
+            radius: 2.0
+        }
+    );
+    // Points together: nothing to place.
+    let together = sketch_of(
+        &[
+            ("p0000001", 1.0, 2.0),
+            ("p0000005", 0.0, 0.0),
+            ("p0000003", 1.0, 2.0),
+        ],
+        &[("n0000002", "p0000005", "p0000001")],
+        &[("c0000004", "p0000003", 2.0)],
+        &[],
+        &[],
+    );
+    assert_eq!(placed(&together, &["p0000001", "p0000003"]).1, None);
+    // The arc a0000006 about (0, 0), radius 5, from (5, 0) to p0000004 (0, 5); its end merged
+    // into the lone p0000007 at (-5, 0), on its circle: placed, sweeping 0 to pi; at (-4, 0),
+    // 1 off its circle: not placed.
+    let arc = |x: f64| {
+        sketch_of(
+            &[
+                ("p0000001", 0.0, 0.0),
+                ("p0000002", 5.0, 0.0),
+                ("p0000004", 0.0, 5.0),
+                ("p0000007", x, 0.0),
+            ],
+            &[],
+            &[],
+            &[("a0000006", "p0000001", "p0000002", "p0000004")],
+            &[],
+        )
+    };
+    let (elements, geometry) = placed(&arc(-5.0), &["p0000007", "p0000004"]);
+    let geometry = geometry.unwrap();
+    let a = elements.iter().position(|x| x == "a0000006").unwrap();
+    assert_eq!(
+        geometry[a],
+        FreecadGeometry::Arc {
+            center: [0.0, 0.0],
+            radius: 5.0,
+            from: 0.0,
+            to: std::f64::consts::PI
+        }
+    );
+    let p7 = elements.iter().position(|x| x == "p0000007").unwrap();
+    assert_eq!(geometry[p7], FreecadGeometry::Point { at: [-5.0, 0.0] });
+    assert_eq!(placed(&arc(-4.0), &["p0000007", "p0000004"]).1, None);
+}

@@ -1006,14 +1006,14 @@ def built(doc, name, geometry, job):
 
 def placed_solve(doc, job):
     """For points merged from apart, the merge of the sketch with them placed where Silico's
-    merge places them (sketch-edit.md:298), solved: FreeCAD's solve from Silico's start.
-    None where FreeCAD refuses that merge."""
+    merge places them (sketch-edit.md:298), solved: FreeCAD's solve from Silico's start, and
+    the geometry it leaves. None where FreeCAD refuses that merge."""
     p = built(doc, "Placed", job["edit"]["placed"], job)
     try:
         edit_merge(p, job["edit"], [])
     except EditRefused:
         return None
-    return solve_state(p)
+    return {"solve": solve_state(p), "geometry": geometry_now(p)}
 
 
 def sketch_edit(doc, job):
