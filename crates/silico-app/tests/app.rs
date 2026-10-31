@@ -69,11 +69,13 @@ fn fixture_reading(read: Option<Reader>) -> Fixture {
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
     let sketches = FakeSketches::new();
     let solver = sketches.clone();
+    // STEP written by the fake, as the STEP worker would (M5.12's export dialog).
     let sessions = Sessions::with_stand_ins(
         Arc::clone(&kernel),
         move |cache| Cache::with_secret(cache, &secret),
         move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
-    );
+    )
+    .exporting_step(Arc::clone(&kernel));
     let sessions = match read {
         None => sessions,
         Some(read) => {
@@ -5447,5 +5449,984 @@ fn rebuild_twice_before_the_session_starts_it_sends_one_read() {
             .is_disabled()
     });
     hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The export dialog (M5.12; M4.1's `export`) ----
+
+/// File > Export…, its dialog open on the tab's document.
+fn open_export(h: &mut AppHarness) {
+    h.get_by_label("File").click();
+    step(h);
+    step(h);
+    h.get_by_role_and_label(Role::Button, "Export…").click();
+    step_until(h, "the export dialog", |h| {
+        anywhere(h, "Export example.silico")
+    });
+}
+
+/// The export dialog's field `label` emptied (its cursor at its start once focused, a
+/// Delete for each character), then `text` typed at once.
+fn set_field(h: &mut AppHarness, label: &str, text: &str) {
+    h.get_by_role_and_label(Role::TextInput, label).focus();
+    step(h);
+    let length = h
+        .get_by_role_and_label(Role::TextInput, label)
+        .value()
+        .unwrap()
+        .chars()
+        .count();
+    for _ in 0..length {
+        h.key_press(eframe::egui::Key::Delete);
+        step(h);
+    }
+    h.get_by_role_and_label(Role::TextInput, label)
+        .type_text(text);
+    step(h);
+    assert_eq!(
+        h.get_by_role_and_label(Role::TextInput, label)
+            .value()
+            .as_deref(),
+        Some(text)
+    );
+}
+
+/// The export dialog's button `label` clicked, through the accessibility tree (a modal's
+/// layout moves as its content changes, so a click at its last place can miss).
+fn press(h: &mut AppHarness, label: &str) {
+    h.get_by_role_and_label(Role::Button, label)
+        .click_accesskit();
+    step(h);
+    // Drawn again as what it did leaves it (a line said, a row gone): the next press finds
+    // its button where it is, its ID among them.
+    step(h);
+}
+
+/// Whether the export dialog is open.
+fn exporting_dialog(h: &AppHarness) -> bool {
+    anywhere(h, "Export example.silico")
+}
+
+fn is_step(op: &Op) -> bool {
+    matches!(op, Op::ExportStep(_))
+}
+
+#[test]
+fn an_export_held_leaves_frames_climbing_and_the_dialog_saying_so() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let hold = f.kernel.hold(is_step);
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    assert!(f.kernel.wait_running(1, WAIT));
+    let before = h.state().frames();
+    for _ in 0..100 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().frames(), before + 100);
+    assert!(anywhere(&h, "Exporting…"));
+    assert!(h.state().tabs()[0].exporting());
+    // Not the status bar's to stop: no rebuild runs.
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Stop")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // One at a time: Export off, and the tab sends no second.
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Export")
+            .accesskit_node()
+            .is_disabled()
+    );
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        let again = tab.exports[0].clone();
+        tab.export(&sessions, again);
+        assert_eq!(tab.exports.len(), 1);
+    }
+    hold.release();
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(path.with_extension("step").is_file());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn each_format_sends_its_request_its_tolerance_and_its_features() {
+    use silico_core::command::export::{Export, ExportFormat};
+    use silico_core::document::{FeatureId, Length};
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // A 3MF at 0.25 mm, of every body. The fake can't mesh: what it answers is its own
+    // refusal, said in the dialog, which stays open, and no file is written. A 3MF written
+    // is M5.12's scripted slice's, on a real kernel worker.
+    open_export(&mut h);
+    set_field(&mut h, "Tolerance", "0.25");
+    press(&mut h, "Export");
+    step_until(&mut h, "its answer", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    assert_eq!(
+        h.state().tabs()[0].exports,
+        [Export {
+            format: ExportFormat::ThreeMf {
+                tolerance: Length::from_nm(250_000)
+            },
+            path: path.with_extension("3mf"),
+            replace: false,
+            features: None,
+        }]
+    );
+    let refused = h.state().tabs()[0]
+        .export_answer
+        .clone()
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        refused.errors()[0]
+            .message()
+            .contains("the fake kernel doesn't do ExportMesh"),
+        "{refused:?}"
+    );
+    step(&mut h);
+    assert!(exporting_dialog(&h));
+    assert!(!path.with_extension("3mf").exists());
+    // A STEP of the Hole alone (the model's one body), chosen.
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, "Tolerance")
+            .is_none()
+    );
+    h.get_by_role_and_label(Role::CheckBox, "All bodies")
+        .click_accesskit();
+    step_until(&mut h, "the bodies listed", |h| {
+        h.query_by_role_and_label(Role::CheckBox, "Hole").is_some()
+    });
+    h.get_by_role_and_label(Role::CheckBox, "Hole")
+        .click_accesskit();
+    step(&mut h);
+    press(&mut h, "Export");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert_eq!(
+        h.state().tabs()[0].exports.last(),
+        Some(&Export {
+            format: ExportFormat::Step,
+            path: path.with_extension("step"),
+            replace: false,
+            features: Some(vec![FeatureId::new("m3tq8v0z").unwrap()]),
+        })
+    );
+    assert!(path.with_extension("step").is_file());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tolerance_out_of_range_is_refused_by_the_core_and_said_in_the_dialog() {
+    use silico_core::command::export::{Export, ExportFormat};
+    use silico_core::document::Length;
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // What the core says of a 3MF at 0 mm, below its least (1e-5 mm), asked directly.
+    let id = h.state().tabs()[0].id;
+    let core = f
+        .sessions
+        .export(
+            &id,
+            Export {
+                format: ExportFormat::ThreeMf {
+                    tolerance: Length::from_nm(0),
+                },
+                path: path.with_extension("3mf"),
+                replace: false,
+                features: None,
+            },
+        )
+        .wait()
+        .result
+        .unwrap_err();
+    let error = &core.errors()[0];
+    assert_eq!(error.parameter(), Some("tolerance"));
+    let want = match error.suggestion() {
+        Some(suggestion) => format!("{} ({suggestion})", error.message()),
+        None => error.message().to_owned(),
+    };
+    open_export(&mut h);
+    set_field(&mut h, "Tolerance", "0");
+    press(&mut h, "Export");
+    // Said in the dialog, and in the status bar, as every command's refusal is.
+    step_until(&mut h, "the refusal said", |h| {
+        h.query_all_by_label(&want).count() == 2
+    });
+    assert!(exporting_dialog(&h));
+    assert!(!path.with_extension("3mf").exists());
+    // A tolerance that doesn't read as a length: Export off, nothing sent.
+    set_field(&mut h, "Tolerance", "fine");
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Export")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert_eq!(h.state().tabs()[0].exports.len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_file_at_the_path_is_asked_about_then_replaced() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let out = path.with_extension("step");
+    std::fs::write(&out, "old").unwrap();
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    let asked = format!("{} already exists. Replace it?", out.display());
+    step_until(&mut h, "the question", |h| anywhere(h, &asked));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "old");
+    assert_eq!(h.state().tabs()[0].message, None);
+    // Cancelled at the question: nothing written, and asked nothing when opened again.
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "old");
+    open_export(&mut h);
+    assert!(!anywhere(&h, &asked));
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    step_until(&mut h, "the question", |h| anywhere(h, &asked));
+    press(&mut h, "Replace");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    // The fake's STEP, as the STEP worker would write it.
+    assert!(
+        std::fs::read_to_string(&out)
+            .unwrap()
+            .starts_with("FAKE STEP\n")
+    );
+    let exports = &h.state().tabs()[0].exports;
+    assert_eq!(exports.len(), 3);
+    assert!(!exports[0].replace && !exports[1].replace);
+    assert!(exports[2].replace);
+    assert_eq!(exports[2].path, out);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_while_an_export_runs_answers_cancelled_and_writes_no_file() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let hold = f.kernel.hold(is_step);
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    assert!(f.kernel.wait_running(1, WAIT));
+    step_until(&mut h, "running", |h| anywhere(h, "Exporting…"));
+    press(&mut h, "Cancel");
+    step_until(&mut h, "its answer", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    assert!(!exporting_dialog(&h));
+    let answer = h.state().tabs()[0].export_answer.clone().unwrap();
+    assert_eq!(answer.unwrap_err().errors()[0].code(), ErrorCode::Cancelled);
+    assert!(!path.with_extension("step").exists());
+    assert_eq!(h.state().tabs()[0].message, None);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_step_export_to_a_stp_path_is_written_there() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    let stp = path.with_extension("stp");
+    set_field(&mut h, "Path", stp.to_str().unwrap());
+    press(&mut h, "Export");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(stp.is_file());
+    assert!(!path.with_extension("step").exists());
+    assert_eq!(h.state().tabs()[0].exports[0].path, stp);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_export_over_the_document_itself_is_refused_by_the_core_and_the_document_kept() {
+    use silico_core::command::export::{Export, ExportFormat};
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // What the core says of a STEP written over the open document, asked directly.
+    let id = h.state().tabs()[0].id;
+    let core = f
+        .sessions
+        .export(
+            &id,
+            Export {
+                format: ExportFormat::Step,
+                path: path.clone(),
+                replace: true,
+                features: None,
+            },
+        )
+        .wait()
+        .result
+        .unwrap_err();
+    let error = &core.errors()[0];
+    assert_eq!(error.parameter(), Some("path"));
+    let want = match error.suggestion() {
+        Some(suggestion) => format!("{} ({suggestion})", error.message()),
+        None => error.message().to_owned(),
+    };
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    set_field(&mut h, "Path", path.to_str().unwrap());
+    press(&mut h, "Export");
+    step_until(&mut h, "the refusal said", |h| {
+        h.query_all_by_label(&want).count() == 2
+    });
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The export dialog: #330's review ----
+
+#[test]
+fn cancel_of_an_export_queued_behind_a_commit_stops_it_and_writes_no_file() {
+    // The export waits in the session's queue behind a commit, itself waiting on a held
+    // rebuild: its Cancel stops it there (through its own handle, not by name, which only
+    // reaches a command running), and nothing is written once the commit goes through.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let hold = edit_the_block_applied_held(&f, &mut h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    assert!(h.state().tabs()[0].exporting());
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    hold.release();
+    step_until(&mut h, "its answer", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    let answer = h.state().tabs()[0].export_answer.clone().unwrap();
+    assert_eq!(answer.unwrap_err().errors()[0].code(), ErrorCode::Cancelled);
+    step_until(&mut h, "saved", |h| !h.state().tabs()[0].unsaved());
+    assert!(!path.with_extension("step").exists());
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The Block made 41 long, through the tab, with every box held: its rebuild runs.
+fn edit_the_block_applied_held(f: &Fixture, h: &mut AppHarness) -> Hold {
+    let hold = f.kernel.hold(is_box);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.edit(
+            &sessions,
+            silico_app::tab::Edit {
+                feature: silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+                field: "length".to_owned(),
+                value: json::read(b"41").unwrap(),
+            },
+        );
+    }
+    step_until(h, "the edit applied", |h| {
+        h.state().tabs()[0].transaction && !h.state().tabs()[0].unsettled()
+    });
+    hold
+}
+
+#[test]
+fn a_refusal_and_a_question_are_let_go_when_the_dialog_opens_again_and_a_quit_cancels_it() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    // A refusal, Cancel, and the dialog again: the refusal isn't said.
+    open_export(&mut h);
+    set_field(&mut h, "Tolerance", "0");
+    press(&mut h, "Export");
+    let said = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .export_said
+            .clone()
+            .is_some_and(|said| h.query_all_by_label(&said).count() > 0)
+    };
+    step_until(&mut h, "the refusal said", said);
+    let refusal = h.state().tabs()[0].export_said.clone().unwrap();
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    open_export(&mut h);
+    assert_eq!(h.query_all_by_label(&refusal).count(), 0);
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    // A question about a file at the path; a quit asked meanwhile (edits held) cancels the
+    // dialog; the quit cancelled, the dialog opens on its form, not the old question.
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let out = path.with_extension("step");
+    std::fs::write(&out, "old").unwrap();
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    let asked = format!("{} already exists. Replace it?", out.display());
+    step_until(&mut h, "the question", |h| anywhere(h, &asked));
+    close_window(&mut h);
+    step_until(&mut h, "the quit's question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    assert!(h.state().tabs()[0].export_replacing.is_none());
+    h.query_all_by_role_and_label(Role::Button, "Cancel")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step(&mut h);
+    open_export(&mut h);
+    assert!(!anywhere(&h, &asked));
+    assert!(h.query_by_role_and_label(Role::Button, "Replace").is_none());
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "old");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn export_is_off_while_a_feature_dialog_is_open_or_the_tab_closes() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let export_off = |h: &mut AppHarness| {
+        h.get_by_label("File").click();
+        step(h);
+        step(h);
+        let off = h
+            .get_by_role_and_label(Role::Button, "Export…")
+            .accesskit_node()
+            .is_disabled();
+        h.get_by_label("File").click();
+        step(h);
+        step(h);
+        off
+    };
+    assert!(!export_off(&mut h));
+    // A name typed (so the close asks), then a feature dialog open: off.
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    create(&mut h, "Box");
+    assert!(export_off(&mut h));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // Closing, its save held: off.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_label("Close example.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    step(&mut h);
+    assert!(h.state().tabs()[0].closing());
+    assert!(export_off(&mut h));
+    hold.release();
+    check.wait();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_export_again_lets_go_of_the_last_refusal_and_answer() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    open_export(&mut h);
+    set_field(&mut h, "Tolerance", "0");
+    press(&mut h, "Export");
+    step_until(&mut h, "the refusal", |h| {
+        h.state().tabs()[0].export_said.is_some()
+    });
+    // STEP now, its writing held: the refusal gone from the dialog, and no answer yet.
+    let hold = f.kernel.hold(is_step);
+    press(&mut h, "STEP");
+    press(&mut h, "Export");
+    assert!(f.kernel.wait_running(1, WAIT));
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].export_said, None);
+    assert!(h.state().tabs()[0].export_answer.is_none());
+    hold.release();
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(path.with_extension("step").is_file());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn only_its_own_tabs_export_closes_a_dialog() {
+    use silico_core::command::export::{Export, ExportFormat};
+    let f = fixture();
+    let (mut h, a) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let b = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(b.to_str().unwrap(), false);
+    step_until(&mut h, "two tabs", |h| {
+        h.state().tabs().len() == 2 && h.state().tabs()[1].timeline.is_some()
+    });
+    // The first tab's export held, sent without its dialog; the second's dialog open.
+    let hold = f.kernel.hold(is_step);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.export(
+            &sessions,
+            Export {
+                format: ExportFormat::Step,
+                path: a.with_extension("step"),
+                replace: false,
+                features: None,
+            },
+        );
+    }
+    assert!(f.kernel.wait_running(1, WAIT));
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Export…").click();
+    step_until(&mut h, "the second's dialog", |h| {
+        anywhere(h, "Export other.silico")
+    });
+    hold.release();
+    step_until(&mut h, "the first's export written", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(a.with_extension("step").is_file());
+    assert!(anywhere(&h, "Export other.silico"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_exports_and_esc_cancels_the_export_dialog() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    open_export(&mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(h.state().tabs()[0].exports.is_empty());
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(path.with_extension("step").is_file());
+    assert_eq!(h.state().tabs()[0].exports.len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_bare_name_is_written_in_the_documents_folder_for_export_and_save_as() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let folder = path.parent().unwrap();
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    set_field(&mut h, "Path", "bare.step");
+    press(&mut h, "Export");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(folder.join("bare.step").is_file());
+    assert_eq!(
+        h.state().tabs()[0].exports[0].path,
+        folder.join("bare.step")
+    );
+    // Save As, Enter its Save.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Save As…").click();
+    step_until(&mut h, "the Save As dialog", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("bare.silico");
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the tab of the new file", |h| {
+        h.state().tabs()[0].path == folder.join("bare.silico").to_str().unwrap()
+    });
+    assert!(folder.join("bare.silico").is_file());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_cancels_save_as_and_open_and_enter_opens() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Save As…").click();
+    step_until(&mut h, "the Save As dialog", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "Save As closed", |h| {
+        !anywhere(h, "Save example.silico as")
+    });
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Open…").click();
+    step_until(&mut h, "the Open dialog", |h| anywhere(h, "Open document"));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "Open closed", |h| !anywhere(h, "Open document"));
+    assert_eq!(h.state().tabs().len(), 1);
+    // Enter is Open's Open.
+    let other = f.file("other.silico", EXAMPLE);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Open…").click();
+    step_until(&mut h, "the Open dialog", |h| anywhere(h, "Open document"));
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text(other.to_str().unwrap());
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the second tab", |h| h.state().tabs().len() == 2);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Enter and Esc in the modals (#330's second round) ----
+
+/// File > `item` focused and Enter pressed: its own click.
+fn menu_item_by_enter(h: &mut AppHarness, item: &str) {
+    h.get_by_label("File").click();
+    step(h);
+    step(h);
+    h.get_by_role_and_label(Role::Button, item).focus();
+    step(h);
+    h.key_press(eframe::egui::Key::Enter);
+    step(h);
+    step(h);
+}
+
+/// The open modal's Cancel focused and Enter pressed: Cancel's own click, never the OK.
+fn cancel_by_enter(h: &mut AppHarness) {
+    h.query_all_by_role_and_label(Role::Button, "Cancel")
+        .last()
+        .unwrap()
+        .focus();
+    step(h);
+    h.key_press(eframe::egui::Key::Enter);
+    step(h);
+    step(h);
+}
+
+#[test]
+fn enter_on_a_focused_menu_item_opens_its_dialog_and_does_nothing_more() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // Export…: the dialog open, nothing exported.
+    menu_item_by_enter(&mut h, "Export…");
+    assert!(exporting_dialog(&h));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs()[0].exports.is_empty());
+    assert!(!path.with_extension("3mf").exists());
+    // Enter on its focused Cancel: cancelled, nothing written.
+    cancel_by_enter(&mut h);
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(h.state().tabs()[0].exports.is_empty());
+    // Open…, a path left in its field from before: open, nothing opened.
+    let other = f.file("other.silico", EXAMPLE);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Open…").click();
+    step_until(&mut h, "the Open dialog", |h| anywhere(h, "Open document"));
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text(other.to_str().unwrap());
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "Open closed", |h| !anywhere(h, "Open document"));
+    menu_item_by_enter(&mut h, "Open…");
+    assert!(anywhere(&h, "Open document"));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    cancel_by_enter(&mut h);
+    step_until(&mut h, "Open closed", |h| !anywhere(h, "Open document"));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    // Save As…: likewise, its path typed, then Cancel by Enter.
+    menu_item_by_enter(&mut h, "Save As…");
+    assert!(anywhere(&h, "Save example.silico as"));
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("copy.silico");
+    step(&mut h);
+    cancel_by_enter(&mut h);
+    step_until(&mut h, "Save As closed", |h| {
+        !anywhere(h, "Save example.silico as")
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert!(!path.with_file_name("copy.silico").exists());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_path_is_sent_as_typed_spaces_and_all() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let folder = path.parent().unwrap().to_owned();
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    set_field(&mut h, "Path", " spaced.step");
+    press(&mut h, "Export");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert!(folder.join(" spaced.step").is_file());
+    assert!(!folder.join("spaced.step").exists());
+    // Save As likewise.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Save As…").click();
+    step_until(&mut h, "the Save As dialog", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text(" spaced.silico");
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "saved there", |h| {
+        h.state().tabs()[0].path == folder.join(" spaced.silico").to_str().unwrap()
+    });
+    assert!(folder.join(" spaced.silico").is_file());
+    // Open: spaces alone are no path; Enter opens nothing, and nothing is refused.
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Open…").click();
+    step_until(&mut h, "the Open dialog", |h| anywhere(h, "Open document"));
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("   ");
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Enter);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, "Open document"));
+    assert_eq!(h.state().message(), None);
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #330's third round ----
+
+#[test]
+fn enter_held_on_export_opens_the_dialog_and_its_repeats_export_nothing() {
+    use eframe::egui::{Event, Key, Modifiers};
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Export…").focus();
+    step(&mut h);
+    for repeat in [false, true, true, true, true, true] {
+        h.input_mut().events.push(Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+    }
+    assert!(exporting_dialog(&h));
+    assert!(h.state().tabs()[0].exports.is_empty());
+    assert!(!path.with_extension("3mf").exists());
+    // Let go, then a fresh press: its OK.
+    h.input_mut().events.push(Event::Key {
+        key: Key::Enter,
+        physical_key: None,
+        pressed: false,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its answer", |h| {
+        h.state().tabs()[0].export_answer.is_some()
+    });
+    assert_eq!(h.state().tabs()[0].exports.len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_is_no_on_the_replace_close_and_quit_questions() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    // Save As over a file there: asked, and Esc writes nothing.
+    let there = path.with_file_name("there.silico");
+    std::fs::write(&there, "theirs").unwrap();
+    save_as(&mut h, &there);
+    let asked = format!("{} already exists. Replace it?", there.display());
+    step_until(&mut h, "the replace question", |h| anywhere(h, &asked));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "no question", |h| !anywhere(h, &asked));
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), "theirs");
+    // Close: asked, and Esc keeps the tab.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::W);
+    step_until(&mut h, "the close question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "no question", |h| {
+        !anywhere(h, "Save changes to example.silico before closing?")
+    });
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    // Quit: asked, and Esc keeps the window and the tab.
+    close_window(&mut h);
+    step_until(&mut h, "the quit question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "no question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_none()
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!told(&h, true));
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn open_and_save_as_each_keep_their_own_path() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let menu = |h: &mut AppHarness, item: &str| {
+        h.get_by_label("File").click();
+        step(h);
+        step(h);
+        h.get_by_role_and_label(Role::Button, item).click();
+        step(h);
+        step(h);
+    };
+    // Open, a path typed, cancelled.
+    menu(&mut h, "Open…");
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("typed-in-open.silico");
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "Open closed", |h| !anywhere(h, "Open document"));
+    // Save As opens with a field of its own: empty, not Open's.
+    menu(&mut h, "Save As…");
+    assert_eq!(
+        h.get_by_role_and_label(Role::TextInput, "Path")
+            .value()
+            .as_deref(),
+        Some("")
+    );
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text("typed-in-save-as.silico");
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "Save As closed", |h| {
+        !anywhere(h, "Save example.silico as")
+    });
+    // Open again: its own last; Save As again: empty.
+    menu(&mut h, "Open…");
+    assert_eq!(
+        h.get_by_role_and_label(Role::TextInput, "Path")
+            .value()
+            .as_deref(),
+        Some("typed-in-open.silico")
+    );
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "Open closed", |h| !anywhere(h, "Open document"));
+    menu(&mut h, "Save As…");
+    assert_eq!(
+        h.get_by_role_and_label(Role::TextInput, "Path")
+            .value()
+            .as_deref(),
+        Some("")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_on_a_feature_dialogs_focused_cancel_cancels() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .focus();
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }

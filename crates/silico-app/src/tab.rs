@@ -6,6 +6,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use silico_core::ErrorCode;
+use silico_core::command::export::{Export, Exported};
 use silico_core::command::{
     Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, FieldSet, ModelChoice,
     Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId, Sessions, Status,
@@ -341,6 +343,20 @@ pub struct Tab {
     /// The commands it sent that change its transaction, in order, the newest
     /// [`SENT_KEPT`]: the call record.
     pub sent: Vec<Sent>,
+    /// The export running (M5.12), as it was asked, and its answer to come; each export the
+    /// tab sent, as sent (the call record); and the last one's answer, once it came.
+    exporting: Option<(Export, Running<Exported>)>,
+    /// The newest [`SENT_KEPT`] exports sent.
+    pub exports: Vec<Export>,
+    pub export_answer: Option<Result<Exported, Problems>>,
+    /// What the export dialog says: the last export's refusal, as said to the person; the
+    /// request whose path held a file, to ask whether to replace it; and whether the last
+    /// export wrote its file, until the window takes that (closing the dialog).
+    pub export_said: Option<String>,
+    pub export_replacing: Option<Export>,
+    exported: bool,
+    /// The export out was sent from a dialog since cancelled, not the one open now.
+    export_disowned: bool,
 }
 
 /// What a refusal says to the person: its first error's message and suggestion.
@@ -405,6 +421,13 @@ impl Tab {
             restored: BTreeMap::new(),
             refused: std::collections::BTreeSet::new(),
             sent: Vec::new(),
+            exporting: None,
+            exports: Vec::new(),
+            export_answer: None,
+            export_said: None,
+            export_replacing: None,
+            exported: false,
+            export_disowned: false,
         }
     }
 
@@ -567,6 +590,7 @@ impl Tab {
     }
 
     fn take_answers<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        self.take_export();
         if let Some(read) = self.timeline_read.take() {
             match read.try_take() {
                 Ok(response) => {
@@ -1246,6 +1270,97 @@ impl Tab {
         self.message = None;
         self.edits.queue.push_back(Queued::Step { undo });
         self.advance(sessions);
+    }
+
+    /// `export` of the session's current model, as `request` asks (M5.12), off the UI thread
+    /// as every command is, unless one is running. What the last one said is let go.
+    pub fn export<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, request: Export) {
+        if self.exporting.is_some() {
+            return;
+        }
+        self.export_said = None;
+        self.export_replacing = None;
+        self.export_answer = None;
+        self.exported = false;
+        self.exports.push(request.clone());
+        // One at a time, so never more than one past.
+        if self.exports.len() > SENT_KEPT {
+            self.exports.remove(0);
+        }
+        let running = sessions.export(&self.id, request.clone());
+        self.exporting = Some((request, running));
+    }
+
+    /// The export whose path held a file sent again, to replace it, as the person said.
+    pub fn replace_export<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if let Some(mut request) = self.export_replacing.take() {
+            request.replace = true;
+            self.export(sessions, request);
+        }
+    }
+
+    /// The export dialog's Cancel: the export stopped through its handle (it answers
+    /// `cancelled`, writing nothing), and a question about a file at its path let go.
+    pub fn stop_export(&mut self) {
+        self.export_replacing = None;
+        // Through its own handle: queued behind another command or running, it's this
+        // export stopped, never another client's; one that has answered has nothing left.
+        if let Some((_, running)) = &self.exporting {
+            running.cancel();
+        }
+    }
+
+    /// The export dialog opened: what the last one left (its refusal, its question) let
+    /// go, as the person's next action lets a refusal go.
+    pub fn export_opened(&mut self) {
+        self.export_said = None;
+        self.export_replacing = None;
+        self.message = None;
+        // An export still out (its dialog cancelled, its answer not in yet) isn't this
+        // dialog's: its answer neither closes it nor asks it anything.
+        self.export_disowned = self.exporting.is_some();
+    }
+
+    /// Whether an export is running.
+    pub fn exporting(&self) -> bool {
+        self.exporting.is_some()
+    }
+
+    /// Whether the last export wrote its file since this was last asked.
+    pub fn take_exported(&mut self) -> bool {
+        std::mem::take(&mut self.exported)
+    }
+
+    /// The export running polled: its answer kept; a file at its path, not to be replaced,
+    /// to ask about; any other refusal said, in the dialog and as every command's is (a
+    /// cancelled one, which the person asked for, said nowhere).
+    fn take_export(&mut self) {
+        let Some((asked, running)) = self.exporting.take() else {
+            return;
+        };
+        match running.try_take() {
+            Ok(response) => {
+                let disowned = std::mem::take(&mut self.export_disowned);
+                match &response.result {
+                    _ if disowned => {}
+                    Ok(_) => self.exported = true,
+                    Err(problems) => {
+                        let first = problems.errors().first();
+                        if first.and_then(|error| error.suggestion())
+                            == Some(silico_core::file::REPLACE_ADVICE)
+                        {
+                            self.export_replacing = Some(asked);
+                        } else if first.is_none_or(|error| error.code() != ErrorCode::Cancelled) {
+                            let said = said(problems);
+                            self.message = Some(said.clone());
+                            self.export_said = Some(said);
+                        }
+                    }
+                }
+                self.export_answer = Some(response.result);
+            }
+            Err(running) => self.exporting = Some((asked, running)),
+        }
     }
 
     /// Whether the stop is on: the session's rebuild running, as `status` says, whatever
@@ -2211,6 +2326,126 @@ mod tests {
         // A cancelled read: asked again, whatever it found.
         assert_eq!(after_refusal(false, &cancelled), (false, true));
         assert_eq!(after_refusal(true, &cancelled), (false, true));
+    }
+
+    #[test]
+    fn the_export_dialog_opened_lets_go_of_the_last_ones_refusal_question_and_message() {
+        use silico_core::command::export::ExportFormat;
+        let mut tab = tab();
+        tab.export_said = Some("refused".to_owned());
+        tab.message = Some("refused".to_owned());
+        tab.export_replacing = Some(Export {
+            format: ExportFormat::Step,
+            path: std::path::PathBuf::from("/work/part.step"),
+            replace: false,
+            features: None,
+        });
+        tab.export_opened();
+        assert_eq!(tab.export_said, None);
+        assert_eq!(tab.message, None);
+        assert_eq!(tab.export_replacing, None);
+    }
+
+    #[test]
+    fn an_export_answered_after_its_dialog_is_opened_again_closes_and_asks_nothing() {
+        use silico_core::command::export::ExportFormat;
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("part.silico");
+        std::fs::write(
+            &document,
+            r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}]}"#,
+        )
+        .unwrap();
+        // STEP written by the fake, as the STEP worker would.
+        let kernel = Arc::new(silico_core::fake::FakeKernel::new(1).unwrap());
+        let sessions = Arc::new(
+            Sessions::with_cache_opener(Arc::clone(&kernel), |dir| {
+                silico_core::cache::Cache::unsealed(dir)
+            })
+            .exporting_step(kernel),
+        );
+        let opened = sessions.open(&document, false).wait();
+        let id = opened.session.unwrap().id;
+        let mut tab = Tab::opened(
+            id,
+            document.to_str().unwrap().to_owned(),
+            &opened.result.unwrap().problems,
+        );
+        // A file at the path: the export is refused with replace's advice.
+        let out = dir.path().join("part.step");
+        std::fs::write(&out, "old").unwrap();
+        let asked = Export {
+            format: ExportFormat::Step,
+            path: out.clone(),
+            replace: false,
+            features: None,
+        };
+        tab.export(&sessions, asked.clone());
+        // Its answer is in once a command queued after it answers: then, before it's taken,
+        // its dialog is cancelled (too late to stop it) and opened again.
+        sessions.text(&id, None).wait().result.unwrap();
+        tab.stop_export();
+        tab.export_opened();
+        tab.take_export();
+        assert!(!tab.exporting());
+        assert_eq!(tab.export_replacing, None);
+        assert_eq!(tab.export_said, None);
+        assert!(!tab.take_exported());
+        // The next one, this dialog's own, asks.
+        tab.export(&sessions, asked);
+        sessions.text(&id, None).wait().result.unwrap();
+        tab.take_export();
+        assert!(tab.export_replacing.is_some());
+        // One written (nothing at its path) and answered late, the same way: it doesn't
+        // close the dialog opened since, nor say anything there.
+        let fresh = dir.path().join("fresh.step");
+        tab.stop_export();
+        tab.export(
+            &sessions,
+            Export {
+                format: ExportFormat::Step,
+                path: fresh.clone(),
+                replace: false,
+                features: None,
+            },
+        );
+        sessions.text(&id, None).wait().result.unwrap();
+        tab.stop_export();
+        tab.export_opened();
+        tab.take_export();
+        assert!(fresh.is_file());
+        assert!(tab.export_answer.as_ref().is_some_and(Result::is_ok));
+        assert!(!tab.take_exported());
+        assert_eq!(tab.export_said, None);
+    }
+
+    #[test]
+    fn the_exports_sent_keep_the_newest_it_holds() {
+        use silico_core::command::export::ExportFormat;
+        // A session that isn't open: each export answered at once, refused.
+        let sessions = Arc::new(Sessions::with_cache_opener(
+            Arc::new(silico_core::fake::FakeKernel::new(1).unwrap()),
+            |dir| silico_core::cache::Cache::unsealed(dir),
+        ));
+        let mut tab = tab();
+        for at in 0..SENT_KEPT + 10 {
+            tab.export(
+                &sessions,
+                Export {
+                    format: ExportFormat::Step,
+                    path: std::path::PathBuf::from(format!("/nowhere/{at}.step")),
+                    replace: false,
+                    features: None,
+                },
+            );
+            tab.take_export();
+            assert!(!tab.exporting());
+        }
+        assert_eq!(tab.exports.len(), SENT_KEPT);
+        assert_eq!(
+            tab.exports[0].path,
+            std::path::PathBuf::from("/nowhere/10.step")
+        );
     }
 
     #[test]
