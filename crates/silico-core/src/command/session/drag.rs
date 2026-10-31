@@ -91,7 +91,8 @@ impl OpenDrag {
 
 /// The moves of a drag sent and not yet answered, each answered as its frame comes
 /// ([`answer`](Self::answer)): told by the drag of each change, with no lock of the drag's
-/// held. Its lock is taken under no session lock but the drag slot's, and holds none.
+/// held. Its lock is taken under no session lock but the drag slot's, and holds none but the
+/// session's queue's, a leaf, asked whether the session closed as a move is kept.
 #[derive(Default)]
 struct Frames {
     pending: Mutex<Vec<PendingFrame>>,
@@ -104,6 +105,9 @@ struct PendingFrame {
     reply: SyncSender<Response<DragFrame>>,
     info: SessionInfo,
     stop: Arc<Ticket>,
+    /// Whether its session had closed as it was kept: a close that took the drag's moves
+    /// before it was among them told it nothing, so it's told here, and answers `not_open`.
+    closed: bool,
     /// What its stop interrupts: held while it's unanswered.
     _interrupt: Arc<dyn Interrupt>,
 }
@@ -134,7 +138,11 @@ impl Frames {
         let any = !answered.is_empty();
         for (frame, outcome) in answered {
             let PendingFrame {
-                reply, info, stop, ..
+                reply,
+                info,
+                stop,
+                closed,
+                ..
             } = frame;
             let response = stop.answer(
                 || Some(info.clone()),
@@ -143,7 +151,7 @@ impl Frames {
                     model: None,
                     // Its session's close ended the drag, or came as the frame did: the
                     // session is gone, and no client stopped the move.
-                    result: if stop.closed() {
+                    result: if closed || stop.closed() {
                         Err(Problems::from(not_open(info.id)))
                     } else {
                         drag_frame(outcome).map_err(Problems::from)
@@ -715,19 +723,20 @@ impl<P: Clients + 'static> Sessions<P> {
         let (reply, answer) = mpsc::sync_channel(1);
         {
             let mut pending = lock(&frames.pending);
+            // A close that took the drag's moves before this one was kept told it nothing: it
+            // learns here, under the lock its answer is given under, so it answers `not_open`
+            // too, never `cancelled` (the close takes the queue before it takes the moves).
+            // Only marked, not closed: closing its stop interrupts it, which takes the drag
+            // slot's lock, taken before this one as a move is sent (the robustness review).
+            let closed = found.closed();
             pending.push(PendingFrame {
                 ticket,
                 reply,
                 info,
                 stop: Arc::clone(&stop),
+                closed,
                 _interrupt: interrupt,
             });
-            // A close that took the drag's moves before this one was kept told it nothing: it
-            // learns here, under the lock its answer is given under, so it answers `not_open`
-            // too, never `cancelled` (the close takes the queue before it takes the moves).
-            if found.closed() {
-                stop.close();
-            }
         }
         // Its frame may have come before it was kept.
         if frames.answer() {
