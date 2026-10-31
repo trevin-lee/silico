@@ -66,6 +66,23 @@ fn longer_by_field(f: &Fixture, at: Revision) -> Running<FieldSet> {
     )
 }
 
+/// Waits, without polling, until the rebuild `progress` counts has ended.
+fn until_ended(progress: &crate::recompute::StepCounter) {
+    let mut seen = crate::recompute::StepCount::default();
+    while !seen.ended {
+        seen = progress.changed_since(&seen);
+    }
+}
+
+/// `gate` shut: what reaches it says so on the first end, and waits for a word on the
+/// second.
+fn shut(gate: &Gate) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+    let (started, was_started) = mpsc::channel();
+    let (through, wait) = mpsc::channel();
+    gate.shut(started, wait);
+    (was_started, through)
+}
+
 /// The published read the app makes each frame, refused with `message`, nothing published.
 fn frame_refused(f: &Fixture, message: &str) {
     let refused = f.sessions.published(&f.id).result.unwrap_err();
@@ -423,6 +440,7 @@ fn a_published_distance_held_in_the_kernel_survives_a_cancel_of_the_rebuild_and_
     );
     // The box of revision 2 asked for once, the box of revision 1 once before it.
     assert_eq!(f.made(is_longer_box), 1);
+    assert_eq!(f.made(is_box), 2);
 }
 
 #[test]
@@ -526,10 +544,13 @@ fn the_command_queued_behind_a_stopped_waiter_starts_the_rebuild_again_and_answe
     let check = f
         .sessions
         .check(&f.id, CheckModel::Current { fresh: false });
+    assert!(f.kernel.wait_running(1, WAIT));
+    // The check is past the gate, waiting: the elements read, queued behind it, is held at
+    // the gate as it starts.
+    let (was_started, through) = shut(&f.session().gate);
     let listed = f
         .sessions
         .elements(&f.id, ModelChoice::Current, None, None, 10);
-    assert!(f.kernel.wait_running(1, WAIT));
     assert_eq!(
         f.sessions
             .cancel(&f.id, Cancellable::Rebuild)
@@ -541,15 +562,15 @@ fn the_command_queued_behind_a_stopped_waiter_starts_the_rebuild_again_and_answe
         check.wait().result.unwrap_err().errors(),
         [cancelled("check")]
     );
-    // The elements read's own rebuild, its box held again, then let through.
-    let deadline = std::time::Instant::now() + WAIT;
-    while f.made(is_box) < 2 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the next command never rebuilt"
-        );
-        std::thread::sleep(Duration::from_millis(2));
-    }
+    was_started.recv_timeout(WAIT).unwrap();
+    assert!(
+        f.kernel.wait_idle(WAIT),
+        "the stopped rebuild's box still runs"
+    );
+    assert_eq!(status(&f).rebuild.state, RebuildState::Stopped);
+    // Let through, the elements read starts its own rebuild, its box held again.
+    through.send(()).unwrap();
+    assert!(f.kernel.wait_running(1, WAIT));
     assert_eq!(status(&f).rebuild.state, RebuildState::Running);
     hold.release();
     let answered = listed.wait();
@@ -632,16 +653,8 @@ fn a_rebuild_stopped_after_its_engine_published_but_before_its_watcher_recorded_
     let kernel = FakeKernel::new(2).unwrap();
     let (session, _jobs) = session(&kernel);
     let (label, run) = started_unwatched(&session, BOX);
-    let progress = run.progress();
-    let deadline = std::time::Instant::now() + WAIT;
-    while !progress.now().ended {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the rebuild never ended"
-        );
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert!(lock(&session.rebuilds).stop_running(Revision::OPENED));
+    until_ended(&run.progress());
+    assert!(lock(&session.rebuilds).stop_running(Revision::OPENED, true, None));
     watch(&Arc::downgrade(&session), &label, run);
     let rebuilds = lock(&session.rebuilds);
     assert_eq!(
@@ -672,7 +685,7 @@ fn a_waiter_whose_rebuild_was_stopped_and_recorded_before_it_woke_answers_cancel
     };
     assert!(kernel.wait_running(1, WAIT));
     // Taken once the waiter waits: it holds the lock from the start until its wait.
-    assert!(lock(&session.rebuilds).stop_running(Revision::OPENED));
+    assert!(lock(&session.rebuilds).stop_running(Revision::OPENED, true, None));
     let answer = answered.recv_timeout(WAIT).unwrap();
     assert_eq!(answer.unwrap_err().errors(), [cancelled("check")]);
     waiter.join().unwrap();
@@ -717,7 +730,7 @@ fn an_edits_candidate_stopped_and_recorded_before_its_commit_woke_answers_cancel
     };
     assert!(kernel.wait_running(1, WAIT));
     // The candidate counts as the session's revision's rebuild running.
-    assert!(lock(&session.rebuilds).stop_running(Revision::OPENED));
+    assert!(lock(&session.rebuilds).stop_running(Revision::OPENED, true, None));
     let answer = answered.recv_timeout(WAIT).unwrap();
     assert_eq!(answer.unwrap_err().errors(), [cancelled("set_field")]);
     committing.join().unwrap();
@@ -743,19 +756,14 @@ fn a_cancel_of_the_rebuild_after_a_newer_one_superseded_it_stops_the_newer_one()
     // superseded, recorded late, never hides the stop.
     let f = opened(BOX);
     let _hold = f.kernel.hold(is_box);
+    // Each rebuild's watcher says it's there as it starts, then waits: so the second word is
+    // the fresh check's, started once the frame's is running.
+    let (watching, through) = shut(&f.session().watching);
     frame_refused(&f, "session s1 has published no model yet");
-    assert!(f.kernel.wait_running(1, WAIT));
+    watching.recv_timeout(WAIT).unwrap();
     let fresh = f.sessions.check(&f.id, CheckModel::Current { fresh: true });
-    // The first box let go as superseded, the fresh one held.
-    let deadline = std::time::Instant::now() + WAIT;
-    while f.made(is_box) < 2 {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the fresh check never asked"
-        );
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    assert!(f.kernel.wait_running(1, WAIT));
+    watching.recv_timeout(WAIT).unwrap();
+    assert_eq!(lock(&f.session().rebuilds).last_number, 2);
     assert_eq!(
         f.sessions
             .cancel(&f.id, Cancellable::Rebuild)
@@ -767,15 +775,269 @@ fn a_cancel_of_the_rebuild_after_a_newer_one_superseded_it_stops_the_newer_one()
         fresh.wait().result.unwrap_err().errors(),
         [cancelled("check")]
     );
+    through.send(()).unwrap();
+    through.send(()).unwrap();
     assert!(
         f.kernel.wait_idle(WAIT),
         "a stopped rebuild's box still runs"
     );
     watchers_ended(&f);
-    assert_eq!(f.made(is_box), 2);
+    // Neither started again: two rebuilds in all.
+    assert_eq!(lock(&f.session().rebuilds).last_number, 2);
     assert_eq!(status(&f).rebuild.state, RebuildState::Stopped);
     frame_refused(
         &f,
         "session s1 has published no model yet: its rebuild was cancelled",
     );
+}
+
+// ---- Round 1's findings ----
+
+#[test]
+fn a_check_running_but_not_yet_waiting_when_the_rebuild_is_cancelled_answers_cancelled() {
+    // A published read's rebuild runs, its box held; a check is the queued command running,
+    // held as it starts, before it asks for a model. The cancel stops the rebuild; let
+    // through, the check answers `cancelled`, never starting the rebuild again.
+    let f = opened(BOX);
+    let hold = f.kernel.hold(is_box);
+    frame_refused(&f, "session s1 has published no model yet");
+    assert!(f.kernel.wait_running(1, WAIT));
+    let (was_started, through) = shut(&f.session().gate);
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false });
+    was_started.recv_timeout(WAIT).unwrap();
+    assert_eq!(
+        status(&f).running,
+        Some(RunningCommand::Command(SessionCommand::Check))
+    );
+    assert_eq!(
+        f.sessions
+            .cancel(&f.id, Cancellable::Rebuild)
+            .result
+            .unwrap(),
+        STOPPED
+    );
+    through.send(()).unwrap();
+    let Ok(answered) = check.wait_timeout(WAIT) else {
+        panic!("the check started the stopped rebuild again");
+    };
+    assert_eq!(answered.result.unwrap_err().errors(), [cancelled("check")]);
+    assert!(
+        f.kernel.wait_idle(WAIT),
+        "the stopped rebuild's box still runs"
+    );
+    assert_eq!(f.made(is_box), 1);
+    assert_eq!(lock(&f.session().rebuilds).last_number, 1);
+    assert_eq!(status(&f).rebuild.state, RebuildState::Stopped);
+    drop(hold);
+}
+
+#[test]
+fn a_commit_running_but_not_yet_waiting_when_the_rebuild_is_cancelled_leaves_no_trace() {
+    // As above, a commit inside a transaction: revision 2's rebuild started by a frame, the
+    // commit held as it starts.
+    let f = opened(BOX);
+    f.begin();
+    longer_by_field(&f, Revision::OPENED).wait().result.unwrap();
+    let two = Revision::OPENED.next().unwrap();
+    let hold = f.kernel.hold(is_box);
+    frame_refused(&f, "session s1 has published no model yet");
+    assert!(f.kernel.wait_running(1, WAIT));
+    let (was_started, through) = shut(&f.session().gate);
+    let commit = f.sessions.commit(&f.id);
+    was_started.recv_timeout(WAIT).unwrap();
+    assert_eq!(
+        f.sessions
+            .cancel(&f.id, Cancellable::Rebuild)
+            .result
+            .unwrap(),
+        STOPPED
+    );
+    through.send(()).unwrap();
+    let Ok(answered) = commit.wait_timeout(WAIT) else {
+        panic!("the commit started the stopped rebuild again");
+    };
+    assert_eq!(answered.result.unwrap_err().errors(), [cancelled("commit")]);
+    assert!(answered.session.unwrap().transaction);
+    assert_eq!(f.file(), BOX);
+    assert_eq!(revision(&f), two);
+    assert_eq!(
+        status(&f).transaction.map(|open| open.base),
+        Some(Revision::OPENED)
+    );
+    assert!(
+        f.kernel.wait_idle(WAIT),
+        "the stopped rebuild's box still runs"
+    );
+    assert_eq!(f.made(is_box), 1);
+    drop(hold);
+}
+
+#[test]
+fn an_edits_candidate_stopped_after_its_engine_published_answers_cancelled() {
+    // The candidate's engine has published; its watcher, held, hasn't recorded it. Stopped
+    // then, its outcome, a model, is recorded once the watcher is let through: the commit
+    // must take it as stopped, not return it.
+    let kernel = FakeKernel::new(2).unwrap();
+    let (session, _jobs) = session(&kernel);
+    let (watching, through) = shut(&session.watching);
+    let (said, answered) = mpsc::channel();
+    let committing = {
+        let session = Arc::clone(&session);
+        std::thread::spawn(move || {
+            let stop = Ticket::new(SessionCommand::SetField);
+            let longer = BOX.replace("\"length\": 40", "\"length\": 41");
+            let model =
+                session.candidate_model(&stop, Revision::OPENED.next().unwrap(), &checked(&longer));
+            let _ = said.send(model.map(|_| ()));
+        })
+    };
+    watching.recv_timeout(WAIT).unwrap();
+    until_ended(&session.newest.counter().unwrap());
+    assert!(lock(&session.rebuilds).stop_running(Revision::OPENED, true, None));
+    through.send(()).unwrap();
+    let answer = answered.recv_timeout(WAIT).unwrap();
+    assert_eq!(answer.unwrap_err().errors(), [cancelled("set_field")]);
+    committing.join().unwrap();
+    // Never started again.
+    assert_eq!(lock(&session.rebuilds).last_number, 1);
+}
+
+#[test]
+fn an_edit_whose_candidate_is_cancelled_after_its_engine_published_saves_nothing() {
+    // The same through the sessions: the edit's candidate built, its watcher held, then the
+    // rebuild cancelled by name. The edit answers `cancelled` and the file is as it was.
+    let f = opened(BOX);
+    let (watching, through) = shut(&f.session().watching);
+    let edit = longer_by_field(&f, Revision::OPENED);
+    watching.recv_timeout(WAIT).unwrap();
+    until_ended(&f.session().newest.counter().unwrap());
+    assert_eq!(
+        f.sessions
+            .cancel(&f.id, Cancellable::Rebuild)
+            .result
+            .unwrap(),
+        STOPPED
+    );
+    through.send(()).unwrap();
+    let answered = edit.wait();
+    assert_eq!(
+        answered.result.unwrap_err().errors(),
+        [cancelled("set_field")]
+    );
+    assert_eq!(answered.session.unwrap().revision, Revision::OPENED);
+    assert_eq!(f.file(), BOX);
+    assert_eq!(lock(&f.session().rebuilds).last_number, 1);
+}
+
+#[test]
+fn a_candidate_rebuilding_for_a_document_the_gate_refused_is_reported_running_and_stops_by_name() {
+    // The session holds a document the gate refuses; a valid text replaces it outside a
+    // transaction, its candidate's box held. Status reports the candidate running, whatever
+    // the held document is, and cancel names it.
+    let f = opened(FLAT);
+    let _hold = f.kernel.hold(is_box);
+    let replaced = f
+        .sessions
+        .replace_text(&f.id, Revision::OPENED, BOX.to_owned());
+    assert!(f.kernel.wait_running(1, WAIT));
+    let before = status(&f);
+    assert!(!before.gated);
+    assert_eq!(
+        (
+            before.running,
+            before.rebuild.revision,
+            before.rebuild.state
+        ),
+        (
+            Some(RunningCommand::Command(SessionCommand::ReplaceText)),
+            Revision::OPENED,
+            RebuildState::Running
+        )
+    );
+    assert_eq!(
+        refused(f.sessions.cancel(&f.id, SessionCommand::Check)),
+        (
+            "no check is running in session s1: replace_text, rebuild are".to_owned(),
+            names(&["replace_text", "rebuild"])
+        )
+    );
+    assert_eq!(
+        f.sessions
+            .cancel(&f.id, Cancellable::Rebuild)
+            .result
+            .unwrap(),
+        STOPPED
+    );
+    assert_eq!(
+        replaced.wait().result.unwrap_err().errors(),
+        [cancelled("replace_text")]
+    );
+    assert_eq!(f.file(), FLAT);
+    assert!(
+        f.kernel.wait_idle(WAIT),
+        "the stopped candidate's box still runs"
+    );
+    let after = status(&f);
+    assert_eq!(
+        (after.running, after.rebuild.state),
+        (None, RebuildState::Idle)
+    );
+}
+
+#[test]
+fn a_cancel_of_the_rebuild_wakes_the_command_waiting_before_its_watcher_records_anything() {
+    // The watcher held before its first look, so it records nothing and tells no one: only
+    // the cancel can wake the check waiting on the rebuild.
+    let f = opened(BOX);
+    let (watching, through) = shut(&f.session().watching);
+    let _hold = f.kernel.hold(is_box);
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false });
+    watching.recv_timeout(WAIT).unwrap();
+    assert!(f.kernel.wait_running(1, WAIT));
+    assert_eq!(
+        f.sessions
+            .cancel(&f.id, Cancellable::Rebuild)
+            .result
+            .unwrap(),
+        STOPPED
+    );
+    let Ok(answered) = check.wait_timeout(WAIT) else {
+        panic!("the cancel never woke the check");
+    };
+    assert_eq!(answered.result.unwrap_err().errors(), [cancelled("check")]);
+    through.send(()).unwrap();
+}
+
+#[test]
+fn a_cancel_of_the_rebuild_wakes_the_client() {
+    // The watcher held before its first look, so it wakes no one: the client's waker is
+    // woken by the cancel itself, as status has changed.
+    let f = opened(BOX);
+    // The first disk comparison ended, so none wakes the client meanwhile.
+    disk_reaches(&f, Disk::Unchanged);
+    let (watching, through) = shut(&f.session().watching);
+    let _hold = f.kernel.hold(is_box);
+    frame_refused(&f, "session s1 has published no model yet");
+    watching.recv_timeout(WAIT).unwrap();
+    assert!(f.kernel.wait_running(1, WAIT));
+    let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let woken = Arc::clone(&woken);
+        f.sessions.on_change(move || {
+            woken.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    assert_eq!(
+        f.sessions
+            .cancel(&f.id, Cancellable::Rebuild)
+            .result
+            .unwrap(),
+        STOPPED
+    );
+    assert!(woken.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    through.send(()).unwrap();
 }

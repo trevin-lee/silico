@@ -59,6 +59,12 @@ pub(super) struct Rebuilds<C: Kernel + 'static> {
     /// The number of the newest rebuild started ([`Label::number`]): as many as have
     /// started, 0 before the first.
     pub(super) last_number: u64,
+    /// The queued command running when `cancel` named the newest rebuild it stopped
+    /// ([`stop_running`](Rebuilds::stop_running)), if one was: it answers `cancelled` when
+    /// it next asks for a model, even if it wasn't waiting yet (still in its reload, say),
+    /// so it never starts the stopped rebuild again. Held weakly, so its allocation, and so
+    /// its address, stays its own while it's kept.
+    pub(super) stopped_for: Option<Weak<Ticket>>,
 }
 
 impl<C: Kernel + 'static> Rebuilds<C> {
@@ -68,12 +74,17 @@ impl<C: Kernel + 'static> Rebuilds<C> {
     }
 
     /// Whether the command `stop` stops was cancelled, or the rebuild it waits on, `waited`,
-    /// was (`cancel` naming `rebuild`): a rebuild and the one command waiting on it stop
-    /// together, whichever is named (decision 34). If so, that rebuild stopped
-    /// ([`stop_waited`](Self::stop_waited)), and the command's `cancelled` answer, as if it
-    /// had been named.
+    /// was (`cancel` naming `rebuild`), or it was the queued command running when `cancel`
+    /// named the rebuild ([`stopped_for`](Self::stopped_for)): a rebuild and the one command
+    /// waiting on it stop together, whichever is named (decision 34). If so, that rebuild
+    /// stopped ([`stop_waited`](Self::stop_waited)), and the command's `cancelled` answer, as
+    /// if it had been named.
     fn stopped(&mut self, stop: &Ticket, waited: Option<&Label>) -> Result<(), Problems> {
-        let rebuild = waited.is_some_and(|label| label.cancelled.load(Ordering::SeqCst));
+        let rebuild = waited.is_some_and(|label| label.cancelled.load(Ordering::SeqCst))
+            || self
+                .stopped_for
+                .as_ref()
+                .is_some_and(|running| std::ptr::eq(running.as_ptr(), stop));
         if !stop.cancelled() && !rebuild {
             return Ok(());
         }
@@ -83,20 +94,49 @@ impl<C: Kernel + 'static> Rebuilds<C> {
         Err(Problems::from(cancelled(stop.name())))
     }
 
-    /// The rebuild running, if `status` reports it so for `revision`, the session's
-    /// ([`state`](Self::state): its own, or an edit's candidate), stopped as `cancel` naming
-    /// `rebuild` stops it (decision 34): as a cancelled waiter stops it
+    /// The rebuild running, if `status` reports it so for `revision`, the session's, whose
+    /// document the gate took if `gated` ([`reported`](Self::reported)), stopped as `cancel`
+    /// naming `rebuild` stops it (decision 34): as a cancelled waiter stops it
     /// ([`stop_waited`](Self::stop_waited)), so the command waiting on it, if one is, answers
-    /// `cancelled` once it's told (`Session::rebuilt`). Whether one was.
-    pub(super) fn stop_running(&mut self, revision: Revision) -> bool {
+    /// `cancelled` once it's told (`Session::rebuilt`); and so does `queued`, the queued
+    /// command running then, if one was, when it next asks for a model
+    /// ([`stopped_for`](Self::stopped_for)). Whether one was.
+    pub(super) fn stop_running(
+        &mut self,
+        revision: Revision,
+        gated: bool,
+        queued: Option<Weak<Ticket>>,
+    ) -> bool {
         let running = self
             .running
             .clone()
-            .filter(|_| self.state(revision).state == RebuildState::Running);
+            .filter(|_| self.reported(revision, gated).state == RebuildState::Running);
         if let Some(label) = &running {
             self.stop_waited(label);
+            self.stopped_for = queued;
         }
         running.is_some()
+    }
+
+    /// What `status` reports of `revision`'s rebuild, the session's, whose document the gate
+    /// took if `gated`: [`state`](Self::state)'s, or, for a document the gate refused,
+    /// `none`, but for an edit's candidate running, which is built whatever the document
+    /// held is. Its progress is left for the caller to read ([`Newest::of`]).
+    pub(super) fn reported(&self, revision: Revision, gated: bool) -> Rebuild {
+        if gated
+            || self
+                .running
+                .as_ref()
+                .is_some_and(|running| running.candidate)
+        {
+            self.state(revision)
+        } else {
+            Rebuild {
+                revision,
+                state: RebuildState::Idle,
+                progress: None,
+            }
+        }
     }
 
     /// `label` numbered as the newest rebuild started, after every one started before it.
@@ -219,6 +259,12 @@ impl Newest {
         let count = progress.now();
         (label.revision() == revision || (label.candidate && !count.ended))
             .then(|| Progress::from(&count))
+    }
+
+    /// The newest rebuild's count, as it goes on, in this crate's tests only.
+    #[cfg(test)]
+    pub(super) fn counter(&self) -> Option<StepCounter> {
+        lock(&self.0).as_ref().map(|(_, progress)| progress.clone())
     }
 
     /// The progress of the newest rebuild, while it runs.
@@ -1080,6 +1126,7 @@ mod tests {
             candidate: None,
             watchers: Threads::new(),
             last_number: 0,
+            stopped_for: None,
         }
     }
 

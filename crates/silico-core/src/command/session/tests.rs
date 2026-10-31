@@ -62,6 +62,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             candidate: None,
             watchers: Threads::new(),
             last_number: 0,
+            stopped_for: None,
         }),
         rebuilt: Condvar::new(),
         reads: Mutex::new(Reads::new()),

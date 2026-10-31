@@ -2136,18 +2136,14 @@ fn status_in<P: Clients + 'static>(
     let running = found.running().and_then(|ticket| ticket.running());
     let held = found.held.read();
     let gated = matches!(*held.gated, Gated::Checked(_));
-    let rebuild = if gated {
-        let state = lock(&found.rebuilds).state(held.revision);
-        Rebuild {
-            progress: found.newest.of(held.revision),
-            ..state
-        }
-    } else {
-        Rebuild {
-            revision: held.revision,
-            state: RebuildState::Idle,
-            progress: None,
-        }
+    let rebuild = {
+        let state = lock(&found.rebuilds).reported(held.revision, gated);
+        let progress = if gated || state.state == RebuildState::Running {
+            found.newest.of(held.revision)
+        } else {
+            None
+        };
+        Rebuild { progress, ..state }
     };
     Response {
         session: Some(found.info_of(&held, false)),
@@ -2249,13 +2245,17 @@ impl<C: Kernel + 'static> Session<C> {
 
     /// `cancel` naming `rebuild`: the rebuild `status` reports running stopped, under the
     /// rebuilds' lock, as a cancelled waiter stops it, and the command waiting on it, if
-    /// one is, told, so it answers `cancelled` (decision 34). Refused, naming what's
+    /// one is, told, so it answers `cancelled` (decision 34); the queued command running,
+    /// if it isn't waiting yet, answers so when it asks for a model. Refused, naming what's
     /// running, if none is (it published, failed, or was superseded first).
     fn cancel_rebuild(&self) -> Result<Cancelled, Problems> {
+        // The queued command running, taken first, under no other lock: it answers
+        // `cancelled` too, waiting on the rebuild or not yet.
+        let queued = self.running().map(|ticket| Arc::downgrade(&ticket));
         let stopped = {
             let held = self.held.read();
-            matches!(*held.gated, Gated::Checked(_))
-                && lock(&self.rebuilds).stop_running(held.revision)
+            let gated = matches!(*held.gated, Gated::Checked(_));
+            lock(&self.rebuilds).stop_running(held.revision, gated, queued)
         };
         if !stopped {
             return Err(self.not_running(Cancellable::Rebuild, &self.running_tickets()));
@@ -2298,12 +2298,12 @@ impl<C: Kernel + 'static> Session<C> {
         Problems::from(not_running(self.id, named, &running))
     }
 
-    /// Whether `status` reports the session's rebuild `running`: its revision's, or an
-    /// edit's candidate, while the gate takes its document.
+    /// Whether `status` reports the session's rebuild `running`: its revision's, while the
+    /// gate takes its document, or an edit's candidate, whatever it holds.
     fn rebuild_running(&self) -> bool {
         let held = self.held.read();
-        matches!(*held.gated, Gated::Checked(_))
-            && lock(&self.rebuilds).state(held.revision).state == RebuildState::Running
+        let gated = matches!(*held.gated, Gated::Checked(_));
+        lock(&self.rebuilds).reported(held.revision, gated).state == RebuildState::Running
     }
 }
 
