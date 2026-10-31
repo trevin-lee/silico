@@ -201,3 +201,38 @@ fn a_format_dropped_past_the_bound_stays_in_force_in_the_edits_after_it() {
     assert!(committed.written);
     assert_eq!(f.file(), canonical);
 }
+
+#[test]
+fn two_formats_on_the_stack_are_counted_apart() {
+    // Formatted (its record A), the text replaced on one line again (41 long, taking A),
+    // formatted again (a record of its own, B: A is shared with the states before, so the
+    // format's change makes a copy), then set to 42: the second format's state held, its
+    // record with it, counted beside A, not as A.
+    let f = bounded(
+        BOX,
+        crate::document::undo::UNDO_BYTES,
+        &crate::fake::FakeSketches::new(),
+    );
+    f.begin();
+    f.sessions.format(&f.id, None, true).wait().result.unwrap();
+    let one_line = BOX.replace(r#""length": 40"#, r#""length": 41"#);
+    f.sessions
+        .replace_text(&f.id, f.revision_now(), one_line)
+        .wait()
+        .result
+        .unwrap();
+    let again = f.sessions.format(&f.id, None, true).wait().result.unwrap();
+    assert!(again.changed);
+    let before = f.transaction_now().bytes;
+    f.set_length(42);
+    // The second format's state (41 long, its fingerprint as rebuilt: 8200, 2860, and its
+    // box, each as many digits as 40's) held, and its record: a second FORMAT.
+    assert_eq!(f.transaction_now().bytes, before + state() + FORMAT);
+}
+
+#[test]
+fn the_unit_extra_shares_nothing_and_costs_nothing() {
+    use crate::document::undo::Extra as _;
+    assert_eq!(().shared(), None);
+    assert_eq!(().cost(), 0);
+}

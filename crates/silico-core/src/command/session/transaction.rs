@@ -159,9 +159,10 @@ impl Formatted {
 
 impl crate::document::undo::Extra for Arc<Formatted> {
     /// Shared by every state an edit after the `format` made (each takes the one before's):
-    /// counted once. One that holds nothing (no `format` yet) costs nothing.
+    /// counted once. One that holds nothing (no `format` yet: a `format` sets `layout` as it
+    /// writes, so `written` is never held without it) costs nothing.
     fn shared(&self) -> Option<usize> {
-        (self.layout || !self.written.is_empty()).then_some(Arc::as_ptr(self) as usize)
+        self.layout.then_some(Arc::as_ptr(self) as usize)
     }
 
     fn cost(&self) -> usize {
