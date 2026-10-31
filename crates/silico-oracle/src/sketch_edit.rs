@@ -2431,13 +2431,15 @@ fn extend_rule(
         if !(member.kind == "line" && names_end) {
             return None;
         }
-        // "extending line … changes nothing: its constraints hold its end … where it is" (#309).
-        if r.message
-            .contains("changes nothing: its constraints hold its end")
-        {
-            return Some(Rule::ExtendHeld);
+        // A drag that didn't end in a frame: its solve ending otherwise, or reaching geometry
+        // that can't be built. Its code and the line and end it names are the held line's
+        // too, so only its words ("the drag") tell it apart.
+        if r.message.contains("the drag") {
+            return Some(Rule::ExtendFrame);
         }
-        return (r.message.contains("the drag")).then_some(Rule::ExtendFrame);
+        // A line its constraints hold where it is: the result, naming the line and its
+        // moving end and nothing else, whatever its words.
+        return (r.elements.len() == 2).then_some(Rule::ExtendHeld);
     }
     if r.message.contains("long or flipped") {
         return match member.kind {

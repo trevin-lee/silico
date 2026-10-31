@@ -3122,7 +3122,8 @@ fn reported(v: &Verdict, why: &str) {
 #[test]
 fn an_extend_refused_for_another_reason_than_the_notes_is_a_difference() {
     // Each extend refusal the note gives, as Silico makes it, with one thing about it changed:
-    // its code, its field, the curve it names, or its words. None is the note's any more.
+    // its code, its field, the curve it names, or its words. None is the note's any more, but
+    // a held end in other words, which is matched by what it names.
     let names = [
         "extend_held_end",
         "extend_probe_line_by_0",
@@ -3158,6 +3159,12 @@ fn an_extend_refused_for_another_reason_than_the_notes_is_a_difference() {
         ];
         for (what, change) in &changes {
             let wrong = refused_otherwise(p, change);
+            // A held end is matched by its code and the line and end it names, not its
+            // words, so a reword can't lose it: the same rule, in other words.
+            if p.name == "extend_held_end" && *what == "its words" {
+                assert_eq!(rule(&wrong), Some(Rule::ExtendHeld), "{} by {what}", p.name);
+                continue;
+            }
             assert!(rule(&wrong).is_none(), "{} by {what}", p.name);
             reported(
                 &verdict(&wrong, fc.as_ref()),

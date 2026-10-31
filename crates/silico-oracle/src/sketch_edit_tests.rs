@@ -1274,6 +1274,88 @@ fn an_extend_refused_for_what_it_reaches_is_excused_by_freecads_degenerate_curve
 }
 
 #[test]
+fn a_held_lines_refusal_is_the_rule_by_its_code_and_the_line_and_end_it_names() {
+    // The line n0000003 from p0000001 (0, 0) to p0000002 (1, 0), its end extended by 1, and
+    // the arc a0000007 about p0000004 (0, 5) from p0000005 (1, 5) to p0000006 (0, 6).
+    let sketch = || {
+        sketch_of(
+            &[
+                ("p0000001", 0.0, 0.0),
+                ("p0000002", 1.0, 0.0),
+                ("p0000004", 0.0, 5.0),
+                ("p0000005", 1.0, 5.0),
+                ("p0000006", 0.0, 6.0),
+            ],
+            &[("n0000003", "p0000001", "p0000002")],
+            &[],
+            &[("a0000007", "p0000004", "p0000005", "p0000006")],
+            &[],
+        )
+    };
+    let refused = |curve: &str, code: &str, message: &str, elements: &[&str]| {
+        let p = prepared_with(
+            sketch(),
+            extend(curve, ExtendEnd::End, ExtendBy::Length(1.0)),
+            SilicoSide::Refused(Refusal {
+                code: code.to_owned(),
+                message: message.to_owned(),
+                elements: elements.iter().map(|e| (*e).to_owned()).collect(),
+                parameter: Some("by".to_owned()),
+                text: message.to_owned(),
+            }),
+        );
+        rule(&p)
+    };
+    // The result refused, naming the line and its moving end: the held line, in any words.
+    for message in [
+        "extending line n0000003 by 1 changes nothing: its constraints hold its end p0000002 where it is",
+        "worded otherwise",
+    ] {
+        assert_eq!(
+            refused(
+                "n0000003",
+                "invalid_result",
+                message,
+                &["n0000003", "p0000002"]
+            ),
+            Some(Rule::ExtendHeld),
+            "{message}"
+        );
+    }
+    // Its drag ending otherwise, with the same code and names: the frame's.
+    assert_eq!(
+        refused(
+            "n0000003",
+            "invalid_result",
+            "line n0000003's end p0000002 can't move by 1: the drag's solve ended Failed",
+            &["n0000003", "p0000002"]
+        ),
+        Some(Rule::ExtendFrame)
+    );
+    // Another code, the line's other end, its end alone, a third element, the end first, or
+    // an arc: not the held line.
+    for (curve, code, elements) in [
+        ("n0000003", "invalid_input", &["n0000003", "p0000002"][..]),
+        ("n0000003", "solve_failed", &["n0000003", "p0000002"][..]),
+        ("n0000003", "invalid_result", &["n0000003", "p0000001"][..]),
+        ("n0000003", "invalid_result", &["n0000003"][..]),
+        (
+            "n0000003",
+            "invalid_result",
+            &["n0000003", "p0000002", "p0000001"][..],
+        ),
+        ("n0000003", "invalid_result", &["p0000002", "n0000003"][..]),
+        ("a0000007", "invalid_result", &["a0000007", "p0000006"][..]),
+    ] {
+        assert_ne!(
+            refused(curve, code, "worded otherwise", elements),
+            Some(Rule::ExtendHeld),
+            "{curve} {code} {elements:?}"
+        );
+    }
+}
+
+#[test]
 fn an_arc_extended_past_a_whole_turn_wraps_its_range_as_freecads_setrange_does() {
     // 370 degrees on at its end: FreeCAD's range wraps to a sweep of 100, its end at 130
     // degrees, its start, centre, and radius kept.
