@@ -2708,3 +2708,37 @@ fn save_as_takes_the_edits_made_before_it_and_one_with_none_open_writes_all_the_
     assert_eq!(names_in(&again), ["Block", typed.as_str(), "Hole"]);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn typing_while_a_save_as_runs_comes_after_it_in_a_new_transaction() {
+    // The Save As held behind the session's queue, then a keystroke: sent after the Save
+    // As has answered, so it begins a transaction on the new file, unsaved, never written
+    // to it as an edit outside one.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let copy = f.dir.path().join("copy.silico");
+    save_as(&mut h, &copy);
+    step_until(&mut h, "the Save As sent", |h| {
+        h.state().tabs()[0].saves == 1
+    });
+    type_name(&mut h, "z");
+    let typed = name_field(&h).value().unwrap();
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the keystroke applied", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", &typed)
+    });
+    step_until(&mut h, "unsaved on the new file", |h| {
+        anywhere(h, "copy.silico *")
+    });
+    assert!(h.state().tabs()[0].transaction);
+    assert_eq!(names_in(&copy), ["Block", "xPin", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
