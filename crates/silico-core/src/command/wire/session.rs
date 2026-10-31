@@ -180,6 +180,8 @@ impl ToWire for Limits {
             ("sketch_seconds", Json::whole(self.sketch_seconds)),
             ("undo_bytes", Json::count(self.undo_bytes)),
             ("disk_check_ms", Json::whole(self.disk_check_ms)),
+            ("drag_move_seconds", Json::whole(self.drag_move_seconds)),
+            ("drag_unknowns", Json::count(self.drag_unknowns)),
         ])
     }
 }
@@ -248,8 +250,8 @@ impl ToWire for Status {
     /// `status`'s result: the number of features (`null` if the text doesn't read as a
     /// document), whether the gate took it, the transaction open and its undo stack's counts
     /// (`null` if none), what's running on the session's thread (a queued command, or
-    /// `reload`; `null` if nothing), the published reads running, the rebuild, and what the
-    /// last disk comparison found (`null` if none has ended).
+    /// `reload`; `null` if nothing), the published reads running, the rebuild, the drag open
+    /// (`null` if none), and what the last disk comparison found (`null` if none has ended).
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("features", Json::or_null(self.features, Json::count)),
@@ -267,6 +269,7 @@ impl ToWire for Status {
                 Json::array(self.reads.iter().map(|read| Json::str(read.as_str()))),
             ),
             ("rebuild", self.rebuild.to_wire()),
+            ("drag", Json::or_null(self.drag.as_ref(), ToWire::to_wire)),
             (
                 "disk",
                 Json::or_null(self.disk, |disk| Json::str(disk.word())),
@@ -438,6 +441,13 @@ pub struct LimitsSchema {
     /// running and the last ended at least this long ago, so `status`'s `disk`, a
     /// diagnostic, is the last comparison's finding and may be older.
     pub disk_check_ms: u64,
+    /// How long one move of a drag may take, in seconds: past it, the drag's worker is
+    /// stopped, a `worker_timeout`, and the drag ends. A drag's whole solves (its begin's,
+    /// its end's) take a sketch's solve's time.
+    pub drag_move_seconds: u64,
+    /// The most unknowns the part of a sketch a drag moves may have (two a free point, one a
+    /// free radius): past it, `drag_begin` is refused, naming `point`, or `curve`.
+    pub drag_unknowns: u64,
 }
 
 /// `version`'s result.
@@ -569,6 +579,10 @@ pub struct StatusResultSchema {
     /// every one of a name.
     pub reads: Vec<PublishedReadSchema>,
     pub rebuild: RebuildSchema,
+    /// The drag open (`drag_begin`): its sketch, and what it grabbed, as the request named
+    /// them; null if none is, once it has ended however it ended (`drag_end`, a new revision,
+    /// its worker's failure, a cancel of its move). A diagnostic.
+    pub drag: Option<super::drag::DragOpenSchema>,
     /// What the last comparison of the session's file on disk found, against the bytes the
     /// session last read or wrote: a diagnostic, never a result, and it reloads nothing
     /// itself. `status` starts the next comparison, off its caller's thread, once the last

@@ -37,12 +37,13 @@ pub mod wire;
 
 pub use call::{Answered, Call, Calling, Command};
 pub use session::{
-    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
-    MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers,
-    Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
-    Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
-    SessionInfo, Sessions, SketchCut, SketchEdited, Status, Stepped, Stopper, Suppressed, TOO_LONG,
-    TextAnswer, TimelineAnswer, Transaction, TryAgainBy, fault_suggestion,
+    Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, DragBegun,
+    DragEnded, DragFrame, DragGrab, DragOpen, FieldSet, FrameEnd, MAX_PUBLISHED_READS,
+    MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers, Opened, OutlineAnswer,
+    Progress, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced,
+    Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, SketchCut,
+    SketchEdited, Status, Stepped, Stopper, Suppressed, TOO_LONG, TextAnswer, TimelineAnswer,
+    Transaction, TryAgainBy, fault_suggestion,
 };
 pub use session_command::{Cancellable, ReadCommand, RunningCommand, SessionCommand};
 
@@ -115,6 +116,10 @@ pub struct Limits {
     /// The least time from one comparison of a session's file on disk ending to the next
     /// one starting, in milliseconds.
     pub disk_check_ms: u64,
+    /// A drag's move's time, in seconds (`DRAG_MOVE_TIMEOUT`).
+    pub drag_move_seconds: u64,
+    /// The most unknowns the part of a sketch a drag moves may have (`MAX_DRAG_UNKNOWNS`).
+    pub drag_unknowns: usize,
 }
 
 /// What `version` answers.
@@ -147,6 +152,8 @@ pub const VERSION: Version = Version {
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
         undo_bytes: document::undo::UNDO_BYTES,
         disk_check_ms: crate::disk::DISK_CHECK_MS,
+        drag_move_seconds: crate::drag::DRAG_MOVE_TIMEOUT.as_secs(),
+        drag_unknowns: silico_protocol::MAX_DRAG_UNKNOWNS,
     },
 };
 
