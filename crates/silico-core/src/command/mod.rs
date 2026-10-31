@@ -556,17 +556,18 @@ pub fn outline(document: &Document) -> String {
         if let Some(note) = note {
             let _ = writeln!(out, "  note {}", quoted(note));
         }
+        // The names it stores, a fillet's or chamfer's edges and a sketch's face, a line
+        // each, quoted (a name can be long, and in a document the gate hasn't passed,
+        // anything), so an edit to one changes its line.
+        for (field, stored) in operation.stored_names() {
+            let _ = writeln!(out, "  {} {}", field.kind().word(), quoted(stored.as_str()));
+        }
         // A sketch's points, curves, and constraints, a line each, as the file writes them,
         // so an edit to one changes its line alone.
         if let Operation::Sketch(sketch) = operation {
             for (kind, text) in document::sketch_elements(sketch) {
                 let _ = writeln!(out, "  {kind} {text}");
             }
-        }
-        // A fillet's or chamfer's edges, a line each, quoted (a name can be long, and in a
-        // document the gate hasn't passed, anything), so an edit to one changes its line.
-        for edge in operation.edges() {
-            let _ = writeln!(out, "  edge {}", quoted(edge.as_str()));
         }
     }
     let bodies: Vec<&str> = bodies(document).into_iter().map(|id| id.as_str()).collect();
@@ -619,7 +620,13 @@ fn values(operation: &Operation) -> String {
         | Operation::Cut { base, tool }
         | Operation::Common { base, tool } => format!("base {base}, tool {tool}"),
         // Its elements follow, a line each.
-        Operation::Sketch(sketch) => format!("plane {}", sketch.plane.as_str()),
+        // A face plane's face follows, a line of its own.
+        Operation::Sketch(sketch) => match &sketch.plane {
+            document::Plane::Origin(plane) => format!("plane {}", plane.as_str()),
+            document::Plane::Face(face) => {
+                format!("plane.x {}, plane.reversed {}", face.x, face.reversed)
+            }
+        },
         // Its edges follow, a line each.
         Operation::Fillet { base, radius, .. } => format!("base {base}, radius {radius}"),
         Operation::Chamfer { base, size, .. } => {

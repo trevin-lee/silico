@@ -120,6 +120,8 @@ mod command;
 mod disk;
 #[path = "document.rs"]
 mod document;
+#[path = "face_sketch.rs"]
+mod face_sketch;
 #[path = "fingerprint.rs"]
 mod fingerprint;
 #[path = "mass_properties.rs"]

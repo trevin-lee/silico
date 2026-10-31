@@ -20,11 +20,10 @@ use silico_protocol::{ChamferSize, MAX_LENGTH, check_fillet_radius, check_offset
 use super::index::FeatureIndex;
 use super::json::shown;
 use super::model::{
-    Axis, Document, ExtentValue, Feature, FeatureId, ID_LENGTH, NamingScheme, Operation,
+    Axis, Document, ExtentValue, Feature, FeatureId, ID_LENGTH, NameField, NamingScheme, Operation,
 };
 use super::quantity::Length;
 use super::sketch::ElementKind as SketchElement;
-use crate::kernel::ElementKind;
 use crate::naming::{Maker, Name, OpCode, TypeWord};
 use crate::{Error, ErrorCode};
 
@@ -321,30 +320,50 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
         // Each name's first place, to say which an edge named twice repeats.
         let mut first_place: std::collections::BTreeMap<&str, usize> =
             std::collections::BTreeMap::new();
-        for (i, edge) in feature.operation.edges().iter().enumerate() {
-            let parameter = format!("edges.{i}");
-            let advice = "write the edge's name as Silico names it (feature.type.Edge(...)), of a feature before this one";
-            match Name::parse(edge.as_str(), &makers) {
+        for (field, stored) in feature.operation.stored_names() {
+            let parameter = field.to_string();
+            let kind = field.kind();
+            let word = kind.word();
+            let advice = match field {
+                NameField::Edge(_) => {
+                    "write the edge's name as Silico names it (feature.type.Edge(...)), of a feature before this one"
+                }
+                NameField::Face => {
+                    "write the face's name as Silico names it (feature.type.Face...), of a feature before this sketch"
+                }
+            };
+            match Name::parse(stored.as_str(), &makers) {
                 Err(error) => problems.add(|| {
+                    // Where an edge names a sketch's edge whole, what to write instead.
+                    let instead = match field {
+                        NameField::Edge(_) => made_of_sketch(
+                            stored.as_str(),
+                            &feature.operation,
+                            features,
+                            &makers,
+                        ),
+                        NameField::Face => String::new(),
+                    };
                     refuse(
                         &parameter,
                         format!(
-                            "{parameter}, {}, isn't an edge's name: {}{}, at column {}",
-                            shown(edge.as_str()),
+                            "{parameter}, {}, isn't {}'s name: {}{instead}, at column {}",
+                            shown(stored.as_str()),
+                            kind.a_word(),
                             error.why,
-                            made_of_sketch(edge.as_str(), &feature.operation, features, &makers),
                             error.column
                         ),
                         advice.to_owned(),
                     )
                 }),
-                Ok(name) if name.kind() != ElementKind::Edge => problems.add(|| {
+                Ok(name) if name.kind() != kind => problems.add(|| {
                     refuse(
                         &parameter,
                         format!(
-                            "{parameter}, {}, names a {}, not an edge",
-                            shown(edge.as_str()),
-                            name.kind().word()
+                            "{parameter}, {}, names {}, not {}",
+                            shown(stored.as_str()),
+                            name.kind().a_word(),
+                            kind.a_word()
                         ),
                         advice.to_owned(),
                     )
@@ -357,19 +376,19 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                     made: TypeWord::Operation(op),
                     element,
                 }) if matches!(makers(&named), Some(Maker::Itself(_))) => problems.add(|| {
-                    let kind = match makers(&named) {
-                        Some(Maker::Itself(kind)) => kind.word(),
+                    let primitive = match makers(&named) {
+                        Some(Maker::Itself(primitive)) => primitive.word(),
                         _ => "primitive",
                     };
                     refuse(
                         &parameter,
                         format!(
-                            "{parameter}, {}, names {element} of a {}, but {named} is a {kind}: its elements are another's",
-                            shown(edge.as_str()),
+                            "{parameter}, {}, names {element} of a {}, but {named} is a {primitive}: its elements are another's",
+                            shown(stored.as_str()),
                             op.word()
                         ),
                         format!(
-                            "name the edge as {named}'s solid names it now (a {kind}'s elements are `{named}.{kind}.` and their numbers)"
+                            "name the {word} as {named}'s solid names it now (a {primitive}'s elements are `{named}.{primitive}.` and their numbers)"
                         ),
                     )
                 }),
@@ -379,15 +398,19 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                     refuse(
                         &parameter,
                         format!(
-                            "{parameter}, {}, names an edge by a name that doesn't say which: a duplicate (~n) or an operation's element by its number",
-                            shown(edge.as_str())
+                            "{parameter}, {}, names {} by a name that doesn't say which: a duplicate (~n) or an operation's element by its number",
+                            shown(stored.as_str()),
+                            kind.a_word()
                         ),
-                        "name the edge by how it came about, as Silico names it now".to_owned(),
+                        format!("name the {word} by how it came about, as Silico names it now"),
                     )
                 }),
                 Ok(_) => {}
             }
-            if let Some(&j) = first_place.get(edge.as_str()) {
+            let NameField::Edge(i) = field else {
+                continue;
+            };
+            if let Some(&j) = first_place.get(stored.as_str()) {
                 problems.add(|| {
                     refuse(
                         &parameter,
@@ -396,7 +419,7 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                     )
                 });
             } else {
-                first_place.insert(edge.as_str(), i);
+                first_place.insert(stored.as_str(), i);
             }
         }
 

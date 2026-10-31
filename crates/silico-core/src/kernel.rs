@@ -2388,11 +2388,11 @@ mod tests {
 
     #[test]
     fn a_documents_plane_is_the_kernels_with_the_normal_d6_gives_it() {
-        use crate::document::Plane;
+        use crate::document::OriginPlane;
         let cases = [
-            (Plane::Xy, [0.0, 0.0, 1.0]),
-            (Plane::Xz, [0.0, -1.0, 0.0]),
-            (Plane::Yz, [1.0, 0.0, 0.0]),
+            (OriginPlane::Xy, [0.0, 0.0, 1.0]),
+            (OriginPlane::Xz, [0.0, -1.0, 0.0]),
+            (OriginPlane::Yz, [1.0, 0.0, 0.0]),
         ];
         for (plane, normal) in cases {
             let kernel = SketchPlane::from(plane);

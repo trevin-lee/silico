@@ -58,7 +58,7 @@ impl ToWire for SketchRead {
     /// the document writes it, with its state; the profile's regions, or why there's none;
     /// and why it wasn't solved.
     fn to_wire(&self) -> Json<'_> {
-        let frame = silico_protocol::SketchPlane::from(self.plane);
+        let frame = self.plane;
         let states = &self.states;
         // Every member has one: a read whose member had none was refused as a bug
         // (`command::sketch`'s `every_member_stated`), so none is ever written null.

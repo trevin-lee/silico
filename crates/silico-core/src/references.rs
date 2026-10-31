@@ -324,7 +324,7 @@ impl Index {
 /// A feature `name` names an element of (itself, or one it's made from, the nearest first),
 /// the type `name` says it is, and the type it is now, if they differ (a box made a
 /// cylinder, a cut made a common, under its ID).
-fn retyped<'a>(
+pub(crate) fn retyped<'a>(
     name: &'a Name,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
 ) -> Option<(&'a FeatureId, &'static str, &'static str)> {

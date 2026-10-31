@@ -3725,6 +3725,18 @@
             "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|x_axis|y_axis)$",
             "type": "string"
           },
+          "AxisToken": {
+            "description": "A global axis, signed, as a sketch on a face names its x: projected onto the face, it's the sketch's x.",
+            "enum": [
+              "+x",
+              "-x",
+              "+y",
+              "-y",
+              "+z",
+              "-z"
+            ],
+            "type": "string"
+          },
           "ChamferSize": {
             "additionalProperties": false,
             "description": "How far a chamfer cuts each edge back: along both its faces alike. (The uneven forms,\nmeasured from one of each edge's faces, are left for later: which face is the document's\nto name, not OCCT's order to pick.)",
@@ -3759,6 +3771,30 @@
             "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>).",
             "minLength": 1,
             "type": "string"
+          },
+          "FacePlane": {
+            "additionalProperties": false,
+            "description": "A sketch on a planar face (docs/ports/attacher.md, *What Silico does*): the face, by its\nname in Silico's form, found in the solids live at the sketch's place at each rebuild;\nthe global axis the sketch's x follows, projected onto the face; and whether the sketch\nis flipped, its normal and x negated and its y kept. Where it then sits is the\nrebuild's to say: nothing of the frame is stored.",
+            "properties": {
+              "face": {
+                "$ref": "#/$defs/ElementName",
+                "description": "The face, by its name, as Silico names it (`k7f2qx3m.box.Face6`), of a feature\nbefore the sketch."
+              },
+              "reversed": {
+                "description": "Whether the sketch is flipped: its normal into the face's solid, not out of it, and\nits x against the axis's projection; its y kept.",
+                "type": "boolean"
+              },
+              "x": {
+                "$ref": "#/$defs/AxisToken",
+                "description": "The global axis the sketch's x follows: projected onto the face, it's the sketch's x."
+              }
+            },
+            "required": [
+              "face",
+              "x",
+              "reversed"
+            ],
+            "type": "object"
           },
           "FeatureId": {
             "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
@@ -4292,6 +4328,15 @@
             "type": "object",
             "unevaluatedProperties": false
           },
+          "OriginPlane": {
+            "description": "One of the origin's planes, oriented as FreeCAD's (D6). On `xy`, the sketch's x is +X\nand its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal −Y); on `yz`, x is +Y and\ny +Z (normal +X).",
+            "enum": [
+              "xy",
+              "xz",
+              "yz"
+            ],
+            "type": "string"
+          },
           "PadExtent": {
             "description": "How far a pad goes from its sketch's plane: each form holds exactly the values it needs.\nLengths are above 0; `reversed` only where it changes the solid.",
             "oneOf": [
@@ -4360,13 +4405,15 @@
             ]
           },
           "Plane": {
-            "description": "The plane a sketch is drawn on: one of the origin's, oriented as FreeCAD's (D6). On\n`xy`, the sketch's x is +X and its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal\n−Y); on `yz`, x is +Y and y +Z (normal +X).",
-            "enum": [
-              "xy",
-              "xz",
-              "yz"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginPlane"
+              },
+              {
+                "$ref": "#/$defs/FacePlane"
+              }
             ],
-            "type": "string"
+            "description": "The plane a sketch is drawn on: one of the origin's, by its word (D6), or a planar face\nof the model, by its name, with the axis the sketch's x follows and whether it's flipped\n(docs/ports/attacher.md, F1 and F2; M5.9)."
           },
           "PocketExtent": {
             "description": "How far a pocket goes from its sketch's plane: a pad's forms, or through everything of\nits base along its direction (against it when `reversed`).",
@@ -5196,6 +5243,18 @@
             "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|x_axis|y_axis)$",
             "type": "string"
           },
+          "AxisToken": {
+            "description": "A global axis, signed, as a sketch on a face names its x: projected onto the face, it's the sketch's x.",
+            "enum": [
+              "+x",
+              "-x",
+              "+y",
+              "-y",
+              "+z",
+              "-z"
+            ],
+            "type": "string"
+          },
           "ChamferSize": {
             "additionalProperties": false,
             "description": "How far a chamfer cuts each edge back: along both its faces alike. (The uneven forms,\nmeasured from one of each edge's faces, are left for later: which face is the document's\nto name, not OCCT's order to pick.)",
@@ -5384,6 +5443,30 @@
               "message",
               "parameter",
               "suggestion"
+            ],
+            "type": "object"
+          },
+          "FacePlane": {
+            "additionalProperties": false,
+            "description": "A sketch on a planar face (docs/ports/attacher.md, *What Silico does*): the face, by its\nname in Silico's form, found in the solids live at the sketch's place at each rebuild;\nthe global axis the sketch's x follows, projected onto the face; and whether the sketch\nis flipped, its normal and x negated and its y kept. Where it then sits is the\nrebuild's to say: nothing of the frame is stored.",
+            "properties": {
+              "face": {
+                "$ref": "#/$defs/ElementName",
+                "description": "The face, by its name, as Silico names it (`k7f2qx3m.box.Face6`), of a feature\nbefore the sketch."
+              },
+              "reversed": {
+                "description": "Whether the sketch is flipped: its normal into the face's solid, not out of it, and\nits x against the axis's projection; its y kept.",
+                "type": "boolean"
+              },
+              "x": {
+                "$ref": "#/$defs/AxisToken",
+                "description": "The global axis the sketch's x follows: projected onto the face, it's the sketch's x."
+              }
+            },
+            "required": [
+              "face",
+              "x",
+              "reversed"
             ],
             "type": "object"
           },
@@ -5977,6 +6060,15 @@
             "minLength": 1,
             "type": "string"
           },
+          "OriginPlane": {
+            "description": "One of the origin's planes, oriented as FreeCAD's (D6). On `xy`, the sketch's x is +X\nand its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal −Y); on `yz`, x is +Y and\ny +Z (normal +X).",
+            "enum": [
+              "xy",
+              "xz",
+              "yz"
+            ],
+            "type": "string"
+          },
           "PadExtent": {
             "description": "How far a pad goes from its sketch's plane: each form holds exactly the values it needs.\nLengths are above 0; `reversed` only where it changes the solid.",
             "oneOf": [
@@ -6045,13 +6137,15 @@
             ]
           },
           "Plane": {
-            "description": "The plane a sketch is drawn on: one of the origin's, oriented as FreeCAD's (D6). On\n`xy`, the sketch's x is +X and its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal\n−Y); on `yz`, x is +Y and y +Z (normal +X).",
-            "enum": [
-              "xy",
-              "xz",
-              "yz"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginPlane"
+              },
+              {
+                "$ref": "#/$defs/FacePlane"
+              }
             ],
-            "type": "string"
+            "description": "The plane a sketch is drawn on: one of the origin's, by its word (D6), or a planar face\nof the model, by its name, with the axis the sketch's x follows and whether it's flipped\n(docs/ports/attacher.md, F1 and F2; M5.9)."
           },
           "PocketExtent": {
             "description": "How far a pocket goes from its sketch's plane: a pad's forms, or through everything of\nits base along its direction (against it when `reversed`).",
@@ -7556,6 +7650,18 @@
             "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|x_axis|y_axis)$",
             "type": "string"
           },
+          "AxisToken": {
+            "description": "A global axis, signed, as a sketch on a face names its x: projected onto the face, it's the sketch's x.",
+            "enum": [
+              "+x",
+              "-x",
+              "+y",
+              "-y",
+              "+z",
+              "-z"
+            ],
+            "type": "string"
+          },
           "ChamferSize": {
             "additionalProperties": false,
             "description": "How far a chamfer cuts each edge back: along both its faces alike. (The uneven forms,\nmeasured from one of each edge's faces, are left for later: which face is the document's\nto name, not OCCT's order to pick.)",
@@ -7744,6 +7850,30 @@
               "message",
               "parameter",
               "suggestion"
+            ],
+            "type": "object"
+          },
+          "FacePlane": {
+            "additionalProperties": false,
+            "description": "A sketch on a planar face (docs/ports/attacher.md, *What Silico does*): the face, by its\nname in Silico's form, found in the solids live at the sketch's place at each rebuild;\nthe global axis the sketch's x follows, projected onto the face; and whether the sketch\nis flipped, its normal and x negated and its y kept. Where it then sits is the\nrebuild's to say: nothing of the frame is stored.",
+            "properties": {
+              "face": {
+                "$ref": "#/$defs/ElementName",
+                "description": "The face, by its name, as Silico names it (`k7f2qx3m.box.Face6`), of a feature\nbefore the sketch."
+              },
+              "reversed": {
+                "description": "Whether the sketch is flipped: its normal into the face's solid, not out of it, and\nits x against the axis's projection; its y kept.",
+                "type": "boolean"
+              },
+              "x": {
+                "$ref": "#/$defs/AxisToken",
+                "description": "The global axis the sketch's x follows: projected onto the face, it's the sketch's x."
+              }
+            },
+            "required": [
+              "face",
+              "x",
+              "reversed"
             ],
             "type": "object"
           },
@@ -8337,6 +8467,15 @@
             "minLength": 1,
             "type": "string"
           },
+          "OriginPlane": {
+            "description": "One of the origin's planes, oriented as FreeCAD's (D6). On `xy`, the sketch's x is +X\nand its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal −Y); on `yz`, x is +Y and\ny +Z (normal +X).",
+            "enum": [
+              "xy",
+              "xz",
+              "yz"
+            ],
+            "type": "string"
+          },
           "PadExtent": {
             "description": "How far a pad goes from its sketch's plane: each form holds exactly the values it needs.\nLengths are above 0; `reversed` only where it changes the solid.",
             "oneOf": [
@@ -8405,13 +8544,15 @@
             ]
           },
           "Plane": {
-            "description": "The plane a sketch is drawn on: one of the origin's, oriented as FreeCAD's (D6). On\n`xy`, the sketch's x is +X and its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal\n−Y); on `yz`, x is +Y and y +Z (normal +X).",
-            "enum": [
-              "xy",
-              "xz",
-              "yz"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginPlane"
+              },
+              {
+                "$ref": "#/$defs/FacePlane"
+              }
             ],
-            "type": "string"
+            "description": "The plane a sketch is drawn on: one of the origin's, by its word (D6), or a planar face\nof the model, by its name, with the axis the sketch's x follows and whether it's flipped\n(docs/ports/attacher.md, F1 and F2; M5.9)."
           },
           "PocketExtent": {
             "description": "How far a pocket goes from its sketch's plane: a pad's forms, or through everything of\nits base along its direction (against it when `reversed`).",

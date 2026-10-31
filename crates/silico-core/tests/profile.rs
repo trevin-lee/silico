@@ -13,7 +13,7 @@ use std::f64::consts::PI;
 use draw::{Draw, FEATURE, close, feature, named};
 use proptest::prelude::*;
 use silico_core::ErrorCode;
-use silico_core::document::{Coordinate, ElementId, Plane};
+use silico_core::document::{Coordinate, ElementId, OriginPlane, Plane};
 use silico_core::profile::{CurveKind, Edge, Loop, Profile, Region, profile};
 use silico_protocol::Curve;
 
@@ -457,16 +457,17 @@ fn the_profile_is_the_same_on_every_plane() {
     d.rectangle(0.0, 0.0, 4.0, 3.0);
     d.circle(2.0, 1.5, 0.5);
     let on_xy = made(&d);
-    assert_eq!(on_xy.plane, Plane::Xy);
-    assert_eq!(on_xy.faces().plane, silico_protocol::SketchPlane::Xy);
-    for plane in [Plane::Xz, Plane::Yz] {
-        d.sketch.plane = plane;
+    assert_eq!(on_xy.plane, Plane::Origin(OriginPlane::Xy));
+    let faces = |p: &silico_core::profile::Profile| p.faces(p.plane.origin().unwrap().into());
+    assert_eq!(faces(&on_xy).plane, silico_protocol::SketchPlane::Xy);
+    for plane in [OriginPlane::Xz, OriginPlane::Yz] {
+        d.sketch.plane = plane.into();
         let on = made(&d);
         // The same regions, on the sketch's plane.
         assert_eq!(on.regions, on_xy.regions);
-        assert_eq!(on.plane, plane);
-        assert_eq!(on.faces().regions, on_xy.faces().regions);
-        assert_eq!(on.faces().plane, silico_protocol::SketchPlane::from(plane));
+        assert_eq!(on.plane, Plane::Origin(plane));
+        assert_eq!(faces(&on).regions, faces(&on_xy).regions);
+        assert_eq!(faces(&on).plane, silico_protocol::SketchPlane::from(plane));
     }
 }
 
@@ -1808,7 +1809,8 @@ fn an_arc_whose_end_is_off_its_circle_is_refused_naming_it_its_centre_and_its_en
     let mut d = Draw::new();
     corner_arc_ending_off_its_circle(&mut d, 5e-8);
     let p = made(&d);
-    silico_core::kernel::KernelRequest::make_faces(&p.faces()).unwrap();
+    silico_core::kernel::KernelRequest::make_faces(&p.faces(p.plane.origin().unwrap().into()))
+        .unwrap();
 }
 
 #[test]

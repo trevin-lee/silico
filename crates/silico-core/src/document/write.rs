@@ -490,13 +490,42 @@ pub(crate) fn sketch_members(sketch: &Sketch) -> [(ElementKind, Vec<(&ElementId,
 /// one element per line.
 fn sketch(sketch: &Sketch) -> Vec<(&'static str, Out<'_>)> {
     let (plane, lists) = sketch_lists(sketch);
-    let mut fields = vec![("plane", Out::Str(plane.as_str()))];
+    let mut fields = vec![("plane", plane_out(plane))];
     fields.extend(
         lists
             .into_iter()
             .map(|(kind, items)| (kind.list(), Out::Array(items))),
     );
     fields
+}
+
+/// A sketch's `plane` as the file writes it: an origin plane's word, or a face plane's
+/// object, its `face`, `x`, and `reversed` in that order, each always written (`reversed`
+/// too, `false` included, as an extent's is), on one line.
+fn plane_out(plane: &Plane) -> Out<'_> {
+    match plane {
+        Plane::Origin(origin) => Out::Str(origin.as_str()),
+        Plane::Face(face) => Out::Object(vec![
+            ("face", Out::Str(face.face.as_str())),
+            ("x", Out::Str(face.x.word())),
+            ("reversed", boolean(face.reversed)),
+        ]),
+    }
+}
+
+/// A sketch's `plane` as the file writes it ([`plane_out`]), as text: an origin plane's
+/// word unquoted (`xy`), as a solve's key has always held it, and a face plane's object as
+/// its one line of canonical JSON.
+pub(crate) fn plane_text(plane: &Plane) -> String {
+    match plane {
+        Plane::Origin(origin) => origin.as_str().to_owned(),
+        Plane::Face(_) => {
+            let mut writer = Writer::new(usize::MAX, true);
+            // Unbounded, it can't run out.
+            let _ = writer.put(&plane_out(plane), 0);
+            writer.out
+        }
+    }
 }
 
 /// Each of a sketch's points, lines, circles, arcs, and constraints, in the order the file

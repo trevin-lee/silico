@@ -189,6 +189,11 @@ pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
         .with_parameter("feature")
         .with_suggestion(match why {
             Child::Sketch => format!("remove {} first", child.id),
+            // A sketch's stored name is its face's; a fillet's or chamfer's, its edges'.
+            Child::Names if matches!(child.operation, Operation::Sketch(_)) => format!(
+                "remove {} first, or set its plane.face to another feature's face",
+                child.id
+            ),
             Child::Names => format!(
                 "remove {} first, or set its edges to names of other features' elements",
                 child.id
@@ -606,8 +611,8 @@ fn lineage_broken(before: &Document, edited: &Document) -> Option<(FeatureId, Fe
             .index
             .feature(&feature.id)
             .and_then(|f| base_of(&f.operation))?;
-        feature.operation.edges().iter().find_map(|edge| {
-            let makers: Vec<&FeatureId> = name_makers(&new.index, edge.as_str())
+        feature.operation.stored_names().find_map(|(_, stored)| {
+            let makers: Vec<&FeatureId> = name_makers(&new.index, stored.as_str())
                 .into_iter()
                 .filter(|maker| **maker != feature.id)
                 .collect();
@@ -778,14 +783,15 @@ fn no_feature(id: &FeatureId, parameter: &str) -> Error {
         .with_suggestion(suggestion)
 }
 
-/// Every feature the element names `feature` stores name as a maker, as the document holds
+/// Every feature the element names `feature` stores ([`Operation::stored_names`]: a
+/// fillet's or chamfer's `edges`, a sketch's face) name as a maker, as the document holds
 /// its ID, in the order they're written; a name that doesn't parse names none (the gate
 /// refuses it on its own).
 fn makers_named<'a>(index: &Index<'a>, feature: &Feature) -> Vec<&'a FeatureId> {
     let mut found: Vec<&'a FeatureId> = Vec::new();
     let mut seen: BTreeSet<&'a FeatureId> = BTreeSet::new();
-    for edge in feature.operation.edges() {
-        for maker in name_makers(index, edge.as_str()) {
+    for (_, stored) in feature.operation.stored_names() {
+        for maker in name_makers(index, stored.as_str()) {
             if seen.insert(maker) {
                 found.push(maker);
             }

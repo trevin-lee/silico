@@ -13,8 +13,8 @@ use fixture::{
 };
 use proptest::prelude::*;
 use silico_core::document::{
-    Coordinate, Direction, ElementId, Form, Operation, Plane, Reference, Sketch, TangentSide, read,
-    validate, write,
+    Coordinate, Direction, ElementId, Form, Operation, OriginPlane, Plane, Reference, Sketch,
+    TangentSide, read, validate, write,
 };
 use silico_core::{Error, ErrorCode};
 
@@ -119,7 +119,7 @@ fn the_designs_example_reads_as_its_values_and_writes_back_byte_for_byte() {
     let document = read(EXAMPLE.as_bytes()).unwrap();
     assert!(validate(&document).is_ok());
     let sketch = sketch_of(EXAMPLE);
-    assert_eq!(sketch.plane, Plane::Xy);
+    assert_eq!(sketch.plane, Plane::Origin(OriginPlane::Xy));
     assert_eq!(sketch.points.len(), 4);
     let corner = &sketch.points[3];
     assert_eq!(corner.id, el("8j9k0m1n"));

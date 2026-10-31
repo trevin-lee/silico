@@ -66,7 +66,8 @@ pub struct Entry {
     pub kind: &'static str,
     pub name: String,
     pub suppressed: bool,
-    /// The features it names: its `base` and `tool`, then the sketch it sweeps.
+    /// The features it names: its `base` and `tool`, then the sketch it sweeps, then, for a
+    /// sketch on a face, the face's own feature (`k7f2qx3m` of `k7f2qx3m.box.Face6`).
     pub inputs: Vec<FeatureId>,
     pub health: Health,
     /// How many problems the model has on it, and warnings, whose text `check` gives.
@@ -137,7 +138,7 @@ pub fn timeline(document: &Document, model: Option<&Model>, excepted: &Excepted)
                 kind: feature.operation.type_name(),
                 name: feature.name.as_str().to_owned(),
                 suppressed: feature.suppressed,
-                inputs: feature.operation.uses().cloned().collect(),
+                inputs: feature.operation.uses().collect(),
                 health: mark.health,
                 problems: mark.problems,
                 warnings: mark.warnings,

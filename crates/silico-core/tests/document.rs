@@ -622,7 +622,7 @@ fn every_feature_type_is_read_written_and_in_the_schema() {
             tool: id("11111111"),
         },
         Operation::Sketch(silico_core::document::Sketch {
-            plane: silico_core::document::Plane::Xy,
+            plane: silico_core::document::OriginPlane::Xy.into(),
             points: Vec::new(),
             lines: Vec::new(),
             circles: Vec::new(),

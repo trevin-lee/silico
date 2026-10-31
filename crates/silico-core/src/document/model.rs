@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
-use silico_protocol::{BooleanOp, ElementRef, Primitive};
+use silico_protocol::{BooleanOp, ElementKind, ElementRef, Primitive};
 
 use super::fingerprint::Fingerprint;
 use super::quantity::{Angle, Length};
@@ -473,6 +473,34 @@ impl JsonSchema for Name {
     }
 }
 
+/// Where a feature stores an element's name ([`Operation::stored_names`]): a fillet's or
+/// chamfer's `edges`, by place, or a sketch's face, `plane.face`. Written as the field's path
+/// (`edges.3`, `plane.face`), as an error's `parameter` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NameField {
+    Edge(usize),
+    Face,
+}
+
+impl NameField {
+    /// The kind of element a name stored there names.
+    pub fn kind(self) -> ElementKind {
+        match self {
+            NameField::Edge(_) => ElementKind::Edge,
+            NameField::Face => ElementKind::Face,
+        }
+    }
+}
+
+impl fmt::Display for NameField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NameField::Edge(i) => write!(f, "edges.{i}"),
+            NameField::Face => f.write_str("plane.face"),
+        }
+    }
+}
+
 /// What a feature makes. A primitive makes a solid; a boolean makes one from two earlier
 /// features' solids, consuming them; a sketch makes no solid; a pad, pocket, revolve, or
 /// groove sweeps a sketch's profile into a solid, and fuses it with its base or cuts it from
@@ -932,12 +960,38 @@ impl Operation {
     }
 
     /// Every feature this one uses: those it consumes ([`inputs`](Self::inputs)), then the
-    /// sketch it sweeps ([`sketch`](Self::sketch)). What an edit of one of them reaches.
-    pub fn uses(&self) -> impl Iterator<Item = &FeatureId> {
+    /// sketch it sweeps ([`sketch`](Self::sketch)), then, for a sketch on a face, the face's
+    /// own feature ([`FacePlane::feature`](super::FacePlane::feature)), whose edit moves the
+    /// face and so the sketch. What an edit of one of them reaches.
+    pub fn uses(&self) -> impl Iterator<Item = FeatureId> + '_ {
+        let face = match self {
+            Operation::Sketch(sketch) => sketch.plane.face().and_then(|face| face.feature()),
+            _ => None,
+        };
         self.inputs()
             .into_iter()
-            .map(|(_, id)| id)
-            .chain(self.sketch())
+            .map(|(_, id)| id.clone())
+            .chain(self.sketch().cloned())
+            .chain(face)
+    }
+
+    /// Every element name this feature stores, with where it stores it, in the order its
+    /// fields come: a fillet's or chamfer's `edges`, and a sketch's face (`plane.face`). Every
+    /// reader of the names a feature stores reads them here, so a name stored in a field
+    /// added later can't be missed.
+    pub fn stored_names(&self) -> impl Iterator<Item = (NameField, &ElementName)> {
+        let face = match self {
+            Operation::Sketch(sketch) => sketch
+                .plane
+                .face()
+                .map(|face| (NameField::Face, &face.face)),
+            _ => None,
+        };
+        self.edges()
+            .iter()
+            .enumerate()
+            .map(|(i, edge)| (NameField::Edge(i), edge))
+            .chain(face)
     }
 
     /// The elements a fillet or chamfer names, by name; none for another feature.
