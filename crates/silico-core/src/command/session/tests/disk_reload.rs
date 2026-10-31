@@ -264,16 +264,27 @@ fn the_sessions_own_commit_landing_during_a_comparison_is_unchanged() {
     // the bytes the session held when it started, and its finding is dropped.
     assert!(w.f.sessions.commit(&w.f.id).wait().result.unwrap().written);
     assert_eq!(w.f.status().disk, Some(Disk::Unchanged));
-    w.reader.release();
+    // Counted before it's let go, so its end is never missed.
     let ended = w.reader.ended();
+    w.reader.release();
     let deadline = std::time::Instant::now() + WAIT;
     while w.reader.ended() == ended {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     }
-    w.f.status_stays(Duration::from_millis(200), |status, _| {
-        status.disk == Some(Disk::Unchanged)
-    });
+    // The next comparison held as it starts, which it does only once the held one has
+    // ended, its finding kept or dropped: dropped, so the finding is still the commit's.
+    w.reader.hold();
+    let next = w.reader.started();
+    let deadline = std::time::Instant::now() + WAIT;
+    while w.reader.started() == next {
+        w.clock.advance(DISK_CHECK_INTERVAL);
+        assert_eq!(w.f.status().disk, Some(Disk::Unchanged));
+        assert!(std::time::Instant::now() < deadline, "no next comparison");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(w.f.status().disk, Some(Disk::Unchanged));
+    w.reader.release();
 }
 
 #[test]
