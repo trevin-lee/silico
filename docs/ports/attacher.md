@@ -62,8 +62,8 @@ Only `FlatFace` on one face is in scope. FreeCAD's origin planes are `FlatFace` 
 - **A missing element** (TNP's `?Face6` marker, with the old mapped name kept in the shadow): `AttachEngine::calculateAttachedPlacement` (113:1129-1199) first traces the old name's history (`getRelatedElements`). Failing that, it tries the old index name. It switches the reference to the new name only if the placement that name gives equals the current one, within `Confusion` and `Angular` (113:1171-1196). Otherwise the attach runs on the missing name and throws `subshape not found`.
 - **A failed attach.**
   - The sketch keeps its last placement. `positionBySupport` sets the placement to the identity first (113: `AttachExtension.cpp:354`), then restores it and rethrows on `Base::Exception` or `Standard_Failure` (:387-394). An `ExceptionCancel` is caught and not rethrown (:382-386).
-  - The sketch's recompute fails with the message, before its solve (113: `src/Mod/Sketcher/App/SketchObject.cpp:262-272`), and the end of the recompute prints it as an error (113: `src/App/Document.cpp:2792-2800`). The sketch is left `Invalid` and `Touched` (`src/Mod/Test/Document.py` `testInvalidAttribute`, 113: 2619-2625).
-  - **The pads that use the sketch aren't failed: they're skipped.** `Document::recompute` puts a failed object's whole in-list, its pads and every later feature, into a filter and doesn't recompute them (113: `Document.cpp:2718, 2737-2738`). They keep their last shape, get no error, and stay `Touched`. `isValid()` reads only the error bit (113: `src/App/DocumentObject.h:203-206`), so a skipped pad reads as valid. Read from code; no FreeCAD test asserts it.
+  - The sketch's recompute fails with the message, before its solve (113: `src/Mod/Sketcher/App/SketchObject.cpp:262-272`), and the end of the recompute prints it as an error (113: `src/App/Document.cpp:2792-2800`). The sketch is left `Invalid` and `Touched`, as any object whose recompute fails is (the general rule, tested on `App::FeatureTestAttribute` by `src/Mod/Test/Document.py` `testInvalidAttribute`, 113: 2619-2625).
+  - **The pads that use the sketch aren't failed: they're skipped.** `Document::recompute` puts a failed object's whole in-list, its pads and every later feature, into a filter and doesn't recompute them (113: `Document.cpp:2718, 2737-2738`). They keep their last shape and get no error. The filter sets no touch bit, so they stay as touched as they were: a pad touched only through the sketch reads up to date. `isValid()` reads only the error bit (113: `src/App/DocumentObject.h:203-206`), so a skipped pad reads as valid. Read from code; no FreeCAD test asserts it.
 - **A non-planar face** fails the same way, with "No planar face". `FlatFace` on a whole solid with no face named fails, and the object stays where it was (the C++ test below).
 - **A deleted support object** doesn't fail. Deleting it clears the link (`removeObject` → `breakDependency` → `PropertyLinkSubList::breakLink`, 113: `Document.cpp:3317, 3365-3368`, `src/App/PropertyLinks.cpp:3222-3248, 3728-3744`). The change re-attaches at once, the engine has no objects left, and `ExceptionCancel` takes the silent path above. The sketch becomes free-standing at its last placement, with `MapMode` still `FlatFace` and no error. Read from code; `src/Mod/PartDesign/PartDesignTests/TestSketch.py` `testIssue17553` asserts `AttachmentSupport == []` once its plane is gone (113: 68-70). `object '<doc>#<name>' not found` (113: `Attacher.cpp:1106-1127`) needs stale names in the engine, which this path never leaves.
 - **The support itself failed:** the sketch is in its in-list, so it's skipped too, at its old placement, with no error of its own.
@@ -82,10 +82,10 @@ Read from code at 1.1.3. `AE` is `src/Mod/Part/App/AttachExtension.cpp`.
   - (a) A mapped name found at a new index has the index written back: `Face8` becomes `Face9` (113: `PropertyLinks.cpp:519-561`).
   - (b) A missing face re-pointed to one sharing the old face's vertices, by geometry ("auto change element reference", :468-500).
   - (c) The attacher's TNP recovery written back into `AttachmentSupport` (113: `Attacher.cpp:1129-1199`, `AE:368-377`; above).
-  - (d) At file open, a search by geometry when the element map's version changed (113: `PropertyLinks.cpp:468-536`, `src/App/Application.cpp:917`).
+  - (d) At the support's first recompute after a file opens, a search by geometry when the element map's version changed (113: `GeoFeature.cpp:238-247`, `PropertyLinks.cpp:468-500, 528-536`). The pass at open (`src/App/Application.cpp:917`) searches only for missing elements, as (b) does.
 
   Main adds (e) `rescueDriftedElement`, a search with an adaptive tolerance (`d45ff368a7`, not in 1.1). Silico stores only the stable name and has no index to rewrite, so (a) has no counterpart. (b) to (e) are re-points, which Silico never makes: at most, the face they'd pick is a candidate.
-- **PartDesign reads the support too:** a feature with no base copies the support's placement (above); with no `BaseFeature`, a profile feature's base is its sketch's support, if that's a `Part::Feature` (113: `FeatureSketchBased.cpp:557-659`, a legacy path outside a body); and the up-to modes and revolve read the support face (`getSupportFace`, 113: `FeatureSketchBased.cpp:670-710`). Silico never takes a feature's base from its sketch's face: a base is always explicit.
+- **PartDesign reads the support too:** a feature with no base copies the support's placement (above); with no `BaseFeature`, a profile feature's base is its sketch's support, if that's a `Part::Feature` (`ProfileBased::getBaseObject`, 113: `FeatureSketchBased.cpp:670-710`, at :692-699, a legacy path outside a body); and the up-to modes and revolve read the support face (`getSupportFace`, 113: `FeatureSketchBased.cpp:557-659`; its callers main: `FeatureExtrude.cpp:911-914`, `FeatureRevolved.cpp:714-718`). Silico never takes a feature's base from its sketch's face: a base is always explicit.
 
 ### 1.1.3 against main
 
@@ -130,15 +130,15 @@ The other commits were checked and don't bear on the frame: TangentPlane, inters
 
 | Commit | What it did | In 1.1.3 | In Silico |
 |---|---|---|---|
-| `9dcfe40a73` (2011-11) | The origin is the support's origin projected onto the plane | Yes (`refOrg`, step 6) | The global origin projected (F2) |
-| `fad7696ad4` (2011-12) | `positionBySupport` moved into Part2DObject; a reversed face flips the normal | Yes, its messages since changed | The outward normal, step 5 |
-| `043dc60403` (2012-12) | A missing face became an error naming it, not an OCC exception | Replaced by "subshape not found" | A missing face is `reference_broken`, naming it |
+| `9dcfe40a73` (2011-11) | The origin is the support's origin projected onto the plane. Before it, an axis-aligned face took the plane's own `gp_Pln` location as the origin, and only an oblique one projected | Yes (`refOrg`, step 6) | The global origin projected (F2): FreeCAD's own fix of an origin that depended on how the plane was parametrized |
+| `fad7696ad4` (2011-12) | `positionBySupport` reads the support itself, where it was handed the face; the reversed face's flip, from `120ca87015` (2011-10), kept | Yes, its messages since changed | The outward normal, step 5 |
+| `043dc60403` (2012-12) | A missing face became a FreeCAD error, "Face in support shape doesn't exist!", not an OCC exception | Replaced by "subshape not found <obj>.<sub>", which names it | A missing face is `reference_broken`, naming it |
 | `1ec99c5d32` (2013-04) | A deleted support threw "Sketch support has been deleted" | No: reverted by `31e4fd8994` | Kept as an error: the gate refuses a name whose maker is gone |
 | `4280334751`, `fe2e490645`, `ba17aa2839` (2013) | The sub-name `"back"` on a base plane reversed the normal | No: `MapReversed` replaced it (`42ecc24ec5`) | `reversed` is a field, never a word inside the name |
 | `31e4fd8994` (2015-05, "fix free-standing sketches") | A null support returns instead of throwing: a sketch whose support is deleted stands free, silently | Yes (the `ExceptionCancel` path) | **Not followed** |
 | `d0d4d6bc07` (2016-11) | Ported to `AttachExtension`: attach at every execute; a failure on an edit sets the error status | Yes | Resolved at every rebuild |
 | `c3eb3e7fc7`, `0a32b91b6b`, `9cfca05c90` (2017-04) | An attach error fails the sketch's recompute with the attacher's message | Yes (113: `AE:424-433`) | Failure as data, on the sketch |
-| `76474951d2` (2017-09) | An attached sketch's `Placement` is read-only | Yes (113: `AE:765-769`) | A face sketch stores no placement |
+| `507b39e3fc` (2016-08) | An attached sketch's `Placement` is read-only (carried into `AttachExtension` by `d0d4d6bc07`) | Yes (113: `AE:765-769`) | A face sketch stores no placement |
 | `a16f5bf9aa`, `65155936a6` (2017-10, 2024-07) | Attach at file load, every exception swallowed | Yes (113: `AE:710-737`) | **Not followed:** opening a file rebuilds it and reports a broken face |
 | `2b79025ad9` (2019-08) | `isAttacherActive`, an attach test that doesn't touch the object | Yes | Resolving a face is never an edit: a rebuild writes nothing |
 | `105c3363b8` (2024-03) | TNP: the attacher's re-pointed names written back into `AttachmentSupport` | Yes (113: `AE:368-377`) | **Not followed:** never re-pointed |
@@ -161,7 +161,7 @@ The frame is F1 and F2's.
 - **Refusals:**
   - A stored axis with |a − n(n·a)| < 1e-12 is `reference_broken` on the sketch, parameter `plane.x`, with the working axes as candidates.
   - A face that's gone is `reference_broken` with candidates, never re-pointed.
-  - A face OCCT doesn't type as a plane is refused, naming it.
+  - A face OCCT doesn't type as a plane is `reference_broken`, naming it, with the planar faces as candidates.
   - A face of a later feature is a cycle, refused by the gate.
 
 ### How a rebuild places it (M5.9)
@@ -169,7 +169,7 @@ The frame is F1 and F2's.
 **The document.** `plane` is either an origin plane's word (`"xy"`, `"xz"`, `"yz"`, D6) or the face plane, `{"face": "<name>", "x": "+y", "reversed": false}`: those three keys, in that order, each always written (`reversed` too, `false` included, as an extent's is). The reader takes nothing else in it. `face` is a name in Silico's form (`Name::parse`), of a face.
 
 **The gate** refuses, naming the sketch and `plane.face` or `plane.x`:
-- a `face` that isn't a name, or names an edge or a vertex (FreeCAD's `TestAllModesBoundaries`: a whole solid or a non-face isn't a plane);
+- a `face` that isn't a name, or names an edge or a vertex (FreeCAD's `TestAllModesBoundaries` tests that a whole solid isn't a plane; FreeCAD takes a planar edge or wire through `findPlane`, step 2, which Silico leaves out);
 - a name with a maker that isn't a feature before the sketch: a cycle, as a fillet's edge of a later feature is (M2.8);
 - an `x` that isn't one of the six tokens.
 
@@ -225,7 +225,7 @@ It ends when a round resolves nothing new. A sketch still waiting then is blocke
 - **The origin is the global origin's projection.** FreeCAD's is the support's placement position projected. They agree whenever that position is zero: in PartDesign bodies built on the origin planes or on a base feature, and in Silico's oracle.
 - **No tolerance for planarity.** FreeCAD accepts a face that's planar to 2e-7 RMS (step 4), and a flat B-spline face, both of which STEP imports carry. Silico refuses either for now (F1's residual). Faces Silico makes itself are expected to come out of OCCT typed as planes, but that's unverified for every feature.
 - **Never re-pointed**, where FreeCAD's TNP recovery switches the reference when the placement is unchanged.
-- **Failures as data:** `reference_broken` with candidates, and the not-planar refusal naming the face. FreeCAD instead fails the sketch with a message and leaves it at its last placement.
+- **Failures as data:** `reference_broken` with candidates, for a face that's gone and for one that isn't planar alike. FreeCAD instead fails the sketch with a message and leaves it at its last placement.
 - **Dependents blocked, never skipped.** FreeCAD skips a failed sketch's pads and every later feature, which keep their last shapes and read as valid. Silico's are blocked by the sketch, each saying so, and draw nothing of a stale build.
 - **A deleted face's feature is refused, never stood free.** FreeCAD's sketch stands free at its last placement, silently (`31e4fd8994`). Silico's gate refuses a name whose maker isn't a feature before the sketch, so the removal is refused first (`remove_feature` lists the sketch as a user), or the document is.
 - **A failed face feature blocks the sketch,** as FreeCAD's skip does, but said: the sketch's outcome names the feature it waits on.
