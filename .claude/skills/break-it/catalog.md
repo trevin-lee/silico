@@ -14,6 +14,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Counts from a command line fed to `(0..n).map(..).collect()`: `collect` sizes the Vec up front, so `usize::MAX` panics (capacity overflow) and 1e15 aborts on allocation
 - Derived measures in fixed point sized for their inputs' units (millionths of a mm³ in an i64 hold 9.2e12 mm³, a cube 21 m on a side, while the gate admits 1 km sides): take the largest values the gate admits through every derived quantity (volume, area, products of lengths)
 - Absolute tolerances on quantities that scale with the part (OCCT's `GeomLib::NormEstim` orients a pole's or apex's normal only when \|dP/du × dP/dv\| a 1e-5 step away is over 1e-8): a ball under 0.0316 mm radius or a cone slenderer than 1:1000 gets a normal pointing into the solid
+- An angular or orthonormality tolerance multiplied by the largest reach the same request admits (a face frame's axes 1e-12 off perpendicular, a sketch point 1e6 out: 1e-6 mm off the plane, ten times OCCT's 1e-7): the check passes and the kernel's validity refuses with a cause about something else; build at the leanest frame and the farthest point together
 - Two rules composed into a third (a direction within 4ε of unit length times a length up to the limit, then checked as a vector at most the limit): the product lands a few ulps past it and is refused naming a parameter the caller never sent; search the boundary with `next_up`/`next_down`
 - Parallel tests by an exact zero (a cross product `== 0.0`) beside others at a rounded tolerance (an angle of 0 at the nanodegree): two axes an ulp from parallel are taken as skew and their distance across the cross product is 0 (coplanar lines that cross 5e16 mm away); end one sketch line of a revolve's axis an ulp off
 - Refusals written as `change <= k * before`: NaN makes every comparison false, so the refusal is skipped; an infinite result or a negative (inverted) base passes too
@@ -348,6 +349,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A fake's step read by its grammar but not its values (a fillet of edge 13 of a box, a radius of -1, an edge listed twice): bytes no request could make are taken as its own
 - Hand-written topology tables (each face's edges, each edge's vertices) for primitives: compare with the real kernel's move history, cones whose cap OCCT drops included
 - A fake's refusal built by hand where the worker client words the real one (`failure_error` adds a suggestion to every refusal): send the same bad request to both and compare every field of the error, not only code, parameter, and message
+- A fake's measure that's exact only for frames whose axes each lie along one model axis (a box of a sketch's box's corners placed): a circle on a frame tilted about X matches the kernel, one tilted about (1, 1, 0) doesn't; test fakes on frames tilted about a diagonal
 
 ## Caches and files the core writes
 
