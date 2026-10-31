@@ -2219,9 +2219,16 @@ fn ctrl_z_held_down_undoes_once_and_says_nothing() {
     assert!(!offered(&h, "Undo"));
     hold.release();
     let _ = check.wait();
-    step_until(&mut h, "undone", |h| {
-        !anywhere(h, "example.silico *") && offered(h, "Redo")
-    });
+    // From the frame the undo's answer is taken, Undo is off: the one edit undone, before
+    // and after a status of the new revision is read.
+    let deadline = Instant::now() + WAIT;
+    while !(!anywhere(&h, "example.silico *") && offered(&h, "Redo")) {
+        step(&mut h);
+        if h.state().tabs()[0].revision.number() > before {
+            assert!(!offered(&h, "Undo"), "Undo offered with nothing to undo");
+        }
+        assert!(Instant::now() < deadline, "never undone");
+    }
     for _ in 0..20 {
         step(&mut h);
     }
@@ -2253,11 +2260,17 @@ fn a_refusal_said_is_cleared_by_the_next_action() {
 fn ctrl_y_redoes_and_redo_turns_off_once_typing_starts() {
     let f = fixture();
     let (mut h, _) = undone_back(&f);
-    // Ctrl+Y: the edit back.
+    // Ctrl+Y: the edit back; from the frame its answer is taken, Redo is off.
+    let before = h.state().tabs()[0].revision.number();
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
-    step_until(&mut h, "redone", |h| {
-        anywhere(h, "example.silico *") && shows(h, "Timeline", "xPin") && !offered(h, "Redo")
-    });
+    let deadline = Instant::now() + WAIT;
+    while !(anywhere(&h, "example.silico *") && shows(&h, "Timeline", "xPin")) {
+        step(&mut h);
+        if h.state().tabs()[0].revision.number() > before {
+            assert!(!offered(&h, "Redo"), "Redo offered with nothing to redo");
+        }
+        assert!(Instant::now() < deadline, "never redone");
+    }
     // Undone again, Redo offered; then typing: Redo off at once (an edit waits), and off
     // after it answers (the edit dropped what was undone).
     h.get_by_role_and_label(Role::Button, "Undo").click();
@@ -2305,5 +2318,30 @@ fn a_file_changed_on_disk_under_a_transaction_that_changed_nothing_offers_no_cho
         &h,
         "example.silico changed on disk while you have unsaved edits."
     ));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_y_held_down_redoes_once_and_says_nothing() {
+    let f = fixture();
+    let (mut h, path) = undone_back(&f);
+    let before = h.state().tabs()[0].revision.number();
+    let (hold, check) = hold_queue(&f, &h, 0);
+    for _ in 0..2 {
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
+        step(&mut h);
+    }
+    assert!(!offered(&h, "Redo"));
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "redone", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "xPin")
+    });
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(h.state().tabs()[0].revision.number(), before + 1);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }

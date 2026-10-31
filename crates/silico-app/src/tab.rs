@@ -311,14 +311,14 @@ impl Tab {
                 .is_some_and(|transaction| transaction.redo > 0)
     }
 
-    /// Whether it holds unsaved edits: the document changed, an edit or a step under way,
-    /// or a transaction open with anything of the tab's still to answer. Only a tab with
+    /// Whether it holds unsaved edits: the document changed, an edit under way, or a
+    /// transaction open with anything of the tab's still to answer (an undo or a redo
+    /// queued or running among them). Only a tab with
     /// none of these is closed without asking (rolled back first if a transaction is open).
     pub fn unsaved(&self) -> bool {
         self.changed()
             || self.beginning
             || !self.edits.idle()
-            || self.stepping()
             || (self.transaction && !self.quiet())
     }
 
