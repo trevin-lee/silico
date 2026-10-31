@@ -389,3 +389,4 @@ crates/silico-core/src/command/session/drag.rs | Session<C>::begin_drag | replac
 # drag's revision, the edit's base, so `sketch_replaced` makes no candidate, no solve runs,
 # and the edit answers unchanged with no commit: the same result, nothing written.
 crates/silico-core/src/command/session/drag.rs | Session<C>::end_drag_with | replace || with && | #307
+crates/silico-core/src/recompute.rs | Key::parse | replace | with ^ | #331
