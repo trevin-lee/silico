@@ -30,6 +30,31 @@ pub const IDLE_MARGIN: Duration = Duration::from_millis(100);
 /// [`DISK_CHECK_INTERVAL`], whose `status` starts the next comparison (section 3, *Idle*).
 pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN);
 
+/// Opens, each by the path it was asked with, in the order asked.
+type ByPath<T> = Vec<(String, T)>;
+
+/// The opens under way that have answered, taken in the order they were asked, each waiting
+/// for those before it, and those still to take: sessions open on threads of their own, so
+/// the order they answer in isn't the person's, and a tab's place is the order it was opened.
+fn in_order<R, T>(
+    opening: ByPath<R>,
+    mut try_take: impl FnMut(R) -> Result<T, R>,
+) -> (ByPath<T>, ByPath<R>) {
+    let mut answered = Vec::new();
+    let mut waiting = Vec::new();
+    for (path, running) in opening {
+        if !waiting.is_empty() {
+            waiting.push((path, running));
+            continue;
+        }
+        match try_take(running) {
+            Ok(answer) => answered.push((path, answer)),
+            Err(running) => waiting.push((path, running)),
+        }
+    }
+    (answered, waiting)
+}
+
 /// Whether Enter, pressed this frame, is an open dialog's OK, taking it if so: while typing
 /// in a field or with nothing focused (a focused button's or checkbox's Enter is its own
 /// click), and only a fresh press, never the system's repeat of one held down (an Enter held
@@ -245,18 +270,17 @@ impl<P: Clients + 'static> App<P> {
 
     /// The opens under way and every tab polled; tabs whose sessions closed dropped.
     fn poll(&mut self) {
-        for (path, running) in std::mem::take(&mut self.opening) {
-            match running.try_take() {
-                Ok(response) => match response.result {
-                    Ok(opened) => {
-                        self.tabs
-                            .push(Tab::opened(opened.session, path, &opened.problems));
-                        self.active = Some(opened.session);
-                        self.message = None;
-                    }
-                    Err(problems) => self.message = Some(said(&problems)),
-                },
-                Err(running) => self.opening.push((path, running)),
+        let (answered, opening) = in_order(std::mem::take(&mut self.opening), Running::try_take);
+        self.opening = opening;
+        for (path, response) in answered {
+            match response.result {
+                Ok(opened) => {
+                    self.tabs
+                        .push(Tab::opened(opened.session, path, &opened.problems));
+                    self.active = Some(opened.session);
+                    self.message = None;
+                }
+                Err(problems) => self.message = Some(said(&problems)),
             }
         }
         for tab in &mut self.tabs {
@@ -929,5 +953,56 @@ impl<P: Clients + 'static> App<P> {
 impl<P: Clients + 'static> eframe::App for App<P> {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::in_order;
+
+    /// An open's answer as the test gives it: `Some` once answered, `None` while not.
+    fn take(running: Option<u32>) -> Result<u32, Option<u32>> {
+        running.ok_or(None)
+    }
+
+    fn opening(answers: &[Option<u32>]) -> Vec<(String, Option<u32>)> {
+        answers
+            .iter()
+            .enumerate()
+            .map(|(at, answer)| (format!("{at}.silico"), *answer))
+            .collect()
+    }
+
+    #[test]
+    fn opens_are_taken_in_the_order_asked_each_waiting_for_those_before_it() {
+        // The second and third answered, the first not: none is taken, the order kept.
+        let (answered, waiting) = in_order(opening(&[None, Some(2), Some(3)]), take);
+        assert!(answered.is_empty());
+        let paths: Vec<&str> = waiting.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(paths, ["0.silico", "1.silico", "2.silico"]);
+        assert_eq!(waiting[1].1, Some(2));
+        // The first answered: all three taken, in the order asked.
+        let (answered, waiting) = in_order(opening(&[Some(1), Some(2), Some(3)]), take);
+        assert!(waiting.is_empty());
+        assert_eq!(
+            answered,
+            [
+                ("0.silico".to_owned(), 1),
+                ("1.silico".to_owned(), 2),
+                ("2.silico".to_owned(), 3)
+            ]
+        );
+        // The first answered, the second not: the first taken, the third waits behind it.
+        let (answered, waiting) = in_order(opening(&[Some(1), None, Some(3)]), take);
+        assert_eq!(answered, [("0.silico".to_owned(), 1)]);
+        let paths: Vec<&str> = waiting.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(paths, ["1.silico", "2.silico"]);
+        assert_eq!(waiting[1].1, Some(3));
+    }
+
+    #[test]
+    fn nothing_opening_takes_nothing() {
+        let (answered, waiting) = in_order(Vec::<(String, Option<u32>)>::new(), take);
+        assert!(answered.is_empty() && waiting.is_empty());
     }
 }
