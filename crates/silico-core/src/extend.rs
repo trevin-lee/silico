@@ -1,6 +1,6 @@
 //! Extending a sketch's line or arc at one end (docs/ports/sketch-edit.md, §7, decision 11;
-//! docs/design/m5.0-app.md, open item 12, pending Trevin): a core function, with no command
-//! yet, as the other sketch edits are (`document::sketch_edit`). Its result is a function of
+//! docs/design/m5.0-app.md, open item 12): the core function the `sketch_extend` command
+//! runs (open item 12c), as the other sketch edits' commands run `document::sketch_edit`. Its result is a function of
 //! its inputs alone, the sketch as stored and the increment or point, as a drag's end is
 //! (`drag`): a drag the app shows while the person picks the increment is only its preview.
 //!
@@ -46,7 +46,7 @@ use silico_protocol::distance;
 
 use crate::document::sketch_edit::{Edited, Geo, crossings, end_ids};
 use crate::document::{Angle, Coordinate, ElementId, Length, Sketch, SketchConstraint};
-use crate::drag::{checked_frame, checked_tags};
+use crate::drag::{DragStop, checked_frame, checked_tags};
 use crate::sketch::{MovedOnce, SketchSolver, Translation};
 use crate::{Error, ErrorCode};
 
@@ -103,6 +103,31 @@ const PULLED: &str = "change the constraints that pull its end back, or extend i
 /// through `solver`'s drag. The edit's points moved are `modified`; nothing is added or
 /// removed. Refused, naming the parameter: see the module's notes.
 pub fn extend(
+    sketch: &Sketch,
+    curve: &ElementId,
+    end: End,
+    by: By,
+    solver: &mut dyn SketchSolver,
+) -> Result<Edited, Error> {
+    extend_under(sketch, curve, end, by, solver, &DragStop::new())
+}
+
+/// [`extend`], its line's move run under `stop` (docs/design/m5.0-app.md, open item 12c):
+/// the solver's stopper taken by `stop`, so the command's `cancel` stops the move, which is
+/// then refused as `cancelled`.
+pub fn extend_under(
+    sketch: &Sketch,
+    curve: &ElementId,
+    end: End,
+    by: By,
+    solver: &mut dyn SketchSolver,
+    stop: &DragStop,
+) -> Result<Edited, Error> {
+    stop.run(solver, |solver| extended(sketch, curve, end, by, solver))
+}
+
+/// [`extend`] on `solver`, readied for its move by its caller's stop.
+fn extended(
     sketch: &Sketch,
     curve: &ElementId,
     end: End,
@@ -421,7 +446,6 @@ fn extend_line(
         )
         .with_elements([curve.to_string(), moving.to_string()]));
     }
-    solver.stopper()?;
     // The worker's own refusal of the move (a frame out of reach, past its time, a crash),
     // said as this edit's: naming the line, its end, and the increment to change.
     let once = solver.move_once(begin.clone(), target).map_err(|error| {
@@ -518,7 +542,7 @@ fn extend_line(
         return Err(Error::new(
             ErrorCode::InvalidResult,
             format!(
-                "line {curve}'s end {moving} can't move {said}: its constraints hold it where it is"
+                "extending line {curve} {said} changes nothing: its constraints hold its end {moving} where it is"
             ),
         )
         .with_elements([curve.to_string(), moving.to_string()])
@@ -697,7 +721,7 @@ fn point(sketch: &Sketch, id: &ElementId) -> Result<[f64; 2], Error> {
 /// The members `edited` changes in place, in the format's order: the points it moves, bit
 /// for bit, then the circles whose radius it changes, then the constraints it rewrites (a
 /// reference dimension re-measured), each by ID.
-fn changed(sketch: &Sketch, edited: &Sketch) -> Vec<ElementId> {
+pub(crate) fn changed(sketch: &Sketch, edited: &Sketch) -> Vec<ElementId> {
     let points: BTreeSet<(&ElementId, u64, u64)> = sketch
         .points
         .iter()

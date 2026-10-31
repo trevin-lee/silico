@@ -456,11 +456,11 @@ fn version_and_open_take_only_their_fields_and_require_each() {
 fn cancel_names_only_a_command_and_any_other_name_is_refused_with_every_command_as_candidates() {
     let text = example("cancel/request");
     let names: Vec<String> = CANCELLABLE.map(str::to_owned).to_vec();
-    // Every command that runs in a session, then the rebuild: 35 and one, counted by hand
-    // from the design's lists (M4.1's 20, M5.0's 15, the drag's three among them).
-    assert_eq!(names.len(), 36);
-    assert_eq!(names[..35], SESSION_COMMANDS.map(str::to_owned));
-    assert_eq!(names[35], "rebuild");
+    // Every command that runs in a session, then the rebuild: 36 and one, counted by hand
+    // from the design's lists (M4.1's 20, M5.0's 16, the drag's three among them).
+    assert_eq!(names.len(), 37);
+    assert_eq!(names[..36], SESSION_COMMANDS.map(str::to_owned));
+    assert_eq!(names[36], "rebuild");
     // A name close to one, the session's own probe, commands that never run in a session
     // (`read_logs` among them, answered at once), and other types.
     for (value, got) in [

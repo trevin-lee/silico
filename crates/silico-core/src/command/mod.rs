@@ -38,7 +38,7 @@ pub mod wire;
 pub use call::{Answered, Call, Calling, Command};
 pub use session::{
     Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, DragBegun,
-    DragEnded, DragFrame, DragGrab, DragOpen, FieldSet, FrameEnd, MAX_PUBLISHED_READS,
+    DragEnded, DragFrame, DragGrab, DragOpen, ExtendBy, FieldSet, FrameEnd, MAX_PUBLISHED_READS,
     MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers, Opened, OutlineAnswer,
     Progress, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced,
     Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, SketchCut,
