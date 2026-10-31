@@ -290,7 +290,8 @@ impl<P: Clients + 'static> App<P> {
             (false, true) => Some(Key::Escape),
             (false, false) => None,
         };
-        if stop && !in_dialog {
+        // Esc stops a rebuild running, as the stop does; with none, it does nothing.
+        if stop && !in_dialog && tab.stoppable() {
             tab.stop(sessions);
         }
         if close && let Some(id) = self.active {
@@ -348,7 +349,7 @@ impl<P: Clients + 'static> App<P> {
         *started |= tab.dialog_changed(sessions);
         match key {
             Some(Key::Enter) if tab.can_ok() => action = Action::Ok,
-            Some(Key::Escape) if tab.preview_rebuilding() => tab.stop_preview(),
+            Some(Key::Escape) if tab.preview_rebuilding() => tab.stop(sessions),
             Some(Key::Escape) => action = Action::Cancel,
             _ => {}
         }
@@ -530,7 +531,8 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The status bar: the rebuild (`status.rebuild`) or the session's own reload, the stop
-    /// button (`cancel`, off while only a reload runs, section 3), and the last refusal.
+    /// button (`cancel` naming the rebuild, on while it runs, whatever command runs: section
+    /// 3, *Stop*), and the last refusal.
     fn status_bar(&mut self, ui: &mut Ui, started: &mut bool) {
         egui::Panel::bottom("status_bar")
             .exact_size(theme::TITLE_BAR_HEIGHT)

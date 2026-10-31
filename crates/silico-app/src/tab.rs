@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use silico_core::command::{
-    Added, Begun, CheckAnswer, CheckModel, Closed, Committed, FieldSet, ModelChoice, Problems,
-    RebuildState, Response, Revision, RolledBack, Running, RunningCommand, SessionCommand,
-    SessionId, Sessions, Status, Stepped, TextAnswer, TimelineAnswer,
+    Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, FieldSet, ModelChoice,
+    Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId, Sessions, Status,
+    Stepped, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
@@ -1235,26 +1235,21 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// Whether the stop can stop what's running: a command a client sent, never the
-    /// session's own reload, which nothing cancels (section 3).
+    /// Whether the stop is on: the session's rebuild running, as `status` says, whatever
+    /// command runs (section 3, *Stop*; decision 34 as amended). A command running with no
+    /// rebuild (an export meshing) is its own dialog's to stop, and the session's own
+    /// reload nothing's.
     pub fn stoppable(&self) -> bool {
         self.status
             .as_ref()
-            .and_then(|status| status.running)
-            .and_then(RunningCommand::command)
-            .is_some()
+            .is_some_and(|status| status.rebuild.state == RebuildState::Running)
     }
 
-    /// Stop what's running (`cancel`), if a command a client sent is: never the session's
-    /// own reload, which nothing cancels. A refusal is said.
+    /// The stop: `cancel` naming the rebuild, which stops it and the command waiting on it,
+    /// if one is (that one answers `cancelled`). One that comes after the rebuild ended is
+    /// refused, and the refusal is said.
     pub fn stop<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if let Some(command) = self
-            .status
-            .as_ref()
-            .and_then(|status| status.running)
-            .and_then(RunningCommand::command)
-            && let Err(problems) = sessions.cancel(&self.id, command).result
-        {
+        if let Err(problems) = sessions.cancel(&self.id, Cancellable::Rebuild).result {
             self.message = Some(said(&problems));
         }
     }
@@ -1306,26 +1301,15 @@ impl Tab {
             && !stopped
     }
 
-    /// Whether a dialog's preview is rebuilding: its read of the current model is the
-    /// command the session runs, waiting for the rebuild. Esc stops it, the dialog left
-    /// open (section 3).
+    /// Whether a dialog's preview is rebuilding: a dialog open on its feature (one that
+    /// isn't added yet has no preview) while the session's rebuild runs. Esc stops it, the
+    /// dialog left open (section 3), with the stop's own call ([`stop`](Self::stop)): the
+    /// preview's read of the current model is the rebuild's waiter, and answers `cancelled`.
     pub fn preview_rebuilding(&self) -> bool {
-        self.dialog.is_some()
-            && self.timeline_read.is_some()
-            && self
-                .status
-                .as_ref()
-                .and_then(|status| status.running)
-                .and_then(RunningCommand::command)
-                == Some(SessionCommand::Timeline)
-    }
-
-    /// The dialog's preview stopped: its read cancelled through its handle, which stops
-    /// the rebuild it waits for. One that has answered by then has nothing left to stop.
-    pub fn stop_preview(&mut self) {
-        if let Some(read) = &self.timeline_read {
-            read.cancel();
-        }
+        self.dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.feature.is_some())
+            && self.stoppable()
     }
 
     /// Before the tab sends what changes the document: its timeline read in flight, of a
@@ -1334,7 +1318,9 @@ impl Tab {
     /// preview's, which waits for the rebuild (a read of the published model answers at
     /// once, so there's nothing of it to stop).
     fn supersede_preview(&mut self) {
-        self.stop_preview();
+        if let Some(read) = &self.timeline_read {
+            read.cancel();
+        }
     }
 
     /// A transaction begun if none is open or beginning (decision 1).
