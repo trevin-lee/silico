@@ -204,17 +204,11 @@ pub fn join(sketch: &Sketch, point: &ElementId) -> Result<Joined, Error> {
         ) else {
             return Err(no_member(kept, ElementKind::Line, "point"));
         };
-        let held = sketch.constraints.iter().any(|c| match &c.form {
-            Form::TangentAt {
-                a,
-                b,
-                at,
-                direction: Direction::Same,
-            } => {
-                *at == at_point
-                    && ((*a == kept_ref && *b == other_ref) || (*a == other_ref && *b == kept_ref))
-            }
-            _ => false,
+        // A `tangent_at` (`same`) at the point is one of these two lines: only they use the
+        // point (above), and the gate holds a `tangent_at`'s two curves different, each
+        // ending at its `at`, so whichever way round it names them, it holds them on one line.
+        let held = sketch.constraints.iter().any(|c| {
+            matches!(&c.form, Form::TangentAt { at, direction: Direction::Same, .. } if *at == at_point)
         });
         if !held {
             return Err(refused(

@@ -1070,6 +1070,32 @@ fn a_point_line_distance_re_pointed_onto_the_joined_lines_own_start_is_refused_n
 }
 
 #[test]
+fn another_lines_length_or_midpoint_is_kept_and_doesnt_refuse_the_join() {
+    // g0, a line from (8, 10) to (8, 20), its own length k0 and a midpoint k1 on it: neither
+    // names a piece, so the join is made (only a piece's length or midpoint would measure
+    // the whole joined line), and both stay as they were.
+    let before = pieces(
+        &[
+            point("g0000001", 8.0, 10.0),
+            point("g0000002", 8.0, 20.0),
+            point("g0000003", 8.0, 15.0),
+        ]
+        .join(", "),
+        &line("g0000000", "g0000001", "g0000002"),
+        r#"{"id": "k0000000", "type": "length", "line": "g0000000", "value": 10, "driving": true}, {"id": "k0000001", "type": "midpoint", "point": "g0000003", "line": "g0000000"}"#,
+    );
+    let joined = join(sketch_of(&before), &id("n0000000")).unwrap();
+    for k in ["k0000000", "k0000001"] {
+        assert_eq!(
+            form(&joined.edited.sketch, k),
+            form(sketch_of(&before), k),
+            "{k}"
+        );
+    }
+    assert_eq!(joined.edited.modified, ids(&["a0000000"]));
+}
+
+#[test]
 fn a_perpendicular_either_way_round_repeats_once_re_pointed_and_is_dropped() {
     // g0, a vertical line from (8, 10) to (8, 20): k0 perpendicular g0, a0, k1
     // perpendicular b1, g0, the same pair the other way round once b1 is a0: k1 removed.
