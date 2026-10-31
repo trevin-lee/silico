@@ -1011,9 +1011,9 @@ fn no_drag(why: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::{Begun, MoveOutcome, begin, lock, off_the_edge};
+    use crate::Error;
     use crate::fake::FakeSketches;
     use crate::recompute::SketchSolvers;
-    use crate::Error;
     use crate::sketch::{DragStarted, SketchSolver, SolveStopper};
     use silico_protocol::{
         Algorithm, DragBegin, Geometry, Moved, PointOf, PointValues, SketchGeometry, SketchSystem,

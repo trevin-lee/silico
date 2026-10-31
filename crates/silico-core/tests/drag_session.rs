@@ -1009,7 +1009,10 @@ fn an_end_whose_move_to_its_cursor_is_stopped_is_cancelled_not_an_end_at_its_beg
     let error = ended.unwrap_err();
     assert_eq!(
         (error.code(), error.message()),
-        (ErrorCode::Cancelled, "the drag's solve of its sketch was stopped")
+        (
+            ErrorCode::Cancelled,
+            "the drag's solve of its sketch was stopped"
+        )
     );
     assert_eq!(fake.stops(), 1);
     assert_eq!(moves_of(&fake.drag_calls()), [[5.0, 5.0]]);

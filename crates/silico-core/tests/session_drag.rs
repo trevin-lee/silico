@@ -2229,7 +2229,7 @@ fn a_release_run_before_a_begin_sent_after_it_is_told_the_begin_may_be_queued() 
 
 #[test]
 fn a_drag_whose_thread_panicked_says_its_end_failed_in_the_sessions_logs_as_the_next_begin_ends_it()
- {
+{
     use silico_core::command::logs::{LogLevel, LogQuery};
     use tracing_subscriber::layer::SubscriberExt;
     // Alone in its process (nextest runs each test in its own): the core's log layer.
