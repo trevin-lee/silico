@@ -87,15 +87,44 @@ enum Asking {
     Export(SessionId),
 }
 
-/// An open under way: its number, the order it was asked in, and the path it was asked with.
-struct Opening {
+/// An open under way: its number, the order it was asked in, the path it was asked with, and
+/// its command, running.
+struct Opening<R = Running<Opened>> {
     number: u64,
     path: String,
-    running: Running<Opened>,
+    running: R,
 }
 
 /// An open that answered: its number, the path it was asked with, and its answer.
-type Answered = (u64, String, Response<Opened>);
+type Answered<T = Response<Opened>> = (u64, String, T);
+
+/// The opens under way split into those that have answered, each with its answer, and those
+/// still pending, both in the order asked: every answered one taken at once, none waiting on
+/// another, so an open stuck reading its file (on a network mount that stopped answering,
+/// say) holds back no open asked after it.
+fn split_answered<R, T>(
+    opening: Vec<Opening<R>>,
+    mut try_take: impl FnMut(R) -> Result<T, R>,
+) -> (Vec<Answered<T>>, Vec<Opening<R>>) {
+    let mut answered = Vec::new();
+    let mut pending = Vec::new();
+    for Opening {
+        number,
+        path,
+        running,
+    } in opening
+    {
+        match try_take(running) {
+            Ok(answer) => answered.push((number, path, answer)),
+            Err(running) => pending.push(Opening {
+                number,
+                path,
+                running,
+            }),
+        }
+    }
+    (answered, pending)
+}
 
 /// The app's state: everything the window draws, and what it's waiting for.
 pub struct App<P: Clients + 'static> {
@@ -108,11 +137,9 @@ pub struct App<P: Clients + 'static> {
     next_open: u64,
     /// Each tab's open number, by its session: the tabs stand in that order, the order their
     /// opens were asked in, whatever order they answered in (each session opens on a thread
-    /// of its own).
+    /// of its own); and an open answering after one asked later than it, whose tab is still
+    /// open, isn't shown over that one.
     open_numbers: BTreeMap<SessionId, u64>,
-    /// The highest open number of the documents opened so far: an open answering after one
-    /// asked later than it isn't shown over that one.
-    newest_opened: Option<u64>,
     asking: Option<Asking>,
     /// The Open (and New) dialog's path field, kept from the last time it was open; and
     /// Save As's, empty each time it opens.
@@ -125,6 +152,9 @@ pub struct App<P: Clients + 'static> {
     name: Option<panes::NameField>,
     /// The last refusal not of a tab's (an open's), as said to the person.
     message: Option<String>,
+    /// The number of the open whose refusal `message` says: none if it says something else,
+    /// or nothing.
+    message_from: Option<u64>,
     /// Quitting: once every tab has closed, the window does.
     quitting: bool,
     /// Frames drawn: what the tests watch climb while commands are held.
@@ -147,7 +177,6 @@ impl<P: Clients + 'static> App<P> {
             opening: Vec::new(),
             next_open: 0,
             open_numbers: BTreeMap::new(),
-            newest_opened: None,
             asking: None,
             open_path: String::new(),
             save_as_path: String::new(),
@@ -155,6 +184,7 @@ impl<P: Clients + 'static> App<P> {
             tree: panes::layout(),
             name: None,
             message: None,
+            message_from: None,
             quitting: false,
             frames: 0,
             wakes: Arc::new(AtomicU64::new(0)),
@@ -275,22 +305,9 @@ impl<P: Clients + 'static> App<P> {
 
     /// The opens under way and every tab polled; tabs whose sessions closed dropped.
     fn poll(&mut self) {
-        let mut answered = Vec::new();
-        for Opening {
-            number,
-            path,
-            running,
-        } in std::mem::take(&mut self.opening)
-        {
-            match running.try_take() {
-                Ok(response) => answered.push((number, path, response)),
-                Err(running) => self.opening.push(Opening {
-                    number,
-                    path,
-                    running,
-                }),
-            }
-        }
+        let (answered, pending) =
+            split_answered(std::mem::take(&mut self.opening), Running::try_take);
+        self.opening = pending;
         self.take_opens(answered);
         for tab in &mut self.tabs {
             tab.poll(&self.sessions);
@@ -310,6 +327,7 @@ impl<P: Clients + 'static> App<P> {
                 // quit stops, said.
                 self.quitting = false;
                 self.message = Some(format!("Quit stopped: {} wasn't closed", tab.name()));
+                self.message_from = None;
             }
         }
         let open_numbers = &mut self.open_numbers;
@@ -325,26 +343,34 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The opens that answered since the last poll, `(number, path, response)` each, in the
-    /// order they answered: the message cleared once, if any answered, then each taken, so a
-    /// refusal among them is still said after an open that answered after it.
+    /// order they were asked: the message cleared if one of them opened that was asked after
+    /// the open whose refusal it says (or it says no open's refusal), then each taken. So a
+    /// refusal is never cleared by an open asked before it, whenever that answers, nor by one
+    /// answering in the same poll.
     fn take_opens(&mut self, answered: Vec<Answered>) {
-        if answered.is_empty() {
-            return;
+        let newest = answered
+            .iter()
+            .filter(|(_, _, response)| response.result.is_ok())
+            .map(|(number, ..)| *number)
+            .max();
+        if newest.is_some_and(|newest| self.message_from.is_none_or(|from| newest > from)) {
+            self.message = None;
+            self.message_from = None;
         }
-        self.message = None;
         for (number, path, response) in answered {
             self.take_open(number, path, response);
         }
     }
 
     /// An open that answered, taken at once, whatever is still opening: its refusal said, or
-    /// its tab put after every tab whose open was asked before it, and shown unless an open
-    /// asked after it has already opened (a late answer never takes the tab shown).
+    /// its tab put after every tab whose open was asked before it, and shown unless the tab of
+    /// an open asked after it is open (a late answer never takes the tab shown).
     fn take_open(&mut self, number: u64, path: String, response: Response<Opened>) {
         let opened = match response.result {
             Ok(opened) => opened,
             Err(problems) => {
                 self.message = Some(said(&problems));
+                self.message_from = Some(number);
                 return;
             }
         };
@@ -358,11 +384,15 @@ impl<P: Clients + 'static> App<P> {
                     .is_some_and(|&asked| asked > number)
             })
             .unwrap_or(self.tabs.len());
+        let shown = self
+            .open_numbers
+            .values()
+            .max()
+            .is_none_or(|&newest| number > newest);
         self.tabs
             .insert(at, Tab::opened(id, path, &opened.problems));
         self.open_numbers.insert(id, number);
-        if self.newest_opened.is_none_or(|newest| number > newest) {
-            self.newest_opened = Some(number);
+        if shown {
             self.active = Some(id);
         }
     }
@@ -1024,7 +1054,7 @@ mod tests {
     use silico_core::sketch::SketchSolver;
     use tempfile::TempDir;
 
-    use super::{Answered, App};
+    use super::{Answered, App, Opening, split_answered};
     use crate::tab::said;
 
     /// A block: any document the gate takes.
@@ -1138,6 +1168,62 @@ mod tests {
         app.take_opens(vec![one]);
         assert_eq!(app.active, Some(shown));
         assert_eq!(names(&app), ["one.silico", "two.silico"]);
+    }
+
+    #[test]
+    fn a_refusal_stays_said_when_an_open_asked_before_it_answers_in_a_later_poll() {
+        let (mut app, dir) = app();
+        let one = answered(&app, &dir, 1, "one.silico", true);
+        let refused = answered(&app, &dir, 2, "missing.silico", false);
+        let said_of_it = said(refused.2.result.as_ref().unwrap_err());
+        app.take_opens(vec![refused]);
+        assert_eq!(app.message(), Some(said_of_it.as_str()));
+        app.take_opens(vec![one]);
+        assert_eq!(app.message(), Some(said_of_it.as_str()));
+        assert_eq!(names(&app), ["one.silico"]);
+        // One asked after it, opening, clears it.
+        let two = answered(&app, &dir, 3, "two.silico", true);
+        app.take_opens(vec![two]);
+        assert_eq!(app.message(), None);
+    }
+
+    #[test]
+    fn an_open_answering_after_a_later_one_whose_tab_has_closed_is_shown() {
+        let (mut app, dir) = app();
+        let one = answered(&app, &dir, 1, "one.silico", true);
+        let two = answered(&app, &dir, 2, "two.silico", true);
+        let three = answered(&app, &dir, 3, "three.silico", true);
+        let (first, second, third) = (session(&one), session(&two), session(&three));
+        app.take_opens(vec![one, three]);
+        assert_eq!(app.active, Some(third));
+        // The third's tab closed: the first is shown in its place.
+        assert!(app.sessions().close(&third).wait().result.is_ok());
+        app.poll();
+        assert_eq!(app.active, Some(first));
+        // The second, answering now, was asked after every open still open: it's shown.
+        app.take_opens(vec![two]);
+        assert_eq!(app.active, Some(second));
+        assert_eq!(names(&app), ["one.silico", "two.silico"]);
+    }
+
+    #[test]
+    fn an_answered_open_is_taken_while_one_asked_before_it_is_still_pending() {
+        // Each stub open answers `Some` at once, or `None`, pending (stuck reading its file).
+        let opening: Vec<Opening<Option<u32>>> = [(1, None), (2, Some(20)), (3, None)]
+            .into_iter()
+            .map(|(number, running)| Opening {
+                number,
+                path: format!("{number}.silico"),
+                running,
+            })
+            .collect();
+        let (answered, pending) = split_answered(opening, |running| running.ok_or(None));
+        assert_eq!(answered, [(2, "2.silico".to_owned(), 20)]);
+        let pending: Vec<(u64, &str)> = pending
+            .iter()
+            .map(|opening| (opening.number, opening.path.as_str()))
+            .collect();
+        assert_eq!(pending, [(1, "1.silico"), (3, "3.silico")]);
     }
 
     #[test]
