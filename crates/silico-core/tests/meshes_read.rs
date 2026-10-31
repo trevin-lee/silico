@@ -336,8 +336,21 @@ fn a_mesh_the_client_holds_is_named_but_not_given() {
             .chain(&body.edges)
             .all(|e| e.count.is_none())
     );
-    // Answered without the kernel: the client holds the mesh, kept or not.
-    assert!(bench.meshed().is_empty());
+    // A fresh cache can't know the level isn't under the floor, so it meshes once to learn
+    // it (#331's format review): the answer is the same, held. Read again, it knows, and the
+    // kernel isn't asked.
+    assert_eq!(bench.meshed(), [0.03125]);
+    let again = bench
+        .read(&Meshes {
+            held: vec![Held {
+                key: bench.key("m3tq8v0z"),
+                deflection: 0.03125,
+            }],
+            ..of(front(80.0), 1000, 1000)
+        })
+        .unwrap();
+    assert!(again.bodies[0].held && again.bodies[0].mesh.is_none());
+    assert_eq!(bench.meshed(), [0.03125]);
     // Held at another deflection, it's given.
     let read = bench
         .read(&Meshes {

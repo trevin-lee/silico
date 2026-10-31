@@ -674,6 +674,222 @@ fn one_view_of_a_body_whose_floor_is_a_power_of_two_answers_alike_whatever_the_c
     assert_eq!(said(&fresh), said(&again));
 }
 
+// Broke, before the fix (#331's format review): a held entry at a level under the body's
+// floor, its floor unknown to a fresh cache, was answered held, with no mesh and the level
+// as its deflection, without the kernel; a cache that had met the floor answered it not
+// held, meshed at the floor. One request, two answers, by what the shared cache had seen.
+// Answered without the kernel only when the cache knows the deflection the kernel would use;
+// otherwise meshed, and the entry compared with what the kernel used.
+#[test]
+fn a_held_entry_under_the_floor_is_answered_alike_whatever_the_cache_has_seen() {
+    // 1 mm over 1,000 pixels: a half pixel of 0.0005, level 2⁻¹¹, under the cut's floor,
+    // 1e-4 of its box's diagonal, √2144 · 1e-4 = 0.0046303.
+    let level = pow2(-11);
+    let fresh = Bench::of(EXAMPLE);
+    let key = fresh.key("m3tq8v0z");
+    let held = Meshes {
+        held: vec![Held {
+            key,
+            deflection: level,
+        }],
+        ..of(front(1.0), 1000, 1000)
+    };
+    let cold = fresh.read(&held).unwrap();
+    // The same request on a cache that has met the floor.
+    let warm = Bench::of(EXAMPLE);
+    warm.read(&of(front(1.0), 1000, 1000)).unwrap();
+    let seen = warm.read(&held).unwrap();
+    assert_eq!(said(&cold), said(&seen));
+    // Not held: the kernel meshes at the floor, never at the level held.
+    let body = &cold.bodies[0];
+    assert!(!body.held);
+    assert!(body.mesh.is_some());
+    assert_eq!(body.level, level);
+    assert!(
+        (body.deflection - 0.004_630_3).abs() < 1e-7,
+        "{}",
+        body.deflection
+    );
+    assert_eq!(body.serves, [0.0, 2.0 * pow2(-8)]);
+    assert_eq!(fresh.meshed(), [level]);
+}
+
+// The other side of the same rule: a level a mesh was made at as asked is known to be at or
+// above the floor, so held there it's answered without the kernel, on a cache that keeps no
+// meshes; and a level finer than any made so, on a floor not met, asks the kernel again.
+#[test]
+fn a_level_made_as_asked_is_known_and_a_finer_one_is_asked_again() {
+    let bench = Bench {
+        meshes: MeshCache::new(0),
+        ..Bench::of(EXAMPLE)
+    };
+    let key = bench.key("m3tq8v0z");
+    let held_at = |view_height: f64, deflection: f64| Meshes {
+        held: vec![Held { key, deflection }],
+        ..of(front(view_height), 1000, 1000)
+    };
+    // 80 mm: 2⁻⁵, made as asked.
+    bench.read(&of(front(80.0), 1000, 1000)).unwrap();
+    assert!(bench.read(&held_at(80.0, pow2(-5))).unwrap().bodies[0].held);
+    // 160 mm: 2⁻⁴, coarser than one made as asked, so known too.
+    assert!(bench.read(&held_at(160.0, pow2(-4))).unwrap().bodies[0].held);
+    assert_eq!(bench.meshed(), [pow2(-5)]);
+    // 40 mm: 2⁻⁶, finer than any made, the floor not met: meshed to learn it (as asked:
+    // above the floor), and then held.
+    let finer = bench.read(&held_at(40.0, pow2(-6))).unwrap();
+    assert!(finer.bodies[0].held);
+    assert_eq!(bench.meshed(), [pow2(-5), pow2(-6)]);
+}
+
+// #331, Main's condition on `box: null`: a body the kernel couldn't measure has no box, so
+// no depth. In a perspective view it asks the finest level there is, so it's meshed at its
+// floor, and its level is that floor, serving [0, 2 · the floor's power of two]; `render`
+// asks by the same rule (`level_of`), so a render of the same view meshes nothing more. In
+// an orthographic view, depth doesn't matter: its level is the view's.
+#[test]
+fn an_unmeasured_body_has_no_box_and_is_meshed_as_render_meshes_it() {
+    use silico_core::command::render::{Render, RenderOn, render};
+    use silico_core::fake::FakeRenderer;
+    let bench = Bench::with(EXAMPLE, |k| {
+        k.refuse(|op| {
+            matches!(op, Op::Summarize { .. }).then(|| {
+                Error::new(ErrorCode::KernelFailed, "the measure failed")
+                    .with_suggestion("measure again")
+            })
+        });
+    });
+    let perspective = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 30.0,
+        },
+        eye: [20.0, -100.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let read = bench.read(&of(&perspective, 1000, 1000)).unwrap();
+    let body = &read.bodies[0];
+    assert_eq!(body.bounds, None);
+    // The fake's floor: 1e-4 of the cut's diagonal, √2144 · 1e-4 = 0.0046303, its level as
+    // well as its deflection; its power of two 2⁻⁸.
+    assert!(
+        (body.deflection - 0.004_630_3).abs() < 1e-7,
+        "{}",
+        body.deflection
+    );
+    assert_eq!(body.level.to_bits(), body.deflection.to_bits());
+    assert_eq!(body.serves, [0.0, 2.0 * pow2(-8)]);
+    // Asked of the kernel as the finest there is, which it meshes at the floor.
+    assert_eq!(bench.meshed(), [f64::MIN_POSITIVE]);
+    // A render of the same view asks the same level: the floor's mesh, already kept.
+    let renderer = FakeRenderer::new();
+    render(
+        &bench.model,
+        &Render {
+            view: None,
+            camera: Some(perspective),
+            width: 1000,
+            height: 1000,
+            highlight: vec![],
+            to: None,
+            replace: false,
+        },
+        &RenderOn {
+            kernel: &bench.kernel,
+            meshes: &bench.meshes,
+            renderer: &renderer,
+            workspace: None,
+            held: &[],
+            settle: &|| Ok(()),
+        },
+    )
+    .unwrap_or_else(|p| panic!("{:?}", p.errors()));
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(bench.meshed(), [f64::MIN_POSITIVE]);
+    // Orthographic: the view's level, 80 mm over 1,000 pixels, 2⁻⁵.
+    let read = bench.read(&of(front(80.0), 1000, 1000)).unwrap();
+    assert_eq!(read.bodies[0].bounds, None);
+    assert_eq!(
+        (read.bodies[0].level, read.bodies[0].deflection),
+        (pow2(-5), pow2(-5))
+    );
+}
+
+// #331 round 2: the floor as the level is for every body at no depth, a measured one too:
+// the bracket (its pad's box 60 × 40 × 50 whatever its pockets cut), in a perspective view
+// whose eye is beside it with its plane through the box. By hand: the floor is 1e-4 of the
+// diagonal, √7700 · 1e-4 = 0.0087750, its power of two 2⁻⁷, so `serves` is [0, 2⁻⁶]
+// (the design's M5.5 case, there from OCCT's enlarged box, 0.00878).
+#[test]
+fn a_measured_body_across_the_eyes_plane_answers_its_floor_as_its_level_as_render_meshes_it() {
+    use super::bracket::{H0000001, P0000001, S0000001, S0000002, S0000003};
+    use silico_core::command::render::{Render, RenderOn, render};
+    use silico_core::fake::FakeRenderer;
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        [S0000001, P0000001, S0000002, H0000001, S0000003].join(", ")
+    );
+    let bench = Bench::of(&text);
+    // Its box, from a view that measures nothing new.
+    let [low, high] = bench.read(&of(front(200.0), 100, 100)).unwrap().bodies[0]
+        .bounds
+        .unwrap();
+    let diagonal = (0..3)
+        .map(|k| (high[k] - low[k]) * (high[k] - low[k]))
+        .sum::<f64>();
+    assert!((diagonal - 7700.0).abs() < 1e-6, "{low:?} {high:?}");
+    // The eye a millimetre beyond its +x side, level with its middle, looking along +y: the
+    // eye's plane, y = the middle, cuts the box.
+    let middle = |k: usize| f64::midpoint(low[k], high[k]);
+    let eye = [high[0] + 1.0, middle(1), middle(2)];
+    let camera = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 120.0,
+        },
+        eye,
+        target: [eye[0], eye[1] + 10.0, eye[2]],
+        up: [0.0, 0.0, 1.0],
+    };
+    let asked_before = bench.meshed().len();
+    let read = bench.read(&of(&camera, 1000, 1000)).unwrap();
+    let body = &read.bodies[0];
+    assert!(body.bounds.is_some());
+    assert!(
+        (body.deflection - 0.008_775_0).abs() < 1e-7,
+        "{}",
+        body.deflection
+    );
+    assert_eq!(body.level.to_bits(), body.deflection.to_bits());
+    assert_eq!(body.serves, [0.0, pow2(-6)]);
+    let asked = bench.meshed().len();
+    assert_eq!(asked, asked_before + 1);
+    // A render of the same view meshes nothing more: the floor's mesh, kept.
+    let renderer = FakeRenderer::new();
+    render(
+        &bench.model,
+        &Render {
+            view: None,
+            camera: Some(camera),
+            width: 1000,
+            height: 1000,
+            highlight: vec![],
+            to: None,
+            replace: false,
+        },
+        &RenderOn {
+            kernel: &bench.kernel,
+            meshes: &bench.meshes,
+            renderer: &renderer,
+            workspace: None,
+            held: &[],
+            settle: &|| Ok(()),
+        },
+    )
+    .unwrap_or_else(|p| panic!("{:?}", p.errors()));
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(renderer.sent()[0].bodies.len(), 1);
+    assert_eq!(bench.meshed().len(), asked);
+}
+
 /// An orthographic camera on the example of a half pixel near a power of two, its height,
 /// or one near the cut's floor (0.00463), and a height of 1 to 4,096 pixels.
 fn an_orthographic_view() -> impl Strategy<Value = (Camera, u32)> {

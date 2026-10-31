@@ -8,7 +8,11 @@
 //! ([`MESH_FLOORS_KEPT`]): one number a step, so a step's floor outlives its meshes, and a
 //! body held at its floor is known to be held without meshing it again. A floor dropped
 //! from that list is learnt again by meshing once more, to the same answer: what the cache
-//! has seen changes only how long a read takes, never what it says.
+//! has seen changes only how long a read takes, never what it says. Apart from the floors,
+//! the finest level each step was meshed at as asked is kept too, in a list of its own of
+//! the same count: the step's floor is no coarser, so a mesh held at that level or a coarser
+//! one is known to be the one the kernel would make ([`MeshCache::known`]). Knowing neither,
+//! a held mesh must be meshed again to tell.
 
 use std::collections::BTreeMap;
 use std::mem::size_of;
@@ -23,7 +27,8 @@ pub const MESH_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// How many steps' floors the cache keeps, before it drops the least recently used: each a
 /// 32-byte step key, its floor, and when it was used, in two maps, about 5.5 MiB of data in
-/// all (some 7 to 9 MiB with the maps' nodes), beside the meshes' 256 MiB.
+/// all (some 7 to 9 MiB with the maps' nodes), beside the meshes' 256 MiB. As many steps'
+/// finest levels meshed as asked are kept again, apart, as much again.
 pub const MESH_FLOORS_KEPT: usize = 1 << 16;
 
 /// The deflection a body is meshed at for a view whose pixel is `2 × half_pixel` mm: the
@@ -80,6 +85,11 @@ struct Inner<K> {
     floors: BTreeMap<K, (f64, u64)>,
     /// The same floors by when they were last used, oldest first.
     floor_recency: BTreeMap<u64, K>,
+    /// Each step's finest deflection a mesh was made at as asked (not at a floor it met),
+    /// so its floor is no coarser, and when it was last used; as many as the floors.
+    made: BTreeMap<K, (f64, u64)>,
+    /// The same by when they were last used, oldest first.
+    made_recency: BTreeMap<u64, K>,
     bytes: u64,
     bound: u64,
     floors_kept: usize,
@@ -106,6 +116,8 @@ impl<K: Ord + Clone> MeshCache<K> {
                 recency: BTreeMap::new(),
                 floors: BTreeMap::new(),
                 floor_recency: BTreeMap::new(),
+                made: BTreeMap::new(),
+                made_recency: BTreeMap::new(),
                 bytes: 0,
                 bound,
                 floors_kept,
@@ -125,6 +137,25 @@ impl<K: Ord + Clone> MeshCache<K> {
                 level.max(floor)
             }
             None => level,
+        }
+    }
+
+    /// The deflection the kernel would use for the step at `level`, if the cache knows it
+    /// without asking: the floor's, if a mesh met it (or `level`, if coarser); `level`, if a
+    /// mesh was made at `level` or finer as asked, so the floor is no coarser. None if it
+    /// knows neither: only meshing says. What it knew by is now the most recently used.
+    pub fn known(&self, key: &K, level: f64) -> Option<f64> {
+        let mut inner = lock(&self.inner);
+        if let Some(&(floor, _)) = inner.floors.get(key) {
+            inner.keep_floor(key, floor);
+            return Some(level.max(floor));
+        }
+        let &(made, _) = inner.made.get(key)?;
+        if level >= made {
+            inner.keep_made(key, made);
+            Some(level)
+        } else {
+            None
         }
     }
 
@@ -158,6 +189,13 @@ impl<K: Ord + Clone> MeshCache<K> {
             .is_some_and(|&(floor, _)| floor == used);
         if used > asked || at_floor {
             inner.keep_floor(key, used);
+        } else if used == asked {
+            // Made as asked: the floor is no coarser than the finest made so.
+            let finest = inner
+                .made
+                .get(key)
+                .map_or(used, |&(made, _)| made.min(used));
+            inner.keep_made(key, finest);
         }
         if bytes > inner.bound {
             return mesh;
@@ -197,6 +235,13 @@ impl<K: Ord + Clone> MeshCache<K> {
             inner.floors.remove(key);
             inner.floor_recency.remove(&tick);
         }
+        // So too what a mesh made as asked at it said.
+        if let Some(&(made, tick)) = inner.made.get(key)
+            && made.to_bits() == deflection.to_bits()
+        {
+            inner.made.remove(key);
+            inner.made_recency.remove(&tick);
+        }
     }
 
     /// How many bytes of meshes are kept.
@@ -213,6 +258,23 @@ impl<K: Ord + Clone> Inner<K> {
         };
         self.recency.remove(&old.tick);
         self.bytes -= old.bytes;
+    }
+
+    /// Records the finest deflection the step was made at as asked, now the most recently
+    /// used, the least recently used dropped past the floors' count.
+    fn keep_made(&mut self, key: &K, made: f64) {
+        self.tick += 1;
+        let tick = self.tick;
+        if let Some((_, old)) = self.made.insert(key.clone(), (made, tick)) {
+            self.made_recency.remove(&old);
+        }
+        self.made_recency.insert(tick, key.clone());
+        while self.made.len() > self.floors_kept {
+            let Some((_, oldest)) = self.made_recency.pop_first() else {
+                break;
+            };
+            self.made.remove(&oldest);
+        }
     }
 
     /// Records the step's floor, now the most recently used, the least recently used
@@ -378,6 +440,48 @@ mod tests {
         none.put(&1u32, 1.0 / 128.0, at(0.0173, mesh(1)));
         assert_eq!(none.deflection_for(&1, 1e-9), 1e-9);
         assert_eq!(MESH_FLOORS_KEPT, 65_536);
+    }
+
+    #[test]
+    fn a_level_is_known_by_the_floor_a_mesh_met_or_a_finer_level_made_as_asked() {
+        // Nothing seen: nothing known.
+        let cache = MeshCache::with_floors(0, 2);
+        assert_eq!(cache.known(&1u32, 0.25), None);
+        // Made at 2⁻⁵ as asked: that level and coarser are known, finer not.
+        cache.put(&1, 1.0 / 32.0, at(1.0 / 32.0, mesh(1)));
+        assert_eq!(cache.known(&1, 1.0 / 32.0), Some(1.0 / 32.0));
+        assert_eq!(cache.known(&1, 0.5), Some(0.5));
+        assert_eq!(cache.known(&1, 1.0 / 64.0), None);
+        // Made finer, 2⁻⁶, as asked: now that too; a coarser made as asked changes nothing.
+        cache.put(&1, 1.0 / 64.0, at(1.0 / 64.0, mesh(1)));
+        cache.put(&1, 0.5, at(0.5, mesh(1)));
+        assert_eq!(cache.known(&1, 1.0 / 64.0), Some(1.0 / 64.0));
+        assert_eq!(cache.known(&1, 1.0 / 128.0), None);
+        // Then the floor met, 0.0123: every level is known, the finer ones at the floor.
+        cache.put(&1, 1.0 / 128.0, at(0.0123, mesh(1)));
+        assert_eq!(cache.known(&1, 1e-9), Some(0.0123));
+        assert_eq!(cache.known(&1, 0.5), Some(0.5));
+        // Forgetting a mesh made at the level drops what it said; another step's is its own.
+        let other = MeshCache::with_floors(0, 2);
+        other.put(&2u32, 0.25, at(0.25, mesh(1)));
+        other.forget(&2, 0.5);
+        assert_eq!(other.known(&2, 0.25), Some(0.25));
+        other.forget(&2, 0.25);
+        assert_eq!(other.known(&2, 0.25), None);
+        // Kept as many as the floors, apart from them: a third step's drops the oldest's, and
+        // no floor.
+        let few = MeshCache::with_floors(0, 2);
+        few.put(&1u32, 1.0 / 128.0, at(0.0173, mesh(1)));
+        for key in [2, 3, 4] {
+            few.put(&key, 0.25, at(0.25, mesh(1)));
+        }
+        assert_eq!(few.known(&2, 0.25), None);
+        assert_eq!(few.known(&4, 0.25), Some(0.25));
+        assert_eq!(few.deflection_for(&1, 1e-9), 0.0173);
+        // A cache that keeps no floors knows nothing.
+        let none = MeshCache::with_floors(0, 0);
+        none.put(&1u32, 0.25, at(0.25, mesh(1)));
+        assert_eq!(none.known(&1, 0.25), None);
     }
 
     #[test]

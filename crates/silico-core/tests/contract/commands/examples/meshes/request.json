@@ -1,0 +1,10 @@
+{
+  "session": "s1",
+  "model": "published",
+  "view": null,
+  "camera": {"projection": "orthographic", "eye": [100, -50, 95], "target": [30, 20, 25], "up": [-0.40824829046386313, 0.40824829046386313, 0.8164965809277258], "view_height": 80, "field_of_view": null},
+  "width": 1600,
+  "height": 1000,
+  "features": null,
+  "held": []
+}

@@ -160,6 +160,7 @@ fn effect(command: Command) -> Effect {
         | Command::Distance
         | Command::Angle
         | Command::Timeline
+        | Command::Meshes
         | Command::Sketch => Effect::Reads,
         // An edit outside a transaction saves at once; commit and format save the file.
         Command::Commit
@@ -376,6 +377,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Read a sketch",
             "A sketch as the model solved it: its plane in 3D, its state (under, fully, or over defined, no solution, or invalid) and degrees of freedom, each point, curve, and constraint as the document writes it, at its solved values, with its own state, the regions its profile makes or why it makes none, and why it wasn't solved.",
         ),
+        Command::Meshes => (
+            "Display meshes",
+            "The display meshes of the model's bodies for a view (a named view or a camera, and its size in pixels), as the app's viewport draws them: each body, or each feature named in `features`, at the largest power of two no coarser than half a pixel, from the meshes `render` makes. Each body's positions, normals, and triangles, its edges' polylines, each face and edge by its name, its `key`, and the half pixels its level `serves`. Pass back in `held` the `key` and `deflection` of each mesh already read: a body held is named, but its geometry isn't given again. To look at the model, `render` is cheaper.",
+        ),
         Command::Render => (
             "Render",
             "A PNG of the model's bodies from a named view or a camera, with elements highlighted, returned as an image beside the result, and written to `to` in the workspace if given.",
@@ -403,6 +408,7 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::MassProperties
         | Command::Render
         | Command::Timeline
+        | Command::Meshes
         | Command::Sketch
         | Command::Undo
         | Command::Redo => &[READ_CURRENT],
