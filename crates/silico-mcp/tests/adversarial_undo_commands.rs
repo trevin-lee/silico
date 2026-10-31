@@ -15,6 +15,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use silico_core::cache::Cache;
 use silico_core::command::{Call, Sessions};
+use silico_core::disk::Found;
 use silico_core::fake::{FakeKernel, FakeRenderer};
 
 use crate::client::{BOX, Client, HANG, Reply};
@@ -129,6 +130,37 @@ fn tool(name: &str) -> Value {
         .clone()
 }
 
+/// A disk watch's stand-ins that hold its comparisons: each reads until [`release`]
+/// (`DiskHold::release`), then finds the file unreadable.
+#[derive(Clone, Default)]
+struct DiskHold(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+impl DiskHold {
+    fn watch(&self, sessions: Sessions<Arc<FakeKernel>>) -> Sessions<Arc<FakeKernel>> {
+        let held = self.clone();
+        sessions
+            .watching_disk(
+                std::time::Duration::from_secs(1),
+                Arc::new(move |_| {
+                    let (released, wake) = &*held.0;
+                    let mut released = released.lock().unwrap();
+                    while !*released {
+                        released = wake.wait(released).unwrap();
+                    }
+                    Found::Unreadable
+                }),
+                Arc::new(std::time::Instant::now),
+            )
+            .unwrap()
+    }
+
+    fn release(&self) {
+        let (released, wake) = &*self.0;
+        *released.lock().unwrap() = true;
+        wake.notify_all();
+    }
+}
+
 #[test]
 fn hostile_undo_redo_and_status_calls_are_answered_as_the_core_answers_them_and_hold_to_their_tools()
  {
@@ -138,12 +170,18 @@ fn hostile_undo_redo_and_status_calls_are_answered_as_the_core_answers_them_and_
     std::fs::create_dir(&work).unwrap();
     std::fs::write(work.join("part.silico"), BOX).unwrap();
     let secret = dir.path().join("secret");
+    // Each side's disk watch held: its first comparison reads until the test ends, so no
+    // finding is ever had and every `status` answers `disk` null, on both sides alike. A
+    // comparison started off the thread by one `status` and ended, or not, by the next
+    // would make the twins differ (#300's flake, with #297's watch).
+    let hold = DiskHold::default();
     let sessions = Sessions::with_cache_opener(Arc::new(FakeKernel::new(2).unwrap()), move |c| {
         Cache::with_secret(c, &secret)
     })
     .rendering(FakeRenderer::new())
     .in_workspace(&work)
     .unwrap();
+    let sessions = hold.watch(sessions);
     let core: Vec<(String, bool)> = calls
         .iter()
         .map(
@@ -156,7 +194,7 @@ fn hostile_undo_redo_and_status_calls_are_answered_as_the_core_answers_them_and_
             },
         )
         .collect();
-    let mut c = Client::initialized();
+    let mut c = Client::initialized_with(|sessions| hold.watch(sessions));
     c.file("part.silico", BOX);
     let mut envelopes = Vec::new();
     let mut differ = Vec::new();
@@ -205,6 +243,25 @@ fn hostile_undo_redo_and_status_calls_are_answered_as_the_core_answers_them_and_
         })
         .map(|(_, envelope)| &envelope["result"]["transaction"])
         .collect();
+    // The watch held, no comparison ever ends: no status has a finding until the commit's
+    // save, which the session knows is its own file's bytes (#269), and every one after says
+    // so.
+    let saved = calls
+        .iter()
+        .zip(&envelopes)
+        .position(|((name, _, _), envelope)| *name == "commit" && envelope["ok"] == true)
+        .expect("the transaction is committed");
+    for (at, ((name, _, refused), envelope)) in calls.iter().zip(&envelopes).enumerate() {
+        if *name == "status" && !refused {
+            let want = if at < saved {
+                Value::Null
+            } else {
+                Value::from("unchanged")
+            };
+            assert_eq!(envelope["result"]["disk"], want, "call {at}");
+        }
+    }
+    hold.release();
     let each = 24 + 8 + 16 + 4 + 122;
     assert_eq!(
         statuses,

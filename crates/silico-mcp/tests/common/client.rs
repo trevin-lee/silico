@@ -165,6 +165,28 @@ impl Client {
         reader: impl std::io::BufRead + Send + 'static,
         solver: Option<FakeSketches>,
     ) -> Client {
+        Client::reading_adjusted(reader, solver, |sessions| sessions)
+    }
+
+    /// A server, initialized, its sessions given what `adjust` gives them as they're made
+    /// (a disk watch's stand-ins, say).
+    pub fn initialized_with(
+        adjust: impl FnOnce(Sessions<Arc<FakeKernel>>) -> Sessions<Arc<FakeKernel>>,
+    ) -> Client {
+        let (reader, input) = std::io::pipe().unwrap();
+        let mut client = Client::reading_adjusted(BufReader::new(reader), None, adjust);
+        client.input = Some(input);
+        client.initialize();
+        client
+    }
+
+    /// A server, not yet initialized, reading `reader`, its sketches solved by `solver` if
+    /// it's given, else by the sketch worker, its sessions as `adjust` gives them.
+    fn reading_adjusted(
+        reader: impl std::io::BufRead + Send + 'static,
+        solver: Option<FakeSketches>,
+        adjust: impl FnOnce(Sessions<Arc<FakeKernel>>) -> Sessions<Arc<FakeKernel>>,
+    ) -> Client {
         let dir = tempfile::tempdir().unwrap();
         let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
         std::fs::create_dir(&work).unwrap();
@@ -180,7 +202,7 @@ impl Client {
         .rendering(FakeRenderer::new())
         .in_workspace(&work)
         .unwrap();
-        let server = Server::new(sessions).unwrap();
+        let server = Server::new(adjust(sessions)).unwrap();
         let stop = server.stopper();
         let (to, lines) = mpsc::channel();
         let fail = Arc::new(AtomicBool::new(false));
