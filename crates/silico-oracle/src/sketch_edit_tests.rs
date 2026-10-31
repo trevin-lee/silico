@@ -1707,3 +1707,37 @@ fn a_cited_anchor_is_read_whole_and_only_where_it_starts_a_word() {
         [format!("{p}a-b"), format!("{p}c"), format!("{p}e9")]
     );
 }
+
+#[test]
+fn an_anchor_is_cited_with_the_line_it_stands_on() {
+    // Built, so the citation guard doesn't read it as a dead citation.
+    let missing = concat!("se", "-no-such-anchor");
+    let tag = |anchor: &str| format!("<a id=\"{anchor}\"></a>");
+    // The line a report gives is the note's line holding the anchor, counted from one.
+    let line = note_line("se-merge-built").unwrap();
+    assert!(
+        NOTE_TEXT
+            .lines()
+            .nth(line - 1)
+            .unwrap()
+            .contains(&tag("se-merge-built")),
+        "line {line} doesn't hold se-merge-built"
+    );
+    assert!(
+        !NOTE_TEXT
+            .lines()
+            .nth(line)
+            .unwrap_or("")
+            .contains(&tag("se-merge-built"))
+    );
+    // The note's first line holds no anchor, so no anchor is at line 1 or 0.
+    assert!(line > 1);
+    assert_eq!(note_line(missing), None);
+    let other = note_line("se-extend-built").unwrap();
+    assert_eq!(
+        cited(&["se-merge-built", "se-extend-built", missing]),
+        format!(
+            "#se-merge-built (line {line}), #se-extend-built (line {other}), #{missing}"
+        )
+    );
+}
