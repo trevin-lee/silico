@@ -342,21 +342,10 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// The opens that answered since the last poll, `(number, path, response)` each, in the
-    /// order they were asked: the message cleared if one of them opened that was asked after
-    /// the open whose refusal it says (or it says no open's refusal), then each taken. So a
-    /// refusal is never cleared by an open asked before it, whenever that answers, nor by one
-    /// answering in the same poll.
+    /// The opens that answered since the last poll, `(number, path, response)` each, taken in
+    /// the order they were asked, so what's said comes out the same whether they answered in
+    /// one poll or in several.
     fn take_opens(&mut self, answered: Vec<Answered>) {
-        let newest = answered
-            .iter()
-            .filter(|(_, _, response)| response.result.is_ok())
-            .map(|(number, ..)| *number)
-            .max();
-        if newest.is_some_and(|newest| self.message_from.is_none_or(|from| newest > from)) {
-            self.message = None;
-            self.message_from = None;
-        }
         for (number, path, response) in answered {
             self.take_open(number, path, response);
         }
@@ -364,7 +353,9 @@ impl<P: Clients + 'static> App<P> {
 
     /// An open that answered, taken at once, whatever is still opening: its refusal said, or
     /// its tab put after every tab whose open was asked before it, and shown unless the tab of
-    /// an open asked after it is open (a late answer never takes the tab shown).
+    /// an open asked after it is open (a late answer never takes the tab shown). An open asked
+    /// after the one whose refusal is said clears it (as one does any other message); one
+    /// asked before it, answering late, never does.
     fn take_open(&mut self, number: u64, path: String, response: Response<Opened>) {
         let opened = match response.result {
             Ok(opened) => opened,
@@ -374,6 +365,10 @@ impl<P: Clients + 'static> App<P> {
                 return;
             }
         };
+        if self.message_from.is_none_or(|from| number > from) {
+            self.message = None;
+            self.message_from = None;
+        }
         let id = opened.session;
         let at = self
             .tabs
@@ -1091,10 +1086,36 @@ mod tests {
         if write {
             std::fs::write(&path, BLOCK).unwrap();
         }
+        let answer = asked(app, number, &path);
+        assert_eq!(answer.2.result.is_ok(), write, "{name}'s open");
+        answer
+    }
+
+    /// The open of `path`, asked as the app's `number`th and waited for.
+    fn asked(app: &App<Fake>, number: u64, path: &std::path::Path) -> Answered {
         let path = path.to_str().unwrap().to_owned();
         let response = app.sessions().open(&path, false).wait();
-        assert_eq!(response.result.is_ok(), write, "{name}'s open");
         (number, path, response)
+    }
+
+    /// What the app says once a refusal and an open, asked as its `refused`th and `opened`th,
+    /// are taken, in one poll (in the order asked) or in two (the refusal's first); and what
+    /// the refusal said.
+    fn said_after(refused: u64, opened: u64, one_poll: bool) -> (Option<String>, String) {
+        let (mut app, dir) = app();
+        let refusal = answered(&app, &dir, refused, "missing.silico", false);
+        let open = answered(&app, &dir, opened, "one.silico", true);
+        let said_of_it = said(refusal.2.result.as_ref().unwrap_err());
+        if one_poll {
+            let mut poll = vec![refusal, open];
+            poll.sort_by_key(|(number, ..)| *number);
+            app.take_opens(poll);
+        } else {
+            app.take_opens(vec![refusal]);
+            app.take_opens(vec![open]);
+        }
+        assert_eq!(names(&app), ["one.silico"]);
+        (app.message().map(str::to_owned), said_of_it)
     }
 
     fn session(answered: &Answered) -> SessionId {
@@ -1137,24 +1158,38 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_stays_said_when_an_open_answers_after_it_in_the_same_poll() {
+    fn an_open_asked_after_a_refusal_clears_it_in_the_same_poll_or_a_later_one() {
+        for one_poll in [true, false] {
+            let (message, _) = said_after(1, 2, one_poll);
+            assert_eq!(message, None, "in one poll: {one_poll}");
+        }
+    }
+
+    #[test]
+    fn an_open_asked_before_a_refusal_never_clears_it_in_the_same_poll_or_a_later_one() {
+        for one_poll in [true, false] {
+            let (message, said_of_it) = said_after(2, 1, one_poll);
+            assert_eq!(message, Some(said_of_it), "in one poll: {one_poll}");
+        }
+    }
+
+    #[test]
+    fn of_two_refusals_in_one_poll_the_one_asked_last_is_said() {
         let (mut app, dir) = app();
-        let refused = answered(&app, &dir, 1, "missing.silico", false);
-        let one = answered(&app, &dir, 2, "one.silico", true);
-        let shown = session(&one);
-        let said_of_it = said(refused.2.result.as_ref().unwrap_err());
-        app.take_opens(vec![refused, one]);
-        assert_eq!(app.message(), Some(said_of_it.as_str()));
-        assert_eq!(names(&app), ["one.silico"]);
-        assert_eq!(app.active, Some(shown));
-        // A later poll in which an open answers clears it: it was that poll's refusal.
-        let two = answered(&app, &dir, 3, "two.silico", true);
-        app.take_opens(vec![two]);
-        assert_eq!(app.message(), None);
-        // A poll in which nothing answers leaves the message as it is.
-        app.message = Some("kept".to_owned());
+        let first = answered(&app, &dir, 1, "missing.silico", false);
+        // A directory: refused for what it is, not for being missing, so said otherwise.
+        let folder = dir.path().join("folder.silico");
+        std::fs::create_dir(&folder).unwrap();
+        let third = asked(&app, 3, &folder);
+        let said_of_first = said(first.2.result.as_ref().unwrap_err());
+        let said_of_third = said(third.2.result.as_ref().unwrap_err());
+        assert_ne!(said_of_first, said_of_third);
+        app.take_opens(vec![first, third]);
+        assert_eq!(app.message(), Some(said_of_third.as_str()));
+        assert!(app.tabs().is_empty());
+        // A poll in which nothing answers leaves it as it is.
         app.take_opens(Vec::new());
-        assert_eq!(app.message(), Some("kept"));
+        assert_eq!(app.message(), Some(said_of_third.as_str()));
     }
 
     #[test]
@@ -1207,9 +1242,9 @@ mod tests {
     }
 
     #[test]
-    fn an_answered_open_is_taken_while_one_asked_before_it_is_still_pending() {
+    fn answered_opens_are_taken_in_the_order_asked_around_one_still_pending() {
         // Each stub open answers `Some` at once, or `None`, pending (stuck reading its file).
-        let opening: Vec<Opening<Option<u32>>> = [(1, None), (2, Some(20)), (3, None)]
+        let opening: Vec<Opening<Option<u32>>> = [(1, Some(10)), (2, None), (3, Some(30))]
             .into_iter()
             .map(|(number, running)| Opening {
                 number,
@@ -1218,12 +1253,18 @@ mod tests {
             })
             .collect();
         let (answered, pending) = split_answered(opening, |running| running.ok_or(None));
-        assert_eq!(answered, [(2, "2.silico".to_owned(), 20)]);
+        assert_eq!(
+            answered,
+            [
+                (1, "1.silico".to_owned(), 10),
+                (3, "3.silico".to_owned(), 30)
+            ]
+        );
         let pending: Vec<(u64, &str)> = pending
             .iter()
             .map(|opening| (opening.number, opening.path.as_str()))
             .collect();
-        assert_eq!(pending, [(1, "1.silico"), (3, "3.silico")]);
+        assert_eq!(pending, [(2, "2.silico")]);
     }
 
     #[test]
