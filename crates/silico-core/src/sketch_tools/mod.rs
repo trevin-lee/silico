@@ -322,8 +322,9 @@ impl NewIds for SystemIds {
     }
 }
 
-/// A sketch tool, between events.
-#[derive(Debug, Clone)]
+/// A sketch tool, between events. Not `Clone`: a copy would give the same tokens as the tool
+/// it copied.
+#[derive(Debug)]
 pub struct SketchTool {
     state: State,
     preview: Preview,

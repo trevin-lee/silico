@@ -1553,13 +1553,23 @@ fn leaving_arc_ending_at(to: f64) -> Vec<&'static str> {
 fn an_arc_leaving_an_axis_by_a_nanoradian_or_less_gets_both_and_by_a_microradian_the_tangent_alone()
 {
     // Past its end at π/2 + ε an arc runs along π + ε: −x, its y component −sin ε. At
-    // ε = 1e-12 that's within 1e-9: tangent and horizontal. At 1e-6, past it: tangent alone.
+    // ε = 1e-12 and 1e-10 that's within 1e-9: tangent and horizontal. At 1e-8 and 1e-6, past
+    // it: tangent alone. So the bound is pinned within a factor of ten either way.
     let half = std::f64::consts::FRAC_PI_2;
-    assert_eq!(
-        leaving_arc_ending_at(half + 1e-12),
-        ["horizontal", "tangent_at"]
-    );
-    assert_eq!(leaving_arc_ending_at(half + 1e-6), ["tangent_at"]);
+    for epsilon in [1e-12, 1e-10] {
+        assert_eq!(
+            leaving_arc_ending_at(half + epsilon),
+            ["horizontal", "tangent_at"],
+            "{epsilon}"
+        );
+    }
+    for epsilon in [1e-8, 1e-6] {
+        assert_eq!(
+            leaving_arc_ending_at(half + epsilon),
+            ["tangent_at"],
+            "{epsilon}"
+        );
+    }
 }
 
 #[test]
