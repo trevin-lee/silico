@@ -1207,6 +1207,12 @@ pub const KNOWN: &[Known] = &[
         shows: Shows::Varies(Rule::MergeHoldsOwn(String::new())),
         why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which the symmetric k0000018 would mirror an end of n0000005 about n0000005 itself, which Silico refuses (#se-a-curve-s-own-point-constrained, #se-the-merged-sketch-is-gated); FreeCAD makes the merge, its solve succeeding (0), in 4 of 6 runs alone and in the one whole sweep, and rolls it back (#se-any-result-whose-solve-is-worse) in 2, but an answer that varies is no oracle",
     },
+    // `sketch-edit-sweep --seed 58 --count 500`'s case 356.
+    Known {
+        case: "edit_58_356",
+        shows: Shows::Varies(Rule::MergeHoldsOwn(String::new())),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which the symmetric k0000019 would mirror an end of n0000005 about n0000005 itself, which Silico refuses (#se-a-curve-s-own-point-constrained, #se-the-merged-sketch-is-gated); FreeCAD makes the merge, its solve succeeding (0, 7 degrees of freedom), in 5 of 12 runs alone and 1 of 2 whole sweeps, and rolls it back (#se-any-result-whose-solve-is-worse) in the rest, but an answer that varies is no oracle",
+    },
     // `sketch-edit-sweep --seed 78 --count 500`'s case 227.
     Known {
         case: "edit_78_227",
