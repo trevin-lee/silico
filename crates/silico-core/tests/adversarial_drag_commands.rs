@@ -902,7 +902,9 @@ fn reachable(to: [f64; 2]) -> bool {
 }
 
 /// Runs `ops`, checking each against the model: the file's text at the end.
-fn run(ops: &[Op]) -> String {
+/// The sequence `ops` played against the model: the document as it ends, and how many
+/// answers came from a drag its worker ended (so a test can tell the case was reached).
+fn run(ops: &[Op]) -> (String, usize) {
     let f = opened(&profile());
     // Inside a transaction, so undo undoes.
     answer(f.sessions.begin(&s1())).result.unwrap();
@@ -913,6 +915,7 @@ fn run(ops: &[Op]) -> String {
     // takes it, and refused with the worker's error code meanwhile: later moves, and a
     // release with a cursor (the design's `drag_move`).
     let mut ended_by_worker: Option<silico_core::ErrorCode> = None;
+    let mut by_worker_answers = 0usize;
     let mut undoable = 0usize;
     // Where a point begins a drag: where the document holds it now, since releases before
     // moved it (the fake solves where it's sent).
@@ -924,6 +927,8 @@ fn run(ops: &[Op]) -> String {
         let before = f.revision();
         match op {
             Op::Begin(point) => {
+                // A begin, taken or refused, first ends a drag its worker ended.
+                ended_by_worker = None;
                 let begun = f.begin_point(point);
                 match (open, *point) {
                     (Some(_), _) => {
@@ -935,11 +940,11 @@ fn run(ops: &[Op]) -> String {
                     (None, point) => {
                         begun.result.unwrap();
                         open = Some(starts(point));
-                        ended_by_worker = None;
                     }
                 }
             }
             Op::Edge(press) => {
+                ended_by_worker = None;
                 let begun = answer(f.sessions.drag_begin(
                     &s1(),
                     fid("s0000001"),
@@ -971,7 +976,6 @@ fn run(ops: &[Op]) -> String {
                     None => {
                         begun.result.unwrap();
                         open = Some(*press);
-                        ended_by_worker = None;
                     }
                 }
             }
@@ -981,6 +985,7 @@ fn run(ops: &[Op]) -> String {
                     None if let Some(code) = ended_by_worker => {
                         let error = the_error(&moved);
                         assert_eq!((error.code(), error.parameter()), (code, None), "{at}");
+                        by_worker_answers += 1;
                     }
                     None => assert_eq!(the_error(&moved).parameter(), Some("session"), "{at}"),
                     Some(_) if !reachable(*to) => {
@@ -1011,10 +1016,12 @@ fn run(ops: &[Op]) -> String {
                     (None, Some(_)) if let Some(code) = by_worker => {
                         let error = the_error(&ended);
                         assert_eq!((error.code(), error.parameter()), (code, None), "{at}");
+                        by_worker_answers += 1;
                     }
                     (None, None) if by_worker.is_some() => {
                         let ended = ended.result.unwrap();
                         assert_eq!((ended.kept, ended.changed), (Kept::Begin, false), "{at}");
+                        by_worker_answers += 1;
                     }
                     (None, _) => {
                         assert_eq!(the_error(&ended).parameter(), Some("session"), "{at}")
@@ -1071,7 +1078,7 @@ fn run(ops: &[Op]) -> String {
     f.begin_point("pa000004").result.unwrap();
     f.ended(None).result.unwrap();
     assert!(!f.open());
-    f.text()
+    (f.text(), by_worker_answers)
 }
 
 proptest! {
@@ -1097,23 +1104,33 @@ fn moves_and_a_release_after_a_worker_ended_the_drag_are_refused_with_its_error(
     // first move the fake solver nudges past the reach, its worker's fault ending the drag.
     // The next move is refused with that worker's error, as the design's `drag_move` says
     // ("later moves and a release with a cursor are refused with the worker's error code"),
-    // not as though no drag were open; the model once read it the other way.
-    run(&[
+    // not as though no drag were open; the model once read it the other way. Each run counts
+    // the answers it took from the ended drag, so the case is reached, not passed by.
+    let far = [
         Op::Begin("pa000004"),
         Op::End(Some([-999000.0, 5.0])),
         Op::Edge([50.58376698026355, 5.0]),
         Op::Move([5.0, 60.0]),
-        Op::Move([60.0, 60.0]),
-        Op::End(Some([60.0, 60.0])),
-    ]);
-    run(&[
-        Op::Begin("pa000004"),
-        Op::End(Some([-999000.0, 5.0])),
-        Op::Edge([50.58376698026355, 5.0]),
-        Op::Move([5.0, 60.0]),
-        Op::End(None),
-        Op::Begin("pa000004"),
-    ]);
+    ];
+    let then = |more: &[Op]| [far.as_slice(), more].concat();
+    // A move, then a release with a cursor: both the worker's error.
+    assert_eq!(
+        run(&then(&[
+            Op::Move([60.0, 60.0]),
+            Op::End(Some([60.0, 60.0]))
+        ]))
+        .1,
+        2
+    );
+    // A release with none keeps the begin state, and a begin after it is a drag's.
+    assert_eq!(run(&then(&[Op::End(None), Op::Begin("pa000004")])).1, 1);
+    // A begin refused (no such point, a press off the reach) still ends the ended drag: the
+    // move after it is told no drag is open (review of #336).
+    assert_eq!(
+        run(&then(&[Op::Begin("pa00000z"), Op::Move([60.0, 60.0])])).1,
+        0
+    );
+    assert_eq!(run(&then(&[Op::Edge([f64::NAN, 5.0]), Op::End(None)])).1, 0);
 }
 
 // ---------------------------------------------------------------------------------------
