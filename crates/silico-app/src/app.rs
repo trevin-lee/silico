@@ -235,7 +235,7 @@ impl<P: Clients + 'static> App<P> {
 
     /// Ctrl+S saves and Ctrl+Shift+S asks where to save as (neither while a dialog is
     /// open), Ctrl+W closes, Ctrl+Z and Ctrl+Y undo and redo (docs/ux/solidworks.md, §6),
-    /// and Esc stops what's running (§5, *Rebuild*). With a dialog open, Enter and Esc are
+    /// Esc stops what's running and Ctrl+B rebuilds what was stopped (§5, *Rebuild*). With a dialog open, Enter and Esc are
     /// the dialog's, taken here and given to it once its inputs have taken this frame's
     /// typing ([`dialog_panel`](Self::dialog_panel)). Whether a command was started, and
     /// the dialog's key.
@@ -265,11 +265,12 @@ impl<P: Clients + 'static> App<P> {
                 input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))
             })
         };
-        let (save, close, undo, redo) = (
+        let (save, close, undo, redo, rebuild) = (
             pressed(Key::S),
             pressed(Key::W),
             pressed(Key::Z),
             pressed(Key::Y),
+            pressed(Key::B),
         );
         let stop = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
@@ -285,6 +286,9 @@ impl<P: Clients + 'static> App<P> {
         if redo && tab.redoable() {
             tab.step(sessions, false);
         }
+        if rebuild {
+            tab.rebuild(sessions);
+        }
         let dialog_key = match (enter, stop && in_dialog) {
             (true, _) => Some(Key::Enter),
             (false, true) => Some(Key::Escape),
@@ -293,16 +297,15 @@ impl<P: Clients + 'static> App<P> {
         // Esc, with no dialog open: the selection cleared first, then a rebuild running
         // stopped, as the stop does (section 3's order); with neither, nothing.
         if stop && !in_dialog {
-            if tab.selected.is_some() {
-                tab.selected = None;
-            } else if tab.stoppable() {
-                tab.stop(sessions);
-            }
+            tab.escape(sessions);
         }
         if close && let Some(id) = self.active {
             self.close(id);
         }
-        (save || undo || redo || stop || close || enter, dialog_key)
+        (
+            save || undo || redo || stop || close || enter || rebuild,
+            dialog_key,
+        )
     }
 
     /// The open dialog, docked at the right (open item 27): drawn, what's changed in it sent,
@@ -354,7 +357,7 @@ impl<P: Clients + 'static> App<P> {
         *started |= tab.dialog_changed(sessions);
         match key {
             Some(Key::Enter) if tab.can_ok() => action = Action::Ok,
-            Some(Key::Escape) if tab.preview_rebuilding() => tab.stop_preview(sessions),
+            Some(Key::Escape) if tab.preview_rebuilding() => tab.stop_quietly(sessions),
             Some(Key::Escape) => action = Action::Cancel,
             _ => {}
         }
@@ -576,6 +579,14 @@ impl<P: Clients + 'static> App<P> {
                         .clicked()
                     {
                         tab.stop(&self.sessions);
+                        *started = true;
+                    }
+                    // Rebuild (Ctrl+B), on while the tab's revision's rebuild is stopped.
+                    if ui
+                        .add_enabled(tab.rebuild_stopped(), egui::Button::new("Rebuild"))
+                        .clicked()
+                    {
+                        tab.rebuild(&self.sessions);
                         *started = true;
                     }
                     for message in [message, tab.message.clone()].into_iter().flatten() {

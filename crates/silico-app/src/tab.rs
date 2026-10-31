@@ -1255,9 +1255,34 @@ impl Tab {
         }
     }
 
-    /// A dialog's preview stopped, with the stop's call: refused only if the preview has
-    /// finished since, which leaves nothing to stop and nothing to say.
-    pub fn stop_preview<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+    /// Rebuild (Ctrl+B, docs/ux/solidworks.md, §5, *Rebuild*): the tab's revision's rebuild,
+    /// stopped, started again by a read of the current model (from the cache, so what was
+    /// built before the stop isn't built again), whose answer is the timeline. Only while
+    /// that rebuild is stopped.
+    pub fn rebuild<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if !self.rebuild_stopped() {
+            return;
+        }
+        // A read of the published model in flight answers at once: this one replaces it.
+        self.timeline_asked = Some((self.revision, self.published));
+        self.timeline_read = Some(sessions.timeline(&self.id, ModelChoice::Current));
+    }
+
+    /// Esc with no dialog open (section 3's order): the selection cleared, or, with none, a
+    /// rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)); with
+    /// neither, nothing.
+    pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if self.selected.is_some() {
+            self.selected = None;
+        } else if self.stoppable() {
+            self.stop_quietly(sessions);
+        }
+    }
+
+    /// The stop, from Esc or a dialog preview: as the button's ([`stop`](Self::stop)), but
+    /// a refusal (the rebuild finished since `status` said it ran, leaving nothing to stop)
+    /// says nothing. Only the Stop button says its refusal.
+    pub fn stop_quietly<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if sessions
             .cancel(&self.id, Cancellable::Rebuild)
             .result
@@ -1288,6 +1313,12 @@ impl Tab {
         if self.timeline_read.is_some() || self.timeline_asked == Some(asked) {
             return;
         }
+        // Stopped with nothing published: a read of the published model is refused for
+        // that, and one of the current model would start the rebuild again. Nothing is read
+        // until the revision or the published model moves, or Rebuild asks.
+        if self.rebuild_stopped() && self.published.is_none() && self.nothing_published {
+            return;
+        }
         // Never the current model of a revision whose rebuild was stopped: its read would
         // start the rebuild again, undoing the stop. The stopped state shows until an edit.
         let current = ((self.published.is_none() && self.nothing_published) || self.previews())
@@ -1313,8 +1344,9 @@ impl Tab {
             .is_some_and(|dialog| dialog.feature.is_some())
     }
 
-    /// Whether the rebuild of the tab's revision was stopped, as `status` says.
-    fn rebuild_stopped(&self) -> bool {
+    /// Whether the rebuild of the tab's revision was stopped, as `status` says: Rebuild is
+    /// on, and the panes say so where they'd say they're building.
+    pub fn rebuild_stopped(&self) -> bool {
         self.status.as_ref().is_some_and(|status| {
             status.rebuild.revision == self.revision
                 && status.rebuild.state == RebuildState::Stopped
