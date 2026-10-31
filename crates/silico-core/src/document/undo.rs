@@ -136,12 +136,36 @@ enum Text {
     Chunked(Vec<Arc<Chunk>>),
 }
 
-/// A state the stack holds: its text, and every revision it was the session's state at,
-/// the one it was made at first.
+/// What a state holds beside its text (a session's: what `format` had put into its
+/// document), which the stack keeps with the state, gives back when it restores it, drops
+/// with it, and counts as it counts texts: for every state but the session's, once however
+/// many share it. An edit's state takes the one before's, until it's set
+/// ([`UndoStack::set_extra`]).
+pub trait Extra: Clone + Default {
+    /// The same key for values shared (an `Arc`'s address), so they're counted once; none
+    /// for one that costs nothing.
+    fn shared(&self) -> Option<usize>;
+    /// What it counts for.
+    fn cost(&self) -> usize;
+}
+
+impl Extra for () {
+    fn shared(&self) -> Option<usize> {
+        None
+    }
+
+    fn cost(&self) -> usize {
+        0
+    }
+}
+
+/// A state the stack holds: its text, every revision it was the session's state at, the
+/// one it was made at first, and what it holds beside its text.
 #[derive(Debug, Clone)]
-struct State<K> {
+struct State<K, X> {
     text: Text,
     revisions: Vec<K>,
+    extra: X,
 }
 
 /// A state restored by [`UndoStack::undo`] or [`UndoStack::redo`]: the revision it was
@@ -156,6 +180,61 @@ pub struct Restored<K> {
     pub dropped: usize,
 }
 
+/// What [`UndoStack::plan_undo`] or [`UndoStack::plan_redo`] found to restore, the stack
+/// not moved: the state, the revision it was made at, and its text as the stack holds it,
+/// shared, so writing it out ([`Plan::text`]) can happen with the stack's lock let go.
+#[derive(Debug, Clone)]
+pub struct Plan<K, X = ()> {
+    target: usize,
+    /// The session's state when it was made: an [`UndoStack::apply`] of a stack moved since
+    /// restores nothing.
+    at: usize,
+    restored: Option<K>,
+    text: Text,
+    extra: X,
+}
+
+impl<K: Copy, X> Plan<K, X> {
+    /// What the state it restores holds beside its text.
+    pub fn extra(&self) -> &X {
+        &self.extra
+    }
+
+    /// The revision whose state it restores: the one that state was made at.
+    pub fn restored(&self) -> Option<K> {
+        self.restored
+    }
+
+    /// The text it restores, as the session held it, byte for byte: written from its
+    /// features' chunks, or its bytes as they were.
+    pub fn text(&self) -> Arc<Vec<u8>> {
+        written(&self.text)
+    }
+}
+
+/// What [`UndoStack::apply`] did: the revision whose state it restored, what's left to undo
+/// and redo, and how many more edits the bound left out of undo's reach as it did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Applied<K> {
+    pub restored: K,
+    pub undo: usize,
+    pub redo: usize,
+    pub dropped: usize,
+}
+
+impl<K> Applied<K> {
+    /// As a [`Restored`], with its text.
+    fn with_text(self, text: Arc<Vec<u8>>) -> Restored<K> {
+        Restored {
+            restored: self.restored,
+            text,
+            undo: self.undo,
+            redo: self.redo,
+            dropped: self.dropped,
+        }
+    }
+}
+
 /// Why [`UndoStack::undo`] or [`UndoStack::redo`] restored nothing, for the command layer to
 /// word (section 7's errors).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,8 +246,9 @@ pub enum Refusal<K> {
     NothingToRedo,
     /// `to` isn't a revision any state undo or redo can reach was the session's state at:
     /// the bound dropped it, or it's from before the transaction, or an edit dropped it
-    /// from redo. `held` is every revision such a state was, in order, for the refusal to
-    /// name.
+    /// from redo. `held` is every revision a state the same command can restore was (for
+    /// undo, those before the session's state that undo reaches; for redo, those after it),
+    /// in order, for the refusal to name: each one a `to` the command takes.
     NotHeld { to: K, held: Vec<K> },
     /// `to` is the session's state now, or a revision on the other side of it (an undo to
     /// a later state, a redo to an earlier one).
@@ -185,9 +265,9 @@ pub struct Pushed {
 /// A transaction's states, from the one `begin` saw to the newest an edit made, the
 /// session's current one among them, and what they hold (section 3's A2).
 #[derive(Debug)]
-pub struct UndoStack<K> {
+pub struct UndoStack<K, X = ()> {
     /// Oldest first: `begin`'s, then each edit's, the redo states after the current one.
-    states: VecDeque<State<K>>,
+    states: VecDeque<State<K, X>>,
     /// The session's state now, in `states`.
     at: usize,
     /// How many of the transaction's edits undo can no longer reach.
@@ -198,24 +278,52 @@ pub struct UndoStack<K> {
     /// Each chunk those states hold, by where it is, with how many of them hold it and what
     /// it counts for: counted once, however many share it.
     held: BTreeMap<usize, (usize, usize)>,
+    /// Each shared extra those states hold, by its key, likewise ([`Extra`]).
+    extras: BTreeMap<usize, (usize, usize)>,
 }
 
 impl<K: Copy + Ord> UndoStack<K> {
     /// The stack of a transaction `begin` opened at `revision`, on a file holding `bytes`,
     /// bounded by `bound` bytes as [`UndoStack::bytes`] counts them ([`UNDO_BYTES`] for a
-    /// session's).
+    /// session's), its states holding nothing beside their texts.
     pub fn new(bytes: Arc<Vec<u8>>, revision: K, bound: usize) -> Self {
+        Self::holding(bytes, revision, bound)
+    }
+}
+
+impl<K: Copy + Ord, X: Extra> UndoStack<K, X> {
+    /// [`UndoStack::new`], each state holding an `X` beside its text (`begin`'s, the
+    /// default).
+    pub fn holding(bytes: Arc<Vec<u8>>, revision: K, bound: usize) -> Self {
         let counted = bytes.len();
         UndoStack {
             states: VecDeque::from([State {
                 text: Text::Whole(bytes),
                 revisions: vec![revision],
+                extra: X::default(),
             }]),
             at: 0,
             dropped: 0,
             bound,
             bytes: counted,
             held: BTreeMap::new(),
+            extras: BTreeMap::new(),
+        }
+    }
+
+    /// What the session's state holds beside its text.
+    pub fn extra(&self) -> X {
+        self.states
+            .get(self.at)
+            .map(|state| state.extra.clone())
+            .unwrap_or_default()
+    }
+
+    /// The session's state holds `extra` beside its text from now (it isn't counted while
+    /// it's the session's: no count changes).
+    pub fn set_extra(&mut self, extra: X) {
+        if let Some(state) = self.states.get_mut(self.at) {
+            state.extra = extra;
         }
     }
 
@@ -224,9 +332,10 @@ impl<K: Copy + Ord> UndoStack<K> {
     pub fn edit(&mut self, after: After, revision: K) -> Pushed {
         while self.states.len() > self.at + 1 {
             if let Some(state) = self.states.pop_back() {
-                self.release(&state.text);
+                self.release(&state.text, &state.extra);
             }
         }
+        let extra = self.extra();
         let text = match after {
             After::Whole(bytes) => Text::Whole(bytes),
             After::Canonical(prepared) => Text::Chunked(self.chunked(&prepared)),
@@ -236,6 +345,7 @@ impl<K: Copy + Ord> UndoStack<K> {
         self.states.push_back(State {
             text,
             revisions: vec![revision],
+            extra,
         });
         self.at += 1;
         Pushed {
@@ -246,32 +356,89 @@ impl<K: Copy + Ord> UndoStack<K> {
     }
 
     /// The state before the session's, or with `to`, the state at that revision; the
-    /// session's state now held for redo, at `revision`, a new one.
+    /// session's state now held for redo, at `revision`, a new one: [`plan_undo`] and
+    /// [`apply`] at once.
+    ///
+    /// [`plan_undo`]: Self::plan_undo
+    /// [`apply`]: Self::apply
     pub fn undo(&mut self, to: Option<K>, revision: K) -> Result<Restored<K>, Refusal<K>> {
+        let plan = self.plan_undo(to)?;
+        let text = plan.text();
+        self.apply(plan, revision)
+            .map(|applied| applied.with_text(text))
+    }
+
+    /// The state after the session's, or with `to`, the state at that revision:
+    /// [`plan_redo`](Self::plan_redo) and [`apply`](Self::apply) at once.
+    pub fn redo(&mut self, to: Option<K>, revision: K) -> Result<Restored<K>, Refusal<K>> {
+        let plan = self.plan_redo(to)?;
+        let text = plan.text();
+        self.apply(plan, revision)
+            .map(|applied| applied.with_text(text))
+    }
+
+    /// What [`undo`](Self::undo) would restore, the stack left as it is: the state before
+    /// the session's, or with `to`, the state at that revision. Refused as `undo` is.
+    pub fn plan_undo(&self, to: Option<K>) -> Result<Plan<K, X>, Refusal<K>> {
         let target = match to {
             None if self.at <= self.lowest() => return Err(Refusal::NothingToUndo),
             None => self.at - 1,
             Some(to) => match self.find(to) {
                 Some(found) if found < self.at => found,
                 Some(_) => return Err(Refusal::WrongSide { to }),
-                None => return Err(self.not_held(to)),
+                None => return Err(self.not_held(to, self.lowest().min(self.at)..self.at)),
             },
         };
-        Ok(self.restore(target, revision))
+        self.plan(target)
     }
 
-    /// The state after the session's, or with `to`, the state at that revision.
-    pub fn redo(&mut self, to: Option<K>, revision: K) -> Result<Restored<K>, Refusal<K>> {
+    /// What [`redo`](Self::redo) would restore, the stack left as it is: the state after
+    /// the session's, or with `to`, the state at that revision. Refused as `redo` is.
+    pub fn plan_redo(&self, to: Option<K>) -> Result<Plan<K, X>, Refusal<K>> {
         let target = match to {
             None if self.at + 1 >= self.states.len() => return Err(Refusal::NothingToRedo),
             None => self.at + 1,
             Some(to) => match self.find(to) {
                 Some(found) if found > self.at => found,
                 Some(_) => return Err(Refusal::WrongSide { to }),
-                None => return Err(self.not_held(to)),
+                None => return Err(self.not_held(to, self.at + 1..self.states.len())),
             },
         };
-        Ok(self.restore(target, revision))
+        self.plan(target)
+    }
+
+    /// The plan of restoring the state at `target`, one the stack holds.
+    fn plan(&self, target: usize) -> Result<Plan<K, X>, Refusal<K>> {
+        match self.states.get(target) {
+            Some(state) => Ok(Plan {
+                target,
+                at: self.at,
+                restored: state.revisions.first().copied(),
+                text: state.text.clone(),
+                extra: state.extra.clone(),
+            }),
+            // Never: `target` is one of the stack's states.
+            None => Err(Refusal::NothingToUndo),
+        }
+    }
+
+    /// `plan`'s state made the session's, at `revision`, a new one: the state it was before
+    /// held from now, and the plan's no longer; then, past the bound, the oldest states
+    /// after `begin`'s dropped, but never the session's. The plan must be of the stack as
+    /// it is now: one made since it last moved (its caller moves it alone, so nothing can
+    /// in between); one of a stack moved since restores nothing, saying so as an undo with
+    /// nothing to undo does.
+    pub fn apply(&mut self, plan: Plan<K, X>, revision: K) -> Result<Applied<K>, Refusal<K>> {
+        if plan.at != self.at || plan.target >= self.states.len() {
+            return Err(Refusal::NothingToUndo);
+        }
+        let restored = self.restore(plan.target, revision);
+        Ok(Applied {
+            restored: plan.restored.unwrap_or(restored.restored),
+            undo: restored.undo,
+            redo: restored.redo,
+            dropped: restored.dropped,
+        })
     }
 
     /// Whether a state after the session's, one [`UndoStack::redo`] can restore, was the
@@ -303,7 +470,8 @@ impl<K: Copy + Ord> UndoStack<K> {
     /// What the stack holds, as its bound counts it: `begin`'s bytes; and for each state but
     /// the session's, its list of chunks ([`LIST_BYTES`] and [`ENTRY_BYTES`] a chunk), and
     /// each chunk no other such state already counted ([`CHUNK_BYTES`] and its texts'
-    /// bytes), or its bytes and [`WHOLE_BYTES`] if it's held whole.
+    /// bytes), or its bytes and [`WHOLE_BYTES`] if it's held whole; and each extra no other
+    /// such state already counted ([`Extra::cost`]).
     pub fn bytes(&self) -> usize {
         self.bytes
     }
@@ -322,11 +490,13 @@ impl<K: Copy + Ord> UndoStack<K> {
             .filter(|&found| found >= lowest)
     }
 
-    fn not_held(&self, to: K) -> Refusal<K> {
+    /// The refusal of `to`, a revision no state the command can restore was: the revisions
+    /// of the states at `side` (those the command can restore), in order.
+    fn not_held(&self, to: K, side: std::ops::Range<usize>) -> Refusal<K> {
+        let end = side.end.min(self.states.len());
         let mut held: Vec<K> = self
             .states
-            .iter()
-            .skip(self.lowest())
+            .range(side.start.min(end)..end)
             .flat_map(|state| state.revisions.iter().copied())
             .collect();
         held.sort_unstable();
@@ -336,29 +506,29 @@ impl<K: Copy + Ord> UndoStack<K> {
 
     /// The state at `target` made the session's, at `revision`: the one it was before held
     /// from now, and `target`'s no longer; then, past the bound, the oldest states after
-    /// `begin`'s dropped, but never the session's.
-    fn restore(&mut self, target: usize, revision: K) -> Restored<K> {
+    /// `begin`'s dropped, but never the session's. Its text isn't written here: a plan
+    /// writes it, off whatever lock the stack is under.
+    fn restore(&mut self, target: usize, revision: K) -> Applied<K> {
         self.hold_at(self.at);
         if target > 0
-            && let Some(then) = self.states.get(target).map(|s| s.text.clone())
+            && let Some((text, extra)) = self
+                .states
+                .get(target)
+                .map(|s| (s.text.clone(), s.extra.clone()))
         {
-            self.release(&then);
+            self.release(&text, &extra);
         }
         self.at = target;
         let dropped = self.drop_past_bound(2);
-        let (restored, text) = match self.states.get_mut(self.at) {
+        let restored = match self.states.get_mut(self.at) {
             Some(state) => {
                 state.revisions.push(revision);
-                (
-                    state.revisions.first().copied().unwrap_or(revision),
-                    written(&state.text),
-                )
+                state.revisions.first().copied().unwrap_or(revision)
             }
-            None => (revision, Arc::new(Vec::new())),
+            None => revision,
         };
-        Restored {
+        Applied {
             restored,
-            text,
             undo: self.undo_left(),
             redo: self.redo_left(),
             dropped,
@@ -373,7 +543,7 @@ impl<K: Copy + Ord> UndoStack<K> {
             let Some(state) = self.states.remove(1) else {
                 break;
             };
-            self.release(&state.text);
+            self.release(&state.text, &state.extra);
             self.at -= 1;
             let more = if self.dropped == 0 { 2 } else { 1 };
             self.dropped += more;
@@ -403,14 +573,24 @@ impl<K: Copy + Ord> UndoStack<K> {
     /// The state at `at` counted as held, unless it's `begin`'s, counted always.
     fn hold_at(&mut self, at: usize) {
         if at > 0
-            && let Some(text) = self.states.get(at).map(|s| s.text.clone())
+            && let Some((text, extra)) = self
+                .states
+                .get(at)
+                .map(|s| (s.text.clone(), s.extra.clone()))
         {
-            self.hold(&text);
+            self.hold(&text, &extra);
         }
     }
 
-    /// `text` counted as held by one more state.
-    fn hold(&mut self, text: &Text) {
+    /// `text` and `extra` counted as held by one more state.
+    fn hold(&mut self, text: &Text, extra: &X) {
+        if let Some(key) = extra.shared() {
+            let (refs, cost) = self.extras.entry(key).or_insert((0, extra.cost()));
+            if *refs == 0 {
+                self.bytes += *cost;
+            }
+            *refs += 1;
+        }
         match text {
             Text::Whole(bytes) => self.bytes += bytes.len() + WHOLE_BYTES,
             Text::Chunked(chunks) => {
@@ -429,8 +609,17 @@ impl<K: Copy + Ord> UndoStack<K> {
         }
     }
 
-    /// `text` counted as held by one state fewer.
-    fn release(&mut self, text: &Text) {
+    /// `text` and `extra` counted as held by one state fewer.
+    fn release(&mut self, text: &Text, extra: &X) {
+        if let Some(key) = extra.shared()
+            && let Some((refs, cost)) = self.extras.get_mut(&key)
+        {
+            *refs = refs.saturating_sub(1);
+            if *refs == 0 {
+                self.bytes = self.bytes.saturating_sub(*cost);
+                self.extras.remove(&key);
+            }
+        }
         match text {
             Text::Whole(bytes) => {
                 self.bytes = self.bytes.saturating_sub(bytes.len() + WHOLE_BYTES);

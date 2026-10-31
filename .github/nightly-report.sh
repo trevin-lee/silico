@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 # A nightly's result as GitHub issues (oracle-sweep.yml), one for each part that can fail:
 # `sweep` (500 generated cases, a new seed each night), `corpus` (the same real parts each
-# night), and `setup` (a failure before either ran). A failed part opens an issue titled
-# "Nightly <workflow> failed: <part>", assigned to the repository's owner, or comments on
-# the one already open. A green night closes the corpus's and setup's: they test the same
-# thing every night. It only comments on the sweep's, which a green night can't settle (its
-# seed tested other cases): it's closed by hand once the failing seed passes again.
+# night), `sketch-edit-sweep` and `sketch-extend-sweep` (500 generated sketch edits and
+# extends, from the night's seed), and `setup` (a failure before any ran). A failed part
+# opens an issue titled "Nightly <workflow> failed: <part>", assigned to the repository's
+# owner, or comments on the one already open; a sketch sweep's lists the cases it found
+# differing. A green night closes the corpus's and setup's: they test the same thing every
+# night. It only comments on the sweeps', which a green night can't settle (its seed tested
+# other cases): each is closed by hand once its failing seed passes again.
 #
 # Run by the workflow's last job, on scheduled runs, with the job's token (GH_TOKEN,
 # GH_REPO, OWNER), the night's RESULT (success, failure, cancelled, skipped), each part's
-# step outcome (SWEEP, CORPUS: success, failure, cancelled, skipped, or empty if it never
-# ran), WORKFLOW, RUN_URL, and SEED.
+# step outcome (SWEEP, CORPUS, EDITS, EXTENDS: success, failure, cancelled, skipped, or
+# empty if it never ran), the cases each sketch sweep found differing (EDIT_CASES,
+# EXTEND_CASES: space-separated names, or empty), each sketch sweep's exit status
+# (EDIT_STATUS, EXTEND_STATUS: 1 when cases differ, 2 when the sweep couldn't run, or empty),
+# WORKFLOW, RUN_URL, and SEED.
 set -euo pipefail
 
 # gh, verified.
@@ -32,8 +37,27 @@ how_to_repeat() {
   case $1 in
   sweep) echo "Seed $SEED: \`pixi run oracle-sweep -- --seed $SEED\` repeats it." ;;
   corpus) echo "\`pixi run corpus\` repeats it." ;;
-  setup) echo "It failed before the sweep or the corpus ran (the checkout or the toolchains)." ;;
+  sketch-edit-sweep) echo "Seed $SEED: \`pixi run oracle-sketch-edit-sweep -- --seed $SEED\` repeats it." ;;
+  sketch-extend-sweep) echo "Seed $SEED: \`pixi run oracle-sketch-extend-sweep -- --seed $SEED\` repeats it." ;;
+  setup) echo "It failed before any sweep or the corpus ran (the checkout or the toolchains)." ;;
   esac
+}
+
+# The cases a sketch sweep found differing, as a line of the issue, if it names any; or that
+# it couldn't run at all (the oracle's exit 2: its own error, not a difference).
+differing() {
+  local cases status
+  case $1 in
+  sketch-edit-sweep) cases=${EDIT_CASES:-} status=${EDIT_STATUS:-} ;;
+  sketch-extend-sweep) cases=${EXTEND_CASES:-} status=${EXTEND_STATUS:-} ;;
+  *) cases= status= ;;
+  esac
+  if [ "$status" = 2 ]; then
+    printf '\n\nThe sweep couldn'"'"'t run (the oracle exited 2): see its log.'
+    return 0
+  fi
+  [ -n "$cases" ] || return 0
+  printf '\n\nThe cases that differ: %s.' "$(sed 's/ /, /g' <<<"$cases")"
 }
 
 failed() {
@@ -41,7 +65,7 @@ failed() {
   number=$(open_for "$part")
   body="The nightly $WORKFLOW's $part ended $outcome: $RUN_URL
 
-$(how_to_repeat "$part")"
+$(how_to_repeat "$part")$(differing "$part")"
   if [ -n "$number" ]; then
     gh issue comment "$number" --body "$body"
     echo "$part: commented on #$number"
@@ -54,9 +78,9 @@ green() {
   local part=$1 number
   number=$(open_for "$part")
   [ -n "$number" ] || return 0
-  if [ "$part" = sweep ]; then
+  if [ "$part" != corpus ] && [ "$part" != setup ]; then
     gh issue comment "$number" --body "Seed $SEED is green ($RUN_URL). Each night's seed tests other cases: close this once the failing seed passes again."
-    echo "sweep: commented on #$number"
+    echo "$part: commented on #$number"
   else
     gh issue comment "$number" --body "Green again: $RUN_URL"
     gh issue close "$number"
@@ -72,10 +96,12 @@ skipped)
 esac
 
 any_part_failed=false
-for part in sweep corpus; do
+for part in sweep corpus sketch-edit-sweep sketch-extend-sweep; do
   case $part in
   sweep) outcome=${SWEEP:-} ;;
   corpus) outcome=${CORPUS:-} ;;
+  sketch-edit-sweep) outcome=${EDITS:-} ;;
+  sketch-extend-sweep) outcome=${EXTENDS:-} ;;
   esac
   case $outcome in
   success) green "$part" ;;

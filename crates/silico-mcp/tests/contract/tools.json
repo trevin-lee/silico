@@ -21,6 +21,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -37,6 +51,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -78,6 +110,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -98,6 +131,11 @@
             "additionalProperties": false,
             "description": "The limits every command holds to (the design's section 6), each the value the commands\nuse. A request past one is refused, as `invalid_input`, unless its description says\notherwise.",
             "properties": {
+              "disk_check_ms": {
+                "description": "The least time, in milliseconds, from the end of one comparison of a session's file\non disk to the start of the next: not refused. Only `status` starts one, when none is\nrunning and the last ended at least this long ago, so `status`'s `disk`, a\ndiagnostic, is the last comparison's finding and may be older.",
+                "minimum": 0,
+                "type": "integer"
+              },
               "document_bytes": {
                 "description": "The most bytes a document's canonical text may be: past it, an edit, a commit, or an\n`open` is refused.",
                 "minimum": 0,
@@ -221,9 +259,15 @@
                 "description": "How long one sketch's solve may take, in seconds: past it, a `worker_timeout`.",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "undo_bytes": {
+                "description": "The most bytes a transaction's undo stack holds, counted as `status`'s\n`transaction.bytes` counts them: not refused, the oldest states after the one the\ntransaction began from are dropped and counted (`transaction.dropped`), and undo then\nstops at the oldest kept; `rollback` still returns to the start.",
+                "minimum": 0,
+                "type": "integer"
               }
             },
             "required": [
+              "disk_check_ms",
               "document_bytes",
               "drag_move_seconds",
               "drag_unknowns",
@@ -247,7 +291,8 @@
               "request_depth",
               "response_bytes",
               "sessions",
-              "sketch_seconds"
+              "sketch_seconds",
+              "undo_bytes"
             ],
             "type": "object"
           },
@@ -326,7 +371,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -495,6 +540,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -511,6 +570,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -552,6 +629,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -644,7 +722,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -829,6 +907,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -845,6 +937,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -886,6 +996,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -973,7 +1084,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -1086,7 +1197,7 @@
         "readOnlyHint": true,
         "title": "Session status"
       },
-      "description": "What a session holds, answered at once even while another of its commands runs: its features, whether a transaction is open, what's running, and how far its rebuild has got.",
+      "description": "What a session holds, answered at once even while another of its commands runs: its features; the transaction open, if one is, with whether its document differs from the one it began from (unsaved), and the edits `undo` and `redo` can step through; what's running; and how far its rebuild has got.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -1107,21 +1218,6 @@
       "name": "status",
       "outputSchema": {
         "$defs": {
-          "BeginResult": {
-            "additionalProperties": false,
-            "description": "`begin`'s result.",
-            "properties": {
-              "base": {
-                "description": "The revision the transaction began from: the one `rollback` returns to.",
-                "minimum": 1,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "base"
-            ],
-            "type": "object"
-          },
           "Coordinate": {
             "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
             "type": "number"
@@ -1211,6 +1307,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -1227,6 +1337,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -1268,6 +1396,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -1442,7 +1571,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -1494,6 +1623,8 @@
               "sketch_trim",
               "sketch_unjoin",
               "sketch_merge",
+              "undo",
+              "redo",
               "reload"
             ],
             "type": "string"
@@ -1530,6 +1661,50 @@
               "reloaded",
               "revision",
               "transaction"
+            ],
+            "type": "object"
+          },
+          "Transaction": {
+            "additionalProperties": false,
+            "description": "The transaction open in a session, as `status` gives it.",
+            "properties": {
+              "base": {
+                "description": "The revision the transaction began from: the one `rollback` returns to.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "bytes": {
+                "description": "What its undo stack holds, in bytes, as its bound counts it: the file's bytes as it\nbegan, and each earlier state's texts beyond what they share.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "changed": {
+                "description": "Whether its document differs from the one it began from, as a commit compares them:\nunsaved changes. False after undoing back to that one, or editing back to it, and a\ncommit then writes nothing.",
+                "type": "boolean"
+              },
+              "dropped": {
+                "description": "How many of its edits undo can no longer reach, the undo stack's bound (`version`'s\n`undo_bytes`) having dropped their states: 2 at the first drop (the edits before and\nafter the state dropped), one more at each after. `rollback` still returns to the\nstate it began from.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "redo": {
+                "description": "How many `redo` can redo: the edits undone, until an edit drops them.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "undo": {
+                "description": "How many of its edits `undo` can undo, one step each.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "base",
+              "bytes",
+              "changed",
+              "dropped",
+              "redo",
+              "undo"
             ],
             "type": "object"
           }
@@ -1617,13 +1792,13 @@
                   "transaction": {
                     "anyOf": [
                       {
-                        "$ref": "#/$defs/BeginResult"
+                        "$ref": "#/$defs/Transaction"
                       },
                       {
                         "type": "null"
                       }
                     ],
-                    "description": "The transaction open, as `begin` answered it: null if none is."
+                    "description": "The transaction open, its base as `begin` answered it, with its undo and redo: null\nif none is."
                   }
                 },
                 "required": [
@@ -1710,7 +1885,9 @@
               "sketch_split",
               "sketch_trim",
               "sketch_unjoin",
-              "sketch_merge"
+              "sketch_merge",
+              "undo",
+              "redo"
             ],
             "type": "string"
           }
@@ -1743,6 +1920,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -1759,6 +1950,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -1800,6 +2009,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -1887,7 +2097,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -1973,7 +2183,9 @@
               "sketch_split",
               "sketch_trim",
               "sketch_unjoin",
-              "sketch_merge"
+              "sketch_merge",
+              "undo",
+              "redo"
             ],
             "type": "string"
           }
@@ -2078,6 +2290,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -2094,6 +2320,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -2135,6 +2379,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -2222,7 +2467,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -2346,12 +2591,23 @@
         "readOnlyHint": false,
         "title": "Commit"
       },
-      "description": "End the session's transaction, saving its document with the fingerprints of what its edits reached. Refused as `conflict` if the file changed outside the session since: roll back, or begin again from the file. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "description": "End the session's transaction, saving its document with the fingerprints of what its edits reached. Refused as `conflict` if the file changed outside the session since: roll back, or begin again from the file, or save elsewhere with `path`. With `path`, saves to that file instead (Save As), which the session then holds. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "`commit`'s request: end the session's transaction, saving its document.",
+        "description": "`commit`'s request: end the session's transaction, saving its document to its own\nfile, or, given a path, to the file there (Save As), which the session then holds.",
         "properties": {
+          "path": {
+            "description": "null to save to the session's own file. A path (relative to the workspace's root\nunder `silico serve`) to save to that file instead, written even if nothing changed:\nit must end in .silico, can't be the session's own file or one another session\nholds, and the session holds it from then on, letting its old file go.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replace": {
+            "description": "Whether to replace a file already at `path`. Must be false when `path` is null.",
+            "type": "boolean"
+          },
           "session": {
             "description": "The session's ID, as `open` gave it.",
             "pattern": "^s[1-9][0-9]*$",
@@ -2359,6 +2615,8 @@
           }
         },
         "required": [
+          "path",
+          "replace",
           "session"
         ],
         "title": "CommitRequest",
@@ -2371,6 +2629,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -2387,6 +2659,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -2428,6 +2718,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -2520,7 +2811,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -2599,7 +2890,7 @@
                 "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
                 "properties": {
                   "path": {
-                    "description": "The document's path, as `open` was given it.",
+                    "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                     "type": "string"
                   },
                   "problems": {
@@ -2704,6 +2995,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -2720,6 +3025,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -2761,6 +3084,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -2848,7 +3172,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -3020,6 +3344,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -3036,6 +3374,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -3077,6 +3433,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -3169,7 +3526,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -4838,7 +5195,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -4909,6 +5266,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -4925,6 +5296,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -4966,6 +5355,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -5761,7 +6151,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -6706,7 +7096,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -6755,6 +7145,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -6771,6 +7175,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -6812,6 +7234,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -6907,7 +7330,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -7128,7 +7551,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -7199,6 +7622,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -7215,6 +7652,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -7256,6 +7711,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -8051,7 +8507,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -8976,7 +9432,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -9025,6 +9481,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -9041,6 +9511,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -9082,6 +9570,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -9174,7 +9663,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -9366,6 +9855,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -9382,6 +9885,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -9423,6 +9944,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -9510,7 +10032,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -9657,6 +10179,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -9673,6 +10209,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -9714,6 +10268,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -9801,7 +10356,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -9974,6 +10529,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -9990,6 +10559,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -10031,6 +10618,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -10118,7 +10706,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -10174,6 +10762,10 @@
             "additionalProperties": false,
             "description": "Something `check` found that fails nothing: it never refuses a command, blocks a save, or\nsets an exit code. In the error contract's shape, each field as an error's: a code, a\nmessage, and, where they apply, the feature, the elements it's of (the first of them,\nand how many in all), the field it's of, the cause, what to do, and the names that might\nhave been meant. Every field is always present: null, or empty, where it doesn't apply.",
             "properties": {
+              "advice": {
+                "description": "Null: a warning is never a worker's fault, so it advises nothing as data, where an\nerror's `advice` may.",
+                "type": "null"
+              },
               "candidates": {
                 "description": "What might have been meant, if anything.",
                 "items": {
@@ -10189,7 +10781,13 @@
                 ]
               },
               "code": {
-                "description": "What kind of warning it is: one of Silico's warning codes, listed in\n`warning-codes.txt`, such as `ends_not_joined`.",
+                "description": "What kind of warning it is: one of Silico's warning codes, such as `ends_not_joined`.",
+                "enum": [
+                  "ends_not_joined",
+                  "constraints_redundant",
+                  "fingerprint_missing",
+                  "constraints_partially_redundant"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -10231,6 +10829,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -10364,6 +10963,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -10380,6 +10993,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -10421,6 +11052,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -10508,7 +11140,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -10584,7 +11216,7 @@
               },
               "result": {
                 "additionalProperties": false,
-                "description": "`cache_clear`'s result. Only files the cache made as entries are removed: never another\nfile in the directory, and nothing through a link.",
+                "description": "`cache_clear`'s result. Only files the cache made as entries are removed: never another\nfile in the directory, and nothing through a link. A cache that leads out of the\nworkspace through a link isn't cleared: the command is refused, saying so.",
                 "properties": {
                   "directory": {
                     "description": "The cache's directory (`.silico-cache` beside the document), named as the session's\npath names the document's.",
@@ -11108,6 +11740,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -11124,6 +11770,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -11165,6 +11829,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -11265,7 +11930,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -12007,6 +12672,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -12023,6 +12702,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -12064,6 +12761,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -12164,7 +12862,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -12352,6 +13050,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -12368,6 +13080,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -12409,6 +13139,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -12496,7 +13227,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -12682,6 +13413,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -12698,6 +13443,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -12739,6 +13502,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -12873,7 +13637,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -13071,6 +13835,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -13087,6 +13865,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -13128,6 +13924,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -13219,7 +14016,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -13474,6 +14271,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -13490,6 +14301,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -13531,6 +14360,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -13618,7 +14448,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -14029,6 +14859,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -14045,6 +14889,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -14086,6 +14948,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -14185,7 +15048,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -14411,6 +15274,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -14427,6 +15304,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -14468,6 +15363,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -14621,7 +15517,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -14840,6 +15736,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -14856,6 +15766,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -14897,6 +15825,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -15050,7 +15979,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -15243,7 +16172,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -15292,6 +16221,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -15308,6 +16251,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -15349,6 +16310,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -15449,7 +16411,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -15696,6 +16658,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -15712,6 +16688,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -15753,6 +16747,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -15856,7 +16851,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -16159,6 +17154,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -16175,6 +17184,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -16216,6 +17243,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -16308,7 +17336,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -16531,6 +17559,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -16547,6 +17589,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -16588,6 +17648,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -16725,7 +17786,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -16918,7 +17979,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -16967,6 +18028,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -16983,6 +18058,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -17024,6 +18117,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -17124,7 +18218,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -17355,6 +18449,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -17371,6 +18479,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -17412,6 +18538,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -17525,7 +18652,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -19428,7 +20555,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -19482,6 +20609,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -19498,6 +20639,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -19539,6 +20698,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -19631,7 +20791,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -19852,7 +21012,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -19906,6 +21066,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -19922,6 +21096,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -19963,6 +21155,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -20055,7 +21248,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -20301,7 +21494,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -20355,6 +21548,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -20371,6 +21578,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -20412,6 +21637,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -20504,7 +21730,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -20763,7 +21989,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -20817,6 +22043,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -20833,6 +22073,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -20874,6 +22132,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -20966,7 +22225,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -21216,7 +22475,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -21270,6 +22529,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -21286,6 +22559,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -21327,6 +22618,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -21419,7 +22711,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -21640,7 +22932,7 @@
             "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
             "properties": {
               "path": {
-                "description": "The document's path, as `open` was given it.",
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
                 "type": "string"
               },
               "problems": {
@@ -21694,6 +22986,20 @@
             "additionalProperties": false,
             "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
             "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "candidates": {
                 "description": "What might have been meant, such as the names nearest one that found nothing.",
                 "items": {
@@ -21710,6 +23016,24 @@
               },
               "code": {
                 "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
                 "type": "string"
               },
               "elements": {
@@ -21751,6 +23075,7 @@
               }
             },
             "required": [
+              "advice",
               "candidates",
               "cause",
               "code",
@@ -21843,7 +23168,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "The session as the command left it: null for a command that takes no session, or a\nsession that isn't open."
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
               },
               "total": {
                 "description": "How many reasons there are, listed or not.",
@@ -21999,6 +23324,724 @@
         "type": "object"
       },
       "title": "Merge sketch points"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Undo"
+      },
+      "description": "Inside a transaction, undo its last edit not undone, or with `to` (an earlier revision the session was at in it), every edit after that revision: its state restored byte for byte, at a new revision. Each edit is one step: to undo a run of edits as one, undo `to` the revision the run began at. The result says the edits left to undo and redo, and `dropped`, how many more edits the undo stack's bound (`version`'s `undo_bytes`) put out of reach; `rollback` still returns to the transaction's start. Outside a transaction each edit was saved as it was made, so there's nothing to undo. Give the revision the session's last answer says. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`undo`'s request: inside a transaction, the state before its last edit not undone\nrestored, or with `to`, the state at that revision, undoing every edit after it; at a new\nrevision, whose state equals that one, byte for byte. Never touches the file.",
+        "properties": {
+          "revision": {
+            "description": "The session's revision the undo was made against: one against another is refused\nas a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "to": {
+            "description": "Null to undo one edit; or an earlier revision whose state the undo stack holds, to\nundo every edit after it, as a dialog's Cancel undoes to the revision it opened at.\nThe session's own revision, a later one, or one the stack doesn't hold (from before\nthe transaction, past its bound, or dropped by an edit after an undo) is refused,\nthe revisions it holds its candidates.",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "revision",
+          "session",
+          "to"
+        ],
+        "title": "UndoRequest",
+        "type": "object"
+      },
+      "name": "undo",
+      "outputSchema": {
+        "$defs": {
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "advice",
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`undo`'s result. The session is at a new revision, whose state equals the restored one's.",
+                "properties": {
+                  "dropped": {
+                    "description": "How many more of the transaction's edits this step put out of undo's reach, the\nstack's bound having dropped its oldest states (a state restored can hold more than\nthe one it replaces): 2 at the first drop, one more at each after, as `status`'s\n`transaction.dropped` counts them; 0 if it dropped none.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "redo": {
+                    "description": "How many edits are left to redo.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "restored": {
+                    "description": "The revision whose state is restored.",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "undo": {
+                    "description": "How many edits are left to undo.",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "dropped",
+                  "redo",
+                  "restored",
+                  "undo"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Undo"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Redo"
+      },
+      "description": "Inside a transaction, redo the last edit undone, or with `to` (a later revision the session was at in it), every edit undone up to that revision: its state restored byte for byte, at a new revision. An edit after an undo drops what was undone, which can't be redone. Give the revision the session's last answer says. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`redo`'s request: inside a transaction, the state after its last edit undone restored,\nor with `to`, the state at that revision, redoing every edit up to it; at a new revision,\nwhose state equals that one, byte for byte. Never touches the file.",
+        "properties": {
+          "revision": {
+            "description": "The session's revision the redo was made against: one against another is refused\nas a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "to": {
+            "description": "Null to redo one edit; or a later revision whose state the undo stack holds, to redo\nevery edit up to it. The session's own revision, an earlier one, or one the stack\ndoesn't hold (an edit after an undo drops what was undone) is refused, the revisions\nit holds its candidates.",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "revision",
+          "session",
+          "to"
+        ],
+        "title": "RedoRequest",
+        "type": "object"
+      },
+      "name": "redo",
+      "outputSchema": {
+        "$defs": {
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "advice",
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`redo`'s result. The session is at a new revision, whose state equals the restored one's.",
+                "properties": {
+                  "dropped": {
+                    "description": "How many more of the transaction's edits this step put out of undo's reach, the\nstack's bound having dropped its oldest states: 2 at the first drop, one more at each\nafter, as `status`'s `transaction.dropped` counts them; 0 if it dropped none.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "redo": {
+                    "description": "How many edits are left to redo.",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "restored": {
+                    "description": "The revision whose state is restored.",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "undo": {
+                    "description": "How many edits are left to undo.",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "dropped",
+                  "redo",
+                  "restored",
+                  "undo"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Redo"
     }
   ]
 }

@@ -270,6 +270,7 @@ fn error(
         "cause": cause,
         "suggestion": suggestion,
         "candidates": candidates,
+        "advice": null,
     })
 }
 
@@ -713,7 +714,7 @@ fn an_edit_against_a_stale_revision_is_a_conflict() {
                 "parameter": "revision",
                 "cause": null,
                 "suggestion": "read the document again (text or outline), then make the edit against revision 2",
-                "candidates": []
+                "candidates": [], "advice": null
             }]),
             "{command}"
         );
@@ -1202,7 +1203,7 @@ fn malformed_requests_are_refused_by_the_wire_each_field_named() {
             "parameter": parameter,
             "cause": null,
             "suggestion": suggestion,
-            "candidates": []
+            "candidates": [], "advice": null
         })
     };
     let missing = |field: &str| {
@@ -1308,7 +1309,7 @@ fn a_document_the_gate_refuses_is_edited_by_replace_text_alone() {
         "parameter": "session",
         "cause": null,
         "suggestion": "read its problems (check), then mend its text with replace_text",
-        "candidates": []
+        "candidates": [], "advice": null
     }]);
     assert_eq!(
         f.refused(

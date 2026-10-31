@@ -161,7 +161,7 @@ fn an_unknown_method_is_method_not_found_naming_the_methods() {
 }
 
 /// Every tool's name, in the list's order, written out by hand.
-pub const TOOLS: [&str; 38] = [
+pub const TOOLS: [&str; 40] = [
     "version",
     "open",
     "close",
@@ -200,6 +200,8 @@ pub const TOOLS: [&str; 38] = [
     "sketch_trim",
     "sketch_unjoin",
     "sketch_merge",
+    "undo",
+    "redo",
 ];
 
 #[test]
@@ -293,7 +295,7 @@ fn a_known_tool_whose_arguments_the_core_refuses_is_a_result_with_the_cores_refu
     assert_eq!(result["isError"], true);
     assert_eq!(
         result["structuredContent"],
-        json!({"ok": false, "session": null, "model": null, "errors": [{"code": "invalid_input", "message": "session is missing", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": null, "suggestion": "give every field the request's shape has; null where it allows none", "candidates": []}], "total": 1})
+        json!({"ok": false, "session": null, "model": null, "errors": [{"code": "invalid_input", "message": "session is missing", "feature": null, "elements": [], "elements_total": 0, "parameter": "session", "cause": null, "suggestion": "give every field the request's shape has; null where it allows none", "candidates": [], "advice": null}], "total": 1})
     );
 }
 

@@ -1,0 +1,69 @@
+{
+  "request": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`undo`'s request: inside a transaction, the state before its last edit not undone\nrestored, or with `to`, the state at that revision, undoing every edit after it; at a new\nrevision, whose state equals that one, byte for byte. Never touches the file.",
+    "properties": {
+      "revision": {
+        "description": "The session's revision the undo was made against: one against another is refused\nas a `conflict`.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      },
+      "to": {
+        "description": "Null to undo one edit; or an earlier revision whose state the undo stack holds, to\nundo every edit after it, as a dialog's Cancel undoes to the revision it opened at.\nThe session's own revision, a later one, or one the stack doesn't hold (from before\nthe transaction, past its bound, or dropped by an edit after an undo) is refused,\nthe revisions it holds its candidates.",
+        "minimum": 1,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "revision",
+      "session",
+      "to"
+    ],
+    "title": "UndoRequest",
+    "type": "object"
+  },
+  "result": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`undo`'s result. The session is at a new revision, whose state equals the restored one's.",
+    "properties": {
+      "dropped": {
+        "description": "How many more of the transaction's edits this step put out of undo's reach, the\nstack's bound having dropped its oldest states (a state restored can hold more than\nthe one it replaces): 2 at the first drop, one more at each after, as `status`'s\n`transaction.dropped` counts them; 0 if it dropped none.",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "redo": {
+        "description": "How many edits are left to redo.",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "restored": {
+        "description": "The revision whose state is restored.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "undo": {
+        "description": "How many edits are left to undo.",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "dropped",
+      "redo",
+      "restored",
+      "undo"
+    ],
+    "title": "UndoResult",
+    "type": "object"
+  }
+}

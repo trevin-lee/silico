@@ -156,12 +156,13 @@ fn an_edit_after_an_undo_drops_what_was_undone() {
     stack.edit_text(other.as_bytes(), Some(&document), 16);
     assert_eq!((stack.undo_left(), stack.redo_left()), (3, 0));
     assert_eq!(stack.redo(None, 17), Err(Refusal::NothingToRedo));
-    // The undone revisions are no state of the stack's now.
+    // The undone revisions are no state of the stack's now. Undo names those it can
+    // restore: the states before the session's (16), 10, 11, and 12's (at 12 and 15).
     assert_eq!(
         stack.undo(Some(13), 17),
         Err(Refusal::NotHeld {
             to: 13,
-            held: vec![10, 11, 12, 15, 16]
+            held: vec![10, 11, 12, 15]
         })
     );
     // Undone, the edit gives back the state it was made from: revision 12's, restored at
@@ -182,11 +183,12 @@ fn to_reaches_a_revision_the_stack_holds_and_refuses_any_other() {
     let mut stack = pushed(&states, UNDO_BYTES);
     // An undo to a later revision, or to the session's own, is on the wrong side.
     assert_eq!(stack.undo(Some(14), 15), Err(Refusal::WrongSide { to: 14 }));
+    // One the stack never held: undo names the states before the session's (14).
     assert_eq!(
         stack.undo(Some(9), 15),
         Err(Refusal::NotHeld {
             to: 9,
-            held: vec![10, 11, 12, 13, 14]
+            held: vec![10, 11, 12, 13]
         })
     );
     let restored = stack.undo(Some(11), 15).unwrap();
@@ -350,19 +352,20 @@ fn past_the_bound_the_oldest_state_after_begin_is_dropped_and_counted() {
     assert_eq!(stack.dropped(), 3);
     assert_eq!(stack.bytes(), f + second_alone + 2 * step);
     assert_eq!(stack.undo_left(), 3);
-    // A dropped revision is refused, as is begin's, naming what's held.
+    // A dropped revision is refused, as is begin's, naming what undo can restore: the
+    // states kept before the session's (7).
     assert_eq!(
         stack.undo(Some(2), 8),
         Err(Refusal::NotHeld {
             to: 2,
-            held: vec![4, 5, 6, 7]
+            held: vec![4, 5, 6]
         })
     );
     assert_eq!(
         stack.undo(Some(1), 8),
         Err(Refusal::NotHeld {
             to: 1,
-            held: vec![4, 5, 6, 7]
+            held: vec![4, 5, 6]
         })
     );
     // Undo stops at the oldest kept, revision 4's state.
@@ -373,13 +376,21 @@ fn past_the_bound_the_oldest_state_after_begin_is_dropped_and_counted() {
     }
     assert_eq!(stack.undo(None, revision), Err(Refusal::NothingToUndo));
     assert_eq!(stack.undo_left(), 0);
-    // And there, a dropped revision is still refused as not held, naming it, not as there
-    // being nothing to undo.
+    // And there, a dropped revision is still refused as not held, not as there being
+    // nothing to undo: with nothing before the session's state, undo can restore none.
     assert_eq!(
         stack.undo(Some(2), revision),
         Err(Refusal::NotHeld {
             to: 2,
-            held: vec![4, 5, 6, 7, 8, 9, 10]
+            held: vec![]
+        })
+    );
+    // Redo can restore the three undone: 5's (at 5 and 9), 6's (6 and 8), and 7's.
+    assert_eq!(
+        stack.redo(Some(2), revision),
+        Err(Refusal::NotHeld {
+            to: 2,
+            held: vec![5, 6, 7, 8, 9]
         })
     );
 }
@@ -832,10 +843,11 @@ fn an_undo_that_holds_more_past_the_bound_drops_the_oldest_and_says_so() {
 }
 
 #[test]
-fn not_held_names_every_revision_the_stack_holds_gaps_and_all() {
+fn not_held_names_every_revision_the_command_can_restore_gaps_and_all() {
     // From the architecture review: begin at 12, edits at 13 and 14, an undo at 15 (13's
-    // state), and an edit at 16, which drops 14's: 14 lies between revisions the stack
-    // holds, and the refusal says which those are, not a range that seems to hold it.
+    // state), and an edit at 16, which drops 14's: 14 lies between revisions undo can
+    // restore, and the refusal says which those are (those before the session's state,
+    // 16's), not a range that seems to hold it.
     let states = run();
     let mut stack = begun(states[0].0.as_bytes(), 12, UNDO_BYTES);
     stack.edit_text(states[1].0.as_bytes(), states[1].1.as_ref(), 13);
@@ -846,7 +858,7 @@ fn not_held_names_every_revision_the_stack_holds_gaps_and_all() {
         stack.undo(Some(14), 17),
         Err(Refusal::NotHeld {
             to: 14,
-            held: vec![12, 13, 15, 16]
+            held: vec![12, 13, 15]
         })
     );
 }
@@ -1150,8 +1162,10 @@ impl Model {
             .filter(|&found| found >= self.lowest())
     }
 
-    fn not_held(&self, to: u64) -> Refusal<u64> {
-        let held: std::collections::BTreeSet<u64> = self.states[self.lowest()..]
+    /// The refusal of `to`, naming the revisions of the states at `side`, those the
+    /// command can restore.
+    fn not_held(&self, to: u64, side: std::ops::Range<usize>) -> Refusal<u64> {
+        let held: std::collections::BTreeSet<u64> = self.states[side]
             .iter()
             .flat_map(|s| s.revisions.iter().copied())
             .collect();
@@ -1184,7 +1198,7 @@ impl Model {
             Some(to) => match self.find(to) {
                 Some(found) if found < self.at => found,
                 Some(_) => return Err(Refusal::WrongSide { to }),
-                None => return Err(self.not_held(to)),
+                None => return Err(self.not_held(to, self.lowest()..self.at)),
             },
         };
         Ok(self.restore(target, revision))
@@ -1201,7 +1215,7 @@ impl Model {
             Some(to) => match self.find(to) {
                 Some(found) if found > self.at => found,
                 Some(_) => return Err(Refusal::WrongSide { to }),
-                None => return Err(self.not_held(to)),
+                None => return Err(self.not_held(to, self.at + 1..self.states.len())),
             },
         };
         Ok(self.restore(target, revision))
@@ -1299,4 +1313,118 @@ proptest! {
             prop_assert_eq!(stack.redo_left(), model.states.len() - model.at - 1);
         }
     }
+}
+
+#[test]
+fn a_plan_made_before_the_stack_moved_restores_nothing() {
+    // Two plans of the same undo, from one state: the first applied moves the stack, and the
+    // second, made where the stack no longer is, is refused, the stack as the first left it.
+    let states = run();
+    let mut stack = pushed(&states, UNDO_BYTES);
+    let first = stack.plan_undo(None).unwrap();
+    let stale = stack.plan_undo(None).unwrap();
+    let last = 10 + states.len() as u64;
+    stack.apply(first, last).unwrap();
+    let (undo, redo, bytes) = (stack.undo_left(), stack.redo_left(), stack.bytes());
+    assert_eq!(
+        stack.apply(stale, last + 1).unwrap_err(),
+        Refusal::NothingToUndo
+    );
+    assert_eq!(
+        (stack.undo_left(), stack.redo_left(), stack.bytes()),
+        (undo, redo, bytes)
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// What a state holds beside its text (`Extra`): kept with the state, given back by a step,
+// taken by the edits after it, dropped and counted with the states that hold it.
+// ---------------------------------------------------------------------------------------
+
+/// A test's extra: a shared label of `cost` bytes, or none.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Label(Option<Arc<(String, usize)>>);
+
+impl Label {
+    fn of(name: &str, cost: usize) -> Label {
+        Label(Some(Arc::new((name.to_owned(), cost))))
+    }
+
+    fn name(&self) -> Option<&str> {
+        self.0.as_ref().map(|label| label.0.as_str())
+    }
+}
+
+impl silico_core::document::undo::Extra for Label {
+    fn shared(&self) -> Option<usize> {
+        self.0.as_ref().map(|label| Arc::as_ptr(label) as usize)
+    }
+
+    fn cost(&self) -> usize {
+        self.0.as_ref().map_or(0, |label| label.1)
+    }
+}
+
+#[test]
+fn a_states_extra_is_restored_with_it_taken_by_the_edits_after_it_and_counted_once() {
+    // Texts held whole: each state but the session's counts its bytes and WHOLE_BYTES.
+    let whole = |text: &str| text.len() + WHOLE_BYTES;
+    let mut stack: UndoStack<u64, Label> =
+        UndoStack::holding(Arc::new(b"begin".to_vec()), 1, UNDO_BYTES);
+    assert_eq!(stack.extra(), Label::default());
+    stack.edit(After::Whole(Arc::new(b"a".to_vec())), 2);
+    stack.set_extra(Label::of("format", 100));
+    // The session's state: its extra not counted.
+    assert_eq!(stack.bytes(), 5);
+    stack.edit(After::Whole(Arc::new(b"bb".to_vec())), 3);
+    // Taken by the edit after it, and counted once the format's state is held.
+    assert_eq!(stack.extra().name(), Some("format"));
+    assert_eq!(stack.bytes(), 5 + whole("a") + 100);
+    stack.edit(After::Whole(Arc::new(b"ccc".to_vec())), 4);
+    // Two states held share it: still counted once.
+    assert_eq!(stack.bytes(), 5 + whole("a") + whole("bb") + 100);
+    // Undone to `begin`'s: none of its own; the three after it held for redo.
+    let plan = stack.plan_undo(Some(1)).unwrap();
+    assert_eq!(plan.extra(), &Label::default());
+    stack.apply(plan, 5).unwrap();
+    assert_eq!(stack.extra(), Label::default());
+    assert_eq!(
+        stack.bytes(),
+        5 + whole("a") + whole("bb") + whole("ccc") + 100
+    );
+    // Redone to the format's state: given back.
+    let plan = stack.plan_redo(Some(2)).unwrap();
+    assert_eq!(plan.extra().name(), Some("format"));
+    stack.apply(plan, 6).unwrap();
+    assert_eq!(stack.extra().name(), Some("format"));
+    // An edit there drops the redo states: the extra still the session's, counted by none.
+    stack.edit(After::Whole(Arc::new(b"d".to_vec())), 7);
+    assert_eq!(stack.extra().name(), Some("format"));
+    assert_eq!(stack.bytes(), 5 + whole("a") + 100);
+    // Undone back to `begin`'s and an edit made there: every state that held it dropped,
+    // and its count with them.
+    let plan = stack.plan_undo(Some(1)).unwrap();
+    stack.apply(plan, 8).unwrap();
+    stack.edit(After::Whole(Arc::new(b"e".to_vec())), 9);
+    assert_eq!(stack.extra(), Label::default());
+    assert_eq!(stack.bytes(), 5);
+}
+
+#[test]
+fn past_the_bound_a_dropped_states_extra_stops_counting_once_no_held_state_shares_it() {
+    let whole = |text: &str| text.len() + WHOLE_BYTES;
+    // Room for `begin`'s 5 bytes, one held state of one byte, and an extra of 10.
+    let bound = 5 + whole("a") + 10;
+    let mut stack: UndoStack<u64, Label> =
+        UndoStack::holding(Arc::new(b"begin".to_vec()), 1, bound);
+    stack.edit(After::Whole(Arc::new(b"a".to_vec())), 2);
+    stack.set_extra(Label::of("first", 10));
+    stack.edit(After::Whole(Arc::new(b"b".to_vec())), 3);
+    stack.set_extra(Label::of("second", 10));
+    assert_eq!(stack.bytes(), bound);
+    // The next drops "a", the first label's last holder; "b" held now, with the second.
+    let pushed = stack.edit(After::Whole(Arc::new(b"c".to_vec())), 4);
+    assert_eq!(pushed.dropped, 2);
+    assert_eq!(stack.bytes(), 5 + whole("b") + 10);
+    assert_eq!(stack.extra().name(), Some("second"));
 }

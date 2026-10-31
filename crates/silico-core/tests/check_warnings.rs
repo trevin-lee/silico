@@ -344,17 +344,29 @@ fn ends_not_joined_is_the_designs_example_word_for_word() {
         .unwrap(),
     )
     .unwrap();
-    // A warning is described by a definition of its own, its codes warning-codes.txt's.
+    // A warning is described by a definition of its own, its codes warning-codes.txt's,
+    // listed in the schema (an agent can't read the file), and its advice always null.
     assert_eq!(
         schema["result"]["properties"]["warnings"]["items"]["$ref"],
         "#/$defs/Warning"
     );
     let warning = &schema["result"]["$defs"]["Warning"];
+    let listed: Vec<serde_json::Value> = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/contract/warning-codes.txt"),
+    )
+    .unwrap()
+    .lines()
+    .filter(|l| !l.starts_with('#') && !l.is_empty())
+    .map(serde_json::Value::from)
+    .collect();
+    assert_eq!(
+        warning["properties"]["code"]["enum"],
+        serde_json::Value::Array(listed),
+        "{warning}"
+    );
+    assert_eq!(warning["properties"]["advice"]["type"], "null", "{warning}");
     assert!(
-        warning["properties"]["code"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("warning-codes.txt"),
+        warning["properties"]["advice"].get("enum").is_none(),
         "{warning}"
     );
     let result = write(&checked.to_wire(), Layout::Canonical).unwrap();
@@ -1000,7 +1012,7 @@ fn a_tiny_arc_short_of_a_half_turn_with_both_ends_in_a_cluster_is_to_be_lengthen
          \"parameter\": null, \"cause\": \"the points are at most 1.5e-7 mm apart, each closer \
          than FreeCAD's joining distance of 1e-7 mm to another of them\", \"suggestion\": \
          \"lengthen arc na000001; then share one point: make the curves that end at the points \
-         named end at one of them\", \"candidates\": []}"
+         named end at one of them\", \"candidates\": [], \"advice\": null}"
     );
 }
 
@@ -1804,7 +1816,7 @@ fn fingerprint_missing_on_the_wire_names_its_parameter() {
          stores no fingerprint, so a change in what it builds isn't caught as drift\", \
          \"feature\": \"k7f2qx3m\", \"elements\": [], \"elements_total\": 0, \"parameter\": \
          \"fingerprint\", \"cause\": null, \"suggestion\": \"format the document to store \
-         it\", \"candidates\": []}"
+         it\", \"candidates\": [], \"advice\": null}"
     );
 }
 

@@ -551,6 +551,108 @@ fn hung_freecad_oracle_times_out() {
 }
 
 #[test]
+fn a_freecad_segfault_is_told_as_one_by_the_signal_or_by_its_linux_handler() {
+    // On Linux, FreeCAD 1.1.3's SIGSEGV handler writes "Program received signal SIGSEGV,
+    // Segmentation fault.", then a backtrace, then exits with status 1
+    // (src/App/Application.cpp:1815-1825); on macOS no handler is installed, and it dies by
+    // the signal. The sketch-edit oracle took only the signal for FreeCAD's crash on a split
+    // of a point until Linux CI ran it. Here stand-ins start the cases and end each way, the
+    // handler's line followed by a backtrace longer than the tail the harness keeps.
+    let backtrace = "for i in $(seq 1 40); do echo \"#$i  0x0 in frame$i\" >&2; done";
+    let line = "echo 'Program received signal SIGSEGV, Segmentation fault.' >&2";
+    for (name, body, segfault, status) in [
+        (
+            "handler",
+            format!("{line}\n{backtrace}\nexit 1"),
+            true,
+            "exit status: 1",
+        ),
+        ("signal", "kill -SEGV $$".to_owned(), true, "signal: 11"),
+        (
+            "exit-1",
+            format!("{backtrace}\nexit 1"),
+            false,
+            "exit status: 1",
+        ),
+        // The handler's line, then an abort: not status 1, so no segmentation fault.
+        (
+            "abort",
+            format!("{line}\n{backtrace}\nkill -ABRT $$"),
+            false,
+            "signal: 6",
+        ),
+        (
+            "handler-line-not-alone",
+            "echo 'x Program received signal SIGSEGV, Segmentation fault.' >&2\nexit 1".to_owned(),
+            false,
+            "exit status: 1",
+        ),
+    ] {
+        let temp = scratch(&format!("segfault-{name}"));
+        let dir = temp.path();
+        let freecad = dir.join("freecadcmd");
+        executable(
+            &freecad,
+            &format!("#!/bin/sh\necho\necho SILICO_ORACLE_READY\n{body}\n"),
+        );
+        let cases = dir.join("cases");
+        std::fs::create_dir_all(&cases).unwrap();
+        write_cases(&cases, &[case("box", block(1.0, 2.0, 3.0))]);
+        let ran = cli(
+            dir,
+            &["run", cases.to_str().unwrap()],
+            &[("SILICO_FREECADCMD", &freecad)],
+            WAIT,
+        );
+        let told = format!("FreeCAD crashed building it by a segmentation fault ({status}");
+        let plain = format!("FreeCAD crashed building it ({status}");
+        if segfault {
+            assert!(ran.stdout.contains(&told), "{name}: {}", ran.stdout);
+        } else {
+            assert!(
+                ran.stdout.contains(&plain) && !ran.stdout.contains("by a segmentation fault"),
+                "{name}: {}",
+                ran.stdout
+            );
+        }
+    }
+    // The handler's line, then an answer to the first case: the line was about that case,
+    // so the second's status 1 is no segmentation fault.
+    let temp = scratch("segfault-answered");
+    let dir = temp.path();
+    let freecad = dir.join("freecadcmd");
+    executable(
+        &freecad,
+        &format!(
+            "#!/bin/sh\necho SILICO_ORACLE_READY\n{line}\n\
+             echo 'SILICO_ORACLE_CASE {{\"failed\": \"injected\"}}'\nexit 1\n"
+        ),
+    );
+    let cases = dir.join("cases");
+    std::fs::create_dir_all(&cases).unwrap();
+    write_cases(
+        &cases,
+        &[
+            case("box", block(1.0, 2.0, 3.0)),
+            case("box2", block(1.0, 2.0, 4.0)),
+        ],
+    );
+    let ran = cli(
+        dir,
+        &["run", cases.to_str().unwrap()],
+        &[("SILICO_FREECADCMD", &freecad)],
+        WAIT,
+    );
+    assert!(
+        ran.stdout
+            .contains("FreeCAD crashed building it (exit status: 1)")
+            && !ran.stdout.contains("by a segmentation fault"),
+        "{}",
+        ran.stdout
+    );
+}
+
+#[test]
 fn a_freecad_that_keeps_printing_but_never_finishes_a_case_is_killed_at_the_deadline() {
     // Only an outcome restarts the deadline: FreeCAD's own output doesn't, or a FreeCAD
     // that hangs printing progress would never be killed. Here a stand-in starts the cases,

@@ -218,7 +218,10 @@ fn a_line_removed_and_another_added_with_a_fresh_id_breaks_the_name_never_re_poi
         ),
         "{broken}"
     );
-    f.ran("commit", &json!({"session": s}).to_string());
+    f.ran(
+        "commit",
+        &json!({"session": s, "path": null, "replace": false}).to_string(),
+    );
     let saved = std::fs::read_to_string(f.path("plate.silico")).unwrap();
     assert_eq!(stored_edges(&saved), json!([NAME]));
     assert_eq!(stored_edges(&saved), stored_edges(&golden()));
@@ -246,7 +249,10 @@ fn a_line_re_added_with_a_removed_ones_id_is_that_line_to_the_name_as_a_replace_
         ),
     );
     assert_eq!(f.problems(&a), Vec::<Value>::new());
-    f.ran("commit", &json!({"session": a}).to_string());
+    f.ran(
+        "commit",
+        &json!({"session": a, "path": null, "replace": false}).to_string(),
+    );
 
     // The same document by its text: s0000001's lines (the first in the file; the boss's
     // sketch holds lines of the same IDs, untouched) with na000001 moved and na000003's
@@ -351,7 +357,10 @@ fn a_split_lists_the_fillet_whose_name_its_line_reaches_and_the_name_then_finds_
     assert_eq!(xs, [-30.0, 0.0], "{start:?} {end:?}");
     assert_eq!((start[1], end[1]), (-15.0, -15.0));
     assert_eq!(start[2], end[2]);
-    f.ran("commit", &json!({"session": s}).to_string());
+    f.ran(
+        "commit",
+        &json!({"session": s, "path": null, "replace": false}).to_string(),
+    );
     let saved = std::fs::read_to_string(f.path("plate.silico")).unwrap();
     assert_eq!(stored_edges(&saved), json!([NAME]));
 }

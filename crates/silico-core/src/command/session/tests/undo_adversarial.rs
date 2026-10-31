@@ -179,7 +179,7 @@ fn at_a_bound_of_nothing_every_step_past_the_third_state_drops_the_oldest_even_a
     let (message, _, _) = refused_with(undo_of(&f, Some(1)));
     assert_eq!(
         message,
-        "revision 1 isn't a state of session s1's undo stack, which holds revisions 4 to 7"
+        "revision 1 isn't a state of session s1's undo stack that undo can restore: it can restore revisions 4 to 6"
     );
     assert_eq!(
         stepped_of(undo_of(&f, Some(6))),
@@ -505,9 +505,8 @@ fn a_to_from_before_begin_or_from_a_transaction_before_is_not_held() {
         assert_eq!(
             message,
             format!(
-                "revision {to} isn't a state of session s1's undo stack, which holds revisions {} to {}",
-                base.0,
-                first.0 + 1
+                "revision {to} isn't a state of session s1's undo stack that undo can restore: it can restore revisions {} to {}",
+                base.0, first.0
             )
         );
         assert_eq!(

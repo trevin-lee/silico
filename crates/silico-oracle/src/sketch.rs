@@ -79,6 +79,14 @@ pub struct FreecadSketch {
     pub points: BTreeMap<String, (i32, i32)>,
     /// Each circle, by ID, its geometry.
     pub circles: BTreeMap<String, i32>,
+    /// Each geometry's Silico element, by FreeCAD's index: a curve, or a point no curve
+    /// uses. Not sent: the harness's own, for matching results (the sketch edits' oracle).
+    #[serde(skip)]
+    pub elements: Vec<String>,
+    /// Every place FreeCAD has each point, by ID: each curve's end or centre that is it, in
+    /// geometry order, the first being [`FreecadSketch::points`]'. Not sent.
+    #[serde(skip)]
+    pub places: BTreeMap<String, Vec<(i32, i32)>>,
 }
 
 /// A piece of FreeCAD geometry.
@@ -134,6 +142,7 @@ pub fn freecad_sketch(sketch: &Sketch, translation: &Translation) -> Result<Free
             .ok_or_else(|| format!("a curve names point {id}, which the sketch doesn't have"))
     };
     let mut geometry = Vec::new();
+    let mut elements = Vec::new();
     // Every place FreeCAD has each point: a geometry and a position.
     let mut uses: BTreeMap<&ElementId, Vec<(i32, i32)>> = BTreeMap::new();
     let mut sorted_lines: Vec<_> = sketch.lines.iter().collect();
@@ -148,6 +157,7 @@ pub fn freecad_sketch(sketch: &Sketch, translation: &Translation) -> Result<Free
         uses.entry(&l.from).or_default().push((g, 1));
         uses.entry(&l.to).or_default().push((g, 2));
         curves.insert(&l.id, g);
+        elements.push(l.id.as_str().to_owned());
     }
     let mut sorted_circles: Vec<_> = sketch.circles.iter().collect();
     sorted_circles.sort_by(|a, b| a.id.cmp(&b.id));
@@ -161,6 +171,7 @@ pub fn freecad_sketch(sketch: &Sketch, translation: &Translation) -> Result<Free
         uses.entry(&c.center).or_default().push((g, 3));
         curves.insert(&c.id, g);
         circles.insert(c.id.as_str().to_owned(), g);
+        elements.push(c.id.as_str().to_owned());
     }
     let mut sorted_arcs: Vec<_> = sketch.arcs.iter().collect();
     sorted_arcs.sort_by(|a, b| a.id.cmp(&b.id));
@@ -179,6 +190,7 @@ pub fn freecad_sketch(sketch: &Sketch, translation: &Translation) -> Result<Free
         uses.entry(&a.end).or_default().push((g, 2));
         uses.entry(&a.center).or_default().push((g, 3));
         curves.insert(&a.id, g);
+        elements.push(a.id.as_str().to_owned());
     }
     // A point no curve uses is FreeCAD geometry of its own.
     for p in &points {
@@ -188,6 +200,7 @@ pub fn freecad_sketch(sketch: &Sketch, translation: &Translation) -> Result<Free
                 at: [p.x.mm(), p.y.mm()],
             });
             uses.insert(&p.id, vec![(g, 1)]);
+            elements.push(p.id.as_str().to_owned());
         }
     }
     let point = |r: &Reference| -> Result<(i32, i32), String> {
@@ -403,6 +416,11 @@ pub fn freecad_sketch(sketch: &Sketch, translation: &Translation) -> Result<Free
             .filter_map(|(id, u)| u.first().map(|&p| (id.as_str().to_owned(), p)))
             .collect(),
         circles,
+        elements,
+        places: uses
+            .iter()
+            .map(|(id, u)| (id.as_str().to_owned(), u.clone()))
+            .collect(),
     })
 }
 
@@ -435,7 +453,7 @@ pub struct FreecadSolved {
     pub values: Vec<f64>,
 }
 
-const SCRIPT: &str = r#"
+pub(crate) const SCRIPT: &str = r#"
 import json, math, os
 import FreeCAD as App, Part, Sketcher
 
@@ -551,6 +569,18 @@ pub fn silico_solve(case: &SketchCase, worker: &mut dyn SketchSolver) -> Result<
 
 /// How `ours` and `theirs` differ for `case`, whose FreeCAD model is `model`.
 pub fn compare(model: &FreecadSketch, ours: &Ours, theirs: &FreecadSolved) -> Vec<String> {
+    compare_outcomes(model, ours, theirs, true)
+}
+
+/// As [`compare`], comparing where each side put the points, the radii, and the reference
+/// values only if `geometry`: the sketch edits' oracle leaves them out where the port note
+/// says the two start their solves from different places.
+pub fn compare_outcomes(
+    model: &FreecadSketch,
+    ours: &Ours,
+    theirs: &FreecadSolved,
+    geometry: bool,
+) -> Vec<String> {
     let mut how = Vec::new();
     // FreeCAD's indices, from 1, to Silico's IDs; its coincidences are none of Silico's.
     let ids = |list: &[usize]| -> Vec<String> {
@@ -595,7 +625,8 @@ pub fn compare(model: &FreecadSketch, ours: &Ours, theirs: &FreecadSolved) -> Ve
     let redundant =
         !ids(&theirs.redundant).is_empty() || !ids(&theirs.partially_redundant).is_empty();
     match (theirs.code, &ours.outcome) {
-        (0, Ok(solution)) => how.extend(compare_solutions(model, solution, theirs)),
+        (0, Ok(solution)) if geometry => how.extend(compare_solutions(model, solution, theirs)),
+        (0, Ok(_)) => {}
         (-2, Ok(_)) => {}
         (-2, Err(e)) if code(e) == ErrorCode::OverConstrained => {}
         (-1, Ok(_)) if redundant => {}

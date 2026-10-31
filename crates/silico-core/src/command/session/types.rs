@@ -108,7 +108,7 @@ pub struct SessionInfo {
 }
 
 /// A command's answer: the session as the command left it (none for an `open` that failed,
-/// or a session that isn't open), the model it read, if it read one, and the command's
+/// a session that isn't open, or a request whose session can't be read), the model it read, if it read one, and the command's
 /// result, or every reason it was refused, in the order found, the first
 /// [`document::PROBLEMS_LISTED`] listed and all counted.
 #[derive(Debug, Clone, PartialEq)]
@@ -720,6 +720,22 @@ pub struct Begun {
     pub base: Revision,
 }
 
+/// A transaction open in a session, as `status` gives it (docs/design/m5.0-app.md, section
+/// 6): the revision it began from, which `rollback` returns to; whether its document
+/// differs from that revision's, as a commit finds it (a commit of one that doesn't writes
+/// nothing), worked out as each edit and each step of its undo stack is held; and its undo
+/// stack's counts, each kept as the stack changes: the edits it can undo and redo, those its
+/// bound has put out of undo's reach, and what it holds, as the bound counts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transaction {
+    pub base: Revision,
+    pub changed: bool,
+    pub undo: usize,
+    pub redo: usize,
+    pub dropped: usize,
+    pub bytes: usize,
+}
+
 /// What `commit` did (the design's section 7): whether it wrote the file (not if the
 /// document is the one `begin` saw), its path as `open` was given it, the features the
 /// transaction's edits reached whose fingerprints it wrote anew and the reached sketches
@@ -994,17 +1010,18 @@ pub struct SketchCut {
 
 /// What `status` says of a session, from what it holds: how many features its document has
 /// (none if its text doesn't read as one), whether the gate took it, the transaction open,
-/// if one is (the revision it began from, which `rollback` returns to), what's running on
-/// its thread, if anything is (a queued command, or its own reload), the published reads
-/// running, in the order they started, its current revision's rebuild, the drag open, if
-/// one is (none once it has ended, however it ended), and what the last comparison of its
-/// file on disk found (docs/design/m5.0-app.md, section 6): none before one has ended,
-/// while its own save runs, and after a save that failed until the next.
+/// if one is (the revision it began from, which `rollback` returns to, and its undo stack's
+/// counts), what's running on its thread, if anything is (a queued command, or its own
+/// reload), the published reads running, in the order they started, its current revision's
+/// rebuild, the drag open, if one is (none once it has ended, however it ended), and what
+/// the last comparison of its file on disk found (docs/design/m5.0-app.md, section 6): none
+/// before one has ended, while its own save runs, and after a save that failed until the
+/// next.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Status {
     pub features: Option<usize>,
     pub gated: bool,
-    pub transaction: Option<Begun>,
+    pub transaction: Option<Transaction>,
     pub running: Option<RunningCommand>,
     pub reads: Vec<ReadCommand>,
     pub rebuild: Rebuild,

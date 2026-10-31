@@ -22,7 +22,8 @@ use crate::worker::Advice;
 
 /// Declares a list of codes, so the enum, its `ALL`, and the string forms (which are also
 /// the serialized forms) can't drift apart: the error codes ([`ErrorCode`]) and the warning
-/// codes ([`WarningCode`]), each a list of its own.
+/// codes ([`WarningCode`]), each a list of its own, and the words of a worker's advice
+/// (`worker::AdviceWord`).
 macro_rules! codes {
     ($(#[$enum_doc:meta])* $name:ident { $($(#[$doc:meta])* $variant:ident = $string:literal,)* }) => {
         $(#[$enum_doc])*
@@ -44,19 +45,20 @@ macro_rules! codes {
             }
         }
 
-        impl Serialize for $name {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        impl ::serde::Serialize for $name {
+            fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 serializer.serialize_str(self.as_str())
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        impl ::std::fmt::Display for $name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 f.write_str(self.as_str())
             }
         }
     };
 }
+pub(crate) use codes;
 
 codes! {
     /// What kind of failure this is. Agents match on the string form, so a code is never
@@ -201,10 +203,21 @@ struct Fields<C> {
     #[serde(skip)]
     worker: Option<Box<WorkerFailure>>,
     /// What `suggestion` says to do, as data, where the worker client worded it from that
-    /// ([`Error::with_advice`]): never written out, no part of what the error is, and
-    /// dropped by any other suggestion given after.
-    #[serde(skip)]
+    /// ([`Error::with_advice`]): written out as its word ([`Advice::word`], the contract's
+    /// `advice`, null for none), and dropped by any other suggestion given after.
+    #[serde(serialize_with = "advice_word")]
     advice: Option<Box<Advice>>,
+}
+
+/// `advice` as the error contract writes it: its word, or null.
+fn advice_word<S: serde::Serializer>(
+    advice: &Option<Box<Advice>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match advice.as_deref().and_then(Advice::word) {
+        Some(word) => serializer.serialize_str(word),
+        None => serializer.serialize_none(),
+    }
 }
 
 impl<C: PartialEq> PartialEq for Fields<C> {
@@ -220,8 +233,9 @@ impl<C: PartialEq> PartialEq for Fields<C> {
             suggestion,
             candidates,
             worker: _,
-            advice: _,
+            advice,
         } = self;
+        let word = |advice: &Option<Box<Advice>>| advice.as_deref().and_then(Advice::word);
         (
             code,
             message,
@@ -232,6 +246,7 @@ impl<C: PartialEq> PartialEq for Fields<C> {
             cause,
             suggestion,
             candidates,
+            word(advice),
         ) == (
             &other.code,
             &other.message,
@@ -242,6 +257,7 @@ impl<C: PartialEq> PartialEq for Fields<C> {
             &other.cause,
             &other.suggestion,
             &other.candidates,
+            word(&other.advice),
         )
     }
 }
@@ -289,7 +305,7 @@ impl<C: Copy> Fields<C> {
             candidates,
             // What it was worded from, never written out.
             worker: _,
-            advice: _,
+            advice,
         } = self;
         Said {
             code: word(*code),
@@ -301,6 +317,7 @@ impl<C: Copy> Fields<C> {
             cause: cause.as_deref(),
             suggestion: suggestion.as_deref(),
             candidates,
+            advice: advice.as_deref().and_then(Advice::word),
         }
     }
 }
@@ -322,6 +339,10 @@ pub struct Said<'a> {
     pub cause: Option<&'a str>,
     pub suggestion: Option<&'a str>,
     pub candidates: &'a [String],
+    /// What the suggestion advises, as data, for a worker's fault: `change_the_values`,
+    /// `simplify_or_wait`, `try_again`, or `try_once_more`; none for any other error, a
+    /// fault whose advice is its words alone, and every warning.
+    pub advice: Option<&'static str>,
 }
 
 /// A kernel worker's failure, as data, and the operation it was for, from which the core
@@ -392,6 +413,19 @@ impl Error {
         self
     }
 
+    /// The same elements named anew, in place of how they were named (the kernel's number
+    /// for one, named by its element map): as many, so the total stands.
+    #[must_use]
+    pub(crate) fn with_elements_as<I, S>(mut self, elements: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.0.elements = elements.into_iter().map(Into::into).collect();
+        self.0.count_elements();
+        self
+    }
+
     /// The parameter at fault, as a dotted name: the operation's field, and the part of it at
     /// fault where it has parts (`radius`, `offset.x`, a chamfer's `size.angle`).
     #[must_use]
@@ -434,10 +468,11 @@ impl Error {
     }
 
     /// The suggestion, worded again from this error's own advice (a session's wording of a
-    /// kept fault): unlike [`with_suggestion`](Self::with_suggestion), the advice is kept,
-    /// since the words still say it.
+    /// kept fault, the CLI's with running its command again: `command::fault_suggestion`):
+    /// unlike [`with_suggestion`](Self::with_suggestion), the advice is kept, since the words
+    /// still say it.
     #[must_use]
-    pub(crate) fn reworded(mut self, suggestion: impl Into<String>) -> Self {
+    pub fn reworded(mut self, suggestion: impl Into<String>) -> Self {
         self.0.suggestion = Some(suggestion.into());
         self
     }

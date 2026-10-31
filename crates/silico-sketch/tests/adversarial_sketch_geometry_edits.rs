@@ -178,7 +178,10 @@ fn a_merge_inside_a_transaction_committed_saves_what_the_sketch_solves_to() {
         "sketch_merge",
         &json!({"session": "s1", "revision": 1, "sketch": "s0000001", "points": ["pa000002", "pb000001"]}).to_string(),
     );
-    f.ran("commit", r#"{"session": "s1"}"#);
+    f.ran(
+        "commit",
+        r#"{"session": "s1", "path": null, "replace": false}"#,
+    );
     f.close();
     f.open();
     assert_eq!(f.problems(), json!([]), "reopened");

@@ -42,8 +42,8 @@ pub use session::{
     MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers, Opened, OutlineAnswer,
     Progress, Published, Read, ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced,
     Response, Revision, RolledBack, Running, SessionId, SessionInfo, Sessions, SketchCut,
-    SketchEdited, Status, Stepped, Stopper, TOO_LONG, TextAnswer, TimelineAnswer, TryAgainBy,
-    fault_suggestion,
+    SketchEdited, Status, Stepped, Stopper, TOO_LONG, TextAnswer, TimelineAnswer, Transaction,
+    TryAgainBy, fault_suggestion,
 };
 pub use session_command::{ReadCommand, RunningCommand, SessionCommand};
 
@@ -111,6 +111,11 @@ pub struct Limits {
     pub kernel_seconds: u64,
     /// A sketch solve's time, in seconds.
     pub sketch_seconds: u64,
+    /// What a transaction's undo stack holds, in bytes, as its bound counts them.
+    pub undo_bytes: usize,
+    /// The least time from one comparison of a session's file on disk ending to the next
+    /// one starting, in milliseconds.
+    pub disk_check_ms: u64,
     /// A drag's move's time, in seconds (`DRAG_MOVE_TIMEOUT`).
     pub drag_move_seconds: u64,
     /// The most unknowns the part of a sketch a drag moves may have (`MAX_DRAG_UNKNOWNS`).
@@ -145,6 +150,8 @@ pub const VERSION: Version = Version {
         export_bytes: crate::export::MAX_ARCHIVE,
         kernel_seconds: crate::kernel::DEFAULT_TIMEOUT.as_secs(),
         sketch_seconds: crate::sketch::SKETCH_TIMEOUT.as_secs(),
+        undo_bytes: document::undo::UNDO_BYTES,
+        disk_check_ms: crate::disk::DISK_CHECK_MS,
         drag_move_seconds: crate::drag::DRAG_MOVE_TIMEOUT.as_secs(),
         drag_unknowns: silico_protocol::MAX_DRAG_UNKNOWNS,
     },

@@ -1,1 +1,1 @@
-{"code": "invalid_input", "message": "kind must be face, edge, or vertex, got solid", "feature": null, "elements": [], "elements_total": 0, "parameter": "kind", "cause": null, "suggestion": "give one of the kinds", "candidates": ["face", "edge", "vertex"]}
+{"code": "invalid_input", "message": "kind must be face, edge, or vertex, got solid", "feature": null, "elements": [], "elements_total": 0, "parameter": "kind", "cause": null, "suggestion": "give one of the kinds", "candidates": ["face", "edge", "vertex"], "advice": null}

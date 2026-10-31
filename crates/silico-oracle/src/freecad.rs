@@ -38,6 +38,16 @@ pub const CASE_DEADLINE_ENV: &str = "SILICO_ORACLE_CASE_DEADLINE";
 /// How many of FreeCAD's last lines a report of how it ended keeps, and how many bytes of
 /// each.
 const TAIL_LINES: usize = 20;
+
+/// The line FreeCAD 1.1.3's SIGSEGV handler writes on Linux before its backtrace and
+/// `_exit(1)` (src/App/Application.cpp:1815-1825, installed for SIGSEGV alone on Linux,
+/// :1901-1902; src/Base/SystemHandler.cpp:123-131 since): there a segmentation fault ends it
+/// with status 1, not by the signal, as it does on macOS, where no handler is installed.
+const SEGFAULT_LINE: &str = "Program received signal SIGSEGV, Segmentation fault.";
+
+/// How a crash that was FreeCAD's segmentation fault is told, after "FreeCAD crashed" and
+/// when: by the signal, or with status 1 after its handler's line ([`SEGFAULT_LINE`]).
+pub const SEGFAULT: &str = "by a segmentation fault";
 const TAIL_LINE_BYTES: usize = 1000;
 
 /// The most of a line of FreeCAD's that's read, in bytes; the rest is dropped. A case's
@@ -208,6 +218,9 @@ struct Freecad {
     since: Instant,
     /// Its last lines since then.
     tail: VecDeque<String>,
+    /// Whether one of its lines since then was its SIGSEGV handler's ([`SEGFAULT_LINE`]),
+    /// which a long backtrace after it pushes out of the tail.
+    segfault_said: bool,
 }
 
 enum Next {
@@ -223,6 +236,8 @@ struct Ended {
     hung: bool,
     status: ExitStatus,
     tail: Vec<String>,
+    /// Whether it wrote its SIGSEGV handler's line since it last answered.
+    segfault_said: bool,
 }
 
 impl Ended {
@@ -235,6 +250,13 @@ impl Ended {
             )
         } else if self.status.success() {
             format!("FreeCAD stopped {when} ({})", self.status)
+        } else if self.segfault() {
+            let said = if self.segfault_said {
+                format!(", after its SIGSEGV handler's \"{SEGFAULT_LINE}\"")
+            } else {
+                String::new()
+            };
+            format!("FreeCAD crashed {when} {SEGFAULT} ({}{said})", self.status)
         } else {
             format!("FreeCAD crashed {when} ({})", self.status)
         };
@@ -243,7 +265,21 @@ impl Ended {
         }
         why
     }
+
+    /// Whether it ended by a segmentation fault: killed by SIGSEGV (macOS), or exiting with
+    /// status 1 after its SIGSEGV handler's line (Linux, [`SEGFAULT_LINE`]). Status 1
+    /// without that line, or any other way of ending, isn't one.
+    fn segfault(&self) -> bool {
+        #[cfg(unix)]
+        let signal = std::os::unix::process::ExitStatusExt::signal(&self.status);
+        #[cfg(not(unix))]
+        let signal: Option<i32> = None;
+        signal == Some(SIGSEGV) || (self.status.code() == Some(1) && self.segfault_said)
+    }
 }
+
+/// SIGSEGV's number, on Linux and macOS alike.
+const SIGSEGV: i32 = 11;
 
 /// FreeCAD's command for `script`, its settings and caches in `home`, in the C locale.
 fn command(exe: PathBuf, script: &Path, home: &Path) -> Command {
@@ -297,6 +333,7 @@ impl Freecad {
             lines,
             since: Instant::now(),
             tail: VecDeque::new(),
+            segfault_said: false,
         })
     }
 
@@ -320,10 +357,14 @@ impl Freecad {
     fn answered(&mut self) {
         self.since = Instant::now();
         self.tail.clear();
+        self.segfault_said = false;
     }
 
     /// Keeps `line` among its last lines.
     fn keep(&mut self, mut line: String) {
+        if line == SEGFAULT_LINE {
+            self.segfault_said = true;
+        }
         if line.len() > TAIL_LINE_BYTES {
             let mut end = TAIL_LINE_BYTES;
             while !line.is_char_boundary(end) {
@@ -365,6 +406,7 @@ impl Freecad {
             hung,
             status,
             tail: self.tail.drain(..).collect(),
+            segfault_said: std::mem::take(&mut self.segfault_said),
         })
     }
 }
@@ -425,6 +467,20 @@ mod tests {
                 envs.contains(&(OsStr::new(name), Some(OsStr::new("C")))),
                 "{name}: {envs:?}"
             );
+        }
+    }
+
+    /// FreeCAD reads the scripts it's given in the locale's encoding, ASCII on CI (a hook
+    /// that runs `oracle.py` failed on a "π" in a comment): every script the oracle hands it
+    /// is ASCII.
+    #[test]
+    fn the_scripts_freecad_runs_are_ascii() {
+        for (name, text) in [
+            ("oracle.py", super::ORACLE),
+            ("the sketch oracle's script", crate::sketch::SCRIPT),
+        ] {
+            let first = text.char_indices().find(|(_, c)| !c.is_ascii());
+            assert_eq!(first, None, "{name} isn't ASCII");
         }
     }
 }

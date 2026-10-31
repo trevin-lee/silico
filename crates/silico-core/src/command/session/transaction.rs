@@ -17,7 +17,7 @@ use super::registry::Unclaimed;
 use super::registry::claim;
 use super::{
     Begun, Committed, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted, Revision,
-    RolledBack, Session, SessionId, shown_path,
+    RolledBack, Session, SessionId, Transaction, shown_path,
 };
 use crate::command::edit::Candidate;
 use crate::document::json::MAX_INPUT_LEN;
@@ -68,7 +68,29 @@ pub(super) struct Held {
 /// there exactly while the transaction is.
 pub(super) struct Open {
     pub(super) begun: Snapshot,
-    pub(super) undo: UndoStack<Revision>,
+    /// Each state holding what `format` had put into the document then ([`Formatted`]), so
+    /// an undo or a redo of a `format` takes it back or gives it back with the text, and the
+    /// stack drops and counts it with the state.
+    pub(super) undo: UndoStack<Revision, Arc<Formatted>>,
+    /// Whether the session's document differs from the one `begin` saw, as a commit finds
+    /// it ([`Snapshot::differs`]): worked out off the lock as each edit is held and each
+    /// undo or redo restores a state, never by `status` (the design's section 6).
+    pub(super) changed: bool,
+}
+
+impl Open {
+    /// The transaction as `status` gives it: its base, whether its document changed, and
+    /// its undo stack's counts, each kept as the stack changes, so none is worked out here.
+    pub(super) fn status(&self) -> Transaction {
+        Transaction {
+            base: self.begun.revision,
+            changed: self.changed,
+            undo: self.undo.undo_left(),
+            redo: self.undo.redo_left(),
+            dropped: self.undo.dropped(),
+            bytes: self.undo.bytes(),
+        }
+    }
 }
 
 /// A transaction's mend ([`Snapshot::mend`]): the first state of its history that read as a
@@ -113,6 +135,69 @@ pub(super) struct Snapshot {
 pub(super) struct Formatted {
     written: BTreeMap<FeatureId, document::Feature>,
     layout: bool,
+    /// What it counts for on the undo stack ([`Formatted::cost`]), worked out as it's made.
+    bytes: usize,
+}
+
+/// What a [`Formatted`] counts for on the undo stack beyond its features: its own fields.
+const FORMATTED_BYTES: usize = 32;
+
+impl Formatted {
+    /// What it counts for: each feature it wrote, as its canonical text's bytes, and
+    /// [`FORMATTED_BYTES`].
+    fn cost(&self) -> usize {
+        FORMATTED_BYTES
+            + self
+                .written
+                .values()
+                .map(|feature| {
+                    document::write::feature_text(feature, usize::MAX).map_or(0, |text| text.len())
+                })
+                .sum::<usize>()
+    }
+}
+
+impl crate::document::undo::Extra for Arc<Formatted> {
+    /// Shared by every state an edit after the `format` made (each takes the one before's):
+    /// counted once. One that holds nothing (no `format` yet: a `format` sets `layout` as it
+    /// writes, so `written` is never held without it) costs nothing.
+    fn shared(&self) -> Option<usize> {
+        self.layout.then_some(Arc::as_ptr(self) as usize)
+    }
+
+    fn cost(&self) -> usize {
+        self.bytes
+    }
+}
+
+impl Snapshot {
+    /// What `format` has put into the transaction's document: `formatted` (an undo or a
+    /// redo restoring a state's).
+    pub(super) fn set_formatted(&mut self, formatted: Arc<Formatted>) {
+        self.formatted = formatted;
+    }
+
+    /// Whether the document `text` holds, as the reader and the gate found it (`gated`),
+    /// differs from this one, `begin`'s, as a commit decides whether it writes: compared as
+    /// canonical form writes them, so a document read from a file whose sketch lists aren't
+    /// in ID order is the one its canonical text reads as; byte for byte where either text
+    /// doesn't read as a document, or once a `format` in the transaction has asked for
+    /// canonical form.
+    pub(super) fn differs(&self, text: &[u8], gated: &Gated) -> bool {
+        self.differs_after(text, gated, false)
+    }
+
+    /// [`differs`](Self::differs), as it will compare once an edit that `formats` (a
+    /// `format` inside the transaction, which asks for canonical form) is held: by bytes
+    /// from then on, as after one already.
+    pub(super) fn differs_after(&self, text: &[u8], gated: &Gated, formats: bool) -> bool {
+        match (self.gated.document(), gated.document()) {
+            (Ok(before), Ok(now)) if !(self.formatted.layout || formats) => {
+                !before.canonically_eq(now)
+            }
+            _ => self.text.as_slice() != text,
+        }
+    }
 }
 
 /// A state of the session's document a commit saves ([`Session::save_state`]): the path as
@@ -138,6 +223,111 @@ struct Save<'a> {
     model: &'a Model,
     reach: &'a BTreeSet<FeatureId>,
     publish: bool,
+}
+
+/// Where a Save As writes (M5.4, `commit`'s `path`; docs/design/m5.0-app.md, open item
+/// 22): the path as the request gave it (in a workspace, relative to its root), whether a
+/// file there may be replaced, the documents the other sessions hold (by their paths),
+/// which session holds a file, looked up (`registry::holder`), and the claim on the path
+/// the session takes before it writes and gives back if it writes nothing
+/// (`registry::reserve`, `registry::unreserve`).
+pub(super) struct SaveTo<'a> {
+    pub(super) given: String,
+    pub(super) replace: bool,
+    pub(super) held: Vec<PathBuf>,
+    pub(super) holder: &'a dyn Fn(&Path) -> Option<SessionId>,
+    pub(super) reserve: &'a dyn Fn(&Path) -> Result<(), SessionId>,
+    pub(super) unreserve: &'a dyn Fn(&Path),
+}
+
+impl SaveTo<'_> {
+    /// The rules its path is held to (decision 35, as a document): ending in `.silico`,
+    /// inside `workspace`, never through a link out of it, never in a `.silico-cache/`
+    /// directory, a file if anything's there, and replaced only as `replace` says; and, as
+    /// it's written, never another session's document (before, [`target`](Self::target)
+    /// names the session).
+    fn rules<'w>(
+        &'w self,
+        workspace: Option<&'w Workspace>,
+        replace: bool,
+        writing: bool,
+    ) -> file::Output<'w> {
+        file::Output {
+            field: "path",
+            extensions: &["silico"],
+            writer: "a commit",
+            replace,
+            workspace,
+            held: if writing { &self.held } else { &[] },
+            document: true,
+        }
+    }
+
+    /// Where it writes, through any links, or why it's refused, writing nothing: as
+    /// [`rules`](Self::rules) refuse it, if it's the session's own file, `own` (by any path
+    /// to it), which a commit with no path saves, or if another session holds it.
+    fn target(&self, workspace: Option<&Workspace>, own: &Path) -> Result<PathBuf, Error> {
+        let given = Path::new(&self.given);
+        // Whether it's the session's own file is said before whether it's there.
+        let target = file::check_output(given, &self.rules(workspace, true, false))?;
+        let same = |a: &std::fs::Metadata, b: &std::fs::Metadata| {
+            use std::os::unix::fs::MetadataExt as _;
+            a.dev() == b.dev() && a.ino() == b.ino()
+        };
+        let there = std::fs::metadata(&target);
+        if target == own
+            || there
+                .as_ref()
+                .is_ok_and(|t| std::fs::metadata(own).is_ok_and(|o| same(t, &o)))
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidInput,
+                format!("{} is this session's own file", shown_path(given)),
+            )
+            .with_parameter("path")
+            .with_suggestion("give path null to save to it, or another path"));
+        }
+        if let Some(holder) = (self.holder)(&target) {
+            return Err(held_elsewhere(&self.given, holder));
+        }
+        if there.is_ok() && !self.replace {
+            return Err(file::exists(given, "path"));
+        }
+        Ok(target)
+    }
+}
+
+/// The problem a Save As gives of the session's old file at `path` (as `open` was given
+/// it), left part written by an earlier save that couldn't put its text back, its text
+/// before in `old`: the session holds another file now, so nothing will say it again.
+fn left_part_written(path: &str, old: &Path) -> Error {
+    Error::new(
+        ErrorCode::IoFailed,
+        format!(
+            "{} was left part written by this session's own save, which couldn't put its text back: its text before is in {}",
+            shown_path(Path::new(path)),
+            shown_path(old)
+        ),
+    )
+    .with_parameter("path")
+    .with_suggestion(
+        "the session holds the new file now: put the old text back in the old file by hand if it's still wanted",
+    )
+}
+
+/// The refusal of a Save As to `given`, a file session `holder` holds or is opening.
+fn held_elsewhere(given: &str, holder: SessionId) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!(
+            "{} is open in session {holder}",
+            shown_path(Path::new(given))
+        ),
+    )
+    .with_parameter("path")
+    .with_suggestion(format!(
+        "give another path, or close session {holder} first"
+    ))
 }
 
 /// Whose state a commit saves: an open transaction's, or an edit's candidate, made outside
@@ -233,20 +423,29 @@ impl Held {
     /// features' canonical texts, which its text was assembled from ([`After::Canonical`]),
     /// so an undo writes it back byte for byte; and, if the push drops the mend's state, the
     /// mend given up first, so the edit's state, if it reads, is the mend from now on
-    /// ([`Snapshot::mend`]). Then the session's document changed to it, as
-    /// [`change`](Self::change) changes it, carrying what was carried. What the push said.
-    pub(super) fn hold(&mut self, revision: Revision, candidate: Candidate) -> Option<Pushed> {
+    /// ([`Snapshot::mend`]). `changed` is whether its document differs from `begin`'s
+    /// ([`Snapshot::differs`], worked out before the lock was taken). Then the session's
+    /// document changed to it, as [`change`](Self::change) changes it, carrying what was
+    /// carried. What the push said.
+    pub(super) fn hold(
+        &mut self,
+        revision: Revision,
+        candidate: Candidate,
+        changed: bool,
+    ) -> Option<Pushed> {
         let (text, gated, prepared) = candidate.into_parts();
         let after = After::Canonical(prepared);
-        let pushed = self.transaction.as_mut().map(|Open { begun, undo }| {
-            if begun
+        let pushed = self.transaction.as_mut().map(|open| {
+            if open
+                .begun
                 .mend
                 .as_ref()
-                .is_some_and(|mend| undo.redo_holds(mend.revision))
+                .is_some_and(|mend| open.undo.redo_holds(mend.revision))
             {
-                begun.mend = None;
+                open.begun.mend = None;
             }
-            undo.edit(after, revision)
+            open.changed = changed;
+            open.undo.edit(after, revision)
         });
         let carried = Arc::clone(&self.carried);
         self.change(revision, text, gated, carried);
@@ -539,7 +738,8 @@ impl<C: Kernel + 'static> Session<C> {
         drop(rebuilds);
         held.transaction = Some(Open {
             begun: held.snapshot(),
-            undo: UndoStack::new(Arc::clone(&held.text), revision, self.undo_bytes),
+            undo: UndoStack::holding(Arc::clone(&held.text), revision, self.undo_bytes),
+            changed: false,
         });
         Ok(Begun { base: revision })
     }
@@ -663,8 +863,55 @@ impl<C: Kernel + 'static> Session<C> {
                 changed_outside,
             }
         };
-        self.save_state(stop, state, Through::Transaction, read, claim)
+        self.save_state(stop, state, Through::Transaction, read, claim, None)
             .map(|(committed, _)| committed)
+    }
+
+    /// `commit` with a `path` (a Save As, M5.4; docs/design/m5.0-app.md, open item 22): as
+    /// [`commit`](Self::commit) saves, but to the file at `to.given`, written whole through
+    /// a new file renamed into place, even if the document is the one `begin` saw, and
+    /// whatever the session's own file holds now (a file changed on disk is kept there,
+    /// never written over, decision 3); then the session holds the new path, its claim on
+    /// it (`claim`) and on no other, its own file let go. Refused, nothing written and the
+    /// transaction left open, as `commit` is (no transaction open, the model, the text's
+    /// length), for a document the gate refuses, and as decision 35 refuses a path a
+    /// command writes, as a document: not ending in `.silico`, outside the workspace or
+    /// through a link out of it, in a `.silico-cache/` directory, a file there and no
+    /// `replace`, or not a file; and for the session's own file (a commit with no path
+    /// saves it) or one another session holds or is opening, by any path to it. The path
+    /// is checked before the rebuild is waited for, and again as it's written.
+    pub(super) fn commit_as(
+        self: &Arc<Self>,
+        stop: &Ticket,
+        to: &SaveTo<'_>,
+        read: &mut Option<ModelRead>,
+        claim: &dyn Fn(&Path),
+    ) -> Result<Committed, Problems> {
+        // Taken under the lock, and the path checked with it let go: the check reads the
+        // file system, which may stall, and `status` reads the held state.
+        let (state, own, part_written) = {
+            let held = self.held.read();
+            let begun = self.transaction(&held)?;
+            let state = Saving {
+                path: held.path.clone(),
+                text: Arc::clone(&held.text),
+                gated: Arc::clone(&held.gated),
+                revision: held.revision,
+                carried: Arc::clone(&held.carried),
+                begun,
+                changed_outside: None,
+            };
+            (state, held.resolved.clone(), held.part_written.clone())
+        };
+        to.target(self.workspace.as_ref(), &own)?;
+        let path = state.path.clone();
+        let (mut committed, _) =
+            self.save_state(stop, state, Through::Transaction, read, claim, Some(to))?;
+        // The old file's mark, let go with it: said, so where its old text is isn't lost.
+        if let Some(old) = part_written {
+            committed.problems.push(left_part_written(&path, &old));
+        }
+        Ok(committed)
     }
 
     /// An edit's `candidate`, made outside a transaction, committed as its own transaction
@@ -700,7 +947,7 @@ impl<C: Kernel + 'static> Session<C> {
                 changed_outside: None,
             }
         };
-        let committed = self.save_state(stop, state, Through::Candidate, read, claim);
+        let committed = self.save_state(stop, state, Through::Candidate, read, claim, None);
         if committed.is_err() {
             *read = None;
         }
@@ -717,7 +964,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// it), or an edit's candidate (held only once saved, its model rebuilt for this commit
     /// alone). With the commit's result, the document saved, as the session then holds it
     /// ([`write`](Self::write)), if one was written. Refused, nothing written and nothing
-    /// held changed, as [`commit`](Self::commit) is. As the command `stop` stops.
+    /// held changed, as [`commit`](Self::commit) is. With `to`, a Save As
+    /// ([`commit_as`](Self::commit_as)): written there whether or not it's changed, and a
+    /// document the gate refuses refused. As the command `stop` stops.
     fn save_state(
         self: &Arc<Self>,
         stop: &Ticket,
@@ -725,6 +974,7 @@ impl<C: Kernel + 'static> Session<C> {
         through: Through,
         read: &mut Option<ModelRead>,
         claim: &dyn Fn(&Path),
+        to: Option<&SaveTo<'_>>,
     ) -> Result<(Committed, Option<Arc<Gated>>), Problems> {
         let Saving {
             path,
@@ -749,11 +999,9 @@ impl<C: Kernel + 'static> Session<C> {
         let reach = reached.get();
         // As canonical form writes them: a document read from a file whose sketch lists
         // aren't in ID order is the one its canonical text reads as. After a `format` in
-        // the transaction, by bytes: it asked for canonical form, as outside one.
-        let unchanged = match (begun.gated.document(), gated.document()) {
-            (Ok(before), Ok(now)) if !begun.formatted.layout => before.canonically_eq(now),
-            _ => begun.text == text,
-        };
+        // the transaction, by bytes: it asked for canonical form, as outside one. The same
+        // compare as `status.transaction.changed`'s ([`Snapshot::differs`]).
+        let unchanged = !begun.differs(&text, &gated);
         // Found before the command, so before any rebuild for it. A commit that would write
         // nothing loses nothing, and ends as one does, without waiting for a rebuild: its
         // problems the gate's alone.
@@ -770,7 +1018,7 @@ impl<C: Kernel + 'static> Session<C> {
         }
         let checked = match &*gated {
             Gated::Checked(checked) => checked,
-            refused if unchanged => {
+            refused if unchanged && to.is_none() => {
                 let problems = refused.problems();
                 if through == Through::Transaction {
                     self.unwritten(stop, &begun, revision)?;
@@ -795,7 +1043,7 @@ impl<C: Kernel + 'static> Session<C> {
             },
             &model.drifted(),
         )?;
-        if unchanged {
+        if unchanged && to.is_none() {
             if through == Through::Transaction {
                 self.unwritten(stop, &begun, revision)?;
             }
@@ -813,11 +1061,12 @@ impl<C: Kernel + 'static> Session<C> {
             },
             saver,
             claim,
+            to,
         )?;
         Ok((
             Committed {
                 written: true,
-                path,
+                path: to.map_or(path, |to| to.given.clone()),
                 refingerprinted: formatted.refingerprinted,
                 resolved: formatted.resolved,
                 problems: formatted.problems,
@@ -983,11 +1232,14 @@ impl<C: Kernel + 'static> Session<C> {
                             .collect(),
                         Err(_) => BTreeMap::new(),
                     };
-                self.hold_then(stop, candidate, |held| {
+                self.hold_then(stop, candidate, true, |held| {
                     if let Some(open) = &mut held.transaction {
                         let formatted = Arc::make_mut(&mut open.begun.formatted);
                         formatted.written.extend(written);
                         formatted.layout = true;
+                        formatted.bytes = formatted.cost();
+                        // The format's own state holds it, for an undo past it to take back.
+                        open.undo.set_extra(Arc::clone(&open.begun.formatted));
                     }
                 })?;
             }
@@ -1014,6 +1266,7 @@ impl<C: Kernel + 'static> Session<C> {
                 },
                 Saver::Format,
                 claim,
+                None,
             )?;
         }
         Ok(Reformatted {
@@ -1041,13 +1294,16 @@ impl<C: Kernel + 'static> Session<C> {
     /// found it, which the session now holds. Refused, nothing changed, as the save is, a
     /// conflict with what `saver` advises; or, `cancelled`, if the command was stopped
     /// before the save began (past it, a cancel comes too late, and the command answers with
-    /// its real result).
+    /// its real result). With `to`, a Save As: written there ([`save_to`](Self::save_to)),
+    /// not over the session's file, and the session's file from then on, its path as `to`
+    /// gives it, the disk watch moved to it.
     fn write(
         &self,
         stop: &Ticket,
         save: Save<'_>,
         saver: Saver,
         claim: &dyn Fn(&Path),
+        to: Option<&SaveTo<'_>>,
     ) -> Result<Arc<Gated>, Problems> {
         let Save {
             text: saved,
@@ -1064,7 +1320,13 @@ impl<C: Kernel + 'static> Session<C> {
                 Arc::clone(&held.bytes),
             )
         };
-        let saving = self.save(stop, &path, &resolved, &bytes, &saved, saver)?;
+        let (saving, resolved) = match to {
+            None => (
+                Some(self.save(stop, &path, &resolved, &bytes, &saved, saver)?),
+                resolved,
+            ),
+            Some(to) => (None, self.save_to(stop, to, &resolved, &saved)?),
+        };
         claim(&resolved);
         let carried = reach
             .iter()
@@ -1083,7 +1345,17 @@ impl<C: Kernel + 'static> Session<C> {
         held.bytes = Arc::clone(&saved);
         // Under the held state's lock, the watch's taken last: a comparison that read the
         // file before the save is dropped, and one after it finds the file unchanged.
-        saving.saved(saved);
+        match (saving, to) {
+            (Some(saving), _) => saving.saved(saved),
+            (None, Some(to)) => {
+                held.path = to.given.clone();
+                held.resolved = resolved.clone();
+                // That was the old file's.
+                held.part_written = None;
+                self.disk.moved(resolved, saved);
+            }
+            (None, None) => {}
+        }
         // Under the held state's lock, so no published read of the new revision starts its
         // rebuild before its model is there.
         let mut rebuilds = lock(&self.rebuilds);
@@ -1273,6 +1545,41 @@ impl<C: Kernel + 'static> Session<C> {
         Ok(saving)
     }
 
+    /// `text` saved as `to` says (a Save As), the session's own file at `own` untouched, as
+    /// the command `stop` stops: its stop settled first, so from here a cancel comes too
+    /// late; the path checked again, claimed for the session, and written whole, through a
+    /// new file renamed into place. Where it wrote, through any links; or refused, nothing
+    /// written and the path's claim given back.
+    fn save_to(
+        &self,
+        stop: &Ticket,
+        to: &SaveTo<'_>,
+        own: &Path,
+        text: &[u8],
+    ) -> Result<PathBuf, Problems> {
+        stop.settle()?;
+        let target = to.target(self.workspace.as_ref(), own)?;
+        (to.reserve)(&target).map_err(|holder| held_elsewhere(&to.given, holder))?;
+        #[cfg(test)]
+        self.writing.pass();
+        // Written only where it was checked and claimed: a link put on its way since is
+        // refused, so it never writes over another session's file.
+        let written = file::write_output_at(
+            Path::new(&to.given),
+            text,
+            &to.rules(self.workspace.as_ref(), to.replace, true),
+            &target,
+        );
+        if written.is_err() {
+            (to.unreserve)(&target);
+        }
+        // A write that failed names the path, as a commit's own does.
+        Ok(written.map_err(|error| match error.parameter() {
+            Some(_) => error,
+            None => error.with_parameter("path"),
+        })?)
+    }
+
     /// The refusal of a save of the document at `path` (as `open` was given it) that failed,
     /// as `unsaved` says: a conflict, naming the file, with what `saver` advises, or why it
     /// couldn't be written; and, if it left the file part written, that marked, for the next
@@ -1325,7 +1632,7 @@ impl Saver {
                     base.number()
                 ))
                 .with_suggestion(
-                    "nothing was written: roll back, then begin again from the file as it is now",
+                    "nothing was written: roll back, then begin again from the file as it is now; or save elsewhere with path",
                 ),
             Saver::Edit => error.with_suggestion(
                 "nothing was written: read it again and make the edit against the new revision",

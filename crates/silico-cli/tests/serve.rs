@@ -59,9 +59,9 @@ fn serve_initializes_lists_its_tools_makes_a_document_and_ends_with_its_input() 
     );
     let tools = tools["result"]["tools"].as_array().unwrap();
     // M4.1's 26 commands, M5.1's move_feature and timeline, M5.3's drag_begin, drag_move,
-    // and drag_end, and M5.10's sketch, sketch_add, sketch_remove, sketch_split, sketch_trim,
-    // sketch_unjoin, and sketch_merge.
-    assert_eq!(tools.len(), 38);
+    // and drag_end, M5.10's sketch, sketch_add, sketch_remove, sketch_split, sketch_trim,
+    // sketch_unjoin, and sketch_merge, and M5.2's undo and redo.
+    assert_eq!(tools.len(), 40);
     assert_eq!(tools[1]["name"], "open");
     let opened = ask(
         &mut stdin,
@@ -389,7 +389,7 @@ fn serve_on_sigterm_mid_commit_leaves_the_document_whole() {
         assert_eq!(reply["result"]["isError"], false, "{reply}");
     }
     // The commit sent, and SIGTERM at once: whichever wins, the file is whole.
-    writeln!(stdin, r#"{{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {{"name": "commit", "arguments": {{"session": "s1"}}}}}}"#).unwrap();
+    writeln!(stdin, r#"{{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {{"name": "commit", "arguments": {{"session": "s1", "path": null, "replace": false}}}}}}"#).unwrap();
     sigterm(&child);
     assert_eq!(exited(child).code(), Some(0));
     let text = std::fs::read_to_string(dir.path().join("part.silico")).unwrap();
@@ -665,4 +665,61 @@ fn serve_with_a_kernel_worker_it_cant_read_doesnt_start() {
         worker.display()
     );
     assert!(stderr.starts_with(&said), "{said}\nin {stderr}");
+}
+
+#[test]
+fn serve_gives_a_kernel_faults_advice_as_data_in_the_models_fault() {
+    // The contract lows' `advice`, from a real fault: a kernel worker that segfaults once
+    // the request reaches it (worker.rs's `crash_advice`: a fault signal with the request
+    // is the values', which would crash it again). `check`'s envelope gives the fault once,
+    // in `model.fault`, its advice `change_the_values` as data beside the session's words.
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("models");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(workspace.join("box.silico"), BOX).unwrap();
+    let kernel = root.path().join("segfaulting-kernel");
+    std::fs::write(
+        &kernel,
+        "#!/bin/sh\nprintf '\\0\\0\\0\\0' >&3\nhead -c 1 <&3 >/dev/null\nkill -SEGV $$\nexec sleep 600\n",
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&kernel, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_silico"))
+        .args(["serve", "--workspace"])
+        .arg(&workspace)
+        .env("SILICO_KERNEL_WORKER", &kernel)
+        .env("XDG_CACHE_HOME", root.path().join("cache-home"))
+        .env_remove("SILICO_LOG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let lines = lines(&mut child);
+    ask(&mut stdin, &lines, INITIALIZE, "0");
+    let opened = ask(
+        &mut stdin,
+        &lines,
+        r#"{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "open", "arguments": {"path": "box.silico", "create": false}}}"#,
+        "1",
+    );
+    assert_eq!(
+        opened["result"]["structuredContent"]["ok"], true,
+        "{opened}"
+    );
+    let checked = ask(
+        &mut stdin,
+        &lines,
+        r#"{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "check", "arguments": {"session": "s1", "model": "current", "fresh": true}}}"#,
+        "2",
+    );
+    let fault = &checked["result"]["structuredContent"]["model"]["fault"];
+    assert_eq!(fault["code"], "worker_crashed", "{checked}");
+    assert_eq!(fault["advice"], "change_the_values", "{checked}");
+    drop(stdin);
+    assert_eq!(exited(child).code(), Some(0));
 }

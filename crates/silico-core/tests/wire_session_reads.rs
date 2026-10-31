@@ -23,9 +23,9 @@ use silico_core::command::wire::session::{
 use silico_core::command::wire::transaction::SessionRequest;
 use silico_core::command::wire::{Layout, ToWire, response, response_text, snapshot_value, write};
 use silico_core::command::{
-    Begun, Cancelled, CheckModel, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer,
-    Problems, Progress, ReadCommand, Rebuild, RebuildState, Response, Revision, RunningCommand,
-    SessionCommand, SessionId, Sessions, Status, TextAnswer, VERSION, Version,
+    Cancelled, CheckModel, Limits, MAX_SESSIONS, ModelChoice, Opened, OutlineAnswer, Problems,
+    Progress, ReadCommand, Rebuild, RebuildState, Response, Revision, RunningCommand,
+    SessionCommand, SessionId, Sessions, Status, TextAnswer, Transaction, VERSION, Version,
 };
 use silico_core::disk::Disk;
 use silico_core::document::json::{Node, read};
@@ -631,13 +631,15 @@ fn version_is_answered_with_every_limit_as_the_design_gives_them_and_no_session(
             export_bytes: 32,
             kernel_seconds: 21,
             sketch_seconds: 22,
-            drag_move_seconds: 33,
-            drag_unknowns: 34,
+            undo_bytes: 33,
+            disk_check_ms: 34,
+            drag_move_seconds: 35,
+            drag_unknowns: 36,
         },
     };
     assert_eq!(
         one_line(&other),
-        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "highlight": 23, "render_side": 24, "render_seconds": 25, "log_read_events": 26, "log_read_bytes": 27, "log_events": 28, "log_bytes": 29, "export_tolerance": [0.000001, 30], "export_triangles": 31, "export_bytes": 32, "kernel_seconds": 21, "sketch_seconds": 22, "drag_move_seconds": 33, "drag_unknowns": 34}}"#
+        r#"{"api": 2, "format": 3, "naming": 4, "limits": {"document_bytes": 11, "request_bytes": 12, "request_depth": 13, "response_bytes": 14, "listed": 15, "sessions": 16, "published_reads": 17, "elements": 18, "query": 19, "query_measures": 20, "highlight": 23, "render_side": 24, "render_seconds": 25, "log_read_events": 26, "log_read_bytes": 27, "log_events": 28, "log_bytes": 29, "export_tolerance": [0.000001, 30], "export_triangles": 31, "export_bytes": 32, "kernel_seconds": 21, "sketch_seconds": 22, "undo_bytes": 33, "disk_check_ms": 34, "drag_move_seconds": 35, "drag_unknowns": 36}}"#
     );
     holds(&schema_of("version", "result"), &written(&other), "another");
 }
@@ -754,11 +756,19 @@ fn close_answers_and_refuses_as_the_design_gives_it() {
 
 #[test]
 fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
-    // The design's: a check running, a published read, a transaction begun at 4.
+    // The design's: a check running, a published read, a transaction begun at 4 with three
+    // edits to undo (M5.0's section 6).
     let status = Status {
         features: Some(7),
         gated: true,
-        transaction: Some(Begun { base: revision(4) }),
+        transaction: Some(Transaction {
+            base: revision(4),
+            changed: true,
+            undo: 3,
+            redo: 0,
+            dropped: 0,
+            bytes: 61530,
+        }),
         running: Some(RunningCommand::Command(SessionCommand::Check)),
         reads: vec![ReadCommand::Distance],
         rebuild: Rebuild {
@@ -778,7 +788,7 @@ fn status_is_written_as_the_design_gives_it_and_from_each_of_its_own_values() {
     let text = written(&status);
     assert_eq!(
         text,
-        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\", \"done\": 3, \"steps\": 9},\n  \"drag\": null,\n  \"disk\": \"unchanged\"\n}\n"
+        "{\n  \"features\": 7,\n  \"gated\": true,\n  \"transaction\": {\"base\": 4, \"changed\": true, \"undo\": 3, \"redo\": 0, \"dropped\": 0, \"bytes\": 61530},\n  \"running\": \"check\",\n  \"reads\": [\"distance\"],\n  \"rebuild\": {\"revision\": 6, \"state\": \"running\", \"done\": 3, \"steps\": 9},\n  \"drag\": null,\n  \"disk\": \"unchanged\"\n}\n"
     );
     // Its read, `distance`, a read of the published model (M4.5's): it holds.
     holds(&schema_of("status", "result"), &text, "the design's");
@@ -1036,7 +1046,6 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
             &[],
             "StatusResult",
             &[
-                "BeginResult",
                 "Coordinate",
                 "Disk",
                 "DragOpen",
@@ -1046,6 +1055,7 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
                 "Rebuild",
                 "RebuildState",
                 "RunningCommand",
+                "Transaction",
             ],
         ),
         (
@@ -1127,7 +1137,7 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
         assert_eq!(cancel["properties"]["command"]["$ref"], command["$ref"]);
         assert_eq!(
             cancel["$defs"]["SessionCommand"]["enum"],
-            serde_json::json!(SESSION_COMMANDS)
+            serde_json::json!(SESSION_COMMANDS.as_slice())
         );
     }
     let base = |running: &str, reads: &str| {

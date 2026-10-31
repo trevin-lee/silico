@@ -388,7 +388,7 @@ fn a_rollback_after_undos_and_redos_restores_begins_state_and_the_next_transacti
         assert_eq!(
             message,
             format!(
-                "revision {to} isn't a state of session {}'s undo stack, which holds revision 7",
+                "revision {to} isn't a state of session {}'s undo stack that redo can restore: it can restore none",
                 f.id
             )
         );
@@ -426,13 +426,17 @@ fn a_to_past_the_session_or_at_u64_max_is_not_held_and_names_to() {
     f.begin();
     f.set(41).result.unwrap();
     for to in [3, 4, u64::MAX] {
-        for response in [f.undo(Some(to)), f.redo(Some(to))] {
+        // Undo can restore `begin`'s state (1); nothing is after the session's (2).
+        for (way, response, can) in [
+            ("undo", f.undo(Some(to)), "revision 1"),
+            ("redo", f.redo(Some(to)), "none"),
+        ] {
             let (code, message, parameter, _) = refused(&response);
             assert_eq!(code, ErrorCode::InvalidInput);
             assert_eq!(
                 message,
                 format!(
-                    "revision {to} isn't a state of session {}'s undo stack, which holds revisions 1 to 2",
+                    "revision {to} isn't a state of session {}'s undo stack that {way} can restore: it can restore {can}",
                     f.id
                 )
             );

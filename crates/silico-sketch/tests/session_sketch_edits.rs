@@ -231,7 +231,7 @@ fn a_dimension_that_over_defines_the_sketch_is_applied_and_its_conflict_reported
             "parameter": null,
             "cause": null,
             "suggestion": "remove or change one of the constraints named",
-            "candidates": []
+            "candidates": [], "advice": null
         })
     );
     // The one problem: what fails downstream is the pad, unbuilt, which a read of it says.
@@ -254,7 +254,7 @@ fn a_dimension_that_over_defines_the_sketch_is_applied_and_its_conflict_reported
             "parameter": "feature",
             "cause": null,
             "suggestion": "mend s0000001 first: `check` says why it failed",
-            "candidates": []
+            "candidates": [], "advice": null
         }]),
         "{pad}"
     );
@@ -274,7 +274,10 @@ fn a_dimension_that_over_defines_the_sketch_is_applied_and_its_conflict_reported
     assert_eq!(set["after"], false, "{set}");
     assert_eq!(f.problems(), []);
     // Committed, the file holds it, its value as the solve measured the line: 60.
-    let committed = f.ran("commit", r#"{"session": "s1"}"#);
+    let committed = f.ran(
+        "commit",
+        r#"{"session": "s1", "path": null, "replace": false}"#,
+    );
     assert_eq!(committed["written"], true, "{committed}");
     let file: Value = serde_json::from_str(&std::fs::read_to_string(f.path()).unwrap()).unwrap();
     let reference = file["features"][0]["constraints"]

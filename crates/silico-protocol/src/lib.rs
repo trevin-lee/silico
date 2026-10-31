@@ -33,8 +33,8 @@ pub use chamfer::ChamferSize;
 pub use classify::{MAX_CLASSIFY_COORDINATE, PointPlace, check_classify_point};
 pub use copies::{CopiesOp, CopiesRefused, MAX_COPIES, MAX_INSTANCES, Placement, check_copies};
 pub use describe::{
-    DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Quantity, Surface,
-    What, batches, describe_in_batches,
+    DESCRIBE_BATCH, Description, EdgeCurve, EdgeDescription, FaceDescription, Impossible, Quantity,
+    Surface, What, batches, describe_in_batches,
 };
 pub use distance::{
     Distance, MAX_POINT_COORDINATE, check_distance, check_point_distance, witness, witness_within,

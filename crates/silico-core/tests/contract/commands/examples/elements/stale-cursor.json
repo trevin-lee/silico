@@ -1,1 +1,1 @@
-{"code": "conflict", "message": "the cursor is of revision 6, and the model read is of revision 7", "feature": null, "elements": [], "elements_total": 0, "parameter": "after", "cause": null, "suggestion": "start again with after set to null", "candidates": []}
+{"code": "conflict", "message": "the cursor is of revision 6, and the model read is of revision 7", "feature": null, "elements": [], "elements_total": 0, "parameter": "after", "cause": null, "suggestion": "start again with after set to null", "candidates": [], "advice": null}
