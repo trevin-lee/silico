@@ -1,6 +1,6 @@
 # Sketches on planar faces (FreeCAD's attacher, `FlatFace`)
 
-A sketch whose `plane` names a planar face of the model, instead of an origin plane, and where it then sits: its normal, its origin, and its x and y axes. This is M4's step "Sketches on faces" (the M4 plan's amendment A4; the frame is decisions F1 and F2). This note covers what FreeCAD does, how 1.1.3 differs from main, the fixes in FreeCAD's history, where Silico departs from FreeCAD on purpose, and the tests to port. The face is found by its stable name, as an edge is (docs/ports/references.md). The sketch's own frame on the origin planes is M3.2's D6.
+A sketch whose `plane` names a planar face of the model, instead of an origin plane, and where it then sits: its normal, its origin, and its x and y axes. This is the M4 plan's amendment A4, deferred from M4 and built as M5.9 (docs/roadmap/m5-app.md); the frame is decisions F1 and F2. This note covers what FreeCAD does, how 1.1.3 differs from main, the fixes in FreeCAD's history, where Silico departs from FreeCAD on purpose, and the tests to port. The face is found by its stable name, as an edge is (docs/ports/references.md). The sketch's own frame on the origin planes is M3.2's D6.
 
 **Sources.** The oracle is FreeCAD 1.1.3, tag `145529fe74`. That commit isn't in the local clone, so the files were read from GitHub at the tag. Main is the fork's `876271d660`. Release 1.1 branched from main at `af2d42a4aa`; `e8f826d0ed`, which bumps main to 1.2, is main's first commit not in 1.1. A commit is "in 1.1.3" here if GitHub's compare puts it behind the tag, or if its code is at the tag (a backport). In citations, `113:` is a line at 1.1.3 and `main:` a line on main. A bare `Attacher.cpp` is `src/Mod/Part/App/Attacher.cpp`, and `TNP` is `src/Mod/PartDesign/PartDesignTests/TestTopologicalNamingProblem.py`. OCCT lines are from 7.9.3, the version Silico pins. Nothing here was run in FreeCAD; where a claim comes from reading code, not from a test, it says so.
 
@@ -122,6 +122,43 @@ The frame is F1 and F2's.
   - A face that's gone is `reference_broken` with candidates, never re-pointed.
   - A face OCCT doesn't type as a plane is refused, naming it.
   - A face of a later feature is a cycle, refused by the gate.
+
+### How a rebuild places it (M5.9)
+
+**The document.** `plane` is either an origin plane's word (`"xy"`, `"xz"`, `"yz"`, D6) or the face plane, `{"face": "<name>", "x": "+y", "reversed": false}`: those three keys, in that order, each always written (`reversed` too, `false` included, as an extent's is). The reader takes nothing else in it. `face` is a name in Silico's form (`Name::parse`), of a face.
+
+**The gate** refuses, naming the sketch and `plane.face` or `plane.x`:
+- a `face` that isn't a name, or names an edge or a vertex (FreeCAD's `TestAllModesBoundaries`: a whole solid or a non-face isn't a plane);
+- a name with a maker that isn't a feature before the sketch: a cycle, as a fillet's edge of a later feature is (M2.8);
+- an `x` that isn't one of the six tokens.
+
+What the gate can't know without building is the rebuild's.
+
+**Where the face is looked for.** In the solids live at the sketch's place in the timeline: those made by features before it, consumed by none before it (a suppressed feature's base passed through, `document::suppression`). Exactly the rule M4.1 section 5 gives `add_feature`. The name is read in each one's element map as a fillet's edge is in its base's (M2.8): a name that finds nothing, or finds an element by an unstable name (N3), is `reference_broken` on the sketch, parameter `plane.face`, with candidates (N4), never re-pointed. A face of a solid whose feature failed or was blocked blocks the sketch, as a fillet's base does.
+
+**The frame**, from the face found, exactly as F1 and F2 say it:
+- n is the face's normal as `describe` reports it: the surface's, reversed where the face is, so out of the solid (step 5).
+- p is the plane's own location, `gp_Pln::Location()`, which `describe` reports beside the normal. Not the centroid: that's measured only to `MEASURE_PRECISION`, and a sketch a nanometre off its face makes its pad's fuse leave a sliver.
+- o = n(n·p); x = (a − n(n·a)) / |a − n(n·a)| for the token's axis a; y = n × x; `reversed` negates n and x.
+- A face OCCT doesn't type as a plane (FreeCAD's `GeomLib_IsPlanarSurface` path, not followed) is `reference_broken` on `plane.face`, saying the face isn't planar, with the live solids' planar faces as candidates: what the name finds is no longer something a sketch can sit on, so the reference is broken, loudly, as FreeCAD's "No planar face" is an error.
+- |a − n(n·a)| < 1e-12 is `reference_broken` on `plane.x`, with the tokens that work as candidates.
+
+**In rounds.** A sweep's steps are planned from its sketch's frame: its direction is the normal, a revolve's axis is placed by the frame. And a face sketch's frame is known only once the solid holding its face is built and described. So a recompute plans in rounds:
+1. Every face sketch whose frame isn't known yet waits, with every feature that needs it.
+2. The rest is planned and built as now.
+3. Each waiting sketch whose live solids are built and described has its frame resolved, or its refusal; one whose solid failed is blocked.
+4. The plan is made again with those frames, and steps already built are kept, by key, in memory.
+
+It ends when a round resolves nothing new. A sketch on a face of a sketch on a face takes a round each, so the rounds are as many as face sketches nest. The model is published once, from the last round. Each round's plan is a function of the document and the frames before it, so the result doesn't depend on which thread finishes first.
+
+**The key.** A faces step's line holds the frame, its origin and axes by their bits, and never the face's name: an upstream edit that moves the face changes the key, so a warm cache can't place the sketch where the face was (the roadmap's key test). Two sketches with the same profile on faces with the same frame share the step. The origin planes' lines are unchanged (`faces xy`), so no existing key moves. A sketch's solve's key holds `plane` as the file writes it, as it holds everything else the file says of the sketch, though the solve, in the sketch's own 2D, reads none of it.
+
+**What else reads the face.**
+- `timeline`'s `inputs` gain the feature that makes the face: the name's own feature (`k7f2qx3m` of `k7f2qx3m.box.Face6`).
+- Suppressing a maker of the name suppresses the sketch with it (M5.1's dependents, which already list A4's face).
+- `move_feature` and `remove_feature` treat the name as a fillet's edge: a move to before a maker, or a removal of one, is refused by the gate as a cycle or a broken reference.
+- `sketch` reports the frame as resolved.
+- `add_feature` and `set_field` take the face plane (M4.1 section 5). `add_feature` may leave out `plane.x`: the face is looked up as above in the model rebuilt up to the sketch's place, so the edit waits for that rebuild, and `x` is written as the face's `default_x`. A name that finds nothing is refused as `reference_broken`, with candidates, and the edit isn't made.
 
 ### Where Silico differs from FreeCAD on purpose
 
@@ -249,3 +286,11 @@ Not ported: TNP `testPartDesignElementPadSketch` (544-571), which A4 lists. It h
 - The document round trip: the fixture writes back byte for byte.
 - Open point 1's departure pinned: pads of an `xz` and a `yz` sketch, FreeCAD's x on all six faces as measured (`xz`: −Z, +Z, +X, +X, +X, −X; `yz`: +Y, +Y, −Z, +Z, +Y, −Y, for normals −X, +X, −Y, +Y, −Z, +Z), and Silico's `default_x` the global table's (`-y`, `+y`, `+x`, `-x`, `+x`, `+x`).
 - The oracle harness honours the token: each face sketch's `AttachmentOffset` turns FreeCAD's x onto the document's, so cases on `xz` and `yz` bodies may use any token.
+
+**M5.9's key tests** (docs/roadmap/m5-app.md, docs/design/m5.0-app.md):
+- A sketch on a box's top face places its profile at the face's height and in its frame: its pad's volume, bounds, and faces' positions by hand.
+- An upstream edit that moves the face (the box's height) moves the sketch with it, with the cache warm: a key holding the name would hit the stale placement, so the test fails if the key does.
+- An upstream edit that removes the face is `reference_broken` with candidates, and the sketch's pad is blocked.
+- Each of a cube's six faces' `default_x` is F1's table, and `add_feature` with no `plane.x` writes it.
+- A face sketch's frame is reached in its own round: a sketch on the top of a pad that's itself of a face sketch takes two, and gives the same model built cold, warm, and from the disk cache.
+- The schema snapshot changes only by the face plane. A sketch on a box's top face has the box in its `timeline` `inputs`.
