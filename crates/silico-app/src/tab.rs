@@ -179,7 +179,8 @@ pub struct Tab {
     /// The browser's hidden rows, by their names: the tab's state, never saved (open item
     /// 29).
     pub hidden: std::collections::BTreeSet<String>,
-    /// The last refusal a command of the tab's answered, as said to the person.
+    /// The last refusal a command of the tab's answered, as said to the person, until
+    /// their next action (an edit, a save, a revert, a step).
     pub message: Option<String>,
     /// A save or a revert that was to close the tab was refused: the tab stays, and a quit
     /// waiting on it stops ([`take_close_refused`](Self::take_close_refused)).
@@ -267,28 +268,58 @@ impl Tab {
             .and_then(|status| status.transaction.as_ref())
     }
 
-    /// Whether Undo can step: an edit to undo, or one still to answer (the undo waits
-    /// behind it).
-    pub fn undoable(&self) -> bool {
-        self.transaction
-            && (!self.edits.idle()
-                || self
-                    .transaction()
-                    .is_some_and(|transaction| transaction.undo > 0))
+    /// Whether the newest `status` is of the tab's own newest revision: no answer came
+    /// after it, so its transaction's counts are the session's now.
+    fn synced(&self) -> bool {
+        self.revision == self.status_revision
     }
 
-    /// Whether Redo can step: an edit undone, and none made since.
+    /// Whether an undo or a redo is queued or running.
+    fn stepping(&self) -> bool {
+        self.edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::Step { .. }))
+            || self
+                .under
+                .iter()
+                .any(|under| matches!(under, Under::Step(_)))
+    }
+
+    /// Whether Undo can step: an edit still to answer (the undo waits behind it), or an
+    /// edit to undo as the status of the tab's newest revision counts them; never while
+    /// another step is under way, whose answer moves the counts.
+    pub fn undoable(&self) -> bool {
+        self.transaction
+            && !self.stepping()
+            && (!self.edits.idle()
+                || (self.synced()
+                    && self
+                        .transaction()
+                        .is_some_and(|transaction| transaction.undo > 0)))
+    }
+
+    /// Whether Redo can step: an edit undone, and none made since, as the status of the
+    /// tab's newest revision counts them; never while a step is under way.
     pub fn redoable(&self) -> bool {
         self.transaction
             && self.edits.idle()
+            && !self.stepping()
+            && self.synced()
             && self
                 .transaction()
                 .is_some_and(|transaction| transaction.redo > 0)
     }
 
-    /// Whether it holds unsaved edits: the document changed, or an edit under way.
+    /// Whether it holds unsaved edits: the document changed, an edit or a step under way,
+    /// or a transaction open with anything of the tab's still to answer. Only a tab with
+    /// none of these is closed without asking (rolled back first if a transaction is open).
     pub fn unsaved(&self) -> bool {
-        self.changed() || self.beginning || !self.edits.idle()
+        self.changed()
+            || self.beginning
+            || !self.edits.idle()
+            || self.stepping()
+            || (self.transaction && !self.quiet())
     }
 
     /// Whether a save or a revert that was to close it was refused since this was last asked.
@@ -620,6 +651,7 @@ impl Tab {
     /// `edit` made by the person: inside the tab's transaction, begun first if none is open
     /// (decision 1), and sent now if no edit is in flight, or else waiting (section 3).
     pub fn edit<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, edit: Edit) {
+        self.message = None;
         self.edits.push(edit);
         self.advance(sessions);
     }
@@ -628,6 +660,7 @@ impl Tab {
     /// answered, so the commit saves every edit made before it. One queued last already takes
     /// `then_close` too. A save that comes up with nothing to save does nothing (or closes).
     pub fn save<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
+        self.message = None;
         match self.edits.queue.back_mut() {
             Some(Queued::Save { then_close: last }) => *last |= then_close,
             _ => self.edits.queue.push_back(Queued::Save { then_close }),
@@ -643,6 +676,7 @@ impl Tab {
     /// reloaded with edits held: the session reloads it once the transaction has ended
     /// (section 4).
     pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
+        self.message = None;
         let kept = self
             .edits
             .queue
@@ -677,6 +711,7 @@ impl Tab {
     /// Undo or redo one edit of the transaction, once the edits made before it have
     /// answered.
     pub fn step<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, undo: bool) {
+        self.message = None;
         self.edits.queue.push_back(Queued::Step { undo });
         self.advance(sessions);
     }
@@ -705,11 +740,12 @@ impl Tab {
         }
     }
 
-    /// The choice section 4 offers once the file changed on disk while edits are held.
+    /// The choice section 4 offers once the file changed on disk while unsaved edits are
+    /// held.
     fn offer_disk_choice(&mut self) {
         let disk = self.status.as_ref().and_then(|status| status.disk);
         let changed = matches!(disk, Some(Disk::Changed | Disk::Gone));
-        self.disk_choice = match (self.disk_choice, changed, self.transaction, disk) {
+        self.disk_choice = match (self.disk_choice, changed, self.unsaved(), disk) {
             (_, false, _, _) | (_, _, false, _) => DiskChoice::None,
             (DiskChoice::Kept, true, true, _) => DiskChoice::Kept,
             (_, true, true, Some(disk)) => DiskChoice::Offered(disk),
@@ -871,4 +907,66 @@ fn chain(entries: &[Entry], place: &BTreeMap<&FeatureId, usize>, at: usize) -> V
         );
     }
     found.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use silico_core::command::{Rebuild, RebuildState, Transaction};
+
+    fn status(revision: Revision, changed: bool) -> Status {
+        Status {
+            features: Some(1),
+            gated: true,
+            transaction: Some(Transaction {
+                base: Revision::OPENED,
+                changed,
+                undo: 1,
+                redo: 0,
+                dropped: 0,
+                bytes: 0,
+            }),
+            running: None,
+            reads: Vec::new(),
+            rebuild: Rebuild {
+                revision,
+                state: RebuildState::Idle,
+                progress: None,
+            },
+            disk: None,
+        }
+    }
+
+    fn tab() -> Tab {
+        let problems = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::Internal,
+            "none",
+        ));
+        let mut tab = Tab::opened(
+            SessionId::parse("s1").unwrap(),
+            "a.silico".to_owned(),
+            &problems,
+        );
+        tab.transaction = true;
+        tab
+    }
+
+    #[test]
+    fn an_answer_newer_than_the_status_keeps_the_tab_unsaved_until_a_status_of_it_is_read() {
+        // A status of revision 2 says nothing changed (an edit undone back, say); an answer
+        // since brought the tab to revision 3, whose status isn't read yet: unsaved, as a
+        // transaction is open, until a status of revision 3 says otherwise.
+        let two = Revision::from_number(2).unwrap();
+        let three = Revision::from_number(3).unwrap();
+        let mut tab = tab();
+        tab.status = Some(status(two, false));
+        tab.status_revision = two;
+        tab.revision = two;
+        assert!(!tab.unsaved());
+        tab.revision = three;
+        assert!(tab.unsaved());
+        tab.status = Some(status(three, false));
+        tab.status_revision = three;
+        assert!(!tab.unsaved());
+    }
 }

@@ -2117,11 +2117,6 @@ fn the_asterisk_follows_whether_the_transaction_changed_and_undo_and_redo_its_co
     let f = fixture();
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    let offered = |h: &AppHarness, word: &str| {
-        !h.get_by_role_and_label(Role::Button, word)
-            .accesskit_node()
-            .is_disabled()
-    };
     assert!(!offered(&h, "Undo") && !offered(&h, "Redo"));
     select(&mut h, "Pin");
     type_name(&mut h, "x");
@@ -2151,5 +2146,164 @@ fn the_asterisk_follows_whether_the_transaction_changed_and_undo_and_redo_its_co
     ));
     step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether the app bar's button `word` is offered (enabled).
+fn offered(h: &AppHarness, word: &str) -> bool {
+    !h.get_by_role_and_label(Role::Button, word)
+        .accesskit_node()
+        .is_disabled()
+}
+
+/// Example open, Pin selected, "x" typed and answered, then undone back to the file's
+/// document: a transaction open, nothing changed, Redo offered.
+fn undone_back(f: &Fixture) -> (AppHarness, std::path::PathBuf) {
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the edit shown unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    step_until(&mut h, "Undo offered", |h| offered(h, "Undo"));
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step_until(&mut h, "undone back", |h| {
+        !anywhere(h, "example.silico *") && offered(h, "Redo")
+    });
+    (h, path)
+}
+
+#[test]
+fn a_close_while_a_redo_waits_asks_first() {
+    // Undone back to the file's document, then Redo held behind the session's queue: the
+    // tab holds an edit still to come back, so Close asks, and nothing is rolled back.
+    let f = fixture();
+    let (mut h, path) = undone_back(&f);
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_role_and_label(Role::Button, "Redo").click();
+    step(&mut h);
+    assert!(h.state().tabs()[0].unsaved());
+    h.get_by_label("Close example.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the redo shown", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "xPin")
+    });
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_z_held_down_undoes_once_and_says_nothing() {
+    // Two Ctrl+Z before the first answers (a key held down): Undo is off while a step is
+    // under way, so the second asks nothing, and no "nothing to undo" is said.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the edit answered", |h| {
+        h.state().tabs()[0].edits.idle() && offered(h, "Undo")
+    });
+    let before = h.state().tabs()[0].revision.number();
+    let (hold, check) = hold_queue(&f, &h, 0);
+    for _ in 0..2 {
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+        step(&mut h);
+    }
+    assert!(!offered(&h, "Undo"));
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "undone", |h| {
+        !anywhere(h, "example.silico *") && offered(h, "Redo")
+    });
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].message, None);
+    // One step: one revision.
+    assert_eq!(h.state().tabs()[0].revision.number(), before + 1);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_refusal_said_is_cleared_by_the_next_action() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    empty_name(&mut h);
+    assert!(h.state().tabs()[0].message.is_some());
+    name_field(&h).type_text("B");
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].message, None);
+    // Drawn so the next frame.
+    step(&mut h);
+    assert!(!anywhere(&h, "name is empty (give the feature a name)"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_y_redoes_and_redo_turns_off_once_typing_starts() {
+    let f = fixture();
+    let (mut h, _) = undone_back(&f);
+    // Ctrl+Y: the edit back.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
+    step_until(&mut h, "redone", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "xPin") && !offered(h, "Redo")
+    });
+    // Undone again, Redo offered; then typing: Redo off at once (an edit waits), and off
+    // after it answers (the edit dropped what was undone).
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step_until(&mut h, "undone again", |h| {
+        !anywhere(h, "example.silico *") && offered(h, "Redo")
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "y");
+    step(&mut h);
+    assert!(!h.state().tabs()[0].edits.idle());
+    assert!(!offered(&h, "Redo"));
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the typing answered", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(!offered(&h, "Redo"));
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_file_changed_on_disk_under_a_transaction_that_changed_nothing_offers_no_choice() {
+    // Undone back to the file's document: a transaction open, nothing unsaved. An agent's
+    // change to the file isn't announced as one "while you have unsaved edits".
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = undone_back(&f);
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#),
+    )
+    .unwrap();
+    step_until(&mut h, "the change found", |h| {
+        h.state().tabs()[0]
+            .status
+            .as_ref()
+            .is_some_and(|status| status.disk == Some(silico_core::disk::Disk::Changed))
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!anywhere(
+        &h,
+        "example.silico changed on disk while you have unsaved edits."
+    ));
     assert_eq!(never_waits::waits(), 0);
 }
