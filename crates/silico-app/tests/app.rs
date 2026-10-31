@@ -2520,6 +2520,11 @@ fn a_one_letter_name_emptied_is_refused_and_the_field_keeps_it_empty() {
 
 // ---- Save As (docs/design/m5.0-app.md, section 4; #305's `commit` with a path) ----
 
+/// The Save As dialog's path field.
+fn path_field(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::TextInput, "Path")
+}
+
 /// File > Save As…, `path` typed into its dialog, and Save.
 fn save_as(h: &mut AppHarness, path: &Path) {
     h.get_by_label("File").click();
@@ -2578,6 +2583,52 @@ fn save_as_writes_the_new_file_and_the_tab_follows_it() {
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(&mut h, "saved", |h| !anywhere(h, "copy.silico *"));
     assert_eq!(names_in(&copy), ["Block", typed.as_str(), "Hole"]);
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_as_saves_only_on_its_save_and_only_with_a_path() {
+    let f = fixture();
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Save As…").click();
+    step_until(&mut h, "the Save As dialog", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    // A path typed, no click: nothing saved, however many frames go by.
+    let copy = f.dir.path().join("copy.silico");
+    path_field(&h).focus();
+    step(&mut h);
+    path_field(&h).type_text(copy.to_str().unwrap());
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, "Save example.silico as"));
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert!(!copy.exists());
+    // The path cleared, then Save clicked: nothing either, and the dialog stays.
+    // Focused again (its cursor at its start), each character deleted.
+    path_field(&h).focus();
+    step(&mut h);
+    for _ in 0..copy.to_str().unwrap().chars().count() {
+        h.key_press(eframe::egui::Key::Delete);
+        step(&mut h);
+    }
+    assert_eq!(path_field(&h).value().as_deref(), Some(""));
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, "Save example.silico as"));
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert_eq!(h.state().tabs()[0].path, old.to_str().unwrap());
     assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
