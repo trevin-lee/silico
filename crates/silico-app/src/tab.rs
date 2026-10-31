@@ -1611,17 +1611,11 @@ impl Tab {
 /// sketch) and isn't suppressed, or if it's suppressed and its base stands for one (its
 /// chain passes it through, as `document::suppression`'s `standing` has it). A feature is
 /// consumed if any feature names it as an input, as the gate counts consumers: built or
-/// not, suppressed or not.
+/// not, suppressed or not (a sketch a sweep names is among them, and stands for nothing).
 fn tip_of(entries: &[Entry]) -> Option<FeatureId> {
-    let sketches: std::collections::BTreeSet<&FeatureId> = entries
-        .iter()
-        .filter(|entry| entry.kind == "sketch")
-        .map(|entry| &entry.id)
-        .collect();
     let consumed: std::collections::BTreeSet<&FeatureId> = entries
         .iter()
         .flat_map(|entry| entry.inputs.iter())
-        .filter(|input| !sketches.contains(input))
         .collect();
     let mut stands: BTreeMap<&FeatureId, bool> = BTreeMap::new();
     for entry in entries {
@@ -1630,12 +1624,12 @@ fn tip_of(entries: &[Entry]) -> Option<FeatureId> {
         } else if !entry.suppressed {
             true
         } else {
-            // Its base: its first input that isn't a sketch (a boolean's base before its
-            // tool; a sweep's sketch is no base).
+            // Its base: its first input (a boolean's base comes before its tool, and a
+            // sweep's before its sketch; a sweep with no base has its sketch first, which
+            // stands for nothing).
             entry
                 .inputs
-                .iter()
-                .find(|input| !sketches.contains(input))
+                .first()
                 .and_then(|base| stands.get(base).copied())
                 .unwrap_or(false)
         };
