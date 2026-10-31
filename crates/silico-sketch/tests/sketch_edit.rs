@@ -224,8 +224,9 @@ fn an_added_conflicting_length_is_found_by_the_solve_naming_it() {
 
 /// Line a0 from p0 (0, 10) to p4 (20, 10), horizontal (k1), edge tangent (k0) to the circle
 /// c0 of radius 10 about z0 (10, 0), z0 and the radius dimensioned (k2 to k4); the upright
-/// v0 up x = 10 from v1 (10, −5) to v2 (10, 15), both ends dimensioned (k5 to k8). Only p0's
-/// x and the line's end are free.
+/// b0 up x = 10 from v1 (10, −5) to v2 (10, 15), both ends dimensioned (k5 to k8), its ID
+/// sorting before the circle's, so the cuts' ID order alone would take the upright: only the
+/// held tangency's rank takes the circle. Only p0's x and the line's end are free.
 fn tangent_line_and_fixed_upright() -> Sketch {
     let dimension = |id: &str, kind: &str, point: &str, value: f64| {
         format!(
@@ -255,7 +256,7 @@ fn tangent_line_and_fixed_upright() -> Sketch {
         .join(", "),
         &[
             line("a0000000", "p0000000", "p0000004"),
-            line("v0000000", "v0000001", "v0000002"),
+            line("b0000000", "v0000001", "v0000002"),
         ]
         .join(", "),
         &circle("c0000000", "z0000000", 10.0),
@@ -318,7 +319,7 @@ fn a_tangent_line_trimmed_back_to_an_upright_through_its_contact_solves_with_no_
         id: id("kz000000"),
         form: Form::On {
             point: Reference::Element(id("n0000000")),
-            curve: Reference::Element(id("v0000000")),
+            curve: Reference::Element(id("b0000000")),
         },
     });
     let ((conflicting, redundant, partially), _) = flagged(&both, &mut worker);
