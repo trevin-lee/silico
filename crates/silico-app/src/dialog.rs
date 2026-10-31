@@ -570,8 +570,10 @@ impl Dialog {
                     if !shown.get(at).copied().unwrap_or(true) {
                         continue;
                     }
-                    let red =
-                        !readable.get(at).copied().unwrap_or(true) || refused(input.part.field());
+                    let red = red(
+                        readable.get(at).copied().unwrap_or(true),
+                        refused(input.part.field()),
+                    );
                     any_refused |= refused(input.part.field());
                     let label = ui.label(input.label);
                     let unit = match input.value {
@@ -615,7 +617,7 @@ impl Dialog {
                                 None => ("Select in the browser".to_owned(), error),
                             };
                             // The active selection box, highlighted (section 9).
-                            let stroke = if active == Some(at) {
+                            let stroke = if highlighted(active, at) {
                                 ui.visuals().selection.stroke
                             } else {
                                 ui.visuals().widgets.noninteractive.bg_stroke
@@ -650,6 +652,17 @@ impl Dialog {
         });
         action
     }
+}
+
+/// Whether an input shows red: its value doesn't read (unparseable, or a selection not
+/// made), or the core refused its last edit.
+fn red(readable: bool, refused: bool) -> bool {
+    !readable || refused
+}
+
+/// Whether the input at `at` is the selection box highlighted, the `active` one.
+fn highlighted(active: Option<usize>, at: usize) -> bool {
+    active == Some(at)
 }
 
 /// A new feature of `kind` as `add_feature` takes it: the `members` its dialog's
@@ -777,6 +790,17 @@ mod tests {
             chosen: 0,
         };
         assert!(readable(&pocket, "Length"));
+    }
+
+    #[test]
+    fn an_input_is_red_if_it_doesnt_read_or_was_refused_and_only_the_active_box_is_lit() {
+        assert!(!red(true, false));
+        assert!(red(false, false));
+        assert!(red(true, true));
+        assert!(red(false, true));
+        assert!(highlighted(Some(2), 2));
+        assert!(!highlighted(Some(2), 3));
+        assert!(!highlighted(None, 0));
     }
 
     #[test]

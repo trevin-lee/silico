@@ -4983,3 +4983,104 @@ fn a_refused_body_read_is_read_again_and_no_add_goes_until_it_answers() {
     );
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- #325's mutants: the frame asked for, a toggle loaded, a pick at once ----
+
+/// Whether the last frame asked for the next at once (`request_repaint`), not the idle one.
+fn asked_at_once(h: &AppHarness) -> bool {
+    h.output()
+        .viewport_output
+        .get(&eframe::egui::ViewportId::ROOT)
+        .is_some_and(|viewport| viewport.repaint_delay == Duration::ZERO)
+}
+
+/// Frames stepped until one asks for none at once (nothing pending answers into it).
+fn idle(h: &mut AppHarness) {
+    step_until(h, "an idle frame", |h| !asked_at_once(h));
+}
+
+#[test]
+fn an_open_dialog_with_nothing_to_send_asks_for_no_frame_at_once() {
+    // A frame with input in it is asked for again by egui itself; one with none, while a
+    // dialog sits open with nothing changed, asks for no frame at once (only the idle one).
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    idle(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(!asked_at_once(&h));
+    }
+    assert!(dialog_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_feature_of_a_reversed_pad_loads_it_reversed_and_sends_nothing() {
+    let f = fixture();
+    let raised = r#"    {"id": "r0000002", "type": "pad", "v": 1, "name": "Raised", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 3, "reversed": true}}"#;
+    let text = SKETCHED.replace("\n  ]\n}", &format!(",\n{raised}\n  ]\n}}"));
+    let (mut h, _) = f.opened("raised.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Raised"));
+    double_click(&mut h, "Timeline", "Raised");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
+    });
+    assert_eq!(
+        dialog(&h)
+            .get_by_role(Role::CheckBox)
+            .accesskit_node()
+            .toggled(),
+        Some(eframe::egui::accesskit::Toggled::True)
+    );
+    assert_eq!(input(&h, "Length").value().as_deref(), Some("3"));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs()[0].sent.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_chosen_in_the_browser_fills_the_box_in_the_frame_it_was_chosen() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    create(&mut h, "Pad");
+    settled(&mut h);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click();
+    step(&mut h);
+    let dialog = h.state().tabs()[0].dialog.clone().unwrap();
+    let sketch = silico_core::document::FeatureId::new("s0000001").unwrap();
+    assert_eq!(
+        dialog.inputs[dialog.active.unwrap()].value,
+        silico_app::dialog::Value::Selection(Some(sketch))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tab_is_unsettled_while_anything_of_its_is_under_way() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].unsettled());
+    select(&mut h, "Pin");
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "K");
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(h.state().tabs()[0].unsettled());
+    }
+    hold.release();
+    check.wait();
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].unsettled());
+    assert_eq!(never_waits::waits(), 0);
+}

@@ -1349,9 +1349,9 @@ impl Tab {
     /// `sent` kept in the call record, the oldest let go past [`SENT_KEPT`].
     fn record(&mut self, sent: Sent) {
         self.sent.push(sent);
+        // One at a time, so never more than one past.
         if self.sent.len() > SENT_KEPT {
-            let over = self.sent.len() - SENT_KEPT;
-            self.sent.drain(..over);
+            self.sent.remove(0);
         }
     }
 
