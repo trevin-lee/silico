@@ -4,15 +4,19 @@
 //! without moving it, and the other direction moves it; merged from apart, the solve holds
 //! the side, and the other direction would flip it. Expected values by hand: a line along
 //! y = 0 into (10, 0), an arc about (10, 10). And an add the gate takes, whose solve then
-//! finds the conflict it makes, which refuses the edit (docs/ports/sketch-edit.md, §2).
+//! finds the conflict it makes, which refuses the edit (docs/ports/sketch-edit.md, §2). And a
+//! trim back to a tangency and a crossing at one place, which holds the new end on one
+//! cutter, so the solve finds nothing redundant (§4).
 
-use super::fixture::{document, fields, line, point};
+use super::fixture::{circle, document, fields, line, point};
 
 use std::path::Path;
 
 use silico_core::ErrorCode;
-use silico_core::document::sketch_edit::{Members, add, merge};
-use silico_core::document::{Direction, ElementId, Form, Operation, Sketch, read};
+use silico_core::document::sketch_edit::{Members, add, merge, trim};
+use silico_core::document::{
+    Direction, ElementId, Form, Operation, Reference, Sketch, SketchConstraint, read,
+};
 use silico_core::sketch::{SketchWorker, Translation};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-sketch-worker");
@@ -215,5 +219,111 @@ fn an_added_conflicting_length_is_found_by_the_solve_naming_it() {
         error.elements().iter().any(|e| e == "kz000001"),
         "{:?}",
         error.elements()
+    );
+}
+
+/// Line a0 from p0 (0, 10) to p4 (20, 10), horizontal (k1), edge tangent (k0) to the circle
+/// c0 of radius 10 about z0 (10, 0), z0 and the radius dimensioned (k2 to k4); the upright
+/// v0 up x = 10 from v1 (10, −5) to v2 (10, 15), both ends dimensioned (k5 to k8). Only p0's
+/// x and the line's end are free.
+fn tangent_line_and_fixed_upright() -> Sketch {
+    let dimension = |id: &str, kind: &str, point: &str, value: f64| {
+        format!(
+            r#"{{"id": "{id}", "type": "{kind}", "a": "origin", "b": "{point}", "value": {value}, "driving": true}}"#
+        )
+    };
+    let constraints = [
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "c0000000", "side": "right"}"#.to_owned(),
+        r#"{"id": "k0000001", "type": "horizontal", "line": "a0000000"}"#.to_owned(),
+        dimension("k0000002", "distance_x", "z0000000", 10.0),
+        dimension("k0000003", "distance_y", "z0000000", 0.0),
+        r#"{"id": "k0000004", "type": "radius", "curve": "c0000000", "value": 10, "driving": true}"#.to_owned(),
+        dimension("k0000005", "distance_x", "v0000001", 10.0),
+        dimension("k0000006", "distance_y", "v0000001", -5.0),
+        dimension("k0000007", "distance_x", "v0000002", 10.0),
+        dimension("k0000008", "distance_y", "v0000002", 15.0),
+    ]
+    .join(", ");
+    let text = document(&fields(
+        &[
+            point("p0000000", 0.0, 10.0),
+            point("p0000004", 20.0, 10.0),
+            point("z0000000", 10.0, 0.0),
+            point("v0000001", 10.0, -5.0),
+            point("v0000002", 10.0, 15.0),
+        ]
+        .join(", "),
+        &[
+            line("a0000000", "p0000000", "p0000004"),
+            line("v0000000", "v0000001", "v0000002"),
+        ]
+        .join(", "),
+        &circle("c0000000", "z0000000", 10.0),
+        "",
+        &constraints,
+    ));
+    let read = read(text.as_bytes()).unwrap();
+    let Operation::Sketch(sketch) = &read.features[0].operation else {
+        panic!("not a sketch")
+    };
+    sketch.clone()
+}
+
+#[test]
+fn a_tangent_line_trimmed_back_to_an_upright_through_its_contact_solves_with_no_redundancy() {
+    // docs/ports/sketch-edit.md, §4 (one cutter per new end): the line, trimmed at (15, 10)
+    // back to (10, 10), where the circle touches it and the upright crosses it, gets a new
+    // end n0 with k0 its tangent_on on the circle and no on, so PlaneGCS finds what it found
+    // before: nothing redundant or in conflict, the end where it's stored. Joined to the
+    // upright too (an on, kz), the end would carry three equations (on the circle, the
+    // tangency, on the upright) where the horizontal line leaves it two unknowns: redundant.
+    let mut worker = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
+    let flagged = |sketch: &Sketch, worker: &mut SketchWorker| {
+        let answer = Translation::new(sketch).unwrap().solve(worker).unwrap();
+        let solved = answer.solved();
+        let flagged = (
+            solved.conflicting.len(),
+            solved.redundant.len(),
+            solved.partially_redundant.len(),
+        );
+        (flagged, answer.into_outcome())
+    };
+    let before = tangent_line_and_fixed_upright();
+    let (none, outcome) = flagged(&before, &mut worker);
+    assert_eq!(none, (0, 0, 0));
+    assert!(outcome.is_ok(), "{outcome:?}");
+    let trimmed = trim(&before, &id("a0000000"), [15.0, 10.0], &[id("n0000000")])
+        .unwrap()
+        .edited
+        .sketch;
+    assert!(trimmed.constraints.iter().any(|c| c.id == id("k0000000")
+        && matches!(&c.form, Form::TangentOn { at, .. } if at.element() == Some(&id("n0000000")))));
+    assert!(
+        !trimmed
+            .constraints
+            .iter()
+            .any(|c| matches!(c.form, Form::On { .. }))
+    );
+    let (none, outcome) = flagged(&trimmed, &mut worker);
+    assert_eq!(none, (0, 0, 0));
+    let solution = outcome.unwrap();
+    let [x, y] = solution.point(&id("n0000000")).unwrap();
+    assert!(
+        libm::hypot(x - 10.0, y - 10.0) <= CLOSE,
+        "n0 solved at ({x}, {y})"
+    );
+    // The alternative the rule refuses, both cutters held: the solve finds it redundant.
+    let mut both = trimmed.clone();
+    both.constraints.push(SketchConstraint {
+        id: id("kz000000"),
+        form: Form::On {
+            point: Reference::Element(id("n0000000")),
+            curve: Reference::Element(id("v0000000")),
+        },
+    });
+    let ((conflicting, redundant, partially), _) = flagged(&both, &mut worker);
+    assert!(
+        conflicting + redundant + partially > 0,
+        "joined to both, the solve flagged nothing"
     );
 }
