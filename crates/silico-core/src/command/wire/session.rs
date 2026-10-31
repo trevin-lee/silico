@@ -418,9 +418,10 @@ pub struct LimitsSchema {
     /// transaction began from are dropped and counted (`transaction.dropped`), and undo then
     /// stops at the oldest kept; `rollback` still returns to the start.
     pub undo_bytes: u64,
-    /// The least time between two comparisons of a session's file on disk, in
-    /// milliseconds: `status`'s `disk` is at most this old (and the time a comparison takes)
-    /// when the session is asked again after it.
+    /// The least time, in milliseconds, from the end of one comparison of a session's file
+    /// on disk to the start of the next: not refused. Only `status` starts one, when none is
+    /// running and the last ended at least this long ago, so `status`'s `disk`, a
+    /// diagnostic, is the last comparison's finding and may be older.
     pub disk_check_ms: u64,
 }
 
