@@ -7,8 +7,8 @@
 //! its normals its own, and each view moves it into place by its instance's transform: the
 //! view's rotation and the centre's offset from the eye, computed in f64 and then f32
 //! ([`world_from_mesh`]). So a new view of the same bodies uploads nothing: it builds only
-//! the instances and the edges' line strips, which are built each view about the camera's
-//! point, exact at every distance. Only a view so close that f32 about a face's centre would
+//! the instances and the edges' line strips, which are placed in the view each frame in
+//! f64, precise at every distance. Only a view so close that f32 about a face's centre would
 //! miss its pixels (a large face seen close) draws that face about the camera's point
 //! instead, uploaded for that view, as M4.6 drew every view. The light is `re_renderer`'s
 //! own (an ambient and two lights fixed in the world), per pixel, which the fixed camera
@@ -387,9 +387,9 @@ impl View {
     /// view. A position about its box's centre rounds by at most the box's half diagonal
     /// times [`F32_ROUNDING`], against the pixel at the box's point nearest the eye in
     /// perspective (none, for an eye in the box). About the eye, a position's rounding grows
-    /// with its distance from it, as the pixel does, so a perspective view always takes the
-    /// eye then; about an orthographic view's target it grows with the distance from the
-    /// target, so the target is taken only where it's nearer the box than the half diagonal.
+    /// with its distance from it, as the pixel does, so a perspective view takes the eye
+    /// then; an orthographic one takes the point on its line through the target at the
+    /// face's depth, where what it sees of the face is.
     fn anchor(&self, bounds: Bounds) -> [f64; 3] {
         let (low, high) = bounds;
         let half: [f64; 3] = std::array::from_fn(|k| high[k] / 2.0 - low[k] / 2.0);
@@ -404,11 +404,30 @@ impl View {
         };
         let precise = half * F32_ROUNDING * self.corner
             <= across / f64::from(self.height) * PRECISION_OF_PIXEL;
-        if precise || (!self.perspective && nearest >= half) {
-            centre_of(bounds)
-        } else {
+        let centre = centre_of(bounds);
+        if precise {
+            centre
+        } else if self.perspective {
             self.origin
+        } else {
+            // On the view's line through the target, at the face's depth: about it, a
+            // position's rounding grows with its distance from what the view sees, and not
+            // with how far along the ray the target is.
+            let along = dot(self.frame.back, sub(centre, self.origin));
+            std::array::from_fn(|k| self.origin[k] + self.frame.back[k] * along)
         }
+    }
+
+    /// `p` in the fixed camera's world, its offset from the camera's point and its rotation
+    /// into the view both taken in f64 before it's f32: precise to f32's step of what's
+    /// across the view, wherever the point is.
+    fn place(&self, p: [f64; 3]) -> glam::Vec3 {
+        let d = sub(p, self.origin);
+        vec3([
+            dot(self.frame.right, d),
+            dot(self.frame.up, d),
+            dot(self.frame.back, d) - self.depth,
+        ])
     }
 }
 
@@ -618,15 +637,16 @@ fn highlights(body: &RenderBody, number: u32) -> bool {
     body.highlight_faces.binary_search(&(number - 1)).is_ok()
 }
 
-/// Each edge of `body` of two points or more as a line strip, about the camera's point (each
-/// point's offset from it taken in f64, so exact at every distance), built for each view:
+/// Each edge of `body` of two points or more as a line strip, placed in the view in f64
+/// ([`View::place`]: each point's offset from the camera's point and its rotation into the
+/// view, so precise across the view at every distance and angle), built for each view:
 /// its picking ID the body's number and the edge's with [`EDGE_BIT`]; a highlighted one
 /// wider, in the highlight's blue.
 fn edges(lines: &mut LineDrawableBuilder<'_>, body: &RenderBody, view: &View) {
     let mesh = &body.mesh;
     let mut batch = lines
         .batch(format!("Body{}", body.body))
-        .world_from_obj(view.world_from_mesh(view.origin))
+        .world_from_obj(glam::Affine3A::IDENTITY)
         .picking_object_id(PickingLayerObjectId(u64::from(body.body)))
         .depth_offset(EDGE_DEPTH_OFFSET);
     let mut first = 0usize;
@@ -651,7 +671,7 @@ fn edges(lines: &mut LineDrawableBuilder<'_>, body: &RenderBody, view: &View) {
             (EDGE_WIDTH, EDGE)
         };
         batch
-            .add_strip(points.iter().map(|p| vec3(sub(*p, view.origin))))
+            .add_strip(points.iter().map(|p| view.place(*p)))
             .radius(Size::new_ui_points(width / 2.0))
             .color(Color32::from_rgb(colour[0], colour[1], colour[2]))
             .picking_instance_id(PickingLayerInstanceId(u64::from(EDGE_BIT | number)));
@@ -1037,15 +1057,15 @@ mod tests {
         //
         // Orthographic, 48 pixels high: the bench's front face (x 0 to 40, z 0 to 10 at y =
         // 0, h = √425) is about its centre from vh = h × 48 / 2^19 = 1.8874e-3 mm up. Below,
-        // its box is 10 from the target (21, 10, 7), nearer than h: about the target. The x
-        // low face (y 0 to 20, z 0 to 10 at x = 0, h = √125) is 21 from the target, farther
-        // than h: about its centre at every height.
+        // it's about the point on the view's line through the target (21, 10, 7) at its own
+        // depth, y = 0: (21, 0, 7). The x low face (y 0 to 20, z 0 to 10 at x = 0, h = √125)
+        // passes down to √125 × 48 / 2^19 = 1.02e-3: about its centre at both heights.
         let front_face: Bounds = ([0.0; 3], [40.0, 0.0, 10.0]);
         let side_face: Bounds = ([0.0; 3], [0.0, 20.0, 10.0]);
         let least = 425f64.sqrt() * 48.0 / 524_288.0;
         for (height, front_at, side_at) in [
             (least * 1.001, [20.0, 0.0, 5.0], [0.0, 10.0, 5.0]),
-            (least * 0.999, [21.0, 10.0, 7.0], [0.0, 10.0, 5.0]),
+            (least * 0.999, [21.0, 0.0, 7.0], [0.0, 10.0, 5.0]),
         ] {
             let mut scene = front_of_a_box(64, 48);
             scene.camera.projection = Projection::Orthographic {
