@@ -2517,3 +2517,194 @@ fn a_one_letter_name_emptied_is_refused_and_the_field_keeps_it_empty() {
     assert_eq!(name_field(&h).value().as_deref(), Some(""));
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- Save As (docs/design/m5.0-app.md, section 4; #305's `commit` with a path) ----
+
+/// File > Save As…, `path` typed into its dialog, and Save.
+fn save_as(h: &mut AppHarness, path: &Path) {
+    h.get_by_label("File").click();
+    step(h);
+    step(h);
+    h.get_by_role_and_label(Role::Button, "Save As…").click();
+    step_until(h, "the Save As dialog", |h| {
+        h.query_by_label_contains("Save example.silico as")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text(path.to_str().unwrap());
+    step(h);
+    // The dialog's, after the app bar's.
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step(h);
+}
+
+#[test]
+fn save_as_writes_the_new_file_and_the_tab_follows_it() {
+    let f = fixture();
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    let copy = f.dir.path().join("copy.silico");
+    save_as(&mut h, &copy);
+    step_until(&mut h, "the tab of the new file", |h| {
+        anywhere(h, "copy.silico") && !anywhere(h, "copy.silico *")
+    });
+    assert_eq!(h.state().tabs()[0].path, copy.to_str().unwrap());
+    // The new file holds the document as the session holds it, byte for byte; the old one
+    // is as it was.
+    let id = h.state().tabs()[0].id;
+    let held = f.sessions.text(&id, None).wait().result.unwrap().text;
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), held);
+    assert_eq!(names_in(&copy), ["Block", "xPin", "Hole"]);
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
+    // A later save goes to the new file.
+    type_name(&mut h, "y");
+    step_until(&mut h, "unsaved again", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "copy.silico *")
+    });
+    let typed = name_field(&h).value().unwrap();
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "saved", |h| !anywhere(h, "copy.silico *"));
+    assert_eq!(names_in(&copy), ["Block", typed.as_str(), "Hole"]);
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_shift_s_asks_where_and_saves_nothing_until_told() {
+    let f = fixture();
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    h.key_press_modifiers(
+        eframe::egui::Modifiers::COMMAND | eframe::egui::Modifiers::SHIFT,
+        eframe::egui::Key::S,
+    );
+    step_until(&mut h, "the Save As dialog", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    // Not Ctrl+S: nothing saved.
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert!(anywhere(&h, "example.silico *"));
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_as_over_a_file_asks_and_cancel_writes_nothing_and_replace_writes() {
+    let f = fixture();
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    let there = f.file("there.silico", "an older copy");
+    save_as(&mut h, &there);
+    let asked = format!("{} already exists. Replace it?", there.to_str().unwrap());
+    step_until(&mut h, "the question", |h| anywhere(h, &asked));
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the question gone", |h| !anywhere(h, &asked));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), "an older copy");
+    assert!(anywhere(&h, "example.silico *"));
+    save_as(&mut h, &there);
+    step_until(&mut h, "the question again", |h| anywhere(h, &asked));
+    h.get_by_role_and_label(Role::Button, "Replace")
+        .click_accesskit();
+    step_until(&mut h, "the tab of the file replaced", |h| {
+        anywhere(h, "there.silico") && !anywhere(h, "there.silico *")
+    });
+    assert_eq!(names_in(&there), ["Block", "xPin", "Hole"]);
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_as_the_core_refuses_is_said_and_the_tab_stays_on_its_file() {
+    let f = fixture();
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    let json = f.dir.path().join("copy.json");
+    save_as(&mut h, &json);
+    step_until(&mut h, "the refusal said", |h| {
+        h.query_by_label_contains("doesn't end in .silico")
+            .is_some()
+    });
+    assert!(!json.exists());
+    assert_eq!(h.state().tabs()[0].path, old.to_str().unwrap());
+    assert!(anywhere(&h, "example.silico *"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_as_takes_the_edits_made_before_it_and_one_with_none_open_writes_all_the_same() {
+    // A keystroke held behind the session's queue, then Save As: the copy has it.
+    let f = fixture();
+    let (mut h, old) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the transaction begun", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "y");
+    let typed = name_field(&h).value().unwrap();
+    let copy = f.dir.path().join("copy.silico");
+    save_as(&mut h, &copy);
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the tab of the new file", |h| {
+        anywhere(h, "copy.silico") && !anywhere(h, "copy.silico *")
+    });
+    assert_eq!(names_in(&copy), ["Block", typed.as_str(), "Hole"]);
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
+    // Then Save As with nothing changed, no transaction open: written all the same.
+    let again = f.dir.path().join("again.silico");
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Save As…").click();
+    step_until(&mut h, "the dialog", |h| anywhere(h, "Save copy.silico as"));
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .type_text(again.to_str().unwrap());
+    step(&mut h);
+    // The dialog's, after the app bar's.
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "the tab of the third file", |h| {
+        anywhere(h, "again.silico") && !anywhere(h, "again.silico *")
+    });
+    assert_eq!(names_in(&again), ["Block", typed.as_str(), "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}

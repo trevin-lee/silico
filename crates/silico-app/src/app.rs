@@ -38,6 +38,10 @@ enum Asking {
     Close(SessionId),
     /// Whether to save the changed documents before quitting.
     Quit,
+    /// A path to save session's document to (Save As), by its session.
+    SaveAs(SessionId),
+    /// Whether to replace the file a Save As of session's document found at its path.
+    Replace(SessionId, String),
 }
 
 /// The app's state: everything the window draws, and what it's waiting for.
@@ -194,6 +198,9 @@ impl<P: Clients + 'static> App<P> {
         }
         for tab in &mut self.tabs {
             tab.poll(&self.sessions);
+            if let Some(path) = tab.take_replace_asked() {
+                self.asking = Some(Asking::Replace(tab.id, path));
+            }
             if tab.take_close_refused() && self.quitting {
                 // A tab's save or revert was refused: it stays, holding its edits, and the
                 // quit stops, said.
@@ -213,10 +220,22 @@ impl<P: Clients + 'static> App<P> {
         self.tabs.iter().position(|tab| tab.id == active)
     }
 
-    /// Ctrl+S saves, Ctrl+W closes, Ctrl+Z and Ctrl+Y undo and redo (docs/ux/solidworks.md,
-    /// §6), and Esc stops what's running (§5, *Rebuild*): whether a command was started.
+    /// Ctrl+S saves, Ctrl+Shift+S asks where to save as, Ctrl+W closes, Ctrl+Z and Ctrl+Y
+    /// undo and redo (docs/ux/solidworks.md, §6), and Esc stops what's running (§5,
+    /// *Rebuild*): whether a command was started.
     fn keys(&mut self, ui: &mut Ui) -> bool {
         if self.asking.is_some() {
+            return false;
+        }
+        // Before Ctrl+S, which a Ctrl+Shift+S also is, its Shift aside.
+        let save_as = ui.input_mut(|input| {
+            input.consume_shortcut(&KeyboardShortcut::new(
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                Key::S,
+            ))
+        });
+        if save_as && let Some(id) = self.active {
+            self.asking = Some(Asking::SaveAs(id));
             return false;
         }
         let pressed = |key| {
@@ -290,6 +309,15 @@ impl<P: Clients + 'static> App<P> {
                         }
                         if ui.button("Open…").clicked() {
                             self.asking = Some(Asking::Path { create: false });
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(self.active.is_some(), egui::Button::new("Save As…"))
+                            .clicked()
+                        {
+                            if let Some(id) = self.active {
+                                self.asking = Some(Asking::SaveAs(id));
+                            }
                             ui.close();
                         }
                         if ui
@@ -490,6 +518,50 @@ impl<P: Clients + 'static> App<P> {
                     if ui.button(word).clicked() && !self.path.is_empty() {
                         let path = std::mem::take(&mut self.path);
                         self.open(&path, create);
+                        *started = true;
+                        done = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        done = true;
+                    }
+                });
+            }
+            Asking::SaveAs(id) => {
+                let name = self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .map(|tab| tab.name().to_owned());
+                ui.heading(format!(
+                    "Save {} as",
+                    name.as_deref().unwrap_or("the document")
+                ));
+                ui.horizontal(|ui| {
+                    let label = ui.label("Path");
+                    ui.add(egui::TextEdit::singleline(&mut self.path))
+                        .labelled_by(label.id);
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() && !self.path.is_empty() {
+                        let path = std::mem::take(&mut self.path);
+                        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                            tab.save_as(&self.sessions, path, false);
+                        }
+                        *started = true;
+                        done = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        done = true;
+                    }
+                });
+            }
+            Asking::Replace(id, path) => {
+                ui.label(format!("{path} already exists. Replace it?"));
+                ui.horizontal(|ui| {
+                    if ui.button("Replace").clicked() {
+                        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                            tab.save_as(&self.sessions, path.clone(), true);
+                        }
                         *started = true;
                         done = true;
                     }
