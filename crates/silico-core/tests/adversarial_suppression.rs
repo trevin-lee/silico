@@ -1019,3 +1019,83 @@ fn a_request_wrong_in_every_field_is_refused_for_each_naming_it() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// Features that use themselves, which the gate refuses but still reads for suppression.
+
+/// The gate's refusals of `document`, each (feature, parameter, message), from a thread of
+/// its own: none if it hasn't answered in 30 seconds (it answers these in microseconds).
+fn refused_within_a_while(document: &Document) -> Option<Vec<(String, String, String)>> {
+    let (send, receive) = std::sync::mpsc::channel();
+    let document = document.clone();
+    std::thread::spawn(move || {
+        let refusals: Vec<(String, String, String)> = match validate(&document) {
+            Ok(()) => Vec::new(),
+            Err(invalid) => invalid
+                .errors()
+                .iter()
+                .map(|e| {
+                    (
+                        e.feature().unwrap_or("").to_owned(),
+                        e.parameter().unwrap_or("").to_owned(),
+                        e.message().to_owned(),
+                    )
+                })
+                .collect(),
+        };
+        let _ = send.send(refusals);
+    });
+    receive.recv_timeout(Duration::from_secs(30)).ok()
+}
+
+#[test]
+fn the_gate_answers_promptly_where_a_names_maker_is_a_chamfer_of_itself_and_a_cut_is_suppressed() {
+    // b, t, a chamfer c whose base is itself, a cut m of b by t (suppressed, so a name may
+    // be lost to it and the gate walks each name's makers down to the feature's base), and
+    // a fillet f on m naming an edge c made of b's Edge1. By hand: c's base is c, which the
+    // gate refuses; c consumes nothing else, and nothing consumes c, so the walk from c, a
+    // maker of f's name, stops at once (c never reaches f's base, m); the walk from b, the
+    // other maker, reaches m as its base, not its tool, so no name is lost. m passes b
+    // through to f, and neither of f's makers is suppressed: f is no dependent. So the one
+    // refusal is c's use of itself, given at once.
+    let b = a_box("b0000001", 0, 10);
+    let t = a_box("t0000001", 5, 10);
+    let c = chamfer("c0000001", "c0000001", "b0000001.box.Edge1");
+    let m = r#"{"id": "m0000001", "type": "cut", "v": 1, "name": "O", "suppressed": true, "base": "b0000001", "tool": "t0000001"}"#;
+    let f = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "F", "base": "m0000001", "edges": ["c0000001.chamfer.Edge(G b0000001.box.Edge1)"], "radius": 0.5}"#;
+    let d = document(&[&b, &t, &c, m, f]);
+    assert_eq!(
+        refused_within_a_while(&d),
+        Some(vec![(
+            "c0000001".to_owned(),
+            "base".to_owned(),
+            "base c0000001 is this feature: a feature can't use itself".to_owned()
+        )])
+    );
+}
+
+#[test]
+fn a_chamfer_naming_its_own_element_is_refused_once_and_names_no_suppressed_maker() {
+    // b, a second box b2 (suppressed, used by nothing), and a chamfer c of b naming an edge
+    // of its own made of b2's Edge1. By hand: c can't name its own element (it's no feature
+    // before c), so the gate refuses the name, and a name that doesn't read has no makers:
+    // b2, suppressed, is no maker of it, so c isn't refused as b2's dependent too. One
+    // refusal, of edges.0.
+    let b = a_box("b0000001", 0, 10);
+    let b2 = r#"{"id": "b0000002", "type": "box", "v": 1, "name": "O", "suppressed": true, "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}"#;
+    let c = chamfer(
+        "c0000001",
+        "b0000001",
+        "c0000001.chamfer.Edge(G b0000002.box.Edge1)",
+    );
+    let refused = refused_within_a_while(&document(&[&b, b2, &c])).unwrap();
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(
+        (refused[0].0.as_str(), refused[0].1.as_str()),
+        ("c0000001", "edges.0")
+    );
+    assert!(
+        refused[0].2.contains("no feature c0000001 before this one"),
+        "{refused:?}"
+    );
+}
