@@ -13,7 +13,7 @@ use std::time::Duration;
 use serde_json::json;
 use silico_core::cache::Cache;
 use silico_core::command::sketch::SketchRead;
-use silico_core::command::{Call, ModelChoice, NewMembers, SessionId, Sessions};
+use silico_core::command::{Call, ModelChoice, NewMembers, Revision, SessionId, Sessions};
 use silico_core::document::{ElementId, FeatureId};
 use silico_core::fake::FakeKernel;
 use silico_core::sketch::{SketchSolver, SketchWorker};
@@ -103,19 +103,28 @@ fn opened(kind: ToolKind) -> Fixture {
 impl Fixture {
     /// The current model's `sketch` read, once its rebuild has solved it.
     fn read(&self) -> SketchRead {
+        self.read_at().0
+    }
+
+    /// The current model's `sketch` read, and the revision of the model it read.
+    fn read_at(&self) -> (SketchRead, Revision) {
         let answer = self
             .sessions
             .sketch(&s1(), ModelChoice::Current, sketch_id())
             .wait_timeout(HANG)
             .unwrap_or_else(|_| panic!("sketch didn't answer in {HANG:?}"));
-        answer.result.unwrap_or_else(|p| panic!("{p:?}"))
+        let revision = answer.model.as_ref().unwrap().revision;
+        (answer.result.unwrap_or_else(|p| panic!("{p:?}")), revision)
     }
 
     /// `event` sent to the tool against the newest read; what it adds sent as a
     /// `sketch_add`, which must be taken.
     fn send(&mut self, event: Event) {
-        let read = self.read();
+        let (read, revision) = self.read_at();
+        let sketch = sketch_id();
         let context = Context {
+            sketch_id: &sketch,
+            revision,
             sketch: &read.members,
             tolerance: TOLERANCE,
             automatic_relations: true,
@@ -134,8 +143,10 @@ impl Fixture {
                 )
                 .wait_timeout(HANG)
                 .unwrap_or_else(|_| panic!("sketch_add didn't answer in {HANG:?}"));
+            let made = added.session.as_ref().unwrap().revision;
             let added = added.result.unwrap_or_else(|p| panic!("{p:?}"));
             assert!(added.changed);
+            self.tool.added(made);
         }
     }
 
@@ -370,4 +381,77 @@ fn with_ctrl_held_a_chain_still_shares_its_joins_and_its_profile_closes() {
     assert_eq!(read.states.dofs, 6);
     assert_eq!(read.regions.len(), 1);
     assert_eq!(read.regions[0].outer.len(), 3);
+}
+
+#[test]
+fn an_obround_drawn_with_tangent_arcs_holds_its_tangencies() {
+    // Review item 1. The bottom (10, 10)-(40, 10), horizontal; a tangent arc up to (40, 30),
+    // about (40, 20); the top from there back to (10, 30.2), leaving the arc along −x, so
+    // tangent and horizontal, to (10, 30); a tangent arc down to the bottom's start, about
+    // (10, 20). Six points, twelve unknowns; each arc's end held on its circle (one each in
+    // the points' terms), two horizontals, three tangencies: 12 − 2 − 2 − 3 = 5 freedoms,
+    // the fifth the last join, which no tool made tangent. Every constraint satisfied, the
+    // points where drawn, one region of four curves.
+    let mut f = opened(ToolKind::Line);
+    f.drag([10.0, 10.0], [40.0, 10.1]);
+    f.tool = SketchTool::new(ToolKind::TangentArc);
+    f.drag([40.0, 10.0], [40.0, 30.0]);
+    f.tool = SketchTool::new(ToolKind::Line);
+    f.drag([40.0, 30.0], [10.0, 30.2]);
+    f.tool = SketchTool::new(ToolKind::TangentArc);
+    f.drag([10.0, 30.0], [10.1, 10.1]);
+    let read = f.read();
+    assert_eq!(read.states.dofs, 5);
+    assert_eq!(
+        constraint_states(&read),
+        [
+            ("horizontal", ConstraintState::Satisfied),
+            ("horizontal", ConstraintState::Satisfied),
+            ("tangent_at", ConstraintState::Satisfied),
+            ("tangent_at", ConstraintState::Satisfied),
+            ("tangent_at", ConstraintState::Satisfied),
+        ]
+    );
+    assert_eq!(
+        points(&read),
+        sorted(vec![
+            at(10.0, 10.0),
+            at(40.0, 10.0),
+            at(40.0, 20.0),
+            at(40.0, 30.0),
+            at(10.0, 30.0),
+            at(10.0, 20.0),
+        ])
+    );
+    assert_eq!(read.regions.len(), 1);
+    assert_eq!(read.regions[0].outer.len(), 4);
+}
+
+#[test]
+fn a_three_point_and_a_centrepoint_arc_solve_where_they_were_drawn() {
+    // Review item 13. A 3-point arc from (10, 10) to (30, 10) through (20, 20): about
+    // (20, 10), radius 10. Three free points, six unknowns, the end held on the circle: five
+    // freedoms. A centrepoint arc about (60, 50) from (68, 56) swept counter-clockwise to
+    // (54, 58) (radius 10, a 6-8-10 each way): five more. Each point where it was drawn.
+    let mut f = opened(ToolKind::ThreePointArc);
+    f.click(10.0, 10.0).click(30.0, 10.0).click(20.0, 20.0);
+    assert_eq!(f.read().states.dofs, 5);
+    f.tool = SketchTool::new(ToolKind::CenterpointArc);
+    f.click(60.0, 50.0).click(68.0, 56.0);
+    f.send(Event::Move([63.0, 60.0]));
+    f.click(54.0, 58.0);
+    let read = f.read();
+    assert_eq!(read.states.dofs, 10);
+    assert_eq!(read.members.arcs.len(), 2);
+    assert_eq!(
+        points(&read),
+        sorted(vec![
+            at(20.0, 10.0),
+            at(10.0, 10.0),
+            at(30.0, 10.0),
+            at(60.0, 50.0),
+            at(68.0, 56.0),
+            at(54.0, 58.0),
+        ])
+    );
 }

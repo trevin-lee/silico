@@ -6,7 +6,7 @@
 
 use super::build::Builder;
 use super::geometry::distance;
-use super::infer::{Align, Placed, Target};
+use super::infer::{Align, Placed, Target, View};
 use super::{Event, Message, Outcome, Preview, Relation, Shown, Step, Xy, failed, within_reach};
 use crate::document::{Form, Reference};
 
@@ -51,6 +51,13 @@ impl Circle {
         !matches!(self.state, State::Idle)
     }
 
+    /// The gesture against `view`, a newer sketch ([`Placed::revalidated`]).
+    pub(super) fn revalidate(&mut self, view: &View<'_>) {
+        if let State::Pressed { centre, .. } | State::Clicked { centre, .. } = &mut self.state {
+            *centre = centre.revalidated(view);
+        }
+    }
+
     pub(super) fn handle(
         &mut self,
         step: &mut Step<'_, '_, '_>,
@@ -90,7 +97,11 @@ impl Circle {
                 Event::Release(at),
             ) => {
                 let centre = centre.clone();
-                if *dragged || distance(at, *press) > step.pointer.tolerance {
+                if *dragged && distance(at, *press) <= step.pointer.tolerance {
+                    // A drag back to where it began.
+                    self.state = State::Idle;
+                    Outcome::said(Message::TooSmall)
+                } else if *dragged || distance(at, *press) > step.pointer.tolerance {
                     self.state = State::Idle;
                     finish(step, &centre, at)
                 } else {

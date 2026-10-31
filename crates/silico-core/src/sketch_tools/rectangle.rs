@@ -10,7 +10,7 @@
 
 use super::build::Builder;
 use super::geometry::{add, distance, scale, sub};
-use super::infer::{Align, Placed};
+use super::infer::{Align, Placed, View};
 use super::{Event, Message, Outcome, Preview, Step, Xy, failed, within_reach};
 use crate::document::{Form, Reference};
 
@@ -54,6 +54,13 @@ impl Rectangle {
         !matches!(self.state, State::Idle)
     }
 
+    /// The gesture against `view`, a newer sketch ([`Placed::revalidated`]).
+    pub(super) fn revalidate(&mut self, view: &View<'_>) {
+        if let State::Pressed { first, .. } | State::Clicked { first, .. } = &mut self.state {
+            *first = first.revalidated(view);
+        }
+    }
+
     pub(super) fn handle(
         &mut self,
         step: &mut Step<'_, '_, '_>,
@@ -93,7 +100,11 @@ impl Rectangle {
                 Event::Release(at),
             ) => {
                 let first = first.clone();
-                if *dragged || distance(at, *press) > step.pointer.tolerance {
+                if *dragged && distance(at, *press) <= step.pointer.tolerance {
+                    // A drag back to where it began.
+                    self.state = State::Idle;
+                    Outcome::said(Message::TooSmall)
+                } else if *dragged || distance(at, *press) > step.pointer.tolerance {
                     self.state = State::Idle;
                     self.finish(step, &first, at)
                 } else {

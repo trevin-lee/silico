@@ -18,10 +18,13 @@
 
 use super::build::Builder;
 use super::geometry::{add, angle_of, circumcentre, distance, scale, sub, unit};
-use super::infer::{Align, Placed, Target, counter_clockwise, one_place, tangent_arc};
+use super::infer::{
+    Align, EXACT, Placed, Target, View, counter_clockwise, nearest_of, one_place, tangent_arc,
+};
 use super::{
     Event, Message, Outcome, Preview, PreviewArc, Relation, Shown, Step, Xy, failed, within_reach,
 };
+use crate::document::sketch_edit::{Geo, crossings};
 use crate::document::{Direction, ElementId, Form, Reference};
 
 /// An arc's points, its start and end counter-clockwise, and whether that's the gesture's
@@ -39,6 +42,16 @@ impl Drawn {
     fn sized(&self) -> bool {
         silico_protocol::squared_distance(self.center, self.start).sqrt()
             <= silico_protocol::MAX_LENGTH
+    }
+
+    /// Whether it's too small for the kernel, as the gate measures it: its centre to its
+    /// start or to its end, or its chord, 1e-7 mm or less.
+    fn too_small(&self) -> bool {
+        let kernel = silico_protocol::distance;
+        let floor = silico_protocol::LENGTH_TOLERANCE;
+        kernel(self.center, self.start) <= floor
+            || kernel(self.center, self.end) <= floor
+            || kernel(self.start, self.end) <= floor
     }
 
     /// The arc about `center` from the gesture's `from` to its `to`, counter-clockwise if
@@ -141,6 +154,20 @@ impl Centerpoint {
         !matches!(self.state, CenterState::Idle)
     }
 
+    /// The gesture against `view`, a newer sketch ([`Placed::revalidated`]).
+    pub(super) fn revalidate(&mut self, view: &View<'_>) {
+        match &mut self.state {
+            CenterState::Idle => {}
+            CenterState::Pressed { centre, .. } | CenterState::Centre { centre, .. } => {
+                *centre = centre.revalidated(view);
+            }
+            CenterState::Sweep { centre, start, .. } => {
+                *centre = centre.revalidated(view);
+                *start = start.revalidated(view);
+            }
+        }
+    }
+
     fn sweep_from(centre: Placed, start: Placed) -> CenterState {
         let last = angle_of(sub(start.at, centre.at));
         CenterState::Sweep {
@@ -207,7 +234,11 @@ impl Centerpoint {
                 Event::Release(at),
             ) => {
                 let centre = centre.clone();
-                if *dragged || distance(at, *press) > step.pointer.tolerance {
+                if *dragged && distance(at, *press) <= step.pointer.tolerance {
+                    // A drag back to where it began: no radius.
+                    self.state = CenterState::Idle;
+                    Outcome::said(Message::TooSmall)
+                } else if *dragged || distance(at, *press) > step.pointer.tolerance {
                     self.start(step, centre, at)
                 } else {
                     self.state = CenterState::Centre {
@@ -334,8 +365,10 @@ fn show(preview: &mut Preview, placed: &Placed) {
 }
 
 /// The end of a centrepoint arc with the pointer at `at`: on the circle the start sets,
-/// toward the pointer, where the pointer places it there (not lined up: the circle places
-/// it). None with the pointer on the centre.
+/// toward the pointer (not lined up: the circle places it). There, what the pointer finds,
+/// if it's on the circle (within [`EXACT`]); a curve it finds, where the curve crosses the
+/// circle nearest, within the pick tolerance; or else nothing, on the circle. So the end the
+/// arc is written with is on its circle. None with the pointer on the centre.
 fn end_on_circle(
     step: &Step<'_, '_, '_>,
     centre: &Placed,
@@ -345,7 +378,28 @@ fn end_on_circle(
     let radius = distance(start.at, centre.at);
     let toward = unit(sub(at, centre.at))?;
     let on_circle = add(centre.at, scale(toward, radius));
-    Some(step.pointer.snap(on_circle))
+    let snapped = step.pointer.snap(on_circle);
+    let on = |p: Xy| (distance(p, centre.at) - radius).abs() <= EXACT;
+    if on(snapped.at) {
+        return Some(snapped);
+    }
+    if let Target::On(curve) = &snapped.target
+        && let Some(geo) = step.pointer.view.geo(curve)
+    {
+        let infinite = !matches!(curve, Reference::Element(_));
+        let circle = Geo::Circle {
+            center: centre.at,
+            radius,
+        };
+        let crossing = nearest_of(crossings(&circle, &geo).into_iter().filter_map(|x| {
+            let d = distance(x, on_circle);
+            (d <= step.pointer.tolerance && (infinite || geo.spans(x)) && on(x)).then_some((d, x))
+        }));
+        if let Some(x) = crossing {
+            return Some(Placed::new(x, Target::On(curve.clone())));
+        }
+    }
+    Some(Placed::new(on_circle, Target::Free))
 }
 
 /// The arc about `center` from `start` to `end`, swept `swept` radians from the start
@@ -377,10 +431,10 @@ fn finish_centerpoint(
     // An end the pointer put on the centre (a point there, with a tolerance past the
     // radius), or at the start's place: no arc.
     let on_centre = centre.shared().is_some() && centre.shared() == end.shared();
-    if on_centre || one_place(end.at, centre.at) || one_place(start.at, end.at) {
+    let drawn = oriented(centre.at, start.at, end.at, swept);
+    if on_centre || one_place(end.at, centre.at) || drawn.too_small() {
         return Outcome::said(Message::TooSmall);
     }
-    let drawn = oriented(centre.at, start.at, end.at, swept);
     if !reach(&[&end]) || !drawn.sized() {
         return Outcome::said(Message::TooFar);
     }
@@ -444,6 +498,20 @@ impl ThreePoint {
         !matches!(self.state, ThreeState::Idle)
     }
 
+    /// The gesture against `view`, a newer sketch ([`Placed::revalidated`]).
+    pub(super) fn revalidate(&mut self, view: &View<'_>) {
+        match &mut self.state {
+            ThreeState::Idle => {}
+            ThreeState::Pressed { start, .. } | ThreeState::Start { start, .. } => {
+                *start = start.revalidated(view);
+            }
+            ThreeState::Ends { start, end, .. } => {
+                *start = start.revalidated(view);
+                *end = end.revalidated(view);
+            }
+        }
+    }
+
     pub(super) fn handle(
         &mut self,
         step: &mut Step<'_, '_, '_>,
@@ -483,7 +551,11 @@ impl ThreePoint {
                 Event::Release(at),
             ) => {
                 let start = start.clone();
-                if *dragged || distance(at, *press) > step.pointer.tolerance {
+                if *dragged && distance(at, *press) <= step.pointer.tolerance {
+                    // A drag back to where it began: no chord.
+                    self.state = ThreeState::Idle;
+                    Outcome::said(Message::TooSmall)
+                } else if *dragged || distance(at, *press) > step.pointer.tolerance {
                     self.end(step, start, at)
                 } else {
                     self.state = ThreeState::Start {
@@ -603,8 +675,13 @@ fn finish_three(step: &mut Step<'_, '_, '_>, start: &Placed, end: &Placed, at: X
     let Some(drawn) = through_three(start.at, end.at, at) else {
         return Outcome::said(Message::InLine);
     };
+    // Its points are within reach: a centre or a radius past it is three points nearly in
+    // a line.
     if !drawn.sized() || !within_reach(drawn.center) {
-        return Outcome::said(Message::TooFar);
+        return Outcome::said(Message::InLine);
+    }
+    if drawn.too_small() {
+        return Outcome::said(Message::TooSmall);
     }
     let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
     let built = (|| -> Result<(), crate::Error> {
@@ -665,6 +742,24 @@ fn tangent_from(base: &Base, end: Xy) -> Option<Drawn> {
 impl Tangent {
     pub(super) fn busy(&self) -> bool {
         !matches!(self.state, TangentState::Idle)
+    }
+
+    /// The gesture against `view`, a newer sketch: its base where the sketch now puts it,
+    /// leaving as its curve now does; or the gesture ended, if the sketch no longer has the
+    /// point, or the curve no longer ends there alone.
+    pub(super) fn revalidate(&mut self, view: &View<'_>) {
+        let base = match &mut self.state {
+            TangentState::Idle => return,
+            TangentState::Pressed { base, .. } | TangentState::Clicked { base, .. } => base,
+        };
+        let ends = view.ends_at(&base.point);
+        match (ends.as_slice(), view.point(&base.point)) {
+            ([(curve, out, _)], Some(at)) if *curve == base.curve => {
+                base.at = at;
+                base.out = *out;
+            }
+            _ => self.state = TangentState::Idle,
+        }
     }
 
     pub(super) fn handle(
@@ -804,11 +899,19 @@ fn finish_tangent(step: &mut Step<'_, '_, '_>, base: &Base, at: Xy) -> Option<Ou
     if one_place(end.at, base.at) {
         return Some(Outcome::said(Message::TooSmall));
     }
+    if !reach(&[&end]) {
+        return Some(Outcome::said(Message::TooFar));
+    }
     let Some(drawn) = tangent_from(base, end.at) else {
         return Some(Outcome::said(Message::InLine));
     };
-    if !drawn.sized() || !within_reach(drawn.center) || !reach(&[&end]) {
-        return Some(Outcome::said(Message::TooFar));
+    // Its points are within reach: a centre or a radius past it is an end nearly straight
+    // ahead.
+    if !drawn.sized() || !within_reach(drawn.center) {
+        return Some(Outcome::said(Message::InLine));
+    }
+    if drawn.too_small() {
+        return Some(Outcome::said(Message::TooSmall));
     }
     let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
     let built = (|| -> Result<(), crate::Error> {

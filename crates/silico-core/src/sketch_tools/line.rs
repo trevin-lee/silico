@@ -7,7 +7,7 @@
 
 use super::build::Builder;
 use super::geometry::distance;
-use super::infer::{Align, Along, Placed, along, one_place, onto};
+use super::infer::{Align, Along, Placed, View, along, one_place, onto};
 use super::{Event, Message, Outcome, Preview, Shown, Step, Xy, within_reach};
 use crate::document::ElementId;
 use crate::document::sketch_edit::Members;
@@ -63,10 +63,10 @@ impl Start {
     }
 }
 
-/// A segment's end, as the pointer shows it: the point, and the direction it shows.
+/// A segment's end, as the pointer shows it: the point, and the directions it shows.
 struct End {
     placed: Placed,
-    along: Option<Along>,
+    along: Vec<Along>,
 }
 
 /// What a segment's click does.
@@ -84,6 +84,41 @@ impl Line {
 
     fn end_chain(&mut self) {
         self.state = State::Idle;
+    }
+
+    /// The gesture against `view`, a newer sketch: a chain's last point where the sketch now
+    /// puts it, or the chain ended if the sketch no longer has it; a first point given up as
+    /// [`Placed::revalidated`] gives it up.
+    pub(super) fn revalidate(&mut self, view: &View<'_>) {
+        self.state = match std::mem::take(&mut self.state) {
+            State::Idle => State::Idle,
+            State::Pressed {
+                start,
+                press,
+                dragged,
+            } => State::Pressed {
+                start: start.revalidated(view),
+                press,
+                dragged,
+            },
+            State::Chain {
+                last: Start::Point(id, _),
+                pressed,
+            } => match view.point(&id) {
+                Some(at) => State::Chain {
+                    last: Start::Point(id, at),
+                    pressed,
+                },
+                None => State::Idle,
+            },
+            State::Chain {
+                last: Start::New(placed),
+                pressed,
+            } => State::Chain {
+                last: Start::New(placed.revalidated(view)),
+                pressed,
+            },
+        };
     }
 
     pub(super) fn handle(
@@ -206,7 +241,7 @@ impl Line {
             preview.shown.extend(placed.shown());
         }
         show_point(preview, &end.placed);
-        if let Some(along) = &end.along {
+        for along in &end.along {
             preview.shown.push(Shown {
                 at: end.placed.at,
                 relation: along.relation(),
@@ -234,7 +269,7 @@ fn end_of(step: &Step<'_, '_, '_>, start: &Start, at: Xy) -> End {
     if !pointer.infer {
         return End {
             placed,
-            along: None,
+            along: Vec::new(),
         };
     }
     let from = start.at();
@@ -244,17 +279,15 @@ fn end_of(step: &Step<'_, '_, '_>, start: &Start, at: Xy) -> End {
         placed.at = onto(from, *direction, placed.at);
     }
     let besides: Vec<&ElementId> = start.id().into_iter().collect();
-    let align = match shows.as_ref().map(|(a, _)| a) {
-        None => Align::Guides,
-        Some(Along::Horizontal) => Align::GuideX,
-        Some(Along::Vertical) => Align::GuideY,
-        Some(_) => Align::None,
+    let along = shows.map(|(a, _)| a).unwrap_or_default();
+    let align = match along.as_slice() {
+        [] => Align::Guides,
+        [Along::Horizontal] => Align::GuideX,
+        [Along::Vertical] => Align::GuideY,
+        _ => Align::None,
     };
     pointer.align(&mut placed, align, &besides);
-    End {
-        placed,
-        along: shows.map(|(a, _)| a),
-    }
+    End { placed, along }
 }
 
 /// The segment from `start` to the pointer at `at`: its members, its end's ID and place,
@@ -284,7 +317,7 @@ fn segment(step: &mut Step<'_, '_, '_>, start: &Start, at: Xy) -> Click {
         };
         let b = builder.point(&end.placed, false)?;
         let line = builder.line(&a, &b)?;
-        if let Some(along) = &end.along {
+        for along in &end.along {
             builder.constraint(along.form(&line, &a))?;
         }
         Ok(b)

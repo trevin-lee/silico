@@ -7,6 +7,9 @@
 //! the newest `sketch` read would show it.
 
 use super::*;
+use crate::command::Revision;
+
+mod edges;
 use crate::document::json::{self, Plain};
 use crate::document::sketch_edit::{self, Members};
 use crate::document::{
@@ -29,6 +32,11 @@ impl NewIds for Counter {
 }
 
 const TOLERANCE: f64 = 0.5;
+
+/// The sketch the tools draw in, by its feature's ID.
+fn sketch_id() -> FeatureId {
+    FeatureId::new("s0000001").unwrap()
+}
 
 fn id(text: &str) -> ElementId {
     ElementId::new(text).unwrap()
@@ -67,6 +75,8 @@ fn empty() -> Sketch {
 struct Drive {
     tool: SketchTool,
     sketch: Sketch,
+    /// The session's revision: one more for each add the core takes, as a session's.
+    revision: Revision,
     tolerance: f64,
     automatic: bool,
     keys: Modifiers,
@@ -84,6 +94,7 @@ impl Drive {
         Drive {
             tool: SketchTool::new(kind),
             sketch,
+            revision: Revision::OPENED,
             tolerance: TOLERANCE,
             automatic: true,
             keys: Modifiers::default(),
@@ -96,15 +107,22 @@ impl Drive {
     }
 
     fn send(&mut self, event: Event) -> Outcome {
+        let sketch_id = sketch_id();
         let context = Context {
+            sketch_id: &sketch_id,
+            revision: self.revision,
             sketch: &self.sketch,
             tolerance: self.tolerance,
             automatic_relations: self.automatic,
         };
         let outcome = self.tool.handle(&context, &mut self.ids, event, self.keys);
         if let Some(members) = &outcome.add {
+            self.revision = self.revision.next().unwrap();
+            self.tool.added(self.revision);
             let edited = sketch_edit::add(&self.sketch, members)
                 .unwrap_or_else(|refused| panic!("the gate refused {members:?}: {refused:?}"));
+            let unmet = unmet(&self.sketch, &edited.sketch, members);
+            assert!(unmet.is_empty(), "{unmet:?} in {members:?}");
             self.added.push(described(&edited.sketch, members));
             self.made.push(members.clone());
             self.sketch = edited.sketch;
@@ -146,6 +164,173 @@ impl Drive {
     fn adds(&self) -> Vec<Vec<String>> {
         self.added.clone()
     }
+}
+
+/// What of `members`, added to `before` to make `after`, doesn't hold at the coordinates
+/// written: each relation, to 1e-9 of the largest coordinate it reads (at least 1 mm), each
+/// direction to 1e-9 as a unit vector's; and each new arc's end as far from its centre as its
+/// start. But for what the tools add without making it hold, by design: a direction a
+/// line's end shows where the pointer fixed that end (a point the sketch held, or one placed
+/// on a curve or at a middle), which the solve then settles (#278's G); and an arc whose
+/// start or end the sketch held, which the solve puts on its circle (D2, arcs).
+fn unmet(before: &Sketch, after: &Sketch, members: &Members) -> Vec<String> {
+    let held = |id: &ElementId| before.elements().any(|(e, _)| e == id);
+    let at = |id: &ElementId| -> Xy {
+        let p = after.points.iter().find(|p| &p.id == id).unwrap();
+        [p.x.mm(), p.y.mm()]
+    };
+    let line_of = |r: &Reference| {
+        after
+            .lines
+            .iter()
+            .find(|l| Reference::Element(l.id.clone()) == *r)
+    };
+    // A point the add fixed by a snap: its own `on`, `midpoint`, or the origin's relations.
+    let snapped = |id: &ElementId| {
+        members.constraints.iter().any(|c| match &c.form {
+            Form::On { point, .. } | Form::Midpoint { point, .. } => {
+                *point == Reference::Element(id.clone())
+            }
+            Form::HorizontalPoints { a, b } | Form::VerticalPoints { a, b } => {
+                *a == Reference::Element(id.clone()) && *b == Reference::Origin
+            }
+            _ => false,
+        })
+    };
+    let fixed_end = |r: &Reference| line_of(r).is_none_or(|l| held(&l.to) || snapped(&l.to));
+    let tangent_too = |r: &Reference| {
+        members
+            .constraints
+            .iter()
+            .any(|c| matches!(&c.form, Form::TangentAt { b, .. } if b == r))
+    };
+    let place = |r: &Reference| match r {
+        Reference::Element(id) => at(id),
+        _ => [0.0, 0.0],
+    };
+    let direction = |r: &Reference| -> Xy {
+        match r {
+            Reference::XAxis => [1.0, 0.0],
+            Reference::YAxis => [0.0, 1.0],
+            _ => {
+                let l = line_of(r).unwrap();
+                geometry::unit(geometry::sub(at(&l.to), at(&l.from))).unwrap()
+            }
+        }
+    };
+    let scale = |ps: &[Xy]| {
+        ps.iter()
+            .flat_map(|p| [p[0].abs(), p[1].abs()])
+            .fold(1.0f64, f64::max)
+            * 1e-9
+    };
+    // The direction a curve runs at `point`: a line's own, an arc's or a circle's across its
+    // radius there.
+    let tangent_of = |r: &Reference, point: Xy| -> Xy {
+        if line_of(r).is_some() {
+            return direction(r);
+        }
+        let Reference::Element(id) = r else {
+            return direction(r);
+        };
+        let centre = after
+            .arcs
+            .iter()
+            .find(|a| &a.id == id)
+            .map(|a| at(&a.center))
+            .unwrap();
+        geometry::left(geometry::unit(geometry::sub(point, centre)).unwrap())
+    };
+    let mut unmet = Vec::new();
+    for c in &members.constraints {
+        let ok = match &c.form {
+            Form::Horizontal { line } => {
+                let (a, b) = line_of(line).map(|l| (at(&l.from), at(&l.to))).unwrap();
+                fixed_end(line) || tangent_too(line) || (a[1] - b[1]).abs() <= scale(&[a, b])
+            }
+            Form::Vertical { line } => {
+                let (a, b) = line_of(line).map(|l| (at(&l.from), at(&l.to))).unwrap();
+                fixed_end(line) || tangent_too(line) || (a[0] - b[0]).abs() <= scale(&[a, b])
+            }
+            Form::HorizontalPoints { a, b } => {
+                let (p, q) = (place(a), place(b));
+                (p[1] - q[1]).abs() <= scale(&[p, q])
+            }
+            Form::VerticalPoints { a, b } => {
+                let (p, q) = (place(a), place(b));
+                (p[0] - q[0]).abs() <= scale(&[p, q])
+            }
+            Form::On { point, curve } => {
+                let p = place(point);
+                let off = match curve {
+                    Reference::XAxis => p[1].abs(),
+                    Reference::YAxis => p[0].abs(),
+                    Reference::Element(id) => {
+                        if let Some(l) = line_of(curve) {
+                            let (a, b) = (at(&l.from), at(&l.to));
+                            geometry::cross(
+                                geometry::unit(geometry::sub(b, a)).unwrap(),
+                                geometry::sub(p, a),
+                            )
+                            .abs()
+                        } else if let Some(k) = after.circles.iter().find(|k| &k.id == id) {
+                            (geometry::distance(p, at(&k.center)) - k.radius.mm()).abs()
+                        } else {
+                            let a = after.arcs.iter().find(|a| &a.id == id).unwrap();
+                            let centre = at(&a.center);
+                            (geometry::distance(p, centre)
+                                - geometry::distance(at(&a.start), centre))
+                            .abs()
+                        }
+                    }
+                    Reference::Origin => f64::INFINITY,
+                };
+                off <= scale(&[p])
+            }
+            Form::Midpoint { point, line } => {
+                let l = line_of(line).unwrap();
+                let mid = geometry::scale(geometry::add(at(&l.from), at(&l.to)), 0.5);
+                geometry::distance(place(point), mid) <= scale(&[mid])
+            }
+            Form::Perpendicular { a, b } => {
+                fixed_end(b) || geometry::dot(direction(a), direction(b)).abs() <= 1e-9
+            }
+            Form::Parallel { a, b } => {
+                fixed_end(b) || geometry::cross(direction(a), direction(b)).abs() <= 1e-9
+            }
+            Form::TangentAt {
+                a, b, at: point, ..
+            } => {
+                let p = place(point);
+                (line_of(b).is_some() && fixed_end(b))
+                    || geometry::cross(tangent_of(a, p), tangent_of(b, p)).abs() <= 1e-9
+            }
+            Form::Symmetric { a, b, about } => {
+                let mid = geometry::scale(geometry::add(place(a), place(b)), 0.5);
+                geometry::distance(mid, place(about)) <= scale(&[mid])
+            }
+            other => {
+                unmet.push(format!("a form no tool adds: {other:?}"));
+                true
+            }
+        };
+        if !ok {
+            unmet.push(format!("{:?}", c.form));
+        }
+    }
+    for arc in &members.arcs {
+        if held(&arc.start) || held(&arc.end) {
+            continue;
+        }
+        let centre = at(&arc.center);
+        let (s, e) = (at(&arc.start), at(&arc.end));
+        if (geometry::distance(s, centre) - geometry::distance(e, centre)).abs()
+            > scale(&[s, e, centre])
+        {
+            unmet.push(format!("arc {} isn't round", arc.id));
+        }
+    }
+    unmet
 }
 
 /// A coordinate as the descriptions write it: to the nanometre, so a sum's last bit doesn't
@@ -804,7 +989,8 @@ fn a_point_lined_up_with_another_is_above_it_as_the_pointer_shows() {
     let mut s = empty();
     s.points.push(point("q0000001", 30.0, 10.0));
     let mut d = Drive::new(ToolKind::Point, s.clone());
-    d.to(30.3, 50.0);
+    // The pointer passes over the point first, waking it (#278's E).
+    d.to(30.2, 10.1).to(30.3, 50.0);
     let preview = d.tool.preview();
     assert_eq!(preview.pointer, Some([30.0, 50.0]));
     assert_eq!(preview.guides, [[[30.0, 10.0], [30.0, 50.0]]]);
@@ -821,7 +1007,7 @@ fn a_point_lined_up_with_another_is_above_it_as_the_pointer_shows() {
     // Ctrl held: neither the move nor the relation.
     let mut held = Drive::new(ToolKind::Point, s);
     held.keys.ctrl = true;
-    held.click(30.3, 50.0);
+    held.to(30.2, 10.1).click(30.3, 50.0);
     assert_eq!(held.adds(), [sorted(&["point (30.3, 50)"])]);
 }
 
@@ -835,7 +1021,7 @@ fn a_horizontal_lines_end_above_a_point_is_a_guide_not_a_relation() {
     let mut s = empty();
     s.points.push(point("q0000001", 40.0, 5.0));
     let mut d = Drive::new(ToolKind::Line, s);
-    d.drag([10.0, 20.0], [40.3, 20.2]);
+    d.to(40.1, 5.2).drag([10.0, 20.0], [40.3, 20.2]);
     assert_eq!(
         d.adds(),
         [sorted(&[
@@ -1325,13 +1511,12 @@ fn the_members_are_what_new_members_writes() {
 }
 
 #[test]
-fn a_centrepoint_arcs_end_put_on_its_own_centre_draws_nothing() {
+fn a_centrepoint_arcs_end_snapped_off_its_circle_is_put_back_on_it() {
     // Found by the property below: with a pick tolerance past the radius, the end's place on
-    // the circle snapped back to the centre, a point of the sketch, and the arc's end was its
-    // centre, which the gate refuses. Centre the point (20, 10), start the point (0, 0),
-    // radius √500 ≈ 22.4; the end toward (25, 12) is at (40.8, 18.3), 22.4 from the centre
-    // and 44.8 from the start, so with a 30 mm tolerance it snaps to the centre: nothing,
-    // too small.
+    // the circle snapped to the centre, a point of the sketch, off the circle. Centre the
+    // point (20, 10), start the point (0, 0), radius √500; the end toward (25, 12) is
+    // (20, 10) + √500·(5, 2)/√29, which a 30 mm tolerance would snap to the centre. The end
+    // stays on the circle, a new point, with no relation.
     let mut s = empty();
     s.points.push(point("q0000001", 20.0, 10.0));
     s.points.push(point("q0000002", 0.0, 0.0));
@@ -1341,8 +1526,15 @@ fn a_centrepoint_arcs_end_put_on_its_own_centre_draws_nothing() {
         .click(0.0, 0.0)
         .to(-5.0, 30.0)
         .click(25.0, 12.0);
-    assert!(d.adds().is_empty());
-    assert_eq!(d.messages, [Message::TooSmall]);
+    assert!(d.messages.is_empty(), "{:?}", d.messages);
+    let made = &d.made[0];
+    assert_eq!(made.points.len(), 1);
+    assert!(made.constraints.is_empty());
+    let end = [made.points[0].x.mm(), made.points[0].y.mm()];
+    let scale = 500f64.sqrt() / 29f64.sqrt();
+    assert!((end[0] - (20.0 + 5.0 * scale)).abs() < 1e-9, "{end:?}");
+    assert!((end[1] - (10.0 + 2.0 * scale)).abs() < 1e-9, "{end:?}");
+    assert_eq!(made.arcs[0].center, id("q0000001"));
 }
 
 #[test]
@@ -1377,7 +1569,10 @@ fn an_arcs_radius_at_a_kilometre_is_measured_as_the_gate_measures_it() {
 /// `events`, each a click at a place, sent to `tool` against `sketch`, which no add changes:
 /// the newest read, before any add reaches it. What each click added, or said.
 fn clicks_on_a_stale_read(tool: &mut SketchTool, sketch: &Sketch, at: &[[f64; 2]]) -> Vec<Outcome> {
+    let sketch_id = sketch_id();
     let context = Context {
+        sketch_id: &sketch_id,
+        revision: Revision::OPENED,
         sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
@@ -1455,7 +1650,10 @@ impl NewIds for Dry {
 #[test]
 fn a_source_with_no_ids_adds_nothing_and_says_why() {
     let sketch = empty();
+    let sketch_id = sketch_id();
     let context = Context {
+        sketch_id: &sketch_id,
+        revision: Revision::OPENED,
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
