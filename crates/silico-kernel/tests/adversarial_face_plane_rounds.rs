@@ -127,6 +127,11 @@ fn frame_of(model: &Model, sketch: &str) -> FaceFrame {
         .unwrap_or_else(|| panic!("{sketch}: {:?}", model.outcome(&id(sketch))))
 }
 
+/// A frame's normal, x × y.
+fn normal_of(f: &FaceFrame) -> [f64; 3] {
+    silico_protocol::SketchPlane::Face(*f).normal()
+}
+
 /// A triangle on xy through `corners`, sketch `id`, padded `height` on its own: `p` + id's
 /// tail.
 fn triangle_prism(sketch: &str, prism: &str, corners: [[f64; 2]; 3], height: &str) -> Vec<String> {
@@ -174,7 +179,7 @@ fn a_sketch_on_a_slanted_face_whose_frame_origin_is_past_a_kilometre_but_whose_p
     for k in 0..3 {
         near(f.origin[k], o[k], 1e-6, "the frame's origin");
         near(f.x[k], x[k], 1e-12, "the frame's x");
-        near(f.normal[k], n[k], 1e-12, "the frame's normal");
+        near(normal_of(&f)[k], n[k], 1e-12, "the frame's normal");
     }
     // Built, 8 mm³; or, if Silico decides a frame's origin must be within reach too, a
     // refusal of the sketch that says so as the document has it, never a faces request
@@ -310,7 +315,7 @@ fn a_sketch_on_a_chamfers_bevel_pads_a_prism_square_to_it() {
         near(f.origin[k], [0.0, -4.0, 4.0][k], 1e-12, "origin");
         near(f.x[k], [1.0, 0.0, 0.0][k], 1e-15, "x");
         near(f.y[k], y[k], 1e-15, "y");
-        near(f.normal[k], n[k], 1e-15, "normal");
+        near(normal_of(&f)[k], n[k], 1e-15, "normal");
     }
     near(
         built_summary(&model, "c0000001").volume,
@@ -435,7 +440,7 @@ fn a_chain_six_faces_deep_places_each_sketch_on_the_last_pads_top_in_its_own_rou
     for k in 1..=6 {
         let f = frame_of(&model, &format!("s{k:07}"));
         assert_eq!(
-            (f.origin, f.x, f.y, f.normal),
+            (f.origin, f.x, f.y, normal_of(&f)),
             (
                 [0.0, 0.0, 9.0 + k as f64],
                 [1.0, 0.0, 0.0],

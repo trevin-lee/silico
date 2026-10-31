@@ -7,7 +7,7 @@
 //! live solid that failed, or was blocked, blocks the sketch where the face isn't found in
 //! another; one not built yet leaves it to the next round of the rebuild.
 
-use silico_protocol::{FaceFrame, Surface, vec3};
+use silico_protocol::{FaceFrame, FaceFrameError, MIN_AXIS_OFF_NORMAL, Surface};
 
 use crate::document::{AxisToken, FacePlane, FeatureId};
 use crate::kernel::{Description, ElementKind};
@@ -15,49 +15,25 @@ use crate::naming::{ElementMap, Maker, Name};
 use crate::references::{CANDIDATES, Candidates, cut_short, refused, retyped, unstable};
 use crate::{Error, ErrorCode};
 
-/// The least |a − n(n·a)| a stored axis `a` may leave on a face of normal `n` (F1): an axis
-/// nearer the normal than that has no direction on the face.
-pub(crate) const PARALLEL: f64 = 1e-12;
-
 /// The frame of a sketch on the plane of unit normal `normal` through `location` (a point
-/// on it), its x following `x` and flipped if `reversed` (F1, F2): the origin o = n(n·p);
-/// x' = (a − n(n·a)) / |a − n(n·a)| for the token's axis a, then projected onto the plane
-/// once more, x = normalize(x' − n(n·x')), since x'·n is off by about 1e-16 / |a − n(n·a)|,
-/// which near the threshold is far past what a frame's check allows; y = normalize(n × x);
-/// and, `reversed`, x negated, y kept, so the frame's normal, x × y, is negated too. Every
-/// component written + 0, so a zero is +0 whatever the signs of the zeros it's made from.
-/// Refused, with |a − n(n·a)|, where that's under [`PARALLEL`].
+/// on it), its x following `x` and flipped if `reversed` (F1, F2), as the protocol's
+/// [`FaceFrame::from_normal`] makes it: the origin o = n(n·p); x the token's axis projected
+/// onto the plane (twice, so the frame is square however near the normal the axis lies);
+/// y = normalize(n × x); every zero +0. A `reversed` sketch's is the frame of −n and −a:
+/// the same origin and y, x negated, so its normal, x × y, is negated too. Refused where
+/// the axis lies along the normal, or the frame made is one no sketch can be placed on.
 pub(crate) fn frame(
     normal: [f64; 3],
     location: [f64; 3],
     x: AxisToken,
     reversed: bool,
-) -> Result<FaceFrame, f64> {
-    let n = normal;
-    let scaled = |v: [f64; 3], by: f64| v.map(|c| c * by);
-    let offset = vec3::dot(n, location);
-    let origin = scaled(n, offset);
-    let a = x.axis();
-    let off = vec3::sub(a, scaled(n, vec3::dot(n, a)));
-    let length = vec3::dot(off, off).sqrt();
-    // A NaN normal is refused too.
-    if length.is_nan() || length < PARALLEL {
-        return Err(length);
-    }
-    let unit = |v: [f64; 3]| scaled(v, 1.0 / vec3::dot(v, v).sqrt());
-    let first = scaled(off, 1.0 / length);
-    let along = unit(vec3::sub(first, scaled(n, vec3::dot(n, first))));
-    let y = unit(vec3::cross(n, along));
+) -> Result<FaceFrame, FaceFrameError> {
     let sign = if reversed { -1.0 } else { 1.0 };
-    let plus = |v: [f64; 3]| v.map(|c| c + 0.0);
-    let x = plus(scaled(along, sign));
-    let y = plus(y);
-    Ok(FaceFrame {
-        origin: plus(origin),
-        x,
-        y,
-        normal: plus(vec3::cross(x, y)),
-    })
+    FaceFrame::from_normal(
+        location,
+        normal.map(|c| c * sign),
+        x.axis().map(|c| c * sign),
+    )
 }
 
 /// The tokens whose axes leave a face of normal `normal` a direction ([`frame`] takes
@@ -65,7 +41,12 @@ pub(crate) fn frame(
 pub(crate) fn working_tokens(normal: [f64; 3]) -> Vec<&'static str> {
     AxisToken::ALL
         .into_iter()
-        .filter(|token| frame(normal, [0.0; 3], *token, false).is_ok())
+        .filter(|token| {
+            !matches!(
+                frame(normal, [0.0; 3], *token, false),
+                Err(FaceFrameError::AxisAlongNormal(_))
+            )
+        })
         .map(AxisToken::word)
         .collect()
 }
@@ -180,7 +161,7 @@ fn placed<'a>(
                 .with_suggestion(crate::worker::SILICO_BUG),
             ));
         };
-        let Surface::Plane { normal, origin } = face.surface else {
+        let Surface::Plane { normal, location } = face.surface else {
             let what = crate::elements::surface_type(&face.surface).word();
             return Ok(broken(
                 &format!(
@@ -189,9 +170,27 @@ fn placed<'a>(
                 planar_faces(&name, related, &others()),
             ));
         };
-        return Ok(match frame(normal, origin, plane.x, plane.reversed) {
+        return Ok(match frame(normal, location, plane.x, plane.reversed) {
             Ok(frame) => Placed::Frame(frame),
-            Err(off) => Placed::Broken(parallel(sketch, plane, normal, off)),
+            Err(FaceFrameError::AxisAlongNormal(off)) => {
+                Placed::Broken(parallel(sketch, plane, normal, off))
+            }
+            // A frame no sketch can be placed on (its origin past the reach, as a slanted
+            // face far out can give): the sketch's, in the document's terms.
+            Err(FaceFrameError::Invalid(invalid)) => Placed::Failed(
+                Error::new(
+                    ErrorCode::InvalidInput,
+                    format!(
+                        "the sketch's face's frame can't place a sketch: {}",
+                        invalid.message
+                    ),
+                )
+                .with_feature(sketch.as_str())
+                .with_parameter("plane")
+                .with_suggestion(
+                    "put the sketch on a face nearer the model's origin: a face's frame is placed from the origin projected onto its plane",
+                ),
+            ),
         });
     }
     // Not in any related solid built: one not built yet may hold it, or one that failed.
@@ -282,7 +281,7 @@ pub(crate) fn beyond_reach(
 }
 
 /// The refusal of a sketch whose axis `plane.x` leaves its face of normal `normal` only
-/// `off` (under [`PARALLEL`]): `reference_broken` on `plane.x`, the tokens that work the
+/// `off` (under [`MIN_AXIS_OFF_NORMAL`]): `reference_broken` on `plane.x`, the tokens that work the
 /// candidates.
 fn parallel(sketch: &FeatureId, plane: &FacePlane, normal: [f64; 3], off: f64) -> Error {
     let word = plane.x.word();
@@ -291,7 +290,7 @@ fn parallel(sketch: &FeatureId, plane: &FacePlane, normal: [f64; 3], off: f64) -
         format!(
             "plane.x, \"{word}\", is parallel to the face's normal {normal:?}: projected onto the face it leaves {}, under the {} a sketch's x needs",
             silico_protocol::format_number(off),
-            silico_protocol::format_number(PARALLEL)
+            silico_protocol::format_number(MIN_AXIS_OFF_NORMAL)
         ),
     )
     .with_feature(sketch.as_str())
@@ -342,6 +341,12 @@ fn planar_faces(name: &Name, related: &[Live<'_>], others: &[Live<'_>]) -> Vec<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use silico_protocol::{SketchPlane, vec3};
+
+    /// A frame's normal, x × y.
+    fn normal(f: &FaceFrame) -> [f64; 3] {
+        SketchPlane::Face(*f).normal()
+    }
     use crate::document::ElementName;
     use crate::kernel::{FaceDescription, Primitive};
     use crate::naming::PrimitiveKind;
@@ -437,7 +442,7 @@ mod tests {
         for (n, location, token, x, y, o) in faces {
             assert_eq!(AxisToken::default_x(n), token, "{n:?}");
             let f = frame(n, location, token, false).unwrap();
-            assert_eq!((f.origin, f.x, f.y, f.normal), (o, x, y, n), "{n:?}");
+            assert_eq!((f.origin, f.x, f.y, normal(&f)), (o, x, y, n), "{n:?}");
             f.check().unwrap();
             // A point (u, v) lands at o + u·x + v·y, on the face's plane.
             let p = at(&f, [3.0, 4.0]);
@@ -447,7 +452,7 @@ mod tests {
             // Reversed: n and x flip, y stays, o is the same.
             let r = frame(n, location, token, true).unwrap();
             assert_eq!(
-                (r.origin, r.x, r.y, r.normal),
+                (r.origin, r.x, r.y, normal(&r)),
                 (o, x.map(|c| -c + 0.0), y, n.map(|c| -c + 0.0)),
                 "{n:?} reversed"
             );
@@ -459,7 +464,7 @@ mod tests {
     fn the_top_face_reversed_has_its_normal_down_its_x_back_and_its_y_kept() {
         // The note: "Face6 reversed has n = −Z, x = −X, y = +Y".
         let f = frame([0.0, 0.0, 1.0], [0.0, 0.0, 10.0], PlusX, true).unwrap();
-        assert_eq!(f.normal, [0.0, 0.0, -1.0]);
+        assert_eq!(normal(&f), [0.0, 0.0, -1.0]);
         assert_eq!(f.x, [-1.0, 0.0, 0.0]);
         assert_eq!(f.y, [0.0, 1.0, 0.0]);
         assert_eq!(f.origin, [0.0, 0.0, 10.0]);
@@ -472,13 +477,13 @@ mod tests {
         // and its x's z −0 before the + 0; written + 0, each is +0, so the faces step's
         // key, which holds the bits, is the +0 frame's.
         let f = frame([-0.0, -0.0, 1.0], [-0.0, -0.0, 4.0], PlusX, false).unwrap();
-        for v in [f.origin, f.x, f.y, f.normal] {
+        for v in [f.origin, f.x, f.y, normal(&f)] {
             for c in v {
                 assert!(c != 0.0 || c.is_sign_positive(), "{f:?}");
             }
         }
         let reversed = frame([0.0, 0.0, 1.0], [0.0, 0.0, 4.0], PlusY, true).unwrap();
-        for v in [reversed.origin, reversed.x, reversed.y, reversed.normal] {
+        for v in [reversed.origin, reversed.x, reversed.y, normal(&reversed)] {
             for c in v {
                 assert!(c != 0.0 || c.is_sign_positive(), "{reversed:?}");
             }
@@ -575,15 +580,23 @@ mod tests {
     #[test]
     fn an_axis_along_the_normal_is_refused_with_how_much_it_leaves() {
         // Face2 turned 90° about Z: n = +Y and the token `+y`. |a − n(n·a)| = 0, under 1e-12.
-        assert_eq!(frame([0.0, 1.0, 0.0], [0.0; 3], PlusY, false), Err(0.0));
-        assert_eq!(frame([0.0, 1.0, 0.0], [0.0; 3], MinusY, true), Err(0.0));
+        assert_eq!(
+            frame([0.0, 1.0, 0.0], [0.0; 3], PlusY, false),
+            Err(FaceFrameError::AxisAlongNormal(0.0))
+        );
+        assert_eq!(
+            frame([0.0, 1.0, 0.0], [0.0; 3], MinusY, true),
+            Err(FaceFrameError::AxisAlongNormal(0.0))
+        );
         // The note's case: Face2 (`+y`) turned 90° about Z, n = (cos 90°, sin 90°, 0) in
         // floating point, (6.1e-17, 1, 0). a − n(n·a) = (0, 1, 0) − n·1 = (−6.1e-17, 0, 0):
         // |…| = cos 90°, under 1e-12, refused.
         let c = libm::cos(std::f64::consts::FRAC_PI_2);
         let n = [c, libm::sin(std::f64::consts::FRAC_PI_2), 0.0];
         assert_eq!(n[1], 1.0);
-        let off = frame(n, [0.0; 3], PlusY, false).unwrap_err();
+        let Err(FaceFrameError::AxisAlongNormal(off)) = frame(n, [0.0; 3], PlusY, false) else {
+            panic!();
+        };
         assert!((off - c).abs() <= 1e-30, "{off} against {c}");
         // `+x` is perpendicular to that n: taken, x ≈ +X.
         let f = frame(n, [0.0; 3], PlusX, false).unwrap();
@@ -683,7 +696,10 @@ mod tests {
                             radius: 1.0,
                         }
                     } else {
-                        Surface::Plane { normal, origin }
+                        Surface::Plane {
+                            normal,
+                            location: origin,
+                        }
                     },
                     area: 100.0,
                     centroid: origin,
@@ -713,7 +729,7 @@ mod tests {
             panic!("{placed:?}");
         };
         assert_eq!(
-            (f.origin, f.x, f.y, f.normal),
+            (f.origin, f.x, f.y, normal(&f)),
             (
                 [0.0, 0.0, 10.0],
                 [1.0, 0.0, 0.0],

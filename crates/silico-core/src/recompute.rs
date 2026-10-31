@@ -2242,10 +2242,19 @@ fn sweep_step(
                 TurnExtent::Symmetric { angle } => (angle, false, true),
             };
             // An origin plane's axes are unit axes of model space, so the line's direction
-            // in it is its direction in the sketch, exactly; a face frame's, to rounding.
+            // in it is its direction in the sketch, exactly. A face frame's are square only to
+            // its check's 1e-14, so x·l₀ + y·l₁ can be that far from a unit: normalized, so
+            // the revolution's own check of a unit direction (4ε) takes it.
             let (x, y) = (plane.x_axis(), plane.y_axis());
             let sign = if reversed { -1.0 } else { 1.0 };
-            let direction = [0, 1, 2].map(|k| plus_zero(sign * (x[k] * line[0] + y[k] * line[1])));
+            let along = [0, 1, 2].map(|k| sign * (x[k] * line[0] + y[k] * line[1]));
+            let along = match plane {
+                silico_protocol::SketchPlane::Face(_) => silico_protocol::vec3::normalize(along),
+                silico_protocol::SketchPlane::Xy
+                | silico_protocol::SketchPlane::Xz
+                | silico_protocol::SketchPlane::Yz => along,
+            };
+            let direction = along.map(plus_zero);
             let angle = silico_protocol::radians(angle.degrees());
             Step::Revolution {
                 faces,
@@ -4552,35 +4561,21 @@ fn placed_faces(
 }
 
 /// Why the sketch `sketch`, its face's frame resolved as `frame`, can't be placed there, if
-/// it can't: a frame the kernel's check of it refuses (an origin past its bound, which a
-/// slanted face far out can give), or a profile (`swept`'s, if a feature sweeps it) placed
-/// past a kilometre ([`beyond_reach`](crate::face_plane::beyond_reach)). Each `invalid_input`
-/// on the sketch's `plane`, in the document's terms, so no later request is refused naming
-/// a value the document never wrote.
+/// it can't: a profile (`swept`'s, if a feature sweeps it) placed past a kilometre
+/// ([`beyond_reach`](crate::face_plane::beyond_reach)), `invalid_input` on the sketch's
+/// `plane`, in the document's terms, so no later request is refused naming a value the
+/// document never wrote. (A frame no sketch can be placed on at all is refused as it's
+/// made: `face_plane::place`.)
 fn placeable(
     sketch: &FeatureId,
     frame: silico_protocol::FaceFrame,
     swept: Option<&Swept>,
 ) -> Option<Error> {
-    let plane = silico_protocol::SketchPlane::Face(frame);
-    if let Err(invalid) = plane.check() {
-        return Some(
-            Error::new(
-                ErrorCode::InvalidInput,
-                format!(
-                    "the sketch's face's frame can't place a sketch: {}",
-                    invalid.message
-                ),
-            )
-            .with_feature(sketch.as_str())
-            .with_parameter("plane")
-            .with_suggestion(
-                "put the sketch on a face nearer the model's origin: a face's frame is placed from the origin projected onto its plane",
-            ),
-        );
-    }
     let profile = swept?.profile.as_ref().ok()?;
-    crate::face_plane::beyond_reach(sketch, &profile.faces(plane))
+    crate::face_plane::beyond_reach(
+        sketch,
+        &profile.faces(silico_protocol::SketchPlane::Face(frame)),
+    )
 }
 
 /// What became of each feature of `source`, from its steps' results, and the bodies.
@@ -6022,6 +6017,68 @@ mod tests {
     /// moves (the cache's format bump re-keys every cache entry once); a face frame's is
     /// `frame` and its nine numbers' bits, origin, x, y, so two frames a bit apart are two
     /// steps, and a frame's −0 is its +0. Spelled out by hand from the doc.
+    #[test]
+    fn a_revolves_axis_on_a_face_frame_square_only_to_its_check_is_made_a_unit() {
+        // A frame whose x and y are 9e-15 from square (inside the check's 1e-14): x = +X,
+        // y = (9e-15, 1, 0) to rounding. A line at 45° in the sketch, (√½, √½): x·l₀ + y·l₁ =
+        // (√½(1 + 9e-15), √½, 0), whose length is √(1 + 9e-15 + …) ≈ 1 + 4.5e-15, past 4ε
+        // (8.9e-16) from a unit, which the revolution's check refuses. Normalized, it's
+        // within it, and the request is made.
+        let y = silico_protocol::vec3::normalize([9e-15, 1.0, 0.0]);
+        let frame = silico_protocol::FaceFrame {
+            origin: [0.0, 0.0, 10.0],
+            x: [1.0, 0.0, 0.0],
+            y,
+        };
+        frame.check().unwrap();
+        let plane = silico_protocol::SketchPlane::Face(frame);
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let raw = [0, 1, 2].map(|k| frame.x[k] * half + y[k] * half);
+        let raw_length = silico_protocol::vec3::norm(raw);
+        assert!(
+            (raw_length - 1.0).abs() > 4.0 * f64::EPSILON,
+            "{raw_length}"
+        );
+        let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}, {"id": "r0000001", "type": "revolve", "v": 1, "name": "R", "sketch": "s0000001", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}}]}"#;
+        let document = crate::document::read(text.as_bytes()).unwrap();
+        let step = sweep_step(
+            &document.features[1],
+            SweepFeature::Revolve,
+            plane,
+            Some(([0.0, 0.0], [half, half])),
+            Key([0; 32]),
+            None,
+        )
+        .unwrap();
+        let Step::Revolution {
+            origin,
+            direction,
+            start,
+            angle,
+            ..
+        } = step
+        else {
+            panic!("{step:?}");
+        };
+        let length = silico_protocol::vec3::norm(direction);
+        assert!((length - 1.0).abs() <= 4.0 * f64::EPSILON, "{length}");
+        silico_protocol::check_revolution(origin, direction, start, angle).unwrap();
+        assert!(silico_protocol::check_revolution(origin, raw, start, angle).is_err());
+        // On an origin plane, the direction is the line's own, exactly.
+        let Step::Revolution { direction, .. } = sweep_step(
+            &document.features[1],
+            SweepFeature::Revolve,
+            silico_protocol::SketchPlane::Xy,
+            Some(([0.0, 0.0], [half, half])),
+            Key([0; 32]),
+            None,
+        )
+        .unwrap() else {
+            panic!();
+        };
+        assert_eq!(direction, [half, half, 0.0]);
+    }
+
     #[test]
     fn a_faces_line_holds_its_plane_s_word_or_its_frame_s_bits() {
         use silico_protocol::{Curve, FaceFrame, Region, SketchPlane};
