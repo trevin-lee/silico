@@ -1294,8 +1294,9 @@ fn a_name_emptied_in_the_field_is_refused_and_the_field_keeps_what_was_typed() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
     empty_name(&mut h);
-    // "in", "n", then "": the last refused by the gate, its words said in the status bar,
-    // the document holding "n".
+    // "in", "n", then "" (a name queued behind one in flight is replaced by the next, so
+    // "n" may never be sent): "" refused by the gate, its words said in the status bar, the
+    // document holding the last name applied before it, "in" or "n".
     assert_eq!(
         h.state().tabs()[0].message.as_deref(),
         Some("name is empty (give the feature a name)")
@@ -1303,12 +1304,15 @@ fn a_name_emptied_in_the_field_is_refused_and_the_field_keeps_what_was_typed() {
     assert!(anywhere(&h, "name is empty (give the feature a name)"));
     let id = h.state().tabs()[0].id;
     let text = f.sessions.text(&id, None).wait().result.unwrap().text;
-    assert!(text.contains(r#""name": "n""#), "{text}");
+    assert!(
+        text.contains(r#""name": "n""#) || text.contains(r#""name": "in""#),
+        "{text}"
+    );
     assert_eq!(name_field(&h).value().as_deref(), Some(""));
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// Pin's Name emptied with Delete (the cursor at its start), each edit answered.
+/// Pin's Name emptied with Delete (the cursor at its start), and "" refused.
 fn empty_name(h: &mut AppHarness) {
     name_field(h).focus();
     step(h);
@@ -1316,8 +1320,13 @@ fn empty_name(h: &mut AppHarness) {
         h.key_press(eframe::egui::Key::Delete);
         step(h);
     }
+    // Answered once nothing is in flight or queued and the refusal of "" is said: how
+    // many edits went is the tab's to coalesce (one in flight replaces none, the next
+    // queued replaces the one queued before it), so it isn't counted.
     step_until(h, "the empty name answered", |h| {
-        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].edits.sent == 3
+        h.state().tabs()[0].edits.idle()
+            && h.state().tabs()[0].message.as_deref()
+                == Some("name is empty (give the feature a name)")
     });
     for _ in 0..20 {
         step(h);
