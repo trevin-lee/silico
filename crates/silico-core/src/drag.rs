@@ -1102,6 +1102,15 @@ mod tests {
     }
 
     #[test]
+    fn a_press_by_a_line_of_no_length_is_measured_from_its_point() {
+        // Both ends at (1, 2): a press at (4, 6) is 5 from it (3, 4, 5), and one on it 0.
+        // Its projection, 0 over a length squared of 0, is no number: a press measured by it
+        // would read NaN, never more than the tolerance, and be taken wherever it was.
+        assert_eq!(off_line([1.0, 2.0], [1.0, 2.0], [4.0, 6.0]), 5.0);
+        assert_eq!(off_line([1.0, 2.0], [1.0, 2.0], [1.0, 2.0]), 0.0);
+    }
+
+    #[test]
     fn a_press_by_an_arc_away_from_the_origin_is_on_its_sweep_by_its_angle_about_its_center() {
         // The quarter of radius 5 about (10, 20) from angle π to 3π/2: from (5, 20) to
         // (10, 15).
