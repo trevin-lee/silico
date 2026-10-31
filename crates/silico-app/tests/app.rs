@@ -1282,19 +1282,31 @@ fn stop_says_a_cancel_the_core_refuses() {
     tab.stop(&f.sessions);
     let said = tab.message.clone().unwrap();
     assert!(said.contains("no rebuild is running in session"), "{said}");
+    // A dialog's preview stopped too late says nothing: there was nothing left to stop.
+    tab.message = None;
+    tab.stop_preview(&f.sessions);
+    assert_eq!(tab.message, None);
     // No rebuild running: the stop off, whatever command runs (a command with no rebuild
-    // is its own dialog's to stop), and the session's own reload among them.
-    for running in [
-        Some(RunningCommand::Command(SessionCommand::Check)),
-        Some(RunningCommand::Command(SessionCommand::Export)),
-        Some(RunningCommand::Reload),
-        None,
+    // is its own dialog's to stop), and the session's own reload among them; in every
+    // state but running.
+    for state in [
+        RebuildState::Idle,
+        RebuildState::Done,
+        RebuildState::Faulted,
+        RebuildState::Stopped,
     ] {
-        if let Some(status) = &mut tab.status {
-            status.rebuild.state = RebuildState::Idle;
-            status.running = running;
+        for running in [
+            Some(RunningCommand::Command(SessionCommand::Check)),
+            Some(RunningCommand::Command(SessionCommand::Export)),
+            Some(RunningCommand::Reload),
+            None,
+        ] {
+            if let Some(status) = &mut tab.status {
+                status.rebuild.state = state;
+                status.running = running;
+            }
+            assert!(!tab.stoppable(), "{state:?} {running:?}");
         }
-        assert!(!tab.stoppable(), "{running:?}");
     }
 }
 
@@ -3526,6 +3538,7 @@ fn esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_dialog_second() {
     }
     assert!(dialog_open(&h));
     assert!(!h.state().tabs()[0].preview_rebuilding());
+    assert_eq!(h.state().tabs()[0].message, None);
     assert!(!h.state().tabs()[0].sent.contains(&Sent::Undo(None)));
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -5042,6 +5055,8 @@ fn stop_is_on_while_a_rebuild_runs_with_no_command_and_stops_it() {
             .is_disabled()
     };
     step_until(&mut h, "Stop on", |h| !stop(h));
+    // A refusal said before: a stop that succeeds clears it.
+    h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
     h.query_all_by_role_and_label(Role::Button, "Stop")
         .last()
         .unwrap()
@@ -5181,5 +5196,69 @@ fn a_tab_is_unsettled_while_anything_of_its_is_under_way() {
     check.wait();
     settled(&mut h);
     assert!(!h.state().tabs()[0].unsettled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_stop_of_the_first_rebuild_holds_with_nothing_published() {
+    // The first rebuild stopped, nothing published: its timeline isn't read of the current
+    // model again (which would start the rebuild again), so the stop holds until an edit.
+    let f = fixture();
+    let hold = f.kernel.hold(|_| true);
+    let path = f.file("example.silico", EXAMPLE);
+    let mut h = f.app();
+    h.state_mut().open(path.to_str().unwrap(), false);
+    let stop = |h: &AppHarness| {
+        h.query_all_by_role_and_label(Role::Button, "Stop")
+            .last()
+            .is_some_and(|stop| !stop.accesskit_node().is_disabled())
+    };
+    step_until(&mut h, "Stop on", stop);
+    h.query_all_by_role_and_label(Role::Button, "Stop")
+        .last()
+        .unwrap()
+        .click();
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    for _ in 0..30 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(rebuild_stopped(&h), "the stop was undone");
+    }
+    assert_eq!(
+        f.kernel
+            .calls()
+            .iter()
+            .filter(|call| is_box(&call.op))
+            .count(),
+        1
+    );
+    assert_eq!(h.state().tabs()[0].message, None);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_clears_the_selection_before_it_stops_the_rebuild() {
+    // Section 3's order: with a selection held and a rebuild held, Esc clears the selection;
+    // a second Esc stops the rebuild.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    let hold = edit_the_block_held(&f, &mut h);
+    h.state_mut().tabs_mut()[0].selected =
+        Some(silico_core::document::FeatureId::new("a91cw0de").unwrap());
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].selected, None);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(!rebuild_stopped(&h));
+    assert!(h.state().tabs()[0].stoppable());
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    hold.release();
     assert_eq!(never_waits::waits(), 0);
 }

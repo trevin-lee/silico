@@ -1249,8 +1249,21 @@ impl Tab {
     /// if one is (that one answers `cancelled`). One that comes after the rebuild ended is
     /// refused, and the refusal is said.
     pub fn stop<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if let Err(problems) = sessions.cancel(&self.id, Cancellable::Rebuild).result {
-            self.message = Some(said(&problems));
+        match sessions.cancel(&self.id, Cancellable::Rebuild).result {
+            Ok(_) => self.message = None,
+            Err(problems) => self.message = Some(said(&problems)),
+        }
+    }
+
+    /// A dialog's preview stopped, with the stop's call: refused only if the preview has
+    /// finished since, which leaves nothing to stop and nothing to say.
+    pub fn stop_preview<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if sessions
+            .cancel(&self.id, Cancellable::Rebuild)
+            .result
+            .is_ok()
+        {
+            self.message = None;
         }
     }
 
@@ -1275,7 +1288,10 @@ impl Tab {
         if self.timeline_read.is_some() || self.timeline_asked == Some(asked) {
             return;
         }
-        let current = (self.published.is_none() && self.nothing_published) || self.previews();
+        // Never the current model of a revision whose rebuild was stopped: its read would
+        // start the rebuild again, undoing the stop. The stopped state shows until an edit.
+        let current = ((self.published.is_none() && self.nothing_published) || self.previews())
+            && !self.rebuild_stopped();
         let model = if current {
             ModelChoice::Current
         } else {
@@ -1286,19 +1302,23 @@ impl Tab {
     }
 
     /// Whether the timeline is read of the current model, as a dialog's preview: a dialog
-    /// open on its feature, and the revision's rebuild not stopped, as `status` says of the
-    /// tab's own revision (a read would start it again). That read waits for the
-    /// revision's rebuild, so its health is the preview's, and Esc's cancel of it stops the
-    /// rebuild (section 3).
+    /// open on its feature (unless the revision's rebuild was stopped: [`read_timeline`]).
+    /// That read waits for the revision's rebuild, so its health is the preview's, and the
+    /// stop, which Esc is, stops it (section 3).
+    ///
+    /// [`read_timeline`]: Self::read_timeline
     fn previews(&self) -> bool {
-        let stopped = self.status.as_ref().is_some_and(|status| {
-            status.rebuild.revision == self.revision
-                && status.rebuild.state == RebuildState::Stopped
-        });
         self.dialog
             .as_ref()
             .is_some_and(|dialog| dialog.feature.is_some())
-            && !stopped
+    }
+
+    /// Whether the rebuild of the tab's revision was stopped, as `status` says.
+    fn rebuild_stopped(&self) -> bool {
+        self.status.as_ref().is_some_and(|status| {
+            status.rebuild.revision == self.revision
+                && status.rebuild.state == RebuildState::Stopped
+        })
     }
 
     /// Whether a dialog's preview is rebuilding: a dialog open on its feature (one that

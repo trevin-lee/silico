@@ -290,9 +290,14 @@ impl<P: Clients + 'static> App<P> {
             (false, true) => Some(Key::Escape),
             (false, false) => None,
         };
-        // Esc stops a rebuild running, as the stop does; with none, it does nothing.
-        if stop && !in_dialog && tab.stoppable() {
-            tab.stop(sessions);
+        // Esc, with no dialog open: the selection cleared first, then a rebuild running
+        // stopped, as the stop does (section 3's order); with neither, nothing.
+        if stop && !in_dialog {
+            if tab.selected.is_some() {
+                tab.selected = None;
+            } else if tab.stoppable() {
+                tab.stop(sessions);
+            }
         }
         if close && let Some(id) = self.active {
             self.close(id);
@@ -349,7 +354,7 @@ impl<P: Clients + 'static> App<P> {
         *started |= tab.dialog_changed(sessions);
         match key {
             Some(Key::Enter) if tab.can_ok() => action = Action::Ok,
-            Some(Key::Escape) if tab.preview_rebuilding() => tab.stop(sessions),
+            Some(Key::Escape) if tab.preview_rebuilding() => tab.stop_preview(sessions),
             Some(Key::Escape) => action = Action::Cancel,
             _ => {}
         }
