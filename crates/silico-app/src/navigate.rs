@@ -10,7 +10,7 @@
 
 use silico_core::views::{self, NamedView};
 use silico_protocol::vec3::{cross, dot, sub};
-use silico_protocol::{Camera, Projection};
+use silico_protocol::{Camera, MIN_VIEW_HEIGHT_OF_REACH, Projection};
 
 /// How far a drag of one point orbits, in degrees: half a turn across 360 points.
 pub const ORBIT_DEGREES_PER_POINT: f64 = 0.5;
@@ -157,14 +157,32 @@ pub fn fit(camera: &Camera, bounds: [[f64; 3]; 2], width: u32, height: u32) -> O
 }
 
 /// Whether a renderer draws `camera`'s view of bodies in `boxes`: any perspective view; an
-/// orthographic one no smaller than the least its bodies' reach from its target allows
-/// (`views::least_view_height`, which fits keep to as well).
+/// orthographic one no smaller than the renderer's own least for its bodies' reach from its
+/// target (`MIN_VIEW_HEIGHT_OF_REACH` of the reach).
 pub fn drawable(camera: &Camera, boxes: impl IntoIterator<Item = [[f64; 3]; 2]>) -> bool {
     match camera.projection {
         Projection::Perspective { .. } => true,
         Projection::Orthographic { view_height } => {
-            view_height >= views::least_view_height(views::reach(camera.target, boxes))
+            view_height >= views::reach(camera.target, boxes) * MIN_VIEW_HEIGHT_OF_REACH
         }
+    }
+}
+
+/// `camera` with its orthographic view raised, if it's under it, to the least the bodies in
+/// `boxes` allow from its target (`views::least_view_height`: the renderer's least and a
+/// hundredth more), so every view the viewport takes is [`drawable`] and a control can
+/// always move it on. A perspective view as it is.
+pub fn clamped(camera: Camera, boxes: impl IntoIterator<Item = [[f64; 3]; 2]>) -> Camera {
+    let Projection::Orthographic { view_height } = camera.projection else {
+        return camera;
+    };
+    let least = views::least_view_height(views::reach(camera.target, boxes));
+    if view_height >= least {
+        return camera;
+    }
+    Camera {
+        projection: Projection::Orthographic { view_height: least },
+        ..camera
     }
 }
 
@@ -405,19 +423,29 @@ mod tests {
     }
 
     #[test]
-    fn an_orthographic_view_smaller_than_its_bodies_reach_allows_isnt_drawable() {
+    fn an_orthographic_view_smaller_than_the_renderers_least_isnt_drawable_and_is_clamped_to_ours()
+    {
         // The block (0, 0, 0) to (40, 20, 10) from the origin reaches √2100 = 45.83 mm: the
-        // least is 45.83 · 1e-5 · 1.01 = 4.6286e-4 mm.
+        // renderer draws down to 45.83 · 1e-5 = 4.5826e-4 mm; a clamp raises a view to a
+        // hundredth over that, 4.6284e-4 mm.
         let block = [[0.0, 0.0, 0.0], [40.0, 20.0, 10.0]];
-        let least = 2100f64.sqrt() * 1e-5 * 1.01;
+        let renderers = 2100f64.sqrt() * 1e-5;
+        let ours = renderers * 1.01;
         let at = |view_height: f64| Camera {
             projection: Projection::Orthographic { view_height },
             ..front()
         };
-        assert!(drawable(&at(least * 1.000_001), [block]));
-        assert!(!drawable(&at(least * 0.999_999), [block]));
+        assert!(drawable(&at(renderers * 1.000_001), [block]));
+        assert!(!drawable(&at(renderers * 0.999_999), [block]));
+        // Between the two: drawn, and a clamp leaves it.
+        assert!(drawable(&at(renderers * 1.005), [block]));
+        for under in [1e-6, renderers, ours * 0.999] {
+            assert!((height(&clamped(at(under), [block])) - ours).abs() < 1e-18);
+        }
+        assert_eq!(clamped(at(80.0), [block]), at(80.0));
         // With no bodies, anything the camera's check takes; in perspective, anything.
         assert!(drawable(&at(1e-6), []));
+        assert_eq!(clamped(at(1e-6), []), at(1e-6));
         let perspective = Camera {
             projection: Projection::Perspective {
                 field_of_view: 30.0,
@@ -425,6 +453,18 @@ mod tests {
             ..front()
         };
         assert!(drawable(&perspective, [block]));
+        assert_eq!(clamped(perspective.clone(), [block]), perspective);
+    }
+
+    #[test]
+    fn a_needle_seen_end_on_fitted_by_f6_or_home_is_drawn() {
+        // Its fit is exactly its least by the half diagonal (with a hundredth over the
+        // renderer's): an ulp of the reach mustn't make it refused.
+        let needle = [[0.0; 3], [1.0, 500_000.0, 1.0]];
+        let fitted = fit(&front(), needle, 400, 400).unwrap();
+        assert!(drawable(&fitted, [needle]));
+        let home = named(NamedView::Front, needle, 400, 400).unwrap();
+        assert!(drawable(&home, [needle]));
     }
 
     #[test]

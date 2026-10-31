@@ -36,7 +36,7 @@ use silico_core::document::FeatureId;
 use silico_core::kernel::Clients;
 use silico_core::recompute::Key;
 use silico_core::views::{NamedView, half_pixel_at, meshing_depth};
-use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh};
+use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 
 use crate::navigate::{self, HOME, NO_BOX};
 use crate::renderer::{Change, Element, FrameData, Picking, PixelRect, Present};
@@ -67,6 +67,8 @@ pub struct ViewBody {
     pub bounds: Option<[[f64; 3]; 2]>,
     /// The half pixels `[at_least, below)` its mesh serves.
     pub serves: [f64; 2],
+    /// Whether the answer that gave it said the tab held its mesh (and so sent no arrays).
+    pub held: bool,
     pub mesh: Arc<Mesh>,
     /// Its faces and edges, in the mesh's order, each named (`Face1` is the first).
     pub faces: Vec<MeshElement>,
@@ -122,6 +124,15 @@ pub enum Navigation {
     Zoom,
 }
 
+/// A read refused for the moment: the read, when it may be asked again, and how many such
+/// refusals of it ran in a row.
+#[derive(Debug, Clone)]
+struct Retry {
+    asked: Asked,
+    at: Instant,
+    tries: u32,
+}
+
 /// A drag under way: on the canvas, by its button, the pointer where it was last frame; or
 /// of the ViewCube, which orbits.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -155,10 +166,12 @@ pub struct View {
     reading: Option<Reading>,
     /// The last read refused for what it asked: not asked again until something differs.
     refused: Option<Asked>,
-    /// A read refused for the moment: when to ask again, and how many such refusals ran.
-    retry: Option<(Instant, u32)>,
-    /// The refusal said in the tab's message, and the notice for the tab to take.
+    /// A read refused for the moment, to ask again after a delay.
+    retry: Option<Retry>,
+    /// The refusal said in the tab's message, and the revision it was said of (a refusal
+    /// is said once a revision, not at every retry), and the notice for the tab to take.
     said: Option<String>,
+    said_for: Option<Revision>,
     notice: Option<Notice>,
     /// A held mesh an answer gave none of wasn't found: the next read holds none.
     hold_none: bool,
@@ -190,6 +203,7 @@ impl Default for View {
             refused: None,
             retry: None,
             said: None,
+            said_for: None,
             notice: None,
             hold_none: false,
             reads: 0,
@@ -352,6 +366,7 @@ impl View {
                 self.placed = true;
                 self.refused = None;
                 self.retry = None;
+                self.said_for = None;
                 if let Some(said) = self.said.take() {
                     self.notice = Some(Notice::Answered(said));
                 }
@@ -381,14 +396,28 @@ impl View {
                     crate::tab::said(&problems)
                 );
                 tracing::warn!(revision = asked.revision.number(), "{said}");
+                let revision = asked.revision;
                 if of_the_request(&problems) {
+                    self.retry = None;
                     self.refused = Some(asked);
                 } else {
-                    let tries = self.retry.map_or(0, |(_, tries)| tries);
-                    self.retry = Some((now + retry_after(tries), tries.saturating_add(1)));
+                    // The delay grows with each refusal of the same read in a row.
+                    let tries = self
+                        .retry
+                        .as_ref()
+                        .filter(|retry| retry.asked == asked)
+                        .map_or(0, |retry| retry.tries);
+                    self.retry = Some(Retry {
+                        asked,
+                        at: now + retry_after(tries),
+                        tries: tries.saturating_add(1),
+                    });
                 }
-                self.said = Some(said.clone());
-                self.notice = Some(Notice::Refused(said));
+                if self.said_for != Some(revision) {
+                    self.said_for = Some(revision);
+                    self.said = Some(said.clone());
+                    self.notice = Some(Notice::Refused(said));
+                }
             }
         }
     }
@@ -433,6 +462,7 @@ impl View {
                     deflection: body.deflection,
                     bounds: body.bounds,
                     serves: body.serves,
+                    held: body.held,
                     mesh,
                     faces: body.faces,
                     edges: body.edges,
@@ -441,11 +471,19 @@ impl View {
         }
         self.bodies = table;
         self.generation = self.generation.wrapping_add(1);
+        // A view zoomed in before these bodies came (or as close as smaller ones allowed)
+        // raised to the least they allow, so every control can move it on.
+        self.camera = navigate::clamped(self.camera.clone(), self.boxes());
+    }
+
+    /// Every body's box.
+    fn boxes(&self) -> impl Iterator<Item = [[f64; 3]; 2]> + '_ {
+        self.bodies.values().filter_map(|body| body.bounds)
     }
 
     /// The read to start at `now`, if one is wanted (section 3, *When the app reads*): none
-    /// while one is in flight, nothing is published, or a read refused for the moment
-    /// waits to be asked again; else one when the published revision isn't the one the
+    /// while one is in flight, nothing is published, or this very read, refused for the
+    /// moment, waits to be asked again (another revision or view is read at once); else one when the published revision isn't the one the
     /// bodies were read from, or when the view has `settled` with a body's half pixel
     /// outside its `serves`. Never the read last answered again, nor one refused for what
     /// it asked; after such a refusal of this revision, only once the view has settled.
@@ -464,7 +502,10 @@ impl View {
             camera: self.camera.clone(),
             size,
         };
-        if self.retry.is_some_and(|(at, _)| now < at) {
+        if let Some(retry) = &self.retry
+            && retry.asked == asked
+            && now < retry.at
+        {
             return None;
         }
         if let Some(refused) = &self.refused
@@ -479,6 +520,14 @@ impl View {
         let stale = self.model != Some(asked.revision);
         let outside = settled && outside_serves(&self.camera, size[1], self.bodies.values());
         (stale || outside).then_some(asked)
+    }
+
+    /// How long until a read refused for the moment may be asked again, if one waits: none
+    /// once it's due, whether or not a read is then wanted (a frame asked at once for a due
+    /// retry no read is wanted for would come at the display's rate for ever).
+    fn wake_in(&self, now: Instant) -> Option<Duration> {
+        let at = self.retry.as_ref()?.at;
+        (now < at).then(|| at - now)
     }
 
     /// The request for the read `asked`: of Home's view until the camera is placed, else
@@ -522,20 +571,42 @@ impl View {
         });
     }
 
-    /// The camera moved to `camera`, if a control made one a renderer draws the bodies
-    /// with (`navigate::drawable`).
-    fn moved(&mut self, camera: Option<Camera>) {
-        if let Some(camera) = camera
-            && navigate::drawable(&camera, self.bodies.values().filter_map(|body| body.bounds))
-        {
-            self.camera = camera;
-            self.placed = true;
+    /// The camera moved to `camera`, if a control made one, its view raised to the least the
+    /// bodies allow if it's under it (`navigate::clamped`). Whether it was taken.
+    fn moved(&mut self, camera: Option<Camera>) -> bool {
+        let Some(camera) = camera else {
+            return false;
+        };
+        self.camera = navigate::clamped(camera, self.boxes());
+        self.placed = true;
+        true
+    }
+
+    /// Zooms by `scroll` points toward `cursor`, in a view `height` points high: an
+    /// orthographic zoom in stops at the least view the bodies allow, the point under the
+    /// cursor kept.
+    fn zoom(&mut self, scroll: f64, cursor: [f64; 2], height: f64) {
+        let mut scroll = scroll;
+        if let Projection::Orthographic { view_height } = self.camera.projection {
+            let least = silico_core::views::least_view_height(silico_core::views::reach(
+                self.camera.target,
+                self.boxes(),
+            ));
+            // The most it may zoom in: to the least, at 200 points an octave.
+            let most = -navigate::ZOOM_POINTS_PER_OCTAVE * libm::log2(least / view_height);
+            if scroll > 0.0 && least > 0.0 {
+                scroll = scroll.min(most.max(0.0));
+            }
+        }
+        if scroll != 0.0 {
+            let camera = navigate::zoom(&self.camera, scroll, cursor, height);
+            self.moved(camera);
         }
     }
 
     /// Every box the tab holds, joined.
     fn bounds(&self) -> Option<[[f64; 3]; 2]> {
-        silico_core::views::joined(self.bodies.values().filter_map(|body| body.bounds))
+        silico_core::views::joined(self.boxes())
     }
 
     /// The named view `view` of the bodies' boxes (a cube's, with none), in the view's
@@ -558,10 +629,9 @@ impl View {
     /// The view made perspective, or orthographic.
     fn project(&mut self, perspective: bool) {
         let camera = navigate::projected(&self.camera, perspective);
-        if camera.is_some() {
+        if self.moved(camera) {
             self.perspective = perspective;
         }
-        self.moved(camera);
     }
 
     /// A drag of `delta` points, in a view `height` points high, as `navigation` takes it.
@@ -571,7 +641,10 @@ impl View {
             Navigation::Orbit => navigate::orbit(&self.camera, dx, dy),
             Navigation::Pan => navigate::pan(&self.camera, dx, dy, height),
             // A drag up zooms in, about the view's centre.
-            Navigation::Zoom => navigate::zoom(&self.camera, -dy, [0.0, 0.0], height),
+            Navigation::Zoom => {
+                self.zoom(-dy, [0.0, 0.0], height);
+                return;
+            }
         };
         self.moved(camera);
     }
@@ -661,13 +734,11 @@ impl View {
                 && let Some(pointer) = latest
             {
                 let cursor = pointer - rect.center();
-                let camera = navigate::zoom(
-                    &self.camera,
+                self.zoom(
                     f64::from(scroll),
                     [f64::from(cursor.x), f64::from(cursor.y)],
                     height,
                 );
-                self.moved(camera);
             }
         }
         let f6 = ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F6));
@@ -677,9 +748,9 @@ impl View {
     }
 }
 
-/// A pick asked: of the tab's session and its bodies table's generation, its rectangle,
-/// and the frame (the drawing's count) it was asked in.
-type PickAsked = (SessionId, u64, PixelRect, u64);
+/// A pick asked: of the tab's session and its bodies table's generation, in the frame
+/// numbered (the drawing's count) as its answer gives back.
+type PickAsked = (SessionId, u64, u64);
 
 /// What the renderer holds, for the tab shown: each body by number, with the session, the
 /// key, and the deflection its mesh was uploaded for; each body whose upload it refused, as
@@ -691,6 +762,8 @@ pub struct Drawing {
     refused: BTreeMap<u32, (SessionId, Key, u64)>,
     picks: VecDeque<PickAsked>,
     frames: u64,
+    /// What says the time: the system's, or a test's.
+    clock: Option<silico_core::disk::Clock>,
 }
 
 impl Drawing {
@@ -700,6 +773,20 @@ impl Drawing {
             present: Some(present),
             ..Drawing::default()
         }
+    }
+
+    /// Frames drawn through `present`, `clock` saying the time (a test's, to move it by hand).
+    pub fn clocked(present: Box<dyn Present>, clock: silico_core::disk::Clock) -> Self {
+        Drawing {
+            clock: Some(clock),
+            ..Drawing::new(present)
+        }
+    }
+
+    fn now(&self) -> Instant {
+        self.clock
+            .as_ref()
+            .map_or_else(Instant::now, |clock| clock())
     }
 
     /// Whether body `number` is held by the renderer, to be drawn.
@@ -761,10 +848,11 @@ impl Drawing {
         changes
     }
 
-    /// A pick asked in this frame, of session `session`'s bodies table `generation`.
-    fn asked(&mut self, session: SessionId, generation: u64, rect: PixelRect) {
-        self.picks
-            .push_back((session, generation, rect, self.frames));
+    /// A pick asked in the frame about to be presented, of session `session`'s bodies table
+    /// `generation`: the frame's number, which its answer gives back.
+    fn asked(&mut self, session: SessionId, generation: u64) -> u64 {
+        self.picks.push_back((session, generation, self.frames));
+        self.frames
     }
 
     /// Whether a pick waits for its answer: the pane asks for frames until it comes.
@@ -772,19 +860,20 @@ impl Drawing {
         !self.picks.is_empty()
     }
 
-    /// The renderer's newest picking answer, and what it was asked of: the newest pick asked
-    /// of its rectangle, those before it dropped. None for an answer to no pick waiting.
-    /// Picks waiting past [`PICK_FRAMES`] are let go.
+    /// The renderer's newest picking answer, and what it was asked of: the pick of the frame
+    /// it names, exactly (answers come two frames late, so the newest pick of its rectangle
+    /// may be another table's); those before it dropped. None for an answer to no pick
+    /// waiting. A pick waits [`PICK_FRAMES`] frames after its own, and is let go after.
     fn answered(&mut self) -> Option<(Picking, SessionId, u64)> {
         let frames = self.frames;
         self.picks
-            .retain(|(_, _, _, asked)| frames.saturating_sub(*asked) <= PICK_FRAMES);
+            .retain(|(_, _, asked)| frames.saturating_sub(*asked) <= PICK_FRAMES);
         let picking = self.present.as_mut().and_then(|present| present.picked())?;
         let at = self
             .picks
             .iter()
-            .rposition(|(_, _, rect, _)| *rect == picking.rect)?;
-        let (session, generation, _, _) = self.picks.drain(..=at).next_back()?;
+            .position(|(_, _, serial)| *serial == picking.frame)?;
+        let (session, generation, _) = self.picks.drain(..=at).next_back()?;
         Some((picking, session, generation))
     }
 
@@ -827,7 +916,7 @@ pub fn show<P: Clients + 'static>(
         drawing.present(ui.painter(), rect, changes, None);
         return;
     };
-    let now = Instant::now();
+    let now = drawing.now();
     let hidden: BTreeSet<&FeatureId> = tab
         .browser
         .bodies
@@ -865,11 +954,10 @@ pub fn show<P: Clients + 'static>(
         view.start(sessions, &tab.id, asked);
     }
     if view.reading.is_none()
-        && let Some((at, _)) = view.retry
+        && let Some(wait) = view.wake_in(now)
     {
-        // A frame when the read refused for the moment may be asked again.
-        ui.ctx()
-            .request_repaint_after(at.saturating_duration_since(now));
+        // A frame when the read refused for the moment may be asked again; none once due.
+        ui.ctx().request_repaint_after(wait);
     }
     view.last = Some((view.camera.clone(), size));
     let changes = drawing.changes(Some(tab.id), &view.bodies);
@@ -906,10 +994,12 @@ pub fn show<P: Clients + 'static>(
         })
         .collect();
     let picking = view.picking.take();
-    if let Some(asked) = picking {
-        drawing.asked(tab.id, view.generation, asked);
-    }
+    let serial = match picking {
+        Some(_) => drawing.asked(tab.id, view.generation),
+        None => drawing.frames,
+    };
     let frame = FrameData {
+        serial,
         camera: view.camera.clone(),
         size_px,
         pixels_per_point: ppp,
@@ -1135,7 +1225,6 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
 #[cfg(test)]
 mod tests {
     use super::*;
-    use silico_protocol::Projection;
 
     /// From −y onto (20, 10, 5), `view_height` high.
     fn front(view_height: f64) -> Camera {
@@ -1159,6 +1248,7 @@ mod tests {
             deflection: level,
             bounds,
             serves,
+            held: false,
             mesh: Arc::new(Mesh {
                 positions: Vec::new(),
                 normals: Vec::new(),
@@ -1561,6 +1651,8 @@ mod tests {
         assert!(view.request(&request).held.is_empty());
         let again = view.request(&request);
         assert_eq!(again.held.len(), 1);
+        assert_eq!(again.held[0].key, view.bodies[&1].key);
+        assert_eq!(again.held[0].key, key(1));
         assert_eq!(again.held[0].deflection, 0.03125);
         // Placed: of the camera, not Home's view.
         assert_eq!((again.view, again.camera.is_some()), (None, true));
@@ -1582,43 +1674,169 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_picking_answer_is_matched_to_the_newest_pick_of_its_rectangle_and_let_go_after_eight_frames()
-     {
-        let s1 = SessionId::parse("s1").unwrap();
-        let rect = |x: i32| PixelRect {
-            min: [x, 0],
-            size: [3, 3],
-        };
-        let answer = |x: i32| Picking {
-            frame: 0,
-            rect: rect(x),
-            hit: None,
-        };
-        let mut drawing = Drawing::new(Box::new(Answering(
-            [answer(2), answer(9), answer(5)].into_iter().collect(),
-        )));
-        drawing.asked(s1, 1, rect(1));
-        drawing.asked(s1, 2, rect(2));
-        drawing.asked(s1, 3, rect(3));
-        // Rectangle 2's answer: asked of generation 2; rectangle 1's pick, older, dropped.
-        assert_eq!(drawing.answered(), Some((answer(2), s1, 2)));
-        assert_eq!(drawing.picks.len(), 1);
-        // An answer to no pick waiting: none.
-        assert_eq!(drawing.answered(), None);
-        assert!(drawing.picking());
-        // Rectangle 3's pick, waiting past eight frames, let go: rectangle 5's answer, for
-        // no pick, is none; and no frame is asked for any more.
-        let painter = egui::Painter::new(
+    fn painter() -> egui::Painter {
+        egui::Painter::new(
             egui::Context::default(),
             egui::LayerId::background(),
             Rect::EVERYTHING,
-        );
-        for _ in 0..9 {
-            drawing.present(&painter, Rect::EVERYTHING, Vec::new(), None);
+        )
+    }
+
+    fn answer(frame: u64) -> Picking {
+        Picking {
+            frame,
+            rect: PixelRect {
+                min: [4, 4],
+                size: [3, 3],
+            },
+            hit: None,
         }
-        assert_eq!(drawing.answered(), None);
+    }
+
+    #[test]
+    fn a_picking_answer_is_matched_to_the_frame_it_names_not_the_newest_pick_of_its_rectangle() {
+        // One rectangle asked in frame 0 of table 1, and again in frame 1 of table 2 (the
+        // bodies read again between): frame 0's answer, two frames late, is table 1's, though
+        // the newest pick of its rectangle is table 2's. Then frame 1's answer, table 2's.
+        let s1 = SessionId::parse("s1").unwrap();
+        let mut drawing = Drawing::new(Box::new(Answering(
+            [answer(0), answer(1)].into_iter().collect(),
+        )));
+        assert_eq!(drawing.asked(s1, 1), 0);
+        drawing.present(&painter(), Rect::EVERYTHING, Vec::new(), None);
+        assert_eq!(drawing.asked(s1, 2), 1);
+        drawing.present(&painter(), Rect::EVERYTHING, Vec::new(), None);
+        assert_eq!(drawing.answered(), Some((answer(0), s1, 1)));
+        assert_eq!(drawing.answered(), Some((answer(1), s1, 2)));
         assert!(!drawing.picking());
+    }
+
+    #[test]
+    fn a_pick_waits_eight_frames_after_its_own_for_its_answer_and_no_more() {
+        let s1 = SessionId::parse("s1").unwrap();
+        for (frames, kept) in [(8, true), (9, false)] {
+            let mut drawing = Drawing::new(Box::new(Answering([answer(0)].into_iter().collect())));
+            assert_eq!(drawing.asked(s1, 1), 0);
+            for _ in 0..frames {
+                drawing.present(&painter(), Rect::EVERYTHING, Vec::new(), None);
+            }
+            assert_eq!(drawing.answered().is_some(), kept, "{frames} frames");
+            assert!(!drawing.picking());
+        }
+    }
+
+    #[test]
+    fn a_due_retry_no_read_is_wanted_for_asks_for_no_more_frames() {
+        // Refused for the moment at t: a frame is asked for in 250 ms, and none at t + 250
+        // ms once the view is back where the last answer was (no read wanted).
+        let at = now();
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        let settled = asked(&view, 3);
+        view.answered = Some(settled);
+        view.camera = front(40.0);
+        let request = asked(&view, 3);
+        view.took(request, false, refusal(ErrorCode::WorkerCrashed, None), at);
+        assert_eq!(view.wake_in(at), Some(Duration::from_millis(250)));
+        assert_eq!(
+            view.wake_in(at + Duration::from_millis(100)),
+            Some(Duration::from_millis(150))
+        );
+        view.camera = front(80.0);
+        let due = at + Duration::from_millis(250);
+        assert_eq!(view.wanted(revision(3), [1000, 1000], true, due), None);
+        assert_eq!(view.wake_in(due), None);
+        assert_eq!(view.wake_in(due + Duration::from_secs(1)), None);
+        // A refusal of what was asked lets the retry go.
+        view.camera = front(40.0);
+        let request = asked(&view, 3);
+        view.took(request, false, refusal(ErrorCode::WorkerCrashed, None), due);
+        assert!(view.retry.is_some());
+        let request = asked(&view, 3);
+        view.took(
+            request,
+            false,
+            refusal(ErrorCode::InvalidInput, Some("camera.eye")),
+            due,
+        );
+        assert!(view.retry.is_none());
+    }
+
+    #[test]
+    fn a_backoff_holds_back_only_its_own_read_never_a_new_revision_or_view() {
+        // Seven refusals in a row: the next asked in 8 s. A new revision, or the view moved
+        // and settled, is read a millisecond later.
+        let at = now();
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        for _ in 0..7 {
+            let request = asked(&view, 4);
+            view.took(request, false, refusal(ErrorCode::WorkerTimeout, None), at);
+        }
+        assert_eq!(view.wake_in(at), Some(Duration::from_secs(8)));
+        let soon = at + Duration::from_millis(1);
+        assert_eq!(view.wanted(revision(4), [1000, 1000], true, soon), None);
+        assert!(
+            view.wanted(revision(5), [1000, 1000], false, soon)
+                .is_some()
+        );
+        view.camera = front(40.0);
+        assert!(view.wanted(revision(4), [1000, 1000], true, soon).is_some());
+        // Back to the read refused: held back again, its count kept.
+        view.camera = front(80.0);
+        assert_eq!(view.wanted(revision(4), [1000, 1000], true, soon), None);
+    }
+
+    #[test]
+    fn a_refusal_is_said_once_a_revision_not_at_every_retry() {
+        let at = now();
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        let request = asked(&view, 4);
+        view.took(request, false, refusal(ErrorCode::Internal, None), at);
+        assert!(matches!(view.notice.take(), Some(Notice::Refused(_))));
+        for _ in 0..5 {
+            let request = asked(&view, 4);
+            view.took(request, false, refusal(ErrorCode::Internal, None), at);
+            assert!(view.notice.is_none());
+        }
+        // The next revision's refusal is said.
+        let request = asked(&view, 5);
+        view.took(request, false, refusal(ErrorCode::Internal, None), at);
+        assert!(matches!(view.notice.take(), Some(Notice::Refused(_))));
+    }
+
+    #[test]
+    fn a_view_under_the_least_a_new_table_allows_is_raised_to_it() {
+        // Zoomed to 1e-5 mm onto (20, 10, 5) before any body came: the cut's box (0, 0, −1)
+        // to (40, 20, 11) reaches √(20² + 10² + 6²) = 23.152 mm from there, so the least is
+        // 23.152 · 1e-5 · 1.01 = 2.3384e-4 mm, which the view is raised to.
+        let mut view = View::default();
+        view.set_camera(front(1e-5));
+        view.take_bodies(vec![meshed(
+            1,
+            1,
+            0.03125,
+            Some(Arc::clone(&body(0.03125, [0.03125, 0.0625], CUT).mesh)),
+        )]);
+        let least = 536f64.sqrt() * 1e-5 * 1.01;
+        let Projection::Orthographic { view_height } = view.camera.projection else {
+            panic!("orthographic")
+        };
+        assert!((view_height - least).abs() < 1e-18, "{view_height}");
+        // From there, a zoom in stays, wherever the cursor is: the point under it, and so
+        // the target, unmoved; out, it doubles.
+        let target = view.camera.target;
+        view.zoom(200.0, [100.0, -50.0], 400.0);
+        assert_eq!(
+            view.camera.projection,
+            Projection::Orthographic { view_height }
+        );
+        assert_eq!(view.camera.target, target);
+        view.zoom(-200.0, [0.0, 0.0], 400.0);
+        assert_eq!(
+            view.camera.projection,
+            Projection::Orthographic {
+                view_height: view_height * 2.0
+            }
+        );
     }
 
     #[test]
@@ -1632,5 +1850,39 @@ mod tests {
         assert!(held.has(Element::Face(1)) && held.has(Element::Face(2)));
         assert!(!held.has(Element::Face(0)) && !held.has(Element::Face(3)));
         assert!(held.has(Element::Edge(3)) && !held.has(Element::Edge(4)));
+    }
+
+    #[test]
+    fn every_camera_a_control_makes_is_raised_to_the_least_its_target_allows() {
+        // A view 1e-6 mm high, its target 1,000 mm from the cut: the box's farthest corner
+        // from (1020, 10, 5) is (0, 0, −1)'s, √(1020² + 10² + 6²) away.
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        let far = Camera {
+            projection: Projection::Orthographic { view_height: 1e-6 },
+            eye: [1020.0, -100.0, 5.0],
+            target: [1020.0, 10.0, 5.0],
+            up: [0.0, 0.0, 1.0],
+        };
+        assert!(view.moved(Some(far)));
+        let least = (1020.0f64 * 1020.0 + 100.0 + 36.0).sqrt() * 1e-5 * 1.01;
+        let Projection::Orthographic { view_height } = view.camera.projection else {
+            panic!("orthographic")
+        };
+        assert!((view_height - least).abs() < 1e-15, "{view_height}");
+        assert!(!view.moved(None));
+    }
+
+    #[test]
+    fn a_projection_the_camera_cant_take_isnt_the_views() {
+        // 1e12 mm high: in perspective at 30° its eye would be 1.87e12 mm back, past what a
+        // camera may be, so the view stays orthographic.
+        let mut view = view_with(&[], 3);
+        view.camera = front(1e12);
+        view.project(true);
+        assert!(!view.perspective);
+        assert_eq!(view.camera, front(1e12));
+        view.camera = front(80.0);
+        view.project(true);
+        assert!(view.perspective);
     }
 }

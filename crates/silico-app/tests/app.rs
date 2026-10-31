@@ -6534,7 +6534,8 @@ struct Told {
     forgets: Vec<u32>,
     frames: Vec<silico_app::renderer::FrameData>,
     pick: Option<silico_app::renderer::Pick>,
-    picking: Option<silico_app::renderer::PixelRect>,
+    /// The pick asked, and the number of the frame that asked it.
+    picking: Option<(u64, silico_app::renderer::PixelRect)>,
 }
 
 type Record = Arc<Mutex<Told>>;
@@ -6564,9 +6565,9 @@ impl silico_app::renderer::ViewRenderer for FakeRenderer {
     fn composite(&self, _: &mut eframe::wgpu::RenderPass<'_>) {}
     fn take_picking(&mut self) -> Option<silico_app::renderer::Picking> {
         let mut told = self.0.lock().unwrap();
-        let rect = told.picking.take()?;
+        let (frame, rect) = told.picking.take()?;
         Some(silico_app::renderer::Picking {
-            frame: 1,
+            frame,
             rect,
             hit: told.pick,
         })
@@ -6591,7 +6592,7 @@ impl silico_app::renderer::Present for Recorder {
             // The renderer takes bodies ascending, each once.
             assert!(frame.bodies.windows(2).all(|pair| pair[0] < pair[1]));
             if let Some(rect) = frame.picking {
-                told.picking = Some(rect);
+                told.picking = Some((frame.serial, rect));
             }
             told.frames.push(frame);
         }
@@ -6828,6 +6829,10 @@ fn a_zoom_past_serves_reads_again_listing_what_is_held_and_uploads_only_the_body
     assert_eq!(view(&h).reads(), 3);
     assert_eq!(at(&h, 1), (0.015625, 0.015625, [0.015625, 0.03125]));
     assert_eq!(at(&h, 2).1, deflection);
+    // The read held both: the large cube was answered held (the key and deflection the tab
+    // sent were its own), the small one, at a new level, with arrays.
+    assert!(view(&h).bodies()[&2].held);
+    assert!(!view(&h).bodies()[&1].held);
     assert_eq!(tessellated(&f), made + 1);
     assert_eq!(uploads(&record)[told..], [1]);
     assert_eq!(never_waits::waits(), 0);
@@ -6900,8 +6905,11 @@ fn an_edits_new_revision_reads_again_and_a_body_gone_is_forgotten() {
     let after = keys(&h);
     assert_ne!(after[0], before[0]);
     assert_eq!(after[1], before[1]);
-    // Only the small cube meshed: the large one was held, at its key and deflection.
+    // Only the small cube meshed: the large one was held, at its key and deflection, and
+    // answered so.
     assert_eq!(tessellated(&f), made + 1);
+    assert!(view(&h).bodies()[&2].held);
+    assert!(!view(&h).bodies()[&1].held);
     assert_eq!(uploads(&record), [1, 2, 1]);
     assert!(record.lock().unwrap().forgets.is_empty());
     // The large cube removed: body 2 forgotten, nothing uploaded.
@@ -7018,18 +7026,19 @@ fn each_frame_gives_the_camera_its_size_scale_pointer_highlights_and_picking_a_f
     assert!(!view_mut(&mut h).pick(wide));
     assert!(view_mut(&mut h).pick(rect_px));
     step(&mut h);
-    {
+    let serial = {
         let told = record.lock().unwrap();
         let last = told.frames.last().unwrap();
         assert_eq!(last.highlights, [face, edge]);
         assert_eq!(last.picking, Some(rect_px));
-    }
+        last.serial
+    };
     assert_eq!(view(&h).picked(), None);
     step(&mut h);
     assert_eq!(
         view(&h).picked(),
         Some(silico_app::renderer::Picking {
-            frame: 1,
+            frame: serial,
             rect: rect_px,
             hit: Some(pick)
         })

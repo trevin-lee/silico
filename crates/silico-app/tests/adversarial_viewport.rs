@@ -504,33 +504,89 @@ fn a_view_at_the_edges_of_serves_reads_once_and_then_never_over_a_hundred_frames
     assert_eq!(never_waits::waits(), 0);
 }
 
-#[test]
-fn a_read_refused_while_the_kernel_fails_is_asked_again_once_it_mends() {
-    // The kernel refuses to mesh while `failing`: the zoomed read is refused. Once it
-    // mends, the view, unmoved, is read again of its own accord, and the small cube shown
-    // at its level.
-    // BREAKS (fixed): a refused read was asked again only when the revision changed or the
-    // view moved, so a passing fault left the view coarse until the person moved it.
-    let f = fixture();
+/// A clock moved by hand, and what reads it.
+fn hand_clock() -> (Arc<Mutex<Instant>>, silico_core::disk::Clock) {
+    let time = Arc::new(Mutex::new(Instant::now()));
+    let read = Arc::clone(&time);
+    (time, Arc::new(move || *read.lock().unwrap()))
+}
+
+fn advance(time: &Mutex<Instant>, by: Duration) {
+    let mut now = time.lock().unwrap();
+    *now += by;
+}
+
+/// The frame the last one asked for, in time.
+fn repaint_delay(h: &AppHarness) -> Option<Duration> {
+    h.output()
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .map(|viewport| viewport.repaint_delay)
+}
+
+impl Fixture {
+    /// [`Fixture::drawn`], its viewport's time `clock`'s.
+    fn drawn_clocked(
+        &self,
+        name: &str,
+        text: &str,
+        clock: silico_core::disk::Clock,
+    ) -> (AppHarness, Record) {
+        let record = Record::default();
+        let app = App::new(Arc::clone(&self.sessions))
+            .presenting_clocked(Box::new(Recorder(FakeRenderer(Arc::clone(&record)))), clock);
+        // A sixtieth of a second a frame: egui asks for a frame at once for any delay
+        // shorter than a frame, which kittest's default quarter second would hide.
+        let mut h = {
+            let _marked = never_waits::marked();
+            Harness::builder()
+                .with_size((1280.0, 800.0))
+                .with_step_dt(1.0 / 60.0)
+                .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+        };
+        let path = self.file(name, text);
+        h.state_mut().open(&path, false);
+        (h, record)
+    }
+}
+
+/// The kernel refusing to mesh while the flag is set.
+fn failing_kernel(f: &Fixture) -> Arc<AtomicBool> {
     let failing = Arc::new(AtomicBool::new(false));
     let refusing = Arc::clone(&failing);
     f.kernel.refuse(move |op| {
         (matches!(op, Op::Tessellate { .. }) && refusing.load(Ordering::SeqCst))
             .then(|| Error::new(ErrorCode::WorkerCrashed, "the worker crashed meshing"))
     });
-    let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
-    meshes_settled(&mut h, 0);
-    let height = f64::from(view(&h).frame().unwrap().size_px[1]);
-    failing.store(true, Ordering::SeqCst);
-    let reads = view(&h).reads();
-    view_mut(&mut h).set_camera(Camera {
+    failing
+}
+
+/// The small cube from the front at a half pixel of 0.04 mm.
+fn the_small_cube_at_0_04(h: &AppHarness) -> Camera {
+    let height = f64::from(view(h).frame().unwrap().size_px[1]);
+    Camera {
         projection: Projection::Orthographic {
             view_height: 0.08 * height,
         },
         eye: [25.0, -500.0, 25.0],
         target: [25.0, 25.0, 25.0],
         up: [0.0, 0.0, 1.0],
-    });
+    }
+}
+
+#[test]
+fn a_read_refused_while_the_kernel_fails_is_asked_again_on_its_backoff_and_a_new_revision_at_once()
+{
+    // The time the viewport waits by is the test's: frozen, then moved by hand.
+    let f = fixture();
+    let failing = failing_kernel(&f);
+    let (time, clock) = hand_clock();
+    let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
+    meshes_settled(&mut h, 0);
+    failing.store(true, Ordering::SeqCst);
+    let reads = view(&h).reads();
+    let zoomed = the_small_cube_at_0_04(&h);
+    view_mut(&mut h).set_camera(zoomed);
     step_until(&mut h, "the refused read", |h| {
         view(h).reads() > reads && !view(h).reading()
     });
@@ -540,18 +596,92 @@ fn a_read_refused_while_the_kernel_fails_is_asked_again_once_it_mends() {
         message.starts_with("The view's meshes couldn't be read: the worker crashed meshing"),
         "{message}"
     );
-    // Refused again and again over a hundred frames: not a read each frame, but after a
-    // quarter of a second, then a half, and so on.
-    assert!(reads_over(&mut h, 100) <= 2);
+    // Settled: a frame is asked for in exactly 250 ms, and none is read meanwhile however
+    // many frames come.
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    // About 250 ms: egui takes a frame off what's asked.
+    let about = |h: &AppHarness, wait: u64| {
+        repaint_delay(h).is_some_and(|delay| {
+            delay <= Duration::from_millis(wait) && delay > Duration::from_millis(wait - 20)
+        })
+    };
+    assert!(about(&h, 250), "{:?}", repaint_delay(&h));
+    assert_eq!(reads_over(&mut h, 100), 0);
+    // A millisecond short: still none (egui asks for a frame at once for a wait shorter
+    // than a frame, so the delay isn't asserted here).
+    advance(&time, Duration::from_millis(249));
+    assert_eq!(reads_over(&mut h, 10), 0);
+    // Due: read once, refused again, and the next in 500 ms.
+    advance(&time, Duration::from_millis(1));
+    assert_eq!(reads_over(&mut h, 10), 1);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(about(&h, 500), "{:?}", repaint_delay(&h));
+    // Said once for the revision: the message is the same one, not said again.
+    h.state_mut().tabs_mut()[0].message = None;
+    advance(&time, Duration::from_millis(500));
+    assert_eq!(reads_over(&mut h, 10), 1);
+    assert_eq!(h.state().tabs()[0].message, None);
+    // A new revision during the backoff (the next is a second away): read at once, the
+    // time not moved, and the kernel mended.
     failing.store(false, Ordering::SeqCst);
-    step_until(&mut h, "the read asked again", |h| {
+    let id = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&id).session.unwrap().revision;
+    f.sessions
+        .set_field(
+            &id,
+            revision,
+            FeatureId::new("k7f2qx3m").unwrap(),
+            "height".to_owned(),
+            json::read(b"60").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new revision read", |h| {
         view(h)
             .bodies()
             .get(&1)
-            .is_some_and(|body| body.level == 0.03125)
+            .is_some_and(|body| body.level == 0.03125 && body.bounds.unwrap()[1][2] == 60.0)
     });
-    // Answered: the refusal it said is gone.
     assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_due_retry_with_no_read_wanted_asks_for_no_frame_at_the_displays_rate() {
+    // Refused, then the view set back where the last answer was: when the retry falls due,
+    // no read is wanted, and the frame asked for is the idle one, never one at once.
+    let f = fixture();
+    let failing = failing_kernel(&f);
+    let (time, clock) = hand_clock();
+    let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
+    meshes_settled(&mut h, 0);
+    let settled = view(&h).camera().clone();
+    failing.store(true, Ordering::SeqCst);
+    let reads = view(&h).reads();
+    let zoomed = the_small_cube_at_0_04(&h);
+    view_mut(&mut h).set_camera(zoomed);
+    step_until(&mut h, "the refused read", |h| {
+        view(h).reads() > reads && !view(h).reading()
+    });
+    view_mut(&mut h).set_camera(settled);
+    advance(&time, Duration::from_millis(300));
+    // The first frame sees the view move and asks for the next; egui repaints once more
+    // after a frame asked at once; the third is the first of the idle ones.
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let idle = |delay: Option<Duration>| delay.is_some_and(|delay| delay > Duration::from_secs(1));
+    assert!(idle(repaint_delay(&h)), "{:?}", repaint_delay(&h));
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(idle(repaint_delay(&h)), "{:?}", repaint_delay(&h));
+    }
+    assert_eq!(view(&h).reads(), reads + 1);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -875,24 +1005,41 @@ fn a_view_cube_drag_held_still_isnt_a_settled_view() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// A present whose picking answers wait until let go, so a test can choose the frame the
-/// answer comes in.
-struct HeldPicks(Arc<Mutex<(Option<Picking>, bool)>>);
+/// A present whose picking answers come two frames after the frame that asked, as through
+/// egui_wgpu's paint callback: the GPU's answer is harvested in the next frame's prepare,
+/// and taken by the pane in the frame after.
+#[derive(Default)]
+struct Lagging {
+    presents: u64,
+    waiting: std::collections::VecDeque<(u64, Picking)>,
+}
 
-impl Present for HeldPicks {
+struct LaggingPicks(Arc<Mutex<Lagging>>);
+
+impl Present for LaggingPicks {
     fn present(&mut self, _: &egui::Painter, _: egui::Rect, _: Vec<Change>, f: Option<FrameData>) {
-        let mut held = self.0.lock().unwrap();
-        if let Some(rect) = f.and_then(|frame| frame.picking) {
-            held.0 = Some(Picking {
-                frame: 1,
-                rect,
-                hit: None,
-            });
+        let mut lag = self.0.lock().unwrap();
+        lag.presents += 1;
+        if let Some(frame) = f
+            && let Some(rect) = frame.picking
+        {
+            let due = lag.presents + 1;
+            lag.waiting.push_back((
+                due,
+                Picking {
+                    frame: frame.serial,
+                    rect,
+                    hit: None,
+                },
+            ));
         }
     }
     fn picked(&mut self) -> Option<Picking> {
-        let mut held = self.0.lock().unwrap();
-        if held.1 { held.0.take() } else { None }
+        let mut lag = self.0.lock().unwrap();
+        let due = lag.waiting.front()?.0;
+        (due <= lag.presents)
+            .then(|| lag.waiting.pop_front().map(|(_, picking)| picking))
+            .flatten()
     }
     fn refused(&mut self) -> std::collections::BTreeSet<u32> {
         std::collections::BTreeSet::new()
@@ -900,13 +1047,16 @@ impl Present for HeldPicks {
 }
 
 #[test]
-fn a_pick_answered_after_the_bodies_were_read_again_is_dropped() {
-    // The pick is asked of one bodies table; the read under way answers, and the table is
-    // made again, in the frame its answer comes: the answer may name bodies renumbered, so
-    // it isn't taken.
+fn a_pick_answered_two_frames_late_across_a_renumber_is_taken_only_by_its_own_table() {
+    // One rectangle picked in frame N, of one bodies table; the read under way answers in
+    // frame N + 1, making the table again, and the same rectangle is picked again then.
+    // Frame N's answer comes in N + 2: it's the old table's (the newest pick of its
+    // rectangle is the new table's, but it names frame N), so it's dropped; frame N + 1's,
+    // in N + 3, is taken.
     let f = fixture();
-    let held = Arc::new(Mutex::new((None, false)));
-    let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(HeldPicks(Arc::clone(&held))));
+    let lag = Arc::new(Mutex::new(Lagging::default()));
+    let app =
+        App::new(Arc::clone(&f.sessions)).presenting(Box::new(LaggingPicks(Arc::clone(&lag))));
     let mut h = {
         let _marked = never_waits::marked();
         Harness::builder()
@@ -933,23 +1083,23 @@ fn a_pick_answered_after_the_bodies_were_read_again_is_dropped() {
     };
     assert!(view_mut(&mut h).pick(rect_px));
     step(&mut h);
-    // The read's answer readied, and the pick's let go: one frame takes both, the table's
-    // first.
+    // The read's answer readied before frame N + 1.
     hold.release();
     assert!(f.kernel.wait_idle(WAIT));
     std::thread::sleep(Duration::from_millis(200));
-    held.lock().unwrap().1 = true;
-    step(&mut h);
-    assert!(!view(&h).reading(), "the read's answer came in that frame");
-    assert_eq!(view(&h).picked(), None);
-    assert!(held.lock().unwrap().0.is_none(), "the answer was given");
-    // A pick asked of the table now is taken.
-    held.lock().unwrap().1 = false;
     assert!(view_mut(&mut h).pick(rect_px));
     step(&mut h);
-    held.lock().unwrap().1 = true;
+    assert!(!view(&h).reading(), "the read's answer came in frame N + 1");
+    assert_eq!(view(&h).picked(), None);
+    step(&mut h);
+    assert_eq!(
+        view(&h).picked(),
+        None,
+        "frame N's answer is the old table's"
+    );
     step(&mut h);
     assert_eq!(view(&h).picked().map(|picking| picking.rect), Some(rect_px));
+    assert!(lag.lock().unwrap().waiting.is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1018,9 +1168,145 @@ fn zooming_in_without_end_stops_where_the_bodies_reach_from_the_target_allows() 
         });
         step(&mut h);
     }
+    // The wheel stops at the least itself (its target kept at the centre's point).
     let height = view_height(view(&h).camera());
-    // 80 halved down to the last that's at least 0.033118: 80 / 2¹¹ = 0.039.
-    assert!(height >= least && height / 2.0 < least, "{height}");
-    assert_eq!(height, 80.0 / 2048.0);
+    assert!((height - least).abs() < 1e-12, "{height} against {least}");
+    // And zooms out from there: twice as high.
+    h.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -200.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    assert!((view_height(view(&h).camera()) - 2.0 * height).abs() < 1e-12);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_view_zoomed_in_before_the_first_read_answers_is_raised_to_the_least_its_bodies_allow() {
+    // The first read held while the wheel zooms in fifty times at the centre: with no body
+    // yet, down to the camera's own least. When the cut comes, its box (0, 0, −1) to (40,
+    // 20, 11) reaches √(40² + 20² + 11²) = √2121 from the target, the origin, so the view
+    // is raised to √2121 · 1e-5 · 1.01 = 4.6514e-4 mm, and a wheel out doubles it.
+    let f = fixture();
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
+    step_until(&mut h, "the first read held", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.view.reading())
+    });
+    let centre = rect(&h).center();
+    for _ in 0..50 {
+        h.hover_at(centre);
+        h.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, 200.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+    }
+    assert!(view_height(view(&h).camera()) < 1e-5);
+    assert_eq!(view(&h).camera().target, [0.0; 3]);
+    hold.release();
+    meshes_settled(&mut h, 0);
+    let least = 2121f64.sqrt() * 1e-5 * 1.01;
+    let height = view_height(view(&h).camera());
+    assert!((height - least).abs() < 1e-15, "{height} against {least}");
+    h.hover_at(centre);
+    h.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -200.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    assert!((view_height(view(&h).camera()) - 2.0 * least).abs() < 1e-15);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() {
+    // At the least the small cube allows from (25, 25, 25), √(3 · 25²) · 1e-5 · 1.01; then
+    // another client moves the large cube a kilometre out, to (1e6, 0, 0): its far corner
+    // (1,001,000, 1000, 1000) is √(1,000,975² + 975² + 975²) from the target, and the view is
+    // raised to that reach's least; a pan, an orbit, and a wheel out all move it.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h, 0);
+    let id = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&id).session.unwrap().revision;
+    f.sessions
+        .set_field(
+            &id,
+            revision,
+            FeatureId::new("a91cw0de").unwrap(),
+            "position".to_owned(),
+            json::read(b"[-2000, 0, 0]").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    meshes_settled(&mut h, 0);
+    // Out of the way while zooming: (−2000, 0, 0) to (−1000, 1000, 1000) reaches
+    // √(2025² + 975² + 975²) from (25, 25, 25).
+    view_mut(&mut h).set_camera(Camera {
+        projection: Projection::Orthographic { view_height: 80.0 },
+        eye: [25.0, -500.0, 25.0],
+        target: [25.0; 3],
+        up: [0.0, 0.0, 1.0],
+    });
+    step(&mut h);
+    let centre = rect(&h).center();
+    for _ in 0..40 {
+        h.hover_at(centre);
+        h.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, 200.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+    }
+    let near = (2025.0f64 * 2025.0 + 2.0 * 975.0 * 975.0).sqrt() * 1e-5 * 1.01;
+    assert!((view_height(view(&h).camera()) - near).abs() < 1e-12);
+    meshes_settled(&mut h, 0);
+    let revision = f.sessions.status(&id).session.unwrap().revision;
+    f.sessions
+        .set_field(
+            &id,
+            revision,
+            FeatureId::new("a91cw0de").unwrap(),
+            "position".to_owned(),
+            json::read(b"[1000000, 0, 0]").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    let published = |h: &AppHarness| h.state().tabs()[0].published;
+    step_until(&mut h, "the move read", |h| {
+        view(h).model() == published(h) && view(h).bodies()[&2].bounds.unwrap()[0][0] == 1e6
+    });
+    let far = (1_000_975.0f64 * 1_000_975.0 + 2.0 * 975.0 * 975.0).sqrt() * 1e-5 * 1.01;
+    assert!((view_height(view(&h).camera()) - far).abs() < 1e-9);
+    let at = centre - vec2(100.0, 0.0);
+    h.hover_at(at);
+    button(&h, at, PointerButton::Middle, true);
+    h.hover_at(at + vec2(30.0, 0.0));
+    button(&h, at + vec2(30.0, 0.0), PointerButton::Middle, false);
+    step(&mut h);
+    assert_ne!(view(&h).camera().target, [25.0; 3], "panned");
+    h.hover_at(centre);
+    h.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -200.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    assert!(view_height(view(&h).camera()) > 1.9 * far);
     assert_eq!(never_waits::waits(), 0);
 }

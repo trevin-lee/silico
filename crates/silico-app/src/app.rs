@@ -149,6 +149,18 @@ impl<P: Clients + 'static> App<P> {
         self
     }
 
+    /// [`presenting`](Self::presenting), with `clock` saying the time the viewport waits on
+    /// (a refused read's retry): a test's, to move by hand.
+    #[must_use]
+    pub fn presenting_clocked(
+        mut self,
+        present: Box<dyn crate::renderer::Present>,
+        clock: silico_core::disk::Clock,
+    ) -> Self {
+        self.drawing = crate::viewport::Drawing::clocked(present, clock);
+        self
+    }
+
     /// The last refusal said that isn't a tab's (an open's).
     pub fn message(&self) -> Option<&str> {
         self.message.as_deref()

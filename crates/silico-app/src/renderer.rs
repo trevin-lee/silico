@@ -71,8 +71,8 @@ pub struct Pick {
     pub point: Option<[f64; 3]>,
 }
 
-/// A picking rectangle's answer: the renderer's number of the frame that asked it, the
-/// rectangle, and what was hit, or none for the background alone.
+/// A picking rectangle's answer: the number of the frame that asked it ([`Frame::serial`],
+/// given back), the rectangle, and what was hit, or none for the background alone.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Picking {
     pub frame: u64,
@@ -83,6 +83,9 @@ pub struct Picking {
 /// One frame of the viewport, as the renderer draws it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Frame<'a> {
+    /// The pane's number for the frame, which its picking answer gives back
+    /// ([`Picking::frame`]), so an answer two frames late is matched to the frame that asked.
+    pub serial: u64,
     /// The tab's camera, as the app holds it (decision 29), in `f64`.
     pub camera: &'a Camera,
     /// The viewport's size in physical pixels.
@@ -101,6 +104,7 @@ pub struct Frame<'a> {
 /// callback is prepared.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameData {
+    pub serial: u64,
     pub camera: Camera,
     pub size_px: [u32; 2],
     pub pixels_per_point: f32,
@@ -113,6 +117,7 @@ impl FrameData {
     /// The frame it holds.
     pub fn frame(&self) -> Frame<'_> {
         Frame {
+            serial: self.serial,
             camera: &self.camera,
             size_px: self.size_px,
             pixels_per_point: self.pixels_per_point,
@@ -493,6 +498,7 @@ mod tests {
 
     fn data(bodies: &[u32], highlights: &[(u32, Element)]) -> FrameData {
         FrameData {
+            serial: 0,
             camera: Camera {
                 projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
                 eye: [0.0, -100.0, 0.0],
