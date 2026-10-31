@@ -756,7 +756,7 @@ fn rolled_back_by_hand(p: &Prepared) -> FreecadEdited {
     let Plan::Run { job, .. } = &p.plan else {
         panic!("{:?}", p.plan);
     };
-    let FreecadEdit::Merge { coincidences } = &job.edit else {
+    let FreecadEdit::Merge { coincidences, .. } = &job.edit else {
         panic!("{:?}", job.edit);
     };
     let geometry = fc_geometry_of(&job.geometry);
@@ -786,6 +786,7 @@ fn rolled_back_by_hand(p: &Prepared) -> FreecadEdited {
         constraints,
         after: diagnosis(0, &[], &[], &[]),
         applied: Vec::new(),
+        placed: None,
     }
 }
 
@@ -836,7 +837,7 @@ fn freecads_merge_refuses_points_already_joined_and_a_worse_solve_and_nothing_el
     let Plan::Run { job, .. } = &p.plan else {
         panic!("{:?}", p.plan);
     };
-    let FreecadEdit::Merge { coincidences } = &job.edit else {
+    let FreecadEdit::Merge { coincidences, .. } = &job.edit else {
         panic!("{:?}", job.edit);
     };
     assert_eq!(coincidences, &[[0, 1, 1, 2]]);
@@ -1117,6 +1118,7 @@ fn as_modelled(p: &Prepared) -> FreecadEdited {
         constraints: Vec::new(),
         after: diagnosis(0, &[], &[], &[]),
         applied: Vec::new(),
+        placed: None,
     }
 }
 

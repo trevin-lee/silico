@@ -984,11 +984,12 @@ def geometry_now(s):
     return out
 
 
-def sketch_edit(doc, job):
+def built(doc, name, geometry, job):
+    """A sketch of `geometry` with the job's construction and constraints, as given."""
     import Sketcher
 
-    s = doc.addObject("Sketcher::SketchObject", "S")
-    for g, construction in zip(job["geometry"], job["construction"]):
+    s = doc.addObject("Sketcher::SketchObject", name)
+    for g, construction in zip(geometry, job["construction"]):
         s.addGeometry(sketch_geometry(g), construction)
     made = []
     for c in job["constraints"]:
@@ -1000,6 +1001,23 @@ def sketch_edit(doc, job):
             s.renameConstraint(i, c["name"])
         if not c["driving"]:
             s.setDriving(i, False)
+    return s
+
+
+def placed_solve(doc, job):
+    """For points merged from apart, the merge of the sketch with them placed where Silico's
+    merge places them (sketch-edit.md:298), solved: FreeCAD's solve from Silico's start.
+    None where FreeCAD refuses that merge."""
+    p = built(doc, "Placed", job["edit"]["placed"], job)
+    try:
+        edit_merge(p, job["edit"], [])
+    except EditRefused:
+        return None
+    return solve_state(p)
+
+
+def sketch_edit(doc, job):
+    s = built(doc, "S", job["geometry"], job)
     before = solve_state(s)
     ids_before = [s.getGeometryId(i) for i in range(len(s.Geometry))]
     applied = []
@@ -1017,6 +1035,7 @@ def sketch_edit(doc, job):
         ],
         "after": after,
         "applied": sorted(set(applied)),
+        "placed": placed_solve(doc, job) if job["edit"].get("placed") else None,
     }
 
 
