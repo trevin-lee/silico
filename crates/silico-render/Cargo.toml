@@ -21,6 +21,7 @@ bench = []
 re_renderer.workspace = true
 wgpu.workspace = true
 glam.workspace = true
+libm.workspace = true
 macaw.workspace = true
 pollster.workspace = true
 smallvec.workspace = true

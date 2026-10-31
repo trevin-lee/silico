@@ -14,6 +14,8 @@ mod share;
 
 #[path = "adversarial_client.rs"]
 mod adversarial_client;
+#[path = "adversarial_held_bodies.rs"]
+mod adversarial_held_bodies;
 #[path = "adversarial_render.rs"]
 mod adversarial_render;
 #[path = "bench.rs"]

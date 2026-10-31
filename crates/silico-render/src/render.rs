@@ -7,7 +7,10 @@
 //! its normals its own, and each view moves it into place by its instance's transform: the
 //! view's rotation and the centre's offset from the eye, computed in f64 and then f32
 //! ([`world_from_mesh`]). So a new view of the same bodies uploads nothing: it builds only
-//! the instances and the edges' line strips, whose transform is batch data. The light is
+//! the instances and the edges' line strips, whose transform is batch data. Only a view so
+//! close that f32 about a body's centre would miss its pixels (a large body seen close)
+//! draws that body about the camera's point instead, uploaded for that view, as M4.6 drew
+//! every view. The light is
 //! `re_renderer`'s own (an ambient and two lights fixed in the world), per pixel, which the
 //! fixed camera makes the camera's.
 //!
@@ -58,6 +61,12 @@ const CLEARANCE: f64 = 0.01;
 /// A perspective view's near plane, of the scene's reach from the eye: reverse-z keeps the
 /// depth precise from there out.
 const NEAR_PLANE_OF_REACH: f64 = 1e-6;
+/// How much a position stored in f32 about its body's centre may be off, of its distance
+/// from it: f32's step (at most 2^-23 of it), twice, for the transform's own rounding.
+const F32_ROUNDING: f64 = 1.0 / 4_194_304.0;
+/// The most of a pixel that rounding may move a body by before it's drawn about the camera's
+/// point instead of its own centre.
+const PRECISION_OF_PIXEL: f64 = 0.125;
 /// How far edges are drawn toward the eye, so an edge on a face isn't hidden by it.
 const EDGE_DEPTH_OFFSET: re_renderer::DepthOffset = 1;
 /// Frames to wait for the readbacks: re_renderer delivers them in a later frame, and each
@@ -196,11 +205,16 @@ impl Renderer {
         let mut lines = LineDrawableBuilder::new(ctx);
         lines.enable_alpha_blending();
         for body in &scene.bodies {
-            let mut uploaded = match held.remove(&body.body) {
-                Some(uploaded) if uploaded.mesh == body.mesh => uploaded,
-                _ => Uploaded::new(body)?,
+            let same = held.remove(&body.body).filter(|u| u.mesh == body.mesh);
+            let bounds = same
+                .as_ref()
+                .map_or_else(|| bounds(&body.mesh), |u| u.bounds);
+            let anchor = view.anchor(bounds, scene.height);
+            let mut uploaded = match same {
+                Some(uploaded) if uploaded.anchor == anchor => uploaded,
+                _ => Uploaded::new(body, bounds, anchor)?,
             };
-            let world_from_mesh = view.world_from_mesh(uploaded.centre);
+            let world_from_mesh = view.world_from_mesh(uploaded.anchor);
             uploaded.faces(ctx, body, world_from_mesh, &mut instances, uploads)?;
             uploaded.edges(&mut lines, body, world_from_mesh);
             kept.insert(body.body, uploaded);
@@ -274,6 +288,10 @@ struct View {
     origin: [f64; 3],
     depth: f64,
     projection: ViewProjection,
+    /// How tall the image is, in mm: across the whole view (orthographic), or for each mm
+    /// from the eye (perspective, `2 tan(fov / 2)`).
+    span: f64,
+    perspective: bool,
 }
 
 impl View {
@@ -290,6 +308,8 @@ impl View {
                     frame,
                     origin: camera.target,
                     depth: reach + margin,
+                    span: view_height,
+                    perspective: false,
                     projection: ViewProjection::Orthographic {
                         camera_mode: OrthographicCameraMode::NearPlaneCenter,
                         vertical_world_size: view_height as f32,
@@ -306,6 +326,8 @@ impl View {
                     frame,
                     origin: camera.eye,
                     depth: 0.0,
+                    span: 2.0 * libm::tan(field_of_view.to_radians() / 2.0),
+                    perspective: true,
                     projection: ViewProjection::Perspective {
                         vertical_fov: field_of_view.to_radians() as f32,
                         near_plane_distance: (reach * NEAR_PLANE_OF_REACH) as f32,
@@ -317,8 +339,35 @@ impl View {
         Ok(view)
     }
 
-    fn world_from_mesh(&self, centre: [f64; 3]) -> glam::Affine3A {
-        world_from_mesh(&self.frame, self.origin, self.depth, centre)
+    fn world_from_mesh(&self, anchor: [f64; 3]) -> glam::Affine3A {
+        world_from_mesh(&self.frame, self.origin, self.depth, anchor)
+    }
+
+    /// The point a body with `bounds` is drawn about in this view, `height` pixels high: its
+    /// box's centre where f32 about it is precise to a fraction of a pixel, so the next view
+    /// of it uploads nothing; otherwise (a large body seen close) the camera's point, the
+    /// eye or the target, as M4.6 drew everything, its meshes uploaded for this view. A
+    /// position about its box's centre rounds by at most the box's half diagonal times
+    /// [`F32_ROUNDING`], against the pixel at the box's point nearest the eye in perspective
+    /// (none, for an eye in the box).
+    fn anchor(&self, bounds: Option<Bounds>, height: u32) -> [f64; 3] {
+        let Some((low, high)) = bounds else {
+            return [0.0; 3];
+        };
+        let half: [f64; 3] = std::array::from_fn(|k| high[k] / 2.0 - low[k] / 2.0);
+        let rounding = dot(half, half).sqrt() * F32_ROUNDING;
+        let across = if self.perspective {
+            let nearest: [f64; 3] =
+                std::array::from_fn(|k| self.origin[k].clamp(low[k], high[k]) - self.origin[k]);
+            dot(nearest, nearest).sqrt() * self.span
+        } else {
+            self.span
+        };
+        if rounding <= across / f64::from(height) * PRECISION_OF_PIXEL {
+            centre_of((low, high))
+        } else {
+            self.origin
+        }
     }
 }
 
@@ -327,7 +376,9 @@ impl View {
 /// world's x, y, and z, where the fixed camera looks along −z with +y up), and the centre
 /// about the camera in the camera's frame, `R (centre − origin) − (0, 0, depth)`, in f64
 /// and then f32. A body far from the origin keeps its precision: the offset is taken in f64
-/// before anything is f32, and what's f32 is the size of the view, not of the document.
+/// before anything is f32. What's f32 about its centre is the body's size, which a close
+/// enough view of a large body would see: that one is drawn about the camera's point instead
+/// ([`View::anchor`]).
 pub fn world_from_mesh(
     frame: &Frame,
     origin: [f64; 3],
@@ -386,11 +437,15 @@ fn unit(n: [f32; 3]) -> glam::Vec3 {
     vec3(scaled.map(|c| c / length))
 }
 
-/// A body as uploaded: what it was made from, to know it again, the centre its positions
+/// A body as uploaded: what it was made from, to know it again, the point its positions
 /// are about, its faces' meshes, and its edges' strips.
 struct Uploaded {
     mesh: Mesh,
-    centre: [f64; 3],
+    /// The box of its positions and edge points; none for a mesh of neither.
+    bounds: Option<Bounds>,
+    /// The point its positions are about: its box's centre, or a view's camera point
+    /// ([`View::anchor`]).
+    anchor: [f64; 3],
     faces: Vec<UploadedFace>,
     /// Each edge of two points or more: its number from 1 and its points about the centre.
     strips: Vec<(u32, Vec<glam::Vec3>)>,
@@ -414,11 +469,14 @@ struct FaceSpan {
 }
 
 impl Uploaded {
-    /// `body`'s faces, to be uploaded as each is drawn, and its edges' strips, about the
-    /// centre of the box of its positions and edge points (the origin if it has none).
-    fn new(body: &RenderBody) -> Result<Uploaded, String> {
+    /// `body`'s faces, to be uploaded as each is drawn, and its edges' strips, about
+    /// `anchor`; `bounds` its mesh's.
+    fn new(
+        body: &RenderBody,
+        bounds: Option<Bounds>,
+        anchor: [f64; 3],
+    ) -> Result<Uploaded, String> {
         let mesh = &body.mesh;
-        let centre = centre(mesh);
         let mut faces = Vec::new();
         let mut first = 0usize;
         for (face, &count) in mesh.face_triangles.iter().enumerate() {
@@ -451,12 +509,13 @@ impl Uploaded {
             let number = u32::try_from(edge + 1).map_err(|e| e.to_string())?;
             strips.push((
                 number,
-                points.iter().map(|p| vec3(sub(*p, centre))).collect(),
+                points.iter().map(|p| vec3(sub(*p, anchor))).collect(),
             ));
         }
         Ok(Uploaded {
             mesh: mesh.clone(),
-            centre,
+            bounds,
+            anchor,
             faces,
             strips,
         })
@@ -474,13 +533,25 @@ impl Uploaded {
         instances: &mut Vec<GpuMeshInstance>,
         uploads: &mut u64,
     ) -> Result<(), String> {
-        let centre = self.centre;
-        let new = self.faces.iter().filter(|f| f.plain.is_none()).count();
+        let anchor = self.anchor;
+        let highlighted = |number: u32| body.highlight_faces.binary_search(&(number - 1)).is_ok();
+        // The faces to be uploaded: each without the mesh, plain or tinted, it's drawn with.
+        let new = self
+            .faces
+            .iter()
+            .filter(|f| {
+                if highlighted(f.span.number) {
+                    f.tinted.is_none()
+                } else {
+                    f.plain.is_none()
+                }
+            })
+            .count();
         let _span = (new > 0)
             .then(|| tracing::debug_span!("upload", body = body.body, faces = new).entered());
         for face in &mut self.faces {
             let number = face.span.number;
-            let highlighted = body.highlight_faces.binary_search(&(number - 1)).is_ok();
+            let highlighted = highlighted(number);
             let held = if highlighted {
                 &mut face.tinted
             } else {
@@ -489,7 +560,7 @@ impl Uploaded {
             let gpu_mesh = match held {
                 Some(mesh) => Arc::clone(mesh),
                 None => {
-                    let mesh = face_mesh(ctx, body, centre, face.span, highlighted)?;
+                    let mesh = face_mesh(ctx, body, anchor, face.span, highlighted)?;
                     *uploads += 1;
                     Arc::clone(held.insert(mesh))
                 }
@@ -545,21 +616,24 @@ impl Uploaded {
     }
 }
 
-/// The centre of the box of `mesh`'s positions and edge points, in f64; the origin for a mesh
-/// of neither.
-fn centre(mesh: &Mesh) -> [f64; 3] {
+/// A box: its lowest and highest corners.
+type Bounds = ([f64; 3], [f64; 3]);
+
+/// The box of `mesh`'s positions and edge points; none for a mesh of neither.
+fn bounds(mesh: &Mesh) -> Option<Bounds> {
     let mut points = mesh.positions.iter().chain(&mesh.edge_points);
-    let Some(&start) = points.next() else {
-        return [0.0; 3];
-    };
-    let (low, high) = points.fold((start, start), |(mut low, mut high), p| {
+    let &start = points.next()?;
+    Some(points.fold((start, start), |(mut low, mut high), p| {
         for k in 0..3 {
             low[k] = low[k].min(p[k]);
             high[k] = high[k].max(p[k]);
         }
         (low, high)
-    });
-    // Halved first, so the sum can't overflow.
+    }))
+}
+
+/// A box's centre, halved first, so the sum can't overflow.
+fn centre_of((low, high): Bounds) -> [f64; 3] {
     std::array::from_fn(|k| low[k] / 2.0 + high[k] / 2.0)
 }
 
@@ -710,7 +784,13 @@ fn png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
 mod tests {
     use silico_protocol::{Camera, Frame, Projection, RenderAdapter, RenderScene};
 
-    use super::{OUTPUT_FORMAT, Renderer, View, centre, device, sub, vec3, world_from_mesh};
+    use super::{
+        OUTPUT_FORMAT, Renderer, View, bounds, centre_of, device, sub, vec3, world_from_mesh,
+    };
+
+    fn centre(mesh: &silico_protocol::Mesh) -> [f64; 3] {
+        centre_of(bounds(mesh).unwrap())
+    }
     use crate::bench::{box_mesh, front_of_a_box};
 
     /// The view `(right, up, back)` from `(1, −1, 1)` with z up, by hand: back (1, −1, 1)/√3;
@@ -810,11 +890,11 @@ mod tests {
     }
 
     #[test]
-    fn a_mesh_of_no_points_is_about_the_origin_and_one_point_about_itself() {
+    fn a_mesh_of_no_points_has_no_box_and_one_point_is_its_own_centre() {
         let mut mesh = box_mesh([0.0; 3], [1.0; 3]);
         mesh.positions.clear();
         mesh.edge_points.clear();
-        assert_eq!(centre(&mesh), [0.0; 3]);
+        assert_eq!(bounds(&mesh), None);
         mesh.edge_points = vec![[1e12, -1e12, 3.0]];
         assert_eq!(centre(&mesh), [1e12, -1e12, 3.0]);
         // The box's corners at the largest coordinates: halved before they're summed.
@@ -849,6 +929,43 @@ mod tests {
         };
         let view = View::of(&perspective.camera, &perspective).unwrap();
         assert_eq!((view.origin, view.depth), (perspective.camera.eye, 0.0));
+    }
+
+    #[test]
+    fn a_body_is_drawn_about_its_centre_unless_f32_about_it_would_miss_the_pixel() {
+        // The bench's box (half diagonal √525 = 22.9 mm, rounding 22.9 / 2^22 = 5.5e-6 mm)
+        // from the front, 44 mm over 48 pixels: about its centre (20, 10, 5).
+        let scene = front_of_a_box(64, 48);
+        let view = View::of(&scene.camera, &scene).unwrap();
+        let the_box = bounds(&scene.bodies[0].mesh);
+        assert_eq!(view.anchor(the_box, 48), [20.0, 10.0, 5.0]);
+        // 3e-4 mm over 48 pixels is 6.3e-6 mm a pixel, an eighth of it under the rounding:
+        // about the target.
+        let mut close = scene.clone();
+        close.camera.projection = Projection::Orthographic { view_height: 3e-4 };
+        let view = View::of(&close.camera, &close).unwrap();
+        assert_eq!(view.anchor(the_box, 48), close.camera.target);
+        // Perspective, 30 degrees, the eye 0.1 mm in front of the box: a pixel at the box is
+        // 0.1 × 2 tan 15° / 48 = 1.1e-3 mm, an eighth of it 1.4e-4, past the rounding: about
+        // the centre. A box a kilometre long (rounding 0.12 mm) there: about the eye. An eye
+        // in the box: about the eye.
+        let mut near = scene.clone();
+        near.camera = Camera {
+            projection: Projection::Perspective {
+                field_of_view: 30.0,
+            },
+            eye: [20.0, -0.1, 5.0],
+            target: [20.0, 10.0, 5.0],
+            up: [0.0, 0.0, 1.0],
+        };
+        let view = View::of(&near.camera, &near).unwrap();
+        assert_eq!(view.anchor(the_box, 48), [20.0, 10.0, 5.0]);
+        let rod = Some(([-5e5, 0.0, 0.0], [5e5, 20.0, 10.0]));
+        assert_eq!(view.anchor(rod, 48), near.camera.eye);
+        let around = Some(([0.0, -1.0, 0.0], [40.0, 20.0, 10.0]));
+        assert_eq!(view.anchor(around, 48), near.camera.eye);
+        // A body of nothing is about the origin.
+        assert_eq!(view.anchor(None, 48), [0.0; 3]);
     }
 
     /// `test` run on lavapipe in this process: in a run of this test alone with lavapipe's
@@ -927,7 +1044,7 @@ mod tests {
                 lit.bodies[0].highlight_faces = vec![2];
                 assert_eq!(centre_id(&mut r, &lit), [1, 3]);
                 assert_eq!(r.uploads(), 7);
-                lit.camera = top.camera;
+                lit.camera = top.camera.clone();
                 assert_eq!(centre_id(&mut r, &lit), [1, 6]);
                 assert_eq!(r.uploads(), 7);
                 // A body whose mesh changed is uploaded again; one beside it is new.
@@ -950,6 +1067,27 @@ mod tests {
                 lit.bodies[0].highlight_faces = vec![2];
                 assert_eq!(centre_id(&mut r, &lit), [1, 3]);
                 assert_eq!(r.uploads(), 31);
+                // Seen as close as f32 about its centre can't draw it, it's drawn about the
+                // target, uploaded again: 3e-4 mm high (6.3e-6 mm a pixel, under the box's
+                // rounding about its centre, 5.5e-6 mm, eight times). Zoomed further about
+                // the same target, its meshes are still about it; moved to another target,
+                // they're uploaded about that one.
+                let mut close = front.clone();
+                close.camera.projection = Projection::Orthographic { view_height: 3e-4 };
+                assert_eq!(centre_id(&mut r, &close), [1, 3]);
+                assert_eq!(r.uploads(), 37);
+                close.camera.projection = Projection::Orthographic { view_height: 6e-4 };
+                assert_eq!(centre_id(&mut r, &close), [1, 3]);
+                assert_eq!(r.uploads(), 37);
+                close.camera.eye[0] += 1.0;
+                close.camera.target[0] += 1.0;
+                assert_eq!(centre_id(&mut r, &close), [1, 3]);
+                assert_eq!(r.uploads(), 43);
+                // And back out, about its centre again, then from it for another view.
+                assert_eq!(centre_id(&mut r, &front), [1, 3]);
+                assert_eq!(r.uploads(), 49);
+                assert_eq!(centre_id(&mut r, &top), [1, 6]);
+                assert_eq!(r.uploads(), 49);
             },
         );
     }
