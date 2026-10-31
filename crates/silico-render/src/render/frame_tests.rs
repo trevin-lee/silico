@@ -13,9 +13,11 @@ use std::time::Duration;
 use silico_protocol::{Camera, Mesh, Projection};
 
 use super::tests::on_lavapipe;
+use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjection};
+
 use super::{
-    BACKGROUND, Element, Frame, MAX_PICKING_SIDE, OUTPUT_FORMAT, Pick, Picking, PixelRect,
-    RenderFailure, Renderer,
+    BACKGROUND, Element, Frame, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, PendingPick,
+    Pick, Picking, PixelRect, RenderFailure, Renderer,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -83,6 +85,7 @@ fn pick(r: &mut Renderer, frame: &Frame<'_>) -> Picking {
     r.take_picking();
     let asked = frame.picking.unwrap();
     draw(r, frame);
+    let serial = r.frame();
     assert_eq!(r.take_picking(), None, "answered in its own frame");
     draw(
         r,
@@ -92,7 +95,8 @@ fn pick(r: &mut Renderer, frame: &Frame<'_>) -> Picking {
         },
     );
     let picking = r.take_picking().expect("not answered a frame later");
-    assert_eq!(picking.rect, asked);
+    assert_eq!((picking.frame, picking.rect), (serial, asked));
+    assert_eq!(r.frame(), serial + 1);
     assert_eq!(r.take_picking(), None, "answered twice");
     picking
 }
@@ -164,7 +168,7 @@ fn a_picking_rectangle_finds_the_face_and_the_edge_under_it_a_frame_later() {
             assert_point(
                 &found,
                 [21.0 + 5.5 / 12.0, 0.0, 7.0 + 38.5 / 12.0],
-                [1e-3, 0.05, 1e-3],
+                [1e-3, 1e-4, 1e-3],
             );
             // The background, above the box (row 5, z = 24.4): no hit, answered as such.
             let above = pick(r, &frame(&camera, &[1], &[], Some(rect([30, 3], [5, 5]))));
@@ -532,6 +536,7 @@ fn hostile_frames_are_refused_naming_what_and_leave_the_renderer_drawing() {
                 );
             }
             for ppp in [
+                32.0,
                 0.0,
                 -1.0,
                 f32::NAN,
@@ -688,12 +693,18 @@ fn of_many_frames_picking_and_none_taken_the_newest_answer_is_given_once() {
             r.upload(1, &the_box()).unwrap();
             let camera = front();
             // Twenty frames, each picking one pixel further right along row 26 (columns 12
-            // to 31, all on the front face), none taken: then one frame more answers.
+            // to 31, all on the front face), their requests kept from the frames after them,
+            // so no answer is read until all are back: then given to one frame together (the
+            // readback belt keeps an unread answer for two frames, so the last three are
+            // there to choose from).
+            let mut asked = std::collections::BTreeMap::new();
             for column in 12..32 {
                 let picking = Some(rect([column, 26], [1, 1]));
                 draw(r, &frame(&camera, &[1], &[], picking));
+                asked.append(&mut r.pending);
             }
-            assert!(r.pending.len() <= super::MAX_PENDING_PICKS);
+            assert_eq!(asked.len(), 20);
+            r.pending = asked;
             draw(r, &frame(&camera, &[1], &[], None));
             let newest = r.take_picking().unwrap();
             assert_eq!(newest.rect, rect([31, 26], [1, 1]));
@@ -703,11 +714,152 @@ fn of_many_frames_picking_and_none_taken_the_newest_answer_is_given_once() {
                 (1, Element::Face(3), [31, 26])
             );
             // Nothing older is given after it, however many frames follow.
+            assert!(r.pending.is_empty());
             for _ in 0..3 {
                 draw(r, &frame(&camera, &[1], &[], None));
                 assert_eq!(r.take_picking(), None);
             }
-            assert!(r.pending.is_empty());
+        },
+    );
+}
+
+#[test]
+fn requests_never_answered_are_dropped_oldest_first_past_the_bound() {
+    on_lavapipe(
+        "render::frame_tests::requests_never_answered_are_dropped_oldest_first_past_the_bound",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            // Twenty requests no readback will answer (identifiers past any the renderer
+            // gives in this test), as a driver that never answers leaves them.
+            let first = r.readback + 1000;
+            for id in first..first + 20 {
+                r.pending.insert(
+                    id,
+                    PendingPick {
+                        serial: 0,
+                        bodies: vec![],
+                        rect: ON_THE_FACE,
+                        size: [WIDTH, HEIGHT],
+                        frame: camera.frame().unwrap(),
+                        origin: camera.target,
+                        depth: 1.0,
+                        projection: ViewProjection::Orthographic {
+                            camera_mode: OrthographicCameraMode::NearPlaneCenter,
+                            vertical_world_size: 44.0,
+                            far_plane_distance: 100.0,
+                        },
+                    },
+                );
+            }
+            // A frame's harvest keeps the newest MAX_PENDING_PICKS of them, then its own
+            // request; the next answers it, and the eight are left.
+            draw(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE)));
+            let kept: Vec<u64> = (first + 20 - 8..first + 20).collect();
+            assert_eq!(MAX_PENDING_PICKS, 8);
+            assert_eq!(r.pending.len(), 9);
+            assert_eq!(r.pending.keys().skip(1).copied().collect::<Vec<_>>(), kept);
+            draw(r, &frame(&camera, &[1], &[], None));
+            let found = r.take_picking().unwrap().hit.unwrap();
+            assert_eq!(
+                (found.body, found.hit, found.pixel),
+                (1, Element::Face(3), [32, 26])
+            );
+            assert_eq!(r.pending.keys().copied().collect::<Vec<_>>(), kept);
+        },
+    );
+}
+
+#[test]
+fn a_late_answer_never_names_a_body_forgotten_or_replaced_since_its_frame() {
+    on_lavapipe(
+        "render::frame_tests::a_late_answer_never_names_a_body_forgotten_or_replaced_since_its_frame",
+        |r| {
+            let camera = front();
+            let one = frame(&camera, &[1], &[], Some(ON_THE_FACE));
+            let after = |r: &mut Renderer, bodies: &[u32]| -> Picking {
+                draw(r, &frame(&camera, bodies, &[], None));
+                r.take_picking().expect("no answer")
+            };
+            r.upload(1, &the_box()).unwrap();
+            // Asked of the box, then its mesh replaced (moved 1 mm: still under the
+            // rectangle, so only the generation tells): the answer comes, naming nothing.
+            draw(r, &one);
+            let asked = r.frame();
+            r.upload(1, &Arc::new(box_mesh([1.0, 0.0, 0.0], [40.0, 20.0, 10.0])))
+                .unwrap();
+            let answer = after(r, &[1]);
+            assert_eq!(
+                (answer.frame, answer.rect, answer.hit),
+                (asked, ON_THE_FACE, None)
+            );
+            // Forgotten: the same.
+            draw(r, &one);
+            r.forget(1);
+            assert_eq!(after(r, &[]).hit, None);
+            // Forgotten and uploaded again under its number: another mesh, all the same.
+            r.upload(1, &the_box()).unwrap();
+            draw(r, &one);
+            r.forget(1);
+            r.upload(1, &the_box()).unwrap();
+            assert_eq!(after(r, &[1]).hit, None);
+            // An equal mesh uploaded again changes nothing: still named.
+            draw(r, &one);
+            r.upload(1, &the_box()).unwrap();
+            let found = after(r, &[1]).hit.unwrap();
+            assert_eq!(
+                (found.body, found.hit, found.pixel),
+                (1, Element::Face(3), [32, 26])
+            );
+            // Of two bodies, a replaced one is passed over for the nearest still as drawn:
+            // body 2, x −8 to −3 (columns 0.4 to 5.8), left of the box (from 9.09), the
+            // rectangle's centre at column 8.5 over the box's left edge.
+            r.upload(2, &Arc::new(box_mesh([-8.0, 0.0, 0.0], [5.0, 20.0, 10.0])))
+                .unwrap();
+            let between = Some(rect([4, 24], [9, 5]));
+            let both = frame(&camera, &[1, 2], &[], between);
+            assert_eq!(pick(r, &both).hit.map(|h| h.body), Some(1));
+            draw(r, &both);
+            r.upload(1, &Arc::new(box_mesh([1.0, 0.0, 0.0], [40.0, 20.0, 10.0])))
+                .unwrap();
+            let found = after(r, &[1, 2]).hit.unwrap();
+            assert_eq!(found.body, 2, "{found:?}");
+            assert!(found.pixel[0] <= 6, "{found:?}");
+        },
+    );
+}
+
+#[test]
+fn a_perspective_picks_point_is_the_pixels_centre_on_the_face() {
+    on_lavapipe(
+        "render::frame_tests::a_perspective_picks_point_is_the_pixels_centre_on_the_face",
+        |r| {
+            // The front view in perspective, 40° high, from (21, −50, 7): the front face 50
+            // mm along the view. Pixel (32, 26)'s centre is at x = 1/64 and y = −5/48 of the
+            // half view, so by hand at x = 21 + 50 × (1/64) × tan 20° × 4/3, z = 7 − 50 ×
+            // (5/48) × tan 20°, y = 0: (21.3791, 0, 5.1043).
+            r.upload(1, &the_box()).unwrap();
+            let camera = Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 40.0,
+                },
+                ..front()
+            };
+            let found = pick(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE)))
+                .hit
+                .unwrap();
+            assert_eq!(
+                (found.body, found.hit, found.pixel),
+                (1, Element::Face(3), [32, 26])
+            );
+            let tan = libm::tan(20f64.to_radians());
+            let want = [
+                21.0 + 50.0 / 64.0 * tan * 4.0 / 3.0,
+                0.0,
+                7.0 - 50.0 * 5.0 / 48.0 * tan,
+            ];
+            assert!((want[0] - 21.3791).abs() < 1e-4 && (want[2] - 5.1043).abs() < 1e-4);
+            assert_point(&found, want, [1e-3, 1e-3, 1e-3]);
         },
     );
 }
@@ -759,58 +911,139 @@ fn from_segment(i: usize, a: [f64; 2], b: [f64; 2]) -> f64 {
     (q[0] * q[0] + q[1] * q[1]).sqrt()
 }
 
+/// The oblique view of the box: orthographic, 40 mm over 48 rows (5/6 mm a pixel), from
+/// (1, −1, 1) about the box's centre (20, 10, 5), z up. Its axes by hand: right (1, 1, 0)/√2,
+/// up (−1, 1, 2)/√6.
+fn oblique() -> Camera {
+    Camera {
+        projection: Projection::Orthographic { view_height: 40.0 },
+        eye: [80.0, -50.0, 65.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    }
+}
+
+/// Where `p` lands in [`oblique`]'s frame, in pixels: column 32 + right · (p − target) × 6/5,
+/// row 24 − up · (p − target) × 6/5.
+fn oblique_px(p: [f64; 3]) -> [f64; 2] {
+    let d = [p[0] - 20.0, p[1] - 10.0, p[2] - 5.0];
+    let right = (d[0] + d[1]) / 2f64.sqrt();
+    let up = (-d[0] + d[1] + 2.0 * d[2]) / 6f64.sqrt();
+    [32.0 + right * 1.2, 24.0 - up * 1.2]
+}
+
+/// The box's faces [`oblique`] sees, by number, and their corners in order round them: Face2
+/// (x = 40), Face3 (y = 0), Face6 (z = 10).
+fn seen_faces() -> [(u32, [[f64; 3]; 4]); 3] {
+    [
+        (
+            2,
+            [
+                [40.0, 0.0, 0.0],
+                [40.0, 20.0, 0.0],
+                [40.0, 20.0, 10.0],
+                [40.0, 0.0, 10.0],
+            ],
+        ),
+        (
+            3,
+            [
+                [0.0, 0.0, 0.0],
+                [40.0, 0.0, 0.0],
+                [40.0, 0.0, 10.0],
+                [0.0, 0.0, 10.0],
+            ],
+        ),
+        (
+            6,
+            [
+                [0.0, 0.0, 10.0],
+                [40.0, 0.0, 10.0],
+                [40.0, 20.0, 10.0],
+                [0.0, 20.0, 10.0],
+            ],
+        ),
+    ]
+}
+
+/// The distance from the centre of pixel `i` to the point `q`, in pixels.
+fn from_point(i: usize, q: [f64; 2]) -> f64 {
+    let i = u32::try_from(i).unwrap();
+    let p = [f64::from(i % WIDTH) + 0.5, f64::from(i / WIDTH) + 0.5];
+    let d = [p[0] - q[0], p[1] - q[1]];
+    (d[0] * d[0] + d[1] * d[1]).sqrt()
+}
+
 #[test]
 fn a_highlight_outlines_its_instance_alone_and_changes_nothing_else() {
-    // The front face's corners in pixels, by hand (the module's mapping): columns 9.09 and
-    // 52.73, rows 20.73 and 31.64. The outline is 1.5 points wide; a pixel it changes lies
-    // within 3.5 of the face's border, allowing for its antialiasing (a loose check: pixels
-    // aren't results).
-    let (left, right) = (32.0 - 21.0 * 12.0 / 11.0, 32.0 + 19.0 * 12.0 / 11.0);
-    let (top, bottom) = (24.0 - 3.0 * 12.0 / 11.0, 24.0 + 7.0 * 12.0 / 11.0);
+    // Seen obliquely, each face's outline is its own parallelogram (Face3's, by hand: (6.5,
+    // 24), (40.5, 43.6), (40.5, 33.8), (6.5, 14.2)), so a face's highlight is told from its
+    // neighbours' and from its edges'. A face's highlight changes pixels only within 3.5 of
+    // its border (the outline is 1.5 points wide, with its antialiasing: a loose check,
+    // pixels aren't results), and some within 1 of each of its four sides' midpoints (its
+    // top edge, Edge3, at most 3 points thick with its outline, passes 4.2 from Face3's
+    // short sides' midpoints, and 8.5 from its far side's).
     on_lavapipe(
         "render::frame_tests::a_highlight_outlines_its_instance_alone_and_changes_nothing_else",
         |r| {
             r.upload(1, &the_box()).unwrap();
-            let camera = front();
+            let camera = oblique();
             let mut image = |lit: &[(u32, Element)]| {
                 let commands = r.prepare(&frame(&camera, &[1], lit, None)).unwrap();
                 composited(r, Some(commands))
             };
             let plain = image(&[]);
-            let border = [
-                ([left, top], [right, top]),
-                ([right, top], [right, bottom]),
-                ([right, bottom], [left, bottom]),
-                ([left, bottom], [left, top]),
-            ];
-            let near_the_face = |i: usize| {
-                border
-                    .iter()
-                    .map(|&(a, b)| from_segment(i, a, b))
-                    .fold(f64::INFINITY, f64::min)
+            let changed = |other: &[[u8; 4]]| -> Vec<usize> {
+                (0..plain.len()).filter(|&i| other[i] != plain[i]).collect()
             };
-            let face = image(&[(1, Element::Face(3))]);
-            let changed: Vec<usize> = (0..plain.len()).filter(|&i| face[i] != plain[i]).collect();
-            // Round its border (about 2 × (43.6 + 10.9) = 109 pixels long), and nowhere else.
-            assert!(changed.len() > 50, "{} pixels changed", changed.len());
-            for &i in &changed {
+            let sides = |corners: [[f64; 3]; 4]| -> Vec<([f64; 2], [f64; 2])> {
+                (0..4)
+                    .map(|k| (oblique_px(corners[k]), oblique_px(corners[(k + 1) % 4])))
+                    .collect()
+            };
+            let midpoints_near = |sides: &[([f64; 2], [f64; 2])], changed: &[usize]| -> usize {
+                sides
+                    .iter()
+                    .filter(|(a, b)| {
+                        let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                        changed.iter().any(|&i| from_point(i, mid) <= 1.0)
+                    })
+                    .count()
+            };
+            for (number, corners) in seen_faces() {
+                let border = sides(corners);
+                let lit = image(&[(1, Element::Face(number))]);
+                let changed = changed(&lit);
                 assert!(
-                    near_the_face(i) <= 3.5,
-                    "pixel {i}, {} from the face",
-                    near_the_face(i)
+                    changed.len() > 40,
+                    "Face{number}: {} pixels changed",
+                    changed.len()
                 );
+                for &i in &changed {
+                    let off = border
+                        .iter()
+                        .map(|&(a, b)| from_segment(i, a, b))
+                        .fold(f64::INFINITY, f64::min);
+                    assert!(off <= 3.5, "Face{number}: pixel {i}, {off} from its border");
+                }
+                assert_eq!(midpoints_near(&border, &changed), 4, "Face{number}");
+                // Its inside, as uploaded: the colour at its centre is the plain frame's.
+                let centre = oblique_px(std::array::from_fn(|k| {
+                    corners.iter().map(|c| c[k]).sum::<f64>() / 4.0
+                }));
+                let at = usize::try_from(centre[1] as u32 * WIDTH + centre[0] as u32).unwrap();
+                assert_eq!(lit[at], plain[at], "Face{number}'s inside");
             }
-            // Its inside, as uploaded: the centre's colour is the plain frame's.
-            let centre = usize::try_from(26 * WIDTH + 32).unwrap();
-            assert_eq!(face[centre], plain[centre]);
-            // The top edge alone: about its line, row 20.73 from column 9.09 to 52.73.
-            let edge = image(&[(1, Element::Edge(3))]);
-            let changed: Vec<usize> = (0..plain.len()).filter(|&i| edge[i] != plain[i]).collect();
-            assert!(changed.len() > 20, "{} pixels changed", changed.len());
-            for &i in &changed {
-                let off = from_segment(i, [left, top], [right, top]);
-                assert!(off <= 3.5, "pixel {i}, {off} from the edge");
+            // The top edge alone (Face3's top side): about its line, and not round Face3.
+            let (_, face3) = seen_faces()[1];
+            let (a, b) = (oblique_px(face3[2]), oblique_px(face3[3]));
+            let edge = changed(&image(&[(1, Element::Edge(3))]));
+            assert!(edge.len() > 20, "{} pixels changed", edge.len());
+            for &i in &edge {
+                let off = from_segment(i, a, b);
+                assert!(off <= 3.5, "pixel {i}, {off} from Edge3");
             }
+            assert!(midpoints_near(&sides(face3), &edge) < 4);
             // And none: the plain frame again.
             assert_eq!(image(&[]), plain);
         },

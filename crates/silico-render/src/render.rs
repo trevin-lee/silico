@@ -208,11 +208,18 @@ pub struct Pick {
     pub point: Option<[f64; 3]>,
 }
 
-/// A frame's picking, answered: the rectangle it asked for, and what in it, of the frame's
-/// own pixels, lies nearest the rectangle's centre (the first in rows, top to bottom, of
-/// those as near), or none if only the background does.
+/// A frame's picking, answered: the frame that asked ([`Renderer::frame`] after its
+/// [`Renderer::prepare`]), the rectangle it asked for, and what in it, of the frame's own
+/// pixels, lies nearest the rectangle's centre (the first in rows, top to bottom, of those
+/// as near), or none if only the background does.
+///
+/// A body forgotten or replaced (by an upload of another mesh) since its frame asked is
+/// stale there: its pixels are passed over as the background's, so the hit is the nearest
+/// pixel of a body still drawn as it was, or none. An answer is still given, so a hover can
+/// clear: never a face of a mesh the frame didn't draw.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Picking {
+    pub frame: u64,
     pub rect: PixelRect,
     pub hit: Option<Pick>,
 }
@@ -241,6 +248,11 @@ pub struct Renderer {
     pending: BTreeMap<u64, PendingPick>,
     /// The newest picking answered and not yet taken.
     picked: Option<Picking>,
+    /// The last generation a body's mesh was given: each new mesh takes the next, so a
+    /// picking answer knows a body changed since its frame.
+    generations: u64,
+    /// The serial of the last frame prepared that passed its checks, from 1.
+    frames: u64,
 }
 
 impl Renderer {
@@ -269,6 +281,8 @@ impl Renderer {
             view: None,
             pending: BTreeMap::new(),
             picked: None,
+            generations: 0,
+            frames: 0,
         })
     }
 
@@ -310,15 +324,28 @@ impl Renderer {
         }
         check_render_mesh(mesh)
             .map_err(|what| invalid("mesh", format!("body {body}'s mesh: {what}")))?;
-        let uploaded = Uploaded::new(Arc::clone(mesh)).map_err(RenderFailure::Failed)?;
+        let mut uploaded = Uploaded::new(Arc::clone(mesh)).map_err(RenderFailure::Failed)?;
+        uploaded.generation = self.next_generation();
         self.bodies.insert(body, uploaded);
         Ok(())
     }
 
     /// Body `body` dropped, and its faces' GPU meshes with it; nothing if it isn't
-    /// uploaded.
+    /// uploaded. A picking answer still to come passes over it ([`Picking`]).
     pub fn forget(&mut self, body: u32) {
         self.bodies.remove(&body);
+    }
+
+    /// The serial of the last frame [`Renderer::prepare`] took (from 1, one for each frame
+    /// that passed its checks; 0 before any): its picking's answer carries it
+    /// ([`Picking::frame`]), so a click can be matched to the frame it was made on.
+    pub fn frame(&self) -> u64 {
+        self.frames
+    }
+
+    fn next_generation(&mut self) -> u64 {
+        self.generations += 1;
+        self.generations
     }
 
     /// `frame` built and drawn into `re_renderer`'s own target, never waiting for the GPU:
@@ -330,8 +357,13 @@ impl Renderer {
     /// rectangle, if any, is read back for [`Renderer::take_picking`]. One frame for each of
     /// egui's frames: it begins `re_renderer`'s frame.
     ///
+    /// A frame has no cap on its faces, edges, or triangles: [`RenderScene::check`]'s are the
+    /// worker's, for a render's time; a frame draws what the model has. A picking answer comes
+    /// only with later frames (re_renderer reads it back when the next frame begins), so the
+    /// pane must keep repainting while one is due.
+    ///
     /// A frame that fails its checks is refused ([`RenderFailure::Invalid`]) before anything
-    /// is done. One the GPU fails (out of memory, or anything wgpu finds invalid) keeps the
+    /// is done, and takes no serial ([`Renderer::frame`]). One the GPU fails (out of memory, or anything wgpu finds invalid) keeps the
     /// bodies but none of their GPU meshes, which the next frame uploads again. Either way
     /// nothing is composited until a frame succeeds.
     pub fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, RenderFailure> {
@@ -345,6 +377,8 @@ impl Renderer {
         .entered();
         self.view = None;
         let (view, lit) = self.check_frame(frame).map_err(RenderFailure::Invalid)?;
+        self.frames += 1;
+        let serial = self.frames;
         let device = self.ctx.device.clone();
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validity = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -356,6 +390,12 @@ impl Renderer {
             self.pending.insert(
                 id,
                 PendingPick {
+                    serial,
+                    bodies: frame
+                        .bodies
+                        .iter()
+                        .filter_map(|b| self.bodies.get(b).map(|u| (*b, u.generation)))
+                        .collect(),
                     rect,
                     size: frame.size_px,
                     frame: view.frame,
@@ -555,8 +595,18 @@ impl Renderer {
         if let Some((id, result)) = newest {
             if let Some(pending) = self.pending.get(&id) {
                 let extent = result.rect.extent;
+                // Drawn in that frame, and as it is now: neither forgotten nor replaced.
+                let current = |body: u32| {
+                    let drawn = pending
+                        .bodies
+                        .binary_search_by_key(&body, |&(b, _)| b)
+                        .ok()
+                        .and_then(|i| pending.bodies.get(i))
+                        .map(|&(_, generation)| generation);
+                    drawn.is_some() && drawn == self.bodies.get(&body).map(|u| u.generation)
+                };
                 let hit = pending
-                    .nearest(&result.picking_id_data, extent)
+                    .nearest(&result.picking_id_data, extent, current)
                     .map(|(i, mut pick)| {
                         if result.picking_depth_data.len() == result.picking_id_data.len()
                             && let Some(&depth) = usize::try_from(i)
@@ -568,6 +618,7 @@ impl Renderer {
                         pick
                     });
                 self.picked = Some(Picking {
+                    frame: pending.serial,
                     rect: pending.rect,
                     hit,
                 });
@@ -582,7 +633,8 @@ impl Renderer {
     /// `scene` drawn. The scene must have passed [`RenderScene::check`]. Errors the GPU
     /// reports while it draws (out of memory, or anything wgpu finds invalid) fail the
     /// render rather than leave a blank image. The renderer keeps only the scene's bodies:
-    /// it's the worker's, or the bench's, not a viewport's.
+    /// it's the worker's, or the bench's, not a viewport's. Don't call it on a renderer that
+    /// holds the app's uploads ([`Renderer::upload`]): it drops every body the scene hasn't.
     pub fn render(&mut self, scene: &RenderScene) -> Result<Rendered, RenderFailure> {
         let _span = tracing::debug_span!(
             "render",
@@ -629,7 +681,10 @@ impl Renderer {
         for body in &scene.bodies {
             if let std::collections::btree_map::Entry::Vacant(entry) = self.bodies.entry(body.body)
             {
-                entry.insert(Uploaded::new(Arc::new(body.mesh.clone()))?);
+                let mut uploaded = Uploaded::new(Arc::new(body.mesh.clone()))?;
+                self.generations += 1;
+                uploaded.generation = self.generations;
+                entry.insert(uploaded);
             }
         }
         let lit: Vec<Lit> = scene.bodies.iter().map(Lit::of_body).collect();
@@ -802,6 +857,10 @@ fn outlined() -> OutlineMaskPreference {
 /// A frame's picking request, waiting for its answer: its rectangle, the frame's size, and
 /// the view it was drawn in, to take its depth back to the document.
 struct PendingPick {
+    /// The frame's serial.
+    serial: u64,
+    /// The bodies it drew, ascending, and their meshes' generations.
+    bodies: Vec<(u32, u64)>,
     rect: PixelRect,
     size: [u32; 2],
     frame: CameraFrame,
@@ -813,9 +872,15 @@ struct PendingPick {
 impl PendingPick {
     /// Of the readback's pixels `ids`, `extent` in size: of the frame's own (outside the
     /// frame, re_renderer draws on as if it were larger, which isn't shown), the one with a
-    /// body nearest the rectangle's centre, the first in rows of those as near; its index
-    /// in `ids`, and what's there, without its point.
-    fn nearest(&self, ids: &[PickingLayerId], extent: glam::UVec2) -> Option<(u32, Pick)> {
+    /// body nearest the rectangle's centre, the first in rows of those as near, of the
+    /// bodies `current` takes (those not, the background's); its index in `ids`, and
+    /// what's there, without its point.
+    fn nearest(
+        &self,
+        ids: &[PickingLayerId],
+        extent: glam::UVec2,
+        current: impl Fn(u32) -> bool,
+    ) -> Option<(u32, Pick)> {
         let width = extent.x;
         let pixels = u64::from(width) * u64::from(extent.y);
         if ids.len() as u64 != pixels || width == 0 {
@@ -830,7 +895,7 @@ impl PendingPick {
             let Some(hit) = Element::of_instance(id.instance.0) else {
                 continue;
             };
-            if body == 0 {
+            if body == 0 || !current(body) {
                 continue;
             }
             // At most MAX_PICKING_SIDE² pixels: each index a u32.
@@ -1101,6 +1166,9 @@ fn unit(n: [f32; 3]) -> glam::Vec3 {
 /// box (its positions' and edge points', none for a mesh of neither), and its faces.
 struct Uploaded {
     mesh: Arc<Mesh>,
+    /// Which of the renderer's meshes it is ([`Renderer::next_generation`]); 0 until the
+    /// renderer gives it one.
+    generation: u64,
     bounds: Option<Bounds>,
     faces: Vec<UploadedFace>,
 }
@@ -1181,6 +1249,7 @@ impl Uploaded {
             });
         }
         Ok(Uploaded {
+            generation: 0,
             bounds: bounds_of(mesh.positions.iter().chain(&mesh.edge_points)),
             mesh,
             faces,
