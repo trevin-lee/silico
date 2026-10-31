@@ -1,28 +1,27 @@
-//! A model's display meshes for a view (docs/design/m5.0-app.md, `meshes`, M5.5; pending
-//! the maintainer, #196's decision 6(a)): each body at the largest power of two no coarser
-//! than half a pixel, from the cache `render` meshes into, so the viewport and an agent's
-//! render of one view mesh a body once and look the same (M4.6's R1). Every body asked is
-//! meshed, never culled to the view, so a pan never needs a read. Each mesh face and edge
-//! carries its element map's name and whether it's stable; each body its step's key, its
-//! box, and the half pixels its level serves, so a client reads again only when its view
-//! leaves them.
+//! A model's display meshes for a view (docs/design/m5.0-app.md, `meshes`, M5.5): each body
+//! at the largest power of two no coarser than half a pixel, from the cache `render` meshes
+//! into, so the viewport and an agent's render of one view mesh a body once and look the same
+//! (M4.6's R1). Every body asked is meshed, never culled to the view, so a pan never needs a
+//! read. Each mesh face and edge carries its element map's name and whether it's stable; each
+//! body its step's key, its box, and the half pixels its level serves, so a client reads
+//! again only when its view leaves them.
 //!
-//! The core's read, without its command: the session's read lane, the published reads'
-//! limit, the response's 128 MiB bound, and the wire's form wait for the maintainer's M5.0
-//! approval.
+//! The command, [`Sessions::meshes`], reads the current or the published model on the
+//! session's read lane, as `render` does, counted among the published reads a session runs.
+//! Its wire form, and the 128 MiB a response may be, are `wire::meshes`'.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use silico_protocol::{Camera, Mesh};
 
-use super::Problems;
 use super::elements::built;
 use super::render::{
     AnsweredCamera, Body, asked_view, bodies, camera_for, eye_outside, level_of, meshed,
 };
+use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
 use crate::document::FeatureId;
-use crate::kernel::{ElementKind, ElementRef, Kernel};
+use crate::kernel::{Clients, ElementKind, ElementRef, Kernel};
 use crate::meshes::{MeshCache, mesh_level};
 use crate::naming::{ElementMap, Name};
 use crate::recompute::{FeatureOutcome, Key, Model};
@@ -59,6 +58,10 @@ pub struct Held {
 pub struct MeshesRead {
     pub camera: AnsweredCamera,
     pub bodies: Vec<MeshedBody>,
+    /// The request's side whose fewer pixels mesh its bodies coarser: a camera's `height`,
+    /// or, for a named view, the side that bound its fit. What an answer too long to send
+    /// for one body names (`wire::meshes`).
+    pub coarser: &'static str,
 }
 
 /// A solid's display mesh, and what it's of.
@@ -107,6 +110,32 @@ pub struct MeshesOn<'a, K: Kernel> {
     pub meshes: &'a MeshCache<Key>,
 }
 
+impl<P: Clients + 'static> Sessions<P> {
+    /// `meshes` (M5.5): the display meshes of the model `model` names (decision 33), as
+    /// `request` asks ([`meshes`]): meshed on the read's own client of the kernel, through the
+    /// meshes the sessions keep, which `render` meshes into too. A level the cache holds asks
+    /// the kernel nothing. The read's cancel, or its session closing, stops it. A published
+    /// read counts against the published reads a session runs at once.
+    pub fn meshes(
+        &self,
+        session: &SessionId,
+        model: ModelChoice,
+        request: Meshes,
+    ) -> Running<MeshesRead> {
+        let (_, cache) = self.render_on();
+        self.read_model(session, ReadCommand::Meshes, model, move |read| {
+            meshes(
+                read.model(),
+                &request,
+                &MeshesOn {
+                    kernel: read.kernel(),
+                    meshes: &cache,
+                },
+            )
+        })
+    }
+}
+
 /// Meshes `model`'s solids for the view `request` asks, on `on`. Refused, each reason named
 /// by its field: the view, the camera, and the size, as `render` refuses them (and a
 /// perspective eye inside a solid, `camera.eye`); a feature the document hasn't, a sketch, or
@@ -141,7 +170,7 @@ pub fn meshes<K: Kernel>(
         _ => return Err(refused),
     };
     // A named view fits every body, as render's does; a camera is taken as given.
-    let (camera, answered, _) = camera_for(asked, &all, request.width, request.height)?;
+    let (camera, answered, fit_side) = camera_for(asked, &all, request.width, request.height)?;
     let solids: Vec<Body> = chosen.iter().map(|(solid, _)| solid.clone()).collect();
     // An eye inside any body is refused, as render refuses it, asked for or not.
     eye_outside(&camera, &all, on.kernel, session_closed)?;
@@ -243,6 +272,7 @@ pub fn meshes<K: Kernel>(
     Ok(MeshesRead {
         camera: answered,
         bodies,
+        coarser: fit_side.unwrap_or("height"),
     })
 }
 

@@ -26,6 +26,7 @@
 
 use std::time::Duration;
 
+use super::meshes::MeshesRead;
 use super::render::Rendering;
 use super::session::WeakSessions;
 use super::wire::drag::{DragBeginRequest, DragEndRequest, DragMoveRequest};
@@ -37,6 +38,7 @@ use super::wire::elements::{ElementsRequest, QueryRequest};
 use super::wire::export::ExportRequest;
 use super::wire::logs::ReadLogsRequest;
 use super::wire::measure::{MassPropertiesRequest, PairRequest};
+use super::wire::meshes::MeshesRequest;
 use super::wire::reads::{CheckRequest, TextRequest, TimelineRequest};
 use super::wire::render::RenderRequest;
 use super::wire::schema::SchemaRequest;
@@ -91,6 +93,7 @@ pub enum Command {
     DragBegin,
     DragMove,
     DragEnd,
+    Meshes,
     Sketch,
     SketchAdd,
     SketchRemove,
@@ -105,7 +108,7 @@ pub enum Command {
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
     /// 7).
-    pub const ALL: [Command; 41] = [
+    pub const ALL: [Command; 42] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -138,6 +141,7 @@ impl Command {
         Command::DragBegin,
         Command::DragMove,
         Command::DragEnd,
+        Command::Meshes,
         Command::Sketch,
         Command::SketchAdd,
         Command::SketchRemove,
@@ -184,6 +188,7 @@ impl Command {
             Command::DragBegin => "drag_begin",
             Command::DragMove => "drag_move",
             Command::DragEnd => "drag_end",
+            Command::Meshes => "meshes",
             Command::Sketch => "sketch",
             Command::SketchAdd => "sketch_add",
             Command::SketchRemove => "sketch_remove",
@@ -242,6 +247,7 @@ impl Command {
             | Command::DragBegin
             | Command::DragMove
             | Command::DragEnd
+            | Command::Meshes
             | Command::Sketch
             | Command::SketchAdd
             | Command::SketchRemove
@@ -466,6 +472,17 @@ fn rendered(response: Response<Rendering>) -> Answered {
         // None for an answer refused as too long to write, whose envelope holds no result.
         png: png.filter(|_| answer.ok),
         ..answer
+    }
+}
+
+/// `meshes`' response as [`Answered`]: its envelope, or, past the bytes a response may be,
+/// its refusal naming the field that makes it (`wire::meshes`).
+fn meshed(response: Response<MeshesRead>) -> Answered {
+    let (ok, text) = wire::meshes::answer_text(&response, Layout::OneLine);
+    Answered {
+        ok,
+        text,
+        png: None,
     }
 }
 
@@ -698,6 +715,10 @@ impl<P: Clients + 'static> Sessions<P> {
             Command::DragEnd => typed(named, DragEndRequest::read(request), |r| {
                 self.drag_end(&r.session, r.to)
             }),
+            Command::Meshes => match MeshesRequest::read(request) {
+                Ok(r) => Calling::waiting(self.meshes(&r.session, r.model, r.meshes), meshed),
+                Err(problems) => Calling::refused(named, problems),
+            },
             Command::Sketch => typed(named, SketchRequest::read(request), |r| {
                 self.sketch(&r.session, r.model, r.sketch)
             }),

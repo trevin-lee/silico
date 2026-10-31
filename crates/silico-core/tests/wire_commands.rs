@@ -795,6 +795,7 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "drag_begin",
                 "drag_move",
                 "drag_end",
+                "meshes",
                 "sketch",
                 "sketch_add",
                 "sketch_remove",
