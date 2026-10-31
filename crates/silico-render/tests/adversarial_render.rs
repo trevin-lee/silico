@@ -20,7 +20,7 @@ use silico_protocol::{
     Projection, RenderBody, RenderScene, Reply,
 };
 use silico_render::bench::{box_mesh, front_of_a_box};
-use silico_render::render::{AMBIENT, BACKGROUND, BODY};
+use silico_render::render::{BACKGROUND, BODY};
 
 use crate::common::WAIT;
 use crate::share::Share;
@@ -483,11 +483,13 @@ fn a_body_numbered_u32_max_carries_its_number() {
 }
 
 #[test]
-fn normals_of_no_length_inward_or_huge_light_by_lamberts_law_clamped() {
-    // Was a break: the design shades in linear light (the albedo times 0.35 + 0.65
-    // max(0, n·l)), but `albedo * light` scaled the `Rgba`'s alpha too, and `Color32::from`
-    // then premultiplied in gamma: a face lit at the ambient only was (60, 61, 64), not
-    // (105, 107, 111), and a highlighted face's tint off square was wrong the same way.
+fn normals_of_no_length_draw_unlit_and_inward_huge_or_tiny_ones_light_by_re_renderers_law() {
+    // Was a break (M4.6's own light): `albedo * light` scaled the `Rgba`'s alpha too, and
+    // `Color32::from` then premultiplied in gamma, so a face lit at the ambient only was
+    // (60, 61, 64), not (105, 107, 111). The light is now re_renderer's `simple_lighting`
+    // (docs/design/m5.0-app.md, section 10): in linear light, the albedo times 0.2 +
+    // max(0, n · l1) + 0.5 max(0, n · l2), at most 1, with l1 = (1, 2, 3) and l2 = (−1, −3,
+    // −5) of unit length in the camera's frame (right, up, back), and a normal of zero unlit.
     let mut w = worker();
     let linear = |c: u8| {
         let c = f64::from(c) / 255.0;
@@ -505,12 +507,16 @@ fn normals_of_no_length_inward_or_huge_light_by_lamberts_law_clamped() {
         };
         (c * 255.0).round()
     };
-    // The front face's normal, by hand: none (ambient only), inward (ambient only), and far
-    // longer than a unit toward the eye (Lambert's term clamped at 1, the body's colour).
+    // The front face's normal, by hand, from the front (back −y): none (unlit, the body's
+    // colour); inward, (0, 0, −1) in the camera's frame, 0.2 + 0.5 × 5/√35; and far longer
+    // or far shorter than a unit toward the eye, (0, 0, 1), 0.2 + 3/√14 clamped at 1 (in f32
+    // a normal of 1e30 or 1e-30 would overflow or underflow on the GPU: it's made unit
+    // length in f64 first).
     for (normal, light) in [
-        ([0.0f32, 0.0, 0.0], f64::from(AMBIENT)),
-        ([0.0, 1.0, 0.0], f64::from(AMBIENT)),
+        ([0.0f32, 0.0, 0.0], 1.0),
+        ([0.0, 1.0, 0.0], 0.2 + 0.5 * 5.0 / 35f64.sqrt()),
         ([0.0, -1e30, 0.0], 1.0),
+        ([0.0, -1e-30, 0.0], 1.0),
     ] {
         let mut mesh = the_box();
         for n in &mut mesh.normals[8..12] {
@@ -1596,4 +1602,128 @@ fn the_same_scene_gives_the_same_id_buffer_in_one_worker_and_another() {
     let other = ids(&mut worker(), &scene);
     assert!(first == again, "the same worker drew it differently");
     assert!(first == other, "another worker drew it differently");
+}
+
+// ---------------------------------------------------------------------------------------
+// The bodies uploaded once and moved into each view (docs/design/m5.0-app.md, section 10):
+// a worker keeps the last scene's bodies, so each of these draws a view from bodies an
+// earlier render uploaded, and must draw it as a fresh worker does.
+
+/// `scene` moved by `by`: its bodies' positions and edge points, and its camera.
+fn moved(scene: &RenderScene, by: [f64; 3]) -> RenderScene {
+    let shift = |p: &mut [f64; 3]| {
+        for k in 0..3 {
+            p[k] += by[k];
+        }
+    };
+    let mut scene = scene.clone();
+    for body in &mut scene.bodies {
+        body.mesh.positions.iter_mut().for_each(shift);
+        body.mesh.edge_points.iter_mut().for_each(shift);
+    }
+    shift(&mut scene.camera.eye);
+    shift(&mut scene.camera.target);
+    scene
+}
+
+#[test]
+fn a_part_a_million_kilometres_out_draws_as_one_at_the_origin_from_every_view_in_turn() {
+    // 1e9 mm out, f32's step is 64 mm: the box's corners would be one point there. Each body
+    // is about its own centre and its offset from the eye is taken in f64, so the ID
+    // buffers are the origin's, view after view in one worker (the second and third from
+    // the meshes the first uploaded), in perspective and orthographic.
+    let mut near = worker();
+    let mut far = worker();
+    let perspective = Projection::Perspective {
+        field_of_view: 50.0,
+    };
+    let views = [
+        corner(100.0, [0.0, 0.0, 1.0], perspective, 128),
+        corner(100.0, [0.0, 0.0, 1.0], ORTHO_50, 128),
+        front_of_a_box(128, 96),
+        corner(60.0, [0.0, 1.0, 1.0], perspective, 128),
+    ];
+    for by in [[1e9, -1e9, 1e9], [-3e11, 7e11, 1e11]] {
+        for (i, scene) in views.iter().enumerate() {
+            let want = ids(&mut near, scene);
+            let got = ids(&mut far, &moved(scene, by));
+            assert_same_away_from_boundaries(
+                &want,
+                &got,
+                scene.width,
+                scene.height,
+                &format!("view {i} {by:?} out"),
+            );
+        }
+    }
+}
+
+#[test]
+fn scenes_drawn_in_turn_in_one_worker_each_draw_as_in_a_fresh_one() {
+    // A held body found again only by its number and its mesh: the same number with
+    // another mesh, another number with the same mesh, a highlight on and off, and bodies
+    // coming and going, each against a fresh worker's drawing.
+    let the_box = || box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+    let small = || box_mesh([5.0, -10.0, 2.0], [4.0, 4.0, 4.0]);
+    let scene = |bodies: Vec<RenderBody>| RenderScene {
+        bodies,
+        ..corner(100.0, [0.0, 0.0, 1.0], ORTHO_50, 160)
+    };
+    let mut lit = body(1, the_box());
+    lit.highlight_faces = vec![2, 5];
+    lit.highlight_edges = vec![0];
+    let scenes = [
+        scene(vec![body(1, the_box())]),
+        scene(vec![body(1, small())]),
+        scene(vec![body(2, the_box())]),
+        scene(vec![lit.clone(), body(4, small())]),
+        scene(vec![body(1, the_box()), body(4, small())]),
+        scene(vec![]),
+        scene(vec![lit]),
+        scene(vec![body(1, the_box())]),
+    ];
+    let mut held = worker();
+    for (i, s) in scenes.iter().enumerate() {
+        let (_, want) = call(&mut worker(), s).unwrap();
+        let (_, got) = call(&mut held, s).unwrap();
+        assert!(want == got, "scene {i} differs from a fresh worker's");
+    }
+}
+
+#[test]
+fn a_highlight_on_a_face_with_no_triangles_or_a_body_of_one_point_draws_without_harm() {
+    let mut w = worker();
+    // Face1 has no triangles: its highlight has nothing to tint, in one view and the next.
+    let mut mesh = the_box();
+    mesh.face_triangles[0] = 0;
+    mesh.face_triangles[1] += 2;
+    let mut scene = with_mesh(64, 48, mesh);
+    scene.bodies[0].highlight_faces = vec![0, 2];
+    let got = ids(&mut w, &scene);
+    assert_eq!(got[front_centre(64, 48)], FRONT_FACE);
+    scene.camera = corner(100.0, [0.0, 0.0, 1.0], ORTHO_50, 64).camera;
+    let got = ids(&mut w, &scene);
+    assert!(!got.contains(&[1, 1]), "Face1 drawn");
+    // A body that's one point, far out: a triangle of it and an edge of it, its box a
+    // point, its centre the point.
+    let point = [1e12, -1e12, 1e12];
+    let one_point = Mesh {
+        positions: vec![point; 3],
+        normals: vec![[0.0, 0.0, 1.0]; 3],
+        triangles: vec![[0, 1, 2]],
+        face_triangles: vec![1],
+        edge_points: vec![point; 2],
+        edge_point_counts: vec![2],
+        valid: None,
+    };
+    let scene = RenderScene {
+        bodies: vec![body(1, the_box()), body(2, one_point)],
+        camera: Camera {
+            projection: Projection::Orthographic { view_height: 1e8 },
+            ..front_of_a_box(64, 48).camera
+        },
+        ..front_of_a_box(64, 48)
+    };
+    call(&mut w, &scene).unwrap();
+    still_draws(&mut w);
 }

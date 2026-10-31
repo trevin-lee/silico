@@ -13,6 +13,7 @@
 //! `views`).
 
 use std::error::Error;
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -29,9 +30,9 @@ const SIZES: [(u32, u32); 2] = [(256, 256), (1920, 1080)];
 fn main() -> Result<(), Box<dyn Error>> {
     silico_render::lavapipe::reexec_with()?;
     let var = |name: &str| {
-        std::env::var_os(name)
-            .map(PathBuf::from)
-            .ok_or(format!("{name} isn't set: the bench's module doc says how to run it"))
+        std::env::var_os(name).map(PathBuf::from).ok_or(format!(
+            "{name} isn't set: the bench's module doc says how to run it"
+        ))
     };
     let (worker, brep) = (var("SILICO_KERNEL_WORKER")?, var("SILICO_BENCH_BREP")?);
     let mut kernel = KernelWorker::start_worker(&worker)?;
@@ -42,7 +43,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mesh = kernel.tessellate(&shape, extent / 1080.0 / 2.0)?;
     let adapters = silico_render::adapters(RenderAdapter::Software)?;
     let adapter = &adapters[0];
-    let mut renderer = Renderer::new(adapter)?;
+    let (device, queue) = silico_render::render::device(adapter)?;
+    let mut renderer = Renderer::new(adapter, device, queue, silico_render::render::OUTPUT_FORMAT)?;
     let mut out = String::new();
     out += &format!("adapter {}\n", adapter.get_info().name);
     out += &format!(
@@ -63,21 +65,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                 ids: false,
             };
             let first = time(&mut renderer, &scene(0))?;
+            let uploaded = renderer.uploads();
             let mut changes = Vec::with_capacity(VIEWS);
             for view in 1..=VIEWS {
                 changes.push(time(&mut renderer, &scene(view))?);
             }
+            let reuploaded = renderer.uploads() - uploaded;
             changes.sort();
             let ms = |d: Duration| d.as_secs_f64() * 1e3;
             out += &format!(
-                "copies {copies} size {width}x{height} first_ms {:.2} view_change_median_ms {:.2} view_change_p95_ms {:.2}\n",
+                "copies {copies} size {width}x{height} first_ms {:.2} view_change_median_ms {:.2} view_change_p95_ms {:.2} meshes_uploaded_by_view_changes {reuploaded}\n",
                 ms(first),
                 ms(changes[VIEWS / 2]),
                 ms(changes[VIEWS * 95 / 100]),
             );
         }
     }
-    print!("{out}");
+    std::io::stdout().write_all(out.as_bytes())?;
     Ok(())
 }
 
