@@ -1335,3 +1335,96 @@ fn a_plan_made_before_the_stack_moved_restores_nothing() {
         (undo, redo, bytes)
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// What a state holds beside its text (`Extra`): kept with the state, given back by a step,
+// taken by the edits after it, dropped and counted with the states that hold it.
+// ---------------------------------------------------------------------------------------
+
+/// A test's extra: a shared label of `cost` bytes, or none.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Label(Option<Arc<(String, usize)>>);
+
+impl Label {
+    fn of(name: &str, cost: usize) -> Label {
+        Label(Some(Arc::new((name.to_owned(), cost))))
+    }
+
+    fn name(&self) -> Option<&str> {
+        self.0.as_ref().map(|label| label.0.as_str())
+    }
+}
+
+impl silico_core::document::undo::Extra for Label {
+    fn shared(&self) -> Option<usize> {
+        self.0.as_ref().map(|label| Arc::as_ptr(label) as usize)
+    }
+
+    fn cost(&self) -> usize {
+        self.0.as_ref().map_or(0, |label| label.1)
+    }
+}
+
+#[test]
+fn a_states_extra_is_restored_with_it_taken_by_the_edits_after_it_and_counted_once() {
+    // Texts held whole: each state but the session's counts its bytes and WHOLE_BYTES.
+    let whole = |text: &str| text.len() + WHOLE_BYTES;
+    let mut stack: UndoStack<u64, Label> =
+        UndoStack::holding(Arc::new(b"begin".to_vec()), 1, UNDO_BYTES);
+    assert_eq!(stack.extra(), Label::default());
+    stack.edit(After::Whole(Arc::new(b"a".to_vec())), 2);
+    stack.set_extra(Label::of("format", 100));
+    // The session's state: its extra not counted.
+    assert_eq!(stack.bytes(), 5);
+    stack.edit(After::Whole(Arc::new(b"bb".to_vec())), 3);
+    // Taken by the edit after it, and counted once the format's state is held.
+    assert_eq!(stack.extra().name(), Some("format"));
+    assert_eq!(stack.bytes(), 5 + whole("a") + 100);
+    stack.edit(After::Whole(Arc::new(b"ccc".to_vec())), 4);
+    // Two states held share it: still counted once.
+    assert_eq!(stack.bytes(), 5 + whole("a") + whole("bb") + 100);
+    // Undone to `begin`'s: none of its own; the three after it held for redo.
+    let plan = stack.plan_undo(Some(1)).unwrap();
+    assert_eq!(plan.extra(), &Label::default());
+    stack.apply(plan, 5).unwrap();
+    assert_eq!(stack.extra(), Label::default());
+    assert_eq!(
+        stack.bytes(),
+        5 + whole("a") + whole("bb") + whole("ccc") + 100
+    );
+    // Redone to the format's state: given back.
+    let plan = stack.plan_redo(Some(2)).unwrap();
+    assert_eq!(plan.extra().name(), Some("format"));
+    stack.apply(plan, 6).unwrap();
+    assert_eq!(stack.extra().name(), Some("format"));
+    // An edit there drops the redo states: the extra still the session's, counted by none.
+    stack.edit(After::Whole(Arc::new(b"d".to_vec())), 7);
+    assert_eq!(stack.extra().name(), Some("format"));
+    assert_eq!(stack.bytes(), 5 + whole("a") + 100);
+    // Undone back to `begin`'s and an edit made there: every state that held it dropped,
+    // and its count with them.
+    let plan = stack.plan_undo(Some(1)).unwrap();
+    stack.apply(plan, 8).unwrap();
+    stack.edit(After::Whole(Arc::new(b"e".to_vec())), 9);
+    assert_eq!(stack.extra(), Label::default());
+    assert_eq!(stack.bytes(), 5);
+}
+
+#[test]
+fn past_the_bound_a_dropped_states_extra_stops_counting_once_no_held_state_shares_it() {
+    let whole = |text: &str| text.len() + WHOLE_BYTES;
+    // Room for `begin`'s 5 bytes, one held state of one byte, and an extra of 10.
+    let bound = 5 + whole("a") + 10;
+    let mut stack: UndoStack<u64, Label> =
+        UndoStack::holding(Arc::new(b"begin".to_vec()), 1, bound);
+    stack.edit(After::Whole(Arc::new(b"a".to_vec())), 2);
+    stack.set_extra(Label::of("first", 10));
+    stack.edit(After::Whole(Arc::new(b"b".to_vec())), 3);
+    stack.set_extra(Label::of("second", 10));
+    assert_eq!(stack.bytes(), bound);
+    // The next drops "a", the first label's last holder; "b" held now, with the second.
+    let pushed = stack.edit(After::Whole(Arc::new(b"c".to_vec())), 4);
+    assert_eq!(pushed.dropped, 2);
+    assert_eq!(stack.bytes(), 5 + whole("b") + 10);
+    assert_eq!(stack.extra().name(), Some("second"));
+}

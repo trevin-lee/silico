@@ -61,7 +61,7 @@ impl<C: Kernel + 'static> Session<C> {
         .entered();
         // What the step restores, found under the held state's lock with the stack left as
         // it is, so a `status` read meanwhile is the state before the step, whole.
-        let (next, plan, begun) = {
+        let (next, plan, begun, formatted) = {
             let held = self.held.read();
             let Some(open) = held.transaction.as_ref() else {
                 return Err(Problems::from(no_transaction(self.id, way)));
@@ -78,12 +78,14 @@ impl<C: Kernel + 'static> Session<C> {
             let plan = match way {
                 Way::Undo => open.undo.plan_undo(to),
                 Way::Redo => open.undo.plan_redo(to),
-            };
-            (
-                next,
-                plan.map_err(|refusal| refused(self.id, way, refusal))?,
-                open.begun.clone(),
-            )
+            }
+            .map_err(|refusal| refused(self.id, way, refusal))?;
+            // What `format` had put into the document at the state restored: an undo of a
+            // `format` takes it back, a redo gives it back.
+            let formatted = Arc::clone(plan.extra());
+            let mut begun = open.begun.clone();
+            begun.set_formatted(Arc::clone(&formatted));
+            (next, plan, begun, formatted)
         };
         // Written from the stack's chunks, gated, and compared with `begin`'s document with
         // the lock let go, so `status` never waits on any of it. Only the session's thread
@@ -103,6 +105,7 @@ impl<C: Kernel + 'static> Session<C> {
             .apply(plan, next)
             .map_err(|refusal| refused(self.id, way, refusal))?;
         open.changed = changed;
+        open.begun.set_formatted(formatted);
         let carried = Arc::clone(&held.carried);
         held.change(next, text, gated, carried);
         drop(held);
