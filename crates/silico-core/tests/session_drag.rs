@@ -1711,6 +1711,133 @@ fn a_moves_reason_reaches_the_sessions_logs() {
 }
 
 #[test]
+fn a_moves_reason_is_filed_under_the_drags_begin_when_its_own_drag_move_answers_it() {
+    // A move's frame is answered by whichever thread finds it: the drag's own, as the frame
+    // comes, or the move's `drag_move`, if the frame came before the move was kept among
+    // the drag's moves. Its events are filed alike either way, under the command that began
+    // the drag (unfixed, the `drag_move` that answered it filed them under itself, so the
+    // test before this one flaked on a gate). Forced here: a move that replaces one waiting
+    // wakes the client before it's kept, and is held in that wake until its frame has come.
+    use silico_core::command::logs::{LogLevel, LogQuery};
+    use std::sync::Mutex;
+    use std::sync::mpsc::{Receiver, Sender, channel};
+    use tracing_subscriber::layer::SubscriberExt;
+    // Alone in its process (nextest runs each test in its own): the core's log layer.
+    let _ = tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(silico_core::command::logs::layer()),
+    );
+    let f = opened(&freed_profile());
+    f.begin_point("pa000003").result.unwrap();
+    // Each move's solve says it's solving and waits to be let go; the worker then refuses
+    // the replacing move, and solves the others.
+    const SOLVING: [f64; 2] = [62.5, 7.0];
+    const REPLACED: [f64; 2] = [66.0, 7.0];
+    const REPLACING: [f64; 2] = [70.0, 7.0];
+    const AFTER: [f64; 2] = [74.0, 7.0];
+    let (solves, solving) = channel::<[f64; 2]>();
+    let solves = Mutex::new(solves);
+    let (lets, gates): (Vec<Sender<()>>, Vec<Mutex<Receiver<()>>>) = (0..3)
+        .map(|_| {
+            let (go, gate) = channel::<()>();
+            (go, Mutex::new(gate))
+        })
+        .unzip();
+    f.sketches.answer_moves(move |begin, to| {
+        let Some(at) = [SOLVING, REPLACING, AFTER].iter().position(|&c| c == to) else {
+            panic!("a move to {to:?} was solved: it should have been dropped");
+        };
+        let _ = solves.lock().unwrap().send(to);
+        let _ = gates[at].lock().unwrap().recv_timeout(HANG);
+        if to == REPLACING {
+            Err(Error::new(
+                ErrorCode::InvalidInput,
+                "the fake refused the move",
+            ))
+        } else {
+            Ok(FakeSketches::dragged(begin, to))
+        }
+    });
+    let first = f.sessions.drag_move(&s1(), SOLVING);
+    assert_eq!(solving.recv_timeout(HANG).unwrap(), SOLVING);
+    // Waiting behind the move solving: the one the next replaces.
+    let replaced = f.sessions.drag_move(&s1(), REPLACED);
+    let mover = Arc::new(Mutex::new(None::<std::thread::ThreadId>));
+    let (let_go, gate) = channel::<()>();
+    let gate = Mutex::new(gate);
+    let (held, in_waker) = channel::<()>();
+    let held = Mutex::new(held);
+    {
+        let mover = Arc::clone(&mover);
+        f.sessions.on_change(move || {
+            // Only the replacing move's own wake, on its own thread, and only once.
+            let mut mover = mover.lock().unwrap();
+            if mover.as_ref() == Some(&std::thread::current().id()) {
+                *mover = None;
+                drop(mover);
+                let _ = held.lock().unwrap().send(());
+                let _ = gate.lock().unwrap().recv_timeout(HANG);
+            }
+        });
+    }
+    let sessions = &f.sessions;
+    let (replacing, after) = std::thread::scope(|scope| {
+        let moving = scope.spawn(|| {
+            *mover.lock().unwrap() = Some(std::thread::current().id());
+            sessions.drag_move(&s1(), REPLACING)
+        });
+        // The replacing move, in its wake, not yet kept.
+        in_waker
+            .recv_timeout(HANG)
+            .expect("the replacing move didn't wake the client before it was kept");
+        // The move solving let go: the drag's thread takes the replacing move next.
+        lets[0].send(()).unwrap();
+        assert_eq!(solving.recv_timeout(HANG).unwrap(), REPLACING);
+        // One sent behind it, then the replacing move refused: the drag's thread found no
+        // move kept to answer with its frame, and took the next, so its frame is there.
+        let after = sessions.drag_move(&s1(), AFTER);
+        lets[1].send(()).unwrap();
+        assert_eq!(solving.recv_timeout(HANG).unwrap(), AFTER);
+        // The replacing move kept, its frame there already: answered by its own drag_move,
+        // on its own thread, before it returns, while the drag's thread waits (so it can be
+        // no other thread's answer).
+        let_go.send(()).unwrap();
+        let replacing = answer(moving.join().unwrap());
+        lets[2].send(()).unwrap();
+        (replacing, after)
+    });
+    assert_eq!(answer(first).result.unwrap().frame, FrameEnd::Solved);
+    assert_eq!(answer(replaced).result.unwrap().frame, FrameEnd::Dropped);
+    assert_eq!(replacing.result.unwrap().frame, FrameEnd::Failed);
+    assert_eq!(answer(after).result.unwrap().frame, FrameEnd::Solved);
+    let logs = f
+        .sessions
+        .read_logs(
+            &s1(),
+            &LogQuery {
+                level: LogLevel::Info,
+                feature: None,
+                after: None,
+                limit: 1000,
+            },
+        )
+        .result
+        .unwrap();
+    let said: Vec<(&str, &str)> = logs
+        .events
+        .iter()
+        .filter(|e| e.message.starts_with("the drag's move"))
+        .map(|e| (e.spans[0].as_str(), e.message.as_str()))
+        .collect();
+    assert_eq!(
+        said,
+        [(
+            "drag_begin",
+            "the drag's move was refused: the fake refused the move"
+        )]
+    );
+}
+
+#[test]
 fn the_sessions_own_reload_of_its_file_ends_the_drag() {
     let profile = freed_profile();
     let f = opened(&profile);
