@@ -4817,8 +4817,16 @@ fn a_sweeps_body_read_before_the_session_moved_is_read_again() {
         .unwrap(),
     );
     create(&mut h, "Pad");
-    // Its read answered, not yet taken: the session then moves.
-    std::thread::sleep(Duration::from_millis(200));
+    // Its read sent, and answered (no published read is left running), but not yet taken,
+    // the harness not stepped: so it read the revision before the box. The session then
+    // moves.
+    assert!(h.state().tabs()[0].reading_body());
+    let deadline = Instant::now() + WAIT;
+    while !f.sessions.status(&id).result.unwrap().reads.is_empty() {
+        assert!(Instant::now() < deadline, "the body's read never answered");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(h.state().tabs()[0].reading_body());
     hold.release();
     check.wait();
     let theirs = theirs.wait().result.unwrap().feature.id;

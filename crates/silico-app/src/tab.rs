@@ -1574,6 +1574,14 @@ impl Tab {
         }
     }
 
+    /// Whether a new sweep's body is being read (the document's features at the session's
+    /// revision, for its add): what a test waits on.
+    pub fn reading_body(&self) -> bool {
+        self.under
+            .iter()
+            .any(|under| matches!(under, Under::Base { .. }))
+    }
+
     /// Whether the dialog's inputs let it be OK'd: valid, no edit of one refused, and its
     /// add not unanswered (what's typed meanwhile is sent after it). While the tab closes,
     /// [`close_dialog`](Self::close_dialog) takes neither OK nor Cancel.
