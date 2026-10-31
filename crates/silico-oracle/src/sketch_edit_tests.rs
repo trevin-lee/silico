@@ -1736,8 +1736,6 @@ fn an_anchor_is_cited_with_the_line_it_stands_on() {
     let other = note_line("se-extend-built").unwrap();
     assert_eq!(
         cited(&["se-merge-built", "se-extend-built", missing]),
-        format!(
-            "#se-merge-built (line {line}), #se-extend-built (line {other}), #{missing}"
-        )
+        format!("#se-merge-built (line {line}), #se-extend-built (line {other}), #{missing}")
     );
 }
