@@ -434,7 +434,7 @@
             "type": "string"
           },
           "level": {
-            "description": "The deflection, in mm, the view asked for: a power of two.",
+            "description": "The deflection, in mm, the view asked for: a power of two; or, for a body at no depth\n(in a perspective view, one with no box or reaching the eye's plane), its floor, the\ndeflection used.",
             "type": "number"
           },
           "normals": {

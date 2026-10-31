@@ -742,10 +742,10 @@ fn a_level_made_as_asked_is_known_and_a_finer_one_is_asked_again() {
 }
 
 // #331, Main's condition on `box: null`: a body the kernel couldn't measure has no box, so
-// no depth. In a perspective view it's meshed for no depth, the finest level there is (f64's
-// least normal), so at its floor, serving [0, 2 · its floor's level]; `render` takes its level
-// by the same rule (`level_of`), so a render of the same view meshes nothing more. In an
-// orthographic view, depth doesn't matter: its level is the view's.
+// no depth. In a perspective view it asks the finest level there is, so it's meshed at its
+// floor, and its level is that floor, serving [0, 2 · the floor's power of two]; `render`
+// asks by the same rule (`level_of`), so a render of the same view meshes nothing more. In
+// an orthographic view, depth doesn't matter: its level is the view's.
 #[test]
 fn an_unmeasured_body_has_no_box_and_is_meshed_as_render_meshes_it() {
     use silico_core::command::render::{Render, RenderOn, render};
@@ -769,14 +769,16 @@ fn an_unmeasured_body_has_no_box_and_is_meshed_as_render_meshes_it() {
     let read = bench.read(&of(&perspective, 1000, 1000)).unwrap();
     let body = &read.bodies[0];
     assert_eq!(body.bounds, None);
-    assert_eq!(body.level, f64::MIN_POSITIVE);
-    // The fake's floor: 1e-4 of the cut's diagonal, √2144 · 1e-4 = 0.0046303; its level 2⁻⁸.
+    // The fake's floor: 1e-4 of the cut's diagonal, √2144 · 1e-4 = 0.0046303, its level as
+    // well as its deflection; its power of two 2⁻⁸.
     assert!(
         (body.deflection - 0.004_630_3).abs() < 1e-7,
         "{}",
         body.deflection
     );
+    assert_eq!(body.level.to_bits(), body.deflection.to_bits());
     assert_eq!(body.serves, [0.0, 2.0 * pow2(-8)]);
+    // Asked of the kernel as the finest there is, which it meshes at the floor.
     assert_eq!(bench.meshed(), [f64::MIN_POSITIVE]);
     // A render of the same view asks the same level: the floor's mesh, already kept.
     let renderer = FakeRenderer::new();

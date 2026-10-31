@@ -17,7 +17,8 @@ use silico_protocol::{Camera, Mesh};
 
 use super::elements::built;
 use super::render::{
-    AnsweredCamera, Body, asked_view, bodies, camera_for, eye_outside, level_of, meshed,
+    AnsweredCamera, Body, NO_DEPTH_LEVEL, asked_view, bodies, camera_for, eye_outside, level_of,
+    meshed,
 };
 use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
 use crate::document::FeatureId;
@@ -73,7 +74,9 @@ pub struct MeshedBody {
     pub body: Option<u32>,
     /// Its step's key.
     pub key: Key,
-    /// The deflection its view asked for (`mesh_level` of its half pixel).
+    /// The deflection its view asked for (`mesh_level` of its half pixel); for a body at no
+    /// depth (a perspective view's, with no box or one reaching the eye's plane), the floor
+    /// its mesh was made at.
     pub level: f64,
     /// The deflection the kernel used: the level, or the body's floor, which is coarser.
     pub deflection: f64,
@@ -259,6 +262,13 @@ pub fn meshes<K: Kernel>(
             let serves = match (deflection > level, mesh_level(deflection)) {
                 (true, Some(floor_level)) => [0.0, 2.0 * floor_level],
                 _ => [level, 2.0 * level],
+            };
+            // A body at no depth asked the finest level there is, a number that names no
+            // mesh: its level is the floor its mesh was made at (#331, Main).
+            let level = if level == NO_DEPTH_LEVEL {
+                deflection
+            } else {
+                level
             };
             Ok(MeshedBody {
                 feature: solid.id.clone(),

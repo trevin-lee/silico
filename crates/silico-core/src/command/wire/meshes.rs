@@ -426,7 +426,9 @@ pub struct MeshedBodySchema {
     /// anything it's built from changes it.
     #[schemars(regex(pattern = KEY_PATTERN))]
     pub key: String,
-    /// The deflection, in mm, the view asked for: a power of two.
+    /// The deflection, in mm, the view asked for: a power of two; or, for a body at no depth
+    /// (in a perspective view, one with no box or reaching the eye's plane), its floor, the
+    /// deflection used.
     pub level: f64,
     /// The deflection the kernel used: the level, or the body's floor, which is coarser.
     pub deflection: f64,
