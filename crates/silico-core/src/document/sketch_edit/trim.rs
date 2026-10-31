@@ -40,12 +40,14 @@ pub struct Trim {
 /// Each new end at a cut shares the cutter's end where a constraint holds that end on the
 /// curve (an `on`, which then goes as implied, or a `tangent_on`, which becomes a
 /// `tangent_at`); else it's a new point, `on` the cutter (decision 5). An edge tangency
-/// with the cutter becomes an end tangency there, its `direction` as the stored drawing
-/// shows it (decision 8: the solve after the edit must agree, which is the command's). A
-/// line's direction constraints and edge tangencies go to every piece (§4, item 9); the
-/// rest follow §3's table, a point on the removed part dropped with its `on`
-/// (`333ca836c0`). A curve's end trimmed away goes, with its constraints, unless another
-/// curve uses it, which keeps it.
+/// with the cutter becomes an end tangency there, with no `on`, its `direction` as the
+/// stored drawing shows it (decision 8: the solve after the edit must agree, which is the
+/// command's). A new end is held on one cutter alone: of cuts within 1e-7 mm of one place,
+/// a held end's, then a held tangency's, then the nearest, then the first along the curve
+/// and by cutter ID (the note's §4). A line's direction constraints and edge tangencies go
+/// to every piece (§4, item 9); the rest follow §3's table, a point on the removed part
+/// dropped with its `on` (`333ca836c0`). A curve's end trimmed away goes, with its
+/// constraints, unless another curve uses it, which keeps it.
 ///
 /// `ids` are the new members' IDs, in `added`'s order: the new points along the curve from
 /// its start (a circle's along the arc left), the new piece, the constraints copied to it
@@ -175,20 +177,9 @@ pub fn trim_with(
         let shared = cut.end.as_ref().filter(|_| cut.held);
         // A cutter's tangency joins one end only: a cutter drawn crossing twice holds the
         // other with an on.
-        let tangent = sketch
-            .constraints
-            .iter()
-            .find(|c| match &c.form {
-                Form::Tangent { a, b, .. } => {
-                    (*a == curve_ref && b.element() == Some(&cut.cutter))
-                        || (*b == curve_ref && a.element() == Some(&cut.cutter))
-                }
-                _ => false,
-            })
-            .filter(|c| {
-                shared.is_none() && !joins.iter().any(|j| j.tangent.as_ref() == Some(&c.id))
-            })
-            .map(|c| c.id.clone());
+        let tangent = cut.tangent.clone().filter(|tangent| {
+            shared.is_none() && !joins.iter().any(|j| j.tangent.as_ref() == Some(tangent))
+        });
         // A cutter's perpendicular goes with the first of its cuts.
         let perpendicular = sketch
             .constraints
@@ -795,13 +786,35 @@ struct Cut {
     /// Whether a constraint holds that end on the curve (an `on`, or the cutter's
     /// `tangent_on`), so the new end shares it (decision 5).
     held: bool,
+    /// The cutter's edge tangency with the curve, the sketch's first, if it has one: a new
+    /// end at the cut makes it an end tangency there, with no `on`.
+    tangent: Option<ElementId>,
+}
+
+/// What the sketch already holds of a cutter to the trimmed curve at a cut, which ranks the
+/// cuts at one place by what joining each adds, least first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Rank {
+    /// The cutter's end, held on the curve: the new end is that point, its `on` implied.
+    HeldEnd,
+    /// The cutter, held edge-tangent to the curve: a new point, the tangency made an end
+    /// tangency there, no `on`.
+    HeldTangency,
+    /// Neither: a new point, `on` the cutter.
+    Other,
 }
 
 impl Cut {
-    /// How the trim ranks the cuts at one place: a held end, which the new end shares,
-    /// before any other.
-    fn rank(&self) -> bool {
-        !self.held
+    /// How the trim ranks the cuts at one place ([`Rank`]): a held end, then a held
+    /// tangency, then any other.
+    fn rank(&self) -> Rank {
+        if self.held {
+            Rank::HeldEnd
+        } else if self.tangent.is_some() {
+            Rank::HeldTangency
+        } else {
+            Rank::Other
+        }
     }
 }
 
@@ -846,12 +859,27 @@ fn cuts(sketch: &Sketch, curve: &ElementId, geo: &Geo) -> Vec<Cut> {
             _ => false,
         })
     };
+    // The cutter's edge tangency with the curve, named either way round.
+    let tangent = |cutter: &ElementId| {
+        sketch
+            .constraints
+            .iter()
+            .find(|c| match &c.form {
+                Form::Tangent { a, b, .. } => {
+                    (*a == curve_ref && b.element() == Some(cutter))
+                        || (*b == curve_ref && a.element() == Some(cutter))
+                }
+                _ => false,
+            })
+            .map(|c| c.id.clone())
+    };
     let mut cuts: Vec<Cut> = Vec::new();
     let others = super::curves(sketch);
     for (_, cutter, _) in others.iter().filter(|(_, id, _)| *id != curve) {
         let Some(other) = Geo::of(sketch, cutter) else {
             continue;
         };
+        let tangent = tangent(cutter);
         let mut found: Vec<Cut> = Vec::new();
         // Its ends on the curve.
         for end in end_ids(sketch, cutter) {
@@ -865,6 +893,7 @@ fn cuts(sketch: &Sketch, curve: &ElementId, geo: &Geo) -> Vec<Cut> {
                     along: geo.along(at),
                     cutter: (*cutter).clone(),
                     held: held(cutter, &end),
+                    tangent: tangent.clone(),
                     end: Some(end),
                 });
             }
@@ -881,6 +910,7 @@ fn cuts(sketch: &Sketch, curve: &ElementId, geo: &Geo) -> Vec<Cut> {
                         cutter: (*cutter).clone(),
                         end: None,
                         held: false,
+                        tangent: tangent.clone(),
                     });
                 }
             }
@@ -1222,8 +1252,9 @@ impl Layout {
     }
 }
 
-/// Of the cuts within 1e-7 mm of `cut`, the nearest nearest-ranked ([`Cut::rank`]): `cut`
-/// itself, unless one there is a held end and it isn't.
+/// Of the cuts within 1e-7 mm of `cut`, the best ranked ([`Cut::rank`]), then the nearest,
+/// then the first in the cuts' order (along the curve, then by cutter ID): that order is the
+/// bound on a tie of two of one rank at one place.
 fn best_at(cuts: &[Cut], cut: &Cut) -> Cut {
     cuts.iter()
         .filter(|c| distance(c.at, cut.at) <= LENGTH_TOLERANCE)
