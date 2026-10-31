@@ -298,3 +298,6 @@ crates/silico-core/src/document/suppression.rs | unsuppress | replace match guar
 # ulp, at least 2^-76 for any radius the gate takes (over 1e-7 mm), and fl(1e-8) is an odd
 # multiple of 2^-78: no input reaches the edge exactly.
 crates/silico-oracle/src/sketch_edit.rs | placed_geometry | replace > with >= | #316
+crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with <= | #320
+crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with > | #320
+crates/silico-core/src/document/sketch_edit/join.rs | one_arc | replace > with >= | #320
