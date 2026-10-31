@@ -42,9 +42,20 @@ pub struct Edit {
 #[derive(Debug, Clone, PartialEq)]
 enum Queued {
     Edit(Edit),
-    Save { then_close: bool },
-    Revert { then_close: bool },
-    Step { undo: bool },
+    Save {
+        then_close: bool,
+    },
+    /// Save As (`commit` with a path): to `path`, replacing a file there if `replace`.
+    SaveAs {
+        path: String,
+        replace: bool,
+    },
+    Revert {
+        then_close: bool,
+    },
+    Step {
+        undo: bool,
+    },
 }
 
 /// A tab's edits and what waits with them: at most one edit in flight, the rest queued
@@ -79,7 +90,10 @@ impl Edits {
                     return;
                 }
                 Queued::Edit(_) => {}
-                Queued::Save { .. } | Queued::Revert { .. } | Queued::Step { .. } => break,
+                Queued::Save { .. }
+                | Queued::SaveAs { .. }
+                | Queued::Revert { .. }
+                | Queued::Step { .. } => break,
             }
         }
         self.queue.push_back(Queued::Edit(edit));
@@ -98,6 +112,14 @@ enum Under {
         then_close: bool,
     },
     Step(Running<Stepped>),
+    /// A Save As, the path it was given, which the tab asks to replace if a file is
+    /// there, and whether the tab began the transaction it commits (rolled back if it's
+    /// refused, so no empty transaction stays open).
+    SaveAs {
+        running: Running<Committed>,
+        path: String,
+        began: bool,
+    },
     Close(Running<Closed>),
 }
 
@@ -185,6 +207,11 @@ pub struct Tab {
     /// A save or a revert that was to close the tab was refused: the tab stays, and a quit
     /// waiting on it stops ([`take_close_refused`](Self::take_close_refused)).
     close_refused: bool,
+    /// A Save As found a file at the path it was given, and wasn't to replace it: the path,
+    /// for the window to ask whether to ([`take_replace_asked`](Self::take_replace_asked)).
+    replace_asked: Option<String>,
+    /// A Save As that began its own transaction was refused: it's rolled back next.
+    roll_back: bool,
     /// The session has closed: the tab goes.
     pub closed: bool,
 }
@@ -237,6 +264,8 @@ impl Tab {
             hidden: std::collections::BTreeSet::new(),
             message: None,
             close_refused: false,
+            replace_asked: None,
+            roll_back: false,
             closed: false,
         }
     }
@@ -318,6 +347,28 @@ impl Tab {
     pub fn unsaved(&self) -> bool {
         // A `begin` under way goes with the edit it was sent for (`edits.idle` is false).
         self.changed() || !self.edits.idle() || (self.transaction && !self.quiet())
+    }
+
+    /// Save As (`commit` with a path, docs/design/m5.0-app.md §4): once everything asked
+    /// before it has answered, as a save, the document written to `path` (replacing a file
+    /// there if `replace`), the tab then of the new file. A file there and no `replace` is
+    /// asked about ([`take_replace_asked`](Self::take_replace_asked)); any other refusal is
+    /// said.
+    pub fn save_as<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        path: String,
+        replace: bool,
+    ) {
+        self.message = None;
+        self.edits.queue.push_back(Queued::SaveAs { path, replace });
+        self.advance(sessions);
+    }
+
+    /// The path a Save As found a file at, if one did since this was last asked: whether to
+    /// replace it is the person's to say.
+    pub fn take_replace_asked(&mut self) -> Option<String> {
+        self.replace_asked.take()
     }
 
     /// Whether a save or a revert that was to close it was refused since this was last asked.
@@ -405,6 +456,12 @@ impl Tab {
         if close {
             self.under.push(Under::Close(sessions.close(&self.id)));
         }
+        if std::mem::take(&mut self.roll_back) {
+            self.under.push(Under::Rollback {
+                running: sessions.rollback(&self.id),
+                then_close: false,
+            });
+        }
         self.advance(sessions);
     }
 
@@ -446,6 +503,39 @@ impl Tab {
                 Err(running) => Some(Under::Commit {
                     running,
                     then_close,
+                }),
+            },
+            Under::SaveAs {
+                running,
+                path,
+                began,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    match response.result {
+                        // The session holds the new file from now on, by the path given.
+                        Ok(committed) => {
+                            self.path = committed.path;
+                            self.disk_choice = DiskChoice::None;
+                        }
+                        Err(problems) => {
+                            // Its own transaction, begun for it, ended: it held nothing.
+                            self.roll_back |= began;
+                            if problems.errors().first().and_then(|e| e.suggestion())
+                                == Some(silico_core::file::REPLACE_ADVICE)
+                            {
+                                self.replace_asked = Some(path);
+                            } else {
+                                self.message = Some(said(&problems));
+                            }
+                        }
+                    }
+                    None
+                }
+                Err(running) => Some(Under::SaveAs {
+                    running,
+                    path,
+                    began,
                 }),
             },
             Under::Rollback {
@@ -573,6 +663,21 @@ impl Tab {
                         then_close,
                     });
                 }
+                Queued::SaveAs { path, replace } => {
+                    // A transaction begun first if none is open: a Save As commits one,
+                    // and one with nothing changed writes the document all the same.
+                    let began = !self.transaction && !self.beginning;
+                    if began {
+                        self.beginning = true;
+                        self.under.push(Under::Begin(sessions.begin(&self.id)));
+                    }
+                    self.saves += 1;
+                    self.under.push(Under::SaveAs {
+                        running: sessions.save_as(&self.id, path.clone(), replace),
+                        path,
+                        began,
+                    });
+                }
                 Queued::Save { then_close } => {
                     self.saves += 1;
                     self.under.push(Under::Commit {
@@ -598,7 +703,10 @@ impl Tab {
             || self.under.iter().any(|under| {
                 matches!(
                     under,
-                    Under::Commit { .. } | Under::Rollback { .. } | Under::Step(_)
+                    Under::Commit { .. }
+                        | Under::SaveAs { .. }
+                        | Under::Rollback { .. }
+                        | Under::Step(_)
                 )
             })
     }
@@ -679,7 +787,7 @@ impl Tab {
             .edits
             .queue
             .iter()
-            .rposition(|queued| matches!(queued, Queued::Save { .. }))
+            .rposition(|queued| matches!(queued, Queued::Save { .. } | Queued::SaveAs { .. }))
             .map_or(0, |save| save + 1);
         // A revert queued to close it (Don't save) still closes it: its intent is carried.
         let then_close = then_close
