@@ -1,0 +1,29 @@
+[package]
+name = "silico-app"
+description = "Silico's app: a window over the core's commands (docs/design/m5.0-app.md)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "silico-app"
+path = "src/main.rs"
+
+[dependencies]
+silico-core.workspace = true
+silico-font.workspace = true
+eframe.workspace = true
+egui_tiles.workspace = true
+# The backends eframe's renderer draws with (Metal, Vulkan), as the workspace chooses them.
+wgpu.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+egui_kittest.workspace = true
+silico-core = { workspace = true, features = ["fake"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -521,12 +521,16 @@ impl<T> Running<T> {
 
     /// Waits for the answer.
     pub fn wait(self) -> Response<T> {
+        #[cfg(feature = "fake")]
+        crate::fake::never_waits::waited();
         let lost = self.lost;
         self.answer.recv().unwrap_or_else(|_| unanswered(lost))
     }
 
     /// Waits up to `timeout` for the answer, or gives the handle back to wait on again.
     pub fn wait_timeout(self, timeout: Duration) -> Result<Response<T>, Self> {
+        #[cfg(feature = "fake")]
+        crate::fake::never_waits::waited();
         match self.answer.recv_timeout(timeout) {
             Ok(response) => Ok(response),
             Err(RecvTimeoutError::Timeout) => Err(self),
