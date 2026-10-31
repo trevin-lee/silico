@@ -31,6 +31,8 @@ mod adversarial_references;
 mod adversarial_sweep_faces;
 #[path = "adversarial_type_words.rs"]
 mod adversarial_type_words;
+#[path = "face_sketches.rs"]
+mod face_sketches;
 #[path = "history.rs"]
 mod history;
 #[path = "history_fixtures.rs"]
