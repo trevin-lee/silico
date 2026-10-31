@@ -846,7 +846,7 @@
   },
   {
     "name": "unjoin_unshared_point",
-    "note": "Unjoining a point no other curve shares: Silico refuses it; FreeCAD 1.1.3's vertex Delete raises \"Not able to delete a constraint on point\" (:262), where main's does nothing (bc4d463cdf).",
+    "note": "Unjoining a point no other curve shares: Silico refuses it; FreeCAD 1.1.3's vertex Delete raises \"Not able to delete a constraint on point\" (:267), where main's does nothing (bc4d463cdf).",
     "sketch": "chain",
     "edit": {
       "unjoin": {
@@ -1062,7 +1062,7 @@
   },
   {
     "name": "merge_apart_onto_a_lines_other_end",
-    "note": "The lone point at the line's start merged with the line's end, the lone point named first: Silico places the merged point at (0, 0), the line left with no length, which the gate refuses, so the merge is refused (:305). FreeCAD 1.1.3's solve of the coincidence fails (-1, no conflicting or redundant constraint), so its Coincident command rolls the merge back (:66): both refuse.",
+    "note": "The lone point at the line's start merged with the line's end, the lone point named first: Silico places the merged point at (0, 0), the line left with no length, which the gate refuses, so the merge is refused (:310). FreeCAD 1.1.3's solve of the coincidence fails (-1, no conflicting or redundant constraint), so its Coincident command rolls the merge back (:66): both refuse.",
     "sketch": "line_and_point_at_its_start",
     "edit": {
       "merge": {
@@ -1115,7 +1115,7 @@
   },
   {
     "name": "merge_leaves_edge_tangent",
-    "note": "Merging the touching ends: the edge tangent there becomes a tangent_at, its stored side kept (:304), as FreeCAD's Coincident command puts an end tangency in its place (180d722a53).",
+    "note": "Merging the touching ends: the edge tangent there becomes a tangent_at, its stored side kept (:309), as FreeCAD's Coincident command puts an end tangency in its place (180d722a53).",
     "sketch": "touching_with_edge_tangent",
     "edit": {
       "merge": {
@@ -1196,7 +1196,7 @@
   },
   {
     "name": "merge_conflicting_coincident",
-    "note": "test_conflicting_coincident_selection_is_rejected: the merge's solve conflicts, so Silico refuses it (:306), as FreeCAD's command rolls it back.",
+    "note": "test_conflicting_coincident_selection_is_rejected: the merge's solve conflicts, so Silico refuses it (:311), as FreeCAD's command rolls it back.",
     "sketch": "conflicting_coincident",
     "edit": {
       "merge": {
@@ -1365,7 +1365,7 @@
   },
   {
     "name": "extend_probe_line_by_0",
-    "note": "By 0: Silico refuses it, as changing nothing (:329); FreeCAD reports success with nothing moved.",
+    "note": "By 0: Silico refuses it, as changing nothing (:334); FreeCAD reports success with nothing moved.",
     "sketch": "extend_probe_line",
     "edit": {
       "extend": {
@@ -1477,7 +1477,7 @@
   },
   {
     "name": "extend_free_line_flipped",
-    "note": "By -15 on a 10 mm line: 1.1.3 flips it to (0, 0)-(-5, 0) (section 7's probe); the request's own target flips it, so Silico refuses it before any drag (:325, :331).",
+    "note": "By -15 on a 10 mm line: 1.1.3 flips it to (0, 0)-(-5, 0) (section 7's probe); the request's own target flips it, so Silico refuses it before any drag (:330, :336).",
     "sketch": "extend_free_line",
     "edit": {
       "extend": {
@@ -1491,7 +1491,7 @@
   },
   {
     "name": "extend_free_line_to_nothing",
-    "note": "By -10 on a 10 mm line: nothing left, which Silico refuses (:325).",
+    "note": "By -10 on a 10 mm line: nothing left, which Silico refuses (:330).",
     "sketch": "extend_free_line",
     "edit": {
       "extend": {
@@ -1505,7 +1505,7 @@
   },
   {
     "name": "extend_probe_line_end_by_minus_15",
-    "note": "The probe's line, horizontal and 10 long, its end by -15: the request's own target flips it, so Silico refuses it before any drag (:325, :331); FreeCAD drags the end toward (-5, 0), the length and the horizontal sliding the line to (-15, 0)-(-5, 0).",
+    "note": "The probe's line, horizontal and 10 long, its end by -15: the request's own target flips it, so Silico refuses it before any drag (:330, :336); FreeCAD drags the end toward (-5, 0), the length and the horizontal sliding the line to (-15, 0)-(-5, 0).",
     "sketch": "extend_probe_line",
     "edit": {
       "extend": {
@@ -1519,7 +1519,7 @@
   },
   {
     "name": "extend_held_end",
-    "note": "An end its constraints hold: Silico refuses it as changing nothing (:335); FreeCAD's drag reports success with the end where it was.",
+    "note": "An end its constraints hold: Silico refuses it as changing nothing (:340); FreeCAD's drag reports success with the end where it was.",
     "sketch": "extend_held_line",
     "edit": {
       "extend": {
@@ -1533,7 +1533,7 @@
   },
   {
     "name": "extend_line_held_by_dimensions",
-    "note": "Its start held in x, its length and direction held: the end can't move along the line, so Silico refuses it (:335), where FreeCAD reports success.",
+    "note": "Its start held in x, its length and direction held: the end can't move along the line, so Silico refuses it (:340), where FreeCAD reports success.",
     "sketch": "extend_line_held_by_dimensions",
     "edit": {
       "extend": {
@@ -1603,7 +1603,7 @@
   },
   {
     "name": "extend_collapses_neighbour",
-    "note": "A's end by 5 onto B's far end: B left with no length, which Silico refuses (:330, :335); FreeCAD 1.1.3's drag fails, leaves the sketch as it was, and still returns success (:318).",
+    "note": "A's end by 5 onto B's far end: B left with no length, which Silico refuses (:335, :340); FreeCAD 1.1.3's drag fails, leaves the sketch as it was, and still returns success (:323).",
     "sketch": "extend_collapses_neighbour",
     "edit": {
       "extend": {
@@ -1673,7 +1673,7 @@
   },
   {
     "name": "extend_arc_to_nothing",
-    "note": "By -90 degrees: no sweep left, which Silico refuses (:325); 1.1.3 raises Geom_TrimmedCurve::U1 == U2 and extends nothing (:318).",
+    "note": "By -90 degrees: no sweep left, which Silico refuses (:330); 1.1.3 raises Geom_TrimmedCurve::U1 == U2 and extends nothing (:323).",
     "sketch": "extend_arc",
     "edit": {
       "extend": {
@@ -1687,7 +1687,7 @@
   },
   {
     "name": "extend_arc_inverted",
-    "note": "By -120 degrees, the note's probe: the sweep -30, an inverted arc, which Silico refuses (:325); 1.1.3's range wraps to 330 degrees (:318).",
+    "note": "By -120 degrees, the note's probe: the sweep -30, an inverted arc, which Silico refuses (:330); 1.1.3's range wraps to 330 degrees (:323).",
     "sketch": "extend_arc",
     "edit": {
       "extend": {
@@ -1701,7 +1701,7 @@
   },
   {
     "name": "extend_arc_whole_turn",
-    "note": "By 270 degrees: a whole turn, which Silico refuses (:333); 1.1.3's range wraps.",
+    "note": "By 270 degrees: a whole turn, which Silico refuses (:338); 1.1.3's range wraps.",
     "sketch": "extend_arc",
     "edit": {
       "extend": {
@@ -1715,7 +1715,7 @@
   },
   {
     "name": "extend_arc_past_a_whole_turn",
-    "note": "By 300 degrees: a sweep of 390, past a whole turn, which Silico refuses (:333); 1.1.3's range wraps to 30 degrees (:318).",
+    "note": "By 300 degrees: a sweep of 390, past a whole turn, which Silico refuses (:338); 1.1.3's range wraps to 30 degrees (:323).",
     "sketch": "extend_arc",
     "edit": {
       "extend": {
@@ -1729,7 +1729,7 @@
   },
   {
     "name": "extend_arc_by_0",
-    "note": "By 0 degrees: Silico refuses it (:329).",
+    "note": "By 0 degrees: Silico refuses it (:334).",
     "sketch": "extend_arc",
     "edit": {
       "extend": {
@@ -1785,7 +1785,7 @@
   },
   {
     "name": "extend_arc_collapses_neighbour",
-    "note": "The arc's end, which the line shares, turned 90 degrees on to (-5, 0), the line's far end: the line left with no length, a sketch the gate refuses, so Silico refuses the extend (:335); FreeCAD's setRange moves only the arc's end, and its solve (line first, :323) collapses the line in some runs and settles without it in others, each excused.",
+    "note": "The arc's end, which the line shares, turned 90 degrees on to (-5, 0), the line's far end: the line left with no length, a sketch the gate refuses, so Silico refuses the extend (:340); FreeCAD's setRange moves only the arc's end, and its solve (line first, :328) collapses the line in some runs and settles without it in others, each excused.",
     "sketch": "extend_arc_into_neighbour",
     "edit": {
       "extend": {
@@ -1799,7 +1799,7 @@
   },
   {
     "name": "extend_arc_order_probe",
-    "note": "The note's arc-order probe (:323), its line-first order, as the harness gives FreeCAD the line before the arc: the arc's end, which the line shares, turned 30 degrees on. Silico's write moves the shared point, and the line's end with it, to (-5, 8.660254), the note's arc-first result; FreeCAD's setRange moves only the arc's end and its solve settles the two otherwise, the difference :323 excuses, so only what both settle alike is compared.",
+    "note": "The note's arc-order probe (:328), its line-first order, as the harness gives FreeCAD the line before the arc: the arc's end, which the line shares, turned 30 degrees on. Silico's write moves the shared point, and the line's end with it, to (-5, 8.660254), the note's arc-first result; FreeCAD's setRange moves only the arc's end and its solve settles the two otherwise, the difference :328 excuses, so only what both settle alike is compared.",
     "sketch": "extend_arc_order_probe",
     "edit": {
       "extend": {
@@ -1813,7 +1813,7 @@
   },
   {
     "name": "extend_arc_turn_too_small",
-    "note": "A turn of 1e-9 degrees, 1.7e-11 mm, below the coordinates' last bit there: Silico refuses it as changing nothing (:335); FreeCAD reports success.",
+    "note": "A turn of 1e-9 degrees, 1.7e-11 mm, below the coordinates' last bit there: Silico refuses it as changing nothing (:340); FreeCAD reports success.",
     "sketch": "extend_far_arc",
     "edit": {
       "extend": {
@@ -1827,7 +1827,7 @@
   },
   {
     "name": "extend_circle",
-    "note": "A circle: refused by both (:324, as 1.1 did).",
+    "note": "A circle: refused by both (:329, as 1.1 did).",
     "sketch": "extend_other_kinds",
     "edit": {
       "extend": {
