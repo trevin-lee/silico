@@ -232,7 +232,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Commit => (
             "Commit",
-            "End the session's transaction, saving its document with the fingerprints of what its edits reached. Refused as `conflict` if the file changed outside the session since: roll back, or begin again from the file.",
+            "End the session's transaction, saving its document with the fingerprints of what its edits reached. Refused as `conflict` if the file changed outside the session since: roll back, or begin again from the file, or save elsewhere with `path`. With `path`, saves to that file instead (Save As), which the session then holds.",
         ),
         Command::Rollback => (
             "Roll back",

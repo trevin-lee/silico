@@ -369,8 +369,9 @@ fn every_example_holds_to_its_tools_schemas() {
     // 4, and timeline's 2; M5.10's 8: sketch's 2, sketch_add's 2, and sketch_remove's 4;
     // its geometry edits' 14: sketch_split's 4, sketch_trim's 3, sketch_unjoin's 3, and
     // sketch_merge's 3; cache_clear's refusal of a cache that leads out of the workspace
-    // (the contract lows); and M5.2's 10: undo's 6, and redo's 4.
-    assert_eq!(seen, 151);
+    // (the contract lows); M5.2's 10: undo's 6, and redo's 4; and M5.4's Save As, commit's
+    // 3: its request, its result, and a file already there.
+    assert_eq!(seen, 154);
 }
 
 #[test]

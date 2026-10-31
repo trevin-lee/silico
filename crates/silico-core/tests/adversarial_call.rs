@@ -27,7 +27,10 @@ fn requests(session: &str) -> Vec<(&'static str, String)> {
             format!(r#"{{"session": "{s}", "command": "check"}}"#),
         ),
         ("begin", format!(r#"{{"session": "{s}"}}"#)),
-        ("commit", format!(r#"{{"session": "{s}"}}"#)),
+        (
+            "commit",
+            format!(r#"{{"session": "{s}", "path": null, "replace": false}}"#),
+        ),
         ("rollback", format!(r#"{{"session": "{s}"}}"#)),
         (
             "format",
@@ -400,7 +403,7 @@ fn after_open() -> Vec<(&'static str, String)> {
             r#"{"session": "s1", "revision": 2, "before": null, "feature": {"id": "q0000001", "type": "box", "name": "B", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}}"#
                 .to_owned(),
         ),
-        ("commit", s1.clone()),
+        ("commit", r#"{"session": "s1", "path": null, "replace": false}"#.to_owned()),
         (
             "check",
             r#"{"session": "s1", "model": "current", "fresh": false}"#.to_owned(),

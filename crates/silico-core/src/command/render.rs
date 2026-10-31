@@ -290,6 +290,7 @@ pub fn render<K: Kernel>(
         replace: request.replace,
         workspace: on.workspace,
         held: on.held,
+        document: false,
     };
     let asked = checked(request, &output)?;
     let bodies = bodies(model);

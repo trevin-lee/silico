@@ -18,6 +18,7 @@ use crate::command::{
 };
 use crate::document::json::Node;
 use crate::document::{FeatureId, PROBLEMS_LISTED};
+use crate::{Error, ErrorCode};
 
 /// A request that names only its session: `begin`'s, `commit`'s, and `rollback`'s, and
 /// `close`'s, `status`'s, and `outline`'s.
@@ -75,6 +76,58 @@ impl ToWire for StepRequest {
             ("session", self.session.to_wire()),
             ("revision", self.revision.to_wire()),
             ("to", Json::or_null(self.to.as_ref(), ToWire::to_wire)),
+        ])
+    }
+}
+
+/// A `commit` request: the session, the path to save to (`None` for its own file; a path,
+/// a Save As, M5.4), and whether a file there may be replaced.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommitRequest {
+    pub session: SessionId,
+    pub path: Option<String>,
+    pub replace: bool,
+}
+
+impl CommitRequest {
+    /// The request `node` holds, or every reason its shape is refused: as well as each
+    /// field's own, `replace` true with no `path` (it saves to its own file, which is
+    /// always written over), as fields that must agree are refused.
+    pub fn read(node: &Node) -> Result<Self, Problems> {
+        RequestFields::read(node, |f| {
+            let session = f.session();
+            let path = f.nullable_string("path");
+            let replace = f.bool("replace");
+            let (path, replace) = (path?, replace?);
+            if path.is_none() && replace {
+                f.refuse(
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        "replace must be false for a commit to the session's own file (path null)",
+                    )
+                    .with_parameter("replace")
+                    .with_suggestion(
+                        "give replace false to save to the session's own file, or a path to save elsewhere",
+                    ),
+                );
+                return None;
+            }
+            Some(CommitRequest {
+                session: session?,
+                path: path.map(str::to_owned),
+                replace,
+            })
+        })
+    }
+}
+
+impl ToWire for CommitRequest {
+    /// The request as a client writes it, every field in the shape's order.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("session", self.session.to_wire()),
+            ("path", Json::or_null(self.path.as_deref(), Json::str)),
+            ("replace", Json::bool(self.replace)),
         ])
     }
 }
@@ -241,13 +294,21 @@ pub struct TransactionSchema {
     pub bytes: u64,
 }
 
-/// `commit`'s request: end the session's transaction, saving its document.
+/// `commit`'s request: end the session's transaction, saving its document to its own
+/// file, or, given a path, to the file there (Save As), which the session then holds.
 #[derive(JsonSchema)]
 #[schemars(rename = "CommitRequest", transform = wire_shape)]
 pub struct CommitRequestSchema {
     /// The session's ID, as `open` gave it.
     #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
+    /// null to save to the session's own file. A path (relative to the workspace's root
+    /// under `silico serve`) to save to that file instead, written even if nothing changed:
+    /// it must end in .silico, can't be the session's own file or one another session
+    /// holds, and the session holds it from then on, letting its old file go.
+    pub path: Option<String>,
+    /// Whether to replace a file already at `path`. Must be false when `path` is null.
+    pub replace: bool,
 }
 
 /// What a commit did: `commit`'s result, and the commit an edit made outside a transaction
@@ -258,7 +319,7 @@ pub struct CommitResultSchema {
     /// Whether the file was written: false when the document is the one the transaction
     /// began with.
     pub written: bool,
-    /// The document's path, as `open` was given it.
+    /// The document's path, as `open` was given it, or, after a Save As, as the commit was.
     pub path: String,
     /// The features the edits reached whose fingerprints were written anew, in timeline
     /// order.

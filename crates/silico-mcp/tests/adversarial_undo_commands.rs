@@ -110,7 +110,11 @@ fn calls() -> Vec<(&'static str, String, bool)> {
         ("set_field", set(8, 43), false),
         ("redo", step("9", "null"), true),
         ("status", r#"{"session": "s1"}"#.to_owned(), false),
-        ("commit", r#"{"session": "s1"}"#.to_owned(), false),
+        (
+            "commit",
+            r#"{"session": "s1", "path": null, "replace": false}"#.to_owned(),
+            false,
+        ),
         ("status", r#"{"session": "s1"}"#.to_owned(), false),
         ("undo", step("9", "null"), true),
     ]);

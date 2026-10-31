@@ -389,7 +389,7 @@ fn serve_on_sigterm_mid_commit_leaves_the_document_whole() {
         assert_eq!(reply["result"]["isError"], false, "{reply}");
     }
     // The commit sent, and SIGTERM at once: whichever wins, the file is whole.
-    writeln!(stdin, r#"{{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {{"name": "commit", "arguments": {{"session": "s1"}}}}}}"#).unwrap();
+    writeln!(stdin, r#"{{"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {{"name": "commit", "arguments": {{"session": "s1", "path": null, "replace": false}}}}}}"#).unwrap();
     sigterm(&child);
     assert_eq!(exited(child).code(), Some(0));
     let text = std::fs::read_to_string(dir.path().join("part.silico")).unwrap();

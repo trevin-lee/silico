@@ -249,7 +249,7 @@ fn a_call_answers_as_its_typed_method_does_written_on_one_line() {
         ),
         (
             "commit",
-            r#"{"session": "s1"}"#,
+            r#"{"session": "s1", "path": null, "replace": false}"#,
             as_written(&answer(t.commit(&s1))),
         ),
         (

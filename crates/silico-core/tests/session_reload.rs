@@ -181,7 +181,7 @@ fn commit_conflict(
             "it changed after the transaction began, from revision {base}, and a transaction doesn't reload its file"
         )),
         Some(
-            "nothing was written: roll back, then begin again from the file as it is now"
+            "nothing was written: roll back, then begin again from the file as it is now; or save elsewhere with path"
                 .to_owned(),
         ),
     )
@@ -353,7 +353,9 @@ fn inside_a_transaction_a_change_isnt_reloaded_and_the_commit_is_a_conflict() {
                 "it changed after the transaction began, from revision 1, and a transaction doesn't reload its file"
             ),
             // The design's words (section 7's commit).
-            Some("nothing was written: roll back, then begin again from the file as it is now")
+            Some(
+                "nothing was written: roll back, then begin again from the file as it is now; or save elsewhere with path"
+            )
         )
     );
     // Found before the commit's rebuild: nothing built, nothing written.
