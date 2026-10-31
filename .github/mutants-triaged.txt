@@ -392,3 +392,4 @@ crates/silico-core/src/command/session/drag.rs | Session<C>::end_drag_with | rep
 crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with <= | #320
 crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with > | #320
 crates/silico-core/src/document/sketch_edit/join.rs | one_arc | replace > with >= | #320
+crates/silico-app/src/app.rs | App<P>::take_open | replace > with >= | #337
