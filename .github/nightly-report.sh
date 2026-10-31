@@ -13,7 +13,9 @@
 # GH_REPO, OWNER), the night's RESULT (success, failure, cancelled, skipped), each part's
 # step outcome (SWEEP, CORPUS, EDITS, EXTENDS: success, failure, cancelled, skipped, or
 # empty if it never ran), the cases each sketch sweep found differing (EDIT_CASES,
-# EXTEND_CASES: space-separated names, or empty), WORKFLOW, RUN_URL, and SEED.
+# EXTEND_CASES: space-separated names, or empty), each sketch sweep's exit status
+# (EDIT_STATUS, EXTEND_STATUS: 1 when cases differ, 2 when the sweep couldn't run, or empty),
+# WORKFLOW, RUN_URL, and SEED.
 set -euo pipefail
 
 # gh, verified.
@@ -41,14 +43,19 @@ how_to_repeat() {
   esac
 }
 
-# The cases a sketch sweep found differing, as a line of the issue, if it names any.
+# The cases a sketch sweep found differing, as a line of the issue, if it names any; or that
+# it couldn't run at all (the oracle's exit 2: its own error, not a difference).
 differing() {
-  local cases
+  local cases status
   case $1 in
-  sketch-edit-sweep) cases=${EDIT_CASES:-} ;;
-  sketch-extend-sweep) cases=${EXTEND_CASES:-} ;;
-  *) cases= ;;
+  sketch-edit-sweep) cases=${EDIT_CASES:-} status=${EDIT_STATUS:-} ;;
+  sketch-extend-sweep) cases=${EXTEND_CASES:-} status=${EXTEND_STATUS:-} ;;
+  *) cases= status= ;;
   esac
+  if [ "$status" = 2 ]; then
+    printf '\n\nThe sweep couldn'"'"'t run (the oracle exited 2): see its log.'
+    return 0
+  fi
   [ -n "$cases" ] || return 0
   printf '\n\nThe cases that differ: %s.' "$(sed 's/ /, /g' <<<"$cases")"
 }
