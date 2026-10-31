@@ -24,10 +24,10 @@
 //!   `vertical`, else `perpendicular` or `parallel` to a line at its start, each within 2°.
 //!   Where a line leaves an arc near an axis, the tangent wins (the coordinator's rule, #335
 //!   round 2): the line runs along the arc, and gets the axis's relation too only if the arc
-//!   leaves along the axis exactly (to a picometre: an obround's join), so both hold where
-//!   it's written. FreeCAD 1.1.3's `seekAutoConstraint` adds both whatever; its main, since
-//!   `d77c9647c3`, skips the alignment wherever there's a tangency; this rule sits between
-//!   them. Every one the
+//!   leaves along the axis exactly (its unit direction's other component at most 1e-9,
+//!   about 1e-9 rad: an obround's join), so both hold where it's written. FreeCAD 1.1.3's
+//!   `seekAutoConstraint` adds both whatever; its main, since `d77c9647c3`, skips the
+//!   alignment wherever there's a tangency; this rule sits between them. Every one the
 //!   pointer shows at the accepting click is added, redundant or not (#278's G). Ctrl held,
 //!   or *Automatic relations* off, suppresses them all, and only them (#278's F).
 //! - **Points lined up** (#278's E, and the coordinator's decision of 2026-10-31, as
@@ -157,9 +157,19 @@ pub struct Outcome {
     pub left: bool,
 }
 
-/// Which of a tool's adds the core answered: given with each add, in the order made.
+/// Which add the core answered: given with each add, naming the tool that made it (its
+/// serial, unique in the process) and the add (in the order the tool made them), so an
+/// answer given to another tool matches nothing there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct AddToken(u64);
+pub struct AddToken {
+    tool: u64,
+    add: u64,
+}
+
+/// Each tool's serial, from one count for the process. Tokens never reach a request, a
+/// result, a name, or the document, so the count's order (which thread made a tool first)
+/// changes nothing that's written.
+static TOOL_SERIALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Outcome {
     fn nothing() -> Self {
@@ -323,7 +333,9 @@ pub struct SketchTool {
     /// share or find (a chain's last point, a point clicked twice), each add in turn with
     /// the revision it made once the core has answered ([`SketchTool::added`]).
     pending: Vec<Pending>,
-    /// The token the next add is given.
+    /// This tool's serial, which its tokens carry.
+    serial: u64,
+    /// The number the next add's token is given.
     next_token: u64,
     /// The points the pointer has woken, the newest first, at most [`WAKE`] (#278's E).
     woken: Vec<ElementId>,
@@ -375,6 +387,7 @@ impl SketchTool {
             preview: Preview::default(),
             sketch: None,
             pending: Vec::new(),
+            serial: TOOL_SERIALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             next_token: 0,
             woken: Vec::new(),
         }
@@ -554,7 +567,10 @@ impl SketchTool {
         if let Some(added) = &outcome.add {
             // The pointer was at each point the tool placed: they're woken too.
             self.wake(added.points.iter().rev().map(|p| p.id.clone()));
-            let token = AddToken(self.next_token);
+            let token = AddToken {
+                tool: self.serial,
+                add: self.next_token,
+            };
             self.next_token += 1;
             self.pending.push(Pending {
                 token,

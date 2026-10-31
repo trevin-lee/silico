@@ -45,10 +45,11 @@ pub const WAKE: usize = 8;
 /// so a pointer over a crowd of curves tries at most 32·31/2 pairs.
 pub const CROSSING_CURVES: usize = 32;
 
-/// How near a place must be to count as exactly on a curve, for an `on` the tool adds there
-/// without moving the point (a line through a line's middle, a centrepoint arc's end the
-/// pointer finds on its circle): a picometre, far inside the kernel's 1e-7 mm, so the
-/// relation holds where the point is written.
+/// How near counts as exactly, for a relation the tool adds without moving a point to make
+/// it hold. As a length, a place on a curve (a line through a line's middle, a centrepoint
+/// arc's end the pointer finds on its circle): 1e-9 mm, a picometre, far inside the kernel's
+/// 1e-7 mm. As an angle, an arc leaving along an axis: its unit direction's other component
+/// at most 1e-9, about 1e-9 rad. Either way the relation holds where it's written.
 pub(super) const EXACT: f64 = 1e-9;
 
 fn angle_tolerance() -> f64 {
@@ -729,9 +730,10 @@ impl Along {
 /// The directions a line from `start` (the point `start_id`, if the sketch holds it) to
 /// `end` shows, and the exact direction that holds them, within
 /// [`ANGLE_TOLERANCE_DEGREES`]: tangent to an arc ending at its start, with horizontal or
-/// vertical too only where the arc leaves along that axis within [`EXACT`] (the
-/// coordinator's rule, #335 round 2: the tangent wins); else horizontal; else vertical; else perpendicular to a line ending there; else parallel
-/// to one. The nearest of each kind, ties by ID.
+/// vertical too only where the arc leaves along that axis to within [`EXACT`] as an angle
+/// (its direction's other component at most 1e-9, about 1e-9 rad; the coordinator's rule,
+/// #335 round 2: the tangent wins); else horizontal; else vertical; else perpendicular to a
+/// line ending there; else parallel to one. The nearest of each kind, ties by ID.
 pub(super) fn along(
     view: &View<'_>,
     start: Xy,

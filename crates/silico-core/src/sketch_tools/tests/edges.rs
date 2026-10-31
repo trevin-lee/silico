@@ -1417,3 +1417,178 @@ fn a_point_woken_again_is_the_newest_and_the_oldest_goes() {
         ])]
     );
 }
+
+// --- Round 3 ------------------------------------------------------------------------------
+
+#[test]
+fn a_point_hovered_by_several_moves_takes_one_slot() {
+    // Nine points at (10 i, 10). Hovered 1 to 8 once each, then 8 three times more: 8 is
+    // still one of the eight woken, so 1 is too. A click at (10.3, 60) lines up with
+    // (10, 10).
+    let mut s = empty();
+    for i in 1..=9 {
+        s.points
+            .push(point(&format!("q000000{i}"), f64::from(i) * 10.0, 10.0));
+    }
+    let mut d = Drive::new(ToolKind::Point, s);
+    for i in [1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8] {
+        d.to(f64::from(i) * 10.0 + 0.1, 10.1);
+    }
+    d.click(10.3, 60.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (10, 60)",
+            "vertical_points (10, 60) #(10, 10)"
+        ])]
+    );
+}
+
+/// The `relation`s the preview shows.
+fn shown(d: &Drive) -> Vec<Relation> {
+    d.tool
+        .preview()
+        .shown
+        .iter()
+        .map(|s| s.relation.clone())
+        .collect()
+}
+
+#[test]
+fn a_clicked_circles_shared_centre_gone_is_a_new_point_there() {
+    let mut d = Drive::new(ToolKind::Circle, lone());
+    d.click(10.0, 10.0);
+    removed(&mut d, &["q0000001"]);
+    d.click(13.0, 14.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&["point (10, 10)", "circle (10, 10) r5"])]
+    );
+}
+
+#[test]
+fn a_clicked_rectangles_shared_corner_gone_is_a_new_point_there() {
+    let mut d = Drive::new(ToolKind::CornerRectangle, lone());
+    d.click(10.0, 10.0);
+    removed(&mut d, &["q0000001"]);
+    d.click(40.0, 30.0);
+    assert_eq!(d.adds(), [rectangle_10_10_40_30()]);
+}
+
+#[test]
+fn a_clicked_tangent_arcs_base_gone_ends_the_gesture() {
+    // Clicked on the line's end (20, 10), which goes with the line: the gesture ends, and
+    // the next click, on nothing, starts none (it says there's no end to follow).
+    let mut d = Drive::new(ToolKind::TangentArc, one_line());
+    d.click(20.0, 10.0);
+    assert!(d.tool.busy());
+    removed(&mut d, &["n0000001", "q0000002"]);
+    d.click(20.0, 20.0);
+    assert!(d.adds().is_empty());
+    assert_eq!(d.messages, [Message::NoEndToFollow]);
+    assert!(!d.tool.busy());
+}
+
+#[test]
+fn a_pressed_centrepoint_arcs_shared_centre_gone_is_a_new_point_there() {
+    // The centre pressed on (10, 10) and dragged; the point goes before the release, which
+    // sets the start: from there on the centre is a new point, shown sharing nothing.
+    let mut d = Drive::new(ToolKind::CenterpointArc, lone());
+    d.press(10.0, 10.0).to(18.0, 16.0);
+    removed(&mut d, &["q0000001"]);
+    d.release(18.0, 16.0);
+    assert!(
+        !shown(&d).contains(&Relation::Shared(id("q0000001"))),
+        "{:?}",
+        shown(&d)
+    );
+    d.to(13.0, 20.0).click(4.0, 18.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (10, 10)",
+            "point (18, 16)",
+            "point (4, 18)",
+            "arc (10, 10) (18, 16)->(4, 18)",
+        ])]
+    );
+}
+
+#[test]
+fn a_pressed_three_point_arcs_shared_start_gone_is_a_new_point_there() {
+    // The start pressed on (10, 10) and dragged; the point goes before the release, which
+    // sets the end: from there on the start is a new point, shown sharing nothing.
+    let mut d = Drive::new(ToolKind::ThreePointArc, lone());
+    d.press(10.0, 10.0).to(30.0, 10.0);
+    removed(&mut d, &["q0000001"]);
+    d.release(30.0, 10.0);
+    assert!(
+        !shown(&d).contains(&Relation::Shared(id("q0000001"))),
+        "{:?}",
+        shown(&d)
+    );
+    d.click(20.0, 20.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (20, 10)",
+            "point (10, 10)",
+            "point (30, 10)",
+            "arc (20, 10) (30, 10)->(10, 10)",
+        ])]
+    );
+}
+
+/// The constraint types a line from the end of the arc about (50, 50), radius 10, from 270°
+/// to `to` radians, adds, drawn toward 180.3° (within 2° of the tangent and of −x).
+fn leaving_arc_ending_at(to: f64) -> Vec<&'static str> {
+    let s = with_arc(empty(), [50.0, 50.0], 10.0, 270.0, to.to_degrees());
+    let end = toward([50.0, 50.0], to.to_degrees(), 10.0);
+    let mut d = Drive::new(ToolKind::Line, s);
+    d.drag(end, toward(end, 180.3, 30.0));
+    types(&d)
+}
+
+#[test]
+fn an_arc_leaving_an_axis_by_a_nanoradian_or_less_gets_both_and_by_a_microradian_the_tangent_alone()
+{
+    // Past its end at π/2 + ε an arc runs along π + ε: −x, its y component −sin ε. At
+    // ε = 1e-12 that's within 1e-9: tangent and horizontal. At 1e-6, past it: tangent alone.
+    let half = std::f64::consts::FRAC_PI_2;
+    assert_eq!(
+        leaving_arc_ending_at(half + 1e-12),
+        ["horizontal", "tangent_at"]
+    );
+    assert_eq!(leaving_arc_ending_at(half + 1e-6), ["tangent_at"]);
+}
+
+#[test]
+fn another_tools_token_answers_nothing() {
+    // Tool A adds a point, and tool B one; both tokens would be the first of their tool. A's
+    // token given to B: refused, it drops nothing of B's; answered at revision 2, it stamps
+    // nothing, so a read of revision 3 without B's point still finds it.
+    let sid = sketch_id();
+    let none = empty();
+    let keys = Modifiers::default();
+    let mut ids = Counter(0);
+    let mut click = |tool: &mut SketchTool, revision: u64, at: Xy| {
+        let context = Context {
+            sketch_id: &sid,
+            revision: Revision::from_number(revision).unwrap(),
+            sketch: &none,
+            tolerance: TOLERANCE,
+            automatic_relations: true,
+        };
+        tool.handle(&context, &mut ids, Event::Press(at), keys);
+        tool.handle(&context, &mut ids, Event::Release(at), keys)
+    };
+    let mut a = SketchTool::new(ToolKind::Point);
+    let mut b = SketchTool::new(ToolKind::Point);
+    let from_a = click(&mut a, 1, [12.0, 34.0]).token.unwrap();
+    assert!(click(&mut b, 1, [22.0, 47.0]).add.is_some());
+    b.refused(from_a);
+    b.added(from_a, Revision::from_number(2).unwrap());
+    let again = click(&mut b, 3, [22.0, 47.0]);
+    assert_eq!(again.add, None, "{again:?}");
+    assert!(matches!(again.message, Some(Message::PointThere(_))));
+}
