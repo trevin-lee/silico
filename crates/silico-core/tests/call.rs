@@ -96,6 +96,7 @@ fn the_commands_are_one_list_in_one_order() {
             "sketch_trim",
             "sketch_unjoin",
             "sketch_merge",
+            "sketch_join",
             "undo",
             "redo",
         ]

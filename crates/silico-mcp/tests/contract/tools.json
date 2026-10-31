@@ -1543,6 +1543,7 @@
               "sketch_trim",
               "sketch_unjoin",
               "sketch_merge",
+              "sketch_join",
               "undo",
               "redo",
               "reload"
@@ -1791,6 +1792,7 @@
               "sketch_trim",
               "sketch_unjoin",
               "sketch_merge",
+              "sketch_join",
               "undo",
               "redo"
             ],
@@ -2086,6 +2088,7 @@
               "sketch_trim",
               "sketch_unjoin",
               "sketch_merge",
+              "sketch_join",
               "undo",
               "redo"
             ],
@@ -21926,6 +21929,473 @@
         "type": "object"
       },
       "title": "Merge sketch points"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Join a split's pieces"
+      },
+      "description": "Join the two pieces a split left at a point into one curve again, split's inverse: two lines held on one line by a `tangent_at` (`same`) at the point, or two arcs about one centre (a split circle's two arcs make its circle again). Name the point they share. The piece that ends there keeps its ID and takes the other's far end; the other piece, the point, and the constraints naming the point go, and constraints on the other piece move to the kept one. Nothing is retyped: a split's distance of the outer ends stays a distance. `references` lists the features whose stored names either piece reached. Refused for a piece's length, midpoint, or equal with another line, which would then measure the whole line: remove it first. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`sketch_join`'s request: join the two pieces a split left at a point into one curve.",
+        "properties": {
+          "point": {
+            "$ref": "#/$defs/ElementId",
+            "description": "The point the two pieces share, by ID: one ends there and the other starts there,\ntwo lines held on one line by a `tangent_at` (`same`) at it, or two arcs about one\ncentre (a split circle's two, sharing both ends, make its circle again). The piece\nthat ends there keeps its ID and takes the other's far end; the other piece, the\npoint, and the constraints naming the point are removed."
+          },
+          "revision": {
+            "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "sketch": {
+            "$ref": "#/$defs/FeatureId",
+            "description": "The sketch, by its feature's ID."
+          }
+        },
+        "required": [
+          "point",
+          "revision",
+          "session",
+          "sketch"
+        ],
+        "title": "SketchJoinRequest",
+        "type": "object"
+      },
+      "name": "sketch_join",
+      "outputSchema": {
+        "$defs": {
+          "CommitResult": {
+            "additionalProperties": false,
+            "description": "What a commit did: `commit`'s result, and the commit an edit made outside a transaction\nholds (each such edit is saved as its own transaction).",
+            "properties": {
+              "path": {
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the commit was.",
+                "type": "string"
+              },
+              "problems": {
+                "description": "What the commit couldn't fix, the first 100: failed features, and the drift of\nfeatures no edit reached, whose fingerprints it leaves as stored (only `format`\naccepts drift).",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "problems_total": {
+                "description": "How many problems there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "refingerprinted": {
+                "description": "The features the edits reached whose fingerprints were written anew, in timeline\norder.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "resolved": {
+                "description": "The sketches the edits reached whose solves were written anew, in timeline order.",
+                "items": {
+                  "$ref": "#/$defs/FeatureId"
+                },
+                "type": "array"
+              },
+              "written": {
+                "description": "Whether the file was written: false when the document is the one the transaction\nbegan with.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "problems",
+              "problems_total",
+              "refingerprinted",
+              "resolved",
+              "written"
+            ],
+            "type": "object"
+          },
+          "ElementId": {
+            "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "advice",
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`sketch_join`'s result.",
+                "properties": {
+                  "added": {
+                    "description": "Always empty: a join makes no member.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "changed": {
+                    "description": "Whether the document changed: always, for a join it makes.",
+                    "type": "boolean"
+                  },
+                  "commit": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/CommitResult"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Outside a transaction, the commit that saved the edit; null inside one."
+                  },
+                  "curve": {
+                    "$ref": "#/$defs/ElementId",
+                    "description": "The curve the pieces make: the start-side piece's ID, a circle's where a split\ncircle's two arcs join."
+                  },
+                  "modified": {
+                    "description": "The members changed in place (the joined curve; a constraint on the other piece,\nnow on it), by kind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "references": {
+                    "description": "The features that store a name made from either piece's ID or its points' IDs, in\ntimeline order: a name made from the kept piece then finds the whole joined curve;\none made from the other piece, or the point, finds nothing.",
+                    "items": {
+                      "$ref": "#/$defs/FeatureId"
+                    },
+                    "type": "array"
+                  },
+                  "removed": {
+                    "description": "The members removed (the point, the other piece, the constraints naming the point,\nthe joining `tangent_at` among them, and a constraint the join makes repeat another\nor name the joined curve twice), by kind, then by ID.",
+                    "items": {
+                      "$ref": "#/$defs/ElementId"
+                    },
+                    "type": "array"
+                  },
+                  "sketch": {
+                    "$ref": "#/$defs/FeatureId",
+                    "description": "The sketch, as the request named it."
+                  }
+                },
+                "required": [
+                  "added",
+                  "changed",
+                  "commit",
+                  "curve",
+                  "modified",
+                  "references",
+                  "removed",
+                  "sketch"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Join a split's pieces"
     },
     {
       "annotations": {

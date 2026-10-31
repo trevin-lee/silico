@@ -142,8 +142,8 @@ pub use types::{
     Added, Begun, CacheCleared, Cancelled, CheckAnswer, CheckModel, Closed, Committed, FieldSet,
     ModelChoice, ModelRead, Moved, NewMembers, Opened, OutlineAnswer, Progress, Published, Read,
     ReadClient, Rebuild, RebuildState, Reformatted, Removed, Replaced, Response, Revision,
-    RolledBack, Running, SessionId, SessionInfo, SketchCut, SketchEdited, Status, Stepped, Stopper,
-    TextAnswer, TimelineAnswer, Transaction,
+    RolledBack, Running, SessionId, SessionInfo, SketchCut, SketchEdited, SketchJoined, Status,
+    Stepped, Stopper, TextAnswer, TimelineAnswer, Transaction,
 };
 use types::{READ_STOPPED, SESSION_STOPPED};
 use waking::Waker;

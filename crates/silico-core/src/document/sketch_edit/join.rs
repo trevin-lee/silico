@@ -19,11 +19,12 @@ use crate::document::sketch::{
 };
 use crate::{Error, ErrorCode};
 
-/// Two pieces joined: the edit, and the curve they make, the start-side piece's ID.
+/// Two pieces joined: the edit, and the pieces, the start-side one first, whose ID the
+/// joined curve keeps, then the one removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Joined {
     pub edited: Edited,
-    pub curve: ElementId,
+    pub pieces: [ElementId; 2],
 }
 
 /// What a point is to a curve that uses it.
@@ -54,7 +55,7 @@ enum Role {
 /// no `tangent_at` (`same`) holds on one line there, and arcs with no centre in common (not
 /// held on one carrier); lines whose join would end at one point at both ends (a curve's own
 /// two ends, FreeCAD's refusal); arcs that sweep a turn or more between them, or one that
-/// sweeps no angle; a piece's `length`, `midpoint`, or line's `equal`, which the joined line
+/// sweeps no angle; a circle's two arcs whose other shared point another curve uses; a piece's `length`, `midpoint`, or line's `equal`, which the joined line
 /// wouldn't mean, naming the constraint; and a joined sketch the gate refuses.
 pub fn join(sketch: &Sketch, point: &ElementId) -> Result<Joined, Error> {
     let kinds = kinds_of(sketch);
@@ -273,7 +274,35 @@ pub fn join(sketch: &Sketch, point: &ElementId) -> Result<Joined, Error> {
         }
         if kept_arc.start == other_arc.end {
             // A split circle's two arcs: its circle again, about their centre, of the kept
-            // arc's radius as the profile measures it (from its centre to its start).
+            // arc's radius as the profile measures it (from its centre to its start). Their
+            // other shared point goes too, so no other curve may use it.
+            let other_end = &kept_arc.start;
+            let also: Vec<(ElementKind, &ElementId)> = curves(sketch)
+                .into_iter()
+                .filter(|(_, id, points)| {
+                    *id != kept && *id != other && points.contains(&other_end)
+                })
+                .map(|(kind, id, _)| (kind, id))
+                .collect();
+            if !also.is_empty() {
+                let said: Vec<String> = also.iter().map(|(k, id)| named(*k, id)).collect();
+                return Err(refused(
+                    format!(
+                        "joining arcs {kept} and {other} at point {point} makes them a circle, which would leave {} without point {other_end}, their other shared point",
+                        listed(&said)
+                    ),
+                    [
+                        p,
+                        kept.to_string(),
+                        other.to_string(),
+                        other_end.to_string(),
+                    ]
+                    .into_iter()
+                    .chain(also.iter().map(|(_, id)| id.to_string()))
+                    .collect(),
+                    "unjoin the other curves from that point first",
+                ));
+            }
             gone_points.insert(kept_arc.start.clone());
             let radius = swept.first().map_or(f64::NAN, |(r, _)| *r);
             let Some(radius) = Coordinate::new(radius) else {
@@ -291,7 +320,11 @@ pub fn join(sketch: &Sketch, point: &ElementId) -> Result<Joined, Error> {
                 radius,
                 construction: kept_arc.construction,
             });
-        } else if swept.iter().map(|(_, sweep)| sweep).sum::<f64>() >= TAU {
+        } else if !one_arc(
+            sketch,
+            [&kept_arc.center, &kept_arc.start, &other_arc.end],
+            &swept,
+        ) {
             return Err(refused(
                 format!(
                     "arcs {kept} and {other} sweep a whole turn or more between them, so one arc can't join them at point {point}"
@@ -398,9 +431,9 @@ pub fn join(sketch: &Sketch, point: &ElementId) -> Result<Joined, Error> {
         repointed.push(Some(form));
     }
     // What a re-pointed constraint may repeat: one naming the kept piece already, or one
-    // re-pointed before it.
+    // re-pointed before it, each by its form written out, in a sorted set.
     let names_kept = |form: &Form| form.references().iter().any(|(_, r, _)| **r == kept_ref);
-    let mut seen: Vec<Form> = sketch
+    let mut seen: BTreeSet<String> = sketch
         .constraints
         .iter()
         .zip(&repointed)
@@ -423,12 +456,10 @@ pub fn join(sketch: &Sketch, point: &ElementId) -> Result<Joined, Error> {
             .filter(|(_, r, _)| **r == kept_ref)
             .count()
             > 1;
-        let key = unordered(&form);
-        if twice || seen.contains(&key) {
+        if twice || !seen.insert(unordered(&form)) {
             removed.insert(constraint.id.clone());
             continue;
         }
-        seen.push(key);
         modified.insert(constraint.id.clone());
         constraints.push(SketchConstraint {
             id: constraint.id.clone(),
@@ -455,14 +486,28 @@ pub fn join(sketch: &Sketch, point: &ElementId) -> Result<Joined, Error> {
             modified: ordered(&after, modified),
             removed: ordered(&kinds, removed),
         },
-        curve: kept.clone(),
+        pieces: [kept.clone(), other.clone()],
     })
 }
 
+/// Whether two arcs about `center`, of sweeps `swept`, one from `start` to the point they
+/// share and the other on from there to `end`, are one arc from `start` to `end`: less than
+/// a turn between them, and that arc sweeping more than either (so rounding near a whole
+/// turn never takes it to the sliver between `end` and `start`).
+fn one_arc(sketch: &Sketch, [center, start, end]: [&ElementId; 3], swept: &[(f64, f64)]) -> bool {
+    let total: f64 = swept.iter().map(|(_, sweep)| sweep).sum();
+    let widest = swept.iter().map(|(_, sweep)| *sweep).fold(0.0, f64::max);
+    let joined = point_at(sketch, center)
+        .zip(point_at(sketch, start))
+        .zip(point_at(sketch, end))
+        .and_then(|((c, s), e)| arc_from_points(c, s, e));
+    total < TAU && joined.is_some_and(|[_, from, to]| to - from > widest)
+}
+
 /// `form` with the two members of a constraint whose order means nothing (two points level,
-/// two lines parallel, two curves equal) in one order, so a repeat in the other order is
-/// found.
-fn unordered(form: &Form) -> Form {
+/// two lines parallel, two curves equal) in one order, written out, so a repeat in the other
+/// order is found.
+fn unordered(form: &Form) -> String {
     let mut form = form.clone();
     match &mut form {
         Form::HorizontalPoints { a, b }
@@ -477,5 +522,5 @@ fn unordered(form: &Form) -> Form {
         }
         _ => {}
     }
-    form
+    format!("{form:?}")
 }

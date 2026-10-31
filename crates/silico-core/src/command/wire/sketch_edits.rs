@@ -1,8 +1,9 @@
 //! The sketch edits' wire types (docs/design/m5.0-app.md, section 7, *The sketch edits*):
 //! their requests, read strictly ([`SketchAddRequest`], [`SketchRemoveRequest`],
 //! [`SketchSplitRequest`], [`SketchTrimRequest`], [`SketchUnjoinRequest`],
-//! [`SketchMergeRequest`]) and written back as a client writes them; their results, written
-//! field for field ([`ToWire`] for [`SketchEdited`] and [`SketchCut`]); and the mirrors their
+//! [`SketchMergeRequest`], [`SketchJoinRequest`]) and written back as a client writes them;
+//! their results, written field for field ([`ToWire`] for [`SketchEdited`], [`SketchCut`],
+//! and [`SketchJoined`]); and the mirrors their
 //! snapshots, `commands/sketch_add.json` and the rest, are generated from. A request's shape
 //! is read here; the members `sketch_add` gives are read by the document's own reader, in
 //! the session, as `add_feature`'s feature is, so the wire and a Rust client meet one set of
@@ -13,7 +14,9 @@ use schemars::JsonSchema;
 use super::transaction::CommitResultSchema;
 use super::{Json, RequestFields, ToWire, invalid, join, wire_shape, written};
 use crate::command::session::SESSION_ID_PATTERN;
-use crate::command::{NewMembers, Problems, Revision, SessionId, SketchCut, SketchEdited};
+use crate::command::{
+    NewMembers, Problems, Revision, SessionId, SketchCut, SketchEdited, SketchJoined,
+};
 use crate::document::json::{Node, Value};
 use crate::document::{
     Coordinate, ElementId, ElementKind, FeatureId, Reference, SketchArc, SketchCircle,
@@ -463,6 +466,71 @@ impl ToWire for SketchMergeRequest {
     }
 }
 
+/// A `sketch_join` request: the session, the revision the edit was made against, the
+/// sketch, and the point the two pieces share.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchJoinRequest {
+    pub session: SessionId,
+    pub revision: Revision,
+    pub sketch: FeatureId,
+    pub point: ElementId,
+}
+
+impl SketchJoinRequest {
+    /// The request `node` holds, or every reason its shape is refused: `point` a member's
+    /// ID. Whether it's two pieces' is the join's to say.
+    pub fn read(node: &Node) -> Result<Self, Problems> {
+        RequestFields::read(node, |f| {
+            let session = f.session();
+            let revision = f.revision("revision");
+            let sketch = f.feature("sketch");
+            let point = member(f, "point", "a point");
+            Some(SketchJoinRequest {
+                session: session?,
+                revision: revision?,
+                sketch: sketch?,
+                point: point?,
+            })
+        })
+    }
+}
+
+impl ToWire for SketchJoinRequest {
+    /// The request as a client writes it, every field in the shape's order.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("session", self.session.to_wire()),
+            ("revision", self.revision.to_wire()),
+            ("sketch", self.sketch.to_wire()),
+            ("point", Json::str(self.point.as_str())),
+        ])
+    }
+}
+
+impl ToWire for SketchJoined {
+    /// A join's result: the sketch, the curve the pieces make, the members added, modified,
+    /// and removed, the features storing a name either piece reaches, whether the document
+    /// changed, and the commit outside a transaction.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("sketch", self.sketch.to_wire()),
+            ("curve", Json::str(self.curve.as_str())),
+            ("added", members(&self.added)),
+            ("modified", members(&self.modified)),
+            ("removed", members(&self.removed)),
+            (
+                "references",
+                Json::array(self.references.iter().map(ToWire::to_wire)),
+            ),
+            ("changed", Json::bool(self.changed)),
+            (
+                "commit",
+                Json::or_null(self.commit.as_ref(), ToWire::to_wire),
+            ),
+        ])
+    }
+}
+
 impl ToWire for SketchCut {
     /// A split's or a trim's result: the sketch, the curve's pieces, the members added,
     /// modified, and removed, the features storing a name the curve reaches, whether the
@@ -732,6 +800,27 @@ pub struct SketchMergeRequestSchema {
     pub points: Vec<ElementId>,
 }
 
+/// `sketch_join`'s request: join the two pieces a split left at a point into one curve.
+#[derive(JsonSchema)]
+#[schemars(rename = "SketchJoinRequest", transform = wire_shape)]
+pub struct SketchJoinRequestSchema {
+    /// The session's ID, as `open` gave it.
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
+    pub session: String,
+    /// The session's revision the edit was made against: an edit against another is
+    /// refused as a `conflict`.
+    #[schemars(range(min = 1))]
+    pub revision: u64,
+    /// The sketch, by its feature's ID.
+    pub sketch: FeatureId,
+    /// The point the two pieces share, by ID: one ends there and the other starts there,
+    /// two lines held on one line by a `tangent_at` (`same`) at it, or two arcs about one
+    /// centre (a split circle's two, sharing both ends, make its circle again). The piece
+    /// that ends there keeps its ID and takes the other's far end; the other piece, the
+    /// point, and the constraints naming the point are removed.
+    pub point: ElementId,
+}
+
 /// `sketch_split`'s result.
 #[derive(JsonSchema)]
 #[schemars(rename = "SketchSplitResult", transform = wire_shape)]
@@ -824,6 +913,34 @@ pub struct SketchMergeResultSchema {
     /// an end on its own curve), by kind, then by ID.
     pub removed: Vec<ElementId>,
     /// Whether the document changed: always, for a merge it makes.
+    pub changed: bool,
+    /// Outside a transaction, the commit that saved the edit; null inside one.
+    pub commit: Option<CommitResultSchema>,
+}
+
+/// `sketch_join`'s result.
+#[derive(JsonSchema)]
+#[schemars(rename = "SketchJoinResult", transform = wire_shape)]
+pub struct SketchJoinResultSchema {
+    /// The sketch, as the request named it.
+    pub sketch: FeatureId,
+    /// The curve the pieces make: the start-side piece's ID, a circle's where a split
+    /// circle's two arcs join.
+    pub curve: ElementId,
+    /// Always empty: a join makes no member.
+    pub added: Vec<ElementId>,
+    /// The members changed in place (the joined curve; a constraint on the other piece,
+    /// now on it), by kind, then by ID.
+    pub modified: Vec<ElementId>,
+    /// The members removed (the point, the other piece, the constraints naming the point,
+    /// the joining `tangent_at` among them, and a constraint the join makes repeat another
+    /// or name the joined curve twice), by kind, then by ID.
+    pub removed: Vec<ElementId>,
+    /// The features that store a name made from either piece's ID or its points' IDs, in
+    /// timeline order: a name made from the kept piece then finds the whole joined curve;
+    /// one made from the other piece, or the point, finds nothing.
+    pub references: Vec<FeatureId>,
+    /// Whether the document changed: always, for a join it makes.
     pub changed: bool,
     /// Outside a transaction, the commit that saved the edit; null inside one.
     pub commit: Option<CommitResultSchema>,

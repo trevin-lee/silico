@@ -1041,6 +1041,41 @@ pub(super) fn sketch_merge(
     sketch_edited(document, index, sketch, edited)
 }
 
+/// What a join did (docs/design/m5.0-app.md, section 7, `sketch_join`): what it changed,
+/// the curve its two pieces make, and the features that store a name either piece reaches,
+/// in timeline order (*What a result lists*).
+pub(super) struct Join {
+    pub(super) changes: SketchChanges,
+    pub(super) curve: ElementId,
+    pub(super) references: Vec<FeatureId>,
+}
+
+/// The two pieces sharing `point`, of the sketch `id` of `document`, joined into one curve
+/// (docs/design/m5.0-app.md, section 7, `sketch_join`; open item 12b), by
+/// [`sketch_edit::join`], and the document put through the gate: what it changed, the curve
+/// they make, the features storing a name either piece reaches, and the state it leads to.
+/// Whether its solve is worse than the one before is the session's to judge. Refused as
+/// [`sketch_split`] is.
+pub(super) fn sketch_join(
+    document: &Document,
+    id: &FeatureId,
+    point: &ElementId,
+) -> Result<(Join, Option<Candidate>), Problems> {
+    let (index, _, sketch) = sketch_of(document, id)?;
+    let joined = sketch_edit::join(sketch, point).map_err(|e| one(id, e))?;
+    let references = referencing_any(document, id, sketch, &joined.pieces);
+    let [curve, _] = joined.pieces;
+    let (changes, candidate) = sketch_edited(document, index, sketch, joined.edited)?;
+    Ok((
+        Join {
+            changes,
+            curve,
+            references,
+        },
+        candidate,
+    ))
+}
+
 /// A sketch edit's one refusal, naming the sketch `id` if it names no feature.
 fn one(id: &FeatureId, error: Error) -> Problems {
     of_sketch(
@@ -1064,14 +1099,25 @@ fn referencing(
     sketch: &Sketch,
     curve: &ElementId,
 ) -> Vec<FeatureId> {
-    let mut reached: BTreeSet<&ElementId> = BTreeSet::from([curve]);
-    for line in sketch.lines.iter().filter(|l| &l.id == curve) {
+    referencing_any(document, id, sketch, std::slice::from_ref(curve))
+}
+
+/// [`referencing`] for any of `curves`: the features storing a name made from one of their
+/// IDs or one of their points', each once, in timeline order (a join's two pieces).
+fn referencing_any(
+    document: &Document,
+    id: &FeatureId,
+    sketch: &Sketch,
+    curves: &[ElementId],
+) -> Vec<FeatureId> {
+    let mut reached: BTreeSet<&ElementId> = curves.iter().collect();
+    for line in sketch.lines.iter().filter(|l| curves.contains(&l.id)) {
         reached.extend([&line.from, &line.to]);
     }
-    for circle in sketch.circles.iter().filter(|c| &c.id == curve) {
+    for circle in sketch.circles.iter().filter(|c| curves.contains(&c.id)) {
         reached.insert(&circle.center);
     }
-    for arc in sketch.arcs.iter().filter(|a| &a.id == curve) {
+    for arc in sketch.arcs.iter().filter(|a| curves.contains(&a.id)) {
         reached.extend([&arc.center, &arc.start, &arc.end]);
     }
     let features = &document.features;

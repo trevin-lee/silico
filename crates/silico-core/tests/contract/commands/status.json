@@ -157,6 +157,7 @@
           "sketch_trim",
           "sketch_unjoin",
           "sketch_merge",
+          "sketch_join",
           "undo",
           "redo",
           "reload"

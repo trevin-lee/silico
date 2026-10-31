@@ -48,6 +48,8 @@ mod adversarial_sketch_extend;
 mod adversarial_sketch_extend_to;
 #[path = "adversarial_sketch_features.rs"]
 mod adversarial_sketch_features;
+#[path = "adversarial_sketch_join.rs"]
+mod adversarial_sketch_join;
 #[path = "adversarial_sketch_merge_tangent.rs"]
 mod adversarial_sketch_merge_tangent;
 #[path = "adversarial_sketch_solve.rs"]

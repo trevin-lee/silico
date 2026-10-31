@@ -41,8 +41,8 @@ pub use session::{
     MAX_PUBLISHED_READS, MAX_SESSIONS, ModelChoice, ModelRead, Moved, NOT_RELOADED, NewMembers,
     Opened, OutlineAnswer, Progress, Published, Read, ReadClient, Rebuild, RebuildState,
     Reformatted, Removed, Replaced, Response, Revision, RolledBack, Running, SessionId,
-    SessionInfo, Sessions, SketchCut, SketchEdited, Status, Stepped, Stopper, TOO_LONG, TextAnswer,
-    TimelineAnswer, Transaction, TryAgainBy, fault_suggestion,
+    SessionInfo, Sessions, SketchCut, SketchEdited, SketchJoined, Status, Stepped, Stopper,
+    TOO_LONG, TextAnswer, TimelineAnswer, Transaction, TryAgainBy, fault_suggestion,
 };
 pub use session_command::{ReadCommand, RunningCommand, SessionCommand};
 

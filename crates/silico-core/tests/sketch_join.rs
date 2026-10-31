@@ -155,7 +155,7 @@ fn a_line_split_then_joined_at_the_split_point_is_the_document_before_byte_for_b
     );
     assert_ne!(text(&split_doc), text(&before));
     assert_eq!(text(&joined_doc), text(&before));
-    assert_eq!(joined.curve, id("a0000000"));
+    assert_eq!(joined.pieces, [id("a0000000"), id("b1000000")]);
     assert!(joined.edited.added.is_empty());
     assert_eq!(
         joined.edited.modified,
@@ -452,7 +452,7 @@ fn an_arc_split_then_joined_at_the_split_point_is_the_document_before_byte_for_b
         }
     );
     assert_eq!(text(&joined_doc), text(&before));
-    assert_eq!(joined.curve, id("a0000000"));
+    assert_eq!(joined.pieces, [id("a0000000"), id("b1000000")]);
     assert_eq!(
         joined.edited.modified,
         ids(&["a0000000", "k0000002", "k0000003"])
@@ -569,7 +569,7 @@ fn a_circle_split_then_joined_at_its_second_split_point_is_the_document_before_b
         }
     );
     assert_eq!(text(&joined_doc), text(&before));
-    assert_eq!(joined.curve, id("c0000000"));
+    assert_eq!(joined.pieces, [id("c0000000"), id("c1000000")]);
     assert_eq!(
         joined.edited.modified,
         ids(&["c0000000", "k0000003", "k0000004"])
@@ -592,7 +592,7 @@ fn a_split_circle_joined_at_its_first_split_point_keeps_the_arc_that_ends_there(
         &["n0000000", "n0000001", "c1000000"],
         "n0000000",
     );
-    assert_eq!(joined.curve, id("c1000000"));
+    assert_eq!(joined.pieces, [id("c1000000"), id("c0000000")]);
     let sketch = sketch_of(&joined_doc);
     let circles: Vec<_> = sketch
         .circles
