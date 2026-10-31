@@ -727,10 +727,10 @@ impl Along {
 }
 
 /// The directions a line from `start` (the point `start_id`, if the sketch holds it) to
-/// `end` shows, and the exact direction that holds the first, within
-/// [`ANGLE_TOLERANCE_DEGREES`]: tangent to an arc ending at its start (with horizontal or
-/// vertical too, if it's also that, as FreeCAD 1.1.3's `seekAutoConstraint` adds both);
-/// else horizontal; else vertical; else perpendicular to a line ending there; else parallel
+/// `end` shows, and the exact direction that holds them, within
+/// [`ANGLE_TOLERANCE_DEGREES`]: tangent to an arc ending at its start, with horizontal or
+/// vertical too only where the arc leaves along that axis within [`EXACT`] (the
+/// coordinator's rule, #335 round 2: the tangent wins); else horizontal; else vertical; else perpendicular to a line ending there; else parallel
 /// to one. The nearest of each kind, ties by ID.
 pub(super) fn along(
     view: &View<'_>,
@@ -759,8 +759,16 @@ pub(super) fn along(
             }),
     );
     if let Some((arc, out)) = tangent {
+        // The tangent wins. The axis is added too only where the arc leaves along it
+        // exactly (an obround's join), so both hold where the line is written; otherwise
+        // the line runs along the arc, tangent alone.
+        let on_axis = |a: &Along| match a {
+            Along::Horizontal => out[1].abs() <= EXACT,
+            Along::Vertical => out[0].abs() <= EXACT,
+            _ => false,
+        };
         let mut shows = vec![Along::Tangent(arc)];
-        shows.extend(axis.map(|(a, _)| a));
+        shows.extend(axis.map(|(a, _)| a).filter(on_axis));
         return Some((shows, out));
     }
     if let Some((a, direction)) = axis {

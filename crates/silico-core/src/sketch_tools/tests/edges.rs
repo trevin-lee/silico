@@ -326,27 +326,40 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
 
 #[test]
 fn a_sketch_at_the_gates_limits_builds_each_shape_once_and_tries_few_crossings() {
-    // 512 points (the gate's 1,024 unknowns) and lines between them up to the gate's 10,000
-    // pieces of geometry (3 are the origin and axes): 9,485 lines, each from x = −100 to
-    // x = 100, most of them passing within 0.5 mm of (50, 128), where the pointer moves.
-    // Each shape is built once a view, and at most 32·31/2 = 496 pairs are tried.
+    // 512 points (the gate's 1,024 unknowns) and lines up to the gate's 10,000 pieces of
+    // geometry (3 are the origin and axes): 9,485 lines. Two cross exactly where the pointer
+    // is, (50, 128): `n9999998`, y = 128 from (−50, 128) to (100, 128), and `n9999999`,
+    // x = 50 from (50, 90) to (50, 200), the highest IDs. The other 9,483 run from
+    // (−100, i) to (100, j), 254 points a side, passing x = 50 at 0.25 i + 0.75 j: those
+    // nearest it first, and none through (50, 128) itself: 170 pass 0.25 mm above or below
+    // it there (through (50, 127.75) or (50, 128.25), each a point where they cross), within
+    // the tolerance, and none nearer. Each shape is built once a view; at most
+    // 32·31/2 = 496 pairs are tried, of the 32 curves nearest; and those include the two
+    // that cross at the pointer, so that's the crossing found: a point at (50, 128), on
+    // each. (Taken in ID order instead, the 32 would be the fan's lowest, which cross at
+    // (50, 127.75) or (50, 128.25).)
     let mut s = empty();
-    for i in 0..256 {
+    for i in 0..254 {
         s.points
             .push(point(&format!("p{i:07}"), -100.0, f64::from(i)));
         s.points
             .push(point(&format!("r{i:07}"), 100.0, f64::from(i)));
     }
-    let mut pairs: Vec<(u32, u32)> = (0..256)
-        .flat_map(|i| (0..256).map(move |j| (i, j)))
+    for (name, x, y) in [
+        ("q0000001", -50.0, 128.0),
+        ("q0000002", 100.0, 128.0),
+        ("q0000003", 50.0, 90.0),
+        ("q0000004", 50.0, 200.0),
+    ] {
+        s.points.push(point(name, x, y));
+    }
+    let off = |(i, j): (u32, u32)| (0.25 * f64::from(i) + 0.75 * f64::from(j) - 128.0).abs();
+    let mut pairs: Vec<(u32, u32)> = (0..254)
+        .flat_map(|i| (0..254).map(move |j| (i, j)))
+        .filter(|&p| off(p) > 0.0)
         .collect();
-    // Nearest the pointer first: the line from (−100, i) to (100, j) passes x = 50 at
-    // 0.25 i + 0.75 j.
-    pairs.sort_by(|a, b| {
-        let off = |(i, j): &(u32, u32)| (0.25 * f64::from(*i) + 0.75 * f64::from(*j) - 128.0).abs();
-        off(a).total_cmp(&off(b)).then(a.cmp(b))
-    });
-    for (k, (i, j)) in pairs.iter().take(10_000 - 512 - 3).enumerate() {
+    pairs.sort_by(|&a, &b| off(a).total_cmp(&off(b)).then(a.cmp(&b)));
+    for (k, (i, j)) in pairs.iter().take(10_000 - 512 - 3 - 2).enumerate() {
         s.lines.push(SketchLine {
             id: ElementId::new(&format!("n{k:07}")).unwrap(),
             from: ElementId::new(&format!("p{i:07}")).unwrap(),
@@ -354,15 +367,11 @@ fn a_sketch_at_the_gates_limits_builds_each_shape_once_and_tries_few_crossings()
             construction: false,
         });
     }
-    let near = s
-        .lines
-        .iter()
-        .filter(|l| {
-            let (i, j) = pairs[l.id.as_str()[1..].parse::<usize>().unwrap()];
-            (0.25 * f64::from(i) + 0.75 * f64::from(j) - 128.0).abs() < 0.5
-        })
-        .count();
-    assert!(near > CROSSING_CURVES, "{near} lines near the pointer");
+    s.lines.push(line("n9999998", "q0000001", "q0000002"));
+    s.lines.push(line("n9999999", "q0000003", "q0000004"));
+    assert_eq!(s.points.len() * 2, 1024);
+    assert_eq!(s.points.len() + s.lines.len() + 3, 10_000);
+    assert_eq!(pairs.iter().filter(|&&p| off(p) == 0.25).count(), 170);
     let sid = sketch_id();
     let context = Context {
         sketch_id: &sid,
@@ -373,17 +382,33 @@ fn a_sketch_at_the_gates_limits_builds_each_shape_once_and_tries_few_crossings()
     };
     let mut tool = SketchTool::new(ToolKind::Point);
     let mut ids = Counter(0);
+    let keys = Modifiers::default();
     infer::work::SHAPES.with(|c| c.set(0));
     infer::work::PAIRS.with(|c| c.set(0));
-    tool.handle(
-        &context,
-        &mut ids,
-        Event::Move([50.0, 128.0]),
-        Modifiers::default(),
-    );
+    tool.handle(&context, &mut ids, Event::Move([50.0, 128.0]), keys);
     assert_eq!(infer::work::SHAPES.with(|c| c.get()), s.lines.len());
     let tried = infer::work::PAIRS.with(|c| c.get());
     assert!(tried > 0 && tried <= 496, "{tried} pairs");
+    tool.handle(&context, &mut ids, Event::Press([50.0, 128.0]), keys);
+    let added = tool
+        .handle(&context, &mut ids, Event::Release([50.0, 128.0]), keys)
+        .add
+        .unwrap();
+    assert_eq!(added.points.len(), 1);
+    let p = &added.points[0];
+    assert_eq!((p.x.mm(), p.y.mm()), (50.0, 128.0));
+    let on = |curve: &str| Form::On {
+        point: Reference::Element(p.id.clone()),
+        curve: Reference::Element(id(curve)),
+    };
+    assert_eq!(
+        added
+            .constraints
+            .iter()
+            .map(|c| c.form.clone())
+            .collect::<Vec<_>>(),
+        [on("n9999998"), on("n9999999")]
+    );
 }
 
 // --- Review items 8, 9, 10: arcs ---------------------------------------------------------
@@ -1115,5 +1140,280 @@ fn each_tools_preview_draws_its_entity_under_way() {
             start: [20.0, 10.0],
             end: [20.0, 20.0],
         }]
+    );
+}
+
+// --- Round 2, item 1: the tangent wins over an axis it isn't on ---------------------------
+
+#[test]
+fn a_line_leaving_an_arc_a_degree_off_an_axis_is_tangent_alone() {
+    // The arc about (50, 50), radius 10, from 270° to 91°: past its end it runs along 181°,
+    // 1° off −x. A line from its end toward 180.5°, 30 mm: 0.5° off the tangent and 0.5° off
+    // horizontal. The tangent wins, the arc not leaving along the axis: `tangent_at` alone,
+    // the line's end on the 181° ray, 30·cos 0.5° along it.
+    let s = with_arc(empty(), [50.0, 50.0], 10.0, 270.0, 91.0);
+    let end = toward([50.0, 50.0], 91.0, 10.0);
+    let mut d = Drive::new(ToolKind::Line, s);
+    d.drag(end, toward(end, 180.5, 30.0));
+    let made = &d.made[0];
+    assert_eq!(
+        made.constraints
+            .iter()
+            .map(|c| c.form.clone())
+            .collect::<Vec<_>>(),
+        [Form::TangentAt {
+            a: Reference::Element(id("a0000001")),
+            b: Reference::Element(made.lines[0].id.clone()),
+            at: Reference::Element(id("q0000102")),
+            direction: crate::document::Direction::Same,
+        }]
+    );
+    let want = toward(end, 181.0, 30.0 * libm::cos(0.5f64.to_radians()));
+    let p = &made.points[0];
+    assert!(
+        distance([p.x.mm(), p.y.mm()], want) < 1e-9,
+        "{p:?} {want:?}"
+    );
+}
+
+// --- Round 2, item 2: each tool's gesture against a sketch that lost what it named --------
+
+/// `d`'s sketch without the members `ids`, at the next revision: another client's remove.
+fn removed(d: &mut Drive, ids: &[&str]) {
+    let gone = |e: &ElementId| ids.contains(&e.as_str());
+    d.sketch.points.retain(|p| !gone(&p.id));
+    d.sketch.lines.retain(|l| !gone(&l.id));
+    d.sketch.circles.retain(|c| !gone(&c.id));
+    d.sketch.arcs.retain(|a| !gone(&a.id));
+    d.sketch.constraints.retain(|c| !gone(&c.id));
+    d.revision = d.revision.next().unwrap();
+}
+
+/// A lone point at (10, 10), `q0000001`.
+fn lone() -> Sketch {
+    let mut s = empty();
+    s.points.push(point("q0000001", 10.0, 10.0));
+    s
+}
+
+#[test]
+fn a_circles_shared_centre_gone_is_a_new_point_there() {
+    let mut d = Drive::new(ToolKind::Circle, lone());
+    d.press(10.0, 10.0).to(12.0, 12.0);
+    removed(&mut d, &["q0000001"]);
+    d.to(13.0, 14.0).release(13.0, 14.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&["point (10, 10)", "circle (10, 10) r5"])]
+    );
+}
+
+#[test]
+fn a_centrepoint_arcs_shared_points_gone_are_new_points_there() {
+    // The centre clicked on the point (10, 10), which goes before the start's click; and an
+    // arc whose centre and start both shared points that go mid-sweep.
+    let mut d = Drive::new(ToolKind::CenterpointArc, lone());
+    d.click(10.0, 10.0);
+    removed(&mut d, &["q0000001"]);
+    d.click(18.0, 16.0).to(13.0, 20.0).click(4.0, 18.0);
+    let want = [sorted(&[
+        "point (10, 10)",
+        "point (18, 16)",
+        "point (4, 18)",
+        "arc (10, 10) (18, 16)->(4, 18)",
+    ])];
+    assert_eq!(d.adds(), want);
+    let mut s = lone();
+    s.points.push(point("q0000002", 18.0, 16.0));
+    let mut d = Drive::new(ToolKind::CenterpointArc, s);
+    d.click(10.0, 10.0).click(18.0, 16.0).to(13.0, 20.0);
+    removed(&mut d, &["q0000001", "q0000002"]);
+    d.click(4.0, 18.0);
+    assert_eq!(d.adds(), want);
+}
+
+#[test]
+fn a_three_point_arcs_shared_ends_gone_are_new_points_there() {
+    // The start on (10, 10), gone before the end; the end on (30, 10), gone before the third
+    // click.
+    let mut s = lone();
+    s.points.push(point("q0000002", 30.0, 10.0));
+    let mut d = Drive::new(ToolKind::ThreePointArc, s);
+    d.click(10.0, 10.0);
+    removed(&mut d, &["q0000001"]);
+    d.click(30.0, 10.0);
+    removed(&mut d, &["q0000002"]);
+    d.click(20.0, 20.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (20, 10)",
+            "point (10, 10)",
+            "point (30, 10)",
+            "arc (20, 10) (30, 10)->(10, 10)",
+        ])]
+    );
+}
+
+#[test]
+fn a_tangent_arc_whose_base_is_gone_ends() {
+    // Pressed on the line's end (20, 10); the line and the end go: the gesture ends, idle,
+    // and the release adds nothing. The same for a base that's still a point but no longer
+    // any curve's end.
+    for gone in [&["n0000001", "q0000002"][..], &["n0000001"][..]] {
+        let mut d = Drive::new(ToolKind::TangentArc, one_line());
+        d.press(20.0, 10.0).to(20.0, 15.0);
+        removed(&mut d, gone);
+        d.to(20.0, 20.0);
+        assert!(!d.tool.busy(), "{gone:?}");
+        d.release(20.0, 20.0);
+        assert!(d.adds().is_empty(), "{gone:?}");
+    }
+}
+
+#[test]
+fn a_lines_first_point_gone_is_a_new_point_there() {
+    // Pressed on the point (10, 10), which goes before the release: the line from a new
+    // point there. And a chain's first click on a line, at (20, 30), whose line goes before
+    // the second click: the segment from a new point there, with no `on`.
+    let mut d = Drive::new(ToolKind::Line, lone());
+    d.press(10.0, 10.0).to(30.0, 20.0);
+    removed(&mut d, &["q0000001"]);
+    d.to(40.0, 25.0).release(40.0, 25.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (10, 10)",
+            "point (40, 25)",
+            "line (10, 10)-(40, 25)"
+        ])]
+    );
+    let mut s = empty();
+    s.points.push(point("q0000001", 10.0, 30.0));
+    s.points.push(point("q0000002", 50.0, 30.0));
+    s.lines.push(line("n0000001", "q0000001", "q0000002"));
+    let mut d = Drive::new(ToolKind::Line, s);
+    d.click(20.0, 30.2);
+    removed(&mut d, &["n0000001"]);
+    d.click(40.0, 60.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (20, 30)",
+            "point (40, 60)",
+            "line (20, 30)-(40, 60)"
+        ])]
+    );
+}
+
+#[test]
+fn a_first_point_on_a_middle_a_crossing_or_a_curve_gone_is_a_new_point_there() {
+    // Lines (10, 30)-(50, 30) and (33, 10)-(33, 60). A line pressed at the first's middle
+    // (30, 30), at their crossing (33, 30), and on the first at (20, 30); the line it names
+    // (for the crossing, the second) goes before the release, 30 mm up and right: each from
+    // a new point there, with no relation.
+    let mut s = empty();
+    s.points.push(point("q0000001", 10.0, 30.0));
+    s.points.push(point("q0000002", 50.0, 30.0));
+    s.points.push(point("q0000003", 33.0, 10.0));
+    s.points.push(point("q0000004", 33.0, 60.0));
+    s.lines.push(line("n0000001", "q0000001", "q0000002"));
+    s.lines.push(line("n0000002", "q0000003", "q0000004"));
+    for (press, gone, at) in [
+        ([30.1, 30.1], "n0000001", "(30, 30)"),
+        ([33.1, 30.1], "n0000002", "(33, 30)"),
+        ([20.0, 30.2], "n0000001", "(20, 30)"),
+    ] {
+        let mut d = Drive::new(ToolKind::Line, s.clone());
+        d.press(press[0], press[1]).to(50.0, 50.0);
+        removed(&mut d, &[gone]);
+        let end = [press[0] + 30.0, press[1] + 40.0];
+        d.to(end[0], end[1]).release(end[0], end[1]);
+        let made = &d.made[0];
+        assert!(made.constraints.is_empty(), "{press:?}: {made:?}");
+        assert!(
+            d.adds()[0].contains(&format!("point {at}")),
+            "{press:?}: {:?}",
+            d.adds()
+        );
+    }
+}
+
+// --- Round 2, item 5: each add answered by its token ---------------------------------------
+
+#[test]
+fn each_add_is_answered_by_its_token_whatever_the_order() {
+    // Three points added, P1 (12, 34), P2 (22, 47), P3 (37, 58) (lined up with nothing),
+    // none answered. P2 refused; P3 answered, at revision 3, before P1, at revision 2. A read
+    // of revision 2 holding P1 (the core's own) and lagging P3: P2 is forgotten (a click
+    // there adds it again), P1 is the read's, and P3 still the tool's (3 is past 2), so a
+    // click on either adds nothing.
+    let sid = sketch_id();
+    let mut tool = SketchTool::new(ToolKind::Point);
+    let mut ids = Counter(0);
+    let keys = Modifiers::default();
+    let mut click = |tool: &mut SketchTool, sketch: &Sketch, revision: u64, at: Xy| {
+        let context = Context {
+            sketch_id: &sid,
+            revision: Revision::from_number(revision).unwrap(),
+            sketch,
+            tolerance: TOLERANCE,
+            automatic_relations: true,
+        };
+        tool.handle(&context, &mut ids, Event::Press(at), keys);
+        tool.handle(&context, &mut ids, Event::Release(at), keys)
+    };
+    let none = empty();
+    let (p1, p2, p3) = ([12.0, 34.0], [22.0, 47.0], [37.0, 58.0]);
+    let made: Vec<Outcome> = [p1, p2, p3]
+        .into_iter()
+        .map(|at| click(&mut tool, &none, 1, at))
+        .collect();
+    let token = |i: usize| made[i].token.unwrap();
+    assert!(token(0) != token(1) && token(1) != token(2));
+    tool.refused(token(1));
+    tool.added(token(2), Revision::from_number(3).unwrap());
+    tool.added(token(0), Revision::from_number(2).unwrap());
+    let read = sketch_edit::add(&none, made[0].add.as_ref().unwrap())
+        .unwrap()
+        .sketch;
+    assert!(click(&mut tool, &read, 2, p1).message.is_some());
+    assert!(click(&mut tool, &read, 2, p3).message.is_some());
+    let again = click(&mut tool, &read, 2, p2);
+    assert!(again.add.is_some(), "{again:?}");
+    // A read of revision 3 without P3 (removed): forgotten.
+    assert!(click(&mut tool, &read, 3, p3).add.is_some());
+}
+
+// --- Round 2, item 6: a point woken again is the newest ------------------------------------
+
+#[test]
+fn a_point_woken_again_is_the_newest_and_the_oldest_goes() {
+    // Points along y = 10 at x = 10, 20, ... 90. Hovered: 1 to 8, then 1 again (now the
+    // newest), then 9: the oldest, 2, is forgotten, and 1 kept. A click at (20.3, 50) lines
+    // up with nothing; at (10.3, 60), with (10, 10).
+    let mut s = empty();
+    for i in 1..=9 {
+        s.points
+            .push(point(&format!("q000000{i}"), f64::from(i) * 10.0, 10.0));
+    }
+    let hovered = || {
+        let mut d = Drive::new(ToolKind::Point, s.clone());
+        for i in [1, 2, 3, 4, 5, 6, 7, 8, 1, 9] {
+            d.to(f64::from(i) * 10.0 + 0.1, 10.1);
+        }
+        d
+    };
+    let mut d = hovered();
+    d.click(20.3, 50.0);
+    assert_eq!(d.adds(), [sorted(&["point (20.3, 50)"])]);
+    let mut d = hovered();
+    d.click(10.3, 60.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (10, 60)",
+            "vertical_points (10, 60) #(10, 10)"
+        ])]
     );
 }

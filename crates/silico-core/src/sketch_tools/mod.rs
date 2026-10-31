@@ -20,9 +20,14 @@
 //!   point tool clicked on a point adds nothing, and says so (#278's D).
 //! - **Inferred relations** ([`infer`]'s order): the origin's `horizontal_points` and
 //!   `vertical_points` (#278's A), `midpoint` (and `on` of a curve crossing there), `on` (two
-//!   at a crossing); a line's `tangent_at` (`same`) to an arc it leaves, with its
-//!   `horizontal` or `vertical` too if it's also that, else `horizontal` or `vertical`, else
-//!   `perpendicular` or `parallel` to a line at its start, each within 2°. Every one the
+//!   at a crossing); a line's `tangent_at` (`same`) to an arc it leaves, else `horizontal` or
+//!   `vertical`, else `perpendicular` or `parallel` to a line at its start, each within 2°.
+//!   Where a line leaves an arc near an axis, the tangent wins (the coordinator's rule, #335
+//!   round 2): the line runs along the arc, and gets the axis's relation too only if the arc
+//!   leaves along the axis exactly (to a picometre: an obround's join), so both hold where
+//!   it's written. FreeCAD 1.1.3's `seekAutoConstraint` adds both whatever; its main, since
+//!   `d77c9647c3`, skips the alignment wherever there's a tangency; this rule sits between
+//!   them. Every one the
 //!   pointer shows at the accepting click is added, redundant or not (#278's G). Ctrl held,
 //!   or *Automatic relations* off, suppresses them all, and only them (#278's F).
 //! - **Points lined up** (#278's E, and the coordinator's decision of 2026-10-31, as
@@ -43,10 +48,11 @@
 //!   at its start).
 //!
 //! **The sketch under a tool.** What a tool adds is taken to be in the sketch until a read
-//! settles it: the viewport tells the tool the revision each add made
-//! ([`SketchTool::added`]), and a read of that revision or later decides (one without it
-//! was undone, rolled back, or removed by another client). A refused add is forgotten with
-//! the gesture ([`SketchTool::forget_pending`]); another sketch starts the tool afresh. Each
+//! settles it. Each add comes with a token ([`Outcome::token`]); the viewport answers it with
+//! the revision the add made ([`SketchTool::added`]), after which a read of that revision or
+//! later decides (one without it was undone, rolled back, or removed by another client), or
+//! with its refusal ([`SketchTool::refused`]), which forgets it. [`SketchTool::forget_pending`]
+//! forgets every add and the gesture; another sketch starts the tool afresh. Each
 //! event finds the gesture's points and curves in the newest read again: a chain's last
 //! point where the solve put it, a chain whose last point is gone ended, and a point shared
 //! that's gone a new point at its place.
@@ -140,14 +146,20 @@ pub enum Event {
 }
 
 /// What an event did: the members to add, if it completed something (a `sketch_add`'s,
-/// each list as the document writes a sketch's: `NewMembers::of`); what the tool says; and
-/// whether the tool was left (Esc).
+/// each list as the document writes a sketch's: `NewMembers::of`), and the token the
+/// viewport answers it by ([`SketchTool::added`], [`SketchTool::refused`]); what the tool
+/// says; and whether the tool was left (Esc).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Outcome {
     pub add: Option<Members>,
+    pub token: Option<AddToken>,
     pub message: Option<Message>,
     pub left: bool,
 }
+
+/// Which of a tool's adds the core answered: given with each add, in the order made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AddToken(u64);
 
 impl Outcome {
     fn nothing() -> Self {
@@ -311,6 +323,8 @@ pub struct SketchTool {
     /// share or find (a chain's last point, a point clicked twice), each add in turn with
     /// the revision it made once the core has answered ([`SketchTool::added`]).
     pending: Vec<Pending>,
+    /// The token the next add is given.
+    next_token: u64,
     /// The points the pointer has woken, the newest first, at most [`WAKE`] (#278's E).
     woken: Vec<ElementId>,
 }
@@ -319,6 +333,7 @@ pub struct SketchTool {
 /// it made (or later) doesn't (undone, rolled back, or removed by another client).
 #[derive(Debug, Clone)]
 struct Pending {
+    token: AddToken,
     members: Members,
     revision: Option<Revision>,
 }
@@ -360,6 +375,7 @@ impl SketchTool {
             preview: Preview::default(),
             sketch: None,
             pending: Vec::new(),
+            next_token: 0,
             woken: Vec::new(),
         }
     }
@@ -401,19 +417,26 @@ impl SketchTool {
         self.state = fresh.state;
     }
 
-    /// Forgets what it added that no read has shown, and the gesture under way, which may
-    /// name it: for an add the core refused, so no click finds a member the sketch hasn't.
+    /// Forgets everything it added that no read has shown, and the gesture under way, which
+    /// may name it: a full reset, so no click finds a member the sketch hasn't.
     pub fn forget_pending(&mut self) {
         self.pending.clear();
         self.restart();
     }
 
-    /// The core took the oldest of the tool's adds it hadn't answered, at `revision`: once
-    /// a read of that revision or later is given, the read says whether the sketch holds it.
-    pub fn added(&mut self, revision: Revision) {
-        if let Some(pending) = self.pending.iter_mut().find(|p| p.revision.is_none()) {
+    /// The core took the add `token` names, at `revision`: once a read of that revision or
+    /// later is given, the read says whether the sketch holds it.
+    pub fn added(&mut self, token: AddToken, revision: Revision) {
+        if let Some(pending) = self.pending.iter_mut().find(|p| p.token == token) {
             pending.revision = Some(revision);
         }
+    }
+
+    /// The core refused the add `token` names: it's forgotten, so no click finds its
+    /// members. A gesture that names them finds them gone at the next event (a chain ends
+    /// there; a point it shared is placed anew).
+    pub fn refused(&mut self, token: AddToken) {
+        self.pending.retain(|p| p.token != token);
     }
 
     /// The tool brought up to `context`: started afresh in another sketch; its adds a read
@@ -516,7 +539,7 @@ impl SketchTool {
             ids,
         };
         let mut preview = Preview::default();
-        let outcome = match &mut self.state {
+        let mut outcome = match &mut self.state {
             State::Line(t) => t.handle(&mut step, event, &mut preview),
             State::CornerRectangle(t) | State::CenterRectangle(t) => {
                 t.handle(&mut step, event, &mut preview)
@@ -531,10 +554,14 @@ impl SketchTool {
         if let Some(added) = &outcome.add {
             // The pointer was at each point the tool placed: they're woken too.
             self.wake(added.points.iter().rev().map(|p| p.id.clone()));
+            let token = AddToken(self.next_token);
+            self.next_token += 1;
             self.pending.push(Pending {
+                token,
                 members: added.clone(),
                 revision: None,
             });
+            outcome.token = Some(token);
         }
         if outcome.left {
             self.woken.clear();

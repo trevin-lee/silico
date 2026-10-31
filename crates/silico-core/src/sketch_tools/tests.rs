@@ -118,7 +118,7 @@ impl Drive {
         let outcome = self.tool.handle(&context, &mut self.ids, event, self.keys);
         if let Some(members) = &outcome.add {
             self.revision = self.revision.next().unwrap();
-            self.tool.added(self.revision);
+            self.tool.added(outcome.token.unwrap(), self.revision);
             let edited = sketch_edit::add(&self.sketch, members)
                 .unwrap_or_else(|refused| panic!("the gate refused {members:?}: {refused:?}"));
             let unmet = unmet(&self.sketch, &edited.sketch, members);
@@ -169,10 +169,10 @@ impl Drive {
 /// What of `members`, added to `before` to make `after`, doesn't hold at the coordinates
 /// written: each relation, to 1e-9 of the largest coordinate it reads (at least 1 mm), each
 /// direction to 1e-9 as a unit vector's; and each new arc's end as far from its centre as its
-/// start. But for what the tools add without making it hold, by design: a direction a
-/// line's end shows where the pointer fixed that end (a point the sketch held, or one placed
-/// on a curve or at a middle), which the solve then settles (#278's G); and an arc whose
-/// start or end the sketch held, which the solve puts on its circle (D2, arcs).
+/// start, at the held points' coordinates as after the add. But for what the tools add
+/// without making it hold, by design: a direction a line's end shows where the pointer fixed
+/// that end (a point the sketch held, or one placed on a curve or at a middle), which the
+/// solve then settles (#278's G).
 fn unmet(before: &Sketch, after: &Sketch, members: &Members) -> Vec<String> {
     let held = |id: &ElementId| before.elements().any(|(e, _)| e == id);
     let at = |id: &ElementId| -> Xy {
@@ -198,12 +198,6 @@ fn unmet(before: &Sketch, after: &Sketch, members: &Members) -> Vec<String> {
         })
     };
     let fixed_end = |r: &Reference| line_of(r).is_none_or(|l| held(&l.to) || snapped(&l.to));
-    let tangent_too = |r: &Reference| {
-        members
-            .constraints
-            .iter()
-            .any(|c| matches!(&c.form, Form::TangentAt { b, .. } if b == r))
-    };
     let place = |r: &Reference| match r {
         Reference::Element(id) => at(id),
         _ => [0.0, 0.0],
@@ -246,11 +240,11 @@ fn unmet(before: &Sketch, after: &Sketch, members: &Members) -> Vec<String> {
         let ok = match &c.form {
             Form::Horizontal { line } => {
                 let (a, b) = line_of(line).map(|l| (at(&l.from), at(&l.to))).unwrap();
-                fixed_end(line) || tangent_too(line) || (a[1] - b[1]).abs() <= scale(&[a, b])
+                fixed_end(line) || (a[1] - b[1]).abs() <= scale(&[a, b])
             }
             Form::Vertical { line } => {
                 let (a, b) = line_of(line).map(|l| (at(&l.from), at(&l.to))).unwrap();
-                fixed_end(line) || tangent_too(line) || (a[0] - b[0]).abs() <= scale(&[a, b])
+                fixed_end(line) || (a[0] - b[0]).abs() <= scale(&[a, b])
             }
             Form::HorizontalPoints { a, b } => {
                 let (p, q) = (place(a), place(b));
@@ -318,10 +312,9 @@ fn unmet(before: &Sketch, after: &Sketch, members: &Members) -> Vec<String> {
             unmet.push(format!("{:?}", c.form));
         }
     }
+    // Every arc, its ends held or not: a centrepoint arc's end, the one point not an input
+    // to its circle, shares a point only one on the circle (to a picometre).
     for arc in &members.arcs {
-        if held(&arc.start) || held(&arc.end) {
-            continue;
-        }
         let centre = at(&arc.center);
         let (s, e) = (at(&arc.start), at(&arc.end));
         if (geometry::distance(s, centre) - geometry::distance(e, centre)).abs()

@@ -69,6 +69,11 @@ fn sketch_id() -> FeatureId {
 }
 
 fn opened(kind: ToolKind) -> Fixture {
+    opened_with(kind, EMPTY)
+}
+
+/// The document `text` open as s1, and a tool drawing on its sketch `s0000001`.
+fn opened_with(kind: ToolKind, text: &str) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
     let sessions = Sessions::with_stand_ins(
@@ -80,7 +85,7 @@ fn opened(kind: ToolKind) -> Fixture {
         },
     );
     let path = dir.path().join("sketch.silico");
-    std::fs::write(&path, EMPTY).unwrap();
+    std::fs::write(&path, text).unwrap();
     let opened = match sessions.call(
         "open",
         &json!({"path": path.to_str().unwrap(), "create": false}).to_string(),
@@ -131,7 +136,7 @@ impl Fixture {
         };
         let outcome = self.tool.handle(&context, &mut self.ids, event, self.keys);
         assert_eq!(outcome.message, None, "{event:?}");
-        if let Some(members) = outcome.add {
+        if let (Some(members), Some(token)) = (outcome.add, outcome.token) {
             let revision = self.sessions.status(&s1()).session.unwrap().revision;
             let added = self
                 .sessions
@@ -146,7 +151,7 @@ impl Fixture {
             let made = added.session.as_ref().unwrap().revision;
             let added = added.result.unwrap_or_else(|p| panic!("{p:?}"));
             assert!(added.changed);
-            self.tool.added(made);
+            self.tool.added(token, made);
         }
     }
 
@@ -453,5 +458,47 @@ fn a_three_point_and_a_centrepoint_arc_solve_where_they_were_drawn() {
             at(68.0, 56.0),
             at(54.0, 58.0),
         ])
+    );
+}
+
+#[test]
+fn a_line_leaving_an_arc_a_degree_off_an_axis_solves_tangent_with_nothing_in_conflict() {
+    // Round 2's rule: the arc about (50, 50), radius 10, from 270° to 91°, leaves its end
+    // along 181°, 1° off −x. A line drawn from there toward 180.5° gets `tangent_at` alone,
+    // written along 181°; were it horizontal too, the two would conflict. The arc (centre,
+    // start, end: six unknowns, its end held on it) has five freedoms, the line's far end
+    // two more, the tangency takes one: six. Nothing conflicts; the line's end solves where
+    // it was drawn.
+    let deg = |d: f64| d.to_radians();
+    let end = [
+        50.0 + 10.0 * libm::cos(deg(91.0)),
+        50.0 + 10.0 * libm::sin(deg(91.0)),
+    ];
+    let text = format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{{"id": "c0000001", "x": 50, "y": 50, "construction": false}}, {{"id": "q0000101", "x": 50, "y": 40, "construction": false}}, {{"id": "q0000102", "x": {}, "y": {}, "construction": false}}], "lines": [], "circles": [], "arcs": [{{"id": "a0000001", "center": "c0000001", "start": "q0000101", "end": "q0000102", "construction": false}}], "constraints": []}}]}}"#,
+        end[0], end[1]
+    );
+    let mut f = opened_with(ToolKind::Line, &text);
+    let toward = [
+        end[0] + 30.0 * libm::cos(deg(180.5)),
+        end[1] + 30.0 * libm::sin(deg(180.5)),
+    ];
+    f.drag(end, toward);
+    let read = f.read();
+    assert_eq!(read.states.dofs, 6);
+    assert_eq!(read.states.state, SketchState::UnderDefined);
+    assert_eq!(
+        constraint_states(&read),
+        [("tangent_at", ConstraintState::Satisfied)]
+    );
+    let along = 30.0 * libm::cos(deg(0.5));
+    let want = at(
+        end[0] + along * libm::cos(deg(181.0)),
+        end[1] + along * libm::sin(deg(181.0)),
+    );
+    assert!(
+        points(&read).contains(&want),
+        "{:?} {want:?}",
+        points(&read)
     );
 }
