@@ -96,8 +96,11 @@ pub type Reader = Arc<dyn Fn(&Path) -> Found + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 /// What a watch tells its session each time a comparison finds the file changed (with what
-/// it read), with no lock held, so the session can reload it ([`DiskWatch::when_changed`]).
-pub type Changed = Arc<dyn Fn(&[u8]) + Send + Sync>;
+/// it read, and the count of the session's reads and writes it compared against), with no
+/// lock held, so the session can reload it ([`DiskWatch::when_changed`]): only if the count
+/// is still the session's ([`DiskWatch::current`]), as it checks under its own lock, since a
+/// read or write of the session's may come between the finding and this.
+pub type Changed = Arc<dyn Fn(&[u8], u64) + Send + Sync>;
 
 /// A session's file watched for changes on disk.
 pub struct DiskWatch {
@@ -119,6 +122,13 @@ struct Shared {
     notify: Option<Notify>,
     /// Told of each comparison that finds the file changed: the session's reload.
     changed: OnceLock<Changed>,
+    /// Called between a comparison's finding and its telling `changed`, in this crate's
+    /// tests only: to hold it there.
+    #[cfg(test)]
+    before_changed: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// How many times `changed` has been told and returned, in this crate's tests only.
+    #[cfg(test)]
+    changed_told: std::sync::atomic::AtomicUsize,
     state: Mutex<State>,
 }
 
@@ -221,6 +231,10 @@ impl DiskWatch {
                 now,
                 notify,
                 changed: OnceLock::new(),
+                #[cfg(test)]
+                before_changed: Mutex::new(None),
+                #[cfg(test)]
+                changed_told: std::sync::atomic::AtomicUsize::new(0),
                 state: Mutex::new(State {
                     held,
                     counter: 0,
@@ -241,6 +255,28 @@ impl DiskWatch {
     /// (A3). Given once, as the session is made; given again, it's ignored.
     pub fn when_changed(&self, changed: Changed) {
         let _ = self.shared.changed.set(changed);
+    }
+
+    /// Whether `counter`, a count of the session's reads and writes a comparison was made
+    /// against (as [`Changed`] is told it), is still the session's: no read or write since.
+    pub fn current(&self, counter: u64) -> bool {
+        lock(&self.shared.state).counter == counter
+    }
+
+    /// From now on, each comparison that finds the file changed calls `hold` after its
+    /// finding is kept and before it tells the session, in this crate's tests only.
+    #[cfg(test)]
+    pub(crate) fn before_changed(&self, hold: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.shared.before_changed) = Some(hold);
+    }
+
+    /// How many times a comparison has told `changed` and it returned, in this crate's tests
+    /// only.
+    #[cfg(test)]
+    pub(crate) fn changed_told(&self) -> usize {
+        self.shared
+            .changed_told
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The session read `bytes` (a reload): what it holds now. A comparison running is
@@ -341,7 +377,20 @@ fn compare(shared: &Shared, counter: u64, held: &[u8]) {
     if let (Found::Bytes(bytes), Disk::Changed) = (&read, found)
         && let Some(changed) = shared.changed.get()
     {
-        changed(bytes);
+        #[cfg(test)]
+        {
+            let hold = lock(&shared.before_changed).clone();
+            if let Some(hold) = hold {
+                hold();
+            }
+        }
+        // Told with the count it compared against: the session may have read or written
+        // since the finding was kept, the lock let go (its own reload, taking these bytes).
+        changed(bytes, counter);
+        #[cfg(test)]
+        shared
+            .changed_told
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 

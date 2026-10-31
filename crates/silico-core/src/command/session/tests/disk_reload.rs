@@ -525,6 +525,17 @@ fn a_file_changed_again_after_that_begin_stays_changed() {
     started.recv_timeout(WAIT).unwrap();
     std::fs::write(&f.path, SPHERE).unwrap();
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    // Its reload queued (behind the begin) before the begin runs: the comparison tells the
+    // session after its finding is kept, and once the begin has read the file the
+    // comparison is the session's no longer, and queues nothing.
+    let deadline = Instant::now() + WAIT;
+    while f.session().disk.changed_told() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the comparison never told the session"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     assert_eq!(begin.wait().result.unwrap().base, Revision(2));
@@ -1175,4 +1186,53 @@ fn a_refused_reload_isnt_tried_again_while_the_session_holding_its_file_only_rea
     open_gate(&f.session().reloading);
     drop(through);
     assert_eq!(f.at(), Revision::OPENED);
+}
+
+#[test]
+fn a_comparison_the_session_read_past_before_it_told_queues_no_reload() {
+    // A comparison finds the agent's bytes, keeps its finding, and is held before it tells
+    // the session; meanwhile a command reads the file and reloads it (the count of reads
+    // moves on). Let go, the comparison is the session's no longer: dropped, never reported
+    // (the design's section 4), so no second reload is queued for bytes already taken.
+    let f = opened(BOX);
+    f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
+    let (at_hold, held_there) = mpsc::channel::<()>();
+    let (release, released) = mpsc::channel::<()>();
+    let released = Arc::new(Mutex::new(released));
+    let at_hold = Mutex::new(at_hold);
+    f.session().disk.before_changed(Arc::new(move || {
+        let _ = lock(&at_hold).send(());
+        // Until the test lets it go (its sender dropped).
+        let _ = lock(&released).recv();
+    }));
+    // A reload, if one is queued, held where the test can see it start.
+    let (reload_started, through) = shut(&f.session().reloading);
+    std::fs::write(&f.path, SPHERE).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while held_there.try_recv().is_err() {
+        f.status();
+        assert!(Instant::now() < deadline, "no comparison found the change");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    // The command reloads the file before it runs: revision 2, the agent's text.
+    let text = f.sessions.text(&f.id, None).wait();
+    let session = text.session.unwrap();
+    assert!(session.reloaded);
+    assert_eq!(session.revision, Revision(2));
+    assert_eq!(text.result.unwrap().text, SPHERE);
+    // Let go: its telling done, it queued nothing.
+    drop(release);
+    let deadline = Instant::now() + WAIT;
+    while f.session().disk.changed_told() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the comparison never told the session"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!lock(&f.session().reloads).queued);
+    assert!(reload_started.try_recv().is_err());
+    assert_eq!(f.at(), Revision(2));
+    open_gate(&f.session().reloading);
+    drop(through);
 }

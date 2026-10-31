@@ -413,9 +413,11 @@ impl<C: Kernel + 'static> Session<C> {
     /// session's own reload (A3): not inside a transaction (only `commit` reads the file
     /// there), nor while its own save has left the file part written (the next save says
     /// where its old text is), nor while one is queued, nor for the bytes a reload refused
-    /// last (a file another session holds, say), which would be refused again. If it should,
-    /// it's marked queued.
-    fn reload_wanted(&self, found: &[u8], claims: u64) -> bool {
+    /// last (a file another session holds, say), which would be refused again; nor for a
+    /// comparison made against `counter`, a count of the session's reads and writes no
+    /// longer its own (it read or wrote since: dropped, never reported). If it should, it's
+    /// marked queued.
+    fn reload_wanted(&self, found: &[u8], claims: u64, counter: u64) -> bool {
         {
             let held = self.held.read();
             if held.transaction.is_some() || held.part_written.is_some() {
@@ -423,7 +425,12 @@ impl<C: Kernel + 'static> Session<C> {
             }
         }
         let mut reloads = lock(&self.reloads);
-        if reloads.queued
+        // A comparison the session has read or written since (its own reload, taking these
+        // bytes) is dropped, never reported (the design's section 4): checked under the
+        // reloads' lock, as a reload moves the watch on before it clears `queued` there, so
+        // a comparison found current here either finds `queued` still set or is current.
+        if !self.disk.current(counter)
+            || reloads.queued
             || reloads
                 .refused
                 .is_some_and(|refused| refused == (digest(found), claims))
@@ -483,14 +490,14 @@ fn reloader<P: Clients + 'static>(
     registry: Weak<Registry<P>>,
     session: Weak<Session<P::Client>>,
 ) -> crate::disk::Changed {
-    Arc::new(move |found: &[u8]| {
+    Arc::new(move |found: &[u8], counter: u64| {
         let Some(session) = session.upgrade() else {
             return;
         };
         let claims = registry
             .upgrade()
             .map_or(0, |registry| lock(&registry.book).claims);
-        if session.reload_wanted(found, claims) {
+        if session.reload_wanted(found, claims, counter) {
             session.queue(reload_job(Weak::clone(&registry), digest(found)));
         }
     })
