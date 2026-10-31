@@ -147,6 +147,12 @@ pub(crate) enum Out<'a> {
     Array(Vec<Out<'a>>),
     /// An array written an item to a line, whatever it holds.
     Lines(Vec<Out<'a>>),
+    /// An array of objects, written as an array of them is (an item to a line), each item
+    /// made only as it's written and dropped once it is: a list of large items (`meshes`'
+    /// bodies), so no more than one item's tree is held at once, and none past the writer's
+    /// limit is made. Its items own what they write (`Out<'static>`), so `Out` stays
+    /// covariant in `'a`.
+    Each(Vec<Box<dyn Fn() -> Out<'static> + 'a>>),
     Object(Vec<(&'static str, Out<'a>)>),
     /// An object whose keys are known only when Silico runs (a JSON Schema's, or a value of
     /// a document's or a request's), in the order given.
@@ -160,6 +166,9 @@ impl Out<'_> {
             Out::Raw(_) | Out::Str(_) | Out::Owned(_) => false,
             // Written over lines, as an object is.
             Out::Object(_) | Out::Keyed(_) | Out::Lines(_) => true,
+            // Its items are objects, made only as they're written: it holds one if it has
+            // any, as an array of them does.
+            Out::Each(items) => !items.is_empty(),
             Out::Array(items) => items.iter().any(Out::holds_object),
         }
     }
@@ -171,6 +180,7 @@ impl Out<'_> {
             Out::Raw(_) | Out::Str(_) | Out::Owned(_) => true,
             Out::Array(items) => !items.iter().any(Out::holds_object),
             Out::Lines(items) => items.is_empty(),
+            Out::Each(items) => items.is_empty(),
             Out::Object(members) => !members.iter().any(|(_, v)| v.holds_object()),
             Out::Keyed(members) => !members.iter().any(|(_, v)| v.holds_object()),
         }
@@ -785,6 +795,29 @@ impl Writer {
                     self.push("]")
                 }
             }
+            Out::Each(makes) => {
+                if makes.is_empty() {
+                    self.push("[]")
+                } else if self.one_line {
+                    self.push("[")?;
+                    for (i, make) in makes.iter().enumerate() {
+                        if i > 0 {
+                            self.push(", ")?;
+                        }
+                        self.put(&make(), indent)?;
+                    }
+                    self.push("]")
+                } else {
+                    self.push("[\n")?;
+                    for (i, make) in makes.iter().enumerate() {
+                        self.pad(indent + 1)?;
+                        self.put(&make(), indent + 1)?;
+                        self.push(if i + 1 < makes.len() { ",\n" } else { "\n" })?;
+                    }
+                    self.pad(indent)?;
+                    self.push("]")
+                }
+            }
             Out::Object(members) => self.object(value, members, indent),
             Out::Keyed(members) => self.object(value, members, indent),
         }
@@ -867,4 +900,72 @@ impl Writer {
 /// Whether `c` is written as an escape though JSON doesn't require it (see `quote`).
 fn escaped(c: char) -> bool {
     matches!(c as u32, 0x7f..=0x9f | 0x2028 | 0x2029) || super::json::bidi_control(c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Layout, Out, text};
+
+    /// An object of a number and an array of numbers, `n` its number: an item of the kind
+    /// `meshes` writes a body at a time.
+    fn item(n: usize) -> Out<'static> {
+        Out::Object(vec![
+            ("n", Out::Raw(n.to_string())),
+            (
+                "list",
+                Out::Array(vec![Out::Raw("1".to_owned()), Out::Raw("2".to_owned())]),
+            ),
+        ])
+    }
+
+    /// `items` items, as an array and as one made an item at a time, in an object, as a
+    /// result holds its bodies.
+    fn both(items: usize) -> (Out<'static>, Out<'static>) {
+        let array = Out::Object(vec![("bodies", Out::Array((0..items).map(item).collect()))]);
+        let each = Out::Object(vec![(
+            "bodies",
+            Out::Each(
+                (0..items)
+                    .map(|n| Box::new(move || item(n)) as Box<dyn Fn() -> Out<'static>>)
+                    .collect(),
+            ),
+        )]);
+        (array, each)
+    }
+
+    #[test]
+    fn an_array_made_an_item_at_a_time_is_written_as_the_array_of_its_items() {
+        for items in 0..=3 {
+            let (array, each) = both(items);
+            for layout in [Layout::Canonical, Layout::OneLine] {
+                assert_eq!(
+                    text(&each, layout, usize::MAX),
+                    text(&array, layout, usize::MAX),
+                    "{items} items, {layout:?}"
+                );
+            }
+        }
+        // By hand, one line: items between ", ", no line broken.
+        let (_, each) = both(2);
+        let line = text(&each, Layout::OneLine, usize::MAX).unwrap();
+        assert_eq!(
+            line,
+            r#"{"bodies": [{"n": 0, "list": [1, 2]}, {"n": 1, "list": [1, 2]}]}"#
+        );
+        assert!(!line.contains('\n'));
+        // Canonical: an item to a line.
+        assert_eq!(
+            text(&each, Layout::Canonical, usize::MAX).unwrap(),
+            "{\n  \"bodies\": [\n    {\"n\": 0, \"list\": [1, 2]},\n    {\"n\": 1, \"list\": [1, 2]}\n  ]\n}"
+        );
+        // Stopped at the limit, as the array is.
+        let (array, each) = both(3);
+        for limit in [0, 10, 40, 60] {
+            assert_eq!(
+                text(&each, Layout::OneLine, limit).is_err(),
+                text(&array, Layout::OneLine, limit).is_err(),
+                "{limit}"
+            );
+        }
+    }
 }

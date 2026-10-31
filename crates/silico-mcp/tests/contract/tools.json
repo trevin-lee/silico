@@ -1464,6 +1464,7 @@
               "angle",
               "render",
               "timeline",
+              "meshes",
               "sketch"
             ],
             "type": "string"
@@ -1617,6 +1618,7 @@
               "drag_begin",
               "drag_move",
               "drag_end",
+              "meshes",
               "sketch",
               "sketch_add",
               "sketch_remove",
@@ -1883,6 +1885,7 @@
               "drag_begin",
               "drag_move",
               "drag_end",
+              "meshes",
               "sketch",
               "sketch_add",
               "sketch_remove",
@@ -2185,6 +2188,7 @@
               "drag_begin",
               "drag_move",
               "drag_end",
+              "meshes",
               "sketch",
               "sketch_add",
               "sketch_remove",
@@ -18813,6 +18817,830 @@
         "type": "object"
       },
       "title": "End a drag"
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Display meshes"
+      },
+      "description": "The display meshes of the model's bodies for a view (a named view or a camera, and its size in pixels), as the app's viewport draws them: each body, or each feature named in `features`, at the largest power of two no coarser than half a pixel, from the meshes `render` makes. Each body's positions, normals, and triangles, its edges' polylines, each face and edge by its name, its `key`, and the half pixels its level `serves`. Pass back in `held` the `key` and `deflection` of each mesh already read: a body held is named, but its geometry isn't given again. To look at the model, `render` is cheaper. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "inputSchema": {
+        "$defs": {
+          "Angle": {
+            "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
+          "Camera": {
+            "additionalProperties": false,
+            "description": "A camera: where it looks from and at, which way is up in the image, and how much it\nsees. The document is Z-up. A result's camera can be passed back unchanged.",
+            "properties": {
+              "eye": {
+                "description": "The eye, in global coordinates (mm), within 1e12 mm of the origin, at least a\nnanometre from the target. An orthographic view uses only its direction from the\ntarget; a perspective eye mustn't be inside a body or on its surface.",
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "field_of_view": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Angle"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "A perspective camera's vertical angle, in degrees, from 0.001 to 179.999; null for\nan orthographic camera."
+              },
+              "projection": {
+                "$ref": "#/$defs/Projection"
+              },
+              "target": {
+                "description": "What the view is centred on, in global coordinates (mm).",
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "up": {
+                "description": "Which way is up in the image: any vector with a part across the view, made\nperpendicular to the view and of unit length in a result.",
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "view_height": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Length"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "An orthographic camera's view's height, in mm, from 1e-6 to 1e12; null for a\nperspective camera."
+              }
+            },
+            "required": [
+              "eye",
+              "field_of_view",
+              "projection",
+              "target",
+              "up",
+              "view_height"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "HeldMesh": {
+            "additionalProperties": false,
+            "description": "A mesh the client holds, as `held` gives it.",
+            "properties": {
+              "deflection": {
+                "description": "The `deflection` a meshes result gave the mesh, as it gave it.",
+                "exclusiveMinimum": 0,
+                "type": "number"
+              },
+              "key": {
+                "description": "Its body's `key`, as a meshes result gave it.",
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "deflection",
+              "key"
+            ],
+            "type": "object"
+          },
+          "Length": {
+            "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
+          "ModelChoice": {
+            "description": "Which model to read: the current one, or the newest published.",
+            "oneOf": [
+              {
+                "const": "current",
+                "description": "The session's current revision's model, rebuilt if it isn't yet: what an agent that\njust edited reads.",
+                "type": "string"
+              },
+              {
+                "const": "published",
+                "description": "The newest model published, which may be an older revision's, read at once: what a\nUI reads while a rebuild runs.",
+                "type": "string"
+              }
+            ]
+          },
+          "NamedView": {
+            "description": "A named view, as Fusion's ViewCube names them, the document Z-up: `front` looks from\n−Y, `right` from +X, `top` from +Z, and the corners combine them.",
+            "enum": [
+              "front",
+              "back",
+              "left",
+              "right",
+              "top",
+              "bottom",
+              "top_front_left",
+              "top_front_right",
+              "top_back_left",
+              "top_back_right",
+              "bottom_front_left",
+              "bottom_front_right",
+              "bottom_back_left",
+              "bottom_back_right"
+            ],
+            "type": "string"
+          },
+          "Projection": {
+            "description": "How a camera projects: from the eye in parallel (`orthographic`, as every named view\nis), or from the eye as a point (`perspective`).",
+            "enum": [
+              "orthographic",
+              "perspective"
+            ],
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`meshes`' request: the display meshes of the model's bodies for a view, from a named\nview or a camera (one, the other null), each body at the largest power of two no coarser\nthan half a pixel, as `render` meshes it. Every body asked is meshed, never culled to the\nview.",
+        "properties": {
+          "camera": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Camera"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A camera; null with a named view."
+          },
+          "features": {
+            "description": "The features whose solids to mesh, by ID, each once; null for every body.",
+            "items": {
+              "$ref": "#/$defs/FeatureId"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "height": {
+            "description": "The view's height in pixels.",
+            "maximum": 4096,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "held": {
+            "description": "The meshes the client holds already, each its key and deflection as a result gave\nthem: a body held is named, but its geometry isn't given again.",
+            "items": {
+              "$ref": "#/$defs/HeldMesh"
+            },
+            "type": "array"
+          },
+          "model": {
+            "$ref": "#/$defs/ModelChoice"
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "view": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/NamedView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A named view, fitted to the bodies; null with a camera."
+          },
+          "width": {
+            "description": "The view's width in pixels.",
+            "maximum": 4096,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "camera",
+          "features",
+          "height",
+          "held",
+          "model",
+          "session",
+          "view",
+          "width"
+        ],
+        "title": "MeshesRequest",
+        "type": "object"
+      },
+      "name": "meshes",
+      "outputSchema": {
+        "$defs": {
+          "Angle": {
+            "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
+          "Camera": {
+            "additionalProperties": false,
+            "description": "A camera: where it looks from and at, which way is up in the image, and how much it\nsees. The document is Z-up. A result's camera can be passed back unchanged.",
+            "properties": {
+              "eye": {
+                "description": "The eye, in global coordinates (mm), within 1e12 mm of the origin, at least a\nnanometre from the target. An orthographic view uses only its direction from the\ntarget; a perspective eye mustn't be inside a body or on its surface.",
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "field_of_view": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Angle"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "A perspective camera's vertical angle, in degrees, from 0.001 to 179.999; null for\nan orthographic camera."
+              },
+              "projection": {
+                "$ref": "#/$defs/Projection"
+              },
+              "target": {
+                "description": "What the view is centred on, in global coordinates (mm).",
+                "items": {
+                  "$ref": "#/$defs/Length"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "up": {
+                "description": "Which way is up in the image: any vector with a part across the view, made\nperpendicular to the view and of unit length in a result.",
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "type": "array"
+              },
+              "view_height": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Length"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "An orthographic camera's view's height, in mm, from 1e-6 to 1e12; null for a\nperspective camera."
+              }
+            },
+            "required": [
+              "eye",
+              "field_of_view",
+              "projection",
+              "target",
+              "up",
+              "view_height"
+            ],
+            "type": "object"
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "advice",
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Length": {
+            "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+            "type": "number"
+          },
+          "MeshEdge": {
+            "additionalProperties": false,
+            "description": "An edge of a body's mesh.",
+            "properties": {
+              "name": {
+                "description": "Its name, by the element map.",
+                "type": "string"
+              },
+              "points": {
+                "description": "How many of `edge_points` are its polyline's, the next after the edges' before it;\nnull when the body is held.",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "stable": {
+                "description": "Whether `name` is stable.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "points",
+              "stable"
+            ],
+            "type": "object"
+          },
+          "MeshFace": {
+            "additionalProperties": false,
+            "description": "A face of a body's mesh.",
+            "properties": {
+              "name": {
+                "description": "Its name, by the element map: give it to `distance`, `angle`, or `render`'s\n`highlight`, or, if it's stable, to a fillet's `edges`.",
+                "type": "string"
+              },
+              "stable": {
+                "description": "Whether `name` is stable: one a reference stored in the document may use.",
+                "type": "boolean"
+              },
+              "triangles": {
+                "description": "How many of the mesh's triangles are its, the next in `triangles` after the faces'\nbefore it; null when the body is held.",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "stable",
+              "triangles"
+            ],
+            "type": "object"
+          },
+          "MeshedBody": {
+            "additionalProperties": false,
+            "description": "A body's display mesh.",
+            "properties": {
+              "body": {
+                "description": "Its number among the model's bodies, from 1, as a render's ID buffer numbers it;\nnull for a feature's solid that isn't a body (one another feature consumes).",
+                "minimum": 1,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "box": {
+                "description": "Its tight box, `[min, max]`, in mm; null if it couldn't be measured.",
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": [
+                  "array",
+                  "null"
+                ]
+              },
+              "deflection": {
+                "description": "The deflection the kernel used: the level, or the body's floor, which is coarser.",
+                "type": "number"
+              },
+              "edge_points": {
+                "description": "The points of every edge's polyline, one edge after another, in `edges`' order.",
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "edges": {
+                "description": "Each edge, in the solid's own order (`Edge1` first).",
+                "items": {
+                  "$ref": "#/$defs/MeshEdge"
+                },
+                "type": "array"
+              },
+              "faces": {
+                "description": "Each face, in the solid's own order (`Face1` first).",
+                "items": {
+                  "$ref": "#/$defs/MeshFace"
+                },
+                "type": "array"
+              },
+              "feature": {
+                "$ref": "#/$defs/FeatureId",
+                "description": "The feature whose solid it is."
+              },
+              "held": {
+                "description": "Whether the client holds this mesh (its key at its deflection): then `positions`,\n`normals`, `triangles`, and `edge_points` are empty, and each face's and edge's count\nnull.",
+                "type": "boolean"
+              },
+              "key": {
+                "description": "Its step's key: the same mesh has the same key, on every platform, and a change to\nanything it's built from changes it.",
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "level": {
+                "description": "The deflection, in mm, the view asked for: a power of two; or, for a body at no depth\n(in a perspective view, one with no box or reaching the eye's plane), its floor, the\ndeflection used.",
+                "type": "number"
+              },
+              "normals": {
+                "description": "One per position: the unit normal of its face's surface there, out of the solid.",
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "positions": {
+                "description": "The mesh's vertices, in the document's coordinates (mm), shared within a face.",
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              "serves": {
+                "description": "The half pixels, in mm, `[at_least, below]`, this mesh serves: read again only when\nthe view's half pixel at the body's nearest point leaves them.",
+                "items": {
+                  "type": "number"
+                },
+                "maxItems": 2,
+                "minItems": 2,
+                "type": "array"
+              },
+              "triangles": {
+                "description": "Vertex indices, three a triangle, wound counterclockwise seen from outside, face by\nface in `faces`' order.",
+                "items": {
+                  "items": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 3,
+                  "minItems": 3,
+                  "type": "array"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "body",
+              "box",
+              "deflection",
+              "edge_points",
+              "edges",
+              "faces",
+              "feature",
+              "held",
+              "key",
+              "level",
+              "normals",
+              "positions",
+              "serves",
+              "triangles"
+            ],
+            "type": "object"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Projection": {
+            "description": "How a camera projects: from the eye in parallel (`orthographic`, as every named view\nis), or from the eye as a point (`perspective`).",
+            "enum": [
+              "orthographic",
+              "perspective"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it.",
+                "type": "string"
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`meshes`' result.",
+                "properties": {
+                  "bodies": {
+                    "description": "Each body meshed, in timeline order.",
+                    "items": {
+                      "$ref": "#/$defs/MeshedBody"
+                    },
+                    "type": "array"
+                  },
+                  "camera": {
+                    "$ref": "#/$defs/Camera",
+                    "description": "The camera of the view: the one given, or the named view's, its up made\nperpendicular to the view and of unit length."
+                  }
+                },
+                "required": [
+                  "bodies",
+                  "camera"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Display meshes"
     },
     {
       "annotations": {

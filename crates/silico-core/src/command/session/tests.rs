@@ -3932,6 +3932,23 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
                 Box::new(move || erased(s.timeline(at, model))),
             ),
             (
+                ReadCommand::Meshes,
+                Box::new(move || {
+                    erased(s.meshes(
+                        at,
+                        model,
+                        crate::command::meshes::Meshes {
+                            view: Some(crate::views::NamedView::Front),
+                            camera: None,
+                            width: 100,
+                            height: 100,
+                            features: None,
+                            held: vec![],
+                        },
+                    ))
+                }),
+            ),
+            (
                 ReadCommand::Sketch,
                 Box::new(move || erased(s.sketch(at, model, id("k7f2qx3m")))),
             ),
@@ -3976,11 +3993,17 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         (SessionCommand::Text, Box::new(|| erased(s.text(at, None)))),
         (SessionCommand::Outline, Box::new(|| erased(s.outline(at)))),
     ];
-    // The reads M4.1 lists; `timeline` and `sketch`, M5.0's, after `export` and
+    // The reads M4.1 lists; `timeline`, `meshes`, and `sketch`, M5.0's, after `export` and
     // `move_feature`.
-    let (m4_reads, m5_reads): (Vec<_>, Vec<_>) = reads(ModelChoice::Current)
-        .into_iter()
-        .partition(|(read, _)| !matches!(read, ReadCommand::Timeline | ReadCommand::Sketch));
+    let (m4_reads, m5_reads): (Vec<_>, Vec<_>) =
+        reads(ModelChoice::Current)
+            .into_iter()
+            .partition(|(read, _)| {
+                !matches!(
+                    read,
+                    ReadCommand::Timeline | ReadCommand::Meshes | ReadCommand::Sketch
+                )
+            });
     queued.extend(
         m4_reads
             .into_iter()
