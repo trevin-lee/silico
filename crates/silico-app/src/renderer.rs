@@ -16,7 +16,7 @@
 //! built on eframe's device, installed in `main.rs` with [`OnGpu`] as the app's
 //! [`Present`], with a test drawing through it on lavapipe (the `wgpu` feature).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -71,9 +71,11 @@ pub struct Pick {
     pub point: Option<[f64; 3]>,
 }
 
-/// A picking rectangle's answer: what was hit, or none for the background alone.
+/// A picking rectangle's answer: the renderer's number of the frame that asked it, the
+/// rectangle, and what was hit, or none for the background alone.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Picking {
+    pub frame: u64,
     pub rect: PixelRect,
     pub hit: Option<Pick>,
 }
@@ -193,13 +195,28 @@ pub trait Present {
     fn refused(&mut self) -> BTreeSet<u32>;
 }
 
-/// What the pane and the paint callbacks share: the changes not yet made, the newest
-/// picking answer, and the bodies refused.
+/// What the pane and the paint callbacks share: the changes not yet made, one for each body
+/// (the last asked: an upload replaces an earlier upload or forget of its body, and a forget
+/// an earlier upload, so frames that are never painted, a window minimized, hold no more
+/// than one mesh a body); the newest picking answer; the bodies refused; and the last
+/// failure said, so a renderer refusing every frame is said once, not each frame.
 #[derive(Default)]
 struct Shared {
-    changes: Vec<Change>,
+    changes: BTreeMap<u32, Change>,
     picked: Option<Picking>,
     refused: BTreeSet<u32>,
+    failure: Option<String>,
+}
+
+impl Shared {
+    fn queue(&mut self, changes: Vec<Change>) {
+        for change in changes {
+            let body = match &change {
+                Change::Upload(body, _) | Change::Forget(body) => *body,
+            };
+            self.changes.insert(body, change);
+        }
+    }
 }
 
 fn locked(shared: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
@@ -209,8 +226,8 @@ fn locked(shared: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
 }
 
 /// Frames drawn through egui_wgpu's paint callback, by the `R` installed in its
-/// `callback_resources` ([`install`]). Changes wait in order until a callback is prepared,
-/// so a frame egui doesn't paint loses none.
+/// `callback_resources` ([`install`]). Changes wait until a callback is prepared, so a
+/// frame egui doesn't paint loses none.
 pub struct OnGpu<R> {
     shared: Arc<Mutex<Shared>>,
     renderer: PhantomData<fn() -> R>,
@@ -248,7 +265,7 @@ impl<R: ViewRenderer> Present for OnGpu<R> {
         changes: Vec<Change>,
         frame: Option<FrameData>,
     ) {
-        locked(&self.shared).changes.extend(changes);
+        locked(&self.shared).queue(changes);
         if let Some(frame) = frame {
             painter.add(egui_wgpu::Callback::new_paint_callback(
                 rect,
@@ -277,6 +294,67 @@ struct Callback<R> {
     renderer: PhantomData<fn() -> R>,
 }
 
+/// A frame's preparation, its GPU's half aside: the changes waiting made; the frame drawn
+/// without the bodies whose uploads were refused, and without highlights of a body it
+/// doesn't draw (the renderer refuses a whole frame for one); a refusal said once until a
+/// frame is drawn again; and a picking answer kept for the pane. With no renderer installed,
+/// the changes are taken, every upload among them refused, so none waits for ever.
+fn prepared<R: ViewRenderer>(
+    renderer: Option<&mut R>,
+    shared: &Mutex<Shared>,
+    data: &FrameData,
+) -> Vec<wgpu::CommandBuffer> {
+    let changes: Vec<Change> = std::mem::take(&mut locked(shared).changes)
+        .into_values()
+        .collect();
+    let Some(renderer) = renderer else {
+        let uploads = changes.iter().filter_map(|change| match change {
+            Change::Upload(body, _) => Some(*body),
+            Change::Forget(_) => None,
+        });
+        locked(shared).refused.extend(uploads);
+        return Vec::new();
+    };
+    let refused = apply(renderer, changes);
+    let bodies: Vec<u32> = data
+        .bodies
+        .iter()
+        .copied()
+        .filter(|body| !refused.contains(body))
+        .collect();
+    let highlights: Vec<(u32, Element)> = data
+        .highlights
+        .iter()
+        .copied()
+        .filter(|(body, _)| bodies.binary_search(body).is_ok())
+        .collect();
+    locked(shared).refused.extend(refused);
+    let frame = Frame {
+        bodies: &bodies,
+        highlights: &highlights,
+        ..data.frame()
+    };
+    let buffers = match renderer.prepare(&frame) {
+        Ok(buffer) => {
+            locked(shared).failure = None;
+            vec![buffer]
+        }
+        Err(failure) => {
+            let said = failure.to_string();
+            let mut shared = locked(shared);
+            if shared.failure.as_deref() != Some(said.as_str()) {
+                tracing::warn!("the viewport's renderer refused a frame: {said}");
+                shared.failure = Some(said);
+            }
+            Vec::new()
+        }
+    };
+    if let Some(picking) = renderer.take_picking() {
+        locked(shared).picked = Some(picking);
+    }
+    buffers
+}
+
 impl<R: ViewRenderer> egui_wgpu::CallbackTrait for Callback<R> {
     fn prepare(
         &self,
@@ -286,35 +364,7 @@ impl<R: ViewRenderer> egui_wgpu::CallbackTrait for Callback<R> {
         _encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let Some(renderer) = resources.get_mut::<R>() else {
-            return Vec::new();
-        };
-        let changes = std::mem::take(&mut locked(&self.shared).changes);
-        let refused = apply(renderer, changes);
-        // A body whose upload was refused now isn't drawn in this frame either.
-        let bodies: Vec<u32> = self
-            .frame
-            .bodies
-            .iter()
-            .copied()
-            .filter(|body| !refused.contains(body))
-            .collect();
-        locked(&self.shared).refused.extend(refused);
-        let frame = Frame {
-            bodies: &bodies,
-            ..self.frame.frame()
-        };
-        let buffers = match renderer.prepare(&frame) {
-            Ok(buffer) => vec![buffer],
-            Err(failure) => {
-                tracing::warn!("the viewport's renderer refused a frame: {failure}");
-                Vec::new()
-            }
-        };
-        if let Some(picking) = renderer.take_picking() {
-            locked(&self.shared).picked = Some(picking);
-        }
-        buffers
+        prepared(resources.get_mut::<R>(), &self.shared, &self.frame)
     }
 
     fn paint(
@@ -345,9 +395,14 @@ impl<R: ViewRenderer> egui_wgpu::CallbackTrait for Callback<R> {
 mod tests {
     use super::*;
 
+    /// A frame as the renderer was given it: its bodies and highlights.
+    type Drawn = (Vec<u32>, Vec<(u32, Element)>);
+
     #[derive(Default)]
     struct Counting {
         calls: Vec<String>,
+        frames: Vec<Drawn>,
+        picking: Option<Picking>,
     }
 
     impl ViewRenderer for Counting {
@@ -363,12 +418,14 @@ mod tests {
         fn forget(&mut self, body: u32) {
             self.calls.push(format!("forget {body}"));
         }
-        fn prepare(&mut self, _: &Frame<'_>) -> Result<wgpu::CommandBuffer, String> {
+        fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, String> {
+            self.frames
+                .push((frame.bodies.to_vec(), frame.highlights.to_vec()));
             Err("no GPU here".to_owned())
         }
         fn composite(&self, _: &mut wgpu::RenderPass<'_>) {}
         fn take_picking(&mut self) -> Option<Picking> {
-            None
+            self.picking.take()
         }
     }
 
@@ -432,5 +489,136 @@ mod tests {
         assert!(!rect([0, 0], [257, 1]).takes());
         assert!(!rect([(1 << 24) + 1, 0], [3, 3]).takes());
         assert!(!rect([0, -(1 << 24) - 1], [3, 3]).takes());
+    }
+
+    fn data(bodies: &[u32], highlights: &[(u32, Element)]) -> FrameData {
+        FrameData {
+            camera: Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+                eye: [0.0, -100.0, 0.0],
+                target: [0.0; 3],
+                up: [0.0, 0.0, 1.0],
+            },
+            size_px: [400, 300],
+            pixels_per_point: 1.0,
+            bodies: bodies.to_vec(),
+            highlights: highlights.to_vec(),
+            picking: None,
+        }
+    }
+
+    fn told(changes: &BTreeMap<u32, Change>) -> Vec<String> {
+        changes
+            .values()
+            .map(|change| match change {
+                Change::Upload(n, mesh) => format!("upload {n} {}", mesh.positions.len()),
+                Change::Forget(n) => format!("forget {n}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn frames_never_painted_hold_one_change_a_body_the_last_asked() {
+        // Two frames with no view (nothing painted): body 1 uploaded then forgotten, body 2
+        // uploaded twice, body 3 forgotten then uploaded. Waiting, each body's last change,
+        // in the bodies' order.
+        let ctx = egui::Context::default();
+        let painter = egui::Painter::new(ctx, egui::LayerId::background(), egui::Rect::EVERYTHING);
+        let mut gpu = OnGpu::<Counting>::new();
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(10.0, 10.0));
+        gpu.present(
+            &painter,
+            rect,
+            vec![
+                Change::Upload(1, mesh(1)),
+                Change::Upload(2, mesh(2)),
+                Change::Forget(3),
+            ],
+            None,
+        );
+        gpu.present(
+            &painter,
+            rect,
+            vec![
+                Change::Forget(1),
+                Change::Upload(2, mesh(5)),
+                Change::Upload(3, mesh(6)),
+            ],
+            None,
+        );
+        assert_eq!(
+            told(&locked(&gpu.shared).changes),
+            ["forget 1", "upload 2 5", "upload 3 6"]
+        );
+        // Ten thousand more frames never painted, a mesh for each of two bodies each time:
+        // still one change a body.
+        for i in 0..10_000 {
+            gpu.present(
+                &painter,
+                rect,
+                vec![Change::Upload(1, mesh(i % 7)), Change::Upload(2, mesh(1))],
+                None,
+            );
+        }
+        assert_eq!(locked(&gpu.shared).changes.len(), 3);
+    }
+
+    #[test]
+    fn a_frame_leaves_out_bodies_refused_now_and_their_highlights_and_keeps_its_picking() {
+        // Body 2's mesh is refused as it's uploaded: the frame draws body 1 alone, with
+        // only body 1's highlight; the renderer's picking answer is kept for the pane.
+        let shared = Mutex::new(Shared::default());
+        locked(&shared).queue(vec![
+            Change::Upload(1, mesh(3)),
+            Change::Upload(2, mesh(11)),
+        ]);
+        let pick = Picking {
+            frame: 7,
+            rect: PixelRect {
+                min: [1, 2],
+                size: [3, 3],
+            },
+            hit: None,
+        };
+        let mut renderer = Counting {
+            picking: Some(pick),
+            ..Counting::default()
+        };
+        let face = (1, Element::Face(1));
+        let edge = (2, Element::Edge(4));
+        let made = prepared(Some(&mut renderer), &shared, &data(&[1, 2], &[face, edge]));
+        assert!(made.is_empty());
+        assert_eq!(renderer.frames, [(vec![1], vec![face])]);
+        assert_eq!(
+            locked(&shared).refused.iter().copied().collect::<Vec<_>>(),
+            [2]
+        );
+        assert_eq!(locked(&shared).picked, Some(pick));
+        assert!(locked(&shared).changes.is_empty());
+    }
+
+    #[test]
+    fn a_renderer_refusing_every_frame_is_said_once_and_still_told_of_each_change() {
+        let shared = Mutex::new(Shared::default());
+        let mut renderer = Counting::default();
+        for i in 0..100 {
+            locked(&shared).queue(vec![Change::Upload(1, mesh(i % 5))]);
+            assert!(prepared(Some(&mut renderer), &shared, &data(&[1], &[])).is_empty());
+        }
+        assert_eq!(renderer.frames.len(), 100);
+        assert_eq!(renderer.calls.len(), 100);
+        assert_eq!(locked(&shared).failure.as_deref(), Some("no GPU here"));
+    }
+
+    #[test]
+    fn with_no_renderer_installed_the_changes_are_taken_and_the_uploads_refused() {
+        let shared = Mutex::new(Shared::default());
+        locked(&shared).queue(vec![Change::Upload(1, mesh(3)), Change::Forget(2)]);
+        assert!(prepared::<Counting>(None, &shared, &data(&[1], &[])).is_empty());
+        assert!(locked(&shared).changes.is_empty());
+        assert_eq!(
+            locked(&shared).refused.iter().copied().collect::<Vec<_>>(),
+            [1]
+        );
     }
 }

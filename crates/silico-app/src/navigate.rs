@@ -3,12 +3,14 @@
 //! the target, pan, zoom toward the cursor, fit, the named views, and the projection. The
 //! camera is the app's own (decision 29), held in `f64` as the core's [`Camera`], and never
 //! reaches a document (section 11). Each control gives the camera it makes, or none when
-//! that camera fails [`Camera::check`] (a zoom past what a renderer draws), so the view
-//! stays as it was.
+//! that camera fails [`Camera::check`] (non-finite, or past the least or the most a camera
+//! may be), so the view stays as it was; [`drawable`] says whether a renderer draws a
+//! camera's view of the bodies (an orthographic view no smaller than their reach allows),
+//! which the viewport asks of every camera a control makes.
 
-use silico_core::views::NamedView;
+use silico_core::views::{self, NamedView};
 use silico_protocol::vec3::{cross, dot, sub};
-use silico_protocol::{Camera, MIN_VIEW_HEIGHT_OF_REACH, Projection};
+use silico_protocol::{Camera, Projection};
 
 /// How far a drag of one point orbits, in degrees: half a turn across 360 points.
 pub const ORBIT_DEGREES_PER_POINT: f64 = 0.5;
@@ -18,10 +20,6 @@ pub const ZOOM_POINTS_PER_OCTAVE: f64 = 200.0;
 
 /// A perspective view's vertical angle, in degrees, when the view is switched to one.
 pub const PERSPECTIVE_FIELD_OF_VIEW: f64 = 30.0;
-
-/// How much room a fit leaves: its view 1.1 times the boxes' extent, as the named views'
-/// fit leaves (`views::NamedView::fit`).
-pub const FIT_MARGIN: f64 = 1.1;
 
 /// The view Home gives, and the first one a document opens at: Fusion's home is a corner's
 /// isometric view, its front and right toward the viewer, Z up.
@@ -63,7 +61,7 @@ pub fn mm_per_point(camera: &Camera, height: f64) -> Option<f64> {
             2.0 * frame.distance * libm::tan(field_of_view.to_radians() / 2.0)
         }
     };
-    (height > 0.0).then(|| view_height / height)
+    (height > 0.0 && height.is_finite()).then(|| view_height / height)
 }
 
 /// Orbits about the target by a drag of `dx`, `dy` points (y down, as the screen's), as
@@ -132,62 +130,42 @@ pub fn zoom(camera: &Camera, scroll: f64, cursor: [f64; 2], height: f64) -> Opti
     })
 }
 
-/// The smallest box holding every one of `boxes`, if there's one.
-pub fn joined(boxes: impl IntoIterator<Item = [[f64; 3]; 2]>) -> Option<[[f64; 3]; 2]> {
-    boxes.into_iter().reduce(|[low, high], [l, h]| {
-        [
-            [low[0].min(l[0]), low[1].min(l[1]), low[2].min(l[2])],
-            [high[0].max(h[0]), high[1].max(h[1]), high[2].max(h[2])],
-        ]
-    })
-}
-
-/// Fits the view to `bounds` in an image `width` by `height`, looking the way it looks: at
-/// the box's centre, its view 1.1 times the larger of the corners' extent along the view's
-/// up and along its right times `height / width`, as the named views fit (but never under
-/// what a renderer draws of the box's reach, as theirs). An orthographic eye stands two
-/// half diagonals back, as theirs; a perspective one far enough back that the view at the
+/// Fits the view to `bounds` in an image `width` by `height`, looking the way it looks: the
+/// core's own fit along the view's direction and up (`views::fit_along`, which the named
+/// views fit by), kept perspective if it is, its eye far enough back that the view at the
 /// box's centre is that high, and half a diagonal more.
 pub fn fit(camera: &Camera, bounds: [[f64; 3]; 2], width: u32, height: u32) -> Option<Camera> {
     let frame = camera.frame().ok()?;
-    let [low, high] = bounds;
-    let target = scaled(add(low, high), 0.5);
-    let mut along_up = (f64::INFINITY, f64::NEG_INFINITY);
-    let mut along_right = (f64::INFINITY, f64::NEG_INFINITY);
-    for i in 0..8 {
-        let corner = [
-            if i & 1 == 0 { low[0] } else { high[0] },
-            if i & 2 == 0 { low[1] } else { high[1] },
-            if i & 4 == 0 { low[2] } else { high[2] },
-        ];
-        let (u, r) = (dot(corner, frame.up), dot(corner, frame.right));
-        along_up = (along_up.0.min(u), along_up.1.max(u));
-        along_right = (along_right.0.min(r), along_right.1.max(r));
-    }
-    let extent_up = along_up.1 - along_up.0;
-    let extent_right = (along_right.1 - along_right.0) * f64::from(height) / f64::from(width);
+    let (fitted, _) = views::fit_along(frame.back, frame.up, bounds, width, height);
+    let Projection::Perspective { field_of_view } = camera.projection else {
+        return checked(fitted);
+    };
+    let Projection::Orthographic { view_height } = fitted.projection else {
+        return None;
+    };
     let half_diagonal = {
-        let d = sub(high, low);
+        let d = sub(bounds[1], bounds[0]);
         dot(d, d).sqrt() / 2.0
     };
-    let least = half_diagonal * MIN_VIEW_HEIGHT_OF_REACH * 1.01;
-    let view_height = (FIT_MARGIN * extent_up.max(extent_right)).max(least);
-    let (distance, projection) = match camera.projection {
-        Projection::Orthographic { .. } => (
-            2.0 * half_diagonal,
-            Projection::Orthographic { view_height },
-        ),
-        Projection::Perspective { field_of_view } => (
-            view_height / (2.0 * libm::tan(field_of_view.to_radians() / 2.0)) + half_diagonal,
-            camera.projection,
-        ),
-    };
+    let distance =
+        view_height / (2.0 * libm::tan(field_of_view.to_radians() / 2.0)) + half_diagonal;
     checked(Camera {
-        projection,
-        eye: add(target, scaled(frame.back, distance)),
-        target,
-        up: frame.up,
+        projection: camera.projection,
+        eye: add(fitted.target, scaled(frame.back, distance)),
+        ..fitted
     })
+}
+
+/// Whether a renderer draws `camera`'s view of bodies in `boxes`: any perspective view; an
+/// orthographic one no smaller than the least its bodies' reach from its target allows
+/// (`views::least_view_height`, which fits keep to as well).
+pub fn drawable(camera: &Camera, boxes: impl IntoIterator<Item = [[f64; 3]; 2]>) -> bool {
+    match camera.projection {
+        Projection::Perspective { .. } => true,
+        Projection::Orthographic { view_height } => {
+            view_height >= views::least_view_height(views::reach(camera.target, boxes))
+        }
+    }
 }
 
 /// The named view `view` of `bounds` (the ViewCube's faces and corners, and Home): the
@@ -355,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn a_zoom_past_what_a_renderer_draws_is_refused_and_the_view_kept() {
+    fn a_zoom_past_the_least_view_height_a_camera_may_have_is_refused_and_the_view_kept() {
         // 1e-6 mm is the least view height: 80 mm halved 27 times is 6e-7 mm.
         assert!(zoom(&front(), 200.0 * 27.0, [0.0, 0.0], 400.0).is_none());
         assert!(zoom(&front(), 200.0 * 26.0, [0.0, 0.0], 400.0).is_some());
@@ -393,14 +371,60 @@ mod tests {
     }
 
     #[test]
-    fn home_is_the_cores_top_front_right_fit() {
-        // The core's camera for the view, as `render` and `meshes` fit it: from (1, −1, 1),
-        // up +z made perpendicular, the box's centre its target.
+    fn home_on_a_20_mm_cube_looks_from_its_corner_at_its_centre_a_tenth_over_its_extent() {
+        // From (1, −1, 1)/√3 onto the centre (10, 10, 10), two half diagonals (2 · 10√3)
+        // back: the eye at (30, −10, 30). Up, +z made perpendicular, (−1, 1, 2)/√6, spans
+        // 80/√6 of the cube (from (20, 0, 0) to (0, 20, 20)); across, right (1, 1, 0)/√2
+        // spans 40/√2, less: so 1.1 · 80/√6 = 35.926 high.
         let home = named(HOME, [[0.0; 3], [20.0; 3]], 400, 400).unwrap();
-        assert_eq!(home, HOME.camera([[0.0; 3], [20.0; 3]], 400, 400));
-        let d = sub(home.eye, home.target);
-        assert!(d[0] > 0.0 && d[1] < 0.0 && d[2] > 0.0);
-        assert!((d[0] + d[1]).abs() < 1e-12 && (d[0] - d[2]).abs() < 1e-12);
+        near(home.target, [10.0; 3], 1e-12);
+        near(home.eye, [30.0, -10.0, 30.0], 1e-12);
+        let six = 6f64.sqrt();
+        near(home.up, [-1.0 / six, 1.0 / six, 2.0 / six], 1e-15);
+        assert!((height(&home) - 1.1 * 80.0 / six).abs() < 1e-12);
+        assert!((height(&home) - 35.926).abs() < 5e-4);
+        // F6 from Home's direction fits the same: its extent over all eight corners (a fit
+        // of two corners alone, (0, 0, 0) and (20, 20, 20), would span 40/√6 up and give
+        // 31.11 by the right's 40/√2).
+        let refit = fit(&home, [[0.0; 3], [20.0; 3]], 400, 400).unwrap();
+        assert!((height(&refit) - 1.1 * 80.0 / six).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_needle_seen_end_on_is_fitted_no_smaller_than_its_reach_allows() {
+        // 1 by 500,000 by 1 mm, from the front: 1 mm across, so 1.1 mm by its extent; but
+        // its half diagonal, 250,000 mm, makes the least 250,000 · 1e-5 · 1.01 = 2.525 mm.
+        let needle = [[0.0; 3], [1.0, 500_000.0, 1.0]];
+        let fitted = fit(&front(), needle, 400, 400).unwrap();
+        assert!(
+            (height(&fitted) - 2.525).abs() < 1e-6,
+            "{}",
+            height(&fitted)
+        );
+        assert!(drawable(&fitted, [needle]));
+    }
+
+    #[test]
+    fn an_orthographic_view_smaller_than_its_bodies_reach_allows_isnt_drawable() {
+        // The block (0, 0, 0) to (40, 20, 10) from the origin reaches √2100 = 45.83 mm: the
+        // least is 45.83 · 1e-5 · 1.01 = 4.6286e-4 mm.
+        let block = [[0.0, 0.0, 0.0], [40.0, 20.0, 10.0]];
+        let least = 2100f64.sqrt() * 1e-5 * 1.01;
+        let at = |view_height: f64| Camera {
+            projection: Projection::Orthographic { view_height },
+            ..front()
+        };
+        assert!(drawable(&at(least * 1.000_001), [block]));
+        assert!(!drawable(&at(least * 0.999_999), [block]));
+        // With no bodies, anything the camera's check takes; in perspective, anything.
+        assert!(drawable(&at(1e-6), []));
+        let perspective = Camera {
+            projection: Projection::Perspective {
+                field_of_view: 30.0,
+            },
+            ..front()
+        };
+        assert!(drawable(&perspective, [block]));
     }
 
     #[test]
@@ -412,17 +436,5 @@ mod tests {
         let ortho = projected(&perspective, false).unwrap();
         assert!((height(&ortho) - 80.0).abs() < 1e-12);
         assert_eq!(projected(&front(), false).unwrap(), front());
-    }
-
-    #[test]
-    fn the_joined_box_holds_every_box() {
-        assert_eq!(
-            joined([
-                [[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]],
-                [[-1.0, 2.0, 0.0], [1.0, 9.0, 4.0]]
-            ]),
-            Some([[-1.0, 1.0, 0.0], [3.0, 9.0, 5.0]])
-        );
-        assert_eq!(joined([]), None);
     }
 }

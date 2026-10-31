@@ -9,29 +9,51 @@
 //! of the published model, listing every mesh it holds (`held`), and reads again only when
 //! the published revision changes, or when the view settles with a body's half pixel
 //! outside its `serves`, computed by the core's own rule (`views::half_pixel_at` at
-//! `views::meshing_depth`), so no rule is copied here (section 7, `meshes`). The renderer
-//! is told of a body once for each key and level it's meshed at, and of a body gone
-//! ([`Drawing`]); each frame it's given the camera, and places the bodies itself (section
-//! 10). Nothing here waits: the read is polled with `try_take` (invariant 4).
+//! `views::meshing_depth`) on the camera the core levels with (rounded as an answer writes
+//! it), so no rule is copied here (section 7, `meshes`). A read refused for what it asked
+//! isn't asked again until something differs; one refused for the moment (a worker that
+//! crashed or timed out, a fault, too many reads at once) is asked again after a delay that
+//! doubles. The renderer is told of a body once for each key and level it's meshed at, and
+//! of a body gone ([`Drawing`]); each frame it's given the camera, and places the bodies
+//! itself (section 10). Nothing here waits: the read is polled with `try_take` (invariant
+//! 4).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self, Align, Layout, PointerButton, Pos2, Rect, Sense, Stroke, Ui, UiBuilder, Vec2, WidgetInfo,
     WidgetType,
 };
+use silico_core::ErrorCode;
 use silico_core::command::meshes::{Held, MeshElement, MeshedBody, Meshes, MeshesRead};
-use silico_core::command::{ModelChoice, Response, Revision, Running, SessionId, Sessions};
+use silico_core::command::render::AnsweredCamera;
+use silico_core::command::{
+    ModelChoice, Problems, Response, Revision, Running, SessionId, Sessions,
+};
 use silico_core::document::FeatureId;
 use silico_core::kernel::Clients;
 use silico_core::recompute::Key;
 use silico_core::views::{NamedView, half_pixel_at, meshing_depth};
-use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
+use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh};
 
 use crate::navigate::{self, HOME, NO_BOX};
 use crate::renderer::{Change, Element, FrameData, Picking, PixelRect, Present};
 use crate::tab::Tab;
+use crate::theme;
+
+/// The first delay before a read refused for the moment is asked again; each refusal after
+/// it doubles it, up to [`RETRY_MOST`].
+pub const RETRY_FIRST: Duration = Duration::from_millis(250);
+
+/// The longest delay before a read refused for the moment is asked again.
+pub const RETRY_MOST: Duration = Duration::from_secs(8);
+
+/// How many frames a pick waits for its answer, which comes a frame after it's asked: past
+/// this, it's let go (a renderer that answers none, or none installed), so the frames
+/// asked for while one waits stop.
+const PICK_FRAMES: u64 = 8;
 
 /// A body whose mesh the tab holds, as the newest `meshes` answer gave it.
 #[derive(Debug, Clone)]
@@ -49,6 +71,17 @@ pub struct ViewBody {
     /// Its faces and edges, in the mesh's order, each named (`Face1` is the first).
     pub faces: Vec<MeshElement>,
     pub edges: Vec<MeshElement>,
+}
+
+impl ViewBody {
+    /// Whether `element` is one of its mesh's faces or edges.
+    fn has(&self, element: Element) -> bool {
+        let (number, count) = match element {
+            Element::Face(n) => (n, self.mesh.face_triangles.len()),
+            Element::Edge(n) => (n, self.mesh.edge_point_counts.len()),
+        };
+        usize::try_from(number).is_ok_and(|n| (1..=count).contains(&n))
+    }
 }
 
 /// What the viewport was last frame, for what picks in it (M5.7): where it was in the
@@ -79,46 +112,64 @@ struct Reading {
     named: bool,
 }
 
-/// What a left drag does, as the navigation bar's tools set it (fusion.md, *ViewCube and
-/// Navigation Bar*). With none chosen, it's the selection's (M5.7).
+/// What a drag in the viewport does, and the navigation bar's tool, which a left drag is
+/// while it's chosen (fusion.md, *ViewCube and Navigation Bar*). With no tool chosen, a
+/// left drag is the selection's (M5.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tool {
+pub enum Navigation {
     Orbit,
     Pan,
     Zoom,
 }
 
-/// What a drag in the viewport does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Navigation {
-    Orbit,
-    Pan,
-    Zoom,
+/// A drag under way: on the canvas, by its button, the pointer where it was last frame; or
+/// of the ViewCube, which orbits.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Drag {
+    Canvas { button: PointerButton, last: Pos2 },
+    Cube,
+}
+
+/// What a read's answer means to the tab's message: a refusal to say, or one said that a
+/// read has since answered.
+enum Notice {
+    Refused(String),
+    Answered(String),
 }
 
 /// A tab's viewport: its camera, its meshes, and its read.
 pub struct View {
     camera: Camera,
+    /// Whether the view is perspective: kept through Home, the ViewCube, and fits.
+    perspective: bool,
     /// Whether the camera was chosen: by the person, or by the first read's Home fit. Until
     /// then, a read asks for Home's view of the bodies, and the tab takes its camera.
     placed: bool,
-    /// The bodies by number, as the newest answer gave them, and the revision it read.
+    /// The bodies by number, as the newest answer gave them, the revision it read, and
+    /// what it was asked under; and one more each time the table is made again, which a
+    /// pick asked of an older table isn't taken for.
     bodies: BTreeMap<u32, ViewBody>,
     model: Option<Revision>,
+    answered: Option<Asked>,
+    generation: u64,
     reading: Option<Reading>,
-    /// The last read refused, as it was asked: not asked again until something differs.
+    /// The last read refused for what it asked: not asked again until something differs.
     refused: Option<Asked>,
+    /// A read refused for the moment: when to ask again, and how many such refusals ran.
+    retry: Option<(Instant, u32)>,
+    /// The refusal said in the tab's message, and the notice for the tab to take.
+    said: Option<String>,
+    notice: Option<Notice>,
     /// A held mesh an answer gave none of wasn't found: the next read holds none.
     hold_none: bool,
     reads: u64,
-    held_asked: Vec<Held>,
     /// The camera and size of the last frame, to tell when the view has settled.
     last: Option<(Camera, [u32; 2])>,
-    /// A drag under way: its button, and where the pointer was last frame.
-    drag: Option<(PointerButton, Pos2)>,
+    drag: Option<Drag>,
     /// The navigation bar's tool, if one is chosen.
-    pub tool: Option<Tool>,
-    /// The elements drawn highlighted, set from outside (M5.7's selection): passed through.
+    pub tool: Option<Navigation>,
+    /// The elements drawn highlighted, set from outside (M5.7's selection): passed through,
+    /// but for one of a body the frame doesn't draw, or that its mesh hasn't.
     pub highlights: BTreeSet<(u32, Element)>,
     picking: Option<PixelRect>,
     picked: Option<Picking>,
@@ -129,14 +180,19 @@ impl Default for View {
     fn default() -> Self {
         View {
             camera: HOME.camera(NO_BOX, 1, 1),
+            perspective: false,
             placed: false,
             bodies: BTreeMap::new(),
             model: None,
+            answered: None,
+            generation: 0,
             reading: None,
             refused: None,
+            retry: None,
+            said: None,
+            notice: None,
             hold_none: false,
             reads: 0,
-            held_asked: Vec::new(),
             last: None,
             drag: None,
             tool: None,
@@ -157,22 +213,58 @@ pub fn half_pixel(camera: &Camera, height: u32, bounds: Option<[[f64; 3]; 2]>) -
 }
 
 /// Whether any of `bodies` has its half pixel, under `camera` in an image `height` pixels
-/// high, outside the half pixels its mesh serves: a read would mesh it otherwise.
+/// high, outside the half pixels its mesh serves: a read would mesh it otherwise. The
+/// camera is taken as a read takes it, rounded as an answer writes it
+/// (`AnsweredCamera::of`), which the core levels with: by the unrounded one, a view at a
+/// level's edge would read again for ever.
 pub fn outside_serves<'a>(
     camera: &Camera,
     height: u32,
     bodies: impl IntoIterator<Item = &'a ViewBody>,
 ) -> bool {
+    let Some(leveled) = AnsweredCamera::of(camera).map(|answered| answered.camera()) else {
+        return false;
+    };
     bodies.into_iter().any(|body| {
-        half_pixel(camera, height, body.bounds)
+        half_pixel(&leveled, height, body.bounds)
             .is_some_and(|half| !(body.serves[0] <= half && half < body.serves[1]))
     })
 }
 
-/// The size a `meshes` read asks for: the viewport's, each side from 1 to
-/// [`MAX_RENDER_SIDE`], the most a read takes.
+/// The size a `meshes` read asks for: the viewport's, scaled by one factor so its longer
+/// side is at most [`MAX_RENDER_SIDE`], the most a read takes (so a fit, which takes the
+/// width over the height, fits the shape shown), each side at least 1.
 pub fn read_size(size_px: [u32; 2]) -> [u32; 2] {
-    size_px.map(|side| side.clamp(1, MAX_RENDER_SIDE))
+    let longer = size_px[0].max(size_px[1]);
+    if longer <= MAX_RENDER_SIDE {
+        return size_px.map(|side| side.max(1));
+    }
+    let scale = f64::from(MAX_RENDER_SIDE) / f64::from(longer);
+    // At most MAX_RENDER_SIDE, so the cast keeps every value.
+    size_px.map(|side| ((f64::from(side) * scale).round() as u32).clamp(1, MAX_RENDER_SIDE))
+}
+
+/// Whether a refusal is of what the read asked (its view, its camera, an eye inside a
+/// solid, its size, or its features), which the same read would meet again; not of the
+/// moment (a worker that crashed or timed out, a fault, too many reads at once), which a
+/// read asked again later may not.
+fn of_the_request(problems: &Problems) -> bool {
+    problems.errors().iter().any(|error| {
+        error.code() == ErrorCode::InvalidInput
+            && error.parameter().is_some_and(|parameter| {
+                ["view", "width", "height"].contains(&parameter)
+                    || parameter.starts_with("camera")
+                    || parameter.starts_with("features")
+            })
+    })
+}
+
+/// The delay before a read refused for the moment, the `tries`th in a row (from 0), is
+/// asked again.
+fn retry_after(tries: u32) -> Duration {
+    RETRY_FIRST
+        .saturating_mul(2u32.saturating_pow(tries))
+        .min(RETRY_MOST)
 }
 
 impl View {
@@ -202,14 +294,14 @@ impl View {
         self.reads
     }
 
-    /// The meshes the last read listed as held.
-    pub fn held_asked(&self) -> &[Held] {
-        &self.held_asked
-    }
-
     /// Whether a `meshes` read is in flight.
     pub fn reading(&self) -> bool {
         self.reading.is_some()
+    }
+
+    /// Whether the view is perspective.
+    pub fn perspective(&self) -> bool {
+        self.perspective
     }
 
     /// What the viewport was last frame (M5.7).
@@ -218,37 +310,40 @@ impl View {
     }
 
     /// Asks the next frame to pick under `rect`, if a renderer takes it
-    /// ([`PixelRect::takes`]): its answer comes a frame after ([`picked`](Self::picked)).
-    /// Whether it was asked.
+    /// ([`PixelRect::takes`]): its answer comes a frame after ([`picked`](Self::picked)),
+    /// and the last answer is let go now. Whether it was asked.
     pub fn pick(&mut self, rect: PixelRect) -> bool {
         let takes = rect.takes();
         if takes {
             self.picking = Some(rect);
+            self.picked = None;
         }
         takes
     }
 
-    /// The newest picking answer.
+    /// The answer to the last pick asked, once it has come, if it's of the bodies the tab
+    /// holds now.
     pub fn picked(&self) -> Option<Picking> {
         self.picked
     }
 
     /// The read in flight polled: its answer taken if it has come.
-    fn poll(&mut self) {
+    fn poll(&mut self, now: Instant) {
         let Some(reading) = self.reading.take() else {
             return;
         };
         match reading.running.try_take() {
-            Ok(response) => self.took(reading.asked, reading.named, response),
+            Ok(response) => self.took(reading.asked, reading.named, response, now),
             Err(running) => {
                 self.reading = Some(Reading { running, ..reading });
             }
         }
     }
 
-    /// A read's answer: its bodies taken (and, for the first, Home's camera), or its
-    /// refusal kept so the same read isn't asked again.
-    fn took(&mut self, asked: Asked, named: bool, response: Response<MeshesRead>) {
+    /// A read's answer: its bodies taken (and, for the first, Home's camera); or its
+    /// refusal said, and kept so the same read isn't asked again if it's of what was
+    /// asked, or asked again after a delay if it's of the moment.
+    fn took(&mut self, asked: Asked, named: bool, response: Response<MeshesRead>, now: Instant) {
         match response.result {
             Ok(read) => {
                 if named && !self.placed {
@@ -256,11 +351,16 @@ impl View {
                 }
                 self.placed = true;
                 self.refused = None;
+                self.retry = None;
+                if let Some(said) = self.said.take() {
+                    self.notice = Some(Notice::Answered(said));
+                }
                 self.model = Some(
                     response
                         .model
                         .map_or(asked.revision, |model| model.revision),
                 );
+                self.answered = Some(asked);
                 self.take_bodies(read.bodies);
             }
             // Home fits the bodies by their boxes: with none to fit (no body, or one that
@@ -275,7 +375,21 @@ impl View {
             {
                 self.placed = true;
             }
-            Err(_) => self.refused = Some(asked),
+            Err(problems) => {
+                let said = format!(
+                    "The view's meshes couldn't be read: {}",
+                    crate::tab::said(&problems)
+                );
+                tracing::warn!(revision = asked.revision.number(), "{said}");
+                if of_the_request(&problems) {
+                    self.refused = Some(asked);
+                } else {
+                    let tries = self.retry.map_or(0, |(_, tries)| tries);
+                    self.retry = Some((now + retry_after(tries), tries.saturating_add(1)));
+                }
+                self.said = Some(said.clone());
+                self.notice = Some(Notice::Refused(said));
+            }
         }
     }
 
@@ -305,6 +419,7 @@ impl View {
                     None => {
                         self.hold_none = true;
                         self.model = None;
+                        self.answered = None;
                         continue;
                     }
                 },
@@ -325,14 +440,22 @@ impl View {
             );
         }
         self.bodies = table;
+        self.generation = self.generation.wrapping_add(1);
     }
 
-    /// The read to start, if one is wanted (section 3, *When the app reads*): none while
-    /// one is in flight or nothing is published; else one when the published revision isn't
-    /// the one the bodies were read from, or when the view has `settled` with a body's half
-    /// pixel outside its `serves`. A read refused isn't asked again as it was, and after a
-    /// refusal of this revision, only once the view has settled.
-    fn wanted(&self, published: Option<Revision>, size: [u32; 2], settled: bool) -> Option<Asked> {
+    /// The read to start at `now`, if one is wanted (section 3, *When the app reads*): none
+    /// while one is in flight, nothing is published, or a read refused for the moment
+    /// waits to be asked again; else one when the published revision isn't the one the
+    /// bodies were read from, or when the view has `settled` with a body's half pixel
+    /// outside its `serves`. Never the read last answered again, nor one refused for what
+    /// it asked; after such a refusal of this revision, only once the view has settled.
+    fn wanted(
+        &self,
+        published: Option<Revision>,
+        size: [u32; 2],
+        settled: bool,
+        now: Instant,
+    ) -> Option<Asked> {
         if self.reading.is_some() {
             return None;
         }
@@ -341,10 +464,16 @@ impl View {
             camera: self.camera.clone(),
             size,
         };
+        if self.retry.is_some_and(|(at, _)| now < at) {
+            return None;
+        }
         if let Some(refused) = &self.refused
             && refused.revision == asked.revision
             && (!settled || *refused == asked)
         {
+            return None;
+        }
+        if self.answered.as_ref() == Some(&asked) {
             return None;
         }
         let stale = self.model != Some(asked.revision);
@@ -352,13 +481,9 @@ impl View {
         (stale || outside).then_some(asked)
     }
 
-    /// Starts the read `asked`, of the published model, listing every mesh held.
-    fn start<P: Clients + 'static>(
-        &mut self,
-        sessions: &Arc<Sessions<P>>,
-        session: &SessionId,
-        asked: Asked,
-    ) {
+    /// The request for the read `asked`: of Home's view until the camera is placed, else
+    /// of the camera; listing every mesh held, unless a held one went missing, once.
+    fn request(&mut self, asked: &Asked) -> Meshes {
         let named = !self.placed;
         let held: Vec<Held> = if std::mem::take(&mut self.hold_none) {
             Vec::new()
@@ -371,26 +496,38 @@ impl View {
                 })
                 .collect()
         };
-        let request = Meshes {
+        Meshes {
             view: named.then_some(HOME),
             camera: (!named).then(|| asked.camera.clone()),
             width: asked.size[0],
             height: asked.size[1],
             features: None,
-            held: held.clone(),
-        };
-        self.held_asked = held;
+            held,
+        }
+    }
+
+    /// Starts the read `asked`, of the published model.
+    fn start<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        session: &SessionId,
+        asked: Asked,
+    ) {
+        let request = self.request(&asked);
         self.reads += 1;
         self.reading = Some(Reading {
+            named: request.view.is_some(),
             running: sessions.meshes(session, ModelChoice::Published, request),
             asked,
-            named,
         });
     }
 
-    /// The camera moved to `camera`, if a control made one.
+    /// The camera moved to `camera`, if a control made one a renderer draws the bodies
+    /// with (`navigate::drawable`).
     fn moved(&mut self, camera: Option<Camera>) {
-        if let Some(camera) = camera {
+        if let Some(camera) = camera
+            && navigate::drawable(&camera, self.bodies.values().filter_map(|body| body.bounds))
+        {
             self.camera = camera;
             self.placed = true;
         }
@@ -398,13 +535,15 @@ impl View {
 
     /// Every box the tab holds, joined.
     fn bounds(&self) -> Option<[[f64; 3]; 2]> {
-        navigate::joined(self.bodies.values().filter_map(|body| body.bounds))
+        silico_core::views::joined(self.bodies.values().filter_map(|body| body.bounds))
     }
 
-    /// The named view `view` of the bodies' boxes (a cube's, with none).
+    /// The named view `view` of the bodies' boxes (a cube's, with none), in the view's
+    /// projection.
     fn look_from(&mut self, view: NamedView, size_px: [u32; 2]) {
         let bounds = self.bounds().unwrap_or(NO_BOX);
-        let camera = navigate::named(view, bounds, size_px[0], size_px[1]);
+        let camera = navigate::named(view, bounds, size_px[0], size_px[1])
+            .and_then(|camera| navigate::projected(&camera, self.perspective));
         self.moved(camera);
     }
 
@@ -414,6 +553,15 @@ impl View {
             let camera = navigate::fit(&self.camera, bounds, size_px[0], size_px[1]);
             self.moved(camera);
         }
+    }
+
+    /// The view made perspective, or orthographic.
+    fn project(&mut self, perspective: bool) {
+        let camera = navigate::projected(&self.camera, perspective);
+        if camera.is_some() {
+            self.perspective = perspective;
+        }
+        self.moved(camera);
     }
 
     /// A drag of `delta` points, in a view `height` points high, as `navigation` takes it.
@@ -431,11 +579,12 @@ impl View {
     /// The person's navigation this frame (section 8, *Navigation*, Fusion's preset): the
     /// wheel zooms toward the cursor; the middle button pans, and orbits with Shift; a left
     /// drag does the navigation bar's tool, if one is chosen; F6, or a double-click of the
-    /// middle button, fits.
+    /// middle button, fits. A drag ends when its button is let go, the pointer leaves the
+    /// window, or the window loses the focus (whose release may never come).
     fn navigate(&mut self, ui: &mut Ui, response: &egui::Response, size_px: [u32; 2]) {
         let rect = response.rect;
         let height = f64::from(rect.height());
-        let (pressed, origin, latest, shift, down) = ui.input(|input| {
+        let (pressed, origin, latest, shift, down, lost) = ui.input(|input| {
             let pointer = &input.pointer;
             let pressed = if pointer.button_pressed(PointerButton::Middle) {
                 Some(PointerButton::Middle)
@@ -444,6 +593,12 @@ impl View {
             } else {
                 None
             };
+            let lost = input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::PointerGone | egui::Event::WindowFocused(false)
+                )
+            });
             (
                 pressed,
                 pointer.press_origin(),
@@ -453,6 +608,7 @@ impl View {
                     pointer.button_down(PointerButton::Middle),
                     pointer.button_down(PointerButton::Primary),
                 ],
+                lost,
             )
         });
         if self.drag.is_none()
@@ -460,16 +616,16 @@ impl View {
             && let (Some(button), Some(origin)) = (pressed, origin)
             && (button == PointerButton::Middle || self.tool.is_some())
         {
-            self.drag = Some((button, origin));
+            self.drag = Some(Drag::Canvas {
+                button,
+                last: origin,
+            });
         }
-        if let Some((button, last)) = self.drag {
-            let navigation = match (button, self.tool) {
-                (PointerButton::Middle, _) if shift => Some(Navigation::Orbit),
-                (PointerButton::Middle, _) => Some(Navigation::Pan),
-                (_, Some(Tool::Orbit)) => Some(Navigation::Orbit),
-                (_, Some(Tool::Pan)) => Some(Navigation::Pan),
-                (_, Some(Tool::Zoom)) => Some(Navigation::Zoom),
-                (_, None) => None,
+        if let Some(Drag::Canvas { button, last }) = self.drag {
+            let navigation = match button {
+                PointerButton::Middle if shift => Some(Navigation::Orbit),
+                PointerButton::Middle => Some(Navigation::Pan),
+                _ => self.tool,
             };
             let at = latest.unwrap_or(last);
             if let Some(navigation) = navigation
@@ -481,7 +637,7 @@ impl View {
                 PointerButton::Middle => down[0],
                 _ => down[1],
             };
-            self.drag = held.then_some((button, at));
+            self.drag = (held && !lost).then_some(Drag::Canvas { button, last: at });
         }
         if response.hovered() {
             let line = ui
@@ -521,14 +677,20 @@ impl View {
     }
 }
 
+/// A pick asked: of the tab's session and its bodies table's generation, its rectangle,
+/// and the frame (the drawing's count) it was asked in.
+type PickAsked = (SessionId, u64, PixelRect, u64);
+
 /// What the renderer holds, for the tab shown: each body by number, with the session, the
 /// key, and the deflection its mesh was uploaded for; each body whose upload it refused, as
-/// it was asked; and how frames reach it.
+/// it was asked; the picks asked and not yet answered; and how frames reach it.
 #[derive(Default)]
 pub struct Drawing {
     present: Option<Box<dyn Present>>,
     uploaded: BTreeMap<u32, (SessionId, Key, u64)>,
     refused: BTreeMap<u32, (SessionId, Key, u64)>,
+    picks: VecDeque<PickAsked>,
+    frames: u64,
 }
 
 impl Drawing {
@@ -536,8 +698,7 @@ impl Drawing {
     pub fn new(present: Box<dyn Present>) -> Self {
         Drawing {
             present: Some(present),
-            uploaded: BTreeMap::new(),
-            refused: BTreeMap::new(),
+            ..Drawing::default()
         }
     }
 
@@ -600,6 +761,33 @@ impl Drawing {
         changes
     }
 
+    /// A pick asked in this frame, of session `session`'s bodies table `generation`.
+    fn asked(&mut self, session: SessionId, generation: u64, rect: PixelRect) {
+        self.picks
+            .push_back((session, generation, rect, self.frames));
+    }
+
+    /// Whether a pick waits for its answer: the pane asks for frames until it comes.
+    pub fn picking(&self) -> bool {
+        !self.picks.is_empty()
+    }
+
+    /// The renderer's newest picking answer, and what it was asked of: the newest pick asked
+    /// of its rectangle, those before it dropped. None for an answer to no pick waiting.
+    /// Picks waiting past [`PICK_FRAMES`] are let go.
+    fn answered(&mut self) -> Option<(Picking, SessionId, u64)> {
+        let frames = self.frames;
+        self.picks
+            .retain(|(_, _, _, asked)| frames.saturating_sub(*asked) <= PICK_FRAMES);
+        let picking = self.present.as_mut().and_then(|present| present.picked())?;
+        let at = self
+            .picks
+            .iter()
+            .rposition(|(_, _, rect, _)| *rect == picking.rect)?;
+        let (session, generation, _, _) = self.picks.drain(..=at).next_back()?;
+        Some((picking, session, generation))
+    }
+
     fn present(
         &mut self,
         painter: &egui::Painter,
@@ -607,13 +795,10 @@ impl Drawing {
         changes: Vec<Change>,
         frame: Option<FrameData>,
     ) {
+        self.frames = self.frames.wrapping_add(1);
         if let Some(present) = &mut self.present {
             present.present(painter, rect, changes, frame);
         }
-    }
-
-    fn picked(&mut self) -> Option<Picking> {
-        self.present.as_mut().and_then(|present| present.picked())
     }
 }
 
@@ -642,6 +827,7 @@ pub fn show<P: Clients + 'static>(
         drawing.present(ui.painter(), rect, changes, None);
         return;
     };
+    let now = Instant::now();
     let hidden: BTreeSet<&FeatureId> = tab
         .browser
         .bodies
@@ -650,8 +836,19 @@ pub fn show<P: Clients + 'static>(
         .map(|row| &row.id)
         .collect();
     let view = &mut tab.view;
-    view.poll();
-    if let Some(picking) = drawing.picked() {
+    view.poll(now);
+    match view.notice.take() {
+        Some(Notice::Refused(said)) => tab.message = Some(said),
+        Some(Notice::Answered(said)) if tab.message.as_deref() == Some(said.as_str()) => {
+            tab.message = None;
+        }
+        _ => {}
+    }
+    // An answer to a pick of another tab, or of a table since made again, isn't this one's.
+    if let Some((picking, session, generation)) = drawing.answered()
+        && session == tab.id
+        && generation == view.generation
+    {
         view.picked = Some(picking);
     }
     drawing.take_refused();
@@ -664,8 +861,15 @@ pub fn show<P: Clients + 'static>(
         // A frame after this one, to see the view settled.
         ui.ctx().request_repaint();
     }
-    if let Some(asked) = view.wanted(tab.published, size, settled) {
+    if let Some(asked) = view.wanted(tab.published, size, settled, now) {
         view.start(sessions, &tab.id, asked);
+    }
+    if view.reading.is_none()
+        && let Some((at, _)) = view.retry
+    {
+        // A frame when the read refused for the moment may be asked again.
+        ui.ctx()
+            .request_repaint_after(at.saturating_duration_since(now));
     }
     view.last = Some((view.camera.clone(), size));
     let changes = drawing.changes(Some(tab.id), &view.bodies);
@@ -681,20 +885,43 @@ pub fn show<P: Clients + 'static>(
         pointer_px,
     });
     // Ascending, each once, as the renderer takes them: the table's order.
+    let bodies: Vec<u32> = view
+        .bodies
+        .iter()
+        .filter(|(number, body)| !hidden.contains(&body.feature) && drawing.holds(**number))
+        .map(|(number, _)| *number)
+        .collect();
+    // A highlight of a body not drawn, or of an element its mesh hasn't, would have the
+    // renderer refuse the whole frame.
+    let highlights = view
+        .highlights
+        .iter()
+        .copied()
+        .filter(|(number, element)| {
+            bodies.binary_search(number).is_ok()
+                && view
+                    .bodies
+                    .get(number)
+                    .is_some_and(|body| body.has(*element))
+        })
+        .collect();
+    let picking = view.picking.take();
+    if let Some(asked) = picking {
+        drawing.asked(tab.id, view.generation, asked);
+    }
     let frame = FrameData {
         camera: view.camera.clone(),
         size_px,
         pixels_per_point: ppp,
-        bodies: view
-            .bodies
-            .iter()
-            .filter(|(number, body)| !hidden.contains(&body.feature) && drawing.holds(**number))
-            .map(|(number, _)| *number)
-            .collect(),
-        highlights: view.highlights.iter().copied().collect(),
-        picking: view.picking.take(),
+        bodies,
+        highlights,
+        picking,
     };
     drawing.present(ui.painter(), rect, changes, Some(frame));
+    if drawing.picking() {
+        // An idle egui draws no frame, and its answer is taken only in one.
+        ui.ctx().request_repaint();
+    }
 }
 
 /// The ViewCube's faces: each named view's face, its outward normal.
@@ -717,26 +944,41 @@ fn words(view: NamedView) -> String {
 }
 
 /// A clickable part of the ViewCube, labelled for the accessibility tree.
-fn cube_part(ui: &mut Ui, rect: Rect, label: &str) -> bool {
+fn cube_part(ui: &mut Ui, rect: Rect, label: &str) -> egui::Response {
     let response = ui.interact(rect, ui.id().with(("viewcube", label)), Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
-    response.on_hover_text(label).clicked()
+    response.on_hover_text(label)
+}
+
+/// The ViewCube's menu (fusion.md, *ViewCube and Navigation Bar*: *Camera*): the
+/// projection, which the views it gives keep.
+fn projection_menu(ui: &mut Ui, view: &mut View) {
+    for (word, wanted) in [("Orthographic", false), ("Perspective", true)] {
+        if ui.radio(view.perspective == wanted, word).clicked() {
+            view.project(wanted);
+            ui.close();
+        }
+    }
+}
+
+/// Where the ViewCube is drawn in `viewport`.
+pub fn view_cube_rect(viewport: Rect) -> Rect {
+    Rect::from_min_size(
+        egui::pos2(
+            viewport.right() - theme::VIEW_CUBE_SIDE - theme::VIEW_CUBE_MARGIN,
+            viewport.top() + theme::VIEW_CUBE_MARGIN + theme::VIEW_CUBE_HOME_HEIGHT,
+        ),
+        Vec2::splat(theme::VIEW_CUBE_SIDE),
+    )
 }
 
 /// The ViewCube, at the canvas's top right (section 8; fusion.md, *ViewCube and Navigation
 /// Bar*): the cube as the camera sees it; a face's click gives its orthographic view, a
-/// corner's its isometric one, a drag orbits, and Home gives the home view; its menu
-/// switches the projection.
+/// corner's its isometric one, a left drag orbits, and Home gives the home view; its menu
+/// switches the projection, which the views it gives keep.
 fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
-    const SIDE: f32 = 96.0;
-    const MARGIN: f32 = 8.0;
-    let rect = Rect::from_min_size(
-        egui::pos2(
-            viewport.right() - SIDE - MARGIN,
-            viewport.top() + MARGIN + 20.0,
-        ),
-        Vec2::splat(SIDE),
-    );
+    let side = theme::VIEW_CUBE_SIDE;
+    let rect = view_cube_rect(viewport);
     let Ok(frame) = view.camera.frame() else {
         return;
     };
@@ -746,22 +988,18 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             node.set_label("ViewCube");
         });
         let cube = ui.interact(rect, ui.id().with("cube"), Sense::click_and_drag());
-        if cube.dragged() {
+        cube.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Orbit the view"));
+        if cube.dragged_by(PointerButton::Primary) {
+            // Not settled while it's held, even where the pointer pauses.
+            view.drag = Some(Drag::Cube);
             let delta = cube.drag_delta();
             let camera = navigate::orbit(&view.camera, f64::from(delta.x), f64::from(delta.y));
             view.moved(camera);
+        } else if view.drag == Some(Drag::Cube) {
+            view.drag = None;
         }
-        cube.context_menu(|ui| {
-            let perspective = matches!(view.camera.projection, Projection::Perspective { .. });
-            for (word, wanted) in [("Orthographic", false), ("Perspective", true)] {
-                if ui.radio(perspective == wanted, word).clicked() {
-                    let camera = navigate::projected(&view.camera, wanted);
-                    view.moved(camera);
-                    ui.close();
-                }
-            }
-        });
-        let scale = f64::from(SIDE) * 0.28;
+        let mut parts = vec![cube];
+        let scale = f64::from(side) * 0.28;
         let at = |v: [f64; 3]| {
             let x = silico_protocol::vec3::dot(v, frame.right) * scale;
             let y = -silico_protocol::vec3::dot(v, frame.up) * scale;
@@ -804,10 +1042,12 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
                     egui::FontId::proportional(10.0),
                     ui.visuals().text_color(),
                 );
-                let part = Rect::from_center_size(centre, Vec2::splat(SIDE * 0.3));
-                if cube_part(ui, part, &label) {
+                let part = Rect::from_center_size(centre, Vec2::splat(side * 0.3));
+                let response = cube_part(ui, part, &label);
+                if response.clicked() {
                     chosen = Some(named);
                 }
+                parts.push(response);
             }
         }
         for named in silico_core::views::NAMED_VIEWS {
@@ -819,20 +1059,26 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             }
             let corner = at(direction.map(|c| c * 3f64.sqrt()));
             painter.circle_filled(corner, 3.0, stroke.color);
-            if cube_part(
+            let response = cube_part(
                 ui,
                 Rect::from_center_size(corner, Vec2::splat(12.0)),
                 &words(named),
-            ) {
+            );
+            if response.clicked() {
                 chosen = Some(named);
             }
+            parts.push(response);
         }
         let home = Rect::from_min_size(
-            rect.left_top() - Vec2::new(0.0, 20.0),
-            Vec2::new(44.0, 18.0),
+            rect.left_top() - Vec2::new(0.0, theme::VIEW_CUBE_HOME_HEIGHT),
+            Vec2::new(44.0, theme::VIEW_CUBE_HOME_HEIGHT - 2.0),
         );
         if ui.put(home, egui::Button::new("Home").small()).clicked() {
             chosen = Some(HOME);
+        }
+        // A right-click anywhere on the cube opens its menu.
+        for part in &parts {
+            part.context_menu(|ui| projection_menu(ui, view));
         }
         if let Some(named) = chosen {
             view.look_from(named, size_px);
@@ -841,11 +1087,14 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
 }
 
 /// The navigation bar, floating at the canvas's bottom centre (section 8): Orbit, Pan, and
-/// Zoom, each the left drag's tool while chosen, and Fit.
+/// Zoom, each the left drag's tool while chosen (a second click lets it go), and Fit.
 fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
-    let size = Vec2::new(220.0, 26.0);
+    let size = Vec2::new(theme::NAVIGATION_BAR_WIDTH, theme::NAVIGATION_BAR_HEIGHT);
     let rect = Rect::from_center_size(
-        egui::pos2(viewport.center().x, viewport.bottom() - size.y / 2.0 - 8.0),
+        egui::pos2(
+            viewport.center().x,
+            viewport.bottom() - size.y / 2.0 - theme::NAVIGATION_BAR_MARGIN,
+        ),
         size,
     );
     ui.scope_builder(
@@ -860,14 +1109,14 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
             });
             egui::Frame::new()
                 .fill(ui.visuals().window_fill)
-                .corner_radius(crate::theme::SMALL_CORNER_RADIUS)
+                .corner_radius(theme::SMALL_CORNER_RADIUS)
                 .inner_margin(egui::Margin::symmetric(6, 2))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         for (tool, word) in [
-                            (Tool::Orbit, "Orbit"),
-                            (Tool::Pan, "Pan"),
-                            (Tool::Zoom, "Zoom"),
+                            (Navigation::Orbit, "Orbit"),
+                            (Navigation::Pan, "Pan"),
+                            (Navigation::Zoom, "Zoom"),
                         ] {
                             let on = view.tool == Some(tool);
                             if ui.selectable_label(on, word).clicked() {
@@ -886,6 +1135,7 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
 #[cfg(test)]
 mod tests {
     use super::*;
+    use silico_protocol::Projection;
 
     /// From −y onto (20, 10, 5), `view_height` high.
     fn front(view_height: f64) -> Camera {
@@ -1011,6 +1261,12 @@ mod tests {
         }
     }
 
+    fn now() -> Instant {
+        // One instant for every call in a test: no retry waits on it.
+        static NOW: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        *NOW.get_or_init(Instant::now)
+    }
+
     fn revision(n: u64) -> Option<Revision> {
         Revision::from_number(n)
     }
@@ -1020,36 +1276,48 @@ mod tests {
         let held = [(1, body(0.03125, [0.03125, 0.0625], CUT))];
         let mut view = view_with(&held, 3);
         // Nothing published: nothing to read.
-        assert_eq!(view.wanted(None, [1000, 1000], true), None);
+        assert_eq!(view.wanted(None, [1000, 1000], true, now()), None);
         // The bodies are of revision 3: none at 3, one at 4, settled or not.
-        assert_eq!(view.wanted(revision(3), [1000, 1000], true), None);
-        assert!(view.wanted(revision(4), [1000, 1000], false).is_some());
+        assert_eq!(view.wanted(revision(3), [1000, 1000], true, now()), None);
+        assert!(
+            view.wanted(revision(4), [1000, 1000], false, now())
+                .is_some()
+        );
         // Zoomed in to 40 mm: 0.02 leaves serves, but only a settled view reads.
         view.camera = front(40.0);
-        assert_eq!(view.wanted(revision(3), [1000, 1000], false), None);
-        let asked = view.wanted(revision(3), [1000, 1000], true).unwrap();
+        assert_eq!(view.wanted(revision(3), [1000, 1000], false, now()), None);
+        let asked = view.wanted(revision(3), [1000, 1000], true, now()).unwrap();
         assert_eq!(asked.camera, front(40.0));
         assert_eq!(asked.size, [1000, 1000]);
         // A narrower window changes nothing orthographic but its height: 2,000 pixels high
         // at 80 mm halves the half pixel, out of serves too.
         view.camera = front(80.0);
-        assert_eq!(view.wanted(revision(3), [500, 1000], true), None);
-        assert!(view.wanted(revision(3), [1000, 2000], true).is_some());
+        assert_eq!(view.wanted(revision(3), [500, 1000], true, now()), None);
+        assert!(
+            view.wanted(revision(3), [1000, 2000], true, now())
+                .is_some()
+        );
     }
 
     #[test]
     fn a_refused_read_is_not_asked_again_until_the_view_differs_and_settles() {
         let held = [(1, body(0.03125, [0.03125, 0.0625], CUT))];
         let mut view = view_with(&held, 3);
-        let asked = view.wanted(revision(4), [1000, 1000], true).unwrap();
+        let asked = view.wanted(revision(4), [1000, 1000], true, now()).unwrap();
         view.refused = Some(asked);
-        assert_eq!(view.wanted(revision(4), [1000, 1000], true), None);
+        assert_eq!(view.wanted(revision(4), [1000, 1000], true, now()), None);
         // Moving, not settled: still none (a drag would read each frame).
         view.camera = front(81.0);
-        assert_eq!(view.wanted(revision(4), [1000, 1000], false), None);
+        assert_eq!(view.wanted(revision(4), [1000, 1000], false, now()), None);
         // Settled elsewhere: once more; and a newer revision at once.
-        assert!(view.wanted(revision(4), [1000, 1000], true).is_some());
-        assert!(view.wanted(revision(5), [1000, 1000], false).is_some());
+        assert!(
+            view.wanted(revision(4), [1000, 1000], true, now())
+                .is_some()
+        );
+        assert!(
+            view.wanted(revision(5), [1000, 1000], false, now())
+                .is_some()
+        );
     }
 
     fn meshed(number: u32, key_byte: u8, deflection: f64, mesh: Option<Arc<Mesh>>) -> MeshedBody {
@@ -1177,5 +1445,192 @@ mod tests {
     fn the_view_cubes_labels_are_the_named_views_in_words() {
         assert_eq!(words(NamedView::TopFrontRight), "Top front right");
         assert_eq!(words(NamedView::Front), "Front");
+    }
+
+    #[test]
+    fn a_view_at_a_levels_edge_by_its_rounding_reads_once() {
+        // 1,000 pixels high, 0.24414062 mm: unrounded, its half pixel is 0.00012207031, just
+        // under 2⁻¹³ (0.0001220703125); the core levels with the camera an answer writes, to
+        // the nanometre, 0.244141 mm, whose half pixel 0.0001220705 is at 2⁻¹³, served by
+        // [2⁻¹³, 2⁻¹²). Taken unrounded, it would leave serves at every settled frame.
+        let level = 1.0 / 8192.0;
+        let held = [(1, body(level, [level, 2.0 * level], CUT))];
+        let mut view = view_with(&held, 3);
+        view.camera = front(0.244_140_62);
+        assert_eq!(view.wanted(revision(3), [1000, 1000], true, now()), None);
+        assert!(!outside_serves(&view.camera, 1000, view.bodies.values()));
+    }
+
+    #[test]
+    fn the_read_last_answered_isnt_asked_again_however_its_answer_reads() {
+        // An answer whose serves don't hold the view's half pixel (0.04, [0.0625, 0.125)):
+        // the same read, asked again, would answer the same.
+        let mut view = view_with(&[(1, body(0.0625, [0.0625, 0.125], CUT))], 3);
+        let asked = view.wanted(revision(3), [1000, 1000], true, now()).unwrap();
+        view.answered = Some(asked);
+        assert_eq!(view.wanted(revision(3), [1000, 1000], true, now()), None);
+        // Another size is another read.
+        assert!(view.wanted(revision(3), [1000, 999], true, now()).is_some());
+    }
+
+    fn refusal(code: ErrorCode, parameter: Option<&str>) -> Response<MeshesRead> {
+        let mut error = silico_core::Error::new(code, "refused");
+        if let Some(parameter) = parameter {
+            error = error.with_parameter(parameter);
+        }
+        Response {
+            session: None,
+            model: None,
+            result: Err(Problems::from(error)),
+        }
+    }
+
+    fn asked(view: &View, published: u64) -> Asked {
+        Asked {
+            revision: Revision::from_number(published).unwrap(),
+            camera: view.camera.clone(),
+            size: [1000, 1000],
+        }
+    }
+
+    #[test]
+    fn a_read_refused_for_the_moment_is_asked_again_after_a_delay_that_doubles_to_eight_seconds() {
+        let at = now();
+        for (code, parameter) in [
+            (ErrorCode::WorkerCrashed, None),
+            (ErrorCode::WorkerTimeout, None),
+            (ErrorCode::Internal, None),
+            // Too many published reads at once: `invalid_input`, naming no parameter.
+            (ErrorCode::InvalidInput, None),
+        ] {
+            let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+            let mut wait = Duration::from_millis(250);
+            for _ in 0..8 {
+                let request = asked(&view, 4);
+                view.took(request, false, refusal(code, parameter), at);
+                assert_eq!(view.wanted(revision(4), [1000, 1000], true, at), None);
+                let early = at + wait - Duration::from_millis(1);
+                assert_eq!(view.wanted(revision(4), [1000, 1000], true, early), None);
+                assert!(
+                    view.wanted(revision(4), [1000, 1000], true, at + wait)
+                        .is_some()
+                );
+                wait = (wait * 2).min(Duration::from_secs(8));
+            }
+            assert_eq!(wait, Duration::from_secs(8), "{code:?}");
+            assert!(view.refused.is_none());
+            assert!(matches!(view.notice, Some(Notice::Refused(_))));
+        }
+    }
+
+    #[test]
+    fn a_read_refused_for_what_it_asked_isnt_asked_again_until_the_view_differs() {
+        // An eye inside a solid (`camera.eye`), a view, a size, features: the same read
+        // would be refused again, so it isn't asked, however long it waits.
+        for parameter in ["camera.eye", "view", "width", "height", "features.0"] {
+            let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+            let request = asked(&view, 4);
+            view.took(
+                request,
+                false,
+                refusal(ErrorCode::InvalidInput, Some(parameter)),
+                now(),
+            );
+            assert!(view.retry.is_none(), "{parameter}");
+            let later = now() + Duration::from_secs(3600);
+            assert_eq!(view.wanted(revision(4), [1000, 1000], true, later), None);
+            view.camera = front(81.0);
+            assert!(
+                view.wanted(revision(4), [1000, 1000], true, later)
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_held_mesh_makes_the_next_request_hold_nothing_once() {
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        view.take_bodies(vec![meshed(2, 1, 0.0625, None)]);
+        view.take_bodies(vec![meshed(
+            1,
+            1,
+            0.03125,
+            Some(Arc::clone(&body(0.03125, [0.03125, 0.0625], CUT).mesh)),
+        )]);
+        let request = asked(&view, 3);
+        assert!(view.request(&request).held.is_empty());
+        let again = view.request(&request);
+        assert_eq!(again.held.len(), 1);
+        assert_eq!(again.held[0].deflection, 0.03125);
+        // Placed: of the camera, not Home's view.
+        assert_eq!((again.view, again.camera.is_some()), (None, true));
+        view.placed = false;
+        let first = view.request(&request);
+        assert_eq!((first.view, first.camera), (Some(HOME), None));
+    }
+
+    /// A present whose picking answers it's given.
+    struct Answering(VecDeque<Picking>);
+
+    impl Present for Answering {
+        fn present(&mut self, _: &egui::Painter, _: Rect, _: Vec<Change>, _: Option<FrameData>) {}
+        fn picked(&mut self) -> Option<Picking> {
+            self.0.pop_front()
+        }
+        fn refused(&mut self) -> BTreeSet<u32> {
+            BTreeSet::new()
+        }
+    }
+
+    #[test]
+    fn a_picking_answer_is_matched_to_the_newest_pick_of_its_rectangle_and_let_go_after_eight_frames()
+     {
+        let s1 = SessionId::parse("s1").unwrap();
+        let rect = |x: i32| PixelRect {
+            min: [x, 0],
+            size: [3, 3],
+        };
+        let answer = |x: i32| Picking {
+            frame: 0,
+            rect: rect(x),
+            hit: None,
+        };
+        let mut drawing = Drawing::new(Box::new(Answering(
+            [answer(2), answer(9), answer(5)].into_iter().collect(),
+        )));
+        drawing.asked(s1, 1, rect(1));
+        drawing.asked(s1, 2, rect(2));
+        drawing.asked(s1, 3, rect(3));
+        // Rectangle 2's answer: asked of generation 2; rectangle 1's pick, older, dropped.
+        assert_eq!(drawing.answered(), Some((answer(2), s1, 2)));
+        assert_eq!(drawing.picks.len(), 1);
+        // An answer to no pick waiting: none.
+        assert_eq!(drawing.answered(), None);
+        assert!(drawing.picking());
+        // Rectangle 3's pick, waiting past eight frames, let go: rectangle 5's answer, for
+        // no pick, is none; and no frame is asked for any more.
+        let painter = egui::Painter::new(
+            egui::Context::default(),
+            egui::LayerId::background(),
+            Rect::EVERYTHING,
+        );
+        for _ in 0..9 {
+            drawing.present(&painter, Rect::EVERYTHING, Vec::new(), None);
+        }
+        assert_eq!(drawing.answered(), None);
+        assert!(!drawing.picking());
+    }
+
+    #[test]
+    fn a_highlight_is_of_an_element_the_bodys_mesh_has() {
+        let mut held = body(0.03125, [0.03125, 0.0625], CUT);
+        held.mesh = Arc::new(Mesh {
+            face_triangles: vec![1, 1],
+            edge_point_counts: vec![2, 2, 2],
+            ..(*held.mesh).clone()
+        });
+        assert!(held.has(Element::Face(1)) && held.has(Element::Face(2)));
+        assert!(!held.has(Element::Face(0)) && !held.has(Element::Face(3)));
+        assert!(held.has(Element::Edge(3)) && !held.has(Element::Edge(4)));
     }
 }

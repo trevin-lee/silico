@@ -6566,6 +6566,7 @@ impl silico_app::renderer::ViewRenderer for FakeRenderer {
         let mut told = self.0.lock().unwrap();
         let rect = told.picking.take()?;
         Some(silico_app::renderer::Picking {
+            frame: 1,
             rect,
             hit: told.pick,
         })
@@ -6611,10 +6612,13 @@ impl Fixture {
         let record = Record::default();
         let app = App::new(Arc::clone(&self.sessions))
             .presenting(Box::new(Recorder(FakeRenderer(Arc::clone(&record)))));
+        // A sixtieth of a second a frame, as a display's: a double-click's two clicks are
+        // two frames apart.
         let mut h = {
             let _marked = never_waits::marked();
             Harness::builder()
                 .with_size((1280.0, 800.0))
+                .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
         h.state_mut().open(path.to_str().unwrap(), false);
@@ -6793,6 +6797,8 @@ fn a_zoom_past_serves_reads_again_listing_what_is_held_and_uploads_only_the_body
     // the half pixel is 0.02, under the small cube's [0.03125, 0.0625); the large one's
     // [0, 0.25) still serves it. One read, holding both; the small cube meshed at 2⁻⁶
     // and uploaded again, alone; the large one answered held.
+    // The read held: meanwhile each frame draws the bodies held, under the new camera.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
     h.hover_at(the_viewport(&h).center());
     h.event(eframe::egui::Event::MouseWheel {
         unit: eframe::egui::MouseWheelUnit::Point,
@@ -6807,22 +6813,19 @@ fn a_zoom_past_serves_reads_again_listing_what_is_held_and_uploads_only_the_body
         }
         silico_protocol::Projection::Perspective { .. } => panic!("orthographic"),
     }
+    step_until(&mut h, "the zoom's read held", |h| view(h).reading());
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    {
+        let told = record.lock().unwrap();
+        let last = told.frames.last().unwrap();
+        assert_eq!(last.bodies, [1, 2]);
+        assert_eq!(&last.camera, view(&h).camera());
+    }
+    hold.release();
     meshes_settled(&mut h);
     assert_eq!(view(&h).reads(), 3);
-    let held: Vec<(String, f64)> = view(&h)
-        .held_asked()
-        .iter()
-        .map(|held| (held.key.to_string(), held.deflection))
-        .collect();
-    let keys: Vec<String> = view(&h)
-        .bodies()
-        .values()
-        .map(|body| body.key.to_string())
-        .collect();
-    assert_eq!(
-        held,
-        [(keys[0].clone(), 0.03125), (keys[1].clone(), deflection)]
-    );
     assert_eq!(at(&h, 1), (0.015625, 0.015625, [0.015625, 0.03125]));
     assert_eq!(at(&h, 2).1, deflection);
     assert_eq!(tessellated(&f), made + 1);
@@ -6847,6 +6850,7 @@ fn frames_climb_and_the_panels_answer_while_the_meshes_read_is_held() {
     }
     assert!(h.state().frames() >= frames + 30);
     assert!(view(&h).reading());
+    assert_eq!(view(&h).reads(), 1);
     assert!(shows(&h, "Timeline", "Hole"));
     select(&mut h, "Pin");
     assert!(uploads(&record).is_empty());
@@ -6854,6 +6858,7 @@ fn frames_climb_and_the_panels_answer_while_the_meshes_read_is_held() {
     step_until(&mut h, "the body uploaded", |h| !view(h).reading());
     step(&mut h);
     assert_eq!(uploads(&record), [1]);
+    assert_eq!(view(&h).reads(), 1);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -6873,6 +6878,7 @@ fn an_edits_new_revision_reads_again_and_a_body_gone_is_forgotten() {
             .collect()
     };
     let before = keys(&h);
+    let made = tessellated(&f);
     // Another client lengthens the small cube: a new revision, whose model is read with
     // both meshes held; the small cube's key changes, so it alone is uploaded again.
     let small = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
@@ -6894,12 +6900,8 @@ fn an_edits_new_revision_reads_again_and_a_body_gone_is_forgotten() {
     let after = keys(&h);
     assert_ne!(after[0], before[0]);
     assert_eq!(after[1], before[1]);
-    let held: Vec<String> = view(&h)
-        .held_asked()
-        .iter()
-        .map(|held| held.key.to_string())
-        .collect();
-    assert_eq!(held, before);
+    // Only the small cube meshed: the large one was held, at its key and deflection.
+    assert_eq!(tessellated(&f), made + 1);
     assert_eq!(uploads(&record), [1, 2, 1]);
     assert!(record.lock().unwrap().forgets.is_empty());
     // The large cube removed: body 2 forgotten, nothing uploaded.
@@ -7027,11 +7029,15 @@ fn each_frame_gives_the_camera_its_size_scale_pointer_highlights_and_picking_a_f
     assert_eq!(
         view(&h).picked(),
         Some(silico_app::renderer::Picking {
+            frame: 1,
             rect: rect_px,
             hit: Some(pick)
         })
     );
     assert_eq!(record.lock().unwrap().frames.last().unwrap().picking, None);
+    // A new pick asked lets the last answer go at once.
+    assert!(view_mut(&mut h).pick(rect_px));
+    assert_eq!(view(&h).picked(), None);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -7051,5 +7057,490 @@ fn a_body_hidden_in_the_browser_is_left_out_of_the_frame_and_kept_uploaded() {
     assert_eq!(record.lock().unwrap().frames.last().unwrap().bodies, [1]);
     assert_eq!(uploads(&record), [1, 2]);
     assert!(record.lock().unwrap().forgets.is_empty());
+    // Shown again: drawn again, with nothing uploaded.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Show Large")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(record.lock().unwrap().frames.last().unwrap().bodies, [1, 2]);
+    assert_eq!(uploads(&record), [1, 2]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A wheel of `delta` in `unit`s at `at`.
+fn wheel(
+    h: &mut AppHarness,
+    at: eframe::egui::Pos2,
+    unit: eframe::egui::MouseWheelUnit,
+    delta: f32,
+) {
+    h.hover_at(at);
+    h.event(eframe::egui::Event::MouseWheel {
+        unit,
+        delta: eframe::egui::vec2(0.0, delta),
+        phase: eframe::egui::TouchPhase::Move,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    step(h);
+}
+
+fn ortho_height(camera: &silico_protocol::Camera) -> f64 {
+    match camera.projection {
+        silico_protocol::Projection::Orthographic { view_height } => view_height,
+        silico_protocol::Projection::Perspective { .. } => panic!("orthographic"),
+    }
+}
+
+/// From −y onto the cut's box's centre, (20, 10, 5), 80 mm high.
+fn the_cuts_front() -> silico_protocol::Camera {
+    silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+        eye: [20.0, -100.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    }
+}
+
+/// `button` pressed at `from`, moved to `to` in `steps` even steps, a frame each, then let
+/// go there.
+fn drag(
+    h: &mut AppHarness,
+    button: eframe::egui::PointerButton,
+    from: eframe::egui::Pos2,
+    to: eframe::egui::Pos2,
+    steps: u16,
+) {
+    h.hover_at(from);
+    h.event(eframe::egui::Event::PointerButton {
+        pos: from,
+        button,
+        pressed: true,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    step(h);
+    for i in 1..=steps {
+        h.hover_at(from + (to - from) * f32::from(i) / f32::from(steps));
+        step(h);
+    }
+    h.event(eframe::egui::Event::PointerButton {
+        pos: to,
+        button,
+        pressed: false,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    step(h);
+}
+
+#[test]
+fn the_wheel_zooms_toward_the_cursor_by_points_lines_and_pages() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(the_cuts_front());
+    step(&mut h);
+    let rect = the_viewport(&h);
+    let mm = 80.0 / f64::from(rect.height());
+    // 200 points at 100 right of the centre and 50 up: halved about the point under it,
+    // (20 + 100 mm, 10, 5 + 50 mm), so the target moves half way there.
+    wheel(
+        &mut h,
+        rect.center() + eframe::egui::vec2(100.0, -50.0),
+        eframe::egui::MouseWheelUnit::Point,
+        200.0,
+    );
+    let zoomed = view(&h).camera().clone();
+    assert!((ortho_height(&zoomed) - 40.0).abs() < 1e-12);
+    let expected = [20.0 + 50.0 * mm, 10.0, 5.0 + 25.0 * mm];
+    for (got, expected) in zoomed.target.iter().zip(expected) {
+        assert!((got - expected).abs() < 1e-9, "{zoomed:?}");
+    }
+    // Five lines, at egui's 40 points a line: 200 points, halved again, at the centre.
+    wheel(
+        &mut h,
+        rect.center(),
+        eframe::egui::MouseWheelUnit::Line,
+        5.0,
+    );
+    assert!((ortho_height(view(&h).camera()) - 20.0).abs() < 1e-12);
+    // A page back out: the viewport's height in points, 2^(height / 200) as large.
+    wheel(
+        &mut h,
+        rect.center(),
+        eframe::egui::MouseWheelUnit::Page,
+        -1.0,
+    );
+    let paged = 20.0 * libm::exp2(f64::from(rect.height()) / 200.0);
+    assert!((ortho_height(view(&h).camera()) - paged).abs() < 1e-9);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_zoom_tool_drag_reads_nothing_while_held_and_once_when_let_go() {
+    // The Zoom tool: a left drag up zooms in, 200 points halving the view. Dragged up 400
+    // points in four moves, twenty idle frames between them, the button held throughout:
+    // no read while it's held, however long the view rests; one read once it's let go.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(the_cuts_front());
+    meshes_settled(&mut h);
+    let reads = view(&h).reads();
+    h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+        .get_by_label("Zoom")
+        .click();
+    step(&mut h);
+    let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, -100.0);
+    h.hover_at(at);
+    h.event(eframe::egui::Event::PointerButton {
+        pos: at,
+        button: eframe::egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    step(&mut h);
+    for i in 1..=4u8 {
+        h.hover_at(at - eframe::egui::vec2(0.0, 100.0 * f32::from(i)));
+        for _ in 0..20 {
+            step(&mut h);
+        }
+        assert_eq!(view(&h).reads(), reads, "move {i}");
+    }
+    assert!((ortho_height(view(&h).camera()) - 20.0).abs() < 1e-9);
+    h.event(eframe::egui::Event::PointerButton {
+        pos: at - eframe::egui::vec2(0.0, 400.0),
+        button: eframe::egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: eframe::egui::Modifiers::NONE,
+    });
+    meshes_settled(&mut h);
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).reads(), reads + 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_navigation_bars_tools_orbit_pan_and_zoom_a_left_drag_and_fit_fits() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(the_cuts_front());
+    step(&mut h);
+    let bar = |h: &AppHarness, word: &str| {
+        h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+            .get_by_label(word)
+            .click();
+    };
+    let at = the_viewport(&h).center() - eframe::egui::vec2(150.0, -80.0);
+    let left = eframe::egui::PointerButton::Primary;
+    // No tool: a left drag is the selection's, and moves nothing.
+    drag(&mut h, left, at, at + eframe::egui::vec2(60.0, 0.0), 3);
+    assert_eq!(view(&h).camera(), &the_cuts_front());
+    // Orbit: 180 points right, a quarter turn about z: the eye from −y to −x of the target.
+    bar(&h, "Orbit");
+    step(&mut h);
+    drag(&mut h, left, at, at + eframe::egui::vec2(180.0, 0.0), 6);
+    let turned = view(&h).camera().clone();
+    let way = [
+        turned.eye[0] - turned.target[0],
+        turned.eye[1] - turned.target[1],
+        turned.eye[2] - turned.target[2],
+    ];
+    for (k, expected) in [-110.0, 0.0, 0.0].into_iter().enumerate() {
+        assert!((way[k] - expected).abs() < 1e-9, "{turned:?}");
+    }
+    // Orbit again lets the tool go: a left drag moves nothing.
+    bar(&h, "Orbit");
+    step(&mut h);
+    drag(&mut h, left, at, at + eframe::egui::vec2(60.0, 0.0), 3);
+    assert_eq!(view(&h).camera(), &turned);
+    // Pan, from the front again: 40 points right moves the target 40 points' worth left.
+    view_mut(&mut h).set_camera(the_cuts_front());
+    bar(&h, "Pan");
+    step(&mut h);
+    drag(&mut h, left, at, at + eframe::egui::vec2(40.0, 0.0), 4);
+    let mm = 80.0 / f64::from(the_viewport(&h).height());
+    let panned = view(&h).camera().clone();
+    assert!(
+        (panned.target[0] - (20.0 - 40.0 * mm)).abs() < 1e-9,
+        "{panned:?}"
+    );
+    // Zoom: 200 points up halves it.
+    bar(&h, "Zoom");
+    step(&mut h);
+    drag(&mut h, left, at, at - eframe::egui::vec2(0.0, 200.0), 4);
+    assert!((ortho_height(view(&h).camera()) - 40.0).abs() < 1e-9);
+    // Fit: the cut's box's centre, 1.1 times the larger of its 12 mm height and its 40 mm
+    // across times the view's height over its width.
+    bar(&h, "Fit");
+    step(&mut h);
+    let [width, height] = view(&h).frame().unwrap().size_px;
+    let fitted = 1.1 * 12f64.max(40.0 * f64::from(height) / f64::from(width));
+    let fit = view(&h).camera().clone();
+    assert_eq!(fit.target, [20.0, 10.0, 5.0]);
+    assert!((ortho_height(&fit) - fitted).abs() < 1e-9);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A unit vector's parts within 1e-9 of `expected`, as `camera` looks from its target.
+#[track_caller]
+fn looks_from(camera: &silico_protocol::Camera, expected: [f64; 3]) {
+    let way = [
+        camera.eye[0] - camera.target[0],
+        camera.eye[1] - camera.target[1],
+        camera.eye[2] - camera.target[2],
+    ];
+    let length = (way[0] * way[0] + way[1] * way[1] + way[2] * way[2]).sqrt();
+    for k in 0..3 {
+        assert!(
+            (way[k] / length - expected[k]).abs() < 1e-9,
+            "{camera:?} against {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn the_view_cubes_corner_home_drag_and_projection_menu() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let third = 1.0 / 3f64.sqrt();
+    let cube = |h: &AppHarness, label: &str| {
+        h.get_by_role_and_label(Role::Group, "ViewCube")
+            .get_by_label(label)
+            .click();
+    };
+    // A corner: its isometric view, from (−1, −1, 1)/√3, up (1, 1, 2)/√6, onto the cut's
+    // box's centre.
+    cube(&h, "Top front left");
+    step(&mut h);
+    let corner = view(&h).camera().clone();
+    looks_from(&corner, [-third, -third, third]);
+    assert_eq!(corner.target, [20.0, 10.0, 5.0]);
+    let six = 6f64.sqrt();
+    for (k, expected) in [1.0 / six, 1.0 / six, 2.0 / six].into_iter().enumerate() {
+        assert!((corner.up[k] - expected).abs() < 1e-12);
+    }
+    // Home: from (1, −1, 1)/√3 again.
+    h.get_by_label("Home").click();
+    step(&mut h);
+    let home = view(&h).camera().clone();
+    looks_from(&home, [third, -third, third]);
+    // A left drag of the cube, 60 points right in one move: a turn of 30° about z, so the
+    // way (1, −1, 1)/√3 turns to (cos 30° − sin 30°, −sin 30° − cos 30°, 1)/√3.
+    let centre = silico_app::viewport::view_cube_rect(the_viewport(&h)).center();
+    let left = eframe::egui::PointerButton::Primary;
+    drag(
+        &mut h,
+        left,
+        centre,
+        centre + eframe::egui::vec2(60.0, 0.0),
+        1,
+    );
+    let (sin, cos) = (0.5, 3f64.sqrt() / 2.0);
+    looks_from(
+        view(&h).camera(),
+        [(cos - sin) * third, (-sin - cos) * third, third],
+    );
+    // Its menu: Perspective, at 30°, the eye as far back as shows Home's height at the
+    // target; Home then keeps the perspective.
+    h.get_by_label("Home").click();
+    step(&mut h);
+    let height = ortho_height(view(&h).camera());
+    h.get_by_label("Orbit the view").click_secondary();
+    step(&mut h);
+    h.get_by_label("Perspective").click_accesskit();
+    step(&mut h);
+    let perspective = view(&h).camera().clone();
+    assert!(view(&h).perspective());
+    assert_eq!(
+        perspective.projection,
+        silico_protocol::Projection::Perspective {
+            field_of_view: 30.0
+        }
+    );
+    let back = height / (2.0 * libm::tan(15f64.to_radians()));
+    let way = [
+        perspective.eye[0] - perspective.target[0],
+        perspective.eye[1] - perspective.target[1],
+        perspective.eye[2] - perspective.target[2],
+    ];
+    assert!(((way[0] * way[0] + way[1] * way[1] + way[2] * way[2]).sqrt() - back).abs() < 1e-9);
+    cube(&h, "Front");
+    step(&mut h);
+    assert!(matches!(
+        view(&h).camera().projection,
+        silico_protocol::Projection::Perspective { .. }
+    ));
+    looks_from(view(&h).camera(), [0.0, -1.0, 0.0]);
+    // Orthographic again.
+    h.get_by_label("Orbit the view").click_secondary();
+    step(&mut h);
+    h.get_by_label("Orthographic").click_accesskit();
+    step(&mut h);
+    assert!(!view(&h).perspective());
+    assert!(matches!(
+        view(&h).camera().projection,
+        silico_protocol::Projection::Orthographic { .. }
+    ));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_middle_double_click_fits() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        target: [300.0, 10.0, 5.0],
+        eye: [300.0, -100.0, 5.0],
+        ..the_cuts_front()
+    });
+    step(&mut h);
+    let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, -60.0);
+    let middle = eframe::egui::PointerButton::Middle;
+    h.hover_at(at);
+    step(&mut h);
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            h.event(eframe::egui::Event::PointerButton {
+                pos: at,
+                button: middle,
+                pressed,
+                modifiers: eframe::egui::Modifiers::NONE,
+            });
+        }
+    }
+    h.hover_at(at);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera().target, [20.0, 10.0, 5.0]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_model_whose_body_cant_be_measured_opens_at_the_cube_home_and_still_reads() {
+    // Every summary answered with no box: Home's view, which fits the bodies' boxes, is
+    // refused, naming `view`; the tab keeps its own camera, Home of a 100 mm cube about
+    // the origin, and reads with it.
+    let f = fixture();
+    f.kernel.answer_instead(|op| {
+        matches!(op, Op::Summarize { .. }).then(|| {
+            silico_protocol::Reply::Summary(silico_protocol::ShapeSummary {
+                volume: 8000.0,
+                area: 2400.0,
+                center: [10.0; 3],
+                faces: 6,
+                edges: 12,
+                vertices: 8,
+                bounds: None,
+                valid: true,
+            })
+        })
+    });
+    let text = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 20, "width": 20, "height": 20}
+  ]
+}
+"#;
+    let (mut h, record) = f.drawn("unmeasured.silico", text);
+    meshes_settled(&mut h);
+    assert_eq!(view(&h).reads(), 2);
+    let camera = view(&h).camera().clone();
+    assert_eq!(camera.target, [0.0; 3]);
+    let third = 1.0 / 3f64.sqrt();
+    looks_from(&camera, [third, -third, third]);
+    assert_eq!(view(&h).bodies()[&1].bounds, None);
+    assert_eq!(uploads(&record), [1]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_camera_moved_before_the_first_read_answers_isnt_taken_back_by_homes_fit() {
+    let f = fixture();
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "the first read held", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.view.reading())
+    });
+    let before = view(&h).camera().clone();
+    let centre = the_viewport(&h).center();
+    wheel(&mut h, centre, eframe::egui::MouseWheelUnit::Point, 200.0);
+    let moved = view(&h).camera().clone();
+    assert!((ortho_height(&moved) - ortho_height(&before) / 2.0).abs() < 1e-9);
+    hold.release();
+    meshes_settled(&mut h);
+    assert_eq!(view(&h).camera(), &moved);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_perspective_view_reads_each_body_at_its_nearest_points_half_pixel() {
+    // From (25, −500, 25) onto (25, 25, 25) at 30°: both cubes' nearest faces are at y = 0,
+    // 500 mm deep, so each half pixel is 500 · tan 15° / H. The small cube is meshed at its
+    // power of two below; the large one's floor, 0.1732, is coarser than that level, so
+    // it's meshed at its floor, serving [0, 0.25).
+    let f = fixture();
+    let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Perspective {
+            field_of_view: 30.0,
+        },
+        eye: [25.0, -500.0, 25.0],
+        target: [25.0; 3],
+        up: [0.0, 0.0, 1.0],
+    });
+    meshes_settled(&mut h);
+    let height = f64::from(view(&h).frame().unwrap().size_px[1]);
+    let half = 500.0 * libm::tan(15f64.to_radians()) / height;
+    let level = libm::exp2(libm::floor(libm::log2(half)));
+    assert!(level < 0.1732 && 2.0 * level > half);
+    let small = &view(&h).bodies()[&1];
+    assert_eq!((small.level, small.serves), (level, [level, 2.0 * level]));
+    let large = &view(&h).bodies()[&2];
+    assert_eq!(large.serves, [0.0, 0.25]);
+    assert!((large.deflection - 1000.0 * 3f64.sqrt() * 1e-4).abs() < 1e-12);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_pick_waiting_for_its_answer_asks_for_frames_until_it_comes() {
+    // An idle egui draws no frame, so a pick asked asks for one at once until its answer
+    // is taken; then the frame asked for is the idle one again.
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let delay = |h: &AppHarness| {
+        h.output()
+            .viewport_output
+            .get(&eframe::egui::ViewportId::ROOT)
+            .map(|viewport| viewport.repaint_delay)
+    };
+    assert!(delay(&h).is_some_and(|delay| delay > Duration::from_millis(500)));
+    let rect = silico_app::renderer::PixelRect {
+        min: [10, 10],
+        size: [3, 3],
+    };
+    record.lock().unwrap().pick = None;
+    assert!(view_mut(&mut h).pick(rect));
+    step(&mut h);
+    assert_eq!(delay(&h), Some(Duration::ZERO));
+    step(&mut h);
+    assert_eq!(view(&h).picked().map(|picking| picking.rect), Some(rect));
+    step(&mut h);
+    assert!(delay(&h).is_some_and(|delay| delay > Duration::from_millis(500)));
     assert_eq!(never_waits::waits(), 0);
 }
