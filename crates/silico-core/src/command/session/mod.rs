@@ -108,7 +108,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use super::edit::{self, FeatureIds};
 use super::logs::{LogBuffer, LogQuery, Logs};
-use super::{Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
+use super::{Cancellable, Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
 use crate::cache::{Cache, Cleared};
 use crate::disk::{DISK_CHECK_INTERVAL, Disk, DiskWatch};
 use crate::document::json::Node;
@@ -963,16 +963,22 @@ impl<P: Clients + 'static> Sessions<P> {
         read_logs_in(&self.registry, session, query)
     }
 
-    /// Stops `session`'s command named `command` (decision 34), answered at once on the
-    /// caller's thread, never queued and never reading the file: the queued command, if
-    /// it's the one running, and every published read of that name running. Each stops as
-    /// [`Running::cancel`] stops it, and answers too: `cancelled` if it left no trace, its
-    /// real result if it had done its work. The answer says which (`stopped`: whether any
-    /// was stopped before it had). Refused, naming `command`, if no command of that name is
-    /// running, what is given as candidates: so a cancel that comes late never stops the
-    /// command queued after the one it meant.
-    pub fn cancel(&self, session: &SessionId, command: SessionCommand) -> Response<Cancelled> {
-        cancel_in(&self.registry, session, command)
+    /// Stops what `session` is running that `named` names (decision 34), answered at once on
+    /// the caller's thread, never queued and never reading the file. A command: the queued
+    /// command, if it's the one running, and every published read of that name running.
+    /// Each stops as [`Running::cancel`] stops it, and answers too: `cancelled` if it left
+    /// no trace, its real result if it had done its work. The answer says which (`stopped`:
+    /// whether any was stopped before it had). The rebuild ([`Cancellable::Rebuild`]): the
+    /// one `status` reports running, stopped as a cancelled command's wait stops it, and the
+    /// command waiting on it, if one is, answers `cancelled` too. Refused, naming `command`,
+    /// if what it names isn't running, what is (as `status` reports it) given as candidates:
+    /// so a cancel that comes late never stops the command queued after the one it meant.
+    pub fn cancel(
+        &self,
+        session: &SessionId,
+        named: impl Into<Cancellable>,
+    ) -> Response<Cancelled> {
+        cancel_in(&self.registry, session, named.into())
     }
 
     /// What answers [`status`](Self::status) and [`cancel`](Self::cancel) later, on whichever
@@ -2200,42 +2206,104 @@ fn command_span(
 fn cancel_in<P: Clients + 'static>(
     registry: &Registry<P>,
     session: &SessionId,
-    command: SessionCommand,
+    named: Cancellable,
 ) -> Response<Cancelled> {
     let Some(found) = find_in(registry, session) else {
         return refused(not_open(*session));
     };
     let _span = command_span(&found.logs, found.id, "cancel", None).entered();
-    let queued = found.running();
-    let reads: Vec<Arc<Ticket>> = {
-        let reads = lock(&found.reads);
-        lock(&reads.unanswered).tickets().cloned().collect()
-    };
-    let named: Vec<&Arc<Ticket>> = queued
-        .iter()
-        .chain(&reads)
-        .filter(|ticket| ticket.command() == Some(command))
-        .collect();
-    let result = if named.is_empty() {
-        // Each, as `status` lists them.
-        let running: Vec<SessionCommand> = queued
-            .iter()
-            .chain(&reads)
-            .filter_map(|ticket| ticket.command())
-            .collect();
-        Err(Problems::from(not_running(found.id, command, &running)))
-    } else {
-        // Every one stopped, none passed over once one is.
-        let stopped = named
-            .iter()
-            .fold(false, |stopped, ticket| ticket.cancel() | stopped);
-        tracing::info!(command = command.as_str(), stopped, "cancelled");
-        Ok(Cancelled { command, stopped })
+    let result = match named {
+        Cancellable::Command(command) => found.cancel_command(command),
+        Cancellable::Rebuild => found.cancel_rebuild(),
     };
     Response {
         session: Some(found.info(false)),
         model: None,
         result,
+    }
+}
+
+impl<C: Kernel + 'static> Session<C> {
+    /// `cancel` naming `command`: the queued command, if it's the one running, and every
+    /// published read of that name, each stopped; or, if none is, refused, naming what's
+    /// running.
+    fn cancel_command(&self, command: SessionCommand) -> Result<Cancelled, Problems> {
+        let running = self.running_tickets();
+        let named: Vec<&Arc<Ticket>> = running
+            .iter()
+            .filter(|ticket| ticket.command() == Some(command))
+            .collect();
+        if named.is_empty() {
+            return Err(self.not_running(Cancellable::Command(command), &running));
+        }
+        // Every one stopped, none passed over once one is.
+        let stopped = named
+            .iter()
+            .fold(false, |stopped, ticket| ticket.cancel() | stopped);
+        tracing::info!(command = command.as_str(), stopped, "cancelled");
+        Ok(Cancelled {
+            command: Cancellable::Command(command),
+            stopped,
+        })
+    }
+
+    /// `cancel` naming `rebuild`: the rebuild `status` reports running stopped, under the
+    /// rebuilds' lock, as a cancelled waiter stops it, and the command waiting on it, if
+    /// one is, told, so it answers `cancelled` (decision 34). Refused, naming what's
+    /// running, if none is (it published, failed, or was superseded first).
+    fn cancel_rebuild(&self) -> Result<Cancelled, Problems> {
+        let stopped = {
+            let held = self.held.read();
+            matches!(*held.gated, Gated::Checked(_))
+                && lock(&self.rebuilds).stop_running(held.revision)
+        };
+        if !stopped {
+            return Err(self.not_running(Cancellable::Rebuild, &self.running_tickets()));
+        }
+        // Told once the stop is recorded, so a waiter that saw none before it waited is
+        // waiting when it's told.
+        self.rebuilt.notify_all();
+        self.waker.wake();
+        tracing::info!(command = "rebuild", stopped, "cancelled");
+        Ok(Cancelled {
+            command: Cancellable::Rebuild,
+            stopped: true,
+        })
+    }
+
+    /// The stops of the commands running, as `status` lists them: the queued command, then
+    /// each published read.
+    fn running_tickets(&self) -> Vec<Arc<Ticket>> {
+        let queued = self.running();
+        let reads = lock(&self.reads);
+        let unanswered = lock(&reads.unanswered);
+        queued
+            .into_iter()
+            .chain(unanswered.tickets().cloned())
+            .collect()
+    }
+
+    /// The refusal of a `cancel` of `named`, which isn't running: what is, as `status`
+    /// reports it, the commands of `tickets` ([`running_tickets`](Self::running_tickets)),
+    /// then the rebuild, if `status.rebuild.state` is `running`.
+    fn not_running(&self, named: Cancellable, tickets: &[Arc<Ticket>]) -> Problems {
+        let mut running: Vec<Cancellable> = tickets
+            .iter()
+            .filter_map(|ticket| ticket.command())
+            .map(Cancellable::Command)
+            .collect();
+        if self.rebuild_running() {
+            running.push(Cancellable::Rebuild);
+        }
+        Problems::from(not_running(self.id, named, &running))
+    }
+
+    /// Whether `status` reports the session's rebuild `running`: its revision's, or an
+    /// edit's candidate, while the gate takes its document.
+    fn rebuild_running(&self) -> bool {
+        let held = self.held.read();
+        matches!(*held.gated, Gated::Checked(_))
+            && lock(&self.rebuilds).state(held.revision).state == RebuildState::Running
     }
 }
 
@@ -2271,13 +2339,9 @@ impl<P: Clients + 'static> WeakSessions<P> {
     }
 
     /// [`Sessions::cancel`].
-    pub(crate) fn cancel(
-        &self,
-        session: &SessionId,
-        command: SessionCommand,
-    ) -> Response<Cancelled> {
+    pub(crate) fn cancel(&self, session: &SessionId, named: Cancellable) -> Response<Cancelled> {
         match self.0.upgrade() {
-            Some(registry) => cancel_in(&registry, session, command),
+            Some(registry) => cancel_in(&registry, session, named),
             None => refused(gone()),
         }
     }

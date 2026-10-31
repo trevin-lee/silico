@@ -225,7 +225,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Cancel => (
             "Cancel a command",
-            "Stop the command named, if it's running in the session. The command stopped answers too: `cancelled` if it left no trace, or its real result if it had already done its work.",
+            "Stop the command named, if it's running in the session, or, named `rebuild`, the session's rebuild while `status` says it's running, with the command waiting on it. The command stopped answers too: `cancelled` if it left no trace, or its real result if it had already done its work.",
         ),
         Command::Begin => (
             "Begin a transaction",

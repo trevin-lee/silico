@@ -67,16 +67,36 @@ impl<C: Kernel + 'static> Rebuilds<C> {
         self.running.as_ref().map(Label::revision)
     }
 
-    /// Whether the command `stop` stops was cancelled: if so, the rebuild it waits on,
-    /// `waited`, stopped ([`stop_waited`](Self::stop_waited)), and its `cancelled` answer.
+    /// Whether the command `stop` stops was cancelled, or the rebuild it waits on, `waited`,
+    /// was (`cancel` naming `rebuild`): a rebuild and the one command waiting on it stop
+    /// together, whichever is named (decision 34). If so, that rebuild stopped
+    /// ([`stop_waited`](Self::stop_waited)), and the command's `cancelled` answer, as if it
+    /// had been named.
     fn stopped(&mut self, stop: &Ticket, waited: Option<&Label>) -> Result<(), Problems> {
-        if !stop.cancelled() {
+        let rebuild = waited.is_some_and(|label| label.cancelled.load(Ordering::SeqCst));
+        if !stop.cancelled() && !rebuild {
             return Ok(());
         }
         if let Some(label) = waited {
             self.stop_waited(label);
         }
         Err(Problems::from(cancelled(stop.name())))
+    }
+
+    /// The rebuild running, if `status` reports it so for `revision`, the session's
+    /// ([`state`](Self::state): its own, or an edit's candidate), stopped as `cancel` naming
+    /// `rebuild` stops it (decision 34): as a cancelled waiter stops it
+    /// ([`stop_waited`](Self::stop_waited)), so the command waiting on it, if one is, answers
+    /// `cancelled` once it's told (`Session::rebuilt`). Whether one was.
+    pub(super) fn stop_running(&mut self, revision: Revision) -> bool {
+        let running = self
+            .running
+            .clone()
+            .filter(|_| self.state(revision).state == RebuildState::Running);
+        if let Some(label) = &running {
+            self.stop_waited(label);
+        }
+        running.is_some()
     }
 
     /// `label` numbered as the newest rebuild started, after every one started before it.
@@ -728,6 +748,9 @@ impl<C: Kernel + 'static> Session<C> {
                     .wait(rebuilds)
                     .unwrap_or_else(PoisonError::into_inner);
             };
+            // A candidate stopped (its edit, or the rebuild, named) ends superseded: so it
+            // answers `cancelled`, never started again, which would undo the stop.
+            rebuilds.stopped(stop, Some(&label))?;
             match outcome {
                 Ok(RunOutcome::Published(model)) => return Ok(model),
                 // Stopped (the sessions dropped, which the loop's start says), or superseded:
@@ -990,6 +1013,11 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
         return;
     }
     match outcome {
+        // One a cancel stopped once its engine had published, before this recorded it: the
+        // cancel said it stopped, and its end was said then ([`Rebuilds::stop_waited`]), so
+        // its model is neither published nor kept, and status and every read agree with the
+        // cancel. Its steps are in the cache for whoever rebuilds it next.
+        Ok(RunOutcome::Published(_)) if label.cancelled.load(Ordering::SeqCst) => {}
         // A late model of an older revision never takes a newer one's place, nor one of a
         // transaction rolled back the restored state's, nor one of a rebuild superseded
         // (after its engine published) what a rebuild of its revision started after it said.

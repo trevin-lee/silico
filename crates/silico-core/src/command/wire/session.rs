@@ -17,7 +17,7 @@ use super::transaction::TransactionSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, problems, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
-    Cancelled, Closed, Limits, Opened, Problems, ReadCommand, Rebuild, RunningCommand,
+    Cancellable, Cancelled, Closed, Limits, Opened, Problems, ReadCommand, Rebuild, RunningCommand,
     SessionCommand, SessionId, Status, Version,
 };
 use crate::document::json::Node;
@@ -99,24 +99,36 @@ pub const PUBLISHED_READS: [&str; ReadCommand::ALL.len()] = {
     names
 };
 
-/// A `cancel` request: the session, and the command to stop, by its name: one of the
-/// commands that run in a session ([`SESSION_COMMANDS`]), never any other string.
+/// What `cancel` names, each by its name, in the design's order: every command that runs in
+/// a session ([`SESSION_COMMANDS`]), then `rebuild` ([`Cancellable::ALL`]).
+pub const CANCELLABLE: [&str; Cancellable::ALL.len()] = {
+    let mut names = [""; Cancellable::ALL.len()];
+    let mut at = 0;
+    while at < names.len() {
+        names[at] = Cancellable::ALL[at].as_str();
+        at += 1;
+    }
+    names
+};
+
+/// A `cancel` request: the session, and what to stop, by its name: one of the commands that
+/// run in a session, or `rebuild` ([`CANCELLABLE`]), never any other string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CancelRequest {
     pub session: SessionId,
-    pub command: SessionCommand,
+    pub command: Cancellable,
 }
 
 impl CancelRequest {
     /// The request `node` holds, or every reason its shape is refused: a `command` that
-    /// isn't the name of a command that runs in a session refused, with every such name as
-    /// candidates.
+    /// isn't the name of a command that runs in a session, nor `rebuild`, refused, with
+    /// every such name as candidates.
     pub fn read(node: &Node) -> Result<Self, Problems> {
         RequestFields::read(node, |f| {
             let session = f.session();
             let command = f.word(
                 "command",
-                &SessionCommand::ALL.map(|command| (command.as_str(), command)),
+                &Cancellable::ALL.map(|named| (named.as_str(), named)),
                 "commands",
             );
             Some(CancelRequest {
@@ -274,10 +286,12 @@ impl ToWire for Cancelled {
     }
 }
 
-/// A command that runs in a session, by name ([`SESSION_COMMANDS`]), in the design's order.
-pub struct SessionCommandSchema;
+/// What `cancel` names ([`CANCELLABLE`]), in the design's order: a command that runs in a
+/// session, by name, or `rebuild`. Its schema keeps the name `cancel.json` gave it before
+/// `rebuild` was added, `SessionCommand`.
+pub struct CancellableSchema;
 
-impl JsonSchema for SessionCommandSchema {
+impl JsonSchema for CancellableSchema {
     fn schema_name() -> Cow<'static, str> {
         "SessionCommand".into()
     }
@@ -285,8 +299,9 @@ impl JsonSchema for SessionCommandSchema {
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         words(
             "A command that runs in a session, by name, as a tool is named: what `status` says \
-             is running, and `cancel` stops.",
-            SESSION_COMMANDS,
+             is running, and `cancel` stops; or `rebuild`, the session's rebuild, while \
+             `status.rebuild.state` is `running`, which stops with the command waiting on it.",
+            CANCELLABLE,
         )
     }
 }
@@ -563,10 +578,11 @@ pub struct StatusResultSchema {
 }
 
 /// `cancel`'s request: stop the command named, if it's running in the session (its queued
-/// command, and every read of the published model of that name), answered at once. The
-/// command stopped answers too: `cancelled` if it left no trace, or its real result if it
-/// had done its work. Refused, naming what is running, if that command isn't, so a cancel
-/// that comes late never stops the command after it.
+/// command, and every read of the published model of that name), or, named `rebuild`, the
+/// session's rebuild running, answered at once. A rebuild and the command waiting on it stop
+/// together, whichever is named. The command stopped answers too: `cancelled` if it left
+/// no trace, or its real result if it had done its work. Refused, naming what is running,
+/// if what's named isn't, so a cancel that comes late never stops the command after it.
 #[derive(JsonSchema)]
 #[schemars(rename = "CancelRequest", transform = wire_shape)]
 pub struct CancelRequestSchema {
@@ -574,7 +590,7 @@ pub struct CancelRequestSchema {
     #[schemars(regex(pattern = SESSION_ID_PATTERN))]
     pub session: String,
     /// The command to stop, as `status` names it.
-    pub command: SessionCommandSchema,
+    pub command: CancellableSchema,
 }
 
 /// `cancel`'s result.
@@ -582,7 +598,7 @@ pub struct CancelRequestSchema {
 #[schemars(rename = "CancelResult", transform = wire_shape)]
 pub struct CancelResultSchema {
     /// The command, as the request named it.
-    pub command: SessionCommandSchema,
+    pub command: CancellableSchema,
     /// Whether it was stopped before it had done its work: false means it had (an edit
     /// already saved), and it answers with its real result. Read `status` for the revision.
     pub stopped: bool,
