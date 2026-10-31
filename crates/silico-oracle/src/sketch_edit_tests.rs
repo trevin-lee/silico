@@ -858,7 +858,8 @@ fn freecads_merge_refuses_points_already_joined_and_a_worse_solve_and_nothing_el
         });
     }
     assert_eq!(merge_refusal(&on_an_edge, &clean), None);
-    // Joined already by a coincidence of their places: refused (#se-points-already-coincident-even-through-other).
+    // Joined already by a coincidence of their places: refused
+    // (#se-points-already-coincident-even-through-other).
     let mut joined = p.clone();
     let Plan::Run { job, .. } = &mut joined.plan else {
         unreachable!()
@@ -877,7 +878,8 @@ fn freecads_merge_refuses_points_already_joined_and_a_worse_solve_and_nothing_el
         merge_refusal(&joined, &clean)
     );
     // A solve worse than the one before: its code, or a constraint newly redundant,
-    // conflicting, or malformed, each alone (#se-any-result-whose-solve-is-worse); the same lists as before aren't worse.
+    // conflicting, or malformed, each alone (#se-any-result-whose-solve-is-worse); the same lists
+    // as before aren't worse.
     let worse = |before: Diagnosis, after: Diagnosis| {
         let fc = FreecadEdited {
             before,
@@ -1439,13 +1441,36 @@ fn a_merges_placed_geometry_is_freecads_with_the_merged_points_at_the_kept_ones_
     assert_eq!(placed(&away(-3.0), &["p0000007", "p0000004"]).1, None);
 }
 
-/// The anchors `text` cites: each word that starts with the anchors' prefix, `se-`, where it
-/// isn't the tail of another word, read to its end.
-fn anchors_cited(text: &str) -> Vec<String> {
+/// What `text` says of the note's anchors: each anchor it cites (each word that starts with
+/// the anchors' prefix where it isn't the tail of another word, read to its end; a
+/// definition, `id="` and the anchor, or `id=\"` as JSON escapes it, not counted), each place the
+/// prefix starts a word but no anchor follows, and each line-number citation of the note (the
+/// note's file, a colon and a digit; or a colon and a digit after `(` or `, `).
+struct Scan {
+    cited: Vec<String>,
+    malformed: Vec<String>,
+    by_line: Vec<String>,
+}
+
+fn scan(text: &str) -> Scan {
     let prefix = concat!("s", "e-");
     let bytes = text.as_bytes();
     let word = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
-    let mut out = Vec::new();
+    let around = |at: usize| {
+        let (mut a, mut b) = (at.saturating_sub(20), (at + 20).min(text.len()));
+        while !text.is_char_boundary(a) {
+            a -= 1;
+        }
+        while !text.is_char_boundary(b) {
+            b += 1;
+        }
+        text[a..b].to_owned()
+    };
+    let mut out = Scan {
+        cited: Vec::new(),
+        malformed: Vec::new(),
+        by_line: Vec::new(),
+    };
     let mut from = 0;
     while let Some(at) = text[from..].find(prefix) {
         let start = from + at;
@@ -1453,83 +1478,232 @@ fn anchors_cited(text: &str) -> Vec<String> {
         if start > 0 && (word(bytes[start - 1]) || bytes[start - 1].is_ascii_alphabetic()) {
             continue;
         }
-        let end = (start..bytes.len())
+        let end = (start + prefix.len()..bytes.len())
             .find(|&i| !word(bytes[i]))
             .unwrap_or(bytes.len());
         let anchor = text[start..end].trim_end_matches('-');
-        if anchor.len() > prefix.len() {
-            out.push(anchor.to_owned());
+        if anchor.len() <= prefix.len() {
+            out.malformed.push(around(start));
+        } else if !(text[..start].ends_with("id=\"") || text[..start].ends_with("id=\\\"")) {
+            out.cited.push(anchor.to_owned());
+        }
+    }
+    for pattern in [
+        concat!("sketch-edit.md", ":"),
+        concat!("(", ":"),
+        concat!(", ", ":"),
+    ] {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(pattern) {
+            let after = from + at + pattern.len();
+            if bytes.get(after).is_some_and(u8::is_ascii_digit) {
+                out.by_line.push(around(after));
+            }
+            from = after;
         }
     }
     out
 }
 
-#[test]
-fn every_anchor_the_harness_cites_is_in_the_note_exactly_once() {
-    // Each anchor the note defines, and how often.
+/// Every file under `dir` with one of the extensions the harness and its cases are written in.
+fn sources_under(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            sources_under(&path, out);
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| matches!(e, "rs" | "py" | "json" | "silico" | "md"))
+        {
+            out.push(path);
+        }
+    }
+}
+
+/// The anchors the note defines, and how often each.
+fn defined_anchors(note: &str) -> BTreeMap<String, usize> {
     let open = concat!("<a id=\"", "s", "e-");
     let mut defined: BTreeMap<String, usize> = BTreeMap::new();
     let mut from = 0;
-    while let Some(at) = NOTE_TEXT[from..].find(open) {
+    while let Some(at) = note[from..].find(open) {
         let start = from + at + "<a id=\"".len();
-        let end = start + NOTE_TEXT[start..].find('"').unwrap();
-        *defined.entry(NOTE_TEXT[start..end].to_owned()).or_default() += 1;
+        let end = start + note[start..].find('"').unwrap();
+        *defined.entry(note[start..end].to_owned()).or_default() += 1;
         from = end;
     }
-    let twice: Vec<_> = defined.iter().filter(|(_, n)| **n != 1).collect();
-    assert!(
-        twice.is_empty(),
-        "anchors defined more than once: {twice:?}"
-    );
-    // Every anchor cited anywhere the harness, its tests, FreeCAD's side, the generator, the
-    // case files, or the note cite one.
-    let sources = [
-        ("sketch_edit.rs", include_str!("sketch_edit.rs")),
-        ("sketch_edit_tests.rs", include_str!("sketch_edit_tests.rs")),
-        ("oracle.py", include_str!("oracle.py")),
-        ("generate.rs", include_str!("generate.rs")),
-        (
-            "tests/sketch_edit_oracle.rs",
-            include_str!("../tests/sketch_edit_oracle.rs"),
-        ),
-        (
-            "cases.json",
-            include_str!("../../../tests/oracle/sketch-edits/cases.json"),
-        ),
-        (
-            "sketches.silico",
-            include_str!("../../../tests/oracle/sketch-edits/sketches.silico"),
-        ),
-        ("sketch-edit.md", NOTE_TEXT),
-    ];
-    let mut cited = 0;
-    for (name, text) in sources {
-        for anchor in anchors_cited(text) {
-            cited += 1;
-            assert!(
-                defined.contains_key(&anchor),
-                "{name} cites #{anchor}, which the note hasn't"
-            );
+    defined
+}
+
+/// What's wrong with how `sources` (each a name and its text) and the note cite the note's
+/// anchors, if anything: an anchor the note defines twice or that a source cites and the
+/// note lacks, a prefix with no anchor after it, a line-number citation (not looked for in
+/// the note, whose references to FreeCAD's sources give their lines that way), or a source
+/// group with no citation at all.
+fn citation_faults(note: &str, groups: &[(&str, Vec<(String, String)>)]) -> Vec<String> {
+    let defined = defined_anchors(note);
+    let mut faults: Vec<String> = defined
+        .iter()
+        .filter(|(_, n)| **n != 1)
+        .map(|(a, n)| format!("the note defines {a} {n} times"))
+        .collect();
+    let check = |faults: &mut Vec<String>, name: &str, text: &str, by_line: bool| -> usize {
+        let found = scan(text);
+        for anchor in &found.cited {
+            if !defined.contains_key(anchor) {
+                faults.push(format!("{name} cites #{anchor}, which the note hasn't"));
+            }
+        }
+        for bad in &found.malformed {
+            faults.push(format!(
+                "{name} has the anchors' prefix with no anchor: {bad:?}"
+            ));
+        }
+        if by_line {
+            for bad in &found.by_line {
+                faults.push(format!("{name} cites the note by line: {bad:?}"));
+            }
+        }
+        found.cited.len()
+    };
+    if check(&mut faults, "the note", note, false) == 0 {
+        faults.push("the note cites none of its anchors".to_owned());
+    }
+    for (group, files) in groups {
+        let cited: usize = files
+            .iter()
+            .map(|(name, text)| check(&mut faults, name, text, true))
+            .sum();
+        if cited == 0 {
+            faults.push(format!("nothing under {group} cites the note"));
         }
     }
-    // Hundreds are cited; the scan isn't vacuous.
+    faults
+}
+
+#[test]
+fn every_anchor_the_harness_cites_is_in_the_note_exactly_once() {
+    // The crate's sources and tests, and the case files, walked: every file in them.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let groups: Vec<(&str, Vec<(String, String)>)> =
+        ["src", "tests", "../../tests/oracle/sketch-edits"]
+            .into_iter()
+            .map(|dir| {
+                let mut paths = Vec::new();
+                sources_under(&root.join(dir), &mut paths);
+                let files = paths
+                    .iter()
+                    .map(|p| (p.display().to_string(), std::fs::read_to_string(p).unwrap()))
+                    .collect();
+                (dir, files)
+            })
+            .collect();
+    let faults = citation_faults(NOTE_TEXT, &groups);
+    assert!(faults.is_empty(), "{faults:#?}");
+    let cited: usize = groups
+        .iter()
+        .flat_map(|(_, files)| files)
+        .map(|(_, text)| scan(text).cited.len())
+        .sum();
+    let defined = defined_anchors(NOTE_TEXT);
+    // Hundreds are cited; the scan isn't vacuous. And each anchor resolves to a line.
     assert!(
         cited > 300 && defined.len() > 80,
         "{cited} cited, {} defined",
         defined.len()
     );
-    // Every rule's anchors, and each resolves to a line.
     for anchor in defined.keys() {
         assert!(note_line(anchor).is_some(), "{anchor}");
     }
 }
 
 #[test]
+fn a_dead_malformed_or_line_numbered_citation_is_a_fault() {
+    let p = concat!("s", "e-");
+    let note = format!("<a id=\"{p}a\"></a> the rule, as (#{p}a) says");
+    let fine = format!("cites #{p}a, and {p}a again");
+    let group = |text: &str| vec![("src", vec![("f.rs".to_owned(), text.to_owned())])];
+    let faults = |text: &str| citation_faults(&note, &group(text));
+    assert!(faults(&fine).is_empty(), "{:?}", faults(&fine));
+    for (what, text, want) in [
+        (
+            "an anchor the note hasn't",
+            format!("#{p}gone"),
+            "which the note hasn't",
+        ),
+        (
+            "the prefix with no anchor",
+            format!("#{p}a and #{p}\u{2026}"),
+            "with no anchor",
+        ),
+        (
+            "the prefix before a capital",
+            format!("#{p}a and #{p}A"),
+            "with no anchor",
+        ),
+        (
+            "the note's file and a line",
+            format!("#{p}a, {}", concat!("sketch-edit.md", ":66")),
+            "by line",
+        ),
+        (
+            "a line in parentheses",
+            format!("#{p}a {}", concat!("(", ":66)")),
+            "by line",
+        ),
+        (
+            "a line after a comma",
+            format!("#{p}a, x{}", concat!(", ", ":67")),
+            "by line",
+        ),
+        (
+            "no citation at all",
+            "nothing here".to_owned(),
+            "nothing under src",
+        ),
+    ] {
+        let found = faults(&text);
+        assert!(found.iter().any(|f| f.contains(want)), "{what}: {found:?}");
+    }
+    // A definition isn't a citation: a group with only one cites nothing.
+    let defs = format!("<a id=\"{p}a\"></a>");
+    assert!(
+        faults(&defs)
+            .iter()
+            .any(|f| f.contains("nothing under src"))
+    );
+    // Nor as a JSON string escapes one.
+    let escaped = format!("<a id=\\\"{p}a\\\"></a>");
+    assert!(
+        faults(&escaped)
+            .iter()
+            .any(|f| f.contains("nothing under src"))
+    );
+    // An anchor defined twice in the note.
+    let twice = format!("{note} <a id=\"{p}a\"></a>");
+    assert!(
+        citation_faults(&twice, &group(&fine))
+            .iter()
+            .any(|f| f.contains("defines"))
+    );
+    // The note's own FreeCAD references by line aren't looked for there.
+    let freecad = format!(
+        "{note} (`Part2DObject.cpp`, {})",
+        concat!("(", ":1563-1590)")
+    );
+    assert!(citation_faults(&freecad, &group(&fine)).is_empty());
+}
+
+#[test]
 fn a_cited_anchor_is_read_whole_and_only_where_it_starts_a_word() {
     let p = concat!("s", "e-");
-    let text = format!("({p}a-b), {p}c-, x{p}d, ({p}e9)!, use-{p}f");
+    let text = format!("({p}a-b), {p}c-, x{p}d, ({p}e9)!, use-{p}f, id=\"{p}g\"");
     assert_eq!(
-        anchors_cited(&text),
+        scan(&text).cited,
         [format!("{p}a-b"), format!("{p}c"), format!("{p}e9")]
     );
 }
