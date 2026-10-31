@@ -389,19 +389,25 @@ fn a_published_distance_held_in_the_kernel_survives_a_cancel_of_the_rebuild_and_
         .wait()
         .result
         .unwrap();
-    // Revision 2, inside a transaction: no rebuild yet.
+    // Revision 2, inside a transaction: no rebuild yet, and nothing running in the kernel.
     f.begin();
     longer_by_field(&f, Revision::OPENED).wait().result.unwrap();
+    assert!(f.kernel.wait_idle(WAIT));
+    // Both held before the read is sent: a published read starts the revision's rebuild
+    // as it starts (decision 13), so the distance's own read starts revision 2's, whose box
+    // may reach the kernel before the distance does.
     let measuring = f.kernel.hold(|op| op.name() == "Distance");
+    let _boxes = f.kernel.hold(is_box);
     let distance = f
         .sessions
         .distance(&f.id, ModelChoice::Published, faces(), None);
-    assert!(f.kernel.wait_running(1, WAIT));
-    // The app's frame starts revision 2's rebuild, its box held; it answers revision 1's.
-    let _boxes = f.kernel.hold(is_box);
+    // The distance and revision 2's box, each held: the two requests there are.
+    assert!(f.kernel.wait_running(2, WAIT));
+    assert_eq!(lock(&f.session().rebuilds).last_number, 2);
+    // The app's frame finds that rebuild running, starts none, and answers revision 1's.
     let frame = f.sessions.published(&f.id).result.unwrap();
     assert_eq!(frame.revision, Revision::OPENED);
-    assert!(f.kernel.wait_running(2, WAIT));
+    assert_eq!(lock(&f.session().rebuilds).last_number, 2);
     let before = status(&f);
     assert_eq!(
         (
