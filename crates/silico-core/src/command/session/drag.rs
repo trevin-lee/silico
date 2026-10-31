@@ -487,6 +487,8 @@ impl<C: Kernel + 'static> Session<C> {
             dofs: opened.dofs,
             moves: opened.moves,
         };
+        #[cfg(test)]
+        self.dragged.pass();
         let number = {
             let mut slot = lock(&self.drags);
             let number = slot.next;

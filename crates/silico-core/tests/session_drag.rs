@@ -2105,3 +2105,180 @@ fn a_cancel_of_drag_move_returns_without_waiting_on_the_drags_thread() {
     f.begin_point("pa000003").result.unwrap();
     assert!(f.drag().is_some());
 }
+
+#[test]
+fn a_move_wakes_the_client_once_its_frame_has_come_and_never_as_it_is_sent() {
+    // The client's waker is told what changed once it can be read: a move's frame, on the
+    // drag's thread as it answers. Sending a move that answers nothing (none replaced, its
+    // own frame held in the solver) changes nothing a client reads, and wakes no one.
+    let f = opened(&freed_profile());
+    f.begin_point("pa000003").result.unwrap();
+    let sender = std::thread::current().id();
+    let on_sender = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (woke, wakes) = std::sync::mpsc::channel::<()>();
+    let woke = std::sync::Mutex::new(woke);
+    {
+        let on_sender = Arc::clone(&on_sender);
+        f.sessions.on_change(move || {
+            let current = std::thread::current();
+            if current.id() == sender {
+                on_sender.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            } else if current.name() == Some("silico-drag") {
+                let _ = woke.lock().unwrap().send(());
+            }
+        });
+    }
+    f.sketches.hold();
+    let moving = f.sessions.drag_move(&s1(), [62.5, 7.0]);
+    assert!(f.sketches.wait_held(HANG));
+    assert_eq!(
+        on_sender.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a move that answered nothing woke the client as it was sent"
+    );
+    f.sketches.release();
+    assert_eq!(answer(moving).result.unwrap().frame, FrameEnd::Solved);
+    wakes
+        .recv_timeout(HANG)
+        .expect("the move's frame didn't wake the client");
+    assert_eq!(on_sender.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// The cause a move or a release is told with when no drag is open and no `drag_begin` is
+/// queued.
+const ENDED: &str =
+    "a drag ends at drag_end, at a new revision of the session, or when its worker restarts";
+
+/// The cause it's told with when a `drag_begin` sent to the session hasn't answered.
+const QUEUED: &str = "a drag_begin sent to the session hasn't answered yet: it may still be queued, and its drag opens when it runs";
+
+#[test]
+fn a_move_after_its_drag_was_cancelled_is_told_why_by_whether_a_begin_is_queued() {
+    // A cancelled move leaves its drag the session's, closed, until what comes next takes
+    // its place: a move then is refused as no drag being open, its cause saying whether a
+    // begin is on its way.
+    let f = opened(&freed_profile());
+    f.begin_point("pa000003").result.unwrap();
+    f.sketches.hold();
+    let moving = f.sessions.drag_move(&s1(), [62.5, 7.0]);
+    assert!(f.sketches.wait_held(HANG));
+    f.sessions
+        .cancel(&s1(), SessionCommand::DragMove)
+        .result
+        .unwrap();
+    assert_eq!(the_error(&answer(moving)).code(), ErrorCode::Cancelled);
+    f.sketches.release();
+    // No begin sent: the plain cause.
+    let error = the_error(&f.moved([1.0, 1.0]));
+    assert_eq!(
+        (error.message(), error.cause()),
+        ("no drag is open in session s1", Some(ENDED))
+    );
+    // A begin queued behind a fresh check, its sketch's solve held: the begin's cause.
+    f.sketches.hold();
+    let check = f.sessions.check(
+        &s1(),
+        silico_core::command::CheckModel::Current { fresh: true },
+    );
+    assert!(f.sketches.wait_held(HANG));
+    let begin = f
+        .sessions
+        .drag_begin(&s1(), fid("s0000001"), DragGrab::Point(eid("pa000003")));
+    let error = the_error(&f.moved([1.0, 1.0]));
+    assert_eq!(
+        (error.message(), error.cause()),
+        ("no drag is open in session s1", Some(QUEUED))
+    );
+    f.sketches.release();
+    answer(check).result.unwrap();
+    answer(begin).result.unwrap();
+    assert!(f.drag().is_some());
+}
+
+#[test]
+fn a_release_run_before_a_begin_sent_after_it_is_told_the_begin_may_be_queued() {
+    // A release and then a begin, sent while a check holds the queue: the release runs
+    // first, with no drag open, and is told a begin is on its way; once that begin has
+    // answered, a release ends its drag, and the next is told plainly.
+    let f = opened(&bracket());
+    f.sketches.hold();
+    let check = f.sessions.check(
+        &s1(),
+        silico_core::command::CheckModel::Current { fresh: false },
+    );
+    assert!(f.sketches.wait_held(HANG));
+    let end = f.sessions.drag_end(&s1(), None);
+    let begin = f
+        .sessions
+        .drag_begin(&s1(), fid("s0000001"), DragGrab::Point(eid("pa000003")));
+    f.sketches.release();
+    answer(check).result.unwrap();
+    let error = the_error(&answer(end));
+    assert_eq!(
+        (error.message(), error.cause()),
+        ("no drag is open in session s1", Some(QUEUED))
+    );
+    answer(begin).result.unwrap();
+    f.ended(None).result.unwrap();
+    let error = the_error(&f.ended(None));
+    assert_eq!(
+        (error.message(), error.cause()),
+        ("no drag is open in session s1", Some(ENDED))
+    );
+}
+
+#[test]
+fn a_drag_whose_thread_panicked_says_its_end_failed_in_the_sessions_logs_as_the_next_begin_ends_it()
+ {
+    use silico_core::command::logs::{LogLevel, LogQuery};
+    use tracing_subscriber::layer::SubscriberExt;
+    // Alone in its process (nextest runs each test in its own): the core's log layer.
+    let _ = tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(silico_core::command::logs::layer()),
+    );
+    let f = opened(&freed_profile());
+    f.begin_point("pa000003").result.unwrap();
+    // A bug in the solver under a move: the drag's thread unwinds, the move failed and the
+    // drag closed, its end's answer the panic's.
+    f.sketches
+        .answer_moves(|_, _| panic!("a bug in the sketch solver"));
+    let error = the_error(&f.moved([62.5, 7.0]));
+    assert_eq!(
+        (error.code(), error.message()),
+        (
+            ErrorCode::Internal,
+            "the drag's thread panicked under its solver"
+        )
+    );
+    f.sketches
+        .answer_moves(|begin, to| Ok(FakeSketches::dragged(begin, to)));
+    // The next begin takes the closed drag's place, ending it: its end failed, as the
+    // session's logs say, at warn, under the end's own span.
+    f.begin_point("pa000003").result.unwrap();
+    let logs = f
+        .sessions
+        .read_logs(
+            &s1(),
+            &LogQuery {
+                level: LogLevel::Warn,
+                feature: None,
+                after: None,
+                limit: 1000,
+            },
+        )
+        .result
+        .unwrap();
+    let ends: Vec<&Vec<String>> = logs
+        .events
+        .iter()
+        .filter(|e| e.message.starts_with("the drag's end failed"))
+        .map(|e| &e.spans)
+        .collect();
+    assert_eq!(ends.len(), 1, "{:?}", logs.events);
+    assert_eq!(
+        ends[0].last().map(String::as_str),
+        Some("drag_ended sketch=s0000001"),
+        "{:?}",
+        ends[0]
+    );
+}

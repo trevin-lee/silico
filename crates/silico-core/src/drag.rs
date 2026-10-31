@@ -1010,14 +1010,18 @@ fn no_drag(why: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Begun, MoveOutcome, begin, lock};
+    use super::{Begun, MoveOutcome, begin, lock, off_the_edge};
     use crate::fake::FakeSketches;
     use crate::recompute::SketchSolvers;
-    use crate::sketch::SketchSolver;
+    use crate::Error;
+    use crate::sketch::{DragStarted, SketchSolver, SolveStopper};
     use silico_protocol::{
-        Algorithm, DragBegin, Geometry, PointOf, PointValues, SketchGeometry, SketchSystem, Value,
+        Algorithm, DragBegin, Geometry, Moved, PointOf, PointValues, SketchGeometry, SketchSystem,
+        Solved, Value,
     };
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     fn a_point() -> DragBegin {
         DragBegin {
@@ -1033,6 +1037,182 @@ mod tests {
             },
             dragged: silico_protocol::Dragged::Point(PointOf::Point(Geometry(0))),
         }
+    }
+
+    /// The point of values `x` and `y` of a system.
+    fn values_at(x: u32, y: u32) -> PointValues {
+        PointValues {
+            x: Value(x),
+            y: Value(y),
+        }
+    }
+
+    /// A system of one curve, `geometry` 0, over `values`.
+    fn one_curve(values: Vec<f64>, curve: SketchGeometry) -> SketchSystem {
+        SketchSystem {
+            values,
+            unknowns: vec![],
+            geometry: vec![curve],
+            constraints: vec![],
+            algorithms: vec![Algorithm::DogLeg],
+        }
+    }
+
+    /// How far `press` is from the line from `a` to `b`.
+    fn off_line(a: [f64; 2], b: [f64; 2], press: [f64; 2]) -> f64 {
+        let system = one_curve(
+            vec![a[0], a[1], b[0], b[1]],
+            SketchGeometry::Line {
+                start: values_at(0, 1),
+                end: values_at(2, 3),
+            },
+        );
+        off_the_edge(&system, Geometry(0), press).unwrap()
+    }
+
+    /// `off` is `by hand` to within a few ulps: for a line along no axis, whose unit direction
+    /// isn't exact in binary.
+    fn about(off: f64, by_hand: f64) {
+        assert!(
+            (off - by_hand).abs() <= 4.0 * f64::EPSILON * by_hand,
+            "{off} for {by_hand}"
+        );
+    }
+
+    #[test]
+    fn a_press_beside_a_line_is_measured_across_it_and_one_past_an_end_from_that_end() {
+        // Up the y axis, from (0, 0) to (0, 4). (1, 3) is beside it, three quarters along
+        // (its foot (0, 3)): 1 across. Its foot's place along the line is the press's
+        // projection over the length squared, 12 / 16: reckoned over 4 + 4, 12 / 8, it would
+        // lie past the end, and be √2 from (0, 4).
+        assert_eq!(off_line([0.0, 0.0], [0.0, 4.0], [1.0, 3.0]), 1.0);
+        // On the line's own axis, past its end and before its start: from the nearer end, 1
+        // and 2. Projected as 0 + (5 + 4) = 9 over 16, or (-2 + 4) = 2 over 16, each would
+        // fall on the segment and read 0.
+        assert_eq!(off_line([0.0, 0.0], [0.0, 4.0], [0.0, 5.0]), 1.0);
+        assert_eq!(off_line([0.0, 0.0], [0.0, 4.0], [0.0, -2.0]), 2.0);
+        // A diagonal, from (0, 0) to (3, 4), of length 5 and direction (0.6, 0.8). (5.5, -1)
+        // is its midpoint (1.5, 2) and 5 along its normal (0.8, -0.6): 5 across it,
+        // |0.6 × -1 - 0.8 × 5.5|. Not 0.6 × -1 + 0.8 × 5.5 = 3.8, nor with the direction's y
+        // as 4 % 5 or 4 × 5.
+        about(off_line([0.0, 0.0], [3.0, 4.0], [5.5, -1.0]), 5.0);
+        // Past its ends along it: (6, 8) is 5 from (3, 4), and (-3, -4) 5 from (0, 0).
+        assert_eq!(off_line([0.0, 0.0], [3.0, 4.0], [6.0, 8.0]), 5.0);
+        assert_eq!(off_line([0.0, 0.0], [3.0, 4.0], [-3.0, -4.0]), 5.0);
+    }
+
+    #[test]
+    fn a_press_by_an_arc_away_from_the_origin_is_on_its_sweep_by_its_angle_about_its_center() {
+        // The quarter of radius 5 about (10, 20) from angle π to 3π/2: from (5, 20) to
+        // (10, 15).
+        let system = one_curve(
+            vec![
+                10.0,
+                20.0,
+                5.0,
+                std::f64::consts::PI,
+                3.0 * std::f64::consts::FRAC_PI_2,
+                5.0,
+                20.0,
+                10.0,
+                15.0,
+            ],
+            SketchGeometry::Arc {
+                center: values_at(0, 1),
+                radius: Value(2),
+                start_angle: Value(3),
+                end_angle: Value(4),
+                start: values_at(5, 6),
+                end: values_at(7, 8),
+            },
+        );
+        let off = |press: [f64; 2]| off_the_edge(&system, Geometry(0), press).unwrap();
+        // (4, 12) is (-6, -8) from the center, at 10, beyond the arc's middle (at angle
+        // π + 0.93, within the sweep): 10 - 5 off its circle. Its angle reckoned from the
+        // press's y plus the center's (atan2(32, -6)), or its x plus the center's
+        // (atan2(-8, 14)) or over it (atan2(-8, 0.4)), lies off the sweep, and the press
+        // would be measured from its nearer end instead, √45 from (10, 15).
+        assert_eq!(off([4.0, 12.0]), 5.0);
+        // (13, 11) is (3, -9) from the center, at angle -1.25, past the sweep's end: from
+        // its nearer end, (10, 15), 5, not from its circle (√90 - 5).
+        assert_eq!(off([13.0, 11.0]), 5.0);
+        // A circle about (10, 20) of radius 5: (4, 12) is 10 - 5 from it.
+        let circle = one_curve(
+            vec![10.0, 20.0, 5.0],
+            SketchGeometry::Circle {
+                center: values_at(0, 1),
+                radius: Value(2),
+            },
+        );
+        assert_eq!(off_the_edge(&circle, Geometry(0), [4.0, 12.0]), Some(5.0));
+    }
+
+    /// The fake, but its drag's requests stopped only in name: each stop counted, the move
+    /// solving left as it is (held, if the fake holds it), so a test can stop it again
+    /// while it still runs.
+    struct CountedStops {
+        fake: FakeSketches,
+        stops: Arc<AtomicUsize>,
+    }
+
+    impl SketchSolver for CountedStops {
+        fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
+            self.fake.solve(system)
+        }
+
+        fn session_stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+            let stops = Arc::clone(&self.stops);
+            Ok(Some(SolveStopper::new(move || {
+                stops.fetch_add(1, Ordering::SeqCst);
+            })))
+        }
+
+        fn drag_begin(&mut self, begin: DragBegin) -> Result<DragStarted, Error> {
+            self.fake.drag_begin(begin)
+        }
+
+        fn drag_move(&mut self, to: [f64; 2], timeout: Duration) -> Result<Moved, Error> {
+            self.fake.drag_move(to, timeout)
+        }
+
+        fn drag_end(&mut self) -> Result<(), Error> {
+            self.fake.drag_end()
+        }
+    }
+
+    #[test]
+    fn a_drag_abandoned_again_while_its_move_still_solves_stops_that_move_once() {
+        // A cancel of `drag_move` stops each of the drag's moves unanswered, each of which
+        // abandons the drag: the move solving and the one waiting abandon it twice. The
+        // first stops the move solving and ends the drag; the second, the drag already
+        // ending, stops nothing again, though the move hasn't yet answered.
+        let fake = FakeSketches::new();
+        let stops = Arc::new(AtomicUsize::new(0));
+        let solvers = {
+            let (fake, stops) = (fake.clone(), Arc::clone(&stops));
+            SketchSolvers::starting(move || {
+                Ok(Box::new(CountedStops {
+                    fake: fake.clone(),
+                    stops: Arc::clone(&stops),
+                }) as Box<dyn SketchSolver>)
+            })
+        };
+        let Begun::Open { session, .. } = begin(&solvers, a_point()).unwrap() else {
+            panic!("conflicting")
+        };
+        fake.hold();
+        let moving = session.move_to([1.0, 1.0]).unwrap();
+        assert!(fake.wait_held(Duration::from_secs(60)));
+        let waiting = session.move_to([2.0, 2.0]).unwrap();
+        session.abandon();
+        session.abandon();
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        fake.release();
+        assert_eq!(moving.wait(), MoveOutcome::Cancelled);
+        assert_eq!(waiting.wait(), MoveOutcome::Dropped);
+        assert!(!session.is_open());
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        assert_eq!(session.end(None).unwrap().kept, super::Kept::Begin);
     }
 
     #[test]

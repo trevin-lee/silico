@@ -231,6 +231,10 @@ struct Session<C: Kernel + 'static> {
     /// this crate's tests only.
     #[cfg(test)]
     watching: Gate,
+    /// Where `drag_begin` waits once its drag has begun and the begin has settled, before
+    /// the session holds the drag, in this crate's tests only.
+    #[cfg(test)]
+    dragged: Gate,
 }
 
 /// A session's own reloads (A3): one queued, and what the last refused, if it was refused

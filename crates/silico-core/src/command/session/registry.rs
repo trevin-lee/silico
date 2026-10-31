@@ -307,6 +307,8 @@ pub(super) fn start<P: Clients + 'static>(
             writing: super::Gate::default(),
             #[cfg(test)]
             watching: super::Gate::default(),
+            #[cfg(test)]
+            dragged: super::Gate::default(),
         });
         // Open from here: the commands sent while it opened are in its queue, ahead of any
         // sent after, and its published reads sent then start now, in the order sent,

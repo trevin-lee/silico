@@ -83,6 +83,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         writing: Gate::default(),
         reloading: Gate::default(),
         watching: Gate::default(),
+        dragged: Gate::default(),
     });
     (session, jobs)
 }
@@ -4499,6 +4500,7 @@ fn asked_without_pause_through_many_commits_the_sessions_own_saves_never_read_as
 }
 
 mod disk_reload;
+mod drag;
 mod timeline;
 mod undo;
 mod undo_adversarial;
