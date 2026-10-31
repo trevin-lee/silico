@@ -2345,3 +2345,166 @@ fn ctrl_y_held_down_redoes_once_and_says_nothing() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn file_close_is_off_with_no_document_open() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(h.get_by_label("Close").accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_tab_shown_is_the_one_selected_in_the_app_bar() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let other = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(other.to_str().unwrap(), false);
+    step_until(&mut h, "two tabs", |h| h.state().tabs().len() == 2);
+    let selected = |h: &AppHarness, name: &str| {
+        h.get_by_role_and_label(Role::Button, name)
+            .accesskit_node()
+            .toggled()
+            .map(|toggled| toggled == eframe::egui::accesskit::Toggled::True)
+    };
+    step_until(&mut h, "the newest shown", |h| {
+        selected(h, "other.silico") == Some(true)
+    });
+    assert_eq!(selected(&h, "example.silico"), Some(false));
+    h.get_by_role_and_label(Role::Button, "example.silico")
+        .click();
+    step_until(&mut h, "the first shown", |h| {
+        selected(h, "example.silico") == Some(true)
+    });
+    assert_eq!(selected(&h, "other.silico"), Some(false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn open_with_no_path_opens_nothing_and_keeps_asking() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    h.get_by_label("File").click();
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Open…").click();
+    step_until(&mut h, "the question", |h| anywhere(h, "Open document"));
+    h.get_by_role_and_label(Role::Button, "Open")
+        .click_accesskit();
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, "Open document"));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_feature_selected_is_the_one_selected_in_the_timeline_and_the_browser() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Pin");
+    let selected = |h: &AppHarness, pane: &str, name: &str| {
+        h.get_by_role_and_label(Role::Pane, pane)
+            .get_by_label(name)
+            .accesskit_node()
+            .toggled()
+            .map(|toggled| toggled == eframe::egui::accesskit::Toggled::True)
+    };
+    step_until(&mut h, "Pin selected", |h| {
+        selected(h, "Timeline", "Pin") == Some(true)
+    });
+    assert_eq!(selected(&h, "Timeline", "Hole"), Some(false));
+    assert_eq!(selected(&h, "Timeline", "Block"), Some(false));
+    // The browser lists Hole, the one body, as selectable: not selected while Pin is.
+    assert_eq!(selected(&h, "Browser", "Hole"), Some(false));
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Hole")
+        .click();
+    step_until(&mut h, "Hole selected", |h| {
+        selected(h, "Browser", "Hole") == Some(true)
+            && selected(h, "Timeline", "Hole") == Some(true)
+    });
+    assert_eq!(selected(&h, "Timeline", "Pin"), Some(false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_name_past_the_basic_plane_is_saved_as_typed() {
+    // A character past U+FFFF, which JSON writes as itself (no escape of four digits
+    // could hold it): the edit is made, and the document holds it.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "\u{1F529}");
+    step_until(&mut h, "the edit applied", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "\u{1F529}Pin")
+    });
+    let id = h.state().tabs()[0].id;
+    let text = f.sessions.text(&id, None).wait().result.unwrap().text;
+    assert!(text.contains("\"name\": \"\u{1F529}Pin\""), "{text}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_quit_asked_while_a_save_waits_queued_keeps_that_save_and_closes() {
+    // A keystroke in flight behind the session's held queue, then Ctrl+S (queued behind
+    // it), then a quit's Save all: the save asked last takes the close too, so once both
+    // edits are saved the window closes.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the transaction begun", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "y");
+    let typed = name_field(&h).value().unwrap();
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step(&mut h);
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Save all")
+        .click_accesskit();
+    step(&mut h);
+    hold.release();
+    let _ = check.wait();
+    step_until_event(&mut h, |h| told(h, true));
+    assert_eq!(names_in(&path), ["Block", typed.as_str(), "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_one_letter_name_emptied_is_refused_and_the_field_keeps_it_empty() {
+    // "P" emptied with one Delete: the only text typed is "", refused; the document's
+    // name, "P", unchanged and never typed, so the field keeps "" because the name it
+    // shows from is the one it started from.
+    let f = fixture();
+    let one = EXAMPLE.replace(r#""name": "Pin""#, r#""name": "P""#);
+    let (mut h, _) = f.opened("example.silico", &one);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "P"));
+    select(&mut h, "P");
+    name_field(&h).focus();
+    step(&mut h);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    step_until(&mut h, "the empty name refused", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].message.is_some()
+    });
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(name_field(&h).value().as_deref(), Some(""));
+    assert_eq!(never_waits::waits(), 0);
+}

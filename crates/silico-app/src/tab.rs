@@ -316,10 +316,8 @@ impl Tab {
     /// queued or running among them). Only a tab with
     /// none of these is closed without asking (rolled back first if a transaction is open).
     pub fn unsaved(&self) -> bool {
-        self.changed()
-            || self.beginning
-            || !self.edits.idle()
-            || (self.transaction && !self.quiet())
+        // A `begin` under way goes with the edit it was sent for (`edits.idle` is false).
+        self.changed() || !self.edits.idle() || (self.transaction && !self.quiet())
     }
 
     /// Whether a save or a revert that was to close it was refused since this was last asked.
@@ -779,20 +777,11 @@ impl Tab {
             return;
         };
         let asked = (timeline.revision, timeline.model);
-        let gate = timeline.problems > 0;
-        let opened =
-            self.selected.as_ref().is_some_and(|selected| {
-                timeline.features.iter().flatten().any(|entry| {
-                    &entry.id == selected && (entry.problems > 0 || entry.warnings > 0)
-                })
-            });
-        if self.check_read.is_some() || self.checked == Some(asked) || !(gate || opened) {
+        if self.check_read.is_some() || self.checked == Some(asked) {
             return;
         }
-        let model = if gate || timeline.model.is_none() {
-            CheckModel::Current { fresh: false }
-        } else {
-            CheckModel::Published
+        let Some((gate, model)) = check_wanted(timeline, self.selected.as_ref()) else {
+            return;
         };
         self.checked = Some(asked);
         self.check_read = Some((gate, sessions.check(&self.id, model)));
@@ -828,6 +817,33 @@ impl Tab {
         self.said = by_feature;
         self.document_problems = document;
     }
+}
+
+/// Whether a `check` of `timeline` is wanted, with `selected` the feature selected: for a
+/// document the gate refused (`gate`, true), of the current model, its problems all the
+/// document's; or for a selected feature `timeline` marks, of the published model (the
+/// current, while none is published). None for neither.
+fn check_wanted(
+    timeline: &TimelineAnswer,
+    selected: Option<&FeatureId>,
+) -> Option<(bool, CheckModel)> {
+    let gate = timeline.problems > 0;
+    let opened = selected.is_some_and(|selected| {
+        timeline
+            .features
+            .iter()
+            .flatten()
+            .any(|entry| &entry.id == selected && (entry.problems > 0 || entry.warnings > 0))
+    });
+    if !(gate || opened) {
+        return None;
+    }
+    let model = if gate || timeline.model.is_none() {
+        CheckModel::Current { fresh: false }
+    } else {
+        CheckModel::Published
+    };
+    Some((gate, model))
 }
 
 /// Whether `timeline` marks anything: the gate's problems, or a feature's problems or
@@ -992,5 +1008,176 @@ mod tests {
         tab.status = Some(counted(three, true, 1, 1));
         tab.status_revision = three;
         assert!(tab.undoable() && tab.redoable());
+    }
+
+    fn entry(id: &str, problems: u64, warnings: u64) -> Entry {
+        Entry {
+            id: FeatureId::new(id).unwrap(),
+            kind: "box",
+            name: id.to_owned(),
+            suppressed: false,
+            inputs: Vec::new(),
+            health: Health::Healthy,
+            problems,
+            warnings,
+        }
+    }
+
+    fn timeline(problems: u64, model: Option<Revision>, features: Vec<Entry>) -> TimelineAnswer {
+        TimelineAnswer {
+            revision: Revision::OPENED,
+            model,
+            problems,
+            features: Some(features),
+            bodies: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_timeline_is_marked_by_the_gates_problems_or_any_features_problems_or_warnings() {
+        let clean = || vec![entry("a0000001", 0, 0), entry("b0000001", 0, 0)];
+        assert!(!marked(&timeline(0, None, clean())));
+        assert!(marked(&timeline(1, None, clean())));
+        assert!(marked(&timeline(
+            0,
+            None,
+            vec![entry("a0000001", 0, 0), entry("b0000001", 1, 0)]
+        )));
+        assert!(marked(&timeline(
+            0,
+            None,
+            vec![entry("a0000001", 0, 1), entry("b0000001", 0, 0)]
+        )));
+        assert!(!marked(&TimelineAnswer {
+            features: None,
+            ..timeline(0, None, Vec::new())
+        }));
+    }
+
+    #[test]
+    fn a_check_is_wanted_for_a_refused_document_or_a_selected_marked_feature() {
+        let one = Revision::OPENED;
+        let a = FeatureId::new("a0000001").unwrap();
+        let b = FeatureId::new("b0000001").unwrap();
+        let features = || {
+            vec![
+                entry("a0000001", 0, 0),
+                entry("b0000001", 0, 2),
+                entry("c0000001", 3, 0),
+            ]
+        };
+        // Nothing refused, nothing selected, or a healthy feature selected: none.
+        assert_eq!(
+            check_wanted(&timeline(0, Some(one), features()), None),
+            None
+        );
+        assert_eq!(
+            check_wanted(&timeline(0, Some(one), features()), Some(&a)),
+            None
+        );
+        // A selected feature with warnings, or problems: of the published model.
+        assert_eq!(
+            check_wanted(&timeline(0, Some(one), features()), Some(&b)),
+            Some((false, CheckModel::Published))
+        );
+        let c = FeatureId::new("c0000001").unwrap();
+        assert_eq!(
+            check_wanted(&timeline(0, Some(one), features()), Some(&c)),
+            Some((false, CheckModel::Published))
+        );
+        // None published: of the current one.
+        assert_eq!(
+            check_wanted(&timeline(0, None, features()), Some(&b)),
+            Some((false, CheckModel::Current { fresh: false }))
+        );
+        // A document the gate refused: the current model, whatever is selected.
+        assert_eq!(
+            check_wanted(&timeline(2, Some(one), features()), None),
+            Some((true, CheckModel::Current { fresh: false }))
+        );
+        assert_eq!(
+            check_wanted(&timeline(2, Some(one), features()), Some(&a)),
+            Some((true, CheckModel::Current { fresh: false }))
+        );
+    }
+
+    #[test]
+    fn a_timeline_unmarked_drops_the_features_text_and_one_the_gate_took_the_documents() {
+        let said = || Said {
+            message: "m".to_owned(),
+            suggestion: None,
+        };
+        let mut tab = tab();
+        tab.said.insert("a0000001".to_owned(), said());
+        tab.document_problems.push(said());
+        // Marked by a feature's warning, the gate taking it: the feature's text kept, the
+        // document's dropped.
+        tab.took_timeline(timeline(0, None, vec![entry("a0000001", 0, 1)]));
+        assert_eq!(tab.said.len(), 1);
+        assert!(tab.document_problems.is_empty());
+        // Refused by the gate: both kept.
+        tab.document_problems.push(said());
+        tab.took_timeline(timeline(1, None, vec![entry("a0000001", 0, 0)]));
+        assert_eq!(tab.said.len(), 1);
+        assert_eq!(tab.document_problems.len(), 1);
+        // Nothing marked: the feature's text dropped too.
+        tab.took_timeline(timeline(0, None, vec![entry("a0000001", 0, 0)]));
+        assert!(tab.said.is_empty());
+        assert!(tab.document_problems.is_empty());
+    }
+
+    #[test]
+    fn an_answer_moves_the_tabs_revision_and_transaction_forward_never_back() {
+        let info = |revision: u64, transaction: bool| silico_core::command::SessionInfo {
+            id: SessionId::parse("s1").unwrap(),
+            path: "a.silico".to_owned(),
+            revision: Revision::from_number(revision).unwrap(),
+            transaction,
+            reloaded: false,
+        };
+        let response = |revision: u64, transaction: bool| Response::<()> {
+            session: Some(info(revision, transaction)),
+            model: None,
+            result: Ok(()),
+        };
+        let mut tab = tab();
+        tab.transaction = false;
+        tab.took_session(&response(3, true));
+        assert_eq!(tab.revision.number(), 3);
+        assert!(tab.transaction);
+        // An older answer taken after: nothing moves back.
+        tab.took_session(&response(2, false));
+        assert_eq!(tab.revision.number(), 3);
+        assert!(tab.transaction);
+    }
+
+    #[test]
+    fn a_check_is_read_once_for_each_revision_and_model() {
+        // A selected feature with a warning: one check read; once it has answered, none
+        // again for the same timeline's revision and model.
+        let sessions = Arc::new(Sessions::with_cache_opener(
+            Arc::new(silico_core::fake::FakeKernel::new(1).unwrap()),
+            |dir| silico_core::cache::Cache::unsealed(dir),
+        ));
+        let mut tab = tab();
+        tab.timeline = Some(timeline(
+            0,
+            Some(Revision::OPENED),
+            vec![entry("a0000001", 0, 1)],
+        ));
+        tab.selected = Some(FeatureId::new("a0000001").unwrap());
+        tab.read_check(&sessions);
+        assert!(tab.check_read.is_some());
+        // Answered and taken.
+        tab.check_read = None;
+        tab.read_check(&sessions);
+        assert!(tab.check_read.is_none());
+        // A new revision's timeline: read again.
+        tab.timeline = Some(TimelineAnswer {
+            revision: Revision::from_number(2).unwrap(),
+            ..timeline(0, Some(Revision::OPENED), vec![entry("a0000001", 0, 1)])
+        });
+        tab.read_check(&sessions);
+        assert!(tab.check_read.is_some());
     }
 }
