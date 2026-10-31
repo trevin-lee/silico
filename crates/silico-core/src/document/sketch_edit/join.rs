@@ -507,14 +507,19 @@ fn one_arc(sketch: &Sketch, [center, start, end]: [&ElementId; 3], swept: &[(f64
 }
 
 /// `form` with the two curves of a constraint whose order means nothing (two lines parallel
-/// or perpendicular, two curves equal) in one order, written out, so a repeat in the other
-/// order is found. Only a constraint naming a curve is ever re-pointed, so only these, of
-/// the forms whose two members may be swapped, can come to repeat another (the points'
-/// forms, `horizontal_points`, `vertical_points`, and `distance`, never change).
+/// or perpendicular, two curves equal, two curves edge-tangent, whose side is the line's,
+/// or outside or inside, whichever is named first) in one order, written out, so a repeat
+/// in the other order is found. Only a constraint naming a curve is ever re-pointed, so
+/// only these, of the forms whose two members may be swapped, can come to repeat another
+/// (the points' forms, `horizontal_points`, `vertical_points`, and `distance`, never
+/// change).
 fn unordered(form: &Form) -> String {
     let mut form = form.clone();
     match &mut form {
-        Form::Parallel { a, b } | Form::Perpendicular { a, b } | Form::Equal { a, b } => {
+        Form::Parallel { a, b }
+        | Form::Perpendicular { a, b }
+        | Form::Equal { a, b }
+        | Form::Tangent { a, b, .. } => {
             if b < a {
                 std::mem::swap(a, b);
             }

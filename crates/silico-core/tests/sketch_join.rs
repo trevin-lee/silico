@@ -1095,6 +1095,50 @@ fn a_perpendicular_either_way_round_repeats_once_re_pointed_and_is_dropped() {
 }
 
 #[test]
+fn an_arcs_edge_tangent_either_way_round_repeats_once_re_pointed_and_is_dropped() {
+    // The arc pieces about c0 (1, 2) of radius 5, a0 from r0 (4, 6) to n0 (−4, 2), b1 on to
+    // r1 (1, −3), and a circle g9 of radius 5 about z9 (11, 2), touching them outside: k0
+    // tangent a0, g9 outside and k1 tangent g9, b1 outside, the same pair the other way
+    // round once b1 is a0 (a tangent's side is the line's, or outside or inside, whichever
+    // curve is named first): k1 removed, k0 kept as written.
+    let before = doc(
+        &[
+            point("c0000000", 1.0, 2.0),
+            point("r0000000", 4.0, 6.0),
+            point("n0000000", -4.0, 2.0),
+            point("r0000001", 1.0, -3.0),
+            point("z0000009", 11.0, 2.0),
+        ]
+        .join(", "),
+        "",
+        &circle("g0000009", "z0000009", 5.0),
+        &[
+            arc("a0000000", "c0000000", "r0000000", "n0000000"),
+            arc("b1000000", "c0000000", "n0000000", "r0000001"),
+        ]
+        .join(", "),
+        r#"{"id": "k0000000", "type": "tangent", "a": "a0000000", "b": "g0000009", "side": "outside"}, {"id": "k0000001", "type": "tangent", "a": "g0000009", "b": "b1000000", "side": "outside"}"#,
+    );
+    let joined = join(sketch_of(&before), &id("n0000000")).unwrap();
+    let after = with(&before, &joined.edited.sketch);
+    let kept: Vec<&str> = sketch_of(&after)
+        .constraints
+        .iter()
+        .map(|c| c.id.as_str())
+        .collect();
+    assert_eq!(kept, ["k0000000"]);
+    assert_eq!(
+        form(sketch_of(&after), "k0000000"),
+        form(sketch_of(&before), "k0000000")
+    );
+    assert_eq!(joined.edited.modified, ids(&["a0000000"]));
+    assert_eq!(
+        joined.edited.removed,
+        ids(&["n0000000", "b1000000", "k0000001"])
+    );
+}
+
+#[test]
 fn an_arcs_equal_either_way_round_repeats_once_re_pointed_and_is_dropped() {
     // The arc pieces about c0 (1, 2), a0 from r0 (4, 6) to n0 (−4, 2), b1 on to r1
     // (1, −3), and a circle g9 of radius 5 about z9 (20, 2): k0 equal a0, g9 and k1 equal
