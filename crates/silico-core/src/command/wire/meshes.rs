@@ -646,4 +646,140 @@ mod tests {
             assert_eq!(written(v).parse::<f32>().unwrap().to_bits(), v.to_bits());
         }
     }
+
+    /// The box 40 × 20 × 10 at the origin.
+    const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
+
+    /// The box's display meshes for `request`, on a fake kernel whose meshes have more
+    /// triangles the finer they're asked (a quarter of a millimetre over the deflection, a
+    /// face: 8 at 2⁻⁵, 4 at 2⁻⁴), so a coarser level answers in fewer bytes.
+    fn box_read(request: &Meshes) -> Response<MeshesRead> {
+        use crate::command::meshes::{MeshesOn, meshes as read};
+        use crate::fake::FakeKernel;
+        use crate::meshes::{MESH_CACHE_BYTES, MeshCache};
+        use crate::recompute::Recompute;
+        use silico_protocol::{MeshAt, Op, Reply};
+        let kernel = Arc::new(FakeKernel::new(1).unwrap());
+        kernel.answer_instead(|op| {
+            let Op::Tessellate {
+                shape, deflection, ..
+            } = op
+            else {
+                return None;
+            };
+            let counts = FakeKernel::counts(shape)?;
+            let each = (0.25 / deflection).round().max(1.0) as u32;
+            let faces = counts.faces as usize;
+            let edges = counts.edges as usize;
+            Some(Reply::MeshAt(MeshAt {
+                mesh: Mesh {
+                    positions: vec![[0.0, 0.0, 0.0], [40.0, 0.0, 0.0], [0.0, 20.0, 10.0]],
+                    normals: vec![[0.0, 0.0, 1.0]; 3],
+                    triangles: vec![[0, 1, 2]; faces * each as usize],
+                    face_triangles: vec![each; faces],
+                    valid: None,
+                    edge_points: vec![[0.0; 3]; 2 * edges],
+                    edge_point_counts: vec![2; edges],
+                },
+                deflection: *deflection,
+            }))
+        });
+        let engine = Recompute::new(Arc::clone(&kernel));
+        let model = crate::command::rebuild(&engine, crate::command::gate(BOX.as_bytes()).unwrap())
+            .unwrap()
+            .unwrap();
+        let cache = MeshCache::new(MESH_CACHE_BYTES);
+        Response {
+            session: None,
+            model: None,
+            result: read(
+                &model,
+                request,
+                &MeshesOn {
+                    kernel: &kernel,
+                    meshes: &cache,
+                },
+            ),
+        }
+    }
+
+    /// The response's text, however long.
+    fn whole(response: &Response<MeshesRead>) -> String {
+        let (ok, text) = answer_within(response, Layout::OneLine, usize::MAX);
+        assert!(ok, "{text}");
+        text
+    }
+
+    #[test]
+    fn halving_the_side_a_body_too_long_names_answers_it() {
+        // A camera: the front, 80 mm high over 1,000 pixels, 2⁻⁵, refused naming `height`;
+        // halved, 2⁻⁴, half the triangles, answered. A named view of the box from the front,
+        // its 40 mm width binding the fit on a square image: refused naming `width`; halved,
+        // a coarser level, answered. The limit is the halved answer's own length, so the
+        // first is past it and the second just within.
+        let camera = Camera {
+            projection: Projection::Orthographic { view_height: 80.0 },
+            eye: [20.0, -100.0, 5.0],
+            target: [20.0, 10.0, 5.0],
+            up: [0.0, 0.0, 1.0],
+        };
+        let asked = |view: Option<crate::views::NamedView>, camera: Option<Camera>| Meshes {
+            view,
+            camera,
+            width: 1000,
+            height: 1000,
+            features: None,
+            held: vec![],
+        };
+        for (request, side) in [
+            (asked(None, Some(camera)), "height"),
+            (asked(Some(crate::views::NamedView::Front), None), "width"),
+        ] {
+            let fine = box_read(&request);
+            // Followed: the side the refusal names, halved.
+            let refusal_names = |limit: usize| {
+                let (ok, text) = answer_within(&fine, Layout::OneLine, limit);
+                assert!(!ok, "{side}: {text}");
+                let refused: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let e = &refused["errors"][0];
+                assert_eq!(e["feature"], "k7f2qx3m", "{side}");
+                assert_eq!(
+                    e["suggestion"],
+                    format!("give a smaller {side}: it meshes the body coarser")
+                );
+                e["parameter"].as_str().unwrap().to_owned()
+            };
+            // The limit: what the expected side, halved, answers in.
+            let mut halved = request.clone();
+            match side {
+                "height" => halved.height /= 2,
+                _ => halved.width /= 2,
+            }
+            let coarse = box_read(&halved);
+            let limit = whole(&coarse).len();
+            assert!(whole(&fine).len() > limit, "{side}");
+            let Ok(fine_read) = &fine.result else { panic!() };
+            let Ok(coarse_read) = &coarse.result else { panic!() };
+            assert_eq!(
+                coarse_read.bodies[0].level,
+                2.0 * fine_read.bodies[0].level,
+                "{side}"
+            );
+            // The refusal names that side; following it, the same body is answered whole.
+            let named = refusal_names(limit);
+            assert_eq!(named, side);
+            let mut followed = request.clone();
+            match named.as_str() {
+                "height" => followed.height /= 2,
+                "width" => followed.width /= 2,
+                other => panic!("{other}"),
+            }
+            let answered = box_read(&followed);
+            let (ok, text) = answer_within(&answered, Layout::OneLine, limit);
+            assert!(ok, "{side}: {text}");
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["result"]["bodies"][0]["feature"], "k7f2qx3m");
+            assert_eq!(value["result"]["bodies"][0]["held"], false);
+        }
+    }
 }
