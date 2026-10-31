@@ -5,12 +5,15 @@
 //! frame after anything changes, and with nothing pending one frame a second compares the
 //! files on disk.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, RichText, Ui};
-use silico_core::command::{Opened, RebuildState, Running, RunningCommand, SessionId, Sessions};
+use silico_core::command::{
+    Opened, RebuildState, Response, Running, RunningCommand, SessionId, Sessions,
+};
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
 
@@ -29,31 +32,6 @@ pub const IDLE_MARGIN: Duration = Duration::from_millis(100);
 /// The delay of the frame the app asks for when nothing it waits on has answered: one each
 /// [`DISK_CHECK_INTERVAL`], whose `status` starts the next comparison (section 3, *Idle*).
 pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN);
-
-/// Opens, each by the path it was asked with, in the order asked.
-type ByPath<T> = Vec<(String, T)>;
-
-/// The opens under way that have answered, taken in the order they were asked, each waiting
-/// for those before it, and those still to take: sessions open on threads of their own, so
-/// the order they answer in isn't the person's, and a tab's place is the order it was opened.
-fn in_order<R, T>(
-    opening: ByPath<R>,
-    mut try_take: impl FnMut(R) -> Result<T, R>,
-) -> (ByPath<T>, ByPath<R>) {
-    let mut answered = Vec::new();
-    let mut waiting = Vec::new();
-    for (path, running) in opening {
-        if !waiting.is_empty() {
-            waiting.push((path, running));
-            continue;
-        }
-        match try_take(running) {
-            Ok(answer) => answered.push((path, answer)),
-            Err(running) => waiting.push((path, running)),
-        }
-    }
-    (answered, waiting)
-}
 
 /// Whether Enter, pressed this frame, is an open dialog's OK, taking it if so: while typing
 /// in a field or with nothing focused (a focused button's or checkbox's Enter is its own
@@ -109,13 +87,32 @@ enum Asking {
     Export(SessionId),
 }
 
+/// An open under way: its number, the order it was asked in, and the path it was asked with.
+struct Opening {
+    number: u64,
+    path: String,
+    running: Running<Opened>,
+}
+
+/// An open that answered: its number, the path it was asked with, and its answer.
+type Answered = (u64, String, Response<Opened>);
+
 /// The app's state: everything the window draws, and what it's waiting for.
 pub struct App<P: Clients + 'static> {
     sessions: Arc<Sessions<P>>,
     tabs: Vec<Tab>,
     /// The tab shown, by its session.
     active: Option<SessionId>,
-    opening: Vec<(String, Running<Opened>)>,
+    opening: Vec<Opening>,
+    /// The number the next open is asked with.
+    next_open: u64,
+    /// Each tab's open number, by its session: the tabs stand in that order, the order their
+    /// opens were asked in, whatever order they answered in (each session opens on a thread
+    /// of its own).
+    open_numbers: BTreeMap<SessionId, u64>,
+    /// The highest open number of the documents opened so far: an open answering after one
+    /// asked later than it isn't shown over that one.
+    newest_opened: Option<u64>,
     asking: Option<Asking>,
     /// The Open (and New) dialog's path field, kept from the last time it was open; and
     /// Save As's, empty each time it opens.
@@ -148,6 +145,9 @@ impl<P: Clients + 'static> App<P> {
             tabs: Vec::new(),
             active: None,
             opening: Vec::new(),
+            next_open: 0,
+            open_numbers: BTreeMap::new(),
+            newest_opened: None,
             asking: None,
             open_path: String::new(),
             save_as_path: String::new(),
@@ -183,7 +183,7 @@ impl<P: Clients + 'static> App<P> {
         &self.sessions
     }
 
-    /// Each open document's tab, in the order they opened.
+    /// Each open document's tab, in the order their opens were asked in.
     pub fn tabs(&self) -> &[Tab] {
         &self.tabs
     }
@@ -196,8 +196,13 @@ impl<P: Clients + 'static> App<P> {
 
     /// Opens the document at `path`, as the Open dialog does: a tab once it has opened.
     pub fn open(&mut self, path: &str, create: bool) {
-        self.opening
-            .push((path.to_owned(), self.sessions.open(path, create)));
+        let number = self.next_open;
+        self.next_open += 1;
+        self.opening.push(Opening {
+            number,
+            path: path.to_owned(),
+            running: self.sessions.open(path, create),
+        });
     }
 
     /// One frame: every tab polled, the person's input taken, and the window drawn.
@@ -270,19 +275,23 @@ impl<P: Clients + 'static> App<P> {
 
     /// The opens under way and every tab polled; tabs whose sessions closed dropped.
     fn poll(&mut self) {
-        let (answered, opening) = in_order(std::mem::take(&mut self.opening), Running::try_take);
-        self.opening = opening;
-        for (path, response) in answered {
-            match response.result {
-                Ok(opened) => {
-                    self.tabs
-                        .push(Tab::opened(opened.session, path, &opened.problems));
-                    self.active = Some(opened.session);
-                    self.message = None;
-                }
-                Err(problems) => self.message = Some(said(&problems)),
+        let mut answered = Vec::new();
+        for Opening {
+            number,
+            path,
+            running,
+        } in std::mem::take(&mut self.opening)
+        {
+            match running.try_take() {
+                Ok(response) => answered.push((number, path, response)),
+                Err(running) => self.opening.push(Opening {
+                    number,
+                    path,
+                    running,
+                }),
             }
         }
+        self.take_opens(answered);
         for tab in &mut self.tabs {
             tab.poll(&self.sessions);
             // Asked once nothing else is: kept on the tab meanwhile.
@@ -303,9 +312,58 @@ impl<P: Clients + 'static> App<P> {
                 self.message = Some(format!("Quit stopped: {} wasn't closed", tab.name()));
             }
         }
-        self.tabs.retain(|tab| !tab.closed);
+        let open_numbers = &mut self.open_numbers;
+        self.tabs.retain(|tab| {
+            if tab.closed {
+                open_numbers.remove(&tab.id);
+            }
+            !tab.closed
+        });
         if self.active_place().is_none() {
             self.active = self.tabs.last().map(|tab| tab.id);
+        }
+    }
+
+    /// The opens that answered since the last poll, `(number, path, response)` each, in the
+    /// order they answered: the message cleared once, if any answered, then each taken, so a
+    /// refusal among them is still said after an open that answered after it.
+    fn take_opens(&mut self, answered: Vec<Answered>) {
+        if answered.is_empty() {
+            return;
+        }
+        self.message = None;
+        for (number, path, response) in answered {
+            self.take_open(number, path, response);
+        }
+    }
+
+    /// An open that answered, taken at once, whatever is still opening: its refusal said, or
+    /// its tab put after every tab whose open was asked before it, and shown unless an open
+    /// asked after it has already opened (a late answer never takes the tab shown).
+    fn take_open(&mut self, number: u64, path: String, response: Response<Opened>) {
+        let opened = match response.result {
+            Ok(opened) => opened,
+            Err(problems) => {
+                self.message = Some(said(&problems));
+                return;
+            }
+        };
+        let id = opened.session;
+        let at = self
+            .tabs
+            .iter()
+            .position(|tab| {
+                self.open_numbers
+                    .get(&tab.id)
+                    .is_some_and(|&asked| asked > number)
+            })
+            .unwrap_or(self.tabs.len());
+        self.tabs
+            .insert(at, Tab::opened(id, path, &opened.problems));
+        self.open_numbers.insert(id, number);
+        if self.newest_opened.is_none_or(|newest| number > newest) {
+            self.newest_opened = Some(number);
+            self.active = Some(id);
         }
     }
 
@@ -958,51 +1016,166 @@ impl<P: Clients + 'static> eframe::App for App<P> {
 
 #[cfg(test)]
 mod tests {
-    use super::in_order;
+    use std::sync::Arc;
 
-    /// An open's answer as the test gives it: `Some` once answered, `None` while not.
-    fn take(running: Option<u32>) -> Result<u32, Option<u32>> {
-        running.ok_or(None)
-    }
+    use silico_core::cache::Cache;
+    use silico_core::command::{SessionId, Sessions};
+    use silico_core::fake::{FakeKernel, FakeSketches};
+    use silico_core::sketch::SketchSolver;
+    use tempfile::TempDir;
 
-    fn opening(answers: &[Option<u32>]) -> Vec<(String, Option<u32>)> {
-        answers
-            .iter()
-            .enumerate()
-            .map(|(at, answer)| (format!("{at}.silico"), *answer))
-            .collect()
-    }
+    use super::{Answered, App};
+    use crate::tab::said;
 
-    #[test]
-    fn opens_are_taken_in_the_order_asked_each_waiting_for_those_before_it() {
-        // The second and third answered, the first not: none is taken, the order kept.
-        let (answered, waiting) = in_order(opening(&[None, Some(2), Some(3)]), take);
-        assert!(answered.is_empty());
-        let paths: Vec<&str> = waiting.iter().map(|(path, _)| path.as_str()).collect();
-        assert_eq!(paths, ["0.silico", "1.silico", "2.silico"]);
-        assert_eq!(waiting[1].1, Some(2));
-        // The first answered: all three taken, in the order asked.
-        let (answered, waiting) = in_order(opening(&[Some(1), Some(2), Some(3)]), take);
-        assert!(waiting.is_empty());
-        assert_eq!(
-            answered,
-            [
-                ("0.silico".to_owned(), 1),
-                ("1.silico".to_owned(), 2),
-                ("2.silico".to_owned(), 3)
-            ]
+    /// A block: any document the gate takes.
+    const BLOCK: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
+  ]
+}
+"#;
+
+    type Fake = Arc<FakeKernel>;
+
+    /// The app on sessions of the fake kernel, as the app's tests have them, with nothing
+    /// open; and the directory its files are made in.
+    fn app() -> (App<Fake>, TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret");
+        let sketches = FakeSketches::new();
+        let sessions = Sessions::with_stand_ins(
+            Arc::new(FakeKernel::new(2).unwrap()),
+            move |cache| Cache::with_secret(cache, &secret),
+            move || Ok(Box::new(sketches.clone()) as Box<dyn SketchSolver>),
         );
-        // The first answered, the second not: the first taken, the third waits behind it.
-        let (answered, waiting) = in_order(opening(&[Some(1), None, Some(3)]), take);
-        assert_eq!(answered, [("0.silico".to_owned(), 1)]);
-        let paths: Vec<&str> = waiting.iter().map(|(path, _)| path.as_str()).collect();
-        assert_eq!(paths, ["1.silico", "2.silico"]);
-        assert_eq!(waiting[1].1, Some(3));
+        (App::new(Arc::new(sessions)), dir)
+    }
+
+    /// The open of `name` in `dir`, asked as the app's `number`th and waited for: a block
+    /// written there first if `write`, or no file at all, which `open` refuses.
+    fn answered(app: &App<Fake>, dir: &TempDir, number: u64, name: &str, write: bool) -> Answered {
+        let path = dir.path().join(name);
+        if write {
+            std::fs::write(&path, BLOCK).unwrap();
+        }
+        let path = path.to_str().unwrap().to_owned();
+        let response = app.sessions().open(&path, false).wait();
+        assert_eq!(response.result.is_ok(), write, "{name}'s open");
+        (number, path, response)
+    }
+
+    fn session(answered: &Answered) -> SessionId {
+        answered.2.result.as_ref().unwrap().session
+    }
+
+    fn names(app: &App<Fake>) -> Vec<&str> {
+        app.tabs().iter().map(|tab| tab.name()).collect()
     }
 
     #[test]
-    fn nothing_opening_takes_nothing() {
-        let (answered, waiting) = in_order(Vec::<(String, Option<u32>)>::new(), take);
-        assert!(answered.is_empty() && waiting.is_empty());
+    fn tabs_stand_in_the_order_their_opens_were_asked_whatever_order_they_answer_in() {
+        let (mut app, dir) = app();
+        let one = answered(&app, &dir, 1, "one.silico", true);
+        let two = answered(&app, &dir, 2, "two.silico", true);
+        let three = answered(&app, &dir, 3, "three.silico", true);
+        let shown = session(&three);
+        // Three answers first, then one, then two, each in a poll of its own.
+        app.take_opens(vec![three]);
+        assert_eq!(names(&app), ["three.silico"]);
+        app.take_opens(vec![one]);
+        assert_eq!(names(&app), ["one.silico", "three.silico"]);
+        app.take_opens(vec![two]);
+        assert_eq!(names(&app), ["one.silico", "two.silico", "three.silico"]);
+        // The last asked is shown, though it answered first.
+        assert_eq!(app.active, Some(shown));
+        assert_eq!(app.message(), None);
+    }
+
+    #[test]
+    fn opens_answering_together_out_of_order_stand_in_the_order_asked() {
+        let (mut app, dir) = app();
+        let one = answered(&app, &dir, 1, "one.silico", true);
+        let two = answered(&app, &dir, 2, "two.silico", true);
+        let three = answered(&app, &dir, 3, "three.silico", true);
+        let shown = session(&three);
+        app.take_opens(vec![three, one, two]);
+        assert_eq!(names(&app), ["one.silico", "two.silico", "three.silico"]);
+        assert_eq!(app.active, Some(shown));
+    }
+
+    #[test]
+    fn a_refusal_stays_said_when_an_open_answers_after_it_in_the_same_poll() {
+        let (mut app, dir) = app();
+        let refused = answered(&app, &dir, 1, "missing.silico", false);
+        let one = answered(&app, &dir, 2, "one.silico", true);
+        let shown = session(&one);
+        let said_of_it = said(refused.2.result.as_ref().unwrap_err());
+        app.take_opens(vec![refused, one]);
+        assert_eq!(app.message(), Some(said_of_it.as_str()));
+        assert_eq!(names(&app), ["one.silico"]);
+        assert_eq!(app.active, Some(shown));
+        // A later poll in which an open answers clears it: it was that poll's refusal.
+        let two = answered(&app, &dir, 3, "two.silico", true);
+        app.take_opens(vec![two]);
+        assert_eq!(app.message(), None);
+        // A poll in which nothing answers leaves the message as it is.
+        app.message = Some("kept".to_owned());
+        app.take_opens(Vec::new());
+        assert_eq!(app.message(), Some("kept"));
+    }
+
+    #[test]
+    fn an_open_answering_after_one_asked_later_never_takes_the_tab_shown() {
+        let (mut app, dir) = app();
+        let one = answered(&app, &dir, 1, "one.silico", true);
+        let two = answered(&app, &dir, 2, "two.silico", true);
+        let shown = session(&two);
+        app.take_opens(vec![two]);
+        assert_eq!(app.active, Some(shown));
+        app.take_opens(vec![one]);
+        assert_eq!(app.active, Some(shown));
+        assert_eq!(names(&app), ["one.silico", "two.silico"]);
+    }
+
+    #[test]
+    fn an_open_answering_after_a_later_one_was_refused_is_shown() {
+        // The later open made no tab, so the earlier one, answering after it, takes none
+        // from it.
+        let (mut app, dir) = app();
+        let one = answered(&app, &dir, 1, "one.silico", true);
+        let refused = answered(&app, &dir, 2, "missing.silico", false);
+        let shown = session(&one);
+        app.take_opens(vec![refused]);
+        app.take_opens(vec![one]);
+        assert_eq!(app.active, Some(shown));
+        assert_eq!(names(&app), ["one.silico"]);
+    }
+
+    #[test]
+    fn a_closed_tabs_open_number_goes_with_it() {
+        let (mut app, dir) = app();
+        let one = answered(&app, &dir, 1, "one.silico", true);
+        let two = answered(&app, &dir, 2, "two.silico", true);
+        let (first, second) = (session(&one), session(&two));
+        app.take_opens(vec![one, two]);
+        assert!(app.sessions().close(&first).wait().result.is_ok());
+        app.poll();
+        assert_eq!(names(&app), ["two.silico"]);
+        assert_eq!(app.open_numbers.keys().collect::<Vec<_>>(), [&second]);
+    }
+
+    #[test]
+    fn opens_are_numbered_in_the_order_asked() {
+        let (mut app, dir) = app();
+        for name in ["one.silico", "two.silico"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, BLOCK).unwrap();
+            app.open(path.to_str().unwrap(), false);
+        }
+        let numbers: Vec<u64> = app.opening.iter().map(|opening| opening.number).collect();
+        assert_eq!(numbers, [0, 1]);
     }
 }
