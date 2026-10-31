@@ -72,7 +72,7 @@ pub use render::{
     Camera, EDGE_BIT, Frame, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
     MAX_RENDER_FACES, MAX_RENDER_SIDE, MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW,
     MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId, Projection,
-    RenderAdapter, RenderBody, RenderScene,
+    RenderAdapter, RenderBody, RenderScene, check_render_mesh,
 };
 pub use sketch::{
     Algorithm, DragBegin, Dragged, Follow, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,

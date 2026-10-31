@@ -1,6 +1,7 @@
 //! A [`RenderScene`] drawn headless (docs/design/m4.6-render.md, as docs/design/m5.0-app.md
 //! section 10 amends it): its bodies' faces and edges, its highlights in Fusion's selection
-//! blue, read back as an 8-bit sRGB PNG and, when asked, the ID buffer.
+//! blue, read back as an 8-bit sRGB PNG and, when asked, the ID buffer. And the app's
+//! viewport, drawn the same way a frame at a time.
 //!
 //! The camera stays fixed in the world and the bodies move. Each face's mesh is uploaded
 //! once, its positions about its own box's centre (subtracted in f64 before they're f32) and
@@ -15,7 +16,17 @@
 //! makes the camera's.
 //!
 //! Drawing is separate from the device: [`device`] makes the worker's on its adapter, and
-//! [`Renderer::new`] draws on any (the app's, later, eframe's).
+//! [`Renderer::new`] draws on any (the app's, eframe's).
+//!
+//! The app's viewport draws through the same path, one frame at a time and never waiting
+//! for the GPU (section 10's "one path for the worker and the app"): each body's mesh is
+//! given once ([`Renderer::upload`], and [`Renderer::forget`]), then each frame is built
+//! and drawn into `re_renderer`'s own target ([`Renderer::prepare`], in egui_wgpu's
+//! `prepare`), composited into egui's pass ([`Renderer::composite`], in its `paint`), and
+//! what its picking rectangle found is read a frame or two later
+//! ([`Renderer::take_picking`]). The worker's [`Renderer::render`] builds its view the
+//! same way, then waits for its readbacks. The egui callback that calls them is the app's:
+//! `deny.toml` keeps egui-wgpu out of this crate.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -34,7 +45,8 @@ use re_renderer::{
 };
 use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{
-    Camera, EDGE_BIT, Frame, Mesh, PixelId, Projection, RenderBody, RenderScene,
+    Camera, EDGE_BIT, Frame as CameraFrame, InvalidParameter, MIN_VIEW_HEIGHT_OF_REACH, Mesh,
+    PixelId, Projection, RenderBody, RenderScene, check_render_mesh,
 };
 
 /// The background: a flat light grey, sRGB.
@@ -47,14 +59,26 @@ pub const EDGE: [u8; 3] = [40, 40, 40];
 pub const HIGHLIGHT: [u8; 3] = [6, 150, 215];
 /// How much of the highlight's blue a highlighted face is tinted with.
 pub const HIGHLIGHT_STRENGTH: f32 = 0.5;
-/// Edges' widths in pixels: every edge, dark and solid, and a highlighted one.
+/// Edges' widths in points (pixels, for the worker): every edge, dark and solid, and a
+/// highlighted one.
 pub const EDGE_WIDTH: f32 = 2.0;
 pub const HIGHLIGHTED_EDGE_WIDTH: f32 = 4.0;
-/// A highlighted face's outline, in pixels.
+/// A highlighted face's outline, in points (pixels, for the worker).
 pub const OUTLINE_WIDTH: f32 = 1.5;
 /// The format of the target a view is composited into: the worker reads its image from the
 /// view's own target, so this is only the render context's.
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// The most a frame's picking rectangle may be on a side, in pixels: Rerun's is a few points
+/// about the pointer, and each of its pixels is read back.
+pub const MAX_PICKING_SIDE: u32 = 256;
+/// How far outside its frame a picking rectangle's corner may be, in pixels on each axis: so
+/// its far corner can't overflow.
+pub const MAX_PICKING_OFFSET: i32 = 1 << 24;
+/// The most pixels a frame may have for each of egui's points.
+pub const MAX_PIXELS_PER_POINT: f32 = 32.0;
+/// How many frames' picking requests are kept waiting for their answers: they come a frame
+/// or two after their frame, so more are a driver that never answers.
+const MAX_PENDING_PICKS: usize = 8;
 /// How far past the scene an orthographic camera sits, of the scene's reach, and at least
 /// 1 mm: so nothing is cut off behind the eye.
 const CLEARANCE: f64 = 0.01;
@@ -83,11 +107,15 @@ pub struct Rendered {
     pub ids: Option<Vec<PixelId>>,
 }
 
-/// Why a render failed.
+/// Why a render, a frame, or an upload failed.
 #[derive(Debug)]
 pub enum RenderFailure {
     /// The GPU (lavapipe's, here: the machine's memory) ran out of memory.
     OutOfMemory(String),
+    /// What the renderer was given can't be drawn (a frame's size, camera, bodies,
+    /// highlights, or picking, or a mesh's structure), naming the parameter at fault: the
+    /// caller's, never the GPU's. Nothing was drawn or changed.
+    Invalid(InvalidParameter),
     /// Anything else: the renderer's own fault.
     Failed(String),
 }
@@ -96,6 +124,7 @@ impl std::fmt::Display for RenderFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RenderFailure::OutOfMemory(what) => write!(f, "out of GPU memory: {what}"),
+            RenderFailure::Invalid(invalid) => f.write_str(&invalid.message),
             RenderFailure::Failed(what) => f.write_str(what),
         }
     }
@@ -110,22 +139,109 @@ pub fn device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), St
         .map_err(|e| format!("no device: {e}"))
 }
 
-/// A render context on one device, kept between renders, with the bodies it last drew
-/// uploaded.
+/// A body's face or edge, by its number from 1, as the ID buffer and the elements' names
+/// number them (`Face3`, `Edge12`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Element {
+    Face(u32),
+    Edge(u32),
+}
+
+impl Element {
+    /// The element a picking ID's instance is: a face's number from 1, or an edge's with
+    /// [`EDGE_BIT`]; none for anything else (0, an edge numbered 0, or past a u32), which
+    /// no instance drawn has.
+    fn of_instance(instance: u64) -> Option<Element> {
+        let n = u32::try_from(instance).ok()?;
+        if n & EDGE_BIT != 0 {
+            let edge = n & !EDGE_BIT;
+            (edge > 0).then_some(Element::Edge(edge))
+        } else {
+            (n > 0).then_some(Element::Face(n))
+        }
+    }
+}
+
+/// A rectangle of a frame's pixels: its top-left corner, which may be outside the frame, and
+/// its size, from the frame's top-left, x right and y down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PixelRect {
+    pub min: [i32; 2],
+    pub size: [u32; 2],
+}
+
+/// One frame of the app's viewport: how it's seen, how large it is, and what's drawn.
+#[derive(Debug, Clone, Copy)]
+pub struct Frame<'a> {
+    /// The camera, as `render` takes it ([`Camera::check`]'s rules).
+    pub camera: &'a Camera,
+    /// The frame's size in physical pixels, each side from 1 to the device's largest
+    /// texture.
+    pub size_px: [u32; 2],
+    /// egui's pixels per point, which edges' widths and outlines scale by: above 0, at most
+    /// [`MAX_PIXELS_PER_POINT`].
+    pub pixels_per_point: f32,
+    /// The uploaded bodies to draw, by number, ascending, each once. The renderer moves
+    /// each into the view itself, from the camera.
+    pub bodies: &'a [u32],
+    /// What's highlighted: a body drawn in this frame, and one of its faces or edges by its
+    /// number from 1, in any order (a repeat is the same highlight). Highlights change no
+    /// picking ID.
+    pub highlights: &'a [(u32, Element)],
+    /// The pixels to read back for picking, if any: [`Renderer::take_picking`] gives what
+    /// they found, a frame or two later.
+    pub picking: Option<PixelRect>,
+}
+
+/// What a picking rectangle found nearest its centre.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pick {
+    /// The body's number.
+    pub body: u32,
+    /// Its face or edge there.
+    pub hit: Element,
+    /// The pixel it was found at, in the frame.
+    pub pixel: [u32; 2],
+    /// The point seen at the pixel's top-left corner, at the depth there, in the
+    /// document's coordinates (re_renderer's, from the picking layer's depth: in f32 about
+    /// the camera's point, then back to the document in f64); none if the depth wasn't
+    /// read back.
+    pub point: Option<[f64; 3]>,
+}
+
+/// A frame's picking, answered: the rectangle it asked for, and what in it, of the frame's
+/// own pixels, lies nearest the rectangle's centre (the first in rows, top to bottom, of
+/// those as near), or none if only the background does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Picking {
+    pub rect: PixelRect,
+    pub hit: Option<Pick>,
+}
+
+/// A render context on one device, kept between renders and frames, with the bodies it
+/// draws uploaded.
 pub struct Renderer {
     ctx: RenderContext,
-    /// The next render's readbacks' identifiers (each render takes two), so a render that
-    /// failed never leaves a readback a later one could take as its own, for a caller that
-    /// keeps the renderer after a failure (the worker doesn't; the bench could).
+    /// The next readback's identifier (each render takes two, each frame that picks one),
+    /// so a render or frame that failed never leaves a readback a later one could take as
+    /// its own.
     readback: u64,
-    /// The last render's bodies, by number, as uploaded: a body the next render has again
-    /// with the same mesh is drawn from them; the others are dropped before it uploads
-    /// anything, and all of them after a render that failed.
+    /// The bodies, by number, as uploaded: the app's ([`Renderer::upload`]), or the last
+    /// render's (a body the next render has again with the same mesh is drawn from them;
+    /// the others are dropped before it uploads anything, and all of them after a render
+    /// that failed).
     bodies: BTreeMap<u32, Uploaded>,
     /// How many face meshes it has uploaded.
     uploads: u64,
-    /// How long the last render took to place its faces and edges for its view, on the CPU.
+    /// How long the last render or frame took to place its faces and edges for its view, on
+    /// the CPU.
     placed: Duration,
+    /// The last frame prepared, which [`Renderer::composite`] draws until the next.
+    view: Option<ViewBuilder>,
+    /// The frames' picking requests waiting for their answers, by readback identifier.
+    pending: BTreeMap<u64, PendingPick>,
+    /// The newest picking answered and not yet taken.
+    picked: Option<Picking>,
 }
 
 impl Renderer {
@@ -151,6 +267,9 @@ impl Renderer {
             bodies: BTreeMap::new(),
             uploads: 0,
             placed: Duration::ZERO,
+            view: None,
+            pending: BTreeMap::new(),
+            picked: None,
         })
     }
 
@@ -161,16 +280,306 @@ impl Renderer {
         self.uploads
     }
 
-    /// How long the last render took to place its faces and edges for its view on the CPU
-    /// (each face's anchor and transform, its instance, and the edges' strips), uploads
-    /// included: for the bench, never a result.
+    /// How long the last render or frame took to place its faces and edges for its view on
+    /// the CPU (each face's anchor and transform, its instance, and the edges' strips),
+    /// uploads included: for the bench, never a result.
     pub fn placed(&self) -> Duration {
         self.placed
     }
 
+    /// `mesh` as body `body`'s (a number from 1), for frames to draw: kept until it's
+    /// forgotten or replaced, and its faces uploaded to the GPU the first time a frame
+    /// draws them, never again for another view (but a large face seen close,
+    /// [`View::anchor`]). The same mesh again (the same `Arc`, or an equal mesh) changes
+    /// nothing; another replaces the body's, so its faces are uploaded again. A mesh that
+    /// fails [`check_render_mesh`], or a body numbered 0 (the background's), is refused,
+    /// and the body is as it was.
+    pub fn upload(&mut self, body: u32, mesh: &Arc<Mesh>) -> Result<(), RenderFailure> {
+        let _span =
+            tracing::debug_span!("upload", body, faces = mesh.face_triangles.len()).entered();
+        if body == 0 {
+            return Err(invalid(
+                "body",
+                "body 0 isn't a body's number: they're from 1 (0 is the background's)".to_owned(),
+            ));
+        }
+        if let Some(held) = self.bodies.get_mut(&body)
+            && (Arc::ptr_eq(&held.mesh, mesh) || *held.mesh == **mesh)
+        {
+            held.mesh = Arc::clone(mesh);
+            return Ok(());
+        }
+        check_render_mesh(mesh)
+            .map_err(|what| invalid("mesh", format!("body {body}'s mesh: {what}")))?;
+        let uploaded = Uploaded::new(Arc::clone(mesh)).map_err(RenderFailure::Failed)?;
+        self.bodies.insert(body, uploaded);
+        Ok(())
+    }
+
+    /// Body `body` dropped, and its faces' GPU meshes with it; nothing if it isn't
+    /// uploaded.
+    pub fn forget(&mut self, body: u32) {
+        self.bodies.remove(&body);
+    }
+
+    /// `frame` built and drawn into `re_renderer`'s own target, never waiting for the GPU:
+    /// the command buffer to submit (egui_wgpu's `prepare` returns it), which
+    /// [`Renderer::composite`] then composites. Each body's faces are moved into the view
+    /// and its edges placed in it in f64, as [`Renderer::render`] draws them; highlighted
+    /// faces are tinted and outlined, highlighted edges wider and blue; the picking
+    /// rectangle, if any, is read back for [`Renderer::take_picking`]. One frame for each of
+    /// egui's frames: it begins `re_renderer`'s frame.
+    ///
+    /// A frame that fails its checks is refused ([`RenderFailure::Invalid`]) before anything
+    /// is done. One the GPU fails (out of memory, or anything wgpu finds invalid) keeps the
+    /// bodies but none of their GPU meshes, which the next frame uploads again. Either way
+    /// nothing is composited until a frame succeeds.
+    pub fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, RenderFailure> {
+        let _span = tracing::debug_span!(
+            "prepare",
+            bodies = frame.bodies.len(),
+            width = frame.size_px[0],
+            height = frame.size_px[1],
+            picking = frame.picking.is_some()
+        )
+        .entered();
+        self.view = None;
+        let (view, lit) = self.check_frame(frame).map_err(RenderFailure::Invalid)?;
+        let device = self.ctx.device.clone();
+        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validity = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        self.ctx.begin_frame();
+        self.harvest();
+        let picking = frame.picking.map(|rect| {
+            let id = self.readback;
+            self.readback += 1;
+            self.pending.insert(
+                id,
+                PendingPick {
+                    rect,
+                    size: frame.size_px,
+                    frame: view.frame,
+                    origin: view.origin,
+                    depth: view.depth,
+                },
+            );
+            (rect_int(rect), id)
+        });
+        let plain = Lit::default();
+        let drawn: Vec<(u32, &Lit)> = frame
+            .bodies
+            .iter()
+            .map(|&b| (b, lit.get(&b).unwrap_or(&plain)))
+            .collect();
+        let built = self.build(&view, frame.pixels_per_point, &drawn, picking, None);
+        self.ctx.before_submit();
+        // On wgpu's native backends these are answered at once: no wait.
+        let invalid = pollster::block_on(validity.pop());
+        let short = pollster::block_on(memory.pop());
+        match scoped(short, invalid, built) {
+            Ok((commands, builder)) => {
+                self.view = Some(builder);
+                Ok(commands)
+            }
+            Err(failure) => {
+                if let Some((_, id)) = picking {
+                    self.pending.remove(&id);
+                }
+                // Nothing vouches for buffers a failed frame made: none is drawn again.
+                for body in self.bodies.values_mut() {
+                    body.drop_gpu_meshes();
+                }
+                Err(failure)
+            }
+        }
+    }
+
+    /// The last frame [`Renderer::prepare`] built, composited into `pass` (egui's, in its
+    /// `paint`, its viewport the callback's rectangle; the pass's target in the format the
+    /// renderer was made with). Nothing, if no frame was prepared or the last one failed.
+    pub fn composite(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if let Some(view) = &self.view {
+            view.composite(&self.ctx, pass);
+        }
+    }
+
+    /// The newest frame's picking the GPU has answered and that wasn't taken yet, never
+    /// waiting: a frame or two after the frame that asked for it (none before, and none
+    /// again once taken). An answer older than one already taken is never given.
+    pub fn take_picking(&mut self) -> Option<Picking> {
+        self.harvest();
+        self.picked.take()
+    }
+
+    /// `frame`'s checks, and what it draws: its view, and each body's highlights.
+    fn check_frame(
+        &self,
+        frame: &Frame<'_>,
+    ) -> Result<(View, BTreeMap<u32, Lit>), InvalidParameter> {
+        let largest = self.ctx.device.limits().max_texture_dimension_2d;
+        if frame
+            .size_px
+            .iter()
+            .any(|side| !(1..=largest).contains(side))
+        {
+            return Err(InvalidParameter {
+                parameter: "size_px",
+                message: format!(
+                    "size_px {:?} must be from 1 to {largest} pixels on each side",
+                    frame.size_px
+                ),
+            });
+        }
+        let ppp = frame.pixels_per_point;
+        if !(ppp.is_finite() && ppp > 0.0 && ppp <= MAX_PIXELS_PER_POINT) {
+            return Err(InvalidParameter {
+                parameter: "pixels_per_point",
+                message: format!(
+                    "pixels_per_point {ppp:?} must be above 0 and at most {MAX_PIXELS_PER_POINT}"
+                ),
+            });
+        }
+        let mut last = 0;
+        for (i, &body) in frame.bodies.iter().enumerate() {
+            if body <= last {
+                return Err(InvalidParameter {
+                    parameter: "bodies",
+                    message: format!(
+                        "bodies[{i}], {body}, must be above the one before it ({last}): ascending, each once, from 1"
+                    ),
+                });
+            }
+            if !self.bodies.contains_key(&body) {
+                return Err(InvalidParameter {
+                    parameter: "bodies",
+                    message: format!("bodies[{i}], {body}, isn't uploaded"),
+                });
+            }
+            last = body;
+        }
+        let mut lit: BTreeMap<u32, Lit> = BTreeMap::new();
+        for (i, &(body, element)) in frame.highlights.iter().enumerate() {
+            let Some(uploaded) = frame
+                .bodies
+                .binary_search(&body)
+                .ok()
+                .and_then(|_| self.bodies.get(&body))
+            else {
+                return Err(InvalidParameter {
+                    parameter: "highlights",
+                    message: format!("highlights[{i}]'s body {body} isn't drawn in the frame"),
+                });
+            };
+            let mesh = &uploaded.mesh;
+            let (number, count, what) = match element {
+                Element::Face(n) => (n, mesh.face_triangles.len(), "faces"),
+                Element::Edge(n) => (n, mesh.edge_point_counts.len(), "edges"),
+            };
+            if !usize::try_from(number).is_ok_and(|n| (1..=count).contains(&n)) {
+                return Err(InvalidParameter {
+                    parameter: "highlights",
+                    message: format!(
+                        "highlights[{i}], {element:?} of body {body}, isn't one of its {count} {what} (numbered from 1)"
+                    ),
+                });
+            }
+            let entry = lit.entry(body).or_default();
+            match element {
+                Element::Face(n) => entry.faces.push(n),
+                Element::Edge(n) => entry.edges.push(n),
+            }
+        }
+        for entry in lit.values_mut() {
+            for numbers in [&mut entry.faces, &mut entry.edges] {
+                numbers.sort_unstable();
+                numbers.dedup();
+            }
+        }
+        if let Some(rect) = frame.picking {
+            let sides = rect.size.iter().all(|s| (1..=MAX_PICKING_SIDE).contains(s));
+            let corner = rect
+                .min
+                .iter()
+                .all(|c| c.unsigned_abs() <= MAX_PICKING_OFFSET.unsigned_abs());
+            if !(sides && corner) {
+                return Err(InvalidParameter {
+                    parameter: "picking",
+                    message: format!(
+                        "picking {rect:?} must be from 1 to {MAX_PICKING_SIDE} pixels on each side, its corner within {MAX_PICKING_OFFSET} of the frame's"
+                    ),
+                });
+            }
+        }
+        // The bodies' reach, from their boxes' farthest corners: at most √3 past the
+        // farthest point, which only sets the clipping, past everything drawn either way.
+        let boxes: Vec<Bounds> = frame
+            .bodies
+            .iter()
+            .filter_map(|b| self.bodies.get(b).and_then(|u| u.bounds))
+            .collect();
+        let reach = |from: [f64; 3]| {
+            boxes
+                .iter()
+                .map(|&bounds| farthest(bounds, from))
+                .fold(0.0, f64::max)
+        };
+        let view = View::new(frame.camera, frame.size_px, &reach)?;
+        if let Projection::Orthographic { view_height } = frame.camera.projection {
+            let reach = reach(frame.camera.target);
+            let least = reach * MIN_VIEW_HEIGHT_OF_REACH;
+            if view_height < least {
+                return Err(InvalidParameter {
+                    parameter: "camera.view_height",
+                    message: format!(
+                        "camera.view_height {view_height:?} is too small to draw the bodies in view, which reach {reach:?} mm from camera.target: at least {least:?}, or a camera.target nearer them"
+                    ),
+                });
+            }
+        }
+        Ok((view, lit))
+    }
+
+    /// The newest picking the GPU has answered, kept for [`Renderer::take_picking`], and
+    /// every request older than it dropped; never waiting.
+    fn harvest(&mut self) {
+        if let Err(e) = self.ctx.device.poll(wgpu::PollType::Poll) {
+            tracing::debug!(error = %e, "the device couldn't be polled");
+        }
+        let mut newest = None;
+        for &id in self.pending.keys() {
+            if let Some(result) = PickingLayerProcessor::readback_result(&self.ctx, id) {
+                newest = Some((id, result));
+            }
+        }
+        if let Some((id, result)) = newest {
+            if let Some(pending) = self.pending.get(&id) {
+                let extent = result.rect.extent;
+                let hit = pending
+                    .nearest(&result.picking_id_data, extent)
+                    .map(|(i, mut pick)| {
+                        // The depth at the pixel's top-left corner, in the fixed camera's world.
+                        if result.picking_depth_data.len() == result.picking_id_data.len() {
+                            let at = glam::UVec2::new(i % extent.x, i / extent.x);
+                            pick.point = pending.document_point(result.picked_world_position(at));
+                        }
+                        pick
+                    });
+                self.picked = Some(Picking {
+                    rect: pending.rect,
+                    hit,
+                });
+            }
+            self.pending.retain(|&k, _| k > id);
+        }
+        while self.pending.len() > MAX_PENDING_PICKS {
+            self.pending.pop_first();
+        }
+    }
+
     /// `scene` drawn. The scene must have passed [`RenderScene::check`]. Errors the GPU
     /// reports while it draws (out of memory, or anything wgpu finds invalid) fail the
-    /// render rather than leave a blank image.
+    /// render rather than leave a blank image. The renderer keeps only the scene's bodies:
+    /// it's the worker's, or the bench's, not a viewport's.
     pub fn render(&mut self, scene: &RenderScene) -> Result<Rendered, RenderFailure> {
         let _span = tracing::debug_span!(
             "render",
@@ -179,6 +588,7 @@ impl Renderer {
             height = scene.height
         )
         .entered();
+        self.view = None;
         let device = self.ctx.device.clone();
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validity = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -187,15 +597,7 @@ impl Renderer {
         let drawn = self.draw(scene, ids);
         let invalid = pollster::block_on(validity.pop());
         let short = pollster::block_on(memory.pop());
-        let result = if let Some(e) = short {
-            Err(RenderFailure::OutOfMemory(e.to_string()))
-        } else if let Some(e) = invalid {
-            Err(RenderFailure::Failed(format!(
-                "the GPU found the render invalid: {e}"
-            )))
-        } else {
-            drawn.map_err(RenderFailure::Failed)
-        };
+        let result = scoped(short, invalid, drawn);
         if result.is_err() {
             // Nothing vouches for buffers a failed render made: none is drawn again.
             self.bodies.clear();
@@ -203,73 +605,106 @@ impl Renderer {
         result
     }
 
-    /// `scene` drawn, its readbacks identified by `(picking, screenshot)`.
+    /// `scene` drawn, its readbacks identified by `(picking, screenshot)`: built as a
+    /// frame is, then submitted and waited for.
     fn draw(
         &mut self,
         scene: &RenderScene,
         (picking, screenshot): (u64, u64),
     ) -> Result<Rendered, String> {
+        let view = View::of(&scene.camera, scene)?;
+        // What this scene doesn't draw again is dropped before anything is uploaded: the
+        // bodies it hasn't with the same mesh (and of those it has, [`Uploaded::settle`]
+        // drops each face's mesh about another point or in the other colour). So the GPU
+        // holds about one scene's meshes.
+        self.bodies.retain(|number, uploaded| {
+            scene
+                .bodies
+                .binary_search_by_key(number, |b| b.body)
+                .is_ok_and(|i| *uploaded.mesh == scene.bodies[i].mesh)
+        });
+        for body in &scene.bodies {
+            if let std::collections::btree_map::Entry::Vacant(entry) = self.bodies.entry(body.body)
+            {
+                entry.insert(Uploaded::new(Arc::new(body.mesh.clone()))?);
+            }
+        }
+        let lit: Vec<Lit> = scene.bodies.iter().map(Lit::of_body).collect();
+        let drawn: Vec<(u32, &Lit)> = scene.bodies.iter().map(|b| b.body).zip(&lit).collect();
+        let whole = RectInt {
+            min: glam::IVec2::ZERO,
+            extent: glam::UVec2::new(scene.width, scene.height),
+        };
+        self.ctx.begin_frame();
+        let built = self.build(
+            &view,
+            1.0,
+            &drawn,
+            scene.ids.then_some((whole, picking)),
+            Some(screenshot),
+        );
+        self.ctx.before_submit();
+        let (commands, _view) = built?;
+        self.ctx.queue.submit([commands]);
+        read_back(&mut self.ctx, scene, picking, screenshot)
+    }
+
+    /// The view `view` of the bodies `drawn` (each uploaded, with its highlights), in a
+    /// frame `re_renderer`'s already begun: each face an instance moved into the view, its
+    /// mesh uploaded where it has none; each edge a strip placed in the view; highlighted
+    /// faces tinted and outlined; the picking rectangle and its readback's identifier, and
+    /// the image's, if asked. The command buffer that draws it into the view's target, and
+    /// the view, to composite.
+    fn build(
+        &mut self,
+        view: &View,
+        pixels_per_point: f32,
+        drawn: &[(u32, &Lit)],
+        picking: Option<(RectInt, u64)>,
+        screenshot: Option<u64>,
+    ) -> Result<(wgpu::CommandBuffer, ViewBuilder), String> {
         let Renderer {
             ctx,
-            bodies: held,
+            bodies,
             uploads,
             placed,
             ..
         } = self;
-        ctx.begin_frame();
-        let view = View::of(&scene.camera, scene)?;
         let placing = std::time::Instant::now();
-        // What this scene doesn't draw again is dropped before anything is uploaded: the
-        // bodies it hasn't with the same mesh, and of those it has, each face's mesh about
-        // another point or in the other colour. So the GPU holds about one scene's meshes.
-        let mut kept = std::mem::take(held);
-        kept.retain(|number, uploaded| {
-            scene
-                .bodies
-                .binary_search_by_key(number, |b| b.body)
-                .is_ok_and(|i| scene.bodies[i].mesh == uploaded.mesh)
-        });
-        let mut drawn = Vec::with_capacity(scene.bodies.len());
-        for body in &scene.bodies {
-            let mut uploaded = match kept.remove(&body.body) {
-                Some(uploaded) => uploaded,
-                None => Uploaded::new(body)?,
-            };
-            uploaded.settle(&view, body);
-            drawn.push(uploaded);
-        }
         let mut instances = Vec::new();
         let mut lines = LineDrawableBuilder::new(ctx);
         lines.enable_alpha_blending();
-        for (body, uploaded) in scene.bodies.iter().zip(&mut drawn) {
-            uploaded.faces(ctx, body, &view, &mut instances, uploads)?;
-            edges(&mut lines, body, &view);
+        for &(number, lit) in drawn {
+            let uploaded = bodies
+                .get_mut(&number)
+                .ok_or_else(|| format!("body {number} isn't uploaded"))?;
+            uploaded.settle(view, lit);
+            uploaded.faces(ctx, number, lit, view, &mut instances, uploads)?;
+            edges(&mut lines, number, &uploaded.mesh, lit, view);
         }
-        *held = scene.bodies.iter().map(|b| b.body).zip(drawn).collect();
         *placed = placing.elapsed();
-        let highlighted = scene
-            .bodies
+        let highlighted = drawn
             .iter()
-            .any(|b| !b.highlight_faces.is_empty() || !b.highlight_edges.is_empty());
+            .any(|(_, lit)| !lit.faces.is_empty() || !lit.edges.is_empty());
         let config = TargetConfiguration {
             name: "render".into(),
-            resolution_in_pixel: [scene.width, scene.height],
+            resolution_in_pixel: [view.width, view.height],
             // The camera at the world's origin, looking along −z with +y up: the bodies are
             // moved into its view.
             view_from_world: macaw::IsoTransform::IDENTITY,
             projection_from_view: view.projection,
+            pixels_per_point,
             outline_config: highlighted.then(|| OutlineConfig {
-                outline_radius_pixel: OUTLINE_WIDTH,
+                outline_radius_pixel: OUTLINE_WIDTH * pixels_per_point,
                 color_layer_a: srgb(HIGHLIGHT),
                 color_layer_b: Rgba::TRANSPARENT,
             }),
-            picking_config: scene.ids.then(|| ViewPickingConfiguration {
-                picking_rect: RectInt {
-                    min: glam::IVec2::ZERO,
-                    extent: glam::UVec2::new(scene.width, scene.height),
-                },
-                readback_identifier: picking,
-                show_debug_view: false,
+            picking_config: picking.map(|(picking_rect, readback_identifier)| {
+                ViewPickingConfiguration {
+                    picking_rect,
+                    readback_identifier,
+                    show_debug_view: false,
+                }
             }),
             ..Default::default()
         };
@@ -290,25 +725,138 @@ impl Renderer {
                 .queue_draw(ctx, draw)
                 .map_err(|e| format!("couldn't queue the edges: {e}"))?;
         } else {
-            // Its borrow of the context ends here, before the frame is submitted.
+            // Its borrow of the context ends here.
             drop(lines);
         }
-        builder
-            .schedule_screenshot(ctx, screenshot, ())
-            .map_err(|e| format!("couldn't schedule the image's readback: {e}"))?;
+        if let Some(screenshot) = screenshot {
+            builder
+                .schedule_screenshot(ctx, screenshot, ())
+                .map_err(|e| format!("couldn't schedule the image's readback: {e}"))?;
+        }
         let commands = builder
             .draw(ctx, srgb(BACKGROUND))
             .map_err(|e| format!("couldn't draw: {e}"))?;
-        ctx.before_submit();
-        ctx.queue.submit([commands]);
-        read_back(ctx, scene, picking, screenshot)
+        Ok((commands, builder))
+    }
+}
+
+/// What the GPU's error scopes found, or what drawing returned: out of memory first, then
+/// anything invalid, then drawing's own error.
+fn scoped<T>(
+    short: Option<wgpu::Error>,
+    invalid: Option<wgpu::Error>,
+    drawn: Result<T, String>,
+) -> Result<T, RenderFailure> {
+    if let Some(e) = short {
+        Err(RenderFailure::OutOfMemory(e.to_string()))
+    } else if let Some(e) = invalid {
+        Err(RenderFailure::Failed(format!(
+            "the GPU found the render invalid: {e}"
+        )))
+    } else {
+        drawn.map_err(RenderFailure::Failed)
+    }
+}
+
+fn invalid(parameter: &'static str, message: String) -> RenderFailure {
+    RenderFailure::Invalid(InvalidParameter { parameter, message })
+}
+
+fn rect_int(rect: PixelRect) -> RectInt {
+    RectInt {
+        min: glam::IVec2::new(rect.min[0], rect.min[1]),
+        extent: glam::UVec2::new(rect.size[0], rect.size[1]),
+    }
+}
+
+/// How far a box's farthest corner is from `from`.
+fn farthest((low, high): Bounds, from: [f64; 3]) -> f64 {
+    let d: [f64; 3] =
+        std::array::from_fn(|k| (from[k] - low[k]).abs().max((high[k] - from[k]).abs()));
+    dot(d, d).sqrt()
+}
+
+/// A frame's picking request, waiting for its answer: its rectangle, the frame's size, and
+/// the view it was drawn in, to take its depth back to the document.
+struct PendingPick {
+    rect: PixelRect,
+    size: [u32; 2],
+    frame: CameraFrame,
+    origin: [f64; 3],
+    depth: f64,
+}
+
+impl PendingPick {
+    /// Of the readback's pixels `ids`, `extent` in size: of the frame's own (outside the
+    /// frame, re_renderer draws on as if it were larger, which isn't shown), the one with a
+    /// body nearest the rectangle's centre, the first in rows of those as near; its index
+    /// in `ids`, and what's there, without its point.
+    fn nearest(&self, ids: &[PickingLayerId], extent: glam::UVec2) -> Option<(u32, Pick)> {
+        let width = extent.x;
+        let pixels = u64::from(width) * u64::from(extent.y);
+        if ids.len() as u64 != pixels || width == 0 {
+            return None;
+        }
+        let centre = self.rect.size.map(|s| f64::from(s) / 2.0);
+        let mut nearest: Option<(f64, u32, Pick)> = None;
+        for (i, id) in ids.iter().enumerate() {
+            let Ok(body) = u32::try_from(id.object.0) else {
+                continue;
+            };
+            let Some(hit) = Element::of_instance(id.instance.0) else {
+                continue;
+            };
+            if body == 0 {
+                continue;
+            }
+            // At most MAX_PICKING_SIDE² pixels: each index a u32.
+            let Ok(i) = u32::try_from(i) else { break };
+            let (x, y) = (i % width, i / width);
+            let at = [
+                i64::from(self.rect.min[0]) + i64::from(x),
+                i64::from(self.rect.min[1]) + i64::from(y),
+            ];
+            let (Ok(px), Ok(py)) = (u32::try_from(at[0]), u32::try_from(at[1])) else {
+                continue;
+            };
+            if px >= self.size[0] || py >= self.size[1] {
+                continue;
+            }
+            let dx = f64::from(x) + 0.5 - centre[0];
+            let dy = f64::from(y) + 0.5 - centre[1];
+            let d2 = dx * dx + dy * dy;
+            if nearest.is_none_or(|(best, ..)| d2 < best) {
+                let pick = Pick {
+                    body,
+                    hit,
+                    pixel: [px, py],
+                    point: None,
+                };
+                nearest = Some((d2, i, pick));
+            }
+        }
+        nearest.map(|(_, i, pick)| (i, pick))
+    }
+
+    /// `p`, a point in the fixed camera's world, in the document: taken back through the
+    /// view in f64 (the inverse of [`View::place`], d = right x + up y + back (z + depth));
+    /// none if it isn't finite (no depth there).
+    fn document_point(&self, p: glam::Vec3) -> Option<[f64; 3]> {
+        if !p.is_finite() {
+            return None;
+        }
+        let v = [f64::from(p.x), f64::from(p.y), f64::from(p.z) + self.depth];
+        let f = &self.frame;
+        Some(std::array::from_fn(|k| {
+            self.origin[k] + f.right[k] * v[0] + f.up[k] * v[1] + f.back[k] * v[2]
+        }))
     }
 }
 
 /// The view as the fixed camera draws it: the camera's frame in f64, the point the bodies
 /// are moved about, and the projection.
 struct View {
-    frame: Frame,
+    frame: CameraFrame,
     /// The point the camera is at, in the document: the eye for a perspective view; for an
     /// orthographic one, the target, the camera then `depth` behind it.
     origin: [f64; 3],
@@ -318,7 +866,8 @@ struct View {
     /// from the eye (perspective, `2 tan(fov / 2)`).
     span: f64,
     perspective: bool,
-    /// The image's height in pixels.
+    /// The image's size in pixels.
+    width: u32,
     height: u32,
     /// How much more a position's error moves the image at its corner than at its centre, in
     /// perspective: the corner ray's sec², 1 + tan²(fov/2)(1 + aspect²); 1 orthographic.
@@ -326,14 +875,25 @@ struct View {
 }
 
 impl View {
+    /// `scene`'s view, from its camera and its bodies' reach.
     fn of(camera: &Camera, scene: &RenderScene) -> Result<View, String> {
-        let frame = camera.frame().map_err(|e| e.message)?;
+        View::new(camera, [scene.width, scene.height], &|p| scene.reach(p)).map_err(|e| e.message)
+    }
+
+    /// The view from `camera` of an image `width` by `height`, of bodies that reach `reach`
+    /// from a point.
+    fn new(
+        camera: &Camera,
+        [width, height]: [u32; 2],
+        reach: &dyn Fn([f64; 3]) -> f64,
+    ) -> Result<View, InvalidParameter> {
+        let frame = camera.frame()?;
         let view = match camera.projection {
             Projection::Orthographic { view_height } => {
                 // Only the eye's direction counts: the camera is set past every point of the
                 // scene, so nothing is cut off behind the eye (FreeCAD fits its clipping
                 // planes to the scene, too), and the far plane past the scene's other side.
-                let reach = scene.reach(camera.target);
+                let reach = reach(camera.target);
                 let margin = (reach * CLEARANCE).max(1.0);
                 View {
                     frame,
@@ -341,7 +901,8 @@ impl View {
                     depth: reach + margin,
                     span: view_height,
                     perspective: false,
-                    height: scene.height,
+                    width,
+                    height,
                     corner: 1.0,
                     projection: ViewProjection::Orthographic {
                         camera_mode: OrthographicCameraMode::NearPlaneCenter,
@@ -354,28 +915,28 @@ impl View {
                 // The near plane from what's in view, not from where the target is along
                 // the ray: a millionth of the farthest point's distance (reverse-z keeps the
                 // depth precise from there out).
-                let reach = scene.reach(camera.eye).max(frame.distance);
+                let reach = reach(camera.eye).max(frame.distance);
                 let tan = libm::tan(field_of_view.to_radians() / 2.0);
-                let aspect = f64::from(scene.width) / f64::from(scene.height);
+                let aspect = f64::from(width) / f64::from(height);
                 View {
                     frame,
                     origin: camera.eye,
                     depth: 0.0,
                     span: 2.0 * tan,
                     perspective: true,
-                    height: scene.height,
+                    width,
+                    height,
                     corner: 1.0 + tan * tan * (1.0 + aspect * aspect),
                     projection: ViewProjection::Perspective {
                         vertical_fov: field_of_view.to_radians() as f32,
                         near_plane_distance: (reach * NEAR_PLANE_OF_REACH) as f32,
-                        aspect_ratio: scene.width as f32 / scene.height as f32,
+                        aspect_ratio: width as f32 / height as f32,
                     },
                 }
             }
         };
         Ok(view)
     }
-
     fn world_from_mesh(&self, anchor: [f64; 3]) -> glam::Affine3A {
         world_from_mesh(&self.frame, self.origin, self.depth, anchor)
     }
@@ -440,7 +1001,7 @@ impl View {
 /// enough view of a large face would see: that one is drawn about the camera's point instead
 /// ([`View::anchor`]).
 pub fn world_from_mesh(
-    frame: &Frame,
+    frame: &CameraFrame,
     origin: [f64; 3],
     depth: f64,
     centre: [f64; 3],
@@ -497,10 +1058,39 @@ fn unit(n: [f32; 3]) -> glam::Vec3 {
     vec3(scaled.map(|c| c / length))
 }
 
-/// A body as uploaded: what it was made from, to know it again, and its faces.
+/// A body as uploaded: what it was made from, to know it again and draw its edges from, its
+/// box (its positions' and edge points', none for a mesh of neither), and its faces.
 struct Uploaded {
-    mesh: Mesh,
+    mesh: Arc<Mesh>,
+    bounds: Option<Bounds>,
     faces: Vec<UploadedFace>,
+}
+
+/// What of a body is highlighted: its faces' and edges' numbers from 1, ascending, each
+/// once.
+#[derive(Default)]
+struct Lit {
+    faces: Vec<u32>,
+    edges: Vec<u32>,
+}
+
+impl Lit {
+    /// A scene's body's highlights, which it numbers from 0.
+    fn of_body(body: &RenderBody) -> Lit {
+        let numbers = |from_0: &[u32]| from_0.iter().map(|i| i.saturating_add(1)).collect();
+        Lit {
+            faces: numbers(&body.highlight_faces),
+            edges: numbers(&body.highlight_edges),
+        }
+    }
+
+    fn face(&self, number: u32) -> bool {
+        self.faces.binary_search(&number).is_ok()
+    }
+
+    fn edge(&self, number: u32) -> bool {
+        self.edges.binary_search(&number).is_ok()
+    }
 }
 
 /// A face with triangles: which it is, its box (its triangles' positions'), the point its
@@ -524,9 +1114,8 @@ struct FaceSpan {
 }
 
 impl Uploaded {
-    /// `body`'s faces with triangles, each about its box's centre, none uploaded yet.
-    fn new(body: &RenderBody) -> Result<Uploaded, String> {
-        let mesh = &body.mesh;
+    /// `mesh`'s faces with triangles, each about its box's centre, none uploaded yet.
+    fn new(mesh: Arc<Mesh>) -> Result<Uploaded, String> {
         let mut faces = Vec::new();
         let mut first = 0usize;
         for (face, &count) in mesh.face_triangles.iter().enumerate() {
@@ -539,7 +1128,7 @@ impl Uploaded {
                 count,
             };
             // A face with no triangles has nothing to draw.
-            let Some(bounds) = face_bounds(mesh, span) else {
+            let Some(bounds) = face_bounds(&mesh, span) else {
                 continue;
             };
             faces.push(UploadedFace {
@@ -551,14 +1140,23 @@ impl Uploaded {
             });
         }
         Ok(Uploaded {
-            mesh: mesh.clone(),
+            bounds: bounds_of(mesh.positions.iter().chain(&mesh.edge_points)),
+            mesh,
             faces,
         })
     }
 
+    /// Its faces' GPU meshes dropped, to be uploaded again when they're next drawn.
+    fn drop_gpu_meshes(&mut self) {
+        for face in &mut self.faces {
+            face.plain = None;
+            face.tinted = None;
+        }
+    }
+
     /// Each face's point for `view`, and what it won't draw dropped: its meshes about
-    /// another point, and the colour `body` doesn't draw it in.
-    fn settle(&mut self, view: &View, body: &RenderBody) {
+    /// another point, and the colour `lit` doesn't draw it in.
+    fn settle(&mut self, view: &View, lit: &Lit) {
         for face in &mut self.faces {
             let anchor = view.anchor(face.bounds);
             if anchor != face.anchor {
@@ -566,7 +1164,7 @@ impl Uploaded {
                 face.plain = None;
                 face.tinted = None;
             }
-            if highlights(body, face.span.number) {
+            if lit.face(face.span.number) {
                 face.plain = None;
             } else {
                 face.tinted = None;
@@ -575,12 +1173,14 @@ impl Uploaded {
     }
 
     /// Each face as a mesh instance of its own, moved into `view` by its own transform, its
-    /// picking ID the body's number and the face's; a highlighted one tinted and outlined.
-    /// A face's mesh is uploaded where it has none (counted in `uploads`).
+    /// picking ID the body's number `body` and the face's; a highlighted one (in `lit`)
+    /// tinted and outlined. A face's mesh is uploaded where it has none (counted in
+    /// `uploads`).
     fn faces(
         &mut self,
         ctx: &RenderContext,
-        body: &RenderBody,
+        body: u32,
+        lit: &Lit,
         view: &View,
         instances: &mut Vec<GpuMeshInstance>,
         uploads: &mut u64,
@@ -591,11 +1191,11 @@ impl Uploaded {
             .iter()
             .filter(|f| f.plain.is_none() && f.tinted.is_none())
             .count();
-        let _span = (new > 0)
-            .then(|| tracing::debug_span!("upload", body = body.body, faces = new).entered());
+        let _span =
+            (new > 0).then(|| tracing::debug_span!("upload_faces", body, faces = new).entered());
         for face in &mut self.faces {
             let number = face.span.number;
-            let highlighted = highlights(body, number);
+            let highlighted = lit.face(number);
             let held = if highlighted {
                 &mut face.tinted
             } else {
@@ -604,7 +1204,8 @@ impl Uploaded {
             let gpu_mesh = match held {
                 Some(mesh) => Arc::clone(mesh),
                 None => {
-                    let cpu = face_cpu_mesh(ctx, body, face.anchor, face.span, highlighted)?;
+                    let cpu =
+                        face_cpu_mesh(ctx, body, &self.mesh, face.anchor, face.span, highlighted)?;
                     let gpu = GpuMesh::new(ctx, &cpu).map_err(|e| format!("Face{number}: {e}"))?;
                     *uploads += 1;
                     Arc::clone(held.insert(Arc::new(gpu)))
@@ -622,7 +1223,7 @@ impl Uploaded {
                     OutlineMaskPreference::NONE
                 },
                 picking_layer_id: PickingLayerId {
-                    object: PickingLayerObjectId(u64::from(body.body)),
+                    object: PickingLayerObjectId(u64::from(body)),
                     instance: PickingLayerInstanceId(u64::from(number)),
                 },
                 cull_mode: None,
@@ -632,22 +1233,16 @@ impl Uploaded {
     }
 }
 
-/// Whether `body` highlights its face numbered `number` from 1.
-fn highlights(body: &RenderBody, number: u32) -> bool {
-    body.highlight_faces.binary_search(&(number - 1)).is_ok()
-}
-
-/// Each edge of `body` of two points or more as a line strip, placed in the view in f64
-/// ([`View::place`]: each point's offset from the camera's point and its rotation into the
-/// view, so precise across the view at every distance and angle), built for each view:
-/// its picking ID the body's number and the edge's with [`EDGE_BIT`]; a highlighted one
-/// wider, in the highlight's blue.
-fn edges(lines: &mut LineDrawableBuilder<'_>, body: &RenderBody, view: &View) {
-    let mesh = &body.mesh;
+/// Each edge of body `body`'s `mesh` of two points or more as a line strip, placed in the
+/// view in f64 ([`View::place`]: each point's offset from the camera's point and its
+/// rotation into the view, so precise across the view at every distance and angle), built
+/// for each view: its picking ID the body's number and the edge's with [`EDGE_BIT`]; a
+/// highlighted one (in `lit`) wider, in the highlight's blue.
+fn edges(lines: &mut LineDrawableBuilder<'_>, body: u32, mesh: &Mesh, lit: &Lit, view: &View) {
     let mut batch = lines
-        .batch(format!("Body{}", body.body))
+        .batch(format!("Body{body}"))
         .world_from_obj(glam::Affine3A::IDENTITY)
-        .picking_object_id(PickingLayerObjectId(u64::from(body.body)))
+        .picking_object_id(PickingLayerObjectId(u64::from(body)))
         .depth_offset(EDGE_DEPTH_OFFSET);
     let mut first = 0usize;
     for (edge, &count) in mesh.edge_point_counts.iter().enumerate() {
@@ -664,7 +1259,7 @@ fn edges(lines: &mut LineDrawableBuilder<'_>, body: &RenderBody, view: &View) {
         if points.len() < 2 {
             continue;
         }
-        let highlighted = body.highlight_edges.binary_search(&(number - 1)).is_ok();
+        let highlighted = lit.edge(number);
         let (width, colour) = if highlighted {
             (HIGHLIGHTED_EDGE_WIDTH, HIGHLIGHT)
         } else {
@@ -684,10 +1279,16 @@ type Bounds = ([f64; 3], [f64; 3]);
 /// The box of the positions of the face `span`'s triangles; none for a face of none.
 fn face_bounds(mesh: &Mesh, span: FaceSpan) -> Option<Bounds> {
     let triangles = mesh.triangles.get(span.first..span.first + span.count)?;
-    let mut points = triangles
-        .iter()
-        .flatten()
-        .filter_map(|&v| mesh.positions.get(usize::try_from(v).ok()?));
+    bounds_of(
+        triangles
+            .iter()
+            .flatten()
+            .filter_map(|&v| mesh.positions.get(usize::try_from(v).ok()?)),
+    )
+}
+
+/// The box of `points`; none for none.
+fn bounds_of<'a>(mut points: impl Iterator<Item = &'a [f64; 3]>) -> Option<Bounds> {
     let &start = points.next()?;
     Some(points.fold((start, start), |(mut low, mut high), p| {
         for k in 0..3 {
@@ -737,11 +1338,12 @@ fn face_vertices(mesh: &Mesh, span: FaceSpan, anchor: [f64; 3]) -> Result<FaceVe
     Ok(out)
 }
 
-/// The face `span` of `body` as a mesh of its own about `anchor` ([`face_vertices`]),
-/// coloured plain or tinted.
+/// The face `span` of body `body`'s `mesh` as a mesh of its own about `anchor`
+/// ([`face_vertices`]), coloured plain or tinted.
 fn face_cpu_mesh(
     ctx: &RenderContext,
-    body: &RenderBody,
+    body: u32,
+    mesh: &Mesh,
     anchor: [f64; 3],
     span: FaceSpan,
     tinted: bool,
@@ -750,10 +1352,10 @@ fn face_cpu_mesh(
         positions,
         normals,
         triangles,
-    } = face_vertices(&body.mesh, span, anchor)?;
+    } = face_vertices(mesh, span, anchor)?;
     let vertices = positions.len();
     Ok(CpuMesh {
-        label: format!("Body{}Face{}", body.body, span.number).into(),
+        label: format!("Body{body}Face{}", span.number).into(),
         materials: smallvec::smallvec![Material {
             label: "body".into(),
             index_range: re_renderer::Span {
@@ -860,7 +1462,12 @@ fn png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
+mod frame_tests;
+
+#[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use silico_protocol::{
         Camera, Frame, Mesh, Projection, RenderAdapter, RenderBody, RenderScene,
     };
@@ -956,7 +1563,7 @@ mod tests {
         // ±0.25) in f32 exactly, in box_mesh's order; about the origin, in f32, the face's
         // four corners would be one point.
         let mesh = box_mesh([1e9, 2e9 - 0.25, -1e9 + 0.25], [0.5, 0.5, 0.5]);
-        let uploaded = Uploaded::new(&body(1, mesh.clone())).unwrap();
+        let uploaded = Uploaded::new(Arc::new(mesh.clone())).unwrap();
         let face = &uploaded.faces[0];
         assert_eq!(face.anchor, [1e9, 2e9, -1e9 + 0.5]);
         let vertices = face_vertices(&mesh, face.span, face.anchor).unwrap();
@@ -984,7 +1591,7 @@ mod tests {
         mesh.face_triangles[1] = 4;
         mesh.edge_points.push([1e6, 0.0, 0.0]);
         mesh.edge_point_counts.push(1);
-        let uploaded = Uploaded::new(&body(1, mesh)).unwrap();
+        let uploaded = Uploaded::new(Arc::new(mesh)).unwrap();
         let numbers: Vec<u32> = uploaded.faces.iter().map(|f| f.span.number).collect();
         assert_eq!(numbers, [2, 3, 4, 5, 6]);
         assert_eq!(uploaded.faces[0].bounds, ([0.0; 3], [40.0, 20.0, 10.0]));
@@ -1001,7 +1608,7 @@ mod tests {
             edge_point_counts: vec![],
             valid: None,
         };
-        let uploaded = Uploaded::new(&body(1, point)).unwrap();
+        let uploaded = Uploaded::new(Arc::new(point)).unwrap();
         assert_eq!(uploaded.faces[0].anchor, [1e12, -1e12, 3.0]);
         let wide: Bounds = ([f64::MAX, -f64::MAX, 1.0], [f64::MAX, f64::MAX, 1.0]);
         assert_eq!(centre_of(wide), [f64::MAX, 0.0, 1.0]);
@@ -1100,14 +1707,19 @@ mod tests {
 
     /// `test` run on lavapipe in this process: in a run of this test alone with lavapipe's
     /// variables, if this process hasn't them (a library's loader path can't be set once
-    /// the process runs).
-    fn on_lavapipe(name: &str, test: impl FnOnce(&mut Renderer)) {
+    /// the process runs). `name` is the test's, in this module, or its path from the crate
+    /// (`render::frame_tests::...`).
+    pub(super) fn on_lavapipe(name: &str, test: impl FnOnce(&mut Renderer)) {
         if let Some(vars) = crate::lavapipe::environment()
             && vars
                 .iter()
                 .any(|(k, v)| std::env::var(k).map_or(true, |have| have != *v))
         {
-            let name = format!("render::tests::{name}");
+            let name = if name.contains("::") {
+                name.to_owned()
+            } else {
+                format!("render::tests::{name}")
+            };
             let out = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([&name, "--exact", "--nocapture"])
                 .envs(vars)

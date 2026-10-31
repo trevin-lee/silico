@@ -82,6 +82,12 @@ fn refused(failure: RenderFailure) -> Failure {
             refusal: Refusal::OutOfMemory,
             cause: Some(cause),
         },
+        // A render's scene passed its check, so this is a frame's or an upload's, never
+        // the worker's; refused as the check refuses, all the same.
+        RenderFailure::Invalid(invalid) => Failure::new(Refusal::InvalidParameter {
+            parameter: invalid.parameter.to_owned(),
+            message: invalid.message,
+        }),
         RenderFailure::Failed(what) => internal(what),
     }
 }
