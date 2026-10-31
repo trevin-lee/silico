@@ -15,8 +15,6 @@ use crate::document::sketch_edit::Members;
 #[derive(Debug, Clone, Default)]
 pub(super) struct Line {
     state: State,
-    /// What the chain under way has added, for clicks the newest read doesn't show yet.
-    chain: Members,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -80,17 +78,12 @@ enum Click {
 }
 
 impl Line {
-    pub(super) fn pending(&self) -> &Members {
-        &self.chain
-    }
-
     pub(super) fn busy(&self) -> bool {
         !matches!(self.state, State::Idle)
     }
 
     fn end_chain(&mut self) {
         self.state = State::Idle;
-        self.chain = Members::default();
     }
 
     pub(super) fn handle(
@@ -167,7 +160,6 @@ impl Line {
                             if closes {
                                 self.end_chain();
                             } else {
-                                extend(&mut self.chain, &members);
                                 self.state = State::Chain {
                                     last: Start::Point(end, end_at),
                                     pressed: false,
@@ -227,15 +219,6 @@ fn show_point(preview: &mut Preview, placed: &Placed) {
     preview.pointer = Some(placed.at);
     preview.shown.extend(placed.shown());
     preview.guides.extend(placed.guides.iter().copied());
-}
-
-/// `added`'s members appended to `chain`'s.
-fn extend(chain: &mut Members, added: &Members) {
-    chain.points.extend(added.points.iter().cloned());
-    chain.lines.extend(added.lines.iter().cloned());
-    chain.circles.extend(added.circles.iter().cloned());
-    chain.arcs.extend(added.arcs.iter().cloned());
-    chain.constraints.extend(added.constraints.iter().cloned());
 }
 
 /// Where a segment from `start` ends with the pointer at `at`, and the direction it shows:

@@ -281,6 +281,10 @@ impl NewIds for SystemIds {
 pub struct SketchTool {
     state: State,
     preview: Preview,
+    /// What the tool has added that the newest read doesn't hold yet, for the next click to
+    /// share or find (a chain's last point, a point clicked twice), each member until a read
+    /// holds it.
+    pending: Members,
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +322,7 @@ impl SketchTool {
         SketchTool {
             state,
             preview: Preview::default(),
+            pending: Members::default(),
         }
     }
 
@@ -352,8 +357,15 @@ impl SketchTool {
         }
     }
 
+    /// Forgets what it added that no read has shown: for an add the core refused, or one
+    /// undone before a read showed it, so no click finds a member the sketch hasn't.
+    pub fn forget_pending(&mut self) {
+        self.pending = Members::default();
+    }
+
     /// `event`, with `keys` held, against `context`: what it added, said, or ended; the
-    /// preview updated.
+    /// preview updated. What it adds is taken to be in the sketch, for the events after it,
+    /// until a read holds it ([`forget_pending`](Self::forget_pending) otherwise).
     pub fn handle(
         &mut self,
         context: &Context<'_>,
@@ -368,12 +380,8 @@ impl SketchTool {
         {
             return Outcome::said(Message::NotFinite);
         }
-        let empty = Members::default();
-        let pending = match &self.state {
-            State::Line(line) => line.pending(),
-            _ => &empty,
-        };
-        let view = infer::View::of(context.sketch, pending);
+        held_dropped(&mut self.pending, context.sketch);
+        let view = infer::View::of(context.sketch, &self.pending);
         let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
             context.tolerance
         } else {
@@ -401,8 +409,29 @@ impl SketchTool {
             State::Point(t) => t.handle(&mut step, event, &mut preview),
         };
         self.preview = preview;
+        if let Some(added) = &outcome.add {
+            let p = &mut self.pending;
+            p.points.extend(added.points.iter().cloned());
+            p.lines.extend(added.lines.iter().cloned());
+            p.circles.extend(added.circles.iter().cloned());
+            p.arcs.extend(added.arcs.iter().cloned());
+            p.constraints.extend(added.constraints.iter().cloned());
+        }
         outcome
     }
+}
+
+/// `pending` without the members `read` holds, by ID.
+fn held_dropped(pending: &mut Members, read: &Sketch) {
+    if pending == &Members::default() {
+        return;
+    }
+    let held: std::collections::BTreeSet<&ElementId> = read.elements().map(|(id, _)| id).collect();
+    pending.points.retain(|m| !held.contains(&m.id));
+    pending.lines.retain(|m| !held.contains(&m.id));
+    pending.circles.retain(|m| !held.contains(&m.id));
+    pending.arcs.retain(|m| !held.contains(&m.id));
+    pending.constraints.retain(|m| !held.contains(&m.id));
 }
 
 /// A builder's failure as what the tool says: an ID the source couldn't make, or (a bug)

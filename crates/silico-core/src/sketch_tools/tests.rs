@@ -1374,6 +1374,75 @@ fn an_arcs_radius_at_a_kilometre_is_measured_as_the_gate_measures_it() {
     assert_eq!(d.messages, [Message::TooFar]);
 }
 
+/// `events`, each a click at a place, sent to `tool` against `sketch`, which no add changes:
+/// the newest read, before any add reaches it. What each click added, or said.
+fn clicks_on_a_stale_read(tool: &mut SketchTool, sketch: &Sketch, at: &[[f64; 2]]) -> Vec<Outcome> {
+    let context = Context {
+        sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+    };
+    let mut ids = Counter(0);
+    let keys = Modifiers::default();
+    at.iter()
+        .map(|&p| {
+            tool.handle(&context, &mut ids, Event::Press(p), keys);
+            tool.handle(&context, &mut ids, Event::Release(p), keys)
+        })
+        .collect()
+}
+
+#[test]
+fn what_a_tool_added_is_found_before_a_read_shows_it() {
+    // The read never catches up. A point clicked twice in one place: the second click finds
+    // the first point, t0000001, and adds nothing (#278's D).
+    let sketch = empty();
+    let mut tool = SketchTool::new(ToolKind::Point);
+    let out = clicks_on_a_stale_read(&mut tool, &sketch, &[[12.0, 34.0], [12.1, 34.0]]);
+    assert!(out[0].add.is_some());
+    assert_eq!(out[1].add, None);
+    assert_eq!(out[1].message, Some(Message::PointThere(id("t0000001"))));
+    // A triangle: each segment shares the last one's end, and the last click, on the start,
+    // shares it and ends the chain, though no read holds any of it.
+    let mut tool = SketchTool::new(ToolKind::Line);
+    let out = clicks_on_a_stale_read(
+        &mut tool,
+        &sketch,
+        &[[10.0, 10.0], [40.0, 30.0], [60.0, 5.0], [10.2, 10.1]],
+    );
+    let lines: Vec<&SketchLine> = out
+        .iter()
+        .filter_map(|o| o.add.as_ref())
+        .flat_map(|m| &m.lines)
+        .collect();
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[1].from, lines[0].to);
+    assert_eq!(lines[2].from, lines[1].to);
+    assert_eq!(lines[2].to, lines[0].from);
+    assert!(!tool.busy());
+}
+
+#[test]
+fn what_the_tool_forgets_is_not_found_again() {
+    // An add the core refused: forgotten, the next click in its place adds a point anew.
+    let sketch = empty();
+    let mut tool = SketchTool::new(ToolKind::Point);
+    clicks_on_a_stale_read(&mut tool, &sketch, &[[12.0, 34.0]]);
+    tool.forget_pending();
+    let out = clicks_on_a_stale_read(&mut tool, &sketch, &[[12.0, 34.0]]);
+    assert!(out[0].add.is_some(), "{out:?}");
+    // Once a read holds what was added, it's the read's: the tool drops its own copy, so a
+    // read without it (an undo) finds nothing there.
+    let mut tool = SketchTool::new(ToolKind::Point);
+    let out = clicks_on_a_stale_read(&mut tool, &sketch, &[[12.0, 34.0]]);
+    let added = out[0].add.clone().unwrap();
+    let held = sketch_edit::add(&sketch, &added).unwrap().sketch;
+    let out = clicks_on_a_stale_read(&mut tool, &held, &[[12.0, 34.0]]);
+    assert_eq!(out[0].message, Some(Message::PointThere(id("t0000001"))));
+    let out = clicks_on_a_stale_read(&mut tool, &sketch, &[[12.0, 34.0]]);
+    assert!(out[0].add.is_some(), "{out:?}");
+}
+
 /// An ID source that has none to give.
 struct Dry;
 
