@@ -28,10 +28,12 @@
 //!     where they meet, among each line's along-ray (leaving the end nearer, FreeCAD's rule)
 //!     and its opposite: between the along-rays, the angle θ; opposite, the reflex
 //!     360 − θ; beside, 180 − θ, with `reversed` where one ray runs against its line
-//!     (Fable's chain-angle decision, §3, superseding SD5). Lines that cross, each
-//!     strictly inside the other (exactly, no tolerance), take θ in both vertical
-//!     sectors (§4): opposite is θ too, as drawn; a T-junction, or a line and an axis,
-//!     keep the quadrant rule;
+//!     (Fable's chain-angle decision, §3, superseding SD5). Lines that cross take θ in
+//!     both vertical sectors (§4): opposite is θ too, as drawn. Structure decides first
+//!     (Main's ruling): lines the sketch ties where they meet, an end of one a point of
+//!     the other or held on it (`on`, `midpoint`), never cross, so a T-junction keeps the
+//!     quadrant rule however its end rounds; lines it doesn't tie cross where each is
+//!     strictly inside the other, compared without tolerance; a line and an axis never;
 //!   - two parallel lines ([`PARALLEL`], FreeCAD's test): `point_line_distance` from the
 //!     second line's `from` to the first line (SD4); with an axis picked second, the first
 //!     line's `from` to the axis, Silico's own choice (an axis has no `from`);
@@ -270,6 +272,8 @@ enum Item {
         end: Xy,
         direction: Xy,
         from: Option<ElementId>,
+        /// Its `to` point (none for an axis).
+        to: Option<ElementId>,
         centreline: bool,
     },
     /// A circle or an arc: its centre point and where it is, and its radius.
@@ -298,6 +302,7 @@ impl Item {
                     end: direction,
                     direction,
                     from: None,
+                    to: None,
                     centreline: true,
                 });
             }
@@ -316,6 +321,7 @@ impl Item {
                     end: to,
                     direction: sub(to, from),
                     from: Some(line.from.clone()),
+                    to: Some(line.to.clone()),
                     centreline: line.construction,
                 })
             }
@@ -841,7 +847,10 @@ fn offered(
                 (Item::Point(..), Item::Point(..)) => points(&first, &second, at, lock),
                 (Item::Point(..), Item::Line { .. }) => point_line(&first, &second, side_at),
                 (Item::Line { .. }, Item::Point(..)) => point_line(&second, &first, side_at),
-                (Item::Line { .. }, Item::Line { .. }) => lines(&first, &second, at, side_at, lock),
+                (Item::Line { .. }, Item::Line { .. }) => {
+                    let tied = tied(view, &first, &second);
+                    lines(&first, &second, at, side_at, lock, tied)
+                }
                 _ => Err(None),
             }
         }
@@ -1014,14 +1023,46 @@ fn point_line(point: &Item, line: &Item, at: Option<Xy>) -> Result<Offered, NotO
 }
 
 /// Whether the place `over / under` along `line`, from its start (0) to its end (1), is
-/// strictly inside it: compared exactly, as the two crosses stand, with no division and no
-/// tolerance (Main's decision: 1 nm inside an end crosses, 1 nm outside doesn't). Never
-/// for an axis, which runs through every vertex.
+/// strictly inside it, as the two crosses stand, with no division and without tolerance
+/// (Main's decision: 1 nm inside an end crosses, 1 nm outside doesn't). Never for an axis,
+/// which runs through every vertex.
 fn inside(line: &Item, over: f64, under: f64) -> bool {
     let Item::Line { from, .. } = line else {
         return false;
     };
     from.is_some() && over != 0.0 && (over > 0.0) == (under > 0.0) && over.abs() < under.abs()
+}
+
+/// Whether the sketch ties two lines where they meet (Main's ruling, structure before
+/// geometry): an end of one is held on the other by `on` or `midpoint`, as a snap or the
+/// line tool leaves it. Such lines never cross, whatever their coordinates' last bits say.
+/// An end that's a point of the other line is tied too, but needs no look at the document:
+/// a point has one pair of coordinates, so the lines meet exactly there, at a shared end,
+/// which [`lines`] finds without arithmetic and never counts as crossing.
+fn tied(view: &View<'_>, first: &Item, second: &Item) -> bool {
+    let line = |item: &Item| match item {
+        Item::Line {
+            reference,
+            from,
+            to,
+            ..
+        } => Some((reference.clone(), [from.clone(), to.clone()])),
+        _ => None,
+    };
+    let (Some((a, a_ends)), Some((b, b_ends))) = (line(first), line(second)) else {
+        return false;
+    };
+    let ends = |e: &[Option<ElementId>; 2]| e.iter().flatten().cloned().collect::<Vec<_>>();
+    let (a_ends, b_ends) = (ends(&a_ends), ends(&b_ends));
+    let held = |end: &ElementId, on: &Reference| {
+        let end = Reference::Element(end.clone());
+        view.sketch.constraints.iter().any(|c| match &c.form {
+            Form::On { point, curve } => *point == end && curve == on,
+            Form::Midpoint { point, line } => *point == end && line == on,
+            _ => false,
+        })
+    };
+    a_ends.iter().any(|p| held(p, &b)) || b_ends.iter().any(|p| held(p, &a))
 }
 
 /// Two lines: parallel ([`PARALLEL`], FreeCAD's test), the second's `from` to the first
@@ -1033,9 +1074,9 @@ fn inside(line: &Item, over: f64, under: f64) -> bool {
 /// - each line's along-ray leaves the end nearer the vertex (FreeCAD's `calculateAngle`:
 ///   its start where that's strictly nearer, else its end), an axis's along it;
 /// - the along-rays in counter-clockwise order, `r1` then `r2`, θ the sweep between them:
-///   between them, θ; opposite, the reflex 360 − θ, or θ where the lines cross (each
-///   strictly inside the other: both vertical sectors are drawn, Fable's §4); either
-///   quadrant beside, 180 − θ;
+///   between them, θ; opposite, the reflex 360 − θ, or θ where the lines cross (both
+///   vertical sectors are drawn, Fable's §4): not `tied` ([`tied`]), and each strictly
+///   inside the other; either quadrant beside, 180 − θ;
 /// - written so the value is the sweep counter-clockwise from the first ray to the second,
 ///   `a` the first ray's line and `b` the second's, `reversed` where exactly one of the two
 ///   rays runs against its line (`b` taken the other way gives the same angle as `a`).
@@ -1045,6 +1086,7 @@ fn lines(
     at: Xy,
     side_at: Option<Xy>,
     lock: Option<Measure>,
+    tied: bool,
 ) -> Result<Offered, NotOffered> {
     let (
         Item::Line {
@@ -1100,9 +1142,12 @@ fn lines(
     let (t_over, s_over) = (cross(between, *db), cross(between, *da));
     let t = t_over / crossed;
     let vertex = shared.unwrap_or([pa[0] + t * da[0], pa[1] + t * da[1]]);
-    // Crossing: the vertex strictly inside both segments (an axis, or a shared end, isn't).
-    let crossing =
-        shared.is_none() && inside(first, t_over, crossed) && inside(second, s_over, crossed);
+    // Crossing: lines the sketch doesn't tie, the vertex strictly inside both segments (an
+    // axis, or an end they share where they are, isn't).
+    let crossing = !tied
+        && shared.is_none()
+        && inside(first, t_over, crossed)
+        && inside(second, s_over, crossed);
     // Each along-ray's sign: +1 leaving `from` (strictly nearer the vertex), −1 leaving `to`;
     // an axis's runs along it.
     let sign = |from: &Option<ElementId>, start: Xy, end: Xy| {
