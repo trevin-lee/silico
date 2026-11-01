@@ -139,7 +139,8 @@ impl FaceFrame {
                 0.0
             };
             return Err(FaceFrameError::Invalid(frame_invalid(format!(
-                "the face's normal must be a unit vector to 1e-6, got {n:?}, {} long",
+                "the face's normal must be a unit vector to {}, got {n:?}, {} long",
+                format_number(NORMAL_LENGTH_TOLERANCE),
                 format_number(length)
             ))));
         }
