@@ -7559,7 +7559,8 @@ fn a_pick_waiting_for_its_answer_asks_for_frames_until_it_comes() {
 /// `test` run where lavapipe is this process's Vulkan driver: in a run of this test alone
 /// with lavapipe's variables, if this process hasn't them (a loader's path can't be set
 /// once the process runs), as silico-render's own frame tests run. With no lavapipe built
-/// in (none in the environment), here, on the machine's own adapters.
+/// in (none in the environment), here, where its check of the adapter fails the test: it
+/// never runs on another.
 fn on_lavapipe(name: &str, test: impl FnOnce()) {
     if let Some(vars) = silico_render::lavapipe::environment()
         && vars
@@ -7595,11 +7596,12 @@ fn lavapipe_render_state() -> eframe::egui_wgpu::RenderState {
         setup,
         eframe::egui_wgpu::RendererOptions::PREDICTABLE,
     );
+    // Lavapipe: a CPU adapter on Vulkan, not GL's llvmpipe (egui_kittest's wgpu has gles).
+    let info = state.adapter.get_info();
     assert_eq!(
-        state.adapter.get_info().device_type,
-        eframe::wgpu::DeviceType::Cpu,
-        "not lavapipe: {:?}",
-        state.adapter.get_info()
+        (info.device_type, info.backend),
+        (eframe::wgpu::DeviceType::Cpu, eframe::wgpu::Backend::Vulkan),
+        "not lavapipe: {info:?}"
     );
     state
 }
@@ -7688,7 +7690,8 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
             // Each of the box's six faces uploaded once, and nothing more over twenty frames
             // of an orthographic orbit: bodies move into each view, never re-uploaded.
             let uploaded = uploads();
-            assert!(uploaded >= 6, "{uploaded}");
+            assert_eq!(uploaded, 6);
+            let front = view(&h).camera().clone();
             let at = the_viewport(&h).center() - eframe::egui::vec2(150.0, 0.0);
             let shift = eframe::egui::Modifiers::SHIFT;
             h.event(eframe::egui::Event::ModifiersChanged(shift));
@@ -7716,6 +7719,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
             for _ in 0..10 {
                 step(&mut h);
             }
+            assert_ne!(view(&h).camera(), &front, "the orbit moved nothing");
             assert_eq!(uploads(), uploaded);
             // Back to the front, and a pick at the view's centre, a frame or two later: the
             // box's front face, Face3, by its name.
@@ -7725,6 +7729,8 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                 target: [20.0, 10.0, 5.0],
                 up: [0.0, 0.0, 1.0],
             });
+            // Settled, with no read out that could land between the pick and its answer.
+            meshes_settled(&mut h);
             for _ in 0..3 {
                 step(&mut h);
             }
@@ -7766,7 +7772,56 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                 (point[0] - 20.0).abs() < 0.1 && (point[2] - 5.0).abs() < 0.1,
                 "{point:?}"
             );
+            // Composited into egui's own image: 20 mm over the pane's height, the face
+            // z = 0..10 about its centre's z = 5, so 2.5 mm above the pane's centre is on the
+            // face and 7.5 mm above it is past its top edge, the renderer's background; and
+            // the centre isn't the pane's own colour, which shows where nothing composites.
+            let image = h.render().unwrap();
+            let rect = the_viewport(&h);
+            let ppp = h.ctx.pixels_per_point();
+            let mm = rect.height() / 20.0;
+            let pixel = |x: f32, y: f32| {
+                let at = |v: f32| v * ppp;
+                let (x, y) = (at(x).round() as u32, at(y).round() as u32);
+                image.get_pixel(x, y).0
+            };
+            let differs = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).any(|(a, b)| a.abs_diff(b) > 8);
+            let centre = rect.center();
+            let on_face = pixel(centre.x, centre.y - 2.5 * mm);
+            let past_it = pixel(centre.x, centre.y - 7.5 * mm);
+            assert!(differs(on_face, past_it), "{on_face:?} against {past_it:?}");
+            let pane = h.ctx.global_style().visuals.extreme_bg_color.to_array();
+            let middle = pixel(centre.x, centre.y);
+            assert!(differs(middle, pane), "{middle:?}: the pane's own colour");
             assert_eq!(never_waits::waits(), 0);
         },
     );
+}
+
+#[test]
+fn a_viewport_with_no_renderer_says_why_in_its_pane() {
+    let f = fixture();
+    let app = App::new(Arc::clone(&f.sessions)).not_drawing("no adapter was found".to_owned());
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0, 800.0))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    step(&mut h);
+    assert!(shows(
+        &h,
+        "Viewport",
+        "The viewport can't draw: no adapter was found"
+    ));
+    // With a document open too.
+    let path = f.file("example.silico", EXAMPLE);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "the tab", |h| !h.state().tabs().is_empty());
+    assert!(shows(
+        &h,
+        "Viewport",
+        "The viewport can't draw: no adapter was found"
+    ));
+    assert_eq!(never_waits::waits(), 0);
 }

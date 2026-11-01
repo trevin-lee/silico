@@ -329,10 +329,10 @@ impl View {
     }
 
     /// Asks the next frame to pick under `rect`, if a renderer takes it
-    /// ([`crate::renderer::takes`]): its answer comes a frame after ([`picked`](Self::picked)),
+    /// ([`PixelRect::takes`]): its answer comes a frame after ([`picked`](Self::picked)),
     /// and the last answer is let go now. Whether it was asked.
     pub fn pick(&mut self, rect: PixelRect) -> bool {
-        let takes = crate::renderer::takes(&rect);
+        let takes = rect.takes();
         if takes {
             self.picking = Some(rect);
             self.picked = None;
@@ -797,6 +797,8 @@ pub struct Drawing {
     frames: u64,
     /// What says the time: the system's, or a test's.
     clock: Option<silico_core::disk::Clock>,
+    /// Why there's no renderer, if one couldn't be made: the pane says so.
+    unavailable: Option<String>,
 }
 
 impl Drawing {
@@ -804,6 +806,14 @@ impl Drawing {
     pub fn new(present: Box<dyn Present>) -> Self {
         Drawing {
             present: Some(present),
+            ..Drawing::default()
+        }
+    }
+
+    /// No renderer, for `why`: frames go nowhere, and the pane says why.
+    pub fn unavailable(why: String) -> Self {
+        Drawing {
+            unavailable: Some(why),
             ..Drawing::default()
         }
     }
@@ -952,6 +962,15 @@ pub fn show<P: Clients + 'static>(
     ui.painter()
         .rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
+    if let Some(why) = &drawing.unavailable {
+        // Said where the model would be: nothing else in the window would say it.
+        let said = format!("The viewport can't draw: {why}");
+        let at = Rect::from_center_size(rect.center(), Vec2::new(rect.width().min(480.0), 60.0));
+        ui.put(
+            at,
+            egui::Label::new(egui::RichText::new(said).color(ui.visuals().warn_fg_color)).wrap(),
+        );
+    }
     let ppp = ui.ctx().pixels_per_point();
     let size_px = [pixels(rect.width() * ppp), pixels(rect.height() * ppp)];
     let Some(tab) = tab else {

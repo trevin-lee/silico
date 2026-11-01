@@ -57,14 +57,13 @@ fn main() -> ExitCode {
             silico_app::theme::apply(&creation.egui_ctx);
             let app = App::new(sessions);
             // The viewport drawn by silico-render on eframe's own device; with no wgpu, or
-            // one it can't draw on, the app runs and draws no viewport.
-            let app = match creation
-                .wgpu_render_state
-                .as_ref()
-                .and_then(silico_app::renderer::on_eframe)
-            {
-                Some(present) => app.presenting(Box::new(present)),
-                None => app,
+            // one it can't draw on, the app runs and its viewport says why it draws nothing.
+            let app = match creation.wgpu_render_state.as_ref() {
+                Some(state) => match silico_app::renderer::on_eframe(state) {
+                    Ok(present) => app.presenting(Box::new(present)),
+                    Err(why) => app.not_drawing(why),
+                },
+                None => app.not_drawing("the window has no wgpu device to draw with".to_owned()),
             };
             Ok(Box::new(app))
         }),

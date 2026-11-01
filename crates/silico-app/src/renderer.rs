@@ -21,21 +21,8 @@ use eframe::egui_wgpu;
 use eframe::wgpu;
 use silico_protocol::{Camera, Mesh};
 pub use silico_render::render::{
-    Element, Frame, MAX_PICKING_OFFSET, MAX_PICKING_SIDE, Pick, Picking, PixelRect, RenderFailure,
-    Renderer,
+    Element, Frame, Pick, Picking, PixelRect, RenderFailure, Renderer,
 };
-
-/// Whether a renderer takes `rect` as a picking rectangle: each side from 1 to
-/// [`MAX_PICKING_SIDE`], its corner within [`MAX_PICKING_OFFSET`] of the frame's top left.
-pub fn takes(rect: &PixelRect) -> bool {
-    rect.size
-        .iter()
-        .all(|side| (1..=MAX_PICKING_SIDE).contains(side))
-        && rect
-            .min
-            .iter()
-            .all(|at| (-MAX_PICKING_OFFSET..=MAX_PICKING_OFFSET).contains(at))
-}
 
 /// A [`Frame`] whose values it holds: what the pane hands on, to be drawn once the paint
 /// callback is prepared.
@@ -107,9 +94,9 @@ impl ViewRenderer for Renderer {
 
 /// The viewport's renderer made on eframe's device (its adapter, device, queue, and target
 /// format), installed in its paint callbacks' resources, and the [`Present`] that reaches it;
-/// or, if `silico-render` can't draw on that device, none, said in the log: the app then
-/// runs with no viewport drawn, as with no wgpu at all.
-pub fn on_eframe(render_state: &egui_wgpu::RenderState) -> Option<OnGpu<Renderer>> {
+/// or, if `silico-render` can't draw on that device, why, said in the log too: the app then
+/// runs with no viewport drawn, the pane saying why ([`crate::App::not_drawing`]).
+pub fn on_eframe(render_state: &egui_wgpu::RenderState) -> Result<OnGpu<Renderer>, String> {
     match Renderer::new(
         &render_state.adapter,
         render_state.device.clone(),
@@ -118,11 +105,11 @@ pub fn on_eframe(render_state: &egui_wgpu::RenderState) -> Option<OnGpu<Renderer
     ) {
         Ok(renderer) => {
             install(render_state, renderer);
-            Some(OnGpu::new())
+            Ok(OnGpu::new())
         }
         Err(why) => {
             tracing::warn!("the viewport can't draw on this device: {why}");
-            None
+            Err(why)
         }
     }
 }
@@ -339,6 +326,21 @@ fn prepared<R: ViewRenderer>(
     buffers
 }
 
+/// The pane's whole rectangle in physical pixels, `[x, y, width, height]`, unclamped to the
+/// window, as Rerun's bridge sets it: egui sets the viewport clamped to the window before
+/// a callback paints, which would squeeze the view of a pane partly off it; unclamped, the
+/// view keeps its scale and egui's scissor cuts it.
+fn unclamped_viewport(info: &egui::PaintCallbackInfo) -> [f32; 4] {
+    let ppp = info.pixels_per_point;
+    let at = info.viewport;
+    [
+        at.min.x * ppp,
+        at.min.y * ppp,
+        at.width() * ppp,
+        at.height() * ppp,
+    ]
+}
+
 impl<R: ViewRenderer> egui_wgpu::CallbackTrait for Callback<R> {
     fn prepare(
         &self,
@@ -358,18 +360,8 @@ impl<R: ViewRenderer> egui_wgpu::CallbackTrait for Callback<R> {
         resources: &egui_wgpu::CallbackResources,
     ) {
         if let Some(renderer) = resources.get::<R>() {
-            // The pane's whole rectangle, unclamped to the window, as Rerun's bridge sets
-            // it: a viewport partly off screen keeps its scale, the scissor cutting it.
-            let ppp = info.pixels_per_point;
-            let at = info.viewport;
-            pass.set_viewport(
-                at.min.x * ppp,
-                at.min.y * ppp,
-                at.width() * ppp,
-                at.height() * ppp,
-                0.0,
-                1.0,
-            );
+            let [x, y, width, height] = unclamped_viewport(&info);
+            pass.set_viewport(x, y, width, height, 0.0, 1.0);
             renderer.composite(pass);
         }
     }
@@ -466,13 +458,15 @@ mod tests {
     #[test]
     fn a_picking_rectangle_is_taken_from_one_to_256_pixels_a_side_within_its_offset() {
         let rect = |min: [i32; 2], size: [u32; 2]| PixelRect { min, size };
-        assert!(takes(&rect([0, 0], [1, 1])));
-        assert!(takes(&rect([-5, 3], [256, 256])));
-        assert!(takes(&rect([1 << 24, -(1 << 24)], [3, 3])));
-        assert!(!takes(&rect([0, 0], [0, 1])));
-        assert!(!takes(&rect([0, 0], [257, 1])));
-        assert!(!takes(&rect([(1 << 24) + 1, 0], [3, 3])));
-        assert!(!takes(&rect([0, -(1 << 24) - 1], [3, 3])));
+        // silico-render's own rule, the one its frame's check refuses by.
+        assert!(rect([0, 0], [1, 1]).takes());
+        assert!(rect([-5, 3], [256, 256]).takes());
+        assert!(rect([1 << 24, -(1 << 24)], [3, 3]).takes());
+        assert!(!rect([0, 0], [0, 1]).takes());
+        assert!(!rect([0, 0], [257, 1]).takes());
+        assert!(!rect([(1 << 24) + 1, 0], [3, 3]).takes());
+        assert!(!rect([0, -(1 << 24) - 1], [3, 3]).takes());
+        assert!(!rect([i32::MIN, 0], [3, 3]).takes());
     }
 
     fn data(bodies: &[u32], highlights: &[(u32, Element)]) -> FrameData {
@@ -604,6 +598,25 @@ mod tests {
         assert_eq!(
             locked(&shared).refused.iter().copied().collect::<Vec<_>>(),
             [1]
+        );
+    }
+
+    #[test]
+    fn a_pane_partly_off_the_window_keeps_its_whole_viewport_unclamped() {
+        // A 200 by 100 point pane at (−50, 700) in an 800 by 750 point window at 2×: egui's
+        // clamped viewport would be 300 by 100 pixels from (0, 1400); the whole pane's is
+        // 400 by 200 from (−100, 1400).
+        let info = egui::PaintCallbackInfo {
+            viewport: egui::Rect::from_min_size(egui::pos2(-50.0, 700.0), egui::vec2(200.0, 100.0)),
+            clip_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 750.0)),
+            pixels_per_point: 2.0,
+            screen_size_px: [1600, 1500],
+        };
+        assert_eq!(unclamped_viewport(&info), [-100.0, 1400.0, 400.0, 200.0]);
+        let clamped = info.viewport_in_pixels();
+        assert_eq!(
+            (clamped.left_px, clamped.width_px, clamped.height_px),
+            (0, 300, 100)
         );
     }
 }

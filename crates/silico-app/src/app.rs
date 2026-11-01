@@ -204,6 +204,13 @@ impl<P: Clients + 'static> App<P> {
         self
     }
 
+    /// The app with no renderer, for `why`: its viewport draws nothing, and says why.
+    #[must_use]
+    pub fn not_drawing(mut self, why: String) -> Self {
+        self.drawing = crate::viewport::Drawing::unavailable(why);
+        self
+    }
+
     /// [`presenting`](Self::presenting), with `clock` saying the time the viewport waits on
     /// (a refused read's retry): a test's, to move by hand.
     #[must_use]
