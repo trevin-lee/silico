@@ -426,9 +426,12 @@ impl SmartDimension {
     /// holds the tool: one state for both. Made when the tool is given the read of the
     /// revision the add made, if [`offer`] gives one there. Released by
     /// [`dismiss_offer`](Self::dismiss_offer), by [`refused`](Self::refused) or
-    /// [`forget_pending`](Self::forget_pending), by a context of another sketch, and by a
-    /// later read that no longer holds the dimension (undone, or removed by another client:
-    /// the offer is moot). Not by a later read that still holds it (another edit, a reload).
+    /// [`forget_pending`](Self::forget_pending), by a context of another sketch, and by any
+    /// read past the add's revision: the moment has passed, as such a read can't open one.
+    /// Its requests are made against the add's revision, so once the session has moved on
+    /// the core would refuse Driven and Cancel as a conflict, and Cancel sent again at the
+    /// newer revision would undo whatever came since. A sketch still over defined shows so
+    /// in its state.
     pub fn open_offer(&self) -> Option<&Offer> {
         self.placed.as_ref()?.offer.as_ref()
     }
@@ -488,15 +491,10 @@ impl SmartDimension {
             self.placed = None;
             self.restart();
         }
-        // An open offer whose dimension a later read no longer holds is moot.
+        // An open offer is past its moment once a later read comes: its requests are against
+        // the add's revision.
         if self.placed.as_ref().is_some_and(|p| {
-            p.offer.is_some()
-                && p.revision.is_some_and(|made| context.revision > made)
-                && !context
-                    .sketch
-                    .constraints
-                    .iter()
-                    .any(|c| c.id == p.constraint)
+            p.offer.is_some() && p.revision.is_some_and(|made| context.revision > made)
         }) {
             self.placed = None;
         }

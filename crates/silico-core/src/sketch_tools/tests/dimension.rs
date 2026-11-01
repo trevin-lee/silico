@@ -2337,8 +2337,7 @@ fn an_offer_holds_the_tool_until_its_dismissed() {
     let open = d.tool.open_offer().unwrap();
     assert_eq!(open.constraint, k);
     assert_eq!(open.state, ConstraintState::Conflicting);
-    // A later read changes nothing: the offer holds until it's answered.
-    d.revision = d.revision.next().unwrap();
+    // Another placing click on the same read: still held.
     d.click(30.0, 30.0);
     assert_eq!(d.messages, vec![Message::OfferOpen, Message::OfferOpen]);
     d.tool.dismiss_offer();
@@ -2348,9 +2347,11 @@ fn an_offer_holds_the_tool_until_its_dismissed() {
 }
 
 #[test]
-fn an_offer_whose_dimension_a_later_read_no_longer_holds_is_released() {
-    // Round 4, item 2: offered, then undone (a later read without it): the offer is moot,
-    // so it's released, and the next dimension is placed.
+fn a_later_read_releases_an_open_offer() {
+    // Round 5, item 1: offered; then a read past the add's revision, the dimension still in
+    // it and the sketch still over defined: the moment has passed (Driven and Cancel are
+    // made against the add's revision), so the offer is released, and the next dimension is
+    // placed. The sketch's state shows it's still over defined.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).escape();
     let k = d.tool.placement().unwrap().constraint;
@@ -2360,19 +2361,62 @@ fn an_offer_whose_dimension_a_later_read_no_longer_holds_is_released() {
         .insert(k.clone(), ConstraintState::Conflicting);
     d.to(50.0, 50.0);
     assert!(d.tool.open_offer().is_some());
-    // A later read still holding it keeps it open.
     d.revision = d.revision.next().unwrap();
     d.to(50.0, 50.0);
-    assert!(d.tool.open_offer().is_some());
-    d.revision = d.revision.next().unwrap();
-    d.sketch.constraints.retain(|c| c.id != k);
-    d.states.constraints.clear();
-    d.states.state = SketchState::UnderDefined;
-    d.to(50.0, 50.0);
+    assert!(d.sketch.constraints.iter().any(|c| c.id == k));
     assert_eq!(d.tool.open_offer(), None);
     assert!(!d.tool.busy());
     d.click(15.0, 15.0).click(30.0, 30.0);
     assert_eq!(d.modify().as_deref(), Some("14.142136"));
+}
+
+#[test]
+fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
+    // Round 5, item 2: placed on revision 1's read; the core answers the add as revision 3
+    // (an edit came between); the tool given revision 3's read, its freedoms not dropped
+    // (which across one add would offer). Satisfied: no offer, settled. Redundant: offered.
+    for (state, offered) in [
+        (ConstraintState::Satisfied, false),
+        (ConstraintState::Redundant, true),
+    ] {
+        let sketch = corner();
+        let sketch_id = sketch_id();
+        let one = Revision::OPENED;
+        let three = one.next().unwrap().next().unwrap();
+        let context = Context {
+            sketch_id: &sketch_id,
+            revision: one,
+            sketch: &sketch,
+            tolerance: TOLERANCE,
+            automatic_relations: true,
+        };
+        let mut tool = SmartDimension::new();
+        let mut ids = Counter(0);
+        for at in [[20.0, 10.0], [20.0, 30.0]] {
+            tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
+            tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+        }
+        let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+        let members = out.add.unwrap();
+        let k = members.constraints[0].id.clone();
+        tool.added(out.token.unwrap(), three);
+        let after = sketch_edit::add(&sketch, &members).unwrap().sketch;
+        let mut states = under();
+        states.constraints.insert(k, state);
+        let context = Context {
+            sketch_id: &sketch_id,
+            revision: three,
+            sketch: &after,
+            tolerance: TOLERANCE,
+            automatic_relations: true,
+        };
+        tool.settle(&context, &states);
+        let placement = tool.placement().unwrap();
+        assert_eq!(placement.read, one, "{state:?}");
+        assert_eq!(placement.revision, three, "{state:?}");
+        assert_eq!(tool.open_offer().is_some(), offered, "{state:?}");
+        assert_eq!(tool.busy(), offered, "{state:?}");
+    }
 }
 
 #[test]
