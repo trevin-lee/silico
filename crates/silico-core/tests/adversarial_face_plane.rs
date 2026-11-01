@@ -1031,6 +1031,82 @@ fn a_face_is_looked_for_in_its_box_when_what_consumes_the_box_comes_after_the_sk
     );
 }
 
+#[test]
+fn a_step_never_run_in_two_rounds_is_counted_once_so_done_stays_under_steps_while_one_is_held() {
+    // From #344's review. A pocket that removes nothing (its box above the sketch's plane)
+    // is refused, and kept so by a first rebuild. A second, on the same engine, adds a cut
+    // of that pocket (made from a refused feature, so never run: settled without a result)
+    // and a sketch on the 10 mm box's top, padded onto it: a second round. That round plans
+    // the cut unsettled again (it has no result) and settles it again. Its pad's last
+    // step, the fuse onto the box, is held: while it is, one step is still to settle, so
+    // `done` is under `steps`. Counted twice, the cut made them equal.
+    let engine = engine_with_a_planar_box();
+    let refused_pocket = [
+        cube(),
+        box_at("b0000002", [-1.0, -1.0, 1.0], 9.0, 9.0, 9.0),
+        rectangle("s0000009", "xy", [0.0, 0.0], 4.0, 2.0),
+        super::sweeps::pocket("q0000001", "b0000002", "s0000009", super::sweeps::TEN),
+    ];
+    let first = publish(&engine, checked_document(&strs(&refused_pocket)));
+    assert!(
+        matches!(
+            first.outcome(&id("q0000001")),
+            Some(FeatureOutcome::Failed(_))
+        ),
+        "{:?}",
+        first.outcome(&id("q0000001"))
+    );
+    let mut features = refused_pocket.to_vec();
+    features.extend([
+        box_at("b0000003", [30.0, 0.0, 0.0], 1.0, 1.0, 1.0),
+        r#"{"id": "c0000001", "type": "cut", "v": 1, "name": "Cut", "base": "q0000001", "tool": "b0000003"}"#
+            .to_owned(),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        pad("p0000001", Some("b0000001"), "s0000001", &one_side("3")),
+    ]);
+    let fuse = |op: &Op| {
+        matches!(
+            op,
+            Op::Boolean {
+                op: silico_protocol::BooleanOp::Fuse,
+                ..
+            }
+        )
+    };
+    let hold = engine.kernel().hold(fuse);
+    let run = engine.start(checked_document(&strs(&features)));
+    let progress = run.progress();
+    let deadline = Instant::now() + WAIT;
+    while !engine.kernel().asked().iter().any(|call| fuse(&call.op)) {
+        assert!(Instant::now() < deadline, "the pad's fuse was never asked");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let held = progress.now();
+    assert_eq!(progress.rounds(), 2, "{held:?}");
+    assert!(held.done < held.steps, "{held:?}");
+    assert_eq!(
+        held.done + 1,
+        held.steps,
+        "only the held fuse is left: {held:?}"
+    );
+    hold.release();
+    let model = match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        Ok(other) => panic!("not published: {other:?}"),
+        Err(_) => panic!("the rebuild didn't finish in {WAIT:?}"),
+    };
+    assert!(matches!(
+        model.outcome(&id("p0000001")),
+        Some(FeatureOutcome::Built { .. })
+    ));
+    assert_eq!(
+        model.outcome(&id("c0000001")),
+        Some(&FeatureOutcome::Blocked { on: id("q0000001") })
+    );
+    let done = progress.now();
+    assert_eq!((done.done, done.ended), (done.steps, true), "{done:?}");
+}
+
 // ---- any face plane, read, written, gated, and rebuilt ----
 
 use proptest::prelude::*;
