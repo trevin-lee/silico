@@ -6538,7 +6538,7 @@ fn leave_sketch(h: &mut AppHarness, finish: bool) {
         sketch_mode(h).is_some_and(|mode| mode.drawable().is_some())
     });
     let place = |h: &AppHarness| {
-        h.get_by_role_and_label(Role::Toolbar, "Sketch")
+        h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
             .get_by_label(word)
             .accesskit_node()
             .bounding_box()
@@ -6548,7 +6548,7 @@ fn leave_sketch(h: &mut AppHarness, finish: bool) {
         let now = place(h);
         now == last.replace(now)
     });
-    h.get_by_role_and_label(Role::Toolbar, "Sketch")
+    h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
         .get_by_label(word)
         .click();
     step_until(h, "sketch mode closed", |h| sketch_mode(h).is_none());
@@ -6603,7 +6603,7 @@ fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_i
     step_until(&mut h, "its status", |h| {
         let palette = h.query_by_role_and_label(Role::Group, "Sketch Palette");
         palette.is_some_and(|p| p.query_by_label("Empty").is_some())
-            && h.get_by_role_and_label(Role::Toolbar, "Sketch")
+            && h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
                 .query_by_label("on XY")
                 .is_some()
     });
@@ -6620,7 +6620,10 @@ fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_i
     );
     leave_sketch(&mut h, true);
     assert!(fields_of(&text_of(&f, &h), "Sketch1").is_some());
-    assert!(h.query_by_role_and_label(Role::Toolbar, "Sketch").is_none());
+    assert!(
+        h.query_by_role_and_label(Role::Toolbar, "Sketch bar")
+            .is_none()
+    );
     // One undo takes the whole sketch back.
     h.get_by_role_and_label(Role::Button, "Undo").click();
     step(&mut h);
@@ -6697,9 +6700,18 @@ fn edit_sketch_from_the_browser_opens_it_at_the_revision_its_asked_at_and_reads_
     let read = sketch_mode(&h).unwrap().drawable().unwrap();
     let lines: Vec<&str> = read.members.lines.iter().map(|l| l.id.as_str()).collect();
     assert_eq!(lines, ["na000000", "nb000000", "nc000000"]);
-    // One read, however many frames pass with nothing moving.
+    // Once the model the edit made is published (its rebuild may land after sketch mode
+    // opens, which reads it again), one read for it, however many frames pass with
+    // nothing moving.
+    step_until(&mut h, "the edit's model published", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.published == Some(tab.revision)
+            && sketch_mode(h)
+                .and_then(|mode| mode.read.as_ref())
+                .is_some_and(|read| read.model == Some(tab.revision))
+    });
     let reads = sketch_mode(&h).unwrap().reads;
-    assert_eq!(reads, 1);
+    assert!(reads <= 2, "{reads}");
     for _ in 0..20 {
         step(&mut h);
     }
@@ -7099,8 +7111,7 @@ fn a_refused_read_is_kept_and_said_and_delete_still_goes_to_the_core() {
     });
     let said = {
         let mode = sketch_mode(&h).unwrap();
-        mode.palette_view(h.state().tabs()[0].revision, &eframe::egui::Visuals::dark())
-            .said
+        mode.palette_view(h.state().tabs()[0].revision).said
     };
     let said = said.unwrap();
     step_until(&mut h, "it said", |h| anywhere(h, &said));

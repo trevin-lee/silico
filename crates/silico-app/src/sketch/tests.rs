@@ -20,8 +20,9 @@ use silico_core::sketch_tools::{Preview, Relation, Shown as Showing};
 
 use super::draw::{
     Drawn, Flat, GlyphKind, LabelKind, MAX_CURVE_SEGMENTS, Scale, Shown, StrokeKind, View, drawing,
-    preview, region_fills, round_points, segments, signed_area, triangulate,
+    preview, region_fills, round_points, segments, tessellate,
 };
+use super::draw::{add, direction, mul};
 use super::hit::{Hit, hit};
 use super::style::*;
 use super::*;
@@ -736,9 +737,10 @@ fn the_profile_is_filled_less_its_holes_and_not_when_over_defined() {
 }
 
 #[test]
-fn ear_clipping_covers_a_concave_polygon_and_a_holed_one_exactly() {
+fn the_tessellation_covers_a_concave_polygon_and_a_holed_one_exactly() {
     // An L: (0,0) (40,0) (40,10) (10,10) (10,30) (0,30), clockwise as given: its foot 40
-    // by 10 and its upright 10 by 20, 600 mm².
+    // by 10 and its upright 10 by 20, 600 mm². The tessellator works in f32, about the
+    // loops' middle: areas to a thousandth.
     let l = vec![
         [0.0, 0.0],
         [0.0, 30.0],
@@ -748,29 +750,26 @@ fn ear_clipping_covers_a_concave_polygon_and_a_holed_one_exactly() {
         [40.0, 0.0],
     ];
     let total = |t: &[[[f64; 2]; 3]]| t.iter().map(|t| signed_area(&t[..]).abs()).sum::<f64>();
-    let triangles = triangulate(l, Vec::new());
-    assert_eq!(triangles.len(), 4);
-    assert!(
-        (total(&triangles) - 600.0).abs() < 1e-9,
-        "{}",
-        total(&triangles)
-    );
-    // Every triangle counter-clockwise, so none folds back over another.
-    assert!(triangles.iter().all(|t| signed_area(&t[..]) > 0.0));
+    assert!((total(&tessellate(&[l]).unwrap()) - 600.0).abs() < 1e-3);
     // A square with two holes: 100 less 4 and 9.
     let square = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
-    let holes = vec![
+    let loops = [
+        square,
         vec![[1.0, 1.0], [3.0, 1.0], [3.0, 3.0], [1.0, 3.0]],
         vec![[5.0, 5.0], [8.0, 5.0], [8.0, 8.0], [5.0, 8.0]],
     ];
-    let triangles = triangulate(square, holes);
+    let triangles = tessellate(&loops).unwrap();
     assert!(
-        (total(&triangles) - 87.0).abs() < 1e-9,
+        (total(&triangles) - 87.0).abs() < 1e-3,
         "{}",
         total(&triangles)
     );
-    // Too few points to clip: nothing.
-    assert!(triangulate(vec![[0.0, 0.0], [1.0, 0.0]], Vec::new()).is_empty());
+    // Too few points to fill: nothing.
+    assert!(
+        tessellate(&[vec![[0.0, 0.0], [1.0, 0.0]]])
+            .unwrap_or_default()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -1038,7 +1037,7 @@ fn an_empty_sketch_draws_only_the_origin_and_hits_nothing() {
         }]
     );
     assert_eq!(hit(&read, [0.0, 0.0], 100.0, HAND), None);
-    assert_eq!(state_shown(&read, &egui::Visuals::dark()).words, "Empty");
+    assert_eq!(state_shown(&read).words, "Empty");
 }
 
 #[test]
@@ -1566,14 +1565,12 @@ fn the_palette_says_a_refused_read_of_the_tabs_revision_and_waits_on_an_older_on
         model: Some(r(2)),
         result: Err(refused),
     });
-    assert_eq!(mode.palette_view(r(3), &egui::Visuals::dark()).said, None);
+    assert_eq!(mode.palette_view(r(3)).said, None);
     assert_eq!(
-        mode.palette_view(r(2), &egui::Visuals::dark())
-            .said
-            .as_deref(),
+        mode.palette_view(r(2)).said.as_deref(),
         Some("the document has no feature s0000001")
     );
-    assert_eq!(mode.palette_view(r(2), &egui::Visuals::dark()).state, None);
+    assert_eq!(mode.palette_view(r(2)).state, None);
 }
 
 #[test]
@@ -1584,7 +1581,7 @@ fn the_states_words_are_the_prototypes_and_the_prefixes_solidworks() {
         .iter()
         .map(|&s| {
             read.states.state = s;
-            let shown = state_shown(&read, &egui::Visuals::dark());
+            let shown = state_shown(&read);
             (shown.words, shown.colour, prefix(s))
         })
         .collect();
@@ -1618,18 +1615,16 @@ fn the_status_line_names_the_sketch_its_pointer_by_the_planes_axes_and_its_state
     read.states.dofs = 2;
     read.plane = Ok(OriginPlane::Xz.into());
     let mut mode = mode_on(read);
-    let line = mode.status("Sketch1", &egui::Visuals::dark());
+    let line = mode.status("Sketch1");
     assert_eq!(line.editing, "Editing Sketch1");
     assert_eq!(line.coordinates, None);
     assert_eq!(line.state.unwrap().words, "Under defined · 2 DOF");
     mode.pointer = Some([15.0, -5.25]);
     assert_eq!(
-        mode.status("Sketch1", &egui::Visuals::dark())
-            .coordinates
-            .as_deref(),
+        mode.status("Sketch1").coordinates.as_deref(),
         Some("x 15.000 · z -5.250 mm")
     );
-    let bar = mode.bar_view("Sketch1", true, &egui::Visuals::dark());
+    let bar = mode.bar_view("Sketch1", true);
     assert_eq!((bar.name.as_str(), bar.plane.as_str()), ("Sketch1", "XZ"));
     // A face whose frame broke: by u and v.
     if let Some(Read {
@@ -1642,17 +1637,12 @@ fn the_status_line_names_the_sketch_its_pointer_by_the_planes_axes_and_its_state
         ));
     }
     assert_eq!(
-        mode.status("Top", &egui::Visuals::dark())
-            .coordinates
-            .as_deref(),
+        mode.status("Top").coordinates.as_deref(),
         Some("u 15.000 · v -5.250 mm")
     );
     assert_eq!(
-        mode.palette_view(
-            silico_core::command::Revision::OPENED,
-            &egui::Visuals::dark()
-        )
-        .plane_problem,
+        mode.palette_view(silico_core::command::Revision::OPENED)
+            .plane_problem,
         Some(("gone".to_owned(), None))
     );
 }
@@ -1853,6 +1843,17 @@ fn delete_joins_two_arcs_or_a_line_and_an_arc_at_their_point_and_removes_a_point
     );
 }
 
+/// Twice a polygon's signed area, halved: positive counter-clockwise.
+fn signed_area(ring: &[[f64; 2]]) -> f64 {
+    (0..ring.len())
+        .map(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            a[0] * b[1] - a[1] * b[0]
+        })
+        .sum::<f64>()
+        / 2.0
+}
+
 /// The area of `fills`' triangles, in square millimetres.
 fn fill_area(fills: &[draw::RegionFill]) -> f64 {
     fills
@@ -1883,7 +1884,7 @@ fn a_profile_with_a_side_written_backwards_fills_the_same() {
         &[],
     )];
     let fills = region_fills(&read, HAND);
-    assert!((fill_area(&fills) - 800.0).abs() < 1e-9);
+    assert!((fill_area(&fills) - 800.0).abs() < 1e-3);
     let drawn = drawing(
         &read,
         &view(),
@@ -1965,7 +1966,7 @@ fn covered(triangles: &[[[f64; 2]; 3]], p: [f64; 2]) -> bool {
 fn a_profiles_hole_is_left_uncovered_and_the_rest_covered() {
     let outer = vec![[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]];
     let hole = vec![[10.0, 5.0], [20.0, 5.0], [20.0, 15.0], [10.0, 15.0]];
-    let triangles = triangulate(outer, vec![hole]);
+    let triangles = tessellate(&[outer, hole]).unwrap();
     // The hole's middle, and a point just inside its edge, uncovered.
     assert!(!covered(&triangles, [15.0, 10.0]));
     assert!(!covered(&triangles, [10.5, 14.5]));
@@ -2117,9 +2118,7 @@ fn contrast(a: egui::Color32, b: egui::Color32) -> f64 {
 }
 
 #[test]
-fn the_states_words_are_coloured_for_the_theme_they_stand_on() {
-    let (dark, light) = (egui::Visuals::dark(), egui::Visuals::light());
-    assert_ne!(dark.window_fill, light.window_fill);
+fn the_states_words_stand_out_from_the_panels_they_stand_on() {
     let mut read = under(rectangle(Vec::new()));
     let mut reads = Vec::new();
     for state in SketchState::ALL {
@@ -2130,32 +2129,10 @@ fn the_states_words_are_coloured_for_the_theme_they_stand_on() {
     empty.members = sketch_of(Vec::new(), Vec::new(), Vec::new());
     reads.push(empty);
     for read in &reads {
-        let (on_dark, on_light) = (state_shown(read, &dark), state_shown(read, &light));
-        assert_ne!(on_dark.colour, on_light.colour, "{}", on_dark.words);
-        for (shown, visuals) in [(&on_dark, &dark), (&on_light, &light)] {
-            let ratio = contrast(shown.colour, visuals.window_fill);
-            assert!(
-                ratio >= 3.0,
-                "{} on {}: {ratio}",
-                shown.words,
-                visuals.dark_mode
-            );
-        }
+        let shown = state_shown(read);
+        let ratio = contrast(shown.colour, FLOATING_BG);
+        assert!(ratio >= 3.0, "{}: {ratio}", shown.words);
     }
-    // On the light theme: over defined and no solution in its error colour, and every other
-    // state's colour its own (SketchState::ALL's order: under, fully, over, no solution,
-    // invalid; then empty).
-    let on_light: Vec<egui::Color32> = reads
-        .iter()
-        .map(|read| state_shown(read, &light).colour)
-        .collect();
-    assert_eq!(on_light[2], light.error_fg_color);
-    assert_eq!(on_light[3], light.error_fg_color);
-    let distinct: std::collections::BTreeSet<[u8; 4]> = [0, 1, 2, 4, 5]
-        .iter()
-        .map(|&n| on_light[n].to_array())
-        .collect();
-    assert_eq!(distinct.len(), 5);
 }
 
 #[test]
@@ -2233,11 +2210,9 @@ fn the_plates_cache_is_keyed_on_the_read_the_scale_the_view_and_whats_shown() {
     let before = drawn_fill(&mode, 10.0).unwrap();
     assert_eq!((mode.drawings, mode.fill_builds), (5, 2));
     // A new read, one hole's circle gone: both worked out again; the fill grows by the
-    // hole as the fill drew it. At 1/16 a hole would take 29 chords, and 60 × 29 + 4 =
-    // 1,744 vertices don't fit (1,744² + 60 · 1,744 is past 2.5 million), so it's worked out
-    // at 1/8: 2·acos(1 − 1/80) = 0.3164 rad a chord, 20 to a turn; coarsened, each hole is
-    // circumscribed, a 20-gon of 20 · 6.25 · tan(π/20) = 19.7981 (to the screen
-    // triangles' f32 rounding).
+    // hole as its outline draws it: at 1/16, r / scale = 40 points, 2·acos(1 − 0.25/40) =
+    // 0.2238 rad a chord, 29 to a turn, an inscribed 29-gon of 14.5 · 6.25 · sin(2π/29)
+    // (to the screen triangles' f32 rounding).
     let mut fewer = read.clone();
     fewer
         .members
@@ -2253,7 +2228,8 @@ fn the_plates_cache_is_keyed_on_the_read_the_scale_the_view_and_whats_shown() {
     frames_at(&mut mode, 10.0, 0.0, 2);
     assert_eq!((mode.drawings, mode.fill_builds), (6, 3));
     let grown = drawn_fill(&mode, 10.0).unwrap() - before;
-    assert!((grown - 19.798_055).abs() < 2e-3, "{grown}");
+    let gon = 14.5 * 6.25 * libm::sin(TAU / 29.0);
+    assert!((grown - gon).abs() < 2e-3, "{grown} for {gon}");
     // Show Profile off: drawn again, the fill kept but not drawn.
     mode.settings.show_profile = false;
     frames_at(&mut mode, 10.0, 0.0, 2);
@@ -2268,40 +2244,29 @@ fn the_plates_cache_is_keyed_on_the_read_the_scale_the_view_and_whats_shown() {
 }
 
 #[test]
-fn the_plate_zoomed_far_in_keeps_a_fill_worked_out_coarser_within_the_work_bound() {
-    // 80 points a millimetre: 0.0125 mm a point, the fill asked at 1/128. Its holes at
-    // 80 chords (then 57, 40, and 29 at each coarser power) are past the bound; at 1/8,
-    // 20, it fits, and it's never left out.
+fn the_plate_zoomed_far_in_fills_at_its_outlines_fidelity() {
+    // 80 points a millimetre: the fill at 1/128, each hole r / scale = 320 points, so
+    // 2·acos(1 − 0.25/320) = 0.0791 rad a chord, 80 to a turn: the plate less 60 inscribed
+    // 80-gons, 40 · 6.25 · sin(π/40) each.
     let mut mode = mode_on(plate());
     frames_at(&mut mode, 80.0, 0.0, 2);
     let fills = mode.fill_at(-7).unwrap();
     assert_eq!(fills.len(), 1);
-    // A polygon of n vertices with h holes bridged clips into n + 2h − 2 triangles.
-    let vertices = fills[0].triangles.len() + 2 - 2 * 60;
-    assert!(
-        vertices * vertices + 60 * vertices <= draw::MAX_FILL_WORK,
-        "{vertices}"
-    );
-    assert_eq!(vertices, 60 * 20 + 4);
-    // Each hole circumscribed: 20 · 6.25 · tan(π/20) = 19.7981, 0.1630 over π · 6.25. The
-    // fill falls short of the plate by that, never over it.
+    let gon = 40.0 * 6.25 * libm::sin(PI / 40.0);
     let got = fill_area(fills);
-    let want = 6000.0 - 60.0 * PI * 6.25;
-    let short = 60.0 * (125.0 * libm::tan(PI / 20.0) - PI * 6.25);
-    assert!((got - (want - short)).abs() < 1e-6, "{got}");
+    assert!((got - (6000.0 - 60.0 * gon)).abs() < 1e-2, "{got}");
     assert!(drawn_fill(&mode, 80.0).is_some());
 }
 
 #[test]
-fn each_holes_bridge_goes_where_it_crosses_no_other_hole() {
-    // C, furthest right, bridges first; then A, a tall slot; then B, whose nearest vertex,
-    // C's (30, 9.5), lies across A. B must bridge elsewhere, or A's slot is filled over.
+fn three_holes_in_a_row_are_each_left_uncovered() {
+    // A tall slot, A, between two small holes, B and C: none filled over.
     let outer = vec![[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]];
     let square = |x0: f64, x1: f64, y0: f64, y1: f64| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
     let c = square(30.0, 31.0, 9.5, 10.5);
     let a = square(24.0, 25.0, 1.0, 19.0);
     let b = square(20.0, 21.0, 9.5, 10.5);
-    let triangles = triangulate(outer, vec![c, a, b]);
+    let triangles = tessellate(&[outer, c, a, b]).unwrap();
     for p in [
         [24.5, 5.0],
         [24.5, 10.2],
@@ -2316,7 +2281,7 @@ fn each_holes_bridge_goes_where_it_crosses_no_other_hole() {
     }
     // 800 less C's 1, A's 18, and B's 1.
     let total: f64 = triangles.iter().map(|t| signed_area(&t[..]).abs()).sum();
-    assert!((total - 780.0).abs() < 1e-9, "{total}");
+    assert!((total - 780.0).abs() < 1e-3, "{total}");
 }
 
 /// A `size` × `size` grid of holes of 5 mm across, 10 mm apart, in a plate `10 · size`
@@ -2381,52 +2346,48 @@ fn holed(size: usize, round: Option<f64>) -> SketchRead {
 }
 
 #[test]
-fn a_plate_of_225_holes_still_gets_a_fill() {
-    // 225 circles at their fewest, 4 each, are 904 vertices: 904² + 225 · 904, within the
-    // bound; with 8 each, past it.
+fn a_plate_of_225_holes_fills_within_the_chord_bound() {
+    // Each hole at 1/16 mm a point is a 29-gon inscribed in it (r / scale = 40 points,
+    // 2·acos(1 − 0.25/40) = 0.2238 rad a chord): the fill exceeds 150² − 225 · π · 6.25 by
+    // at most the holes' perimeters times the chords' sagitta, 0.25 / 16 mm.
     let read = holed(15, None);
-    let fills = region_fills(&read, draw::fill_scale(Scale(0.1)).1);
+    let at = draw::fill_scale(Scale(0.1)).1;
+    let fills = region_fills(&read, at);
     assert_eq!(fills.len(), 1);
-    // Coarsened, each hole circumscribed: the fill falls short of 150² − 225 · π · 6.25,
-    // by at most each hole being its circumscribed square, side 5, at its fewest chords.
     let want = 150.0 * 150.0 - 225.0 * PI * 6.25;
     let got = fill_area(&fills);
-    assert!(got <= want && got >= 150.0 * 150.0 - 225.0 * 25.0, "{got}");
+    let bound = 225.0 * TAU * 2.5 * 0.25 * at.0;
+    assert!(got >= want - 1e-2 && got <= want + bound, "{got}");
 }
 
 #[test]
-fn a_coarsened_fill_keeps_outside_each_hole_and_inside_a_round_outer_boundary() {
-    // The 60-hole grid inside a circle of radius 70 about (50, 50), at 1/128 (coarsened):
-    // each fill vertex near a hole at its radius or past it, and every one within the outer
-    // circle.
+fn a_close_fill_keeps_outside_each_hole_and_inside_a_round_outer_boundary() {
+    // The 60-hole grid inside a circle of radius 70 about (50, 50), at 1/128: every fill
+    // vertex at a hole's radius or past it, and within the outer circle.
     let mut read = holed(10, Some(70.0));
-    // Six rows: drop the last four of the ten.
     read.members.circles.retain(|c| {
         c.id.as_str() == "cr000000" || c.id.as_str()[2..].parse::<usize>().is_ok_and(|n| n < 60)
     });
     read.regions[0].holes.truncate(60);
-    let middle = [50.0, 50.0];
-    let fine = region_fills(&read, Scale(1.0 / 128.0));
-    let vertices: Vec<[f64; 2]> = fine[0].triangles.iter().flatten().copied().collect();
-    // Coarsened: fewer vertices than the outline's at 1/128 (80 to a hole).
-    let distinct: std::collections::BTreeSet<[u64; 2]> = vertices
-        .iter()
-        .map(|v| [v[0].to_bits(), v[1].to_bits()])
-        .collect();
-    assert!(distinct.len() < 60 * 80, "{}", distinct.len());
+    let fills = region_fills(&read, Scale(1.0 / 128.0));
+    let vertices: Vec<[f64; 2]> = fills[0].triangles.iter().flatten().copied().collect();
     for v in &vertices {
-        let off_middle = libm::hypot(v[0] - middle[0], v[1] - middle[1]);
-        assert!(off_middle <= 70.0 + 1e-9, "{v:?} outside the outer circle");
+        assert!(
+            libm::hypot(v[0] - 50.0, v[1] - 50.0) <= 70.0 + 1e-3,
+            "{v:?} outside"
+        );
         for n in 0..60 {
             let centre = [5.0 + 10.0 * (n % 10) as f64, 5.0 + 10.0 * (n / 10) as f64];
-            let off = libm::hypot(v[0] - centre[0], v[1] - centre[1]);
-            assert!(off >= 2.5 - 1e-9, "{v:?} inside hole {n}");
+            assert!(
+                libm::hypot(v[0] - centre[0], v[1] - centre[1]) >= 2.5 - 1e-3,
+                "{v:?} in {n}"
+            );
         }
     }
 }
 
 #[test]
-fn an_uncoarsened_fill_meets_its_outline_vertex_for_vertex() {
+fn a_fill_meets_its_outline_vertex_for_vertex_at_every_zoom() {
     let mut read = under(sketch_of(
         vec![point("pa000001", 0.0, 0.0)],
         Vec::new(),
@@ -2439,36 +2400,226 @@ fn an_uncoarsened_fill_meets_its_outline_vertex_for_vertex() {
         construction: false,
     });
     read.regions = vec![region(&["ca000001"], &[])];
-    let fills = region_fills(&read, draw::fill_scale(HAND).1);
-    let drawn = drawing(
-        &read,
-        &view(),
-        Shown::default(),
-        &Default::default(),
-        &fills,
+    // At 10 points a millimetre (the fill at 1/16, 160 points of radius: 57 chords) and at
+    // 80 (1/128, 1,280 points: 159).
+    for (zoom, chords) in [(10.0, 57), (80.0, 159)] {
+        let (project, _) = zoomed(zoom, 0.0);
+        let view = View {
+            project: &*project,
+            scale: Scale(1.0 / zoom),
+            visible: None,
+            chord_tolerance: SKETCH_CHORD_TOLERANCE,
+        };
+        let fills = region_fills(&read, draw::fill_scale(view.scale).1);
+        let drawn = drawing(&read, &view, Shown::default(), &Default::default(), &fills);
+        let key = |p: Pos2| ((p.x * 16.0).round() as i64, (p.y * 16.0).round() as i64);
+        let outline: std::collections::BTreeSet<(i64, i64)> = drawn
+            .iter()
+            .find_map(|d| match d {
+                Drawn::Stroke {
+                    of: Some(of),
+                    points,
+                    ..
+                } if of.as_str() == "ca000001" => Some(points.iter().map(|&p| key(p)).collect()),
+                _ => None,
+            })
+            .unwrap();
+        let filled: std::collections::BTreeSet<(i64, i64)> = drawn
+            .iter()
+            .find_map(|d| match d {
+                Drawn::Fill { triangles, .. } => {
+                    Some(triangles.iter().flatten().map(|&p| key(p)).collect())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(outline.len(), chords, "at {zoom}");
+        assert_eq!(outline, filled, "at {zoom}");
+    }
+}
+
+/// `columns` × `rows` holes of 5 mm across at `pitch`, in a plate just holding them, its
+/// profile one region.
+fn pitched(columns: usize, rows: usize, pitch: f64) -> SketchRead {
+    let (width, height) = (pitch * columns as f64, pitch * rows as f64);
+    let mut points = vec![
+        point("pa000001", 0.0, 0.0),
+        point("pa000002", width, 0.0),
+        point("pa000003", width, height),
+        point("pa000004", 0.0, height),
+    ];
+    let mut circles = Vec::new();
+    for n in 0..columns * rows {
+        let (row, column) = (n / columns, n % columns);
+        points.push(point(
+            &format!("pc{n:06}"),
+            pitch / 2.0 + pitch * column as f64,
+            pitch / 2.0 + pitch * row as f64,
+        ));
+        circles.push(SketchCircle {
+            id: id(&format!("cc{n:06}")),
+            center: id(&format!("pc{n:06}")),
+            radius: Coordinate::new(2.5).unwrap(),
+            construction: false,
+        });
+    }
+    let mut sketch = rectangle(Vec::new());
+    sketch.lines = vec![
+        line("na000001", "pa000001", "pa000002"),
+        line("na000002", "pa000002", "pa000003"),
+        line("na000003", "pa000003", "pa000004"),
+        line("na000004", "pa000004", "pa000001"),
+    ];
+    sketch.points = points;
+    sketch.circles = circles;
+    let mut read = under(sketch);
+    read.regions = vec![Region {
+        outer: ["na000001", "na000002", "na000003", "na000004"]
+            .iter()
+            .map(|n| id(n))
+            .collect(),
+        holes: (0..columns * rows)
+            .map(|n| vec![id(&format!("cc{n:06}"))])
+            .collect(),
+    }];
+    read
+}
+
+#[test]
+fn a_perforated_plate_at_a_close_pitch_covers_no_hole_and_fills_within_the_chord_bound() {
+    // 300 holes of r 2.5 on a 7 mm pitch, 2 mm of web between them, in a 140 × 105 plate.
+    let read = pitched(20, 15, 7.0);
+    let at = draw::fill_scale(Scale(0.1)).1;
+    let fills = region_fills(&read, at);
+    assert_eq!(fills.len(), 1);
+    let triangles = &fills[0].triangles;
+    // Each hole inscribed (29 chords at 1/16): the fill exceeds the true area by at most the
+    // holes' perimeters times the chords' sagitta.
+    let want = 140.0 * 105.0 - 300.0 * PI * 6.25;
+    let got = fill_area(&fills);
+    assert!(
+        got >= want - 1e-2 && got <= want + 300.0 * TAU * 2.5 * 0.25 * at.0,
+        "{got}"
     );
-    let key = |p: Pos2| ((p.x * 16.0).round() as i64, (p.y * 16.0).round() as i64);
-    let outline: std::collections::BTreeSet<(i64, i64)> = drawn
-        .iter()
-        .find_map(|d| match d {
-            Drawn::Stroke {
-                of: Some(of),
-                points,
-                ..
-            } if of.as_str() == "ca000001" => Some(points.iter().map(|&p| key(p)).collect()),
-            _ => None,
-        })
-        .unwrap();
-    let filled: std::collections::BTreeSet<(i64, i64)> = drawn
-        .iter()
-        .find_map(|d| match d {
-            Drawn::Fill { triangles, .. } => {
-                Some(triangles.iter().flatten().map(|&p| key(p)).collect())
+    // No hole covered: 16 points at r 2.4 round each, inside its inscribed 29-gon (whose
+    // chords come no nearer its centre than 2.5 · cos(π/29) = 2.485). Triangles found by a
+    // grid of the pitch's cells.
+    let cell = |p: [f64; 2]| ((p[0] / 7.0).floor() as i64, (p[1] / 7.0).floor() as i64);
+    let mut grid: BTreeMap<(i64, i64), Vec<[[f64; 2]; 3]>> = BTreeMap::new();
+    for t in triangles {
+        let (lo, hi) = (
+            [
+                t[0][0].min(t[1][0]).min(t[2][0]),
+                t[0][1].min(t[1][1]).min(t[2][1]),
+            ],
+            [
+                t[0][0].max(t[1][0]).max(t[2][0]),
+                t[0][1].max(t[1][1]).max(t[2][1]),
+            ],
+        );
+        let (a, b) = (cell(lo), cell(hi));
+        for x in a.0..=b.0 {
+            for y in a.1..=b.1 {
+                grid.entry((x, y)).or_default().push(*t);
             }
-            _ => None,
-        })
-        .unwrap();
-    // 160 points of radius at 1/16, tolerance 0.25: 57 chords, its 57 vertices both's.
-    assert_eq!(outline.len(), 57);
-    assert_eq!(outline, filled);
+        }
+    }
+    for n in 0..300 {
+        let centre = [3.5 + 7.0 * (n % 20) as f64, 3.5 + 7.0 * (n / 20) as f64];
+        for k in 0..16 {
+            let p = add(centre, mul(direction(TAU * k as f64 / 16.0), 2.4));
+            let near = grid.get(&cell(p)).map_or(&[][..], Vec::as_slice);
+            assert!(!covered(near, p), "hole {n} covered at {p:?}");
+        }
+        // And the web between holes, 3.5 mm off a centre, covered (but past the plate's end).
+        let web = add(centre, [3.5, 0.0]);
+        if web[0] < 140.0 {
+            let near = grid.get(&cell(web)).map_or(&[][..], Vec::as_slice);
+            assert!(covered(near, web), "web at {web:?}");
+        }
+    }
+}
+
+#[test]
+fn a_slot_hole_and_a_concave_notch_fill_exactly_within_the_chord_bound() {
+    // A 60 × 30 plate whose top has a notch: a half circle of radius 10 about (30, 30),
+    // bulging down into it. A slot hole: two lines and two half circles of radius 3 about
+    // (15, 8) and (25, 8), its lines written backwards.
+    let sketch = Sketch {
+        plane: OriginPlane::Xy.into(),
+        points: vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 60.0, 0.0),
+            point("pa000003", 60.0, 30.0),
+            point("pa000004", 40.0, 30.0),
+            point("pa000005", 20.0, 30.0),
+            point("pa000006", 0.0, 30.0),
+            point("pn000000", 30.0, 30.0),
+            point("pq000001", 15.0, 8.0),
+            point("pq000002", 25.0, 8.0),
+            point("ps000001", 15.0, 5.0),
+            point("ps000002", 25.0, 5.0),
+            point("ps000003", 25.0, 11.0),
+            point("ps000004", 15.0, 11.0),
+        ],
+        lines: vec![
+            line("na000001", "pa000001", "pa000002"),
+            line("na000002", "pa000002", "pa000003"),
+            line("na000003", "pa000003", "pa000004"),
+            line("na000004", "pa000005", "pa000006"),
+            line("na000005", "pa000006", "pa000001"),
+            line("nm000001", "ps000002", "ps000001"),
+            line("nm000002", "ps000004", "ps000003"),
+        ],
+        circles: Vec::new(),
+        arcs: vec![
+            // Counter-clockwise from (20, 30) by the bottom to (40, 30).
+            arc("an000000", "pn000000", "pa000005", "pa000004"),
+            arc("ab000001", "pq000001", "ps000004", "ps000001"),
+            arc("ab000002", "pq000002", "ps000002", "ps000003"),
+        ],
+        constraints: Vec::new(),
+    };
+    let mut read = under(sketch);
+    read.regions = vec![region(
+        &[
+            "na000001", "na000002", "na000003", "an000000", "na000004", "na000005",
+        ],
+        &[&["nm000001", "ab000001", "nm000002", "ab000002"]],
+    )];
+    let at = draw::fill_scale(HAND).1;
+    let fills = region_fills(&read, at);
+    assert_eq!(fills.len(), 1);
+    // 1,800 less the notch's half disc, 50π, and the slot, 60 + 9π. Both inscribed, so the
+    // fill exceeds it, by at most their arcs' lengths (10π and 6π) times the sagitta.
+    let want = 1800.0 - 50.0 * PI - (60.0 + 9.0 * PI);
+    let got = fill_area(&fills);
+    assert!(
+        got >= want - 1e-2 && got <= want + 16.0 * PI * 0.25 * at.0,
+        "{got} for {want}"
+    );
+    let triangles = &fills[0].triangles;
+    // The slot's inside, and just inside the notch's circle, uncovered; just below it, and
+    // the plate's corner, covered.
+    for p in [
+        [20.0, 8.0],
+        [13.0, 8.0],
+        [27.0, 8.0],
+        [30.0, 20.5],
+        [30.0, 29.0],
+    ] {
+        assert!(!covered(triangles, p), "{p:?} covered");
+    }
+    for p in [[30.0, 19.5], [5.0, 5.0], [20.0, 4.0], [20.0, 12.0]] {
+        assert!(covered(triangles, p), "{p:?} uncovered");
+    }
+}
+
+#[test]
+fn the_same_read_fills_with_the_same_triangles_every_time() {
+    let read = plate();
+    let first = region_fills(&read, Scale(0.0625));
+    for _ in 0..3 {
+        assert_eq!(region_fills(&read, Scale(0.0625)), first);
+    }
 }

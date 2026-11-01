@@ -1,8 +1,8 @@
 //! Sketch mode's canvas colours and sizes, the approved prototype's (docs/design/m5-ui/:
 //! DESIGN.md's *Tokens*, `js/sketch.js`). They move into `theme.rs` with the port: the
 //! shared tokens here are stand-ins under `theme.rs`'s own names, types, and values, so the
-//! move deletes them; the sketch's own follow, under the names agreed for it. Panels' colours
-//! aren't here: the palette and the bar take theirs from the theme in use (`ui.visuals()`).
+//! move deletes them; the sketch's own follow, under the names agreed for it. The app is
+//! dark only, as the prototype is.
 
 use eframe::egui::{Color32, Margin, Stroke};
 
@@ -41,8 +41,16 @@ pub const GRAY_700: Color32 = hex(0xbfbfbf);
 pub const FOCUS: Color32 = hex(0x4676ff);
 /// The warning orange.
 pub const WARNING: Color32 = hex(0xff7a0c);
-/// Subdued text (Gray.550): an empty sketch's state, on the dark theme.
+/// The panels' and text's tokens the palette and the sketch bar are drawn with: floating
+/// panels' fill (Gray.200) and border (Gray.250); subdued (Gray.550), default (Gray.750),
+/// and strong (Gray.1000) text; text on the selection (Blue.900); and error text (Red.550).
+pub const FLOATING_BG: Color32 = hex(0x212121);
+pub const PANEL_BORDER: Color32 = hex(0x272626);
 pub const TEXT_SUBDUED: Color32 = hex(0x939090);
+pub const TEXT_DEFAULT: Color32 = hex(0xcfcfcf);
+pub const TEXT_STRONG: Color32 = hex(0xffffff);
+pub const ON_SELECTION: Color32 = hex(0xf0f2ff);
+pub const ERROR_TEXT: Color32 = hex(0xff3865);
 /// The selection's blue (Blue.500): the profile's fill is it, faint.
 pub const SELECTION_BG: Color32 = hex(0x186add);
 /// The axes: X (Red.600), Y (Green.600), Z (Blue.600).

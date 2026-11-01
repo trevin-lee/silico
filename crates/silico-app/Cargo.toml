@@ -18,6 +18,8 @@ eframe.workspace = true
 egui_tiles.workspace = true
 # Sketch mode's drawing math, the same bits on every platform as the rest of Silico's.
 libm.workspace = true
+# Sketch mode's profile fill, its outline's polylines in triangles.
+lyon_tessellation.workspace = true
 # The backends eframe's renderer draws with (Metal, Vulkan), as the workspace chooses them.
 wgpu.workspace = true
 tracing.workspace = true

@@ -879,9 +879,8 @@ impl<P: Clients + 'static> App<P> {
             return;
         };
         let canvas = self.canvas.unwrap_or_else(|| ui.ctx().content_rect());
-        let visuals = ui.visuals().clone();
-        let bar = mode.bar_view(&name, enabled, &visuals);
-        let view = mode.palette_view(revision, &visuals);
+        let bar = mode.bar_view(&name, enabled);
+        let view = mode.palette_view(revision);
         let mut action = BarAction::None;
         egui::Area::new(egui::Id::new(("sketch_bar", id.to_string())))
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))

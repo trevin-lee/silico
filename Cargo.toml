@@ -71,6 +71,8 @@ egui_tiles = "=0.17.1"
 # Drives the app through its accessibility tree in tests, with no GPU (dev only).
 egui_kittest = "=0.36.2"
 silico-font = { path = "crates/silico-font" }
+# Sketch mode's profile fill: an outline and its holes, even-odd, in triangles (silico-app).
+lyon_tessellation = "1.0.23"
 glam = "0.30"
 macaw = "0.30"
 pollster = "0.4"

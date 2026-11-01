@@ -17,7 +17,7 @@ pub mod style;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Vec2, Visuals};
+use eframe::egui::{self, Painter, Pos2, Rect, Vec2};
 use silico_core::Error;
 use silico_core::command::sketch::SketchRead;
 use silico_core::command::{ModelChoice, Problems, Revision, Running, SessionId, Sessions};
@@ -37,51 +37,22 @@ use style::*;
 
 /// A sketch's state as sketch mode words it (SolidWorks' five states, in the prototype's
 /// words: an empty sketch "Empty", an under-defined one with its degrees of freedom left),
-/// in a colour for text on the theme `visuals` are of: the canvas's state colours on the
-/// dark theme, as the prototype has them; on a light one, colours that mean the same and
-/// stand out from its panels: the selection's blue (not egui's light theme's pale fill), the
-/// theme's own strong text and error colours, and its warning colour darkened.
-pub fn state_shown(read: &SketchRead, visuals: &Visuals) -> StateShown {
+/// in the canvas's state colours, as the prototype has them.
+pub fn state_shown(read: &SketchRead) -> StateShown {
     let empty = read.members.elements().next().is_none();
-    let dark = visuals.dark_mode;
-    let pick = |on_dark: Color32, on_light: Color32| if dark { on_dark } else { on_light };
     let (words, colour) = match read.states.state {
-        _ if empty => (
-            "Empty".to_owned(),
-            pick(TEXT_SUBDUED, visuals.weak_text_color()),
-        ),
+        _ if empty => ("Empty".to_owned(), TEXT_SUBDUED),
         SketchState::UnderDefined => (
             format!("Under defined · {} DOF", read.states.dofs),
-            pick(SKETCH_UNDER_DEFINED, SELECTION_BG),
+            SKETCH_UNDER_DEFINED,
         ),
-        SketchState::FullyDefined => (
-            "Fully defined".to_owned(),
-            pick(SKETCH_FULLY_DEFINED, visuals.strong_text_color()),
-        ),
-        SketchState::OverDefined => (
-            "Over defined".to_owned(),
-            pick(SKETCH_OVER_DEFINED, visuals.error_fg_color),
-        ),
-        SketchState::NoSolution => (
-            "No solution found".to_owned(),
-            pick(SKETCH_OVER_DEFINED, visuals.error_fg_color),
-        ),
-        SketchState::Invalid => (
-            "Invalid solution found".to_owned(),
-            pick(
-                SKETCH_INVALID,
-                visuals
-                    .warn_fg_color
-                    .lerp_to_gamma(Color32::BLACK, DARKENED_ON_LIGHT),
-            ),
-        ),
+        SketchState::FullyDefined => ("Fully defined".to_owned(), SKETCH_FULLY_DEFINED),
+        SketchState::OverDefined => ("Over defined".to_owned(), SKETCH_OVER_DEFINED),
+        SketchState::NoSolution => ("No solution found".to_owned(), SKETCH_OVER_DEFINED),
+        SketchState::Invalid => ("Invalid solution found".to_owned(), SKETCH_INVALID),
     };
     StateShown { words, colour }
 }
-
-/// How far toward black the light theme's warning colour is taken for an invalid sketch's
-/// words: egui's own is under 3:1 on its panels.
-const DARKENED_ON_LIGHT: f32 = 0.3;
 
 /// A word on what the state means, as the palette says it.
 fn hint(state: SketchState) -> Option<&'static str> {
@@ -544,7 +515,7 @@ impl SketchMode {
     /// What the palette shows, the tab at `revision`: the state's words; the read's refusal
     /// if it's of the session's own revision (one of an older model, from before the sketch
     /// was added, waits for the next); and the plane's problem.
-    pub fn palette_view(&self, revision: Revision, visuals: &Visuals) -> PaletteView {
+    pub fn palette_view(&self, revision: Revision) -> PaletteView {
         let said = match &self.read {
             Some(Read {
                 result: Err(problems),
@@ -553,7 +524,7 @@ impl SketchMode {
             _ => None,
         };
         PaletteView {
-            state: self.drawable().map(|read| state_shown(read, visuals)),
+            state: self.drawable().map(state_shown),
             hint: self.state().and_then(hint),
             tool: self.tool,
             said,
@@ -570,7 +541,7 @@ impl SketchMode {
 impl SketchMode {
     /// What the status bar says of the sketch, named `name`: that it's being edited, the
     /// pointer's coordinates on its plane, and its state.
-    pub fn status(&self, name: &str, visuals: &Visuals) -> StatusLine {
+    pub fn status(&self, name: &str) -> StatusLine {
         let plane = self.drawable().and_then(|read| read.plane.as_ref().ok());
         let [u, v] = plane_words(plane).1;
         StatusLine {
@@ -578,17 +549,17 @@ impl SketchMode {
             coordinates: self
                 .pointer
                 .map(|[x, y]| format!("{u} {x:.3} · {v} {y:.3} mm")),
-            state: self.drawable().map(|read| state_shown(read, visuals)),
+            state: self.drawable().map(state_shown),
         }
     }
 
     /// What the sketch bar shows of the sketch, named `name`.
-    pub fn bar_view(&self, name: &str, enabled: bool, visuals: &Visuals) -> bar::BarView {
+    pub fn bar_view(&self, name: &str, enabled: bool) -> bar::BarView {
         let plane = self.drawable().and_then(|read| read.plane.as_ref().ok());
         bar::BarView {
             name: name.to_owned(),
             plane: plane_words(plane).0.to_owned(),
-            state: self.drawable().map(|read| state_shown(read, visuals)),
+            state: self.drawable().map(state_shown),
             enabled,
         }
     }
