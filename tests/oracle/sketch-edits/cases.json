@@ -1840,6 +1840,20 @@
     }
   },
   {
+    "name": "trim_line_with_reversed_angle_end_kept",
+    "note": "The horizontal line trimmed at the upright, its start's side picked, its end kept: the reversed angle (FreeCAD's start-point form, b from its end) stays on the piece; 1.1.3 keeps an angle with positions on one piece, where Silico copies an angle to every line piece, so the harness takes it off before FreeCAD's trim and puts it back as Silico does (#se-trim-a-positioned-angle).",
+    "sketch": "line_with_reversed_angle_and_upright",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          2,
+          0
+        ]
+      }
+    }
+  },
+  {
     "name": "extend_point",
     "note": "A point: refused by both.",
     "sketch": "extend_other_kinds",
