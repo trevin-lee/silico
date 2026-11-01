@@ -156,10 +156,17 @@ fn pixel(scene: &RenderScene, p: [f64; 3]) -> (f64, f64) {
     (w / 2.0 + x * scale, h / 2.0 - y * scale)
 }
 
-/// What a ray from `origin` along `dir` hits first of the box from 0 to `size`: its face's
-/// number (x low 1, x high 2, y low 3, y high 4, z low 5, z high 6), or none.
+/// How far along a cast's ray (a perspective one's is its depth: the ray's part along the
+/// view is 1) a surface must be to be drawn: what's within a nanometre of the eye is cut.
+const NEAREST: f64 = 1e-6;
+
+/// What a ray from `origin` along `dir` sees first of the box from 0 to `size`, a nanometre
+/// or more along it: the face it enters by (x low 1, x high 2, y low 3, y high 4, z low 5,
+/// z high 6), or, from inside the box there, the face it leaves by (a box's skin is drawn
+/// from both sides), or none.
 fn hit(origin: [f64; 3], dir: [f64; 3], size: [f64; 3]) -> Option<u32> {
-    let (mut near, mut far, mut face) = (f64::NEG_INFINITY, f64::INFINITY, None);
+    let (mut near, mut far) = (f64::NEG_INFINITY, f64::INFINITY);
+    let (mut enters, mut leaves) = (None, None);
     for k in 0..3 {
         if dir[k] == 0.0 {
             if origin[k] < 0.0 || origin[k] > size[k] {
@@ -169,13 +176,26 @@ fn hit(origin: [f64; 3], dir: [f64; 3], size: [f64; 3]) -> Option<u32> {
         }
         let (t0, t1) = ((0.0 - origin[k]) / dir[k], (size[k] - origin[k]) / dir[k]);
         let (enter, exit, side) = if t0 < t1 { (t0, t1, 0) } else { (t1, t0, 1) };
+        let axis = 2 * u32::try_from(k).unwrap() + 1;
         if enter > near {
             near = enter;
-            face = Some(2 * u32::try_from(k).unwrap() + 1 + side);
+            enters = Some(axis + side);
         }
-        far = far.min(exit);
+        if exit < far {
+            far = exit;
+            leaves = Some(axis + 1 - side);
+        }
     }
-    (near <= far && near > 0.0).then_some(face).flatten()
+    if near > far {
+        return None;
+    }
+    if near >= NEAREST {
+        enters
+    } else if far >= NEAREST {
+        leaves
+    } else {
+        None
+    }
 }
 
 /// The ID the pixel at `(u, v)` (in pixels from the top left) sees of the box at `low` of
@@ -711,9 +731,8 @@ fn a_close_look_at_a_small_box_with_a_body_a_kilometre_ahead_still_sees_the_box(
     // the box) or 1e6 mm aside.
     //
     // A body 1e6 mm aside at 0.5 to 1.5 mm deep is 1e6 / 0.5 = 2e6 times as far across the
-    // view as along it, past the 2^20 tan(30°) / 48 = 12612 f32 draws to an eighth of a
-    // pixel over 48 rows: refused, naming the eye. The core leaves it out (it's outside the
-    // view, `sees`), so a render draws the box alone.
+    // view as along it, past the 2^20 tan(30°) / 48 = 12612 the pyramid holds over 48 rows:
+    // cut away as it's drawn (and the core leaves it out, as it's outside the view, `sees`).
     let mut w = worker();
     let camera = Camera {
         projection: Projection::Perspective {
@@ -741,11 +760,14 @@ fn a_close_look_at_a_small_box_with_a_body_a_kilometre_ahead_still_sees_the_box(
         "with a body 1e6 ahead: {wrong} pixels not the front face"
     );
     let aside = [[1e6, 0.0, 0.0], [1e6 + 1.0, 1.0, 1.0]];
-    refused(
+    let (_, ids) = draw(
         &mut w,
         &scene(vec![the_box(), body(2, box_mesh(aside[0], [1.0; 3]))]),
-        "camera.eye",
-        "body 2 is 2000001.",
+    );
+    let wrong = ids.iter().filter(|id| **id != FRONT).count();
+    assert_eq!(
+        wrong, 0,
+        "with a body 1e6 aside: {wrong} pixels not the front face"
     );
     assert_eq!(
         silico_core::views::sees(&camera, 64, 48, aside),
@@ -758,14 +780,12 @@ fn a_close_look_at_a_small_box_with_a_body_a_kilometre_ahead_still_sees_the_box(
 
 #[test]
 fn a_sequence_that_moves_faces_between_their_centres_and_the_eye_draws_as_a_fresh_worker_does() {
-    // The rod seen 40 mm off at 120° (its long faces about the eye, re-uploaded each view:
-    // 5e5 / 40 = 12500 times as large as near, past the 2^20 tan(60°) / (64 × 7) = 4054
-    // their centres hold to an eighth of a pixel at the corner, sec² 7; its ends about their
-    // centres), then from 5e5 mm (all about their centres), then close again, with
-    // highlights turned on and off as faces move between the two points: each scene's PNG
-    // and ID buffer from one worker holding the meshes before it against a fresh worker's,
-    // byte for byte. At 40 mm its far end is 1e6 / 40 = 25000 times as far across as along,
-    // under the 2^20 tan(60°) / 64 = 28378 f32 draws.
+    // The rod seen at its end, 5 mm off at 0.5° (its long faces past the pyramid, 1e6 / 5 =
+    // 2e5 times as far across the view as along it against its 2^20 tan 0.25° / 64 = 71.5:
+    // cut to it about the eye, cut again each view; its ends about their centres), then from
+    // farther (all about their centres, none cut), then close again, with highlights turned
+    // on and off as faces move between the two: each scene's PNG and ID buffer from one
+    // worker holding the meshes before it against a fresh worker's, byte for byte.
     let rod = box_mesh([0.0; 3], [1e6, 20.0, 10.0]);
     let view = |x: f64, distance: f64, faces: Vec<u32>, edges: Vec<u32>| RenderScene {
         bodies: vec![RenderBody {
@@ -774,9 +794,7 @@ fn a_sequence_that_moves_faces_between_their_centres_and_the_eye_draws_as_a_fres
             ..body(1, rod.clone())
         }],
         camera: Camera {
-            projection: Projection::Perspective {
-                field_of_view: 120.0,
-            },
+            projection: Projection::Perspective { field_of_view: 0.5 },
             eye: [x, -distance, 5.0],
             target: [x, 0.0, 5.0],
             up: [0.0, 0.0, 1.0],
@@ -786,14 +804,14 @@ fn a_sequence_that_moves_faces_between_their_centres_and_the_eye_draws_as_a_fres
         ids: true,
     };
     let scenes = [
-        view(0.01, 40.0, vec![], vec![]),
-        view(0.01, 40.0, vec![2], vec![3]),
-        view(0.012, 40.0, vec![2, 3], vec![]),
+        view(0.01, 5.0, vec![], vec![]),
+        view(0.01, 5.0, vec![2], vec![3]),
+        view(0.012, 5.0, vec![2, 3], vec![]),
         view(0.012, 5e5, vec![2], vec![]),
         view(0.012, 5e5, vec![], vec![0, 3]),
-        view(0.011, 40.0, vec![], vec![0, 3]),
-        view(0.011, 40.0, vec![0, 1, 2, 3, 4, 5], vec![]),
-        view(0.01, 40.0, vec![], vec![]),
+        view(0.011, 5.0, vec![], vec![0, 3]),
+        view(0.011, 5.0, vec![0, 1, 2, 3, 4, 5], vec![]),
+        view(0.01, 5.0, vec![], vec![]),
     ];
     let mut held = worker();
     for (i, s) in scenes.iter().enumerate() {
@@ -817,9 +835,10 @@ fn a_box_at_each_of_the_checks_limits_draws_as_a_fresh_worker_does() {
     // orthographic at its least height from its corner, 64 √2100 / 2^19 (its far corner is
     // √2100 off); perspective at the narrowest and the widest angle 64 by 64 allows (by hand,
     // 0.006994° and 179.986012°), from 1e5 mm and from a nanometre before its front face,
-    // the least a point may be before the eye; and from just past where the front face's
-    // far corner, √490 mm off the axis through (21, 0, 7), is 2^20 tan(30°) / 64 = 9459.31
-    // times as far across the view as along it, at 60°.
+    // the least a point may be before the eye to be drawn (the pyramid's floor); and from
+    // where the front face's far corner, √490 mm off the axis through (21, 0, 7), is 2^20
+    // tan(30°) / 64 = 9459.31 times as far across the view as along it, at 60° (by the
+    // pyramid's |x| + |y|, 28, past its side: that face is cut).
     let the_box = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
     let (narrowest, widest) = field_of_view_range(64, 64);
     assert!(
@@ -892,16 +911,9 @@ fn a_box_at_each_of_the_checks_limits_draws_as_a_fresh_worker_does() {
     past[1].camera.projection = Projection::Perspective {
         field_of_view: narrowest.next_down(),
     };
-    past[2].camera.eye[1] = -9.99e-7;
-    past[3].camera.eye[1] = -across * (1.0 - 2e-9);
     for (i, (s, parameter)) in past
         .iter()
-        .zip([
-            "camera.view_height",
-            "camera.field_of_view",
-            "camera.eye",
-            "camera.eye",
-        ])
+        .zip(["camera.view_height", "camera.field_of_view"])
         .enumerate()
     {
         assert_eq!(s.check().unwrap_err().parameter, parameter, "scene {i}");
@@ -973,9 +985,8 @@ fn look() -> impl Strategy<Value = Look> {
             0..6usize,
             fraction(),
             fraction(),
-            // Close looks twice as often as far ones, and those at most a metre off: the
-            // check refuses close perspective looks at a kilometre slab, and farther ones at
-            // a wide angle see a slab under a pixel.
+            // Close looks twice as often as far ones, and those at most a metre off: farther
+            // ones at a wide angle see a slab under a pixel.
             prop_oneof![1 => Just(1e-2), 2 => 1e-2..50.0f64, 1 => 50.0..1e3f64],
             prop::array::uniform2(prop_oneof![Just(0.0), -1.5..1.5f64]),
             prop::array::uniform3(-1.0..1.0f64),
@@ -1014,7 +1025,7 @@ fn look() -> impl Strategy<Value = Look> {
 /// The scene of the slab at `low` of `size` from `look`, its eye moved by `step` (the
 /// second view), orthographic at `look.zoom` times the least height its reach allows (`h ×
 /// reach / 2^19`), or none where the numbers make no view the check takes (an angle past the
-/// size's, or a perspective eye too near the slab for how far across the view it reaches).
+/// size's).
 fn scene_of(low: [f64; 3], size: [f64; 3], look: &Look, step: [f64; 3]) -> Option<RenderScene> {
     let axis = look.face / 2;
     let high = look.face % 2 == 1;
@@ -1078,10 +1089,7 @@ fn random_close_looks(perspective: bool) {
     let w = RefCell::new(worker());
     let mut runner = TestRunner::new_with_rng(
         Config {
-            // The check refuses most close perspective looks at a kilometre slab (too far
-            // across the view for their depth), so a perspective run takes more cases for
-            // as many views drawn.
-            cases: if perspective { 2400 } else { 1000 },
+            cases: 1000,
             failure_persistence: None,
             // Each shrink draws again: a few dozen find the smallest case well enough.
             max_shrink_iters: 64,
@@ -1172,8 +1180,7 @@ fn random_close_perspective_looks_at_long_slabs_draw_every_clear_face_pixel_as_a
     //
     // Was a break (the rasterizer, on the eye's path from M4.6): its smallest case was
     // `a_long_face_seen_close_from_before_its_middle_at_a_narrow_angle_is_drawn_whole`'s,
-    // which the check refuses now (a point too far across the view for its depth): the
-    // views `scene_of` keeps are those the check takes.
+    // which is cut to the view's pyramid now, in f64, and drawn whole.
     random_close_looks(true);
 }
 
@@ -1401,36 +1408,35 @@ fn slab_seen_from_below(
 #[test]
 fn a_long_face_seen_close_from_before_its_middle_at_a_narrow_angle_is_drawn_whole() {
     // Was a break (the rasterizer, on the eye's path from M4.6): from 48.37 mm below the
-    // slab's bottom at 0.5°, the bottom fills the view, but half the image was background:
-    // its two triangles' far corners, 318 m off at 48 mm deep, land some 1e8 pixels off the
-    // image, and the clipper's f32 slides a guard-band cut by 2^-24 of that. That view is
-    // refused now, naming the eye: by hand, the far corners are √(318205.17² + 0.5²) /
-    // 48.3746 = 6577.94 times as far across the view as along it, and 0.5° over 2048 rows
-    // draws 2^20 tan(0.25°) / 2048 = 2.2340 times (mpmath).
+    // slab's bottom at 0.5°, the bottom fills the view (it is 1 mm across y, the view 2 ×
+    // 48.37 × tan 0.25° = 0.42 mm high, and 318 m long either way across x), so by hand every
+    // pixel is Face5, but half the image was background: its two triangles' far corners,
+    // 318 m off at 48 mm deep, land some 1e8 pixels off the image, and the clipper's f32
+    // slides a guard-band cut by 2^-24 of that. By hand, the far corners are √(318205.17² +
+    // 0.5²) / 48.3746 = 6577.94 times as far across the view as along it, and the pyramid
+    // 0.5° over 2048 rows holds 2^20 tan(0.25°) / 2048 = 2.2340 times (mpmath): the bottom
+    // is cut to it in f64, about the eye, and drawn whole, as two triangles or a strip of
+    // 10,000.
     //
     // From 1.08 m below at 60°, the slab 500 mm across so it's some 820 of the 2048 rows
     // (a pixel 0.61 mm there), its far corners √(318205.17² + 250²) / 1080 = 294.63 times
-    // as far across as along, under the 2^20 tan(30°) / 2048 = 295.60 drawn; or
-    // orthographic, its target the bottom's centre, at 1.0001 times the least height the
-    // reach allows (by hand, 2048 × √(318205.17² + 250² + 1) / 2^19 = 1242.989 mm): the bottom is drawn whole, its pixels
-    // what the cast sees, as two triangles or a strip of 10,000.
+    // as far across as along, under the 2^20 tan(30°) / 2048 = 295.60 the pyramid holds,
+    // so uncut; or orthographic, its target the bottom's centre, at 1.0001 times the least
+    // height the reach allows (by hand, 2048 × √(318205.17² + 250² + 1) / 2^19 = 1242.989
+    // mm): the bottom is drawn whole, its pixels what the cast sees, as two triangles or a
+    // strip of 10,000.
     let mut w = worker();
     let narrow = Projection::Perspective { field_of_view: 0.5 };
-    refused(
-        &mut w,
-        &slab_seen_from_below(1, 1.0, 48.374_580_540_203_375, narrow),
-        "camera.eye",
-        "body 1 is 6577.94",
-    );
-    let e = slab_seen_from_below(1, 1.0, 48.374_580_540_203_375, narrow)
-        .check()
-        .unwrap_err();
-    assert!(
-        e.message.contains("more than the 2.234035620199"),
-        "{}",
-        e.message
-    );
     let mut misses = vec![];
+    for pieces in [10_000, 1] {
+        let scene = slab_seen_from_below(pieces, 1.0, 48.374_580_540_203_375, narrow);
+        let (_, ids) = draw(&mut w, &scene);
+        let (wrong, on) = cast_misses(&scene, [0.0; 3], [BOTTOM_SLAB, 1.0, 1.0], &ids, 1);
+        assert!(on > 40_000, "close, {pieces} pieces: {on}");
+        if !wrong.is_empty() {
+            misses.push((narrow, pieces, wrong.len(), wrong[0]));
+        }
+    }
     let views = [
         (
             Projection::Perspective {
@@ -1463,4 +1469,217 @@ fn a_long_face_seen_close_from_before_its_middle_at_a_narrow_angle_is_drawn_whol
         "the bottom in pieces: how many pixels clear of a boundary differ, and the first (at, \
          got, want): {misses:?}"
     );
+}
+
+// ---------------------------------------------------------------------------------------
+// The pyramid: a perspective view draws what lies in P = { depth ≥ 1e-6, |x| + |y| ≤ B ×
+// depth }, B = 2^20 tan(fov / 2) / height, each face and edge cut to it in f64. The casts by
+// hand keep only what P keeps (in an image, its sides are far outside the view, so its
+// floor alone cuts what a pixel sees: `hit`'s nanometre).
+
+/// The bench's box (40 × 20 × 10 from the origin) seen from `eye` along +y, up +z, 90°, 64
+/// by 48.
+fn box_from(eye: [f64; 3]) -> RenderScene {
+    RenderScene {
+        bodies: vec![body(1, box_mesh([0.0; 3], [40.0, 20.0, 10.0]))],
+        camera: Camera {
+            projection: Projection::Perspective {
+                field_of_view: 90.0,
+            },
+            eye,
+            target: [eye[0], eye[1] + 10.0, eye[2]],
+            up: [0.0, 0.0, 1.0],
+        },
+        width: 64,
+        height: 48,
+        ids: true,
+    }
+}
+
+#[test]
+fn a_box_seen_from_inside_shows_its_walls_cut_at_the_view_and_its_edges_where_they_are() {
+    // From its centre, from its x low wall's plane (that wall through the eye, seen edge on),
+    // and 1 mm from that wall: every pixel clear of a boundary is the wall a ray cast by
+    // hand from the eye meets first (from inside, the one it leaves by), and every edge
+    // pixel within a pixel of where its edge projects. The walls beside and behind the eye
+    // are cut to the view's pyramid; from inside, its far wall is at the centre.
+    let mut w = worker();
+    for eye in [[20.0, 10.0, 5.0], [0.0, 10.0, 5.0], [1.0, 10.0, 5.0]] {
+        let scene = box_from(eye);
+        let (_, ids) = draw(&mut w, &scene);
+        let (wrong, on) = cast_misses(&scene, [0.0; 3], [40.0, 20.0, 10.0], &ids, 1);
+        assert!(on > 1_000, "{eye:?}: {on}");
+        assert!(
+            wrong.is_empty(),
+            "{eye:?}: {} pixels clear of a boundary differ (at, got, want), the first {:?}",
+            wrong.len(),
+            &wrong[..wrong.len().min(5)]
+        );
+        // By hand, 8.5 pixels right of the centre is 0.354 across for each mm deep: the far
+        // wall, 10 deep, 3.5 right of the eye (the centre's column holds the x low wall's
+        // edges, edge on, from its plane).
+        assert_eq!(at(&ids, 64, 40, 24), [1, 4], "{eye:?}: the far wall");
+        let off = edge_pixels_off(&scene, &ids);
+        assert!(
+            off.is_empty(),
+            "{eye:?}: edge pixels more than a pixel from their edge's projection, the first {:?}",
+            &off[..off.len().min(6)]
+        );
+    }
+}
+
+#[test]
+fn a_floor_passing_under_the_eye_is_drawn_to_its_edge() {
+    // A floor 20 m square, its top 1 mm under the eye, reaching 10 m behind and beside it;
+    // looking level along +y at 60°: by hand its top (Face6) is every pixel clear of a
+    // boundary below the horizon (row 24), the sky above, and its far edge 10 m off a
+    // ten-thousandth of a radian under the horizon.
+    let mut w = worker();
+    let low = [-1e4, -1e4, -2.0];
+    let size = [2e4, 2e4, 1.0];
+    let scene = RenderScene {
+        bodies: vec![body(1, box_mesh(low, size))],
+        camera: Camera {
+            projection: Projection::Perspective {
+                field_of_view: 60.0,
+            },
+            eye: [0.0; 3],
+            target: [0.0, 10.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        },
+        width: 64,
+        height: 48,
+        ids: true,
+    };
+    let (_, ids) = draw(&mut w, &scene);
+    let (wrong, on) = cast_misses(&scene, low, size, &ids, 1);
+    assert!(on > 1_000, "{on}");
+    assert!(wrong.is_empty(), "{:?}", &wrong[..wrong.len().min(5)]);
+    assert_eq!(at(&ids, 64, 32, 40), [1, 6]);
+    assert_eq!(at(&ids, 64, 32, 8), BACKGROUND);
+}
+
+#[test]
+fn a_wall_a_nanometre_before_the_eye_is_drawn_whole_and_one_nearer_not_at_all() {
+    // A box 2 × 1 × 2 about the view's axis, its front face (Face3, y = 0) facing the eye:
+    // from 1e-6 mm before it, the least depth drawn, the face fills the image (cut to the
+    // pyramid, 2^20 tan 30° / 48 × 1e-6 = 0.0126 mm across there, which is 89.995° off the
+    // axis); from 9.99e-7, nearer, it's cut away whole, and the eye sees the box's back
+    // face (Face4) from inside. Every pixel, by hand and by the cast.
+    let mut w = worker();
+    let scene = |distance: f64| RenderScene {
+        bodies: vec![body(1, box_mesh([-1.0, 0.0, -1.0], [2.0, 1.0, 2.0]))],
+        camera: Camera {
+            projection: Projection::Perspective {
+                field_of_view: 60.0,
+            },
+            eye: [0.0, -distance, 0.0],
+            target: [0.0, 10.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        },
+        width: 64,
+        height: 48,
+        ids: true,
+    };
+    for (distance, want) in [(1e-6, FRONT), (9.99e-7, [1, 4])] {
+        let s = scene(distance);
+        let (_, ids) = draw(&mut w, &s);
+        let wrong = ids.iter().filter(|id| **id != want).count();
+        assert_eq!(wrong, 0, "{distance}: {wrong} pixels not {want:?}");
+        let (misses, _) = cast_misses(&s, [-1.0, 0.0, -1.0], [2.0, 1.0, 2.0], &ids, 1);
+        assert!(
+            misses.is_empty(),
+            "{distance}: {:?}",
+            &misses[..misses.len().min(5)]
+        );
+    }
+}
+
+/// The pixels of `ids` whose centres are more than an eighth of a pixel from the boundary
+/// of `triangle`'s projection (every vertex before the eye) and aren't what that says: the
+/// triangle's ID, body 1's face 1, inside it, the background outside (at, got, want).
+fn triangle_misses(scene: &RenderScene, triangle: [[f64; 3]; 3], ids: &[PixelId]) -> Vec<Miss> {
+    let q: Vec<(f64, f64)> = triangle.iter().map(|&p| pixel(scene, p)).collect();
+    let (w, h) = (i64::from(scene.width), i64::from(scene.height));
+    let mut out = vec![];
+    for row in 0..h {
+        for col in 0..w {
+            let (x, y) = (col as f64 + 0.5, row as f64 + 0.5);
+            let sides: Vec<f64> = (0..3)
+                .map(|i| {
+                    let ((ax, ay), (bx, by)) = (q[i], q[(i + 1) % 3]);
+                    (bx - ax) * (y - ay) - (by - ay) * (x - ax)
+                })
+                .collect();
+            let inside = sides.iter().all(|&s| s >= 0.0) || sides.iter().all(|&s| s <= 0.0);
+            let near = (0..3).any(|i| {
+                let ((ax, ay), (bx, by)) = (q[i], q[(i + 1) % 3]);
+                let (dx, dy) = (bx - ax, by - ay);
+                let t = (((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                let (ex, ey) = (ax + t * dx - x, ay + t * dy - y);
+                (ex * ex + ey * ey).sqrt() <= 0.125
+            });
+            if near {
+                continue;
+            }
+            let want = if inside { [1, 1] } else { BACKGROUND };
+            let got = ids[usize::try_from(row * w + col).unwrap()];
+            if got != want {
+                out.push(((col, row), got, want));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_triangle_reaching_the_pyramids_side_is_drawn_within_an_eighth_of_a_pixel() {
+    // From the origin along +y, up +z, 30° over 4096 rows (64 wide): B = 2^20 tan 15° / 4096
+    // = 68.595 (by hand). A triangle at depth 1 from (−0.01, 1, ±0.2), left of the image, to
+    // a vertex on the pyramid's side, (B, 1, 0), 2^19 pixels right of the axis: drawn as it
+    // is, every pixel more than an eighth of a pixel from its projection's boundary the
+    // triangle inside it and the background outside. With that vertex a ten-thousandth past
+    // the side, the triangle is cut there, 2^19 pixels off the image, and drawn the same.
+    let mut w = worker();
+    let b = libm::tan(15f64.to_radians()) * 1_048_576.0 / 4096.0;
+    assert!((b - 68.594_993_262_367_41).abs() < 1e-9, "{b}");
+    for reach in [b, b * 1.0001] {
+        let triangle = [[-0.01, 1.0, -0.2], [reach, 1.0, 0.0], [-0.01, 1.0, 0.2]];
+        let mesh = Mesh {
+            positions: triangle.to_vec(),
+            normals: vec![[0.0, -1.0, 0.0]; 3],
+            triangles: vec![[0, 1, 2]],
+            face_triangles: vec![1],
+            edge_points: vec![],
+            edge_point_counts: vec![],
+            valid: None,
+        };
+        let scene = RenderScene {
+            bodies: vec![body(1, mesh)],
+            camera: Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 30.0,
+                },
+                eye: [0.0; 3],
+                target: [0.0, 10.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+            },
+            width: 64,
+            height: 4096,
+            ids: true,
+        };
+        let (_, ids) = draw(&mut w, &scene);
+        let inside = ids.iter().filter(|id| **id == [1, 1]).count();
+        assert!(
+            inside > 64 * 1000,
+            "{reach}: only {inside} pixels of the triangle"
+        );
+        let misses = triangle_misses(&scene, triangle, &ids);
+        assert!(
+            misses.is_empty(),
+            "{reach}: {} pixels off, the first {:?}",
+            misses.len(),
+            &misses[..misses.len().min(5)]
+        );
+    }
 }

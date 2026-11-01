@@ -106,19 +106,8 @@ fn a_kilometre_rod_seen_close_at_its_end_draws_its_end_where_it_is() {
     // 1e-9 mm, and M4.6's renderer (main at 39e9ddbb) passes this test and the two after it.
     // Now a body is drawn about the camera's point when a view is as close as this
     // (`View::anchor`).
-    //
-    // That view is refused now: the rod's far end is 1e6 / 5 = 2e5 times as far across the
-    // view as along it, past the 2^20 tan(0.25°) / 64 = 71.5 f32 draws to an eighth of a
-    // pixel. The same view of the end, 14.7 pixels left of the centre, from 40 mm at 120°
-    // (25000 times, under 2^20 tan 60° / 64 = 28378): a pixel is 2·40·tan 60°/64 = 2.165
-    // mm, the eye 31.8 mm right of the end, the rod 100 mm high so a row crosses it (it's
-    // still drawn about the eye: its long faces are 5e5 / 40 = 12500 times as large as near,
-    // past the 4054 its centre holds at 120°).
-    let thin = box_mesh([0.0; 3], [1e6, 1.0, 1.0]);
-    let refused = front_close(0.01, 5.0, 0.5, vec![body(1, thin)]);
-    assert_eq!(refused.check().unwrap_err().parameter, "camera.eye");
-    let rod = box_mesh([0.0, 0.0, -50.0], [1e6, 1.0, 100.0]);
-    let (x, distance, fov) = (31.8, 40.0, 120.0);
+    let rod = box_mesh([0.0; 3], [1e6, 1.0, 1.0]);
+    let (x, distance, fov) = (0.01, 5.0, 0.5);
     let scene = front_close(x, distance, fov, vec![body(1, rod)]);
     let (_, ids) = draw(&mut worker(), &scene);
     let (outside, inside) = either_side_of_the_end(x, distance, fov);
@@ -181,9 +170,8 @@ fn a_kilometre_rod_at_the_least_orthographic_zoom_draws_its_end_where_it_is() {
 fn a_point_no_one_draws_a_kilometre_off_a_small_box_leaves_the_box_where_it_is() {
     // Was a break: one edge of a single point (drawn as nothing: an edge needs two) at x = 1e6
     // moves the box's centre to x = 5e5, and the 1 mm box, seen as in the rod's test, is
-    // drawn 14.7 pixels from where it is. A point so far across the view for its depth is
-    // refused now (1e6 / 5 = 2e5 times, past the 71.5 0.5° draws over 64 rows), so the
-    // point is 1e6 mm along the view: the body's box reaches it, its faces' don't.
+    // drawn 14.7 pixels from where it is. The point passes the check (within 1e12 mm), and
+    // a perspective view has no zoom limit by reach.
     let (x, distance, fov) = (0.01, 5.0, 0.5);
     let (outside, inside) = either_side_of_the_end(x, distance, fov);
     let row_of = |ids: &[PixelId]| (0..64).map(|c| at(ids, 64, c, 32)).collect::<Vec<_>>();
@@ -201,15 +189,10 @@ fn a_point_no_one_draws_a_kilometre_off_a_small_box_leaves_the_box_where_it_is()
             row_of(&ids)
         );
     }
-    // With the point aside, refused; along the view, drawn where it is.
+    // With the point.
     let mut mesh = alone;
     mesh.edge_points.push([1e6, 0.5, 0.5]);
     mesh.edge_point_counts.push(1);
-    let aside = front_close(x, distance, fov, vec![body(1, mesh.clone())]);
-    assert_eq!(aside.check().unwrap_err().parameter, "camera.eye");
-    if let Some(point) = mesh.edge_points.last_mut() {
-        *point = [0.5, 1e6, 0.5];
-    }
     let scene = front_close(x, distance, fov, vec![body(1, mesh)]);
     let (_, ids) = draw(&mut worker(), &scene);
     assert_eq!(at(&ids, 64, outside, 32), BACKGROUND, "{:?}", row_of(&ids));

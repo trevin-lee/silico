@@ -1317,35 +1317,23 @@ fn an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allow
 }
 
 #[test]
-fn a_perspective_frame_takes_the_angles_and_eyes_a_scenes_check_does_at_its_size() {
+fn a_perspective_frame_takes_the_angles_a_scenes_check_does_at_its_size_and_any_eye() {
     on_lavapipe(
-        "render::frame_tests::a_perspective_frame_takes_the_angles_and_eyes_a_scenes_check_does_at_its_size",
+        "render::frame_tests::a_perspective_frame_takes_the_angles_a_scenes_check_does_at_its_size_and_any_eye",
         |r| {
             r.upload(1, &the_box()).unwrap();
-            // From in front of the front face's point (21, 0, 7), looking +y, at 1° over 48
-            // rows: a point may be 2^20 tan(0.5°) / 48 = 190.6 times as far across the view
-            // as along it (by hand). The face's farthest corner from the axis, (0, 0, 0), is
-            // √(21² + 7²) = 22.14 across at the eye's distance d: 0.2 mm off, 110.7 times,
-            // drawn; 0.1 mm off, 221.4, refused, naming the eye; the box's back corners nearer
-            // the axis for their depth either way.
             let at = |distance: f64, field_of_view: f64| Camera {
                 projection: Projection::Perspective { field_of_view },
                 eye: [21.0, -distance, 7.0],
                 target: [21.0, 10.0, 7.0],
                 up: [0.0, 0.0, 1.0],
             };
-            let camera = at(0.2, 1.0);
-            r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
-            let camera = at(0.1, 1.0);
-            assert_eq!(refused(r, &frame(&camera, &[1], &[], None)), "camera.eye");
-            // An eye in the front face's plane, or behind it, reaches the eye's plane.
-            for distance in [0.0, -1.0] {
-                let camera = at(distance, 60.0);
-                assert_eq!(
-                    refused(r, &frame(&camera, &[1], &[], None)),
-                    "camera.eye",
-                    "{distance}"
-                );
+            // Any eye: 0.1 mm before the front face (its corners 221 times as far across the
+            // view as along it at 1°, past the pyramid's 190.6 over 48 rows: cut), in its
+            // plane, or inside the box: each drawn, what's outside the pyramid cut away.
+            for (distance, field_of_view) in [(0.2, 1.0), (0.1, 1.0), (0.0, 60.0), (-1.0, 60.0)] {
+                let camera = at(distance, field_of_view);
+                r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
             }
             // The angle at the frame's size: at 64 by 48, from 0.005246° (by hand, the
             // quadratic's root): 0.001° is refused, 0.006° drawn.
@@ -1356,6 +1344,86 @@ fn a_perspective_frame_takes_the_angles_and_eyes_a_scenes_check_does_at_its_size
             );
             let camera = at(1e5, 0.006);
             r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
+        },
+    );
+}
+
+/// Every pixel's ID of `camera`'s frame of `bodies`, `size` pixels (at most 256 a side), as
+/// its picking reads them back: the body's number and the element's, as the worker's ID
+/// buffer writes them.
+fn frame_ids(r: &mut Renderer, camera: &Camera, bodies: &[u32], size: [u32; 2]) -> Vec<[u32; 2]> {
+    let asking = Frame {
+        size_px: size,
+        picking: Some(rect([0, 0], size)),
+        ..frame(camera, bodies, &[], None)
+    };
+    pick(r, &asking);
+    // `pick` took the answer's hit; the frame again, and its readback read whole.
+    draw(r, &asking);
+    draw(
+        r,
+        &Frame {
+            serial: asking.serial.wrapping_add(1),
+            picking: None,
+            ..asking
+        },
+    );
+    r.harvest();
+    let answer = r.picked.take().expect("no answer");
+    answer
+        .ids
+        .iter()
+        .map(|id| {
+            [
+                u32::try_from(id.object.0).unwrap(),
+                u32::try_from(id.instance.0).unwrap(),
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn a_box_seen_from_inside_draws_in_a_frame_as_the_workers_render_draws_it() {
+    on_lavapipe(
+        "render::frame_tests::a_box_seen_from_inside_draws_in_a_frame_as_the_workers_render_draws_it",
+        |r| {
+            // The bench's box with the eye at its centre, in a wall's plane (x = 0), and 1 mm
+            // from it, looking along +y at 90°: its walls beside and behind the eye cut to the
+            // view's pyramid, as a frame and the worker's render cut them, pixel for pixel.
+            for eye in [[20.0, 10.0, 5.0], [0.0, 10.0, 5.0], [1.0, 10.0, 5.0]] {
+                let camera = Camera {
+                    projection: Projection::Perspective {
+                        field_of_view: 90.0,
+                    },
+                    eye,
+                    target: [eye[0], 20.0, eye[2]],
+                    up: [0.0, 0.0, 1.0],
+                };
+                let scene = silico_protocol::RenderScene {
+                    bodies: vec![silico_protocol::RenderBody {
+                        body: 1,
+                        mesh: Mesh::clone(&the_box()),
+                        highlight_faces: vec![],
+                        highlight_edges: vec![],
+                    }],
+                    camera: camera.clone(),
+                    width: WIDTH,
+                    height: HEIGHT,
+                    ids: true,
+                };
+                scene.check().unwrap();
+                let rendered = r.render(&scene).unwrap().ids.unwrap();
+                assert!(
+                    rendered.contains(&[1, 4]),
+                    "{eye:?}: the far wall isn't drawn"
+                );
+                r.upload(1, &the_box()).unwrap();
+                let framed = frame_ids(r, &camera, &[1], [WIDTH, HEIGHT]);
+                assert!(
+                    framed == rendered,
+                    "{eye:?}: the frame differs from the render"
+                );
+            }
         },
     );
 }

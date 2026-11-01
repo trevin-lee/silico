@@ -862,11 +862,9 @@ fn a_measured_body_across_the_eyes_plane_answers_its_floor_as_its_level_as_rende
     assert_eq!(body.serves, [0.0, pow2(-6)]);
     let asked = bench.meshed().len();
     assert_eq!(asked, asked_before + 1);
-    // A render of the same view meshes nothing more (the floor's mesh, kept), and is then
-    // refused: the body reaches behind the perspective eye's plane, which the render's
-    // check refuses, naming the eye. `meshes` answers it, for a viewport to cull.
+    // A render of the same view meshes nothing more: the floor's mesh, kept.
     let renderer = FakeRenderer::new();
-    let refused = render(
+    render(
         &bench.model,
         &Render {
             view: None,
@@ -886,17 +884,9 @@ fn a_measured_body_across_the_eyes_plane_answers_its_floor_as_its_level_as_rende
             settle: &|| Ok(()),
         },
     )
-    .map(|_| ())
-    .unwrap_err();
-    assert_eq!(refused.errors()[0].parameter(), Some("camera.eye"));
-    assert!(
-        refused.errors()[0]
-            .message()
-            .starts_with("body 1 reaches camera.eye's plane"),
-        "{:?}",
-        refused.errors()
-    );
-    assert!(renderer.sent().is_empty());
+    .unwrap_or_else(|p| panic!("{:?}", p.errors()));
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(renderer.sent()[0].bodies.len(), 1);
     assert_eq!(bench.meshed().len(), asked);
 }
 

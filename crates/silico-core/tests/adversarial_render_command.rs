@@ -516,18 +516,11 @@ fn an_eye_in_the_second_body_names_it_and_one_on_a_shared_face_names_the_first()
     let e = refused(bench.render(&at([20.0, 10.0, 10.0])));
     assert_eq!(e.feature(), Some("bbbbbbbb"));
     // A nanometre beyond it, the least a request can say: outside every box, never
-    // classified; but B reaches behind the eye's plane there (the view looks back across
-    // it, toward (10, 100, 5)), so the scene's check refuses it, naming the eye, and
-    // nothing is sent.
+    // classified, drawn.
     let beyond = 20.000_001;
-    let e = refused(bench.render(&at([beyond, 10.0, 10.0])));
-    assert_eq!(e.parameter(), Some("camera.eye"));
-    assert!(
-        e.message().starts_with("body 2 reaches camera.eye's plane"),
-        "{e:?}"
-    );
+    bench.render(&at([beyond, 10.0, 10.0])).unwrap();
     assert_eq!(bench.classified(), 4);
-    assert!(bench.renderer.sent().is_empty());
+    assert_eq!(bench.renderer.sent().len(), 1);
 }
 
 #[test]
@@ -546,18 +539,9 @@ fn a_perspective_view_leaves_out_what_is_behind_or_beside_it_and_keeps_what_stra
         ("bbbbbbbb", [50.0, -10.0, -1.0], [10.0, 20.0, 2.0]),
         ("cccccccc", [5.0, -10.0, -1.0], [55.0, 20.0, 2.0]),
     ]));
-    // 3 is kept, and the scene's check then refuses it, naming it (its nearest point 10
-    // behind the eye's plane): had 1 (20 behind) or 2 (10 behind, and before 3) been kept,
-    // the check would name it. Nothing is sent.
     let c = perspective(90.0, [0.0; 3], [0.0, 100.0, 0.0]);
-    let e = refused(bench.render(&camera(c, 100, 100)));
-    assert_eq!(e.parameter(), Some("camera.eye"));
-    assert!(
-        e.message()
-            .starts_with("body 3 reaches camera.eye's plane: a point of it is -10.0 mm"),
-        "{e:?}"
-    );
-    assert!(bench.renderer.sent().is_empty());
+    bench.render(&camera(c, 100, 100)).unwrap();
+    assert_eq!(bench.numbers(0), [3]);
     assert_eq!(bench.meshed().len(), 1);
     assert_eq!(bench.classified(), 0, "no box holds the eye");
     // The same orthographic, 30 high: no depth clips it, so 1, all across x and z, is kept;
@@ -565,7 +549,7 @@ fn a_perspective_view_leaves_out_what_is_behind_or_beside_it_and_keeps_what_stra
     let mut o = perspective(90.0, [0.0; 3], [0.0, 100.0, 0.0]);
     o.projection = Projection::Orthographic { view_height: 30.0 };
     bench.render(&camera(o, 100, 100)).unwrap();
-    assert_eq!(bench.numbers(0), [1, 3]);
+    assert_eq!(bench.numbers(1), [1, 3]);
 }
 
 /// A camera's numbers, biased to the hostile: near the coordinate limit and tiny, ups nearly

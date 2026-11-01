@@ -358,32 +358,9 @@ fn rules(scene: &RenderScene) -> Option<&'static str> {
                 return Some("camera.view_height");
             }
         }
-        // Perspective: every point at least a nanometre before the eye along the view, and
-        // none more than 2^20 t / h across the view for its depth (its distance from the
-        // view's axis, |d × forward|).
-        Projection::Perspective { field_of_view } => {
-            let forward = scaled(view);
-            let length = dot(forward, forward).sqrt();
-            let forward = forward.map(|x| x / length);
-            let t = libm::tan(field_of_view.to_radians() / 2.0);
-            let mut widest = 0.0f64;
-            for p in points() {
-                let d = [p[0] - c.eye[0], p[1] - c.eye[1], p[2] - c.eye[2]];
-                let depth = dot(d, forward);
-                if depth < 1e-6 {
-                    return Some("camera.eye");
-                }
-                let x = [
-                    d[1] * forward[2] - d[2] * forward[1],
-                    d[2] * forward[0] - d[0] * forward[2],
-                    d[0] * forward[1] - d[1] * forward[0],
-                ];
-                widest = widest.max(dot(x, x).sqrt() / depth);
-            }
-            if widest * h > 1_048_576.0 * t {
-                return Some("camera.eye");
-            }
-        }
+        // Perspective: any bodies; what lies outside the view's pyramid is cut as it's
+        // drawn.
+        Projection::Perspective { .. } => {}
     }
     None
 }
@@ -642,4 +619,51 @@ fn every_size_has_angles_whose_ends_are_taken_and_whose_outside_is_refused() {
         let _ = c.check(width, height);
         let _ = field_of_view_range(width, height);
     }
+}
+
+#[test]
+fn a_boxs_farthest_corner_bounds_its_points_reach_from_anywhere() {
+    // `/break-it` on the corner bound: random points and targets; the box's farthest
+    // corner is at least as far as every point, and one point of the box's corners' own
+    // set (the box of a box's corners) is exactly as far.
+    use silico_protocol::{points_box, reach_of_box, reach_of_points};
+    let mut runner = TestRunner::new_with_rng(
+        Config {
+            cases: 5000,
+            failure_persistence: None,
+            ..Config::default()
+        },
+        TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+    );
+    let points = prop::collection::vec([-50.0..50.0f64, -50.0..50.0f64, -50.0..50.0f64], 1..12);
+    let target = [-200.0..200.0f64, -200.0..200.0f64, -200.0..200.0f64];
+    runner
+        .run(&(points, target), |(positions, target)| {
+            let mesh = Mesh {
+                normals: vec![[0.0, 0.0, 1.0]; positions.len()],
+                positions,
+                triangles: vec![],
+                face_triangles: vec![],
+                edge_points: vec![],
+                edge_point_counts: vec![],
+                valid: None,
+            };
+            let bounds = points_box(&mesh).unwrap();
+            let (by_box, by_points) =
+                (reach_of_box(bounds, target), reach_of_points(&mesh, target));
+            prop_assert!(by_box >= by_points, "{by_box} < {by_points}");
+            let (low, high) = bounds;
+            let corners = Mesh {
+                positions: (0..8)
+                    .map(|i: usize| {
+                        std::array::from_fn(|k| if i >> k & 1 == 0 { low[k] } else { high[k] })
+                    })
+                    .collect(),
+                normals: vec![[0.0, 0.0, 1.0]; 8],
+                ..mesh.clone()
+            };
+            prop_assert_eq!(reach_of_points(&corners, target), by_box);
+            Ok(())
+        })
+        .unwrap();
 }
