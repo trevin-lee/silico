@@ -1163,3 +1163,189 @@ fn an_answer_carries_the_serial_its_caller_gave_the_frame_that_asked() {
         },
     );
 }
+
+#[test]
+fn a_picking_instance_is_a_face_from_1_or_an_edge_from_1_with_the_edge_bit() {
+    use super::EDGE_BIT;
+    let edge_bit = u64::from(EDGE_BIT);
+    for (instance, want) in [
+        (0, None),
+        (1, Some(Element::Face(1))),
+        (edge_bit - 1, Some(Element::Face(EDGE_BIT - 1))),
+        (edge_bit, None),
+        (edge_bit + 1, Some(Element::Edge(1))),
+        (u64::from(u32::MAX), Some(Element::Edge(EDGE_BIT - 1))),
+        (1 << 32, None),
+        (u64::MAX, None),
+    ] {
+        assert_eq!(Element::of_instance(instance), want, "{instance:#x}");
+    }
+}
+
+/// A picking request of `rect` in a frame `size`, asked of no body in particular.
+fn request(rect: PixelRect, size: [u32; 2]) -> PendingPick {
+    PendingPick {
+        serial: 0,
+        bodies: vec![],
+        rect,
+        size,
+        frame: front().frame().unwrap(),
+        origin: [0.0; 3],
+        depth: 1.0,
+        projection: ViewProjection::Orthographic {
+            camera_mode: OrthographicCameraMode::NearPlaneCenter,
+            vertical_world_size: 44.0,
+            far_plane_distance: 100.0,
+        },
+    }
+}
+
+/// Body 1's face `n`'s picking ID.
+fn face_id(n: u64) -> re_renderer::PickingLayerId {
+    re_renderer::PickingLayerId {
+        object: re_renderer::PickingLayerObjectId(1),
+        instance: re_renderer::PickingLayerInstanceId(n),
+    }
+}
+
+/// What `request` finds in `ids`, `extent` in size, every body current: its element and
+/// pixel.
+fn nearest_of(
+    request: &PendingPick,
+    ids: &[re_renderer::PickingLayerId],
+    extent: [u32; 2],
+) -> Option<(Element, [u32; 2])> {
+    request
+        .nearest(ids, glam::UVec2::from(extent), |_| true)
+        .map(|(_, pick)| (pick.hit, pick.pixel))
+}
+
+#[test]
+fn of_pixels_as_near_the_first_in_rows_is_taken_and_one_past_the_frames_edge_never() {
+    let size = [WIDTH, HEIGHT];
+    // Two pixels beside each other, the centre (1, 0.5) between them, each 0.5 away: the
+    // first, Face1 at (10, 10). And above each other: the first row's.
+    let across = request(rect([10, 10], [2, 1]), size);
+    assert_eq!(
+        nearest_of(&across, &[face_id(1), face_id(2)], [2, 1]),
+        Some((Element::Face(1), [10, 10]))
+    );
+    let down = request(rect([10, 10], [1, 2]), size);
+    assert_eq!(
+        nearest_of(&down, &[face_id(1), face_id(2)], [1, 2]),
+        Some((Element::Face(1), [10, 10]))
+    );
+    // Three pixels from column 63, the frame's last: the middle one (column 64) is at the
+    // centre, but past the frame; the nearest of the frame's own is column 63, one away.
+    // So for row 47, the frame's last.
+    let right = request(rect([63, 10], [3, 1]), size);
+    let ids = [face_id(1), face_id(2), face_id(3)];
+    assert_eq!(
+        nearest_of(&right, &ids, [3, 1]),
+        Some((Element::Face(1), [63, 10]))
+    );
+    let bottom = request(rect([10, 47], [1, 3]), size);
+    assert_eq!(
+        nearest_of(&bottom, &ids, [1, 3]),
+        Some((Element::Face(1), [10, 47]))
+    );
+    // A readback not of the rectangle's size (one ID for two pixels), or of no width:
+    // nothing.
+    assert_eq!(nearest_of(&across, &[face_id(1)], [2, 1]), None);
+    assert_eq!(nearest_of(&across, &[], [0, 1]), None);
+}
+
+#[test]
+fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bodies() {
+    on_lavapipe(
+        "render::frame_tests::a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bodies",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            draw(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 6);
+            // A frame that asks, then fails as the GPU fails one (its request the last
+            // readback identifier given).
+            draw(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE)));
+            let id = r.readback - 1;
+            assert!(r.pending.contains_key(&id));
+            r.failed(Some(id));
+            assert!(r.pending.is_empty());
+            // The next frame uploads all six faces again, and no answer comes.
+            draw(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 12);
+            assert_eq!(r.take_picking(), None);
+            // The body is still drawn, and picked.
+            assert_eq!(
+                hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE))),
+                Some((1, Element::Face(3), [32, 26]))
+            );
+        },
+    );
+}
+
+#[test]
+fn an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allows() {
+    on_lavapipe(
+        "render::frame_tests::an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allows",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            // The box's reach from the target, by its box's farthest corner: from (21, 10,
+            // 7), the corner (0, 0, 0) on x, y, and z alike (21, 10, 7 away), √590; from
+            // (5, 4, 3), the corner (40, 20, 10) (35, 16, 7 away), √1530. The least height is
+            // that times MIN_VIEW_HEIGHT_OF_REACH: drawn at it, refused just under it.
+            for (target, squared) in [([21.0, 10.0, 7.0], 590.0f64), ([5.0, 4.0, 3.0], 1530.0)] {
+                let least = squared.sqrt() * silico_protocol::MIN_VIEW_HEIGHT_OF_REACH;
+                let at = |view_height: f64| Camera {
+                    projection: Projection::Orthographic { view_height },
+                    eye: [target[0], target[1] - 60.0, target[2]],
+                    target,
+                    up: [0.0, 0.0, 1.0],
+                };
+                let camera = at(least);
+                r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
+                let camera = at(least.next_down());
+                assert_eq!(
+                    refused(r, &frame(&camera, &[1], &[], None)),
+                    "camera.view_height",
+                    "{target:?}"
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn edges_and_outlines_are_as_wide_as_their_points_at_the_frames_pixels_per_point() {
+    on_lavapipe(
+        "render::frame_tests::edges_and_outlines_are_as_wide_as_their_points_at_the_frames_pixels_per_point",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let at = |ppp: f32, lit: &'static [(u32, Element)], picking| Frame {
+                pixels_per_point: ppp,
+                ..frame(&camera, &[1], lit, picking)
+            };
+            // Row 19's centre is 1.23 pixels from the top edge's line: past its 1-point half
+            // width at 1 pixel a point, inside it at 2.
+            let beside = Some(rect([32, 19], [1, 1]));
+            assert_eq!(hit(r, &at(1.0, &[], beside)), None);
+            assert_eq!(
+                hit(r, &at(2.0, &[], beside)),
+                Some((1, Element::Edge(3), [32, 19]))
+            );
+            // The front face's outline, 1.5 points: twice as wide at 2 pixels a point, so
+            // it changes more pixels round the face than at 1.
+            const LIT: &[(u32, Element)] = &[(1, Element::Face(3))];
+            let mut changed = |ppp: f32| {
+                let commands = r.prepare(&at(ppp, &[], None)).unwrap();
+                let plain = composited(r, Some(commands));
+                let commands = r.prepare(&at(ppp, LIT, None)).unwrap();
+                let lit = composited(r, Some(commands));
+                plain.iter().zip(&lit).filter(|(a, b)| a != b).count()
+            };
+            let (one, two) = (changed(1.0), changed(2.0));
+            assert!(two * 2 > one * 3, "{one} pixels changed at 1, {two} at 2");
+        },
+    );
+}

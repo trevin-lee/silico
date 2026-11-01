@@ -420,15 +420,21 @@ impl Renderer {
                 Ok(commands)
             }
             Err(failure) => {
-                if let Some((_, id)) = picking {
-                    self.pending.remove(&id);
-                }
-                // Nothing vouches for buffers a failed frame made: none is drawn again.
-                for body in self.bodies.values_mut() {
-                    body.drop_gpu_meshes();
-                }
+                self.failed(picking.map(|(_, id)| id));
                 Err(failure)
             }
+        }
+    }
+
+    /// What a frame the GPU failed leaves: its picking request (`request`, its readback's
+    /// identifier) dropped, and every body's GPU meshes, which nothing vouches for, to be
+    /// uploaded again when they're next drawn; the bodies themselves kept.
+    fn failed(&mut self, request: Option<u64>) {
+        if let Some(id) = request {
+            self.pending.remove(&id);
+        }
+        for body in self.bodies.values_mut() {
+            body.drop_gpu_meshes();
         }
     }
 
@@ -620,7 +626,9 @@ impl Renderer {
             }
         }
         if let Some((id, result)) = newest {
-            if let Some(request) = self.pending.remove(&id) {
+            // It, and the requests after it; those before it are dropped.
+            let mut newer = self.pending.split_off(&id);
+            if let Some(request) = newer.remove(&id) {
                 self.picked = Some(Answer {
                     request,
                     ids: result.picking_id_data,
@@ -628,7 +636,7 @@ impl Renderer {
                     extent: result.rect.extent,
                 });
             }
-            self.pending.retain(|&k, _| k > id);
+            self.pending = newer;
         }
         while self.pending.len() > MAX_PENDING_PICKS {
             self.pending.pop_first();
@@ -683,14 +691,15 @@ impl Renderer {
                 .binary_search_by_key(number, |b| b.body)
                 .is_ok_and(|i| *uploaded.mesh == scene.bodies[i].mesh)
         });
-        for body in &scene.bodies {
-            if let std::collections::btree_map::Entry::Vacant(entry) = self.bodies.entry(body.body)
-            {
-                let mut uploaded = Uploaded::new(Arc::new(body.mesh.clone()))?;
-                self.generations += 1;
-                uploaded.generation = self.generations;
-                entry.insert(uploaded);
-            }
+        let new: Vec<&RenderBody> = scene
+            .bodies
+            .iter()
+            .filter(|b| !self.bodies.contains_key(&b.body))
+            .collect();
+        for body in new {
+            let mut uploaded = Uploaded::new(Arc::new(body.mesh.clone()))?;
+            uploaded.generation = self.next_generation();
+            self.bodies.insert(body.body, uploaded);
         }
         let lit: Vec<Lit> = scene.bodies.iter().map(Lit::of_body).collect();
         let drawn: Vec<(u32, &Lit)> = scene.bodies.iter().map(|b| b.body).zip(&lit).collect();
@@ -750,7 +759,7 @@ impl Renderer {
             .iter()
             .any(|(_, lit)| !lit.faces.is_empty() || !lit.edges.is_empty());
         let config = TargetConfiguration {
-            name: "render".into(),
+            // Its name is only GPU objects' labels: the default's ("default view").
             resolution_in_pixel: [view.width, view.height],
             // The view is the default, the identity: the camera at the world's origin, looking
             // along −z with +y up. The camera reaches the GPU through each face's
