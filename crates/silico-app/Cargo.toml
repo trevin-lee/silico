@@ -27,6 +27,8 @@ wgpu.workspace = true
 silico-render.workspace = true
 # Native file dialogs, on their async API (`browse`).
 rfd.workspace = true
+# Where the list of recent documents is kept: the platform's app-data folder (`recent`).
+directories.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

@@ -17,6 +17,8 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
 use silico_app::app::IDLE_FRAME;
+use silico_app::recent::Recents;
+use silico_app::start::Warm;
 use silico_app::tab::Sent;
 use silico_core::cache::Cache;
 use silico_core::command::{CheckAnswer, CheckModel, ModelChoice, Running, Sessions};
@@ -199,6 +201,19 @@ fn anywhere(h: &AppHarness, label: &str) -> bool {
     h.query_by_label(label).is_some()
 }
 
+/// The one button labelled `label` that isn't the start page's: the File menu's Open…,
+/// while the start page shows its own.
+fn button_off_start<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
+    let mut found = h
+        .query_all_by_role_and_label(Role::Button, label)
+        .filter(|node| !in_pane(node, "Start"));
+    let node = found
+        .next()
+        .unwrap_or_else(|| panic!("no {label} off the start page"));
+    assert!(found.next().is_none(), "two {label}s off the start page");
+    node
+}
+
 /// The feature `name` selected on the timeline, its properties shown.
 fn select(h: &mut AppHarness, name: &str) {
     h.get_by_role_and_label(Role::Pane, "Timeline")
@@ -238,7 +253,12 @@ fn is_box(op: &Op) -> bool {
 #[test]
 fn every_pane_has_its_label() {
     let f = fixture();
-    let h = f.app();
+    // With no document, the start page alone; with one, the panes.
+    let mut h = f.app();
+    step(&mut h);
+    assert!(h.query_by_role_and_label(Role::Pane, "Start").is_some());
+    let (h, _) = f.opened("example.silico", EXAMPLE);
+    assert!(h.query_by_role_and_label(Role::Pane, "Start").is_none());
     for pane in ["Browser", "Viewport", "Properties", "Timeline"] {
         assert!(
             h.query_by_role_and_label(Role::Pane, pane).is_some(),
@@ -1185,7 +1205,7 @@ fn new_through_its_dialog_makes_the_file_and_open_cancelled_opens_nothing() {
     let mut h = f.app();
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Open…").click();
+    button_off_start(&h, "Open…").click();
     step_until(&mut h, "the dialog", |h| anywhere(h, "Open document"));
     h.get_by_role_and_label(Role::Button, "Cancel")
         .click_accesskit();
@@ -2442,7 +2462,7 @@ fn open_with_no_path_opens_nothing_and_keeps_asking() {
     step(&mut h);
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Open…").click();
+    button_off_start(&h, "Open…").click();
     step_until(&mut h, "the question", |h| anywhere(h, "Open document"));
     h.get_by_role_and_label(Role::Button, "Open")
         .click_accesskit();
@@ -7666,7 +7686,9 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
         assert!((corner.up[k] - expected).abs() < 1e-12);
     }
     // Home: from (1, −1, 1)/√3 again.
-    h.get_by_label("Home").click();
+    h.get_by_role_and_label(Role::Pane, "Viewport")
+        .get_by_label("Home")
+        .click();
     step(&mut h);
     let home = view(&h).camera().clone();
     looks_from(&home, [third, -third, third]);
@@ -7688,7 +7710,9 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
     );
     // Its menu: Perspective, at 30°, the eye as far back as shows Home's height at the
     // target; Home then keeps the perspective.
-    h.get_by_label("Home").click();
+    h.get_by_role_and_label(Role::Pane, "Viewport")
+        .get_by_label("Home")
+        .click();
     step(&mut h);
     let height = ortho_height(view(&h).camera());
     h.get_by_label("Orbit the view").click_secondary();
@@ -8438,12 +8462,10 @@ fn a_viewport_with_no_renderer_says_why_in_its_pane() {
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
     step(&mut h);
-    assert!(shows(
-        &h,
-        "Viewport",
-        "The viewport can't draw: no adapter was found"
-    ));
-    // With a document open too.
+    // With no document, the start page shows, and no viewport.
+    assert!(h.query_by_role_and_label(Role::Pane, "Viewport").is_none());
+    assert!(h.query_by_role_and_label(Role::Pane, "Start").is_some());
+    // With a document open, its viewport says why it draws nothing.
     let path = f.file("example.silico", EXAMPLE);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the tab", |h| !h.state().tabs().is_empty());
@@ -9352,7 +9374,7 @@ fn file_menu(h: &mut AppHarness, item: &str, heading: &str) {
     h.get_by_label("File").click();
     step(h);
     step(h);
-    h.get_by_role_and_label(Role::Button, item).click();
+    button_off_start(h, item).click();
     step_until(h, heading, |h| h.query_by_label_contains(heading).is_some());
 }
 
@@ -10513,6 +10535,172 @@ fn a_right_press_is_no_click_once_another_button_goes_between_the_focus_goes_or_
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- The start page (docs/design/m5-ui/DESIGN.md, *Start page or blank canvas?*) ----
+
+impl Fixture {
+    /// The app on these sessions as `make` makes it, in a harness, with nothing open.
+    fn app_made(&self, make: impl FnOnce(App<Fake>) -> App<Fake>) -> AppHarness {
+        let app = make(App::new(Arc::clone(&self.sessions)));
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0, 800.0))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    }
+
+    /// Where these tests keep the list of recent documents: in a folder not yet made.
+    fn recents_file(&self) -> PathBuf {
+        self.dir.path().join("app-data").join("recent-documents")
+    }
+
+    /// The app keeping its recent documents in [`recents_file`](Self::recents_file), the
+    /// list read.
+    fn remembering(&self) -> AppHarness {
+        let file = self.recents_file();
+        let mut h = self.app_made(|app| app.remembering(Recents::at(file)));
+        recents_read(&mut h);
+        h
+    }
+}
+
+/// Frames stepped until the app has heard the list of recent documents read.
+fn recents_read(h: &mut AppHarness) {
+    step_until(h, "the recent documents read", |h| {
+        h.state().recents().is_some_and(Recents::is_read)
+    });
+}
+
+/// Whether `node` is inside the pane labelled `pane`.
+fn in_pane(node: &egui_kittest::Node<'_>, pane: &str) -> bool {
+    let mut at = node.parent();
+    while let Some(node) = at {
+        let shown = node.accesskit_node();
+        if shown.role() == Role::Pane && shown.label().as_deref() == Some(pane) {
+            return true;
+        }
+        at = node.parent();
+    }
+    false
+}
+
+/// Whether `node` is shown selected (toggled on).
+fn toggled(node: &egui_kittest::Node<'_>) -> Option<bool> {
+    node.accesskit_node()
+        .toggled()
+        .map(|toggled| toggled == eframe::egui::accesskit::Toggled::True)
+}
+
+/// The start page.
+fn start_page(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::Pane, "Start")
+}
+
+/// Whether the start page is shown.
+fn start_shown(h: &AppHarness) -> bool {
+    h.query_by_role_and_label(Role::Pane, "Start").is_some()
+}
+
+/// The app bar's Home (the viewport's view cube has a Home of its own).
+fn home_button(h: &AppHarness) -> egui_kittest::Node<'_> {
+    let mut found = h
+        .query_all_by_role_and_label(Role::Button, "Home")
+        .filter(|node| !in_pane(node, "Viewport"));
+    let home = found.next().expect("the app bar's Home");
+    assert!(found.next().is_none(), "two Homes outside the viewport");
+    home
+}
+
+/// The start page's Recent, each document's name in order, and each one's description.
+fn recent_rows(h: &AppHarness) -> Vec<(String, String)> {
+    start_page(h)
+        .get_by_role_and_label(Role::List, "Recent")
+        .query_all_by_role(Role::Button)
+        .map(|node| {
+            let node = node.accesskit_node();
+            (
+                node.label().unwrap_or_default(),
+                node.description().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// The start page's Recent, each document's name in order.
+fn recent_names(h: &AppHarness) -> Vec<String> {
+    recent_rows(h).into_iter().map(|(name, _)| name).collect()
+}
+
+/// `path` opened, its tab waited for.
+fn open_and_wait(h: &mut AppHarness, path: &Path) {
+    let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(h, "its tab", |h| {
+        h.state().tabs().iter().any(|tab| tab.name() == name)
+    });
+}
+
+/// The text the frame just stepped copied, if it copied any.
+fn copied(h: &AppHarness) -> Option<String> {
+    h.output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            eframe::egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+}
+
+#[test]
+fn with_no_document_the_start_page_shows_new_open_recent_and_copy_mcp_config() {
+    let f = fixture();
+    let mut h = f.remembering();
+    let start = start_page(&h);
+    for button in ["New part", "Open…", "Copy MCP config"] {
+        assert!(
+            start
+                .query_by_role_and_label(Role::Button, button)
+                .is_some(),
+            "{button}"
+        );
+    }
+    assert!(
+        start
+            .query_by_role_and_label(Role::List, "Recent")
+            .is_some()
+    );
+    assert!(
+        start
+            .query_by_label("Recent".to_uppercase().as_str())
+            .is_some()
+    );
+    assert!(
+        start
+            .query_by_label("No recent documents yet: each you open or make is listed here.")
+            .is_some()
+    );
+    // Nothing else between the bars: no panes, no toolbar.
+    for pane in ["Browser", "Viewport", "Properties", "Timeline"] {
+        assert!(
+            h.query_by_role_and_label(Role::Pane, pane).is_none(),
+            "{pane}"
+        );
+    }
+    assert!(h.query_by_role_and_label(Role::Toolbar, "CREATE").is_none());
+    // Home is the page shown.
+    assert_eq!(toggled(&home_button(&h)), Some(true));
+    // New part asks where the new document goes, as File > New… does.
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "New part")
+        .click();
+    step_until(&mut h, "New's dialog", |h| anywhere(h, "New document"));
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "it gone", |h| !anywhere(h, "New document"));
+    assert!(h.state().tabs().is_empty());
+    assert!(start_shown(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn a_frames_left_events_and_right_clicks_are_numbered_in_their_order_together() {
     use eframe::egui::{Event, Modifiers, PointerButton, vec2};
@@ -10571,4 +10759,504 @@ fn a_frames_left_events_and_right_clicks_are_numbered_in_their_order_together() 
     assert_eq!(clicks.len(), 1, "{clicks:?}");
     assert_eq!(clicks[0].click.seq, 0);
     assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_pages_open_asks_as_file_open_does_and_its_browse_opens_the_pick() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let path = f.file("example.silico", EXAMPLE);
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "Open…")
+        .click();
+    step_until(&mut h, "Open's dialog", |h| anywhere(h, "Open document"));
+    browse(&mut h, &browser);
+    assert_eq!(browser.asked()[0].pick, Pick::Open);
+    browser.answer(Some(&path));
+    step_until(&mut h, "its tab", |h| !h.state().tabs().is_empty());
+    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    step_until(&mut h, "the start page left", |h| !start_shown(h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn command_n_and_command_o_ask_for_new_and_open_from_the_start_page() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    for (key, heading) in [
+        (eframe::egui::Key::N, "New document"),
+        (eframe::egui::Key::O, "Open document"),
+    ] {
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+        step_until(&mut h, heading, |h| anywhere(h, heading));
+        h.key_press(eframe::egui::Key::Escape);
+        step_until(&mut h, "it gone", |h| !anywhere(h, heading));
+    }
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn opening_a_document_leaves_the_start_page_and_home_returns_to_it() {
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let mut h = f.app();
+    step(&mut h);
+    assert!(start_shown(&h));
+    open_and_wait(&mut h, &path);
+    step(&mut h);
+    assert!(!start_shown(&h));
+    assert!(h.query_by_role_and_label(Role::Pane, "Browser").is_some());
+    assert_eq!(toggled(&home_button(&h)), Some(false));
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "example.silico")),
+        Some(true)
+    );
+    // Home: the start page, over the open document, which stays open.
+    home_button(&h).click();
+    step(&mut h);
+    step(&mut h);
+    assert!(start_shown(&h));
+    assert!(h.query_by_role_and_label(Role::Pane, "Browser").is_none());
+    assert_eq!(toggled(&home_button(&h)), Some(true));
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "example.silico")),
+        Some(false)
+    );
+    assert_eq!(h.state().tabs().len(), 1);
+    // Its tab: the document again.
+    h.get_by_role_and_label(Role::Button, "example.silico")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert!(!start_shown(&h));
+    assert!(h.query_by_role_and_label(Role::Pane, "Browser").is_some());
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "example.silico")),
+        Some(true)
+    );
+    // Home again, then another document opened: it's shown, and the start page left.
+    home_button(&h).click();
+    step(&mut h);
+    step(&mut h);
+    assert!(start_shown(&h));
+    let other = f.file("other.silico", EXAMPLE);
+    open_and_wait(&mut h, &other);
+    step(&mut h);
+    assert!(!start_shown(&h));
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "other.silico")),
+        Some(true)
+    );
+    // The last tab closed: the start page, with no Home pressed.
+    for name in ["other.silico", "example.silico"] {
+        h.get_by_label(&format!("Close {name}")).click();
+        step_until(&mut h, "the tab closed", |h| {
+            h.state().tabs().iter().all(|tab| tab.name() != name)
+        });
+    }
+    step(&mut h);
+    assert!(start_shown(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn recent_lists_the_last_opened_newest_first_each_once_and_a_new_app_reads_them() {
+    let f = fixture();
+    let one = f.file("one.silico", EXAMPLE);
+    let two = f.file("two.silico", EXAMPLE);
+    let mut h = f.remembering();
+    open_and_wait(&mut h, &one);
+    open_and_wait(&mut h, &two);
+    // One closed and opened again: first now, and listed once.
+    h.get_by_label("Close one.silico").click();
+    step_until(&mut h, "one closed", |h| h.state().tabs().len() == 1);
+    open_and_wait(&mut h, &one);
+    home_button(&h).click();
+    step_until(&mut h, "Recent, one first", |h| {
+        start_shown(h) && recent_names(h) == ["one.silico", "two.silico"]
+    });
+    let (one, two) = (one.to_str().unwrap(), two.to_str().unwrap());
+    assert_eq!(
+        recent_rows(&h),
+        [
+            ("one.silico".to_owned(), one.to_owned()),
+            ("two.silico".to_owned(), two.to_owned())
+        ]
+    );
+    // The file, as recent.rs's form has it: a header, then a path a line, newest first.
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!("silico recent-documents 1\n{one}\n{two}\n")
+    );
+    // A recent document already open: its tab shown, not opened again.
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "two.silico")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert!(!start_shown(&h));
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "two.silico")),
+        Some(true)
+    );
+    assert_eq!(h.state().tabs().len(), 2);
+    assert_eq!(h.state().message(), None);
+    for name in ["one.silico", "two.silico"] {
+        h.get_by_label(&format!("Close {name}")).click();
+        step_until(&mut h, "the tab closed", |h| {
+            h.state().tabs().iter().all(|tab| tab.name() != name)
+        });
+    }
+    // Another app on the same file lists the same.
+    let mut again = f.remembering();
+    step(&mut again);
+    assert_eq!(recent_names(&again), ["one.silico", "two.silico"]);
+    // A recent document clicked opens it.
+    start_page(&again)
+        .get_by_role_and_label(Role::Button, "two.silico")
+        .click();
+    step_until(&mut again, "two's tab", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .any(|tab| tab.name() == "two.silico")
+    });
+    assert_eq!(again.state().tabs()[0].path, two);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_recent_document_no_longer_there_is_said_and_dropped_from_the_list() {
+    let f = fixture();
+    let kept = f.file("kept.silico", EXAMPLE);
+    let gone = f.dir.path().join("gone.silico");
+    let (kept_at, gone_at) = (kept.to_str().unwrap(), gone.to_str().unwrap());
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{gone_at}\n{kept_at}\n"),
+    )
+    .unwrap();
+    let mut h = f.remembering();
+    step(&mut h);
+    // Nothing at gone's path when the list was read: marked so.
+    assert_eq!(
+        recent_rows(&h),
+        [
+            ("gone.silico".to_owned(), format!("{gone_at}, not found")),
+            ("kept.silico".to_owned(), kept_at.to_owned())
+        ]
+    );
+    let folder = f.dir.path().display().to_string();
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "gone.silico")
+        .click();
+    let said =
+        format!("gone.silico isn't in {folder} any more, so it's no longer listed in Recent");
+    step_until(&mut h, "gone said and dropped", |h| {
+        h.state().message() == Some(said.as_str()) && recent_names(h) == ["kept.silico"]
+    });
+    assert!(anywhere(&h, &said));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!("silico recent-documents 1\n{kept_at}\n")
+    );
+    // Kept goes from disk after the list was read: its open is refused, and it's dropped.
+    std::fs::remove_file(&kept).unwrap();
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "kept.silico")
+        .click();
+    let said =
+        format!("kept.silico isn't in {folder} any more, so it's no longer listed in Recent");
+    step_until(&mut h, "kept said and dropped", |h| {
+        h.state().message() == Some(said.as_str()) && recent_names(h).is_empty()
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        "silico recent-documents 1\n"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_recent_document_refused_for_another_reason_stays_listed() {
+    let f = fixture();
+    // A folder: there, but no document, so its open is refused.
+    let broken = f.dir.path().join("broken.silico");
+    std::fs::create_dir(&broken).unwrap();
+    let at = broken.to_str().unwrap().to_owned();
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{at}\n"),
+    )
+    .unwrap();
+    let mut h = f.remembering();
+    step(&mut h);
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "broken.silico")
+        .click();
+    step_until(&mut h, "the refusal said", |h| {
+        h.state().message().is_some()
+    });
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(!h.state().message().unwrap().contains("Recent"));
+    assert_eq!(recent_names(&h), ["broken.silico"]);
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!("silico recent-documents 1\n{at}\n")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_corrupt_recents_file_lists_nothing_and_the_next_open_replaces_it() {
+    let f = fixture();
+    let listed = f.file("listed.silico", EXAMPLE);
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    // Its paths are real, but its header isn't the form's.
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent 1\n{}\n", listed.to_str().unwrap()),
+    )
+    .unwrap();
+    let mut h = f.remembering();
+    step(&mut h);
+    assert!(recent_names(&h).is_empty());
+    assert!(
+        start_page(&h)
+            .query_by_label("No recent documents yet: each you open or make is listed here.")
+            .is_some()
+    );
+    let opened = f.file("opened.silico", EXAMPLE);
+    open_and_wait(&mut h, &opened);
+    home_button(&h).click();
+    step_until(&mut h, "Recent", |h| {
+        start_shown(h) && recent_names(h) == ["opened.silico"]
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!("silico recent-documents 1\n{}\n", opened.to_str().unwrap())
+    );
+    // Bytes that aren't text: nothing either.
+    std::fs::write(f.recents_file(), b"silico recent-documents 1\n\xff\n").unwrap();
+    let mut again = f.remembering();
+    step(&mut again);
+    assert!(recent_names(&again).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_recents_file_is_read_off_the_ui_thread_and_an_open_meanwhile_comes_first() {
+    let f = fixture();
+    let listed = f.file("listed.silico", EXAMPLE);
+    let opened = f.file("opened.silico", EXAMPLE);
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{}\n", listed.to_str().unwrap()),
+    )
+    .unwrap();
+    // The read held until released, saying which thread it ran on.
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let reader = Arc::new(Mutex::new(None));
+    let read_on = Arc::clone(&reader);
+    let read: silico_app::recent::Read = Box::new(move |file| {
+        *read_on.lock().unwrap() = Some(std::thread::current().id());
+        released.recv_timeout(WAIT).ok()?;
+        std::fs::read(file).ok()
+    });
+    let file = f.recents_file();
+    let mut h = f.app_made(|app| app.remembering(Recents::reading(file, read)));
+    let frames = h.state().frames();
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(h.state().frames() >= frames + 20);
+    step_until(&mut h, "the read started", |_| {
+        reader.lock().unwrap().is_some()
+    });
+    assert_ne!(*reader.lock().unwrap(), Some(std::thread::current().id()));
+    assert!(
+        start_page(&h)
+            .query_by_label("Reading the list of recent documents…")
+            .is_some()
+    );
+    // An open while it's held: the window goes on, and the open waits for the list.
+    open_and_wait(&mut h, &opened);
+    home_button(&h).click();
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(start_shown(&h));
+    assert!(!h.state().recents().unwrap().is_read());
+    release.send(()).unwrap();
+    step_until(&mut h, "both listed", |h| {
+        recent_names(h) == ["opened.silico", "listed.silico"]
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn copy_mcp_config_copies_the_config_docs_mcp_md_gives() {
+    let f = fixture();
+    let mut h = f.app_made(|app| app.serving_with("/opt/silico/bin/silico".to_owned()));
+    step(&mut h);
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "Copy MCP config")
+        .click();
+    step(&mut h);
+    // docs/mcp.md's form, written out by hand: no document, so no workspace.
+    assert_eq!(
+        copied(&h).as_deref(),
+        Some(
+            r#"{
+  "mcpServers": {
+    "silico": {
+      "command": "/opt/silico/bin/silico",
+      "args": ["serve"]
+    }
+  }
+}
+"#
+        )
+    );
+    step(&mut h);
+    assert_eq!(copied(&h), None);
+    // A document open: its folder is the workspace.
+    let path = f.file("example.silico", EXAMPLE);
+    open_and_wait(&mut h, &path);
+    home_button(&h).click();
+    step_until(&mut h, "the start page", start_shown);
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "Copy MCP config")
+        .click();
+    step(&mut h);
+    let folder = f.dir.path().to_str().unwrap();
+    assert_eq!(
+        copied(&h),
+        Some(format!(
+            r#"{{
+  "mcpServers": {{
+    "silico": {{
+      "command": "/opt/silico/bin/silico",
+      "args": ["serve", "--workspace", "{folder}"]
+    }}
+  }}
+}}
+"#
+        ))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_warm_start_says_it_is_starting_then_ready() {
+    let f = fixture();
+    let warm = Warm::new();
+    let warming = warm.clone();
+    let mut h = f.app_made(|app| app.warming(warming));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let starting = "Starting the kernel and sketch solver…";
+    let ready = "Kernel and sketch solver ready";
+    assert!(anywhere(&h, starting));
+    assert!(!anywhere(&h, ready));
+    // Ready, told off the UI thread (which asks for a frame: start.rs's own test).
+    std::thread::spawn(move || warm.ready()).join().unwrap();
+    step(&mut h);
+    assert!(anywhere(&h, ready));
+    assert!(!anywhere(&h, starting));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_warm_start_that_started_nothing_says_the_first_rebuild_starts_them() {
+    let f = fixture();
+    let warm = Warm::new();
+    let mut h = f.app_made(|app| app.warming(warm.clone()));
+    step(&mut h);
+    warm.cold();
+    step(&mut h);
+    assert!(anywhere(
+        &h,
+        "The kernel and sketch solver start with the first rebuild"
+    ));
+    assert!(!anywhere(&h, "Kernel and sketch solver ready"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_page_draws_in_the_themes_colours_on_lavapipe() {
+    on_lavapipe(
+        "the_start_page_draws_in_the_themes_colours_on_lavapipe",
+        || {
+            let f = fixture();
+            let listed = f.file("bracket.silico", EXAMPLE);
+            std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+            std::fs::write(
+                f.recents_file(),
+                format!(
+                    "silico recent-documents 1\n{}\n{}\n",
+                    listed.to_str().unwrap(),
+                    f.dir.path().join("vise-jaw.silico").to_str().unwrap()
+                ),
+            )
+            .unwrap();
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let warm = Warm::new();
+            let app = App::new(Arc::clone(&f.sessions))
+                .presenting(Box::new(present))
+                .remembering(Recents::at(f.recents_file()))
+                .warming(warm.clone());
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            recents_read(&mut h);
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            // The page's own background, below its columns and above the status bar: the
+            // panels' Gray.100.
+            let below = eframe::egui::pos2(640.0, 700.0);
+            assert_eq!(pixel(below), [0x0d, 0x0d, 0x0d, 0xff]);
+            // New part, the primary action: button_primary's Gray.800, inside its fill and
+            // short of its icon.
+            let new = start_page(&h)
+                .get_by_role_and_label(Role::Button, "New part")
+                .rect();
+            let inside = eframe::egui::pos2(new.left() + 4.0, new.center().y);
+            assert_eq!(pixel(inside), [0xe0, 0xdf, 0xdf, 0xff], "{new:?}");
+            // A recent document's thumbnail: Gray.0 inside its Gray.250 border.
+            let row = start_page(&h)
+                .get_by_role_and_label(Role::Button, "bracket.silico")
+                .rect();
+            let thumb = eframe::egui::pos2(row.left() + 6.0 + 4.0, row.center().y - 12.0);
+            assert_eq!(pixel(thumb), [0x00, 0x00, 0x00, 0xff], "{row:?}");
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
 }

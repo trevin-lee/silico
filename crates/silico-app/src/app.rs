@@ -21,7 +21,10 @@ use silico_core::kernel::Clients;
 use crate::browse::{self, Ask, Browse, Browsing, Pick};
 use crate::dialog::{Action, Kind};
 use crate::export::{self, ExportForm, Shown};
+use crate::icons::Icon;
 use crate::panes::{self, Pane, Panes};
+use crate::recent::Recents;
+use crate::start::{self, Warm};
 use crate::tab::{DiskChoice, Tab, said};
 use crate::theme;
 
@@ -178,6 +181,15 @@ pub struct App<P: Clients + 'static> {
     /// The folder of the last path a native dialog picked: where the next starts, if its
     /// document's folder isn't known.
     last_folder: Option<PathBuf>,
+    /// The Home tab shown, over the open documents' (the start page, which shows anyway
+    /// while none is open).
+    home: bool,
+    /// The documents opened lately, if the app keeps a list.
+    recents: Option<Recents>,
+    /// The warm start's state, if the app warms its workers.
+    warm: Option<Warm>,
+    /// The `silico` an MCP client is told to run (Copy MCP config).
+    silico: String,
 }
 
 impl<P: Clients + 'static> App<P> {
@@ -207,7 +219,67 @@ impl<P: Clients + 'static> App<P> {
             browser: None,
             browsing: None,
             last_folder: None,
+            home: false,
+            recents: None,
+            warm: None,
+            silico: "silico".to_owned(),
         }
+    }
+
+    /// The app, keeping the documents it opens in `recents`, which its start page lists.
+    #[must_use]
+    pub fn remembering(mut self, recents: Recents) -> Self {
+        self.recents = Some(recents);
+        self
+    }
+
+    /// The app, its status bar saying how `warm`, its workers' warm start, stands while no
+    /// document is open.
+    #[must_use]
+    pub fn warming(mut self, warm: Warm) -> Self {
+        self.warm = Some(warm);
+        self
+    }
+
+    /// The app, Copy MCP config naming `silico` as the command to run (else `silico`, as
+    /// found on the client's `PATH`).
+    #[must_use]
+    pub fn serving_with(mut self, silico: String) -> Self {
+        self.silico = silico;
+        self
+    }
+
+    /// Whether the start page is shown: the Home tab, or no document open.
+    pub fn start_shown(&self) -> bool {
+        self.home || self.tabs.is_empty()
+    }
+
+    /// The documents opened lately, if the app keeps a list.
+    pub fn recents(&self) -> Option<&Recents> {
+        self.recents.as_ref()
+    }
+
+    /// The MCP config Copy MCP config copies: the `silico` it was given, serving the folder
+    /// of the document shown, or else of the newest recent one, if there is either.
+    pub fn mcp_config(&self) -> String {
+        let shown = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .map(|tab| tab.path.as_str());
+        let newest = self
+            .recents
+            .as_ref()
+            .and_then(|recents| recents.list().first())
+            .map(|recent| recent.path.as_str());
+        let workspace = shown
+            .or(newest)
+            .map(|path| std::path::absolute(path).unwrap_or_else(|_| PathBuf::from(path)))
+            .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+            .filter(|folder| !folder.as_os_str().is_empty());
+        start::mcp_config(
+            &self.silico,
+            workspace.as_deref().and_then(std::path::Path::to_str),
+        )
     }
 
     /// The app, a Browse… button beside each path field opening `browser`'s file dialog:
@@ -298,12 +370,36 @@ impl<P: Clients + 'static> App<P> {
                 wakes.fetch_add(1, Ordering::SeqCst);
                 ctx.request_repaint();
             });
+            // And the threads that keep the recent documents and warm the workers.
+            if let Some(recents) = &self.recents {
+                recents.waking(ui.ctx());
+            }
+            if let Some(warm) = &self.warm {
+                warm.waking(ui.ctx());
+            }
             self.waker_set = true;
         }
         self.poll();
         let (mut started, dialog_key) = self.keys(ui);
         started |= self.take_browsed();
         self.app_bar(ui, &mut started);
+        if self.start_shown() {
+            // The start page alone between the bars: no toolbar, panes, or dialog.
+            self.status_bar(ui, &mut started);
+            let act = egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(theme::PANEL_BG))
+                .show(ui, |ui| {
+                    if self.tabs.is_empty() {
+                        // Nothing is drawn: the renderer lets go of what it held.
+                        self.drawing.nothing_shown(ui.painter());
+                    }
+                    start::page(ui, self.recents.as_ref())
+                })
+                .inner;
+            self.start_act(ui, act, &mut started);
+            self.after_drawing(ui, started);
+            return;
+        }
         self.toolbar(ui, &mut started);
         self.status_bar(ui, &mut started);
         self.disk_banner(ui, &mut started);
@@ -336,6 +432,37 @@ impl<P: Clients + 'static> App<P> {
             };
             tree.ui(&mut panes, ui);
         });
+        self.after_drawing(ui, started);
+    }
+
+    /// What the start page's `act` asks: New's and Open's dialogs, a recent document opened
+    /// (or its tab shown, if it's open), or the MCP config copied.
+    fn start_act(&mut self, ui: &Ui, act: start::Act, started: &mut bool) {
+        match act {
+            start::Act::None => {}
+            start::Act::New => self.asking = Some(Asking::Path { create: true }),
+            start::Act::Open => self.asking = Some(Asking::Path { create: false }),
+            start::Act::Recent(path) => {
+                // One already open is shown; any other opened.
+                let open = self.tabs.iter().find(|tab| {
+                    std::path::absolute(&tab.path).is_ok_and(|at| at == std::path::Path::new(&path))
+                });
+                if let Some(tab) = open {
+                    self.active = Some(tab.id);
+                    self.home = false;
+                } else {
+                    self.open(&path, false);
+                    *started = true;
+                }
+            }
+            start::Act::CopyMcpConfig => ui.ctx().copy_text(self.mcp_config()),
+        }
+    }
+
+    /// The frame's end, the window drawn: what's asked, as a modal; the window closed once
+    /// a quit has closed every tab, or kept open while one holds edits; and the next frame
+    /// asked for.
+    fn after_drawing(&mut self, ui: &mut Ui, mut started: bool) {
         self.ask(ui, &mut started);
         if self.quitting && self.tabs.is_empty() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -367,8 +494,22 @@ impl<P: Clients + 'static> App<P> {
         ui.ctx().request_repaint_after(IDLE_FRAME);
     }
 
-    /// The opens under way and every tab polled; tabs whose sessions closed dropped.
+    /// The opens under way and every tab polled; tabs whose sessions closed dropped; and
+    /// what the recent documents' thread has told, a document it dropped said.
     fn poll(&mut self) {
+        let gone = self.recents.as_mut().map(Recents::poll).unwrap_or_default();
+        for path in gone {
+            let path = std::path::Path::new(&path);
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            let folder = path.parent().unwrap_or(path).display();
+            self.message = Some(format!(
+                "{name} isn't in {folder} any more, so it's no longer listed in Recent"
+            ));
+            self.message_from = None;
+        }
         let (answered, pending) =
             split_answered(std::mem::take(&mut self.opening), Running::try_take);
         self.opening = pending;
@@ -426,9 +567,17 @@ impl<P: Clients + 'static> App<P> {
             Err(problems) => {
                 self.message = Some(said(&problems));
                 self.message_from = Some(number);
+                // A recent document's: dropped from the list if nothing is at its path.
+                if let Some(recents) = self.recents.as_ref().filter(|recents| recents.holds(&path))
+                {
+                    recents.check(&path);
+                }
                 return;
             }
         };
+        if let Some(recents) = &self.recents {
+            recents.opened(&path);
+        }
         if self.message_from.is_none_or(|from| number > from) {
             self.message = None;
             self.message_from = None;
@@ -453,6 +602,7 @@ impl<P: Clients + 'static> App<P> {
         self.open_numbers.insert(id, number);
         if shown {
             self.active = Some(id);
+            self.home = false;
         }
     }
 
@@ -503,6 +653,16 @@ impl<P: Clients + 'static> App<P> {
             self.save_as_path.clear();
             self.asking = self.active.map(Asking::SaveAs);
             return (false, None);
+        }
+        // Ctrl+N and Ctrl+O: New's and Open's dialogs, as the File menu's and the start
+        // page's.
+        for (key, create) in [(Key::N, true), (Key::O, false)] {
+            if ui.input_mut(|input| {
+                input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))
+            }) {
+                self.asking = Some(Asking::Path { create });
+                return (false, None);
+            }
         }
         let in_dialog = self
             .active_place()
@@ -768,6 +928,25 @@ impl<P: Clients + 'static> App<P> {
             .exact_size(theme::TOP_BAR_HEIGHT)
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
+                    // Home, at the far left: the start page, over the open documents.
+                    let start_shown = self.start_shown();
+                    let home = ui
+                        .add(
+                            egui::Button::image(crate::icons::icon(Icon::Home))
+                                .selected(start_shown),
+                        )
+                        .on_hover_text("Home: New, Open, and the documents opened lately");
+                    home.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::Button,
+                            true,
+                            start_shown,
+                            "Home",
+                        )
+                    });
+                    if home.clicked() {
+                        self.home = true;
+                    }
                     let open = !self.tabs.is_empty();
                     let transaction = self
                         .active_place()
@@ -867,10 +1046,11 @@ impl<P: Clients + 'static> App<P> {
                             tab.name().to_owned()
                         };
                         if ui
-                            .selectable_label(Some(tab.id) == self.active, &title)
+                            .selectable_label(Some(tab.id) == self.active && !start_shown, &title)
                             .clicked()
                         {
                             self.active = Some(tab.id);
+                            self.home = false;
                         }
                         let x = ui.add(egui::Button::new("×").frame(false));
                         let closing = format!("Close {}", tab.name());
@@ -943,6 +1123,10 @@ impl<P: Clients + 'static> App<P> {
                 ui.horizontal_centered(|ui| {
                     let message = self.message.clone();
                     let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
+                        // No document: how the warm start stands (decision 10).
+                        if let Some(warm) = &self.warm {
+                            start::warm_status(ui, warm.state());
+                        }
                         if let Some(message) = message {
                             ui.colored_label(ui.visuals().error_fg_color, message);
                         }

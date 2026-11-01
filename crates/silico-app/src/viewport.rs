@@ -1331,6 +1331,13 @@ impl Drawing {
         Some((picking, session, generation))
     }
 
+    /// A frame with no view in it (the start page, no document open): every body the
+    /// renderer holds forgotten, and nothing drawn, as the pane does with no tab.
+    pub(crate) fn nothing_shown(&mut self, painter: &egui::Painter) {
+        let changes = self.changes(None, &BTreeMap::new());
+        self.present(painter, Rect::NOTHING, changes, None);
+    }
+
     fn present(
         &mut self,
         painter: &egui::Painter,
