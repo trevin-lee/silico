@@ -499,8 +499,8 @@ impl View {
     }
 
     /// The read to start at `now`, if one is wanted (section 3, *When the app reads*): none
-    /// while one is in flight, nothing is published, or this very read, refused for the
-    /// moment, waits to be asked again (another revision or view is read at once); else one when the published revision isn't the one the
+    /// while one is in flight, nothing is published, or a read of this revision, refused for
+    /// the moment, waits to be asked again (another revision is read at once); else one when the published revision isn't the one the
     /// bodies were read from, or when the view has `settled` with a body's half pixel
     /// outside its `serves`. Never the read last answered again, nor one refused for what
     /// it asked; after such a refusal of this revision, only once the view has settled.
@@ -519,13 +519,12 @@ impl View {
             camera: self.camera.clone(),
             size,
         };
-        // A retry waiting holds back its own read, and every read of its revision while the
-        // view moves (each frame's another view, which would ask again at once); a new
-        // revision, or the view settled elsewhere, is read now.
+        // A retry waiting holds back every read of its revision, settled or not (a wheel's
+        // every notch settles), until its time; then the view as it is then is read. A new
+        // revision is read now.
         if let Some(retry) = &self.retry
             && now < retry.at
             && retry.asked.revision == asked.revision
-            && (!settled || retry.asked == asked)
         {
             return None;
         }
@@ -541,6 +540,14 @@ impl View {
         let stale = self.model != Some(asked.revision);
         let outside = settled && outside_serves(&self.camera, size[1], self.bodies.values());
         (stale || outside).then_some(asked)
+    }
+
+    /// A retry due at `now` that no read was wanted for: its run ends, so a later refusal
+    /// starts again at the shortest delay.
+    fn ended_if_due(&mut self, now: Instant) {
+        if self.reading.is_none() && self.retry.as_ref().is_some_and(|retry| retry.at <= now) {
+            self.retry = None;
+        }
     }
 
     /// How long until a read refused for the moment may be asked again, if one waits: none
@@ -956,7 +963,12 @@ pub fn show<P: Clients + 'static>(
         .map(|row| &row.id)
         .collect();
     let view = &mut tab.view;
-    view.hidden = hidden.iter().map(|id| (*id).clone()).collect();
+    let now_hidden: BTreeSet<FeatureId> = hidden.iter().map(|id| (*id).clone()).collect();
+    if now_hidden != view.hidden {
+        view.hidden = now_hidden;
+        // A body shown again may reach farther than the view's least allowed.
+        view.camera = navigate::clamped(view.camera.clone(), view.drawn_boxes());
+    }
     view.poll(now);
     match view.notice.take() {
         Some(Notice::Refused(said)) => tab.message = Some(said),
@@ -982,8 +994,11 @@ pub fn show<P: Clients + 'static>(
         // A frame after this one, to see the view settled.
         ui.ctx().request_repaint();
     }
-    if let Some(asked) = view.wanted(tab.published, size, settled, now) {
-        view.start(sessions, &tab.id, asked);
+    match view.wanted(tab.published, size, settled, now) {
+        Some(asked) => view.start(sessions, &tab.id, asked),
+        // A retry due with no read wanted ends its run: a later refusal starts again at the
+        // shortest delay.
+        None => view.ended_if_due(now),
     }
     if view.reading.is_none()
         && let Some(wait) = view.wake_in(now)
@@ -1008,7 +1023,7 @@ pub fn show<P: Clients + 'static>(
     let bodies: Vec<u32> = view
         .bodies
         .iter()
-        .filter(|(number, body)| !hidden.contains(&body.feature) && drawing.holds(**number))
+        .filter(|(number, body)| !view.hidden.contains(&body.feature) && drawing.holds(**number))
         .map(|(number, _)| *number)
         .collect();
     // A highlight of a body not drawn, or of an element its mesh hasn't, would have the
@@ -1796,9 +1811,10 @@ mod tests {
     }
 
     #[test]
-    fn a_backoff_holds_back_only_its_own_read_never_a_new_revision_or_view() {
-        // Seven refusals in a row: the next asked in 8 s. A new revision, or the view moved
-        // and settled, is read a millisecond later.
+    fn a_backoff_holds_back_every_read_of_its_revision_till_its_time_never_a_new_revision() {
+        // Seven refusals in a row: the next asked in 8 s. A new revision is read a
+        // millisecond later; the view moved and settled is not, until the 8 s are up, and
+        // then the view as it is then.
         let at = now();
         let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
         for _ in 0..7 {
@@ -1813,10 +1829,10 @@ mod tests {
                 .is_some()
         );
         view.camera = front(40.0);
-        assert!(view.wanted(revision(4), [1000, 1000], true, soon).is_some());
-        // Back to the read refused: held back again, its count kept.
-        view.camera = front(80.0);
         assert_eq!(view.wanted(revision(4), [1000, 1000], true, soon), None);
+        let due = at + Duration::from_secs(8);
+        let asked = view.wanted(revision(4), [1000, 1000], true, due).unwrap();
+        assert_eq!(asked.camera, front(40.0));
     }
 
     #[test]
@@ -1921,10 +1937,10 @@ mod tests {
     }
 
     #[test]
-    fn a_retry_waiting_holds_back_its_revisions_reads_while_the_view_moves() {
+    fn a_retry_waiting_holds_back_its_revisions_reads_moving_or_settled() {
         // Refused for the moment at revision 4 (the bodies are of 3, so every view of 4
-        // would read): while the view moves, no read of 4; settled elsewhere, one at once;
-        // refused again there, the delay goes on growing (500 ms, not 250 again).
+        // would read): while the view moves, and once it settles elsewhere, no read of 4
+        // until 250 ms; then one, of the view then; refused again, the delay grows (500 ms).
         let at = now();
         let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
         let request = asked(&view, 4);
@@ -1932,17 +1948,20 @@ mod tests {
         for height in [81.0, 82.0, 83.0] {
             view.camera = front(height);
             assert_eq!(view.wanted(revision(4), [1000, 1000], false, at), None);
+            assert_eq!(view.wanted(revision(4), [1000, 1000], true, at), None);
         }
-        let elsewhere = view.wanted(revision(4), [1000, 1000], true, at).unwrap();
+        let due = at + Duration::from_millis(250);
+        let elsewhere = view.wanted(revision(4), [1000, 1000], true, due).unwrap();
+        assert_eq!(elsewhere.camera, front(83.0));
         view.took(
             elsewhere,
             false,
             refusal(ErrorCode::WorkerCrashed, None),
-            at,
+            due,
         );
-        assert_eq!(view.wake_in(at), Some(Duration::from_millis(500)));
+        assert_eq!(view.wake_in(due), Some(Duration::from_millis(500)));
         // A new revision, moving or not, at once.
-        assert!(view.wanted(revision(5), [1000, 1000], false, at).is_some());
+        assert!(view.wanted(revision(5), [1000, 1000], false, due).is_some());
     }
 
     #[test]
@@ -2009,7 +2028,7 @@ mod tests {
     fn the_least_a_view_is_clamped_to_is_by_the_bodies_drawn_and_an_unmeasured_ones_mesh() {
         // The cut, and a body 10 m off: hidden, it's no part of the reach from (20, 10, 5),
         // √536, as the renderer, drawing it not, leaves it out. A body with no box, whose
-        // mesh reaches (100, 10, 5), counts by that: 80 mm.
+        // mesh reaches (200, 10, 5) by an edge's point, counts by that: 180 mm.
         let far = ViewBody {
             feature: FeatureId::new("a91cw0de").unwrap(),
             ..body(0.03125, [0.03125, 0.0625], Some([[1e4; 3], [1.1e4; 3]]))
@@ -2029,11 +2048,77 @@ mod tests {
         let mut unmeasured = body(0.03125, [0.03125, 0.0625], None);
         unmeasured.mesh = Arc::new(Mesh {
             positions: vec![[20.0, 10.0, 5.0], [100.0, 10.0, 5.0]],
-            edge_points: vec![[20.0, 10.0, 5.0]],
+            edge_points: vec![[20.0, 10.0, 5.0], [200.0, 10.0, 5.0]],
             ..(*unmeasured.mesh).clone()
         });
         let mut view = view_with(&[(1, unmeasured)], 3);
         view.moved(Some(tiny));
-        assert!((height(&view) - 80.0 * 1e-5 * 1.01).abs() < 1e-15);
+        // Its edge's point at (200, 10, 5) is the farthest: 180 mm.
+        assert!((height(&view) - 180.0 * 1e-5 * 1.01).abs() < 1e-15);
+    }
+
+    fn hidden_far() -> (ViewBody, FeatureId) {
+        let far = FeatureId::new("a91cw0de").unwrap();
+        (
+            ViewBody {
+                feature: far.clone(),
+                ..body(0.03125, [0.03125, 0.0625], Some([[1e4; 3], [1.1e4; 3]]))
+            },
+            far,
+        )
+    }
+
+    #[test]
+    fn a_new_tables_clamp_and_a_zooms_stop_are_by_the_bodies_drawn() {
+        // The cut, and a body 10 m off that the browser hides: the least from (20, 10, 5) is
+        // the cut's alone, √536 · 1e-5 · 1.01, both as a table comes and as a zoom stops.
+        let least = 536f64.sqrt() * 1e-5 * 1.01;
+        let height = |view: &View| match view.camera.projection {
+            Projection::Orthographic { view_height } => view_height,
+            Projection::Perspective { .. } => panic!("orthographic"),
+        };
+        let (far, id) = hidden_far();
+        let mut view = View::default();
+        view.hidden = [id.clone()].into_iter().collect();
+        view.set_camera(front(1e-6));
+        let mesh = Arc::clone(&body(0.03125, [0.03125, 0.0625], CUT).mesh);
+        view.take_bodies(vec![
+            meshed(1, 1, 0.03125, Some(Arc::clone(&mesh))),
+            MeshedBody {
+                feature: id,
+                bounds: far.bounds,
+                ..meshed(2, 2, 0.03125, Some(mesh))
+            },
+        ]);
+        assert!((height(&view) - least).abs() < 1e-15, "{}", height(&view));
+        // From four times the least, two octaves in reach it, the far body hidden; with it
+        // counted, the zoom would stop far above.
+        view.camera = front(4.0 * least);
+        view.zoom(400.0, [0.0, 0.0], 400.0);
+        assert!((height(&view) - least).abs() < 1e-15, "{}", height(&view));
+    }
+
+    #[test]
+    fn a_retry_due_with_no_read_wanted_ends_its_run() {
+        // Three refusals (the next in 1 s); due with the view back where the last answer
+        // was, no read is wanted and the run ends: the next refusal waits 250 ms again.
+        let at = now();
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        view.answered = Some(asked(&view, 3));
+        view.camera = front(40.0);
+        for _ in 0..3 {
+            let request = asked(&view, 3);
+            view.took(request, false, refusal(ErrorCode::WorkerCrashed, None), at);
+        }
+        assert_eq!(view.wake_in(at), Some(Duration::from_secs(1)));
+        view.camera = front(80.0);
+        let due = at + Duration::from_secs(1);
+        assert_eq!(view.wanted(revision(3), [1000, 1000], true, due), None);
+        view.ended_if_due(due);
+        assert!(view.retry.is_none());
+        view.camera = front(40.0);
+        let request = asked(&view, 3);
+        view.took(request, false, refusal(ErrorCode::WorkerCrashed, None), due);
+        assert_eq!(view.wake_in(due), Some(Duration::from_millis(250)));
     }
 }

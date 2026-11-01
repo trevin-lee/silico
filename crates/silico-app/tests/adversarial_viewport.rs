@@ -695,6 +695,23 @@ fn a_due_retry_with_no_read_wanted_asks_for_no_frame_at_the_displays_rate() {
         assert!(idle(repaint_delay(&h)), "{:?}", repaint_delay(&h));
     }
     assert_eq!(view(&h).reads(), reads + 1);
+    // That run of refusals ended: zoomed again and refused, the next waits 250 ms, the
+    // shortest, not the 500 a second refusal in a row would.
+    let wakes = h.state().wakes();
+    let zoomed = the_small_cube_at_0_04(&h);
+    view_mut(&mut h).set_camera(zoomed);
+    step_until(&mut h, "the second refused read", |h| {
+        view(h).reads() > reads + 1 && !view(h).reading()
+    });
+    woken(&mut h, wakes);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let delay = repaint_delay(&h).unwrap_or_default();
+    assert!(
+        delay <= Duration::from_millis(250) && delay > Duration::from_millis(230),
+        "{delay:?}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1325,11 +1342,11 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
 }
 
 #[test]
-fn a_view_moving_while_a_new_revision_is_refused_for_the_moment_reads_nothing_until_it_settles() {
+fn a_view_moving_while_a_new_revision_is_refused_for_the_moment_reads_nothing_until_its_time() {
     // The bodies are of an older revision, so any view of the new one would read; its read
     // was refused for the moment. A pan of thirty frames, each another view, the time not
-    // moving: no read. Let go and settled: one, at once (refused again, its next half a
-    // second off, the backoff going on).
+    // moving: no read; let go and settled, none either. At the retry's time, 250 ms on, one
+    // (refused again, its next half a second off, the backoff going on).
     let f = fixture();
     let failing = failing_kernel(&f);
     let (time, clock) = hand_clock();
@@ -1367,14 +1384,116 @@ fn a_view_moving_while_a_new_revision_is_refused_for_the_moment_reads_nothing_un
     }
     assert_eq!(view(&h).reads(), refused, "a read while the view moved");
     button(&h, at + vec2(60.0, 0.0), PointerButton::Middle, false);
-    for _ in 0..5 {
-        step(&mut h);
-    }
-    step_until(&mut h, "no read out", |h| !view(h).reading());
-    assert_eq!(view(&h).reads(), refused + 1);
+    assert_eq!(reads_over(&mut h, 20), 0);
+    advance(&time, Duration::from_millis(250));
+    assert_eq!(reads_over(&mut h, 5), 1);
     // Refused again: nothing more until half a second has passed.
     assert_eq!(reads_over(&mut h, 20), 0);
     advance(&time, Duration::from_millis(500));
     assert_eq!(reads_over(&mut h, 5), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn wheel_notches_during_a_backoff_read_at_most_once() {
+    // A new revision refused for the moment; five wheel notches, each followed by a frame
+    // the view rests in (settled): no read before the retry's time, 250 ms on, and one at
+    // it, of the view then.
+    let f = fixture();
+    let failing = failing_kernel(&f);
+    let (time, clock) = hand_clock();
+    let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
+    meshes_settled(&mut h, 0);
+    failing.store(true, Ordering::SeqCst);
+    let id = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&id).session.unwrap().revision;
+    let reads = view(&h).reads();
+    let wakes = h.state().wakes();
+    f.sessions
+        .set_field(
+            &id,
+            revision,
+            FeatureId::new("k7f2qx3m").unwrap(),
+            "height".to_owned(),
+            json::read(b"60").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new revision's refused read", |h| {
+        view(h).reads() > reads && !view(h).reading()
+    });
+    woken(&mut h, wakes);
+    let refused = view(&h).reads();
+    let centre = rect(&h).center();
+    for _ in 0..5 {
+        h.hover_at(centre);
+        h.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, 40.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+        step(&mut h);
+        step(&mut h);
+    }
+    assert_eq!(reads_over(&mut h, 10), 0);
+    assert_eq!(view(&h).reads(), refused);
+    let rested = view(&h).camera().clone();
+    advance(&time, Duration::from_millis(250));
+    assert_eq!(reads_over(&mut h, 10), 1);
+    assert_eq!(view(&h).camera(), &rested);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_body_shown_again_raises_a_view_under_the_least_its_reach_allows() {
+    // The large cube hidden, the view zoomed in to the least the small one allows from
+    // (25, 25, 25); the large cube shown again: in the next frame the view is raised to
+    // the least of both, so the renderer draws it.
+    let f = fixture();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h, 0);
+    step_until(&mut h, "the browser", |h| {
+        h.query_by_label("Hide Large").is_some()
+    });
+    h.get_by_label("Hide Large").click();
+    step(&mut h);
+    view_mut(&mut h).set_camera(Camera {
+        projection: Projection::Orthographic { view_height: 80.0 },
+        eye: [25.0, -500.0, 25.0],
+        target: [25.0; 3],
+        up: [0.0, 0.0, 1.0],
+    });
+    step(&mut h);
+    let centre = rect(&h).center();
+    for _ in 0..40 {
+        h.hover_at(centre);
+        h.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, 200.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        step(&mut h);
+    }
+    let small = (3.0f64 * 25.0 * 25.0).sqrt() * 1e-5 * 1.01;
+    assert!((view_height(view(&h).camera()) - small).abs() < 1e-15);
+    let boxes: Vec<[[f64; 3]; 2]> = view(&h)
+        .bodies()
+        .values()
+        .filter_map(|body| body.bounds)
+        .collect();
+    assert!(!navigate::drawable(view(&h).camera(), boxes.clone()));
+    h.get_by_label("Show Large").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(navigate::drawable(view(&h).camera(), boxes.clone()));
+    let both = (2975.0f64 * 2975.0 + 2.0 * 975.0 * 975.0).sqrt() * 1e-5 * 1.01;
+    assert!((view_height(view(&h).camera()) - both).abs() < 1e-12);
+    let last = record.lock().unwrap().frames.last().unwrap().clone();
+    assert_eq!(last.bodies, [1, 2]);
+    assert!(navigate::drawable(&last.camera, boxes));
     assert_eq!(never_waits::waits(), 0);
 }
