@@ -2204,7 +2204,9 @@ fn a_cancel_of_drag_move_returns_without_waiting_on_the_drags_thread() {
                 && armed.swap(false, std::sync::atomic::Ordering::SeqCst)
             {
                 let _ = held.lock().unwrap().send(());
-                let _ = gate.lock().unwrap().recv_timeout(HANG);
+                // Twice the test's own wait for the cancel: a cancel that joined this thread
+                // must fail that wait, never be let go by this one ending first.
+                let _ = gate.lock().unwrap().recv_timeout(HANG * 2);
             }
         });
     }
