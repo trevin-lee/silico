@@ -517,6 +517,75 @@ pub const GHOST_BUTTON_PADDING: f32 = 6.0;
 /// A ghost button's fill, hovered (`.btn-ghost:hover`, Gray.300).
 pub const GHOST_BUTTON_HOVER_BG: Color32 = WIDGET_BG;
 
+// ---- The application bar (`#appbar`, `.ab-*`, `.doc-tab`) ----
+
+/// The room macOS's window buttons take at the bar's left, where the title bar is the app
+/// bar (`.traffic`: 12 of padding, three 12 point lights 8 apart, and 14 of padding).
+pub const TRAFFIC_LIGHTS_WIDTH: f32 = 12.0 + 3.0 * 12.0 + 2.0 * 8.0 + 14.0;
+
+/// The bar's padding at its right (`#appbar`), and at its left where no window buttons are.
+pub const APP_BAR_PADDING: f32 = 8.0;
+
+/// The space between the bar's items (`#appbar`'s `gap`).
+pub const APP_BAR_ITEM_SPACING: f32 = 2.0;
+
+/// The bar's border below it (`#appbar`'s `border-bottom`, Gray.250).
+pub const APP_BAR_BORDER: Color32 = PANEL_BORDER;
+
+/// A bar button's height and least width (`.ab-btn`, `--btn`: `large_button_size`).
+pub const APP_BAR_BUTTON_SIZE: f32 = 22.0;
+
+/// A bar button's padding at its sides, and the gap between its icon and its text.
+pub const APP_BAR_BUTTON_PADDING: f32 = 5.0;
+pub const APP_BAR_BUTTON_GAP: f32 = 4.0;
+
+/// A bar button hovered (`.ab-btn:hover`, Gray.300), and on, as Home is on the start page
+/// (`.ab-btn.on`, Gray.250); each draws its icon and text [`TEXT_STRONG`]. At rest a bar
+/// button has no fill and is [`TEXT_DEFAULT`]; disabled, [`TEXT_DISABLED`].
+pub const APP_BAR_BUTTON_HOVER_BG: Color32 = WIDGET_BG;
+pub const APP_BAR_BUTTON_ON_BG: Color32 = HOVER_BG;
+
+/// The separator between the bar's buttons and the documents' tabs (`.ab-sep`): its height,
+/// its colour, and its margin at each side.
+pub const APP_BAR_SEPARATOR_HEIGHT: f32 = 16.0;
+pub const APP_BAR_SEPARATOR: Color32 = PANEL_BORDER;
+pub const APP_BAR_SEPARATOR_MARGIN: f32 = 6.0;
+
+/// A document's tab (`.doc-tab`): its padding at its left and right, the gap between its
+/// parts, and its widest, borders and all; a longer name ends in an ellipsis.
+pub const DOC_TAB_PADDING_LEFT: f32 = 10.0;
+pub const DOC_TAB_PADDING_RIGHT: f32 = 6.0;
+pub const DOC_TAB_GAP: f32 = 6.0;
+pub const DOC_TAB_MAX_WIDTH: f32 = 220.0;
+
+/// A tab's 1 point borders, at its right and, the first's, at its left (Gray.250).
+pub const DOC_TAB_BORDER: Color32 = PANEL_BORDER;
+
+/// A tab's name at rest (Gray.550), hovered (`.doc-tab:hover`, Gray.800 on Gray.150), and
+/// the shown document's (`.doc-tab.active`, white on Gray.200, its fill covering the bar's
+/// border below it).
+pub const DOC_TAB_TEXT: Color32 = TEXT_SUBDUED;
+pub const DOC_TAB_HOVER_TEXT: Color32 = GRAY_800;
+pub const DOC_TAB_HOVER_BG: Color32 = GRAY_150;
+pub const DOC_TAB_ACTIVE_TEXT: Color32 = TEXT_STRONG;
+pub const DOC_TAB_ACTIVE_BG: Color32 = GRAY_200;
+
+/// The asterisk of a document with unsaved edits (`.doc-tab .dirty`, white).
+pub const DOC_TAB_DIRTY: Color32 = TEXT_STRONG;
+
+/// A tab's close button (`.doc-tab .x`), shown while the tab is hovered or shown: its side,
+/// its corners, its icon (Gray.550), and its fill and icon hovered (Gray.350, white).
+pub const DOC_TAB_CLOSE_SIZE: f32 = 16.0;
+pub const DOC_TAB_CLOSE_CORNER_RADIUS: u8 = 3;
+pub const DOC_TAB_CLOSE: Color32 = TEXT_SUBDUED;
+pub const DOC_TAB_CLOSE_HOVER_BG: Color32 = GRAY_350;
+pub const DOC_TAB_CLOSE_HOVER: Color32 = TEXT_STRONG;
+
+/// The gap between a tooltip's title and its shortcut's key caps (`.tt-title`), and the
+/// space above its description (`.tt-desc`, [`HEADER_SIZE`] text, [`TEXT_SUBDUED`]).
+pub const TOOLTIP_TITLE_GAP: f32 = 8.0;
+pub const TOOLTIP_DESCRIPTION_GAP: f32 = 2.0;
+
 // ---- Key caps (`.kbd`) ----
 
 /// A key cap's fill (Gray.250).
@@ -1084,6 +1153,63 @@ mod tests {
             ("VIEWPORT_BG", VIEWPORT_BG, [0, 0, 0, 0xff]),
         ] {
             assert_eq!(color, rgba, "{name}");
+        }
+    }
+
+    /// The app bar's and its tabs' values, typed from styles.css's `#appbar`, `.traffic`,
+    /// `.ab-btn`, `.ab-sep`, `.doc-tab`, and `.tooltip`, and its `--g*` greys.
+    #[test]
+    fn the_app_bars_tokens_are_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `.traffic`: `padding: 0 14px 0 12px`, three spans of 12, `gap: 8px`.
+        assert_eq!(TRAFFIC_LIGHTS_WIDTH, 78.0);
+        // `#appbar`: `padding-right: 8px; gap: 2px`, `--top-bar-h: 30px`.
+        assert_eq!(APP_BAR_PADDING, 8.0);
+        assert_eq!(APP_BAR_ITEM_SPACING, 2.0);
+        assert_eq!(TOP_BAR_HEIGHT, 30.0);
+        // `.ab-btn`: `height` and `min-width` `--btn` (22), `padding: 0 5px`, `gap: 4px`.
+        assert_eq!(APP_BAR_BUTTON_SIZE, 22.0);
+        assert_eq!(APP_BAR_BUTTON_PADDING, 5.0);
+        assert_eq!(APP_BAR_BUTTON_GAP, 4.0);
+        // `.ab-sep`: `height: 16px; margin: 0 6px`.
+        assert_eq!(APP_BAR_SEPARATOR_HEIGHT, 16.0);
+        assert_eq!(APP_BAR_SEPARATOR_MARGIN, 6.0);
+        // `.doc-tab`: `padding: 0 6px 0 10px; gap: 6px; max-width: 220px`; `.x` 16 square
+        // with corners 3.
+        assert_eq!(DOC_TAB_PADDING_LEFT, 10.0);
+        assert_eq!(DOC_TAB_PADDING_RIGHT, 6.0);
+        assert_eq!(DOC_TAB_GAP, 6.0);
+        assert_eq!(DOC_TAB_MAX_WIDTH, 220.0);
+        assert_eq!(DOC_TAB_CLOSE_SIZE, 16.0);
+        assert_eq!(DOC_TAB_CLOSE_CORNER_RADIUS, 3);
+        // `.tooltip .tt-title`'s `gap: 8px`, `.tt-desc`'s `margin-top: 2px`.
+        assert_eq!(TOOLTIP_TITLE_GAP, 8.0);
+        assert_eq!(TOOLTIP_DESCRIPTION_GAP, 2.0);
+        for (name, color, hex) in [
+            // `#appbar`'s `border-bottom` and `.ab-sep`, `--g250`.
+            ("APP_BAR_BORDER", APP_BAR_BORDER, 0x272626),
+            ("APP_BAR_SEPARATOR", APP_BAR_SEPARATOR, 0x272626),
+            // `.ab-btn:hover`, `--g300`; `.ab-btn.on`, `--g250`.
+            ("APP_BAR_BUTTON_HOVER_BG", APP_BAR_BUTTON_HOVER_BG, 0x2c2b2b),
+            ("APP_BAR_BUTTON_ON_BG", APP_BAR_BUTTON_ON_BG, 0x272626),
+            // `.doc-tab`, `--g550` in `--g250` borders; `:hover`, `--g800` on `--g150`;
+            // `.active`, `--g1000` on `--g200`; `.dirty`, `--g1000`.
+            ("DOC_TAB_TEXT", DOC_TAB_TEXT, 0x939090),
+            ("DOC_TAB_BORDER", DOC_TAB_BORDER, 0x272626),
+            ("DOC_TAB_HOVER_TEXT", DOC_TAB_HOVER_TEXT, 0xe0dfdf),
+            ("DOC_TAB_HOVER_BG", DOC_TAB_HOVER_BG, 0x171717),
+            ("DOC_TAB_ACTIVE_TEXT", DOC_TAB_ACTIVE_TEXT, 0xffffff),
+            ("DOC_TAB_ACTIVE_BG", DOC_TAB_ACTIVE_BG, 0x212121),
+            ("DOC_TAB_DIRTY", DOC_TAB_DIRTY, 0xffffff),
+            // `.doc-tab .x`, `--g550`; `.x:hover`, `--g1000` on `--g350`.
+            ("DOC_TAB_CLOSE", DOC_TAB_CLOSE, 0x939090),
+            ("DOC_TAB_CLOSE_HOVER", DOC_TAB_CLOSE_HOVER, 0xffffff),
+            ("DOC_TAB_CLOSE_HOVER_BG", DOC_TAB_CLOSE_HOVER_BG, 0x525151),
+        ] {
+            assert_eq!(color, opaque(hex), "{name}");
         }
     }
 

@@ -372,7 +372,7 @@ fn action(ui: &mut Ui, icon: Icon, label: &str, key: Key, primary: bool) -> Resp
 }
 
 /// The caps of Command (Ctrl off macOS) and `key`, as the platform names them.
-fn shortcut_caps(ctx: &egui::Context, key: Key) -> [String; 2] {
+pub(crate) fn shortcut_caps(ctx: &egui::Context, key: Key) -> [String; 2] {
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     let names = if mac {
         egui::ModifierNames::SYMBOLS
@@ -385,8 +385,29 @@ fn shortcut_caps(ctx: &egui::Context, key: Key) -> [String; 2] {
     ]
 }
 
+/// The width `caps` take as [`key_caps`] paints them.
+pub(crate) fn key_caps_width(ui: &Ui, caps: &[String]) -> f32 {
+    let gaps = caps.len().saturating_sub(1) as f32 * theme::KEY_CAP_GAP;
+    caps.iter()
+        .map(|cap| {
+            let galley = ui.painter().layout_no_wrap(
+                cap.clone(),
+                FontId::proportional(theme::KEY_CAP_TEXT_SIZE),
+                theme::KEY_CAP_TEXT,
+            );
+            key_cap_width(galley.size().x)
+        })
+        .sum::<f32>()
+        + gaps
+}
+
+/// A key cap's width, for text `text` wide: its padding and its outline at each side.
+fn key_cap_width(text: f32) -> f32 {
+    (text + 2.0 * (theme::KEY_CAP_PADDING + theme::KEY_CAP_BORDER)).max(theme::KEY_CAP_MIN_WIDTH)
+}
+
 /// `caps` painted as key caps, the last ending at `right` (centred on its height).
-fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
+pub(crate) fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
     let painter = ui.painter();
     let (fill, stroke, text) = if primary {
         (
@@ -408,8 +429,7 @@ fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
             FontId::proportional(theme::KEY_CAP_TEXT_SIZE),
             text,
         );
-        let width = (galley.size().x + 2.0 * (theme::KEY_CAP_PADDING + theme::KEY_CAP_BORDER))
-            .max(theme::KEY_CAP_MIN_WIDTH);
+        let width = key_cap_width(galley.size().x);
         let rect = Rect::from_min_max(
             Pos2::new(x - width, right.y - theme::KEY_CAP_HEIGHT / 2.0),
             Pos2::new(x, right.y + theme::KEY_CAP_HEIGHT / 2.0),

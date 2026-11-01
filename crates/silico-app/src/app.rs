@@ -18,6 +18,7 @@ use silico_core::command::{
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
 
+use crate::bar;
 use crate::browse::{self, Ask, Browse, Browsing, Pick};
 use crate::dialog::{Action, Kind};
 use crate::export::{self, ExportForm, Shown};
@@ -184,6 +185,9 @@ pub struct App<P: Clients + 'static> {
     /// The Home tab shown, over the open documents' (the start page, which shows anyway
     /// while none is open).
     home: bool,
+    /// The tab last scrolled into view in the app bar: a tab shown since, by a click or an
+    /// open, is scrolled to until it's in view, once.
+    tab_in_view: Option<SessionId>,
     /// The documents opened lately, if the app keeps a list.
     recents: Option<Recents>,
     /// The warm start's state, if the app warms its workers.
@@ -223,6 +227,7 @@ impl<P: Clients + 'static> App<P> {
             browsing: None,
             last_folder: None,
             home: false,
+            tab_in_view: None,
             recents: None,
             warm: None,
             silico: "silico".to_owned(),
@@ -958,159 +963,197 @@ impl<P: Clients + 'static> App<P> {
         self.browsing = Some(Browsing::new(asking, answer, ctx));
     }
 
-    /// The application bar (section 8): the File menu, Save, Undo and Redo, and the open
-    /// documents' tabs, an asterisk on a changed one's (docs/ux/solidworks.md, §6).
+    /// The application bar (section 8; docs/design/m5-ui/DESIGN.md, *Layout*): Home, the
+    /// File menu, Save, Undo and Redo, and the open documents' tabs, an asterisk on a changed
+    /// one's (docs/ux/solidworks.md, §6), scrolling across when they overflow. On macOS it's
+    /// the window's title bar (`bar`).
     fn app_bar(&mut self, ui: &mut Ui, started: &mut bool) {
         egui::Panel::top("app_bar")
             .exact_size(theme::TOP_BAR_HEIGHT)
+            .frame(egui::Frame::NONE.fill(theme::TOP_BAR_BG))
+            .show_separator_line(false)
             .show(ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    // Home, at the far left: the start page, over the open documents.
-                    let start_shown = self.start_shown();
-                    // On: Gray.250 behind a white icon (`.ab-btn.on`), not the selection's blue.
-                    let (fill, icon) = if start_shown {
-                        (theme::HOVER_BG, theme::TEXT_STRONG)
-                    } else {
-                        (egui::Color32::TRANSPARENT, theme::TEXT_DEFAULT)
-                    };
-                    let home = ui
-                        .add(
-                            egui::Button::image(crate::icons::icon(Icon::Home).tint(icon))
-                                .fill(fill)
-                                .frame_when_inactive(start_shown),
-                        )
-                        .on_hover_text("Home: New, Open, and the documents opened lately");
-                    home.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::Button,
-                            true,
-                            start_shown,
-                            "Home",
-                        )
-                    });
-                    if home.clicked() {
-                        self.home = true;
-                    }
-                    let open = !self.tabs.is_empty();
-                    let transaction = self
-                        .active_place()
-                        .and_then(|at| self.tabs.get(at))
-                        .is_some_and(|tab| tab.transaction);
-                    // Revert is off while the tab closes: its close drops the edits already.
-                    let revertible = transaction
-                        && self
-                            .active_place()
-                            .and_then(|at| self.tabs.get(at))
-                            .is_some_and(|tab| !tab.closing());
-                    ui.menu_button("File", |ui| {
-                        if ui.button("New…").clicked() {
-                            self.asking = Some(Asking::Path { create: true });
-                            ui.close();
-                        }
-                        if ui.button("Open…").clicked() {
-                            self.asking = Some(Asking::Path { create: false });
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(self.save_as_offered(), egui::Button::new("Save As…"))
-                            .clicked()
-                        {
-                            if let Some(id) = self.active {
-                                self.save_as_path.clear();
-                                self.asking = Some(Asking::SaveAs(id));
-                            }
-                            ui.close();
-                        }
-                        // Off while the tab closes, as Save As is.
-                        if ui
-                            .add_enabled(self.save_as_offered(), egui::Button::new("Export…"))
-                            .clicked()
-                        {
-                            if let Some(tab) =
-                                self.active_place().and_then(|at| self.tabs.get_mut(at))
-                            {
-                                tab.export_opened();
-                                self.export = Some(ExportForm::new(tab.id, &tab.path));
-                                self.asking = Some(Asking::Export(tab.id));
-                            }
-                            ui.close();
-                        }
-                        if ui
-                            .add_enabled(revertible, egui::Button::new("Revert"))
-                            .clicked()
-                        {
-                            if let Some(tab) =
-                                self.active_place().and_then(|at| self.tabs.get_mut(at))
-                            {
-                                tab.revert(&self.sessions, false);
-                                *started = true;
-                            }
-                            ui.close();
-                        }
-                        if ui.add_enabled(open, egui::Button::new("Close")).clicked() {
-                            if let Some(id) = self.active {
-                                self.close(id);
-                            }
-                            *started = true;
-                            ui.close();
-                        }
-                    });
-                    let tab = self.active_place().and_then(|at| self.tabs.get_mut(at));
-                    // Off while a dialog is open: its OK or Cancel ends its edits first.
-                    let unsaved = tab
-                        .as_ref()
-                        .is_some_and(|tab| tab.unsaved() && !tab.in_dialog());
-                    if ui.add_enabled(unsaved, egui::Button::new("Save")).clicked()
-                        && let Some(tab) = tab
-                    {
-                        tab.save(&self.sessions, false);
-                        *started = true;
-                    }
-                    let (undoable, redoable) = self
-                        .active_place()
-                        .and_then(|at| self.tabs.get(at))
-                        .map_or((false, false), |tab| (tab.undoable(), tab.redoable()));
-                    for (undo, word, enabled) in
-                        [(true, "Undo", undoable), (false, "Redo", redoable)]
-                    {
-                        if ui.add_enabled(enabled, egui::Button::new(word)).clicked()
-                            && let Some(tab) =
-                                self.active_place().and_then(|at| self.tabs.get_mut(at))
-                        {
-                            tab.step(&self.sessions, undo);
-                            *started = true;
-                        }
-                    }
-                    ui.separator();
-                    let mut close = None;
-                    for tab in &self.tabs {
-                        let title = if tab.unsaved() {
-                            format!("{} *", tab.name())
-                        } else {
-                            tab.name().to_owned()
-                        };
-                        if ui
-                            .selectable_label(Some(tab.id) == self.active && !start_shown, &title)
-                            .clicked()
-                        {
-                            self.active = Some(tab.id);
-                            self.home = false;
-                        }
-                        let x = ui.add(egui::Button::new("×").frame(false));
-                        let closing = format!("Close {}", tab.name());
-                        x.widget_info(|| {
-                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &closing)
-                        });
-                        if x.clicked() {
-                            close = Some(tab.id);
-                        }
-                    }
-                    if let Some(id) = close {
-                        self.close(id);
-                        *started = true;
-                    }
-                });
+                let bar = ui.max_rect();
+                bar::move_window(ui, bar);
+                bar::border(ui, bar);
+                // The row above the border, its items centred in it.
+                let row =
+                    egui::Rect::from_min_max(bar.min, egui::pos2(bar.right(), bar.bottom() - 1.0));
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(row)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = theme::APP_BAR_ITEM_SPACING;
+                        bar::inset(ui);
+                        self.app_bar_buttons(ui, started);
+                        bar::separator(ui);
+                        self.document_tabs(ui, started);
+                    },
+                );
             });
+    }
+
+    /// The app bar's buttons: Home, at the far left (the start page, over the open
+    /// documents), the File menu, Save, Undo, and Redo.
+    fn app_bar_buttons(&mut self, ui: &mut Ui, started: &mut bool) {
+        let start_shown = self.start_shown();
+        let home = bar::button(ui, Icon::Home, None, "Home", true, Some(start_shown));
+        let home = bar::tooltip(
+            home,
+            "Home",
+            None,
+            Some("New, Open, and the documents opened lately"),
+        );
+        if home.clicked() {
+            self.home = true;
+        }
+        let file = bar::button(ui, Icon::Menu, Some("File"), "File", true, None);
+        let config = egui::containers::menu::MenuConfig::new();
+        egui::Popup::menu(&file)
+            .close_behavior(config.close_behavior)
+            .style(config.style.clone())
+            .info(
+                egui::UiStackInfo::new(egui::UiKind::Menu)
+                    .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
+            )
+            .show(|ui| self.file_menu(ui, started));
+        let tab = self.active_place().and_then(|at| self.tabs.get_mut(at));
+        // Off while a dialog is open: its OK or Cancel ends its edits first.
+        let unsaved = tab
+            .as_ref()
+            .is_some_and(|tab| tab.unsaved() && !tab.in_dialog());
+        let said = tab
+            .as_ref()
+            .filter(|_| unsaved)
+            .map(|tab| format!("Writes your edits to {}", tab.name()));
+        let save = bar::button(ui, Icon::Save, None, "Save", unsaved, None);
+        if bar::tooltip(save, "Save", Some(Key::S), said.as_deref()).clicked()
+            && let Some(tab) = tab
+        {
+            tab.save(&self.sessions, false);
+            *started = true;
+        }
+        let (undoable, redoable) = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .map_or((false, false), |tab| (tab.undoable(), tab.redoable()));
+        for (undo, icon, word, key, enabled) in [
+            (true, Icon::Undo, "Undo", Key::Z, undoable),
+            (false, Icon::Redo, "Redo", Key::Y, redoable),
+        ] {
+            let button = bar::button(ui, icon, None, word, enabled, None);
+            if bar::tooltip(button, word, Some(key), None).clicked()
+                && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at))
+            {
+                tab.step(&self.sessions, undo);
+                *started = true;
+            }
+        }
+    }
+
+    /// The File menu's items: New…, Open…, Save As…, Export…, Revert, and Close.
+    fn file_menu(&mut self, ui: &mut Ui, started: &mut bool) {
+        let open = !self.tabs.is_empty();
+        let transaction = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .is_some_and(|tab| tab.transaction);
+        // Revert is off while the tab closes: its close drops the edits already.
+        let revertible = transaction
+            && self
+                .active_place()
+                .and_then(|at| self.tabs.get(at))
+                .is_some_and(|tab| !tab.closing());
+        if ui.button("New…").clicked() {
+            self.asking = Some(Asking::Path { create: true });
+            ui.close();
+        }
+        if ui.button("Open…").clicked() {
+            self.asking = Some(Asking::Path { create: false });
+            ui.close();
+        }
+        if ui
+            .add_enabled(self.save_as_offered(), egui::Button::new("Save As…"))
+            .clicked()
+        {
+            if let Some(id) = self.active {
+                self.save_as_path.clear();
+                self.asking = Some(Asking::SaveAs(id));
+            }
+            ui.close();
+        }
+        // Off while the tab closes, as Save As is.
+        if ui
+            .add_enabled(self.save_as_offered(), egui::Button::new("Export…"))
+            .clicked()
+        {
+            if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
+                tab.export_opened();
+                self.export = Some(ExportForm::new(tab.id, &tab.path));
+                self.asking = Some(Asking::Export(tab.id));
+            }
+            ui.close();
+        }
+        if ui
+            .add_enabled(revertible, egui::Button::new("Revert"))
+            .clicked()
+        {
+            if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
+                tab.revert(&self.sessions, false);
+                *started = true;
+            }
+            ui.close();
+        }
+        if ui.add_enabled(open, egui::Button::new("Close")).clicked() {
+            if let Some(id) = self.active {
+                self.close(id);
+            }
+            *started = true;
+            ui.close();
+        }
+    }
+
+    /// The open documents' tabs, after the separator: a click shows one's document, and its
+    /// ×, shown while it's hovered or shown, closes it. A tab newly shown is scrolled into
+    /// view.
+    fn document_tabs(&mut self, ui: &mut Ui, started: &mut bool) {
+        let start_shown = self.start_shown();
+        let mut show = None;
+        let mut close = None;
+        let in_view = &mut self.tab_in_view;
+        bar::tab_strip(ui, |ui| {
+            for (at, tab) in self.tabs.iter().enumerate() {
+                let active = Some(tab.id) == self.active && !start_shown;
+                let drawn = bar::doc_tab(
+                    ui,
+                    &bar::DocTab {
+                        name: tab.name(),
+                        path: &tab.path,
+                        unsaved: tab.unsaved(),
+                        active,
+                        first: at == 0,
+                    },
+                );
+                // Scrolled to until it's in view; then left where the person scrolls.
+                if active && *in_view != Some(tab.id) && drawn.in_view(ui) {
+                    *in_view = Some(tab.id);
+                }
+                if drawn.close.clicked() {
+                    close = Some(tab.id);
+                } else if drawn.tab.clicked() {
+                    show = Some(tab.id);
+                }
+            }
+        });
+        if let Some(id) = show {
+            self.active = Some(id);
+            self.home = false;
+        }
+        if let Some(id) = close {
+            self.close(id);
+            *started = true;
+        }
     }
 
     /// The toolbar (section 8): the Design workspace's SOLID tab, its panels named, and
