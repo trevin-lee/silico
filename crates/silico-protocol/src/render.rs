@@ -381,69 +381,79 @@ impl RenderScene {
     }
 }
 
+/// Whether `mesh` can be drawn without the renderer trusting anything about it: its
+/// positions and normals finite, its positions within [`MAX_RENDER_COORDINATE`], one normal
+/// each, every index in range, the faces' and edges' counts adding up, and every number
+/// fitting the ID buffer. What [`RenderScene::check`] asks of each body's mesh, and what the
+/// app's renderer asks of a mesh it uploads; the message says what isn't so.
+pub fn check_render_mesh(mesh: &Mesh) -> Result<(), String> {
+    if mesh.normals.len() != mesh.positions.len() {
+        return Err(format!(
+            "{} normals for {} positions",
+            mesh.normals.len(),
+            mesh.positions.len()
+        ));
+    }
+    let within = |p: &[f64; 3]| p.iter().all(|c| c.abs() <= MAX_RENDER_COORDINATE);
+    if let Some(p) = mesh.positions.iter().position(|p| !within(p)) {
+        return Err(format!(
+            "position {p} must be finite and within {MAX_RENDER_COORDINATE} mm of the origin"
+        ));
+    }
+    if let Some(n) = mesh
+        .normals
+        .iter()
+        .position(|n| n.iter().any(|c| !c.is_finite()))
+    {
+        return Err(format!("normal {n} isn't finite"));
+    }
+    let positions = mesh.positions.len();
+    if let Some(t) = mesh.triangles.iter().position(|t| {
+        t.iter()
+            .any(|&v| usize::try_from(v).map_or(true, |v| v >= positions))
+    }) {
+        return Err(format!(
+            "triangle {t} indexes past its {positions} positions"
+        ));
+    }
+    let counted: u64 = mesh.face_triangles.iter().map(|&c| u64::from(c)).sum();
+    if counted != mesh.triangles.len() as u64 {
+        return Err(format!(
+            "its faces count {counted} triangles, and it has {}",
+            mesh.triangles.len()
+        ));
+    }
+    if let Some(p) = mesh.edge_points.iter().position(|p| !within(p)) {
+        return Err(format!(
+            "edge point {p} must be finite and within {MAX_RENDER_COORDINATE} mm of the origin"
+        ));
+    }
+    let counted: u64 = mesh.edge_point_counts.iter().map(|&c| u64::from(c)).sum();
+    if counted != mesh.edge_points.len() as u64 {
+        return Err(format!(
+            "its edges count {counted} points, and it has {}",
+            mesh.edge_points.len()
+        ));
+    }
+    // Every face's and edge's number from 1 must fit under the edge bit.
+    for (what, count) in [
+        ("faces", mesh.face_triangles.len()),
+        ("edges", mesh.edge_point_counts.len()),
+    ] {
+        if count as u64 >= u64::from(EDGE_BIT) {
+            return Err(format!(
+                "{count} {what} are more than the ID buffer numbers"
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl RenderBody {
     fn check(&self, i: usize) -> Result<(), InvalidParameter> {
         let mesh = &self.mesh;
-        let bad = |what: String| invalid("bodies", format!("bodies[{i}]'s mesh: {what}"));
-        if mesh.normals.len() != mesh.positions.len() {
-            return Err(bad(format!(
-                "{} normals for {} positions",
-                mesh.normals.len(),
-                mesh.positions.len()
-            )));
-        }
-        let within = |p: &[f64; 3]| p.iter().all(|c| c.abs() <= MAX_RENDER_COORDINATE);
-        if let Some(p) = mesh.positions.iter().position(|p| !within(p)) {
-            return Err(bad(format!(
-                "position {p} must be finite and within {MAX_RENDER_COORDINATE} mm of the origin"
-            )));
-        }
-        if let Some(n) = mesh
-            .normals
-            .iter()
-            .position(|n| n.iter().any(|c| !c.is_finite()))
-        {
-            return Err(bad(format!("normal {n} isn't finite")));
-        }
-        let positions = mesh.positions.len();
-        if let Some(t) = mesh.triangles.iter().position(|t| {
-            t.iter()
-                .any(|&v| usize::try_from(v).map_or(true, |v| v >= positions))
-        }) {
-            return Err(bad(format!(
-                "triangle {t} indexes past its {positions} positions"
-            )));
-        }
-        let counted: u64 = mesh.face_triangles.iter().map(|&c| u64::from(c)).sum();
-        if counted != mesh.triangles.len() as u64 {
-            return Err(bad(format!(
-                "its faces count {counted} triangles, and it has {}",
-                mesh.triangles.len()
-            )));
-        }
-        if let Some(p) = mesh.edge_points.iter().position(|p| !within(p)) {
-            return Err(bad(format!(
-                "edge point {p} must be finite and within {MAX_RENDER_COORDINATE} mm of the origin"
-            )));
-        }
-        let counted: u64 = mesh.edge_point_counts.iter().map(|&c| u64::from(c)).sum();
-        if counted != mesh.edge_points.len() as u64 {
-            return Err(bad(format!(
-                "its edges count {counted} points, and it has {}",
-                mesh.edge_points.len()
-            )));
-        }
-        // Every face's and edge's number from 1 must fit under the edge bit.
-        for (what, count) in [
-            ("faces", mesh.face_triangles.len()),
-            ("edges", mesh.edge_point_counts.len()),
-        ] {
-            if count as u64 >= u64::from(EDGE_BIT) {
-                return Err(bad(format!(
-                    "{count} {what} are more than the ID buffer numbers"
-                )));
-            }
-        }
+        check_render_mesh(mesh)
+            .map_err(|what| invalid("bodies", format!("bodies[{i}]'s mesh: {what}")))?;
         for (what, highlights, count) in [
             (
                 "highlight_faces",
