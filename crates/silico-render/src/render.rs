@@ -483,18 +483,17 @@ fn vertex_colour(highlighted: bool) -> Rgba32Unmul {
     Rgba32Unmul::from_rgba_unmul_array([c.r(), c.g(), c.b(), 255])
 }
 
-/// A normal of unit length, scaled by its largest part first so a huge or tiny one neither
-/// overflows nor underflows (re_renderer normalizes in f32); none for zero, which
+/// A normal of unit length, made so in f64, where a huge or tiny f32 one neither overflows
+/// nor underflows (re_renderer normalizes in f32, where it would: f32's largest squared is
+/// 1.2e77 and its least 2e-90, both well inside f64's range); none for zero, which
 /// re_renderer draws unlit.
 fn unit(n: [f32; 3]) -> glam::Vec3 {
     let n = n.map(f64::from);
-    let largest = n.iter().fold(0.0f64, |m, c| m.max(c.abs()));
-    if largest == 0.0 {
+    let length = dot(n, n).sqrt();
+    if length == 0.0 {
         return glam::Vec3::ZERO;
     }
-    let scaled = n.map(|c| c / largest);
-    let length = dot(scaled, scaled).sqrt();
-    vec3(scaled.map(|c| c / length))
+    vec3(n.map(|c| c / length))
 }
 
 /// A body as uploaded: what it was made from, to know it again, and its faces.
@@ -866,8 +865,8 @@ mod tests {
     };
 
     use super::{
-        Bounds, OUTPUT_FORMAT, Renderer, Uploaded, View, centre_of, device, face_vertices, vec3,
-        world_from_mesh,
+        Bounds, OUTPUT_FORMAT, Renderer, Uploaded, View, centre_of, device, face_vertices, unit,
+        vec3, world_from_mesh,
     };
     use crate::bench::{box_mesh, front_of_a_box};
 
@@ -1203,6 +1202,120 @@ mod tests {
                 lit.bodies.truncate(1);
                 lit.bodies[0].highlight_faces = vec![2];
                 assert_eq!(uploads_and_centre(r, &lit), (6, [1, 3]));
+            },
+        );
+    }
+
+    #[test]
+    fn a_normal_is_made_unit_length_in_f64_at_any_f32_size() {
+        // (0, 3, 4) is 5 long by hand: (0, 0.6, 0.8), and so at 2^100 and 2^-140 times it
+        // (f32 numbers whose squares are past f32's range, or under it); f32::MAX on two
+        // axes is (1/√2, 1/√2, 0); zero is none.
+        let want = glam::Vec3::new(0.0, 0.6, 0.8);
+        // 2^100 and 2^-140 (a subnormal) by their bits.
+        for scale in [1.0f32, f32::from_bits(227 << 23), f32::from_bits(1 << 9)] {
+            assert_eq!(unit([0.0, 3.0 * scale, 4.0 * scale]), want, "{scale:e}");
+            assert_eq!(unit([0.0, -3.0 * scale, -4.0 * scale]), -want, "{scale:e}");
+        }
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        assert_eq!(unit([f32::MAX, f32::MAX, 0.0]), glam::Vec3::new(h, h, 0.0));
+        assert_eq!(unit([0.0; 3]), glam::Vec3::ZERO);
+    }
+
+    #[test]
+    fn a_render_takes_its_view_from_its_camera() {
+        // The bench's box from the front (A), and from the front rolled a quarter turn, its
+        // up +x (B: right is up × back = (0, 0, −1)), orthographic 44 mm over 48 rows, 64
+        // wide, about (21, 10, 7): 48/44 pixels a mm. By hand, A's pixel (12, 26) is x −17.9,
+        // z −2.3 about the target, (3.1, 0, 4.7) on the front face, and its pixel (34, 8) is
+        // z 21.2, above the box; B's pixel (34, 8) is the front face's (35.2, 0, 4.7), and its
+        // (12, 26) is z 24.9, off the box.
+        on_lavapipe("a_render_takes_its_view_from_its_camera", |r| {
+            let a = front_of_a_box(64, 48);
+            let mut b = a.clone();
+            b.camera.up = [1.0, 0.0, 0.0];
+            let at = |ids: &[[u32; 2]], col: usize, row: usize| ids[row * 64 + col];
+            let (seen_a, seen_b) = (ids(r, &a), ids(r, &b));
+            assert_eq!(at(&seen_a, 12, 26), [1, 3]);
+            assert_eq!(at(&seen_a, 34, 8), [0, 0]);
+            assert_eq!(at(&seen_b, 34, 8), [1, 3]);
+            assert_eq!(at(&seen_b, 12, 26), [0, 0]);
+        });
+    }
+
+    #[test]
+    fn placing_a_view_takes_time_within_the_render() {
+        on_lavapipe("placing_a_view_takes_time_within_the_render", |r| {
+            let front = front_of_a_box(64, 48);
+            for _ in 0..2 {
+                let started = std::time::Instant::now();
+                r.render(&front).unwrap();
+                let whole = started.elapsed();
+                assert!(
+                    r.placed() > std::time::Duration::ZERO && r.placed() <= whole,
+                    "placed {:?} of {whole:?}",
+                    r.placed()
+                );
+            }
+        });
+    }
+
+    /// The `faces` of each `upload` span `f` opens, in order.
+    fn uploads_spans(f: impl FnOnce()) -> Vec<u64> {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::layer::{Context, SubscriberExt};
+
+        #[derive(Default)]
+        struct Faces(Option<u64>);
+        impl tracing::field::Visit for Faces {
+            fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                if field.name() == "faces" {
+                    self.0 = Some(value);
+                }
+            }
+            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+        }
+        struct Spans(Arc<Mutex<Vec<u64>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Spans {
+            fn on_new_span(
+                &self,
+                attrs: &tracing::span::Attributes<'_>,
+                _: &tracing::span::Id,
+                _: Context<'_, S>,
+            ) {
+                if attrs.metadata().name() == "upload" {
+                    let mut faces = Faces::default();
+                    attrs.record(&mut faces);
+                    self.0.lock().unwrap().push(faces.0.unwrap_or(u64::MAX));
+                }
+            }
+        }
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(Spans(Arc::clone(&seen)));
+        tracing::subscriber::with_default(subscriber, f);
+        seen.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn an_upload_span_counts_the_faces_a_render_uploads_and_only_when_it_uploads_any() {
+        on_lavapipe(
+            "an_upload_span_counts_the_faces_a_render_uploads_and_only_when_it_uploads_any",
+            |r| {
+                let front = front_of_a_box(64, 48);
+                let mut lit = front.clone();
+                lit.bodies[0].highlight_faces = vec![2];
+                let mut top = front.clone();
+                top.camera.eye = [21.0, 10.0, 60.0];
+                top.camera.up = [0.0, 1.0, 0.0];
+                // Six faces, then none for a new view, then the one face highlighted, then it
+                // plain again.
+                let spans = uploads_spans(|| {
+                    for scene in [&front, &top, &lit, &lit, &front] {
+                        r.render(scene).unwrap();
+                    }
+                });
+                assert_eq!(spans, [6, 1, 1]);
+                assert_eq!(r.uploads(), 8);
             },
         );
     }
