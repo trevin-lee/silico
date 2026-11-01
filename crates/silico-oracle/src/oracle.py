@@ -866,20 +866,33 @@ def edit_trim(s, e, applied):
               for (a, pa), (b, pb) in [refs_of(c)]}
     about = [captured(s, i) for i, c in enumerate(s.Constraints)
              if c.Type == "Symmetric" and len(refs_of(c)) == 3 and refs_of(c)[2] == [g, 0]]
-    # An angle with positions (Silico's `reversed`), which 1.1.3 keeps on one piece: taken
-    # off, and put back on every line piece, as Silico has it (#se-trim-a-positioned-angle).
-    angled = [i for i, c in enumerate(s.Constraints) if angle_on(c, g, positioned=True)]
-    angles = [captured(s, i) for i in angled]
-    drop(s, angled)
+    # An angle with positions (Silico's `reversed`) on the line, and the ends of it it names,
+    # where they are before the trim (#se-trim-a-positioned-angle).
+    angles = [(captured(s, i), [s.getPoint(g, pos) for r, pos in refs_of(c) if r == g and pos])
+              for i, c in enumerate(s.Constraints) if angle_on(c, g, positioned=True)]
     edit_call(s.trim, g, V(e["pick"][0], e["pick"][1], 0))
     g = index_of(s, keep)
     if g is None:
         return
     pieces = {keep} | {gid(s, i) for i in range(len(s.Geometry)) if gid(s, i) not in ids_before}
-    if angles and kind == "line":
-        for cap in angles:
+    # Where the end such an angle names survives the trim, 1.1.3 keeps the angle on the
+    # start-side piece only, which keeps the curve's ID, its position now that piece's end at
+    # the cut (transferConstraints never moves an angle, e66849378b); Silico has it on every
+    # piece, so FreeCAD's is taken off and the angle put on each. Where the end is removed,
+    # FreeCAD's own handling stands, and is compared (#se-trim-a-positioned-angle).
+    if kind == "line":
+        now = [s.getPoint(index_of(s, p), pos) for p in pieces for pos in (1, 2)]
+        for cap, named in angles:
+            if not all(any((q - end).Length <= EDIT_TOLERANCE for q in now) for end in named):
+                continue
+            other = [r for r, _ in cap["refs"] if r != keep]
+            theirs = [i for i, c in enumerate(s.Constraints)
+                      if c.Type == "Angle"
+                      and any(gid(s, r) in pieces for r, _ in refs_of(c))
+                      and all(gid(s, r) in pieces or gid(s, r) in other for r, _ in refs_of(c))]
+            drop(s, theirs)
             put_angle_back(s, cap, keep, sorted(pieces))
-        applied.append("se-trim-a-positioned-angle")
+            applied.append("se-trim-a-positioned-angle")
     # A new end at a cut joined to the cutter's end by 1.1.3's 5e-5 mm test, where no
     # constraint held that end on the curve: Silico gives the piece a new point on the
     # cutter instead (decision 5, #se-the-piece-s-end-is-the, #se-trim-s-the-cut-is-the).
