@@ -9979,6 +9979,7 @@ fn the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe() {
             let path = f.file("box.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
             meshes_settled(&mut h);
+            select(&mut h, "Block");
             for _ in 0..5 {
                 step(&mut h);
             }
@@ -9992,15 +9993,15 @@ fn the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe() {
             let viewport = the_viewport(&h);
             let browser = viewport.left_bottom() + eframe::egui::vec2(-20.0, -20.0);
             assert_eq!(pixel(browser), [0x0d, 0x0d, 0x0d, 0xff]);
-            // The open document's tab, selected: Blue.500 at its left edge, inside its fill
-            // and short of its text.
-            let tab = h
-                .query_all_by_label("box.silico")
-                .map(|node| node.rect())
-                .find(|rect| rect.top() < 30.0)
-                .expect("the document's tab");
-            let inside = eframe::egui::pos2(tab.left() + 1.5, tab.center().y);
-            assert_eq!(pixel(inside), [0x18, 0x6a, 0xdd, 0xff], "{tab:?}");
+            // The selected feature's timeline entry: Blue.500 (styles.css, `.tl-item.selected`)
+            // at its left edge, inside its fill, clear of a focus ring's 1 point, and short
+            // of its text.
+            let entry = h
+                .get_by_role_and_label(Role::Pane, "Timeline")
+                .get_by_label("Block")
+                .rect();
+            let inside = eframe::egui::pos2(entry.left() + 2.5, entry.center().y);
+            assert_eq!(pixel(inside), [0x18, 0x6a, 0xdd, 0xff], "{entry:?}");
         },
     );
 }
