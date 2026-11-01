@@ -1492,7 +1492,7 @@ fn names_its_scheme(root: &Node) -> bool {
 /// system's randomness, five bytes (as the cache's secret is read, [`crate::system_random`])
 /// for the eight characters of an ID, or, in this crate's own tests only, bytes they give
 /// (never through the API, the Rust API, or a request).
-pub(super) struct FeatureIds {
+pub(crate) struct FeatureIds {
     #[cfg(test)]
     given: Option<std::collections::VecDeque<[u8; 5]>>,
 }
@@ -1505,7 +1505,7 @@ const ID_TRIES: usize = 16;
 
 impl FeatureIds {
     /// IDs from the system's randomness.
-    pub(super) fn system() -> Self {
+    pub(crate) fn system() -> Self {
         FeatureIds {
             #[cfg(test)]
             given: None,
@@ -1570,7 +1570,7 @@ impl FeatureIds {
     /// edit's `ids` given as `null`) that isn't `taken`: one of the sketch's, or one drawn
     /// for the same edit before it. From the same source as a feature's, with the same
     /// alphabet and length.
-    pub(super) fn next_member(
+    pub(crate) fn next_member(
         &mut self,
         taken: &dyn Fn(&ElementId) -> bool,
     ) -> Result<ElementId, Error> {

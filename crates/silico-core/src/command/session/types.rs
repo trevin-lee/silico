@@ -17,8 +17,10 @@ use super::{Cancellable, Gated, Problems, ReadCommand, RunningCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::chain::Rewired;
-use crate::document::json::{Node, Plain};
-use crate::document::{Angle, Coordinate, ElementId, Feature, FeatureId, Length};
+use crate::document::json::{self, Node, Plain};
+use crate::document::sketch_edit::Members;
+use crate::document::write::{self, Layout, Out};
+use crate::document::{Angle, Coordinate, ElementId, Feature, FeatureId, Length, Plane, Sketch};
 use crate::recompute::{Model, StepCount};
 use crate::timeline::{Entry, Excepted, Timeline, timeline};
 use crate::warnings::Warnings;
@@ -913,6 +915,51 @@ pub struct NewMembers {
     pub circles: Node,
     pub arcs: Node,
     pub constraints: Node,
+}
+
+impl NewMembers {
+    /// `members`, typed, as a `sketch_add` takes them: each list written as the document
+    /// writes a sketch's (each sorted by ID, every field the canonical writer's), then read
+    /// back as a request's list is. What a client that builds members in Rust sends, the
+    /// sketch tools' among them ([`crate::sketch_tools`]).
+    pub fn of(members: &Members) -> Result<NewMembers, Error> {
+        let sketch = Sketch {
+            // Not written: only the lists are.
+            plane: Plane::Xy,
+            points: members.points.clone(),
+            lines: members.lines.clone(),
+            circles: members.circles.clone(),
+            arcs: members.arcs.clone(),
+            constraints: members.constraints.clone(),
+        };
+        let [points, lines, circles, arcs, constraints] =
+            write::sketch_members(&sketch).map(|(_, items)| {
+                let list = Out::Array(items.into_iter().map(|(_, item)| item).collect());
+                // With no limit, writing can't fail, and what the writer writes, the reader
+                // reads; either failing is a bug.
+                let text = write::text(&list, Layout::OneLine, usize::MAX).map_err(|_| {
+                    Error::new(
+                        ErrorCode::Internal,
+                        "a sketch's members couldn't be written",
+                    )
+                    .with_suggestion(crate::worker::SILICO_BUG)
+                })?;
+                json::read(text.as_bytes()).map_err(|e| {
+                    Error::new(
+                        ErrorCode::Internal,
+                        format!("a sketch's members, as written, didn't read back: {e:?}"),
+                    )
+                    .with_suggestion(crate::worker::SILICO_BUG)
+                })
+            });
+        Ok(NewMembers {
+            points: points?,
+            lines: lines?,
+            circles: circles?,
+            arcs: arcs?,
+            constraints: constraints?,
+        })
+    }
 }
 
 /// What a sketch edit did (`sketch_add`, `sketch_remove`: docs/design/m5.0-app.md, section
