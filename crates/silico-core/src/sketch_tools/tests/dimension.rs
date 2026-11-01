@@ -2147,31 +2147,39 @@ fn lines_that_only_meet_keep_the_quadrant_rule_opposite() {
 }
 
 #[test]
-fn lines_ending_at_one_place_with_points_of_their_own_dont_cross() {
-    // A (8.425, 40.42)-(18.198, 42.895) and B (35.64, 49.099)-(18.198, 42.895), each `to`
-    // a point of its own at Q (18.198, 42.895): the sketch doesn't tie them, but they meet
-    // at an end, so they don't cross, though their crosses round (each -17.462741999999906
-    // against -17.462741999999913) to strictly inside both. Both rays leave Q back along
-    // their lines: B's to (35.64, 49.099), atan2(6.204, 17.442) = 19.5801245°; A's to
+fn lines_ending_at_one_place_dont_cross() {
+    // A (8.425, 40.42)-(18.198, 42.895) and B (35.64, 49.099)-(18.198, 42.895) both end at
+    // Q (18.198, 42.895): at one point the two share, or each `to` a point of its own there.
+    // Either way they meet at an end, so they don't cross, though their crosses round (each
+    // -17.462741999999906 against -17.462741999999913) to strictly inside both: the vertex
+    // is found where an end of one is where an end of the other is, by coordinates, so a
+    // single point and two coincident points run the same code. Both rays leave Q back
+    // along their lines: B's to (35.64, 49.099), atan2(6.204, 17.442) = 19.5801245°; A's to
     // (8.425, 40.42), atan2(-2.475, -9.773) = 194.2112992°. B's first, θ = 174.6311746°,
     // both against. The pointer at (19.066, 37.971), 280° round from Q, is opposite: the
     // reflex, 360 − θ = 185.368825354, from A's ray round to B's: `{A, B, 185.368825354}`.
-    let mut s = empty();
-    s.points.push(point("f000000a", 8.425, 40.42));
-    s.points.push(point("t000000a", 18.198, 42.895));
-    s.points.push(point("f000000b", 35.64, 49.099));
-    s.points.push(point("t000000b", 18.198, 42.895));
-    s.lines.push(line("n000000a", "f000000a", "t000000a"));
-    s.lines.push(line("n000000b", "f000000b", "t000000b"));
-    let mut d = Dim::new(s);
-    d.click(13.3115, 41.6575)
-        .click(26.919, 45.997)
-        .click(19.066, 37.971)
-        .escape();
-    assert_eq!(
-        d.placed(),
-        angle("n000000a", "n000000b", false, "185.368825354")
-    );
+    for one_point in [true, false] {
+        let b_end = if one_point { "t000000a" } else { "t000000b" };
+        let mut s = empty();
+        s.points.push(point("f000000a", 8.425, 40.42));
+        s.points.push(point("t000000a", 18.198, 42.895));
+        s.points.push(point("f000000b", 35.64, 49.099));
+        if !one_point {
+            s.points.push(point("t000000b", 18.198, 42.895));
+        }
+        s.lines.push(line("n000000a", "f000000a", "t000000a"));
+        s.lines.push(line("n000000b", "f000000b", b_end));
+        let mut d = Dim::new(s);
+        d.click(13.3115, 41.6575)
+            .click(26.919, 45.997)
+            .click(19.066, 37.971)
+            .escape();
+        assert_eq!(
+            d.placed(),
+            angle("n000000a", "n000000b", false, "185.368825354"),
+            "one point: {one_point}"
+        );
+    }
 }
 
 /// The point `length` from `from` at `deg`°.
@@ -2279,8 +2287,18 @@ fn a_t_held_at_a_lines_middle_never_crosses() {
             b: r("t000000a"),
             about: r("f000000b"),
         },
+        Form::Symmetric {
+            a: r("t000000a"),
+            b: r("f000000a"),
+            about: r("f000000b"),
+        },
     ];
-    for hold in holds {
+    let pick_a = [p[0] + d[0] * 0.15, p[1] + d[1] * 0.15];
+    let pick_b = [m[0] - d[1] * 0.25, m[1] + d[0] * 0.25];
+    for (hold, picks) in holds
+        .into_iter()
+        .flat_map(|hold| [[pick_a, pick_b], [pick_b, pick_a]].map(|picks| (hold.clone(), picks)))
+    {
         let mut s = with_line(
             with_line(empty(), "n000000a", p, q),
             "n000000b",
@@ -2297,8 +2315,8 @@ fn a_t_held_at_a_lines_middle_never_crosses() {
             .map(|turn| {
                 let at = toward(m, phi + turn, 2.0);
                 let mut dim = Dim::new(s.clone());
-                dim.click(p[0] + d[0] * 0.15, p[1] + d[1] * 0.15)
-                    .click(m[0] - d[1] * 0.25, m[1] + d[0] * 0.25)
+                dim.click(picks[0][0], picks[0][1])
+                    .click(picks[1][0], picks[1][1])
                     .click(at[0], at[1])
                     .escape();
                 match dim.placed() {
@@ -2308,7 +2326,7 @@ fn a_t_held_at_a_lines_middle_never_crosses() {
             })
             .collect();
         values.sort();
-        assert_eq!(values, ["270", "90"], "{hold:?}");
+        assert_eq!(values, ["270", "90"], "{hold:?} {picks:?}");
     }
 }
 
@@ -2323,7 +2341,10 @@ fn only_a_hold_of_one_lines_end_on_the_other_ties_them() {
     // - a point P (15, 10) of its own held at A's middle by `symmetric` of A's ends (not an
     //   end of B);
     // - B's `to` (15, 15) the middle of A's `from` (10, 10) and a point Z (20, 20) by
-    //   `symmetric` (not of A's two ends).
+    //   `symmetric` (not of A's two ends);
+    // - a point P (15, 10) of its own held at A's middle by `midpoint` (not an end of B);
+    // - B's `to` (15, 15) held at the middle of a third line C (10, 15)-(20, 15) by
+    //   `midpoint` (not A's).
     let crossing = || {
         with_line(
             with_line(empty(), "n000000a", [10.0, 10.0], [20.0, 10.0]),
@@ -2366,7 +2387,23 @@ fn only_a_hold_of_one_lines_end_on_the_other_ties_them() {
             about: r("t000000b"),
         },
     });
-    for s in [on_a, on_circle, about_p, half_on_a] {
+    let mut middle_p = with_point(crossing(), "p0000001", [15.0, 10.0]);
+    middle_p.constraints.push(SketchConstraint {
+        id: id("k0000001"),
+        form: Form::Midpoint {
+            point: r("p0000001"),
+            line: r("n000000a"),
+        },
+    });
+    let mut middle_c = with_line(crossing(), "n000000c", [10.0, 15.0], [20.0, 15.0]);
+    middle_c.constraints.push(SketchConstraint {
+        id: id("k0000001"),
+        form: Form::Midpoint {
+            point: r("t000000b"),
+            line: r("n000000c"),
+        },
+    });
+    for s in [on_a, on_circle, about_p, half_on_a, middle_p, middle_c] {
         let mut d = Dim::new(s.clone());
         d.click(17.0, 10.0)
             .click(15.0, 7.0)
@@ -2382,29 +2419,8 @@ fn only_a_hold_of_one_lines_end_on_the_other_ties_them() {
 }
 
 #[test]
-fn a_corner_rounding_inside_is_its_vertex_and_a_t_merely_near_is_geometry() {
-    // A corner: A (8.425, 40.42) and B (35.64, 49.099) both ending at one point Q
-    // (18.198, 42.895). Their crosses round strictly inside both (each -17.462741999999906
-    // against -17.462741999999913), so the bare cross test calls them crossing; the vertex is
-    // Q itself, an end they share, so they don't. Opposite, at (19.066, 37.971), the reflex
-    // as in lines_ending_at_one_place_with_points_of_their_own_dont_cross:
-    // `{A, B, 185.368825354}`.
+fn a_t_merely_near_its_line_is_geometry() {
     let phi = libm::atan2(3.0, 7.0).to_degrees();
-    let mut corner = empty();
-    corner.points.push(point("f000000a", 8.425, 40.42));
-    corner.points.push(point("q0000001", 18.198, 42.895));
-    corner.points.push(point("f000000b", 35.64, 49.099));
-    corner.lines.push(line("n000000a", "f000000a", "q0000001"));
-    corner.lines.push(line("n000000b", "f000000b", "q0000001"));
-    let mut d = Dim::new(corner);
-    d.click(13.3115, 41.6575)
-        .click(26.919, 45.997)
-        .click(19.066, 37.971)
-        .escape();
-    assert_eq!(
-        d.placed(),
-        angle("n000000a", "n000000b", false, "185.368825354")
-    );
     // B from A's fourth ninth, (28/9, 12/9), to the left, with no `on`: the sketch doesn't
     // tie them, so the cross test decides, on the bits. B's start rounds 1.8e-15 to A's
     // left, inside B, so they cross: the sector opposite (φ + 225) reads θ, `{A, B, 90}`.

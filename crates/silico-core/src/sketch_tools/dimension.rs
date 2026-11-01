@@ -1065,7 +1065,8 @@ fn tied(view: &View<'_>, first: &Item, second: &Item) -> bool {
         view.sketch.constraints.iter().any(|c| match &c.form {
             Form::On { point, curve } => *point == end && curve == on,
             Form::Midpoint { point, line } => *point == end && line == on,
-            Form::Symmetric { a, b, about } => *about == end && a != b && an_end(a) && an_end(b),
+            // The gate refuses `a` and `b` the same, so two ends are the line's two.
+            Form::Symmetric { a, b, about } => *about == end && an_end(a) && an_end(b),
             _ => false,
         })
     };
