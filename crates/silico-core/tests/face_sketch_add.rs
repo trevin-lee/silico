@@ -9,7 +9,7 @@
 //! are silico-kernel's tests/face_sketches.rs.
 
 use super::model::WAIT;
-use super::sweeps::{box_at, document, rectangle};
+use super::sweeps::{box_at, document, one_side, pad, rectangle};
 
 use std::sync::Arc;
 
@@ -264,11 +264,6 @@ fn inside_a_transaction_the_face_is_found_in_the_current_documents_model_not_the
     // The second box is added inside the transaction: only the current document has it, so
     // the published model (the opened document's) holds no b0000002.box.Face2.
     let f = opened_on(planar_boxes(), &[cube()]);
-    let published = f.call(
-        "elements",
-        &json!({"session": "s1", "model": "current", "feature": "b0000001", "after": null, "limit": 1}),
-    );
-    assert_eq!(published["ok"], true, "{published}");
     assert_eq!(f.call("begin", &json!({"session": "s1"}))["ok"], true);
     let second =
         serde_json::from_str::<Value>(&box_at("b0000002", [20.0, 0.0, 0.0], 1.0, 1.0, 1.0))
@@ -305,7 +300,7 @@ fn a_face_that_names_nothing_is_refused_as_broken_with_candidates_and_the_edit_i
             "plane.face, \"b0000001.box.Face7\", names no face of the solids live at the sketch's place: it isn't one of the faces they're made from, or an edit before this sketch removed or remade it",
             "s0000001",
             &["b0000001.box.Face7"],
-            "feature.plane.face",
+            "plane.face",
             "name the face as its feature now names it: the candidates are the likeliest, none taken for it",
             &["b0000001.box.Face6"],
         ),
@@ -328,7 +323,7 @@ fn a_face_the_fake_types_no_plane_is_refused_as_not_planar_and_the_edit_isnt_mad
             "plane.face, \"b0000001.box.Face6\", names a face that isn't planar: OCCT types its surface a other, and a sketch sits only on a face typed a plane",
             "s0000001",
             &["b0000001.box.Face6"],
-            "feature.plane.face",
+            "plane.face",
             "name the face as its feature now names it: the candidates are the likeliest, none taken for it",
             &[],
         ),
@@ -404,9 +399,10 @@ fn an_edge_an_unstable_name_and_a_face_of_a_later_feature_are_the_gates_refusals
 }
 
 #[test]
-fn a_face_of_a_feature_that_failed_is_refused_naming_that_feature() {
+fn a_face_of_a_feature_that_failed_is_refused_naming_the_sketch_and_the_feature_blocking_it() {
     // The box's values refused by the kernel: it failed, so its faces' defaults aren't
-    // known. Refused naming the box, with the way on: mend it, or give x.
+    // known. Refused naming the new sketch, as every refusal of its face does, the box in
+    // the words, with the way on: mend it, or give x.
     let kernel = planar_boxes();
     kernel.refuse(|op| {
         matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
@@ -419,10 +415,10 @@ fn a_face_of_a_feature_that_failed_is_refused_naming_that_feature() {
         &answer,
         &error(
             "invalid_input",
-            "plane.face, \"b0000001.box.Face6\", is looked for in b0000001's solid, which didn't build, so the face's default x isn't known",
-            "b0000001",
+            "plane.face, \"b0000001.box.Face6\", is looked for in a solid that didn't build, blocked on b0000001, so the face's default x isn't known",
+            "s0000001",
             &["b0000001.box.Face6"],
-            "feature.plane.face",
+            "plane.face",
             "mend b0000001 first (`check` says why it failed), or give plane.x to add the sketch all the same",
             &[],
         ),
@@ -436,6 +432,174 @@ fn a_face_of_a_feature_that_failed_is_refused_naming_that_feature() {
     );
     assert_eq!(f.add(None, &given)["ok"], true);
     assert_eq!(f.revision(), revision + 1);
+}
+
+#[test]
+fn a_face_of_a_pad_blocked_on_a_failed_box_is_refused_naming_the_sketch_and_the_box() {
+    // b1 fails; p1, a pad of s1 onto b1, is blocked on it; a sketch on p1's side without x
+    // is looked for in p1's solid, which didn't build, its root b1.
+    let kernel = planar_boxes();
+    kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
+            .then(|| Error::new(ErrorCode::KernelFailed, "the box couldn't be made"))
+    });
+    let f = opened_on(
+        kernel,
+        &[
+            cube(),
+            rectangle("s0000001", "xy", [1.0, 1.0], 4.0, 2.0),
+            pad("p0000001", Some("b0000001"), "s0000001", &one_side("3")),
+        ],
+    );
+    let (revision, text) = (f.revision(), f.text());
+    let face = "p0000001.pad.Face(G s0000001.sketch.Edge.na000001)";
+    let answer = f.add(None, &without_x("s0000002", face));
+    f.refused(
+        &answer,
+        &json!({
+            "code": "invalid_input",
+            // The name cut short, as messages show text past 40 characters.
+            "message": "plane.face, \"p0000001.pad.Face(G s0000001.sketch.Edge\"…, is looked for in a solid that didn't build, blocked on b0000001, so the face's default x isn't known",
+            "feature": "s0000002",
+            "elements": ["p0000001.pad.Face(G s0000001.sketch.Edge.na000001)"],
+            "elements_total": 1,
+            "parameter": "plane.face",
+            "cause": null,
+            "suggestion": "mend b0000001 first (`check` says why it failed), or give plane.x to add the sketch all the same",
+            "candidates": [],
+            "advice": null,
+        }),
+        revision,
+        &text,
+    );
+    assert_eq!(answer["total"], 1);
+}
+
+#[test]
+fn a_face_of_a_solid_that_couldnt_be_described_is_refused_with_the_kept_fault() {
+    // The box builds, but describing it crashes the worker: the fault, kept as the
+    // revision's, on the new sketch, as the rebuild gives it in the sketch's plane_problem;
+    // its words and advice those a read of the box gives.
+    let kernel = planar_boxes();
+    kernel.refuse(|op| {
+        matches!(op, Op::DescribeAll { .. })
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+    });
+    let f = opened_on(kernel, &[cube()]);
+    let (revision, text) = (f.revision(), f.text());
+    let answer = f.add(None, &without_x("s0000001", "b0000001.box.Face6"));
+    // The fault met no feature (the description's), so the suggestion is to try again
+    // alone, never to report a feature that crashed the worker: the sketch didn't.
+    let suggestion = "check with fresh to try it again";
+    f.refused(
+        &answer,
+        &json!({
+            "code": "worker_crashed",
+            "message": "the kernel worker crashed",
+            "feature": "s0000001",
+            "elements": [],
+            "elements_total": 0,
+            "parameter": null,
+            "cause": null,
+            "suggestion": suggestion,
+            "candidates": [],
+            "advice": null,
+        }),
+        revision,
+        &text,
+    );
+    let read = f.call(
+        "elements",
+        &json!({"session": "s1", "model": "current", "feature": "b0000001", "after": null, "limit": 1}),
+    );
+    let fault = &read["errors"][0];
+    assert_eq!(
+        (&fault["code"], &fault["message"], &fault["suggestion"]),
+        (
+            &json!("worker_crashed"),
+            &json!("the kernel worker crashed"),
+            &json!(suggestion)
+        ),
+        "{read}"
+    );
+}
+
+#[test]
+fn inside_a_transaction_the_answer_names_the_model_read_with_its_fault_beside_the_result() {
+    // An unrelated cylinder crashed the worker: the model the face was read from holds the
+    // fault, and the add, made inside a transaction (so no commit names a model), answers
+    // naming that model, the fault beside its result (decision 32).
+    let kernel = planar_boxes();
+    kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. }))
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+    });
+    let pin = r#"{"id": "c0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [50, 0, 0], "radius": 1, "height": 1}"#;
+    let f = opened_on(kernel, &[cube(), pin.to_owned()]);
+    assert_eq!(f.call("begin", &json!({"session": "s1"}))["ok"], true);
+    let added = f.add(None, &without_x("s0000001", "b0000001.box.Face6"));
+    assert_eq!(added["ok"], true, "{added}");
+    assert_eq!(added["result"]["feature"]["plane"]["x"], "+x");
+    assert_eq!(added["result"]["commit"], Value::Null);
+    let model = &added["model"];
+    assert_eq!(model["revision"], 1, "{added}");
+    assert_eq!(model["of"], "current", "{added}");
+    assert_eq!(model["fault"]["code"], "worker_crashed", "{added}");
+    assert_eq!(model["fault"]["feature"], "c0000001", "{added}");
+    // A sketch on an origin plane reads no model: none is named.
+    let flat: Value =
+        serde_json::from_str(&rectangle("s0000002", "xy", [1.0, 1.0], 1.0, 1.0)).unwrap();
+    let added = f.add(None, &flat);
+    assert_eq!(added["ok"], true, "{added}");
+    assert_eq!(added["model"], Value::Null, "{added}");
+}
+
+#[test]
+fn a_lookup_refusal_and_a_gate_refusal_of_the_face_name_the_same_parameter_and_the_sketch() {
+    // Face7 is refused by the lookup (it finds nothing), Edge3 by the gate (an edge): both at
+    // the document's plane.face, both naming the new sketch.
+    let f = opened_on(planar_boxes(), &[cube()]);
+    let lookup = f.add(None, &without_x("s0000001", "b0000001.box.Face7"));
+    let gate = f.add(None, &without_x("s0000001", "b0000001.box.Edge3"));
+    assert_eq!(lookup["errors"][0]["code"], "reference_broken", "{lookup}");
+    assert_eq!(gate["errors"][0]["code"], "invalid_input", "{gate}");
+    for answer in [&lookup, &gate] {
+        assert_eq!(answer["errors"][0]["parameter"], "plane.face", "{answer}");
+        assert_eq!(answer["errors"][0]["feature"], "s0000001", "{answer}");
+    }
+}
+
+#[test]
+fn a_placeholder_x_never_reaches_the_document_and_a_plane_given_its_x_is_kept_in_its_order() {
+    // The members in another order, x left out: written in the document's order, x the
+    // face's default, never the placeholder.
+    let f = opened_on(planar_boxes(), &[cube()]);
+    let reordered = sketch_on(
+        "s0000001",
+        json!({"reversed": false, "face": "b0000001.box.Face1"}),
+    );
+    let added = f.add(None, &reordered);
+    assert_eq!(added["ok"], true, "{added}");
+    assert!(
+        f.text()
+            .contains(r#""plane": {"face": "b0000001.box.Face1", "x": "-y", "reversed": false}"#),
+        "{}",
+        f.text()
+    );
+    // A pad given a plane with no x is the reader's refusal of a member a pad hasn't, as one
+    // given its x is: the same answer, the default never looked for.
+    let pad = |plane: Value| json!({"id": "p0000009", "type": "pad", "name": "P", "sketch": "s0000001", "plane": plane, "extent": {"type": "one_side", "length": 1, "reversed": false}});
+    let without = f.add(
+        None,
+        &pad(json!({"face": "b0000001.box.Face6", "reversed": false})),
+    );
+    let with = f.add(
+        None,
+        &pad(json!({"face": "b0000001.box.Face6", "x": "+x", "reversed": false})),
+    );
+    assert_eq!(without["ok"], false, "{without}");
+    assert_eq!(without["errors"], with["errors"]);
+    assert_eq!(without["errors"][0]["parameter"], "plane", "{without}");
 }
 
 #[test]
@@ -672,6 +836,7 @@ fn set_field_refuses_a_face_planes_member_of_an_origin_plane_and_a_malformed_pla
         json!({"face": "b0000001.box.Face6", "x": "+x", "reversed": false}),
     );
     assert_eq!(set["ok"], true, "{set}");
+    let after_set = f.text();
     let answer = f.set("s0000001", "plane.y", json!("+x"));
     assert_eq!(answer["ok"], false, "{answer}");
     assert_eq!(
@@ -693,4 +858,10 @@ fn set_field_refuses_a_face_planes_member_of_an_origin_plane_and_a_malformed_pla
     let answer = f.set("s0000001", "plane.x", json!("+w"));
     assert_eq!(answer["ok"], false, "{answer}");
     assert_eq!(answer["errors"][0]["parameter"], "plane.x", "{answer}");
+    // Neither refusal made an edit.
+    assert_eq!(
+        (f.revision(), f.text()),
+        (revision + 1, after_set),
+        "a refused set_field was made"
+    );
 }

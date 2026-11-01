@@ -118,10 +118,12 @@ pub(crate) fn place<'a>(
 pub(crate) enum Defaulted {
     /// The face's default token (F1), as `elements` reports it as its `default_x`.
     X(AxisToken),
-    /// Why there's none: the face's name is broken, its solid failed or was blocked, or
-    /// couldn't be described, as a rebuild would place the sketch ([`Placed`], never a
-    /// frame).
+    /// Why there's none: the face's name is broken, or its solid failed or was blocked, as a
+    /// rebuild would place the sketch ([`Placed`], never a frame).
     Refused(Placed),
+    /// The solid that holds it couldn't be described: why, as its solid's read gives it,
+    /// naming no sketch (a kernel fault is worded as it was met, then put on the sketch).
+    Undescribed(Error),
     /// A solid that could hold it isn't built yet, the feature named.
     Waits(FeatureId),
 }
@@ -139,6 +141,7 @@ pub(crate) fn default_x<'a>(
     match found_face(sketch, face.as_str(), related, others, makers) {
         Ok(Found::Plane { normal, .. }) => Defaulted::X(AxisToken::default_x(normal)),
         Ok(Found::Not(placed)) => Defaulted::Refused(placed),
+        Ok(Found::Undescribed(error)) => Defaulted::Undescribed(error),
         Err(on) => Defaulted::Waits(on),
     }
 }
@@ -152,6 +155,8 @@ enum Found {
     },
     /// Not found, or not a face a sketch can sit on: why, as the sketch's placing.
     Not(Placed),
+    /// Found in a solid that couldn't be described: why, as the solid's own read has it.
+    Undescribed(Error),
 }
 
 /// [`place`]'s finding: placed, or the feature whose solid it waits for.
@@ -166,6 +171,9 @@ fn placed<'a>(
     let (normal, location) = match found_face(sketch, text, related, others, makers)? {
         Found::Plane { normal, location } => (normal, location),
         Found::Not(placed) => return Ok(placed),
+        Found::Undescribed(error) => {
+            return Ok(Placed::Failed(error.with_feature(sketch.as_str())));
+        }
     };
     Ok(match frame(normal, location, plane.x, plane.reversed) {
         Ok(frame) => Placed::Frame(frame),
@@ -279,11 +287,7 @@ fn found_face<'a>(
     };
     let description = match description {
         Ok(description) => *description,
-        Err(error) => {
-            return Ok(Found::Not(Placed::Failed(
-                error.clone().with_feature(sketch.as_str()),
-            )));
-        }
+        Err(error) => return Ok(Found::Undescribed(error.clone())),
     };
     let face = element
         .index

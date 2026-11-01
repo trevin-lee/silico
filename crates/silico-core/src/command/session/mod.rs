@@ -1599,10 +1599,11 @@ impl<P: Clients + 'static> Sessions<P> {
     /// `default_x` (F1) is written (M4.1 section 5): once the rest of the edit is through the
     /// gate, the face is looked for, as a rebuild looks for it, in the solids live at the
     /// sketch's place in the model of the session's current document, which the edit waits
-    /// for (its rebuild started if none runs); refused, the edit not made, naming
-    /// `feature.plane.face`, for a name that finds nothing or no stable face, a face that
-    /// isn't planar (each `reference_broken`, with candidates), or one whose solid's feature
-    /// failed or was blocked, naming that feature.
+    /// for (its rebuild started if none runs), which the answer's `model` names if no commit
+    /// read another; refused, the edit not made, naming the new sketch and `plane.face`, as
+    /// the gate's refusals of it do, for a name that finds nothing or no stable face, a face
+    /// that isn't planar (each `reference_broken`, with candidates), or one whose solid
+    /// didn't build, saying the feature it's blocked on.
     /// Through the gate, all at once; inside a transaction, applied, starting no rebuild;
     /// outside one, saved as its own transaction (decision 1). Refused whole, the session as
     /// it was, as every edit is ([`Session::edit`]), for a `before` the document hasn't, and
@@ -1621,6 +1622,8 @@ impl<P: Clients + 'static> Sessions<P> {
             SessionCommand::AddFeature,
             move |session, stop, model| {
                 let id = session.id;
+                // The model the face's default x was read from, if it was looked for.
+                let mut looked = None;
                 let edited = session.edit(
                     stop,
                     revision,
@@ -1640,6 +1643,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         // edit is through the gate.
                         let inserted = if defaulted {
                             let current = session.current(stop).map_err(Unbuilt::problems)?;
+                            looked = Some(current.read);
                             edit::with_default_x(inserted, &current.model)?
                         } else {
                             inserted
@@ -1654,7 +1658,13 @@ impl<P: Clients + 'static> Sessions<P> {
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
-                )?;
+                );
+                // A command that read a model answers naming it, its fault beside the result
+                // (decision 32): the commit's, outside a transaction, or else the one read.
+                if model.is_none() {
+                    *model = looked;
+                }
+                let edited = edited?;
                 let (made, index, rewired) = edited.made;
                 let id = made.id.clone();
                 let feature = as_committed(edited.saved.as_deref(), made, |saved| {

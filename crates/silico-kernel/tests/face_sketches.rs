@@ -832,7 +832,7 @@ fn a_cylinders_side_added_without_x_is_refused_as_not_planar_with_the_planar_fac
             "feature": "s0000001",
             "elements": ["c0000001.cylinder.Face1"],
             "elements_total": 1,
-            "parameter": "feature.plane.face",
+            "parameter": "plane.face",
             "cause": null,
             "suggestion": "name the face as its feature now names it: the candidates are the likeliest, none taken for it",
             "candidates": ["c0000001.cylinder.Face2", "c0000001.cylinder.Face3"],
@@ -885,7 +885,7 @@ fn a_sketch_added_before_a_fuse_finds_its_face_in_the_boxs_own_solid_and_after_i
     let after = f.add(&session, None, &without_x("s0000001", "b0000001.box.Face6"));
     assert_eq!(after["ok"], false, "{after}");
     assert_eq!(after["errors"][0]["code"], "reference_broken", "{after}");
-    assert_eq!(after["errors"][0]["parameter"], "feature.plane.face");
+    assert_eq!(after["errors"][0]["parameter"], "plane.face");
     assert_eq!((f.revision(&session), f.text(&session)), (revision, text));
     let side = f.add(&session, None, &without_x("s0000001", "b0000001.box.Face2"));
     assert_eq!(side["ok"], true, "{side}");

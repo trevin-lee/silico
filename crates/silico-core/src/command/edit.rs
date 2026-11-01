@@ -894,26 +894,22 @@ fn new_feature(
         .map_err(Problems::from)
 }
 
-/// The request's path to a face plane's face, which a refusal of the face's default `x`
-/// names ([`with_default_x`]).
-const FACE_PATH: &str = "feature.plane.face";
+/// The path to a face plane's face, which a refusal of the face's default `x` names
+/// ([`with_default_x`]): the document's, as the gate's refusals of it and the rebuild's name
+/// it, with the new sketch's ID as the feature.
+const FACE_PATH: &str = "plane.face";
 
 /// Whether `feature`, an `add_feature` request's feature, is a sketch on a face whose plane
 /// leaves out its `x`, or gives it as `null`, which is the same (M4.1 section 5: the core
 /// names the face's `default_x`, F1; the document always holds `x`, so the reader never
 /// takes a plane without one). If so, its `x` is given meanwhile as `+x`, any token, so the
 /// rest of the feature is read and put through the gate as it will be, which no token
-/// changes: [`with_default_x`] then puts the face's own in its place.
+/// changes: [`with_default_x`] then puts the face's own in its place. Only a sketch has a
+/// `plane`, so the reader refuses one of any other feature, `x` or none.
 pub(super) fn leaves_out_x(feature: &mut Node) -> bool {
     let Value::Object(members) = &mut feature.value else {
         return false;
     };
-    let sketch = members
-        .iter()
-        .any(|m| m.key == "type" && m.value.value.as_str() == Some("sketch"));
-    if !sketch {
-        return false;
-    }
     let Some(Value::Object(plane)) = members
         .iter_mut()
         .find(|m| m.key == "plane")
@@ -931,19 +927,13 @@ pub(super) fn leaves_out_x(feature: &mut Node) -> bool {
             true
         }
         Some(_) => false,
+        // Read by key, so at its end: the document writes the plane in its own order.
         None => {
-            let after_face = plane
-                .iter()
-                .position(|m| m.key == "face")
-                .map_or(0, |at| at + 1);
-            plane.insert(
-                after_face,
-                Member {
-                    key: "x".to_owned(),
-                    at: json::At::UNPLACED,
-                    value: meanwhile(),
-                },
-            );
+            plane.push(Member {
+                key: "x".to_owned(),
+                at: json::At::UNPLACED,
+                value: meanwhile(),
+            });
             true
         }
     }
@@ -954,12 +944,12 @@ pub(super) fn leaves_out_x(feature: &mut Node) -> bool {
 /// document it was added to, in the solids live at its place in the timeline, by the rule
 /// and the code a rebuild places it by (`recompute::default_x`), and its `x` written as the
 /// face's `default_x`, as `elements` reports it. Refused, the edit not made, in the words a
-/// rebuild would refuse the sketch's face in, naming the request's `feature.plane.face`: a
-/// name that finds nothing, finds an element by an unstable name or one that isn't a face,
-/// or a face OCCT doesn't type as a plane, as `reference_broken` with candidates; a face
-/// whose solid's feature failed or was blocked, naming that feature (with the kernel's
-/// fault, if it's what stopped it, as every read of a solid refuses one); and a solid that
-/// couldn't be described, with why.
+/// rebuild would refuse the sketch's face in, naming the new sketch and `plane.face`, as the
+/// gate's refusals of the face do: a name that finds nothing, finds an element by an
+/// unstable name or one that isn't a face, or a face OCCT doesn't type as a plane, as
+/// `reference_broken` with candidates; a face whose solid didn't build, saying which feature
+/// it's blocked on (or with the kernel's fault itself, if one stopped it, as every read of a
+/// solid refuses one); and a solid that couldn't be described, with why.
 pub(super) fn with_default_x(inserted: Inserted, model: &Model) -> Result<Inserted, Problems> {
     let Inserted {
         index,
@@ -981,7 +971,16 @@ pub(super) fn with_default_x(inserted: Inserted, model: &Model) -> Result<Insert
     };
     let token = match crate::recompute::default_x(checked, model, index) {
         Some(Defaulted::X(token)) => token,
-        Some(Defaulted::Refused(placed)) => return Err(no_default(placed, model, face.as_str())),
+        Some(Defaulted::Refused(placed)) => {
+            let sketch = sketch_id(checked, index)?;
+            return Err(no_default(placed, model, &sketch, face.as_str()));
+        }
+        // Worded as the solid's own read words it, then on the new sketch, as the
+        // rebuild puts it.
+        Some(Defaulted::Undescribed(error)) => {
+            let sketch = sketch_id(checked, index)?;
+            return Err(worded(&error).with_feature(sketch.as_str()).into());
+        }
         Some(Defaulted::Waits(on)) => {
             return Err(bug(&format!(
                 "the face's default x waits for {on}'s solid in a model already published"
@@ -1017,11 +1016,22 @@ pub(super) fn with_default_x(inserted: Inserted, model: &Model) -> Result<Insert
     })
 }
 
-/// The refusal of a face's default `x` where a rebuild would place the sketch so
-/// (`placed`, never a frame), its face `face`, in `model`: as [`with_default_x`] says.
-fn no_default(placed: Placed, model: &Model, face: &str) -> Problems {
+/// The ID of the feature at `index` of `checked`: the sketch added.
+fn sketch_id(checked: &Checked, index: usize) -> Result<FeatureId, Problems> {
+    checked
+        .document()
+        .features
+        .get(index)
+        .map(|f| f.id.clone())
+        .ok_or_else(|| Problems::from(bug("the sketch added isn't in the document")))
+}
+
+/// The refusal of the sketch `sketch`'s face's default `x` where a rebuild would place the
+/// sketch so (`placed`, never a frame), its face `face`, in `model`: as [`with_default_x`]
+/// says.
+fn no_default(placed: Placed, model: &Model, sketch: &FeatureId, face: &str) -> Problems {
     match placed {
-        Placed::Broken(error) => error.with_parameter(FACE_PATH).into(),
+        Placed::Broken(error) => error.into(),
         Placed::Failed(error) => worded(&error).into(),
         Placed::Blocked(root) => {
             // Stopped by a kernel fault, which isn't the document's: refused with the fault
@@ -1037,11 +1047,11 @@ fn no_default(placed: Placed, model: &Model, face: &str) -> Problems {
             Error::new(
                 ErrorCode::InvalidInput,
                 format!(
-                    "plane.face, {}, is looked for in {root}'s solid, which didn't build, so the face's default x isn't known",
+                    "plane.face, {}, is looked for in a solid that didn't build, blocked on {root}, so the face's default x isn't known",
                     json::shown(face)
                 ),
             )
-            .with_feature(root.as_str())
+            .with_feature(sketch.as_str())
             .with_parameter(FACE_PATH)
             .with_element(cut_short(face))
             .with_suggestion(format!(

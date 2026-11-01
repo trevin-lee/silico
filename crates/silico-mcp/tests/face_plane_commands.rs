@@ -204,7 +204,7 @@ fn a_face_sketch_added_without_x_and_its_plane_set_answer_as_the_core_does_and_h
     );
     let broken = &answers[3]["errors"][0];
     assert_eq!(broken["code"], "reference_broken");
-    assert_eq!(broken["parameter"], "feature.plane.face");
+    assert_eq!(broken["parameter"], "plane.face");
     assert_eq!(broken["candidates"], json!(["b0000001.box.Face6"]));
     assert_eq!(answers[3]["session"]["revision"], 3);
     assert_eq!(
