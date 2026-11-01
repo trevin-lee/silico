@@ -7553,3 +7553,220 @@ fn a_pick_waiting_for_its_answer_asks_for_frames_until_it_comes() {
     assert!(delay(&h).is_some_and(|delay| delay > Duration::from_millis(500)));
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- The viewport drawn through silico-render on lavapipe ----
+
+/// `test` run where lavapipe is this process's Vulkan driver: in a run of this test alone
+/// with lavapipe's variables, if this process hasn't them (a loader's path can't be set
+/// once the process runs), as silico-render's own frame tests run. With no lavapipe built
+/// in (none in the environment), here, on the machine's own adapters.
+fn on_lavapipe(name: &str, test: impl FnOnce()) {
+    if let Some(vars) = silico_render::lavapipe::environment()
+        && vars
+            .iter()
+            .any(|(k, v)| std::env::var(k).map_or(true, |have| have != *v))
+    {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--nocapture"])
+            .envs(vars)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "{said}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(said.contains("1 passed"), "{name} didn't run: {said}");
+        return;
+    }
+    test();
+}
+
+/// eframe's render state as the app gets it, on lavapipe: egui_kittest's wgpu setup (which
+/// takes a CPU adapter first), its device made by egui_wgpu as eframe makes the app's.
+fn lavapipe_render_state() -> eframe::egui_wgpu::RenderState {
+    let mut setup = egui_kittest::wgpu::default_wgpu_setup();
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(new) = &mut setup {
+        new.instance_descriptor.flags |=
+            eframe::wgpu::InstanceFlags::ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER;
+    }
+    let state = egui_kittest::wgpu::create_render_state(
+        setup,
+        eframe::egui_wgpu::RendererOptions::PREDICTABLE,
+    );
+    assert_eq!(
+        state.adapter.get_info().device_type,
+        eframe::wgpu::DeviceType::Cpu,
+        "not lavapipe: {:?}",
+        state.adapter.get_info()
+    );
+    state
+}
+
+/// The fake kernel's display meshes made the bench's 40 by 20 by 10 box from the origin:
+/// six faces in the box's order (Face3 its front, y = 0), two triangles each, and twelve
+/// edges, where the fake's own mesh is a triangle a face, all alike.
+fn meshes_a_real_box(f: &Fixture) {
+    f.kernel.answer_instead(|op| match op {
+        Op::Tessellate {
+            deflection,
+            at_least_the_floor,
+            ..
+        } => {
+            let mesh = silico_render::bench::box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+            Some(if *at_least_the_floor {
+                silico_protocol::Reply::MeshAt(silico_protocol::MeshAt {
+                    mesh,
+                    deflection: *deflection,
+                })
+            } else {
+                silico_protocol::Reply::Mesh(mesh)
+            })
+        }
+        _ => None,
+    });
+}
+
+const A_BOX: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
+  ]
+}
+"#;
+
+#[test]
+fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_face_under_it() {
+    on_lavapipe(
+        "the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_face_under_it",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            // As main.rs does: the renderer on eframe's device, in its callbacks' resources.
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            // Each frame drawn: egui's paint callbacks prepared and painted, as a window's.
+            h.set_render_every_step(true);
+            let path = f.file("box.silico", A_BOX);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            // From the front, onto the box's centre (20, 10, 5), 20 mm high: its front face,
+            // 40 by 10 mm, fills the view's middle; the view's centre is on it.
+            view_mut(&mut h).set_camera(silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 20.0 },
+                eye: [20.0, -100.0, 5.0],
+                target: [20.0, 10.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            });
+            meshes_settled(&mut h);
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let uploads = || {
+                state
+                    .renderer
+                    .read()
+                    .callback_resources
+                    .get::<silico_app::renderer::Renderer>()
+                    .expect("installed")
+                    .uploads()
+            };
+            // Each of the box's six faces uploaded once, and nothing more over twenty frames
+            // of an orthographic orbit: bodies move into each view, never re-uploaded.
+            let uploaded = uploads();
+            assert!(uploaded >= 6, "{uploaded}");
+            let at = the_viewport(&h).center() - eframe::egui::vec2(150.0, 0.0);
+            let shift = eframe::egui::Modifiers::SHIFT;
+            h.event(eframe::egui::Event::ModifiersChanged(shift));
+            h.hover_at(at);
+            h.event(eframe::egui::Event::PointerButton {
+                pos: at,
+                button: eframe::egui::PointerButton::Middle,
+                pressed: true,
+                modifiers: shift,
+            });
+            step(&mut h);
+            for i in 1..=10u8 {
+                h.hover_at(at + eframe::egui::vec2(f32::from(i), 0.0));
+                step(&mut h);
+            }
+            h.event(eframe::egui::Event::PointerButton {
+                pos: at + eframe::egui::vec2(10.0, 0.0),
+                button: eframe::egui::PointerButton::Middle,
+                pressed: false,
+                modifiers: shift,
+            });
+            h.event(eframe::egui::Event::ModifiersChanged(
+                eframe::egui::Modifiers::NONE,
+            ));
+            for _ in 0..10 {
+                step(&mut h);
+            }
+            assert_eq!(uploads(), uploaded);
+            // Back to the front, and a pick at the view's centre, a frame or two later: the
+            // box's front face, Face3, by its name.
+            view_mut(&mut h).set_camera(silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 20.0 },
+                eye: [20.0, -100.0, 5.0],
+                target: [20.0, 10.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            });
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            let [width, height] = view(&h).frame().unwrap().size_px;
+            let centre = silico_app::renderer::PixelRect {
+                min: [
+                    i32::try_from(width / 2).unwrap() - 2,
+                    i32::try_from(height / 2).unwrap() - 2,
+                ],
+                size: [5, 5],
+            };
+            assert!(view_mut(&mut h).pick(centre));
+            for _ in 0..8 {
+                step(&mut h);
+                if view(&h).picked().is_some() {
+                    break;
+                }
+            }
+            let picked = view(&h)
+                .picked()
+                .expect("no picking answer within 8 frames");
+            assert_eq!(picked.rect, centre);
+            let hit = picked.hit.expect("the background at the box's centre");
+            assert_eq!(
+                (hit.body, hit.hit),
+                (1, silico_app::renderer::Element::Face(3))
+            );
+            let silico_app::renderer::Element::Face(n) = hit.hit else {
+                unreachable!()
+            };
+            let name = view(&h).bodies()[&1].faces[usize::try_from(n - 1).unwrap()]
+                .name
+                .to_string();
+            assert_eq!(name, "k7f2qx3m.box.Face3");
+            // On the front face, y = 0, at about the view's centre's x and z.
+            let point = hit.point.expect("no point");
+            assert!(point[1].abs() < 1e-3, "{point:?}");
+            assert!(
+                (point[0] - 20.0).abs() < 0.1 && (point[2] - 5.0).abs() < 0.1,
+                "{point:?}"
+            );
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}

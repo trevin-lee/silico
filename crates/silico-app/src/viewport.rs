@@ -329,10 +329,10 @@ impl View {
     }
 
     /// Asks the next frame to pick under `rect`, if a renderer takes it
-    /// ([`PixelRect::takes`]): its answer comes a frame after ([`picked`](Self::picked)),
+    /// ([`crate::renderer::takes`]): its answer comes a frame after ([`picked`](Self::picked)),
     /// and the last answer is let go now. Whether it was asked.
     pub fn pick(&mut self, rect: PixelRect) -> bool {
-        let takes = rect.takes();
+        let takes = crate::renderer::takes(&rect);
         if takes {
             self.picking = Some(rect);
             self.picked = None;

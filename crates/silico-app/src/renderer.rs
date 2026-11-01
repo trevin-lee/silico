@@ -1,20 +1,16 @@
 //! The viewport's renderer, as the pane sees it (docs/design/m5.0-app.md, section 10; M5.6):
 //! bodies uploaded once by the pane, each frame's view (the camera, the size, the bodies to
 //! draw, the highlights, and a picking rectangle), drawn into egui's render pass, and the
-//! picking result a frame late. `silico-render`'s renderer, on eframe's device, is the one
-//! this is for, and these types mirror its frame API's; it places every face and edge
-//! itself from the camera, in `f64` (section 10, *The bodies move instead*), so the pane
-//! passes the camera and no transform.
+//! picking result a frame or two late. It's `silico-render`'s renderer, on eframe's device
+//! (one renderer with agents' renders: M4.6's R1), whose frame types these are; it places
+//! every face and edge itself from the camera, in `f64` (section 10, *The bodies move
+//! instead*), so the pane passes the camera and no transform. [`ViewRenderer`] is the
+//! pane's view of it, so a test can hand the pane a renderer that needs no GPU.
 //!
-//! The renderer lives in egui_wgpu's `callback_resources` ([`install`]), and each frame
-//! reaches it through a paint callback ([`OnGpu`]): the pane's uploads and forgets, queued
-//! in order until a callback is prepared, then the frame. A test hands the pane a
-//! [`Present`] of its own, and [`apply`]s the changes to a renderer that needs no GPU.
-//!
-//! TODO(Worker 3's `render-frame-api`, stacked on #332): implement [`ViewRenderer`] for
-//! `silico_render::render::Renderer` (its `RenderFailure` as [`ViewRenderer::Failure`]),
-//! built on eframe's device, installed in `main.rs` with [`OnGpu`] as the app's
-//! [`Present`], with a test drawing through it on lavapipe (the `wgpu` feature).
+//! The renderer lives in egui_wgpu's `callback_resources` ([`on_eframe`], [`install`]), and
+//! each frame reaches it through a paint callback ([`OnGpu`]): the pane's uploads and
+//! forgets, one waiting for each body until a callback is prepared, then the frame. A test
+//! hands the pane a [`Present`] of its own, and [`apply`]s the changes to a renderer.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
@@ -24,80 +20,21 @@ use eframe::egui;
 use eframe::egui_wgpu;
 use eframe::wgpu;
 use silico_protocol::{Camera, Mesh};
+pub use silico_render::render::{
+    Element, Frame, MAX_PICKING_OFFSET, MAX_PICKING_SIDE, Pick, Picking, PixelRect, RenderFailure,
+    Renderer,
+};
 
-/// The widest and tallest picking rectangle a renderer takes, in physical pixels.
-pub const MAX_PICKING_SIDE: u32 = 256;
-
-/// The farthest a picking rectangle's corner may be from the frame's top left, in physical
-/// pixels, either way.
-pub const MAX_PICKING_OFFSET: i32 = 1 << 24;
-
-/// A body's element, numbered from 1 as M4.6's ID buffer numbers them (`Face1`, `Edge1`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Element {
-    Face(u32),
-    Edge(u32),
-}
-
-/// A rectangle of the viewport's image, in physical pixels from its top left.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PixelRect {
-    pub min: [i32; 2],
-    pub size: [u32; 2],
-}
-
-impl PixelRect {
-    /// Whether a renderer takes it: each side from 1 to [`MAX_PICKING_SIDE`], its corner
-    /// within [`MAX_PICKING_OFFSET`] of the frame's top left.
-    pub fn takes(&self) -> bool {
-        self.size
+/// Whether a renderer takes `rect` as a picking rectangle: each side from 1 to
+/// [`MAX_PICKING_SIDE`], its corner within [`MAX_PICKING_OFFSET`] of the frame's top left.
+pub fn takes(rect: &PixelRect) -> bool {
+    rect.size
+        .iter()
+        .all(|side| (1..=MAX_PICKING_SIDE).contains(side))
+        && rect
+            .min
             .iter()
-            .all(|side| (1..=MAX_PICKING_SIDE).contains(side))
-            && self
-                .min
-                .iter()
-                .all(|at| (-MAX_PICKING_OFFSET..=MAX_PICKING_OFFSET).contains(at))
-    }
-}
-
-/// What picking found nearest under a frame's [`PixelRect`]: the body by its number, its
-/// element, the pixel, and the point in the document's coordinates, if the renderer gives
-/// one.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Pick {
-    pub body: u32,
-    pub hit: Element,
-    pub pixel: [u32; 2],
-    pub point: Option<[f64; 3]>,
-}
-
-/// A picking rectangle's answer: the number of the frame that asked it ([`Frame::serial`],
-/// given back), the rectangle, and what was hit, or none for the background alone.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Picking {
-    pub frame: u64,
-    pub rect: PixelRect,
-    pub hit: Option<Pick>,
-}
-
-/// One frame of the viewport, as the renderer draws it.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Frame<'a> {
-    /// The pane's number for the frame, which its picking answer gives back
-    /// ([`Picking::frame`]), so an answer two frames late is matched to the frame that asked.
-    pub serial: u64,
-    /// The tab's camera, as the app holds it (decision 29), in `f64`.
-    pub camera: &'a Camera,
-    /// The viewport's size in physical pixels.
-    pub size_px: [u32; 2],
-    /// Physical pixels per egui point: the display's scale.
-    pub pixels_per_point: f32,
-    /// The bodies to draw, by number, ascending, each once, each uploaded.
-    pub bodies: &'a [u32],
-    /// The elements drawn highlighted, as the selection gives them (M5.7).
-    pub highlights: &'a [(u32, Element)],
-    /// The rectangle to pick under, if one was asked: its answer comes a frame later.
-    pub picking: Option<PixelRect>,
+            .all(|at| (-MAX_PICKING_OFFSET..=MAX_PICKING_OFFSET).contains(at))
 }
 
 /// A [`Frame`] whose values it holds: what the pane hands on, to be drawn once the paint
@@ -128,7 +65,8 @@ impl FrameData {
     }
 }
 
-/// The pane's view of a renderer (M5.6), mirroring `silico_render`'s frame API.
+/// The pane's view of a renderer (M5.6): `silico_render`'s frame API, which [`Renderer`]
+/// is, and a test's fake.
 pub trait ViewRenderer: Send + Sync + 'static {
     /// Why it refused something.
     type Failure: std::fmt::Display;
@@ -146,6 +84,47 @@ pub trait ViewRenderer: Send + Sync + 'static {
     /// The answer to the rectangle a frame asked to pick under, from the frame after it;
     /// none until then.
     fn take_picking(&mut self) -> Option<Picking>;
+}
+
+impl ViewRenderer for Renderer {
+    type Failure = RenderFailure;
+    fn upload(&mut self, body: u32, mesh: &Arc<Mesh>) -> Result<(), RenderFailure> {
+        Renderer::upload(self, body, mesh)
+    }
+    fn forget(&mut self, body: u32) {
+        Renderer::forget(self, body);
+    }
+    fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, RenderFailure> {
+        Renderer::prepare(self, frame)
+    }
+    fn composite(&self, pass: &mut wgpu::RenderPass<'_>) {
+        Renderer::composite(self, pass);
+    }
+    fn take_picking(&mut self) -> Option<Picking> {
+        Renderer::take_picking(self)
+    }
+}
+
+/// The viewport's renderer made on eframe's device (its adapter, device, queue, and target
+/// format), installed in its paint callbacks' resources, and the [`Present`] that reaches it;
+/// or, if `silico-render` can't draw on that device, none, said in the log: the app then
+/// runs with no viewport drawn, as with no wgpu at all.
+pub fn on_eframe(render_state: &egui_wgpu::RenderState) -> Option<OnGpu<Renderer>> {
+    match Renderer::new(
+        &render_state.adapter,
+        render_state.device.clone(),
+        render_state.queue.clone(),
+        render_state.target_format,
+    ) {
+        Ok(renderer) => {
+            install(render_state, renderer);
+            Some(OnGpu::new())
+        }
+        Err(why) => {
+            tracing::warn!("the viewport can't draw on this device: {why}");
+            None
+        }
+    }
 }
 
 /// A change to the bodies a renderer holds.
@@ -487,13 +466,13 @@ mod tests {
     #[test]
     fn a_picking_rectangle_is_taken_from_one_to_256_pixels_a_side_within_its_offset() {
         let rect = |min: [i32; 2], size: [u32; 2]| PixelRect { min, size };
-        assert!(rect([0, 0], [1, 1]).takes());
-        assert!(rect([-5, 3], [256, 256]).takes());
-        assert!(rect([1 << 24, -(1 << 24)], [3, 3]).takes());
-        assert!(!rect([0, 0], [0, 1]).takes());
-        assert!(!rect([0, 0], [257, 1]).takes());
-        assert!(!rect([(1 << 24) + 1, 0], [3, 3]).takes());
-        assert!(!rect([0, -(1 << 24) - 1], [3, 3]).takes());
+        assert!(takes(&rect([0, 0], [1, 1])));
+        assert!(takes(&rect([-5, 3], [256, 256])));
+        assert!(takes(&rect([1 << 24, -(1 << 24)], [3, 3])));
+        assert!(!takes(&rect([0, 0], [0, 1])));
+        assert!(!takes(&rect([0, 0], [257, 1])));
+        assert!(!takes(&rect([(1 << 24) + 1, 0], [3, 3])));
+        assert!(!takes(&rect([0, -(1 << 24) - 1], [3, 3])));
     }
 
     fn data(bodies: &[u32], highlights: &[(u32, Element)]) -> FrameData {

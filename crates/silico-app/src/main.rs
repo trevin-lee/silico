@@ -55,7 +55,18 @@ fn main() -> ExitCode {
         options(),
         Box::new(move |creation| {
             silico_app::theme::apply(&creation.egui_ctx);
-            Ok(Box::new(App::new(sessions)))
+            let app = App::new(sessions);
+            // The viewport drawn by silico-render on eframe's own device; with no wgpu, or
+            // one it can't draw on, the app runs and draws no viewport.
+            let app = match creation
+                .wgpu_render_state
+                .as_ref()
+                .and_then(silico_app::renderer::on_eframe)
+            {
+                Some(present) => app.presenting(Box::new(present)),
+                None => app,
+            };
+            Ok(Box::new(app))
         }),
     );
     match ran {
