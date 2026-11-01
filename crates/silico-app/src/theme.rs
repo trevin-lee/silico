@@ -906,10 +906,12 @@ pub fn style(mut base: egui::Style) -> egui::Style {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldKind {
     /// A dialog's field (`.field`): [`FIELD_BG`], unoutlined at rest, [`FIELD_HOVER_BG`]
-    /// hovered.
+    /// hovered. For a field on a panel ([`PANEL_BG`]): on a floating surface, whose fill is
+    /// [`FIELD_BG`] too, it would show nothing at rest.
     Dialog,
     /// The Modify box's value (`.modify-box input`): [`MODIFY_FIELD_BG`], outlined in
-    /// [`STROKE_STRONG`] at rest, hovered or not.
+    /// [`STROKE_STRONG`] at rest, hovered or not. The prototype's field on a floating
+    /// surface ([`FLOATING_BG`], as the Modify box is), so a modal's fields too.
     Modify,
 }
 
@@ -939,6 +941,30 @@ pub fn field_frame(kind: FieldKind, hovered: bool, focused: bool, invalid: bool)
         .corner_radius(CornerRadius::same(SMALL_CORNER_RADIUS))
         .inner_margin(Margin::symmetric(6, 2))
         .shadow(Shadow::NONE)
+}
+
+/// `edit` as the prototype draws a field of `kind`: in [`field_frame`]'s frame, hovered
+/// while the pointer is over it (where it was last drawn) and it's on, focused while it has
+/// the keyboard, and `invalid` as the caller says; its text [`TEXT_STRONG`], or
+/// [`ERROR_TEXT`] when invalid. Its ID is made from `id_salt` in `ui`, as
+/// `TextEdit::id_salt`'s is. egui's own frame for a text field can't be this: its fill is
+/// one colour in every state, and its outline at rest is a button's, which has none.
+pub fn field<'t>(
+    ui: &egui::Ui,
+    edit: egui::TextEdit<'t>,
+    id_salt: impl egui::AsIdSalt,
+    kind: FieldKind,
+    invalid: bool,
+) -> egui::TextEdit<'t> {
+    let id = ui.make_persistent_id(id_salt);
+    let hovered = ui
+        .ctx()
+        .read_response(id)
+        .is_some_and(|drawn| drawn.enabled() && ui.rect_contains_pointer(drawn.rect));
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    edit.id(id)
+        .frame(field_frame(kind, hovered, focused, invalid))
+        .text_color(if invalid { ERROR_TEXT } else { TEXT_STRONG })
 }
 
 #[cfg(test)]

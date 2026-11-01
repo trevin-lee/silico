@@ -1,6 +1,7 @@
-//! Native file dialogs: the Browse… button beside a path field (Open, New, Save As, and
-//! Export's path), which asks the platform's own dialog for a path and fills the field with
-//! it, or opens the file it picked (Open).
+//! Native file dialogs: Open's own (File > Open…, Command+O, and the start page's Open…,
+//! which open the file picked), and the Browse… button beside a path field (New, Save As,
+//! Export's path, and the typed-path Open the app falls back to), which asks the platform's
+//! own dialog for a path and fills the field with it.
 //!
 //! A dialog is a future ([`Answer`]) that the frame polls, never waits on (invariant 4): it
 //! answers through a waker that asks egui for a frame ([`Repaint`]), and the frame after
@@ -51,17 +52,59 @@ pub type Answer = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;
 
 /// What opens a file dialog: the platform's ([`Native`]), or a test's.
 pub trait Browse {
-    /// The dialog `ask` says, opened, its answer to come. Never waits for it.
-    fn browse(&mut self, ask: &Ask) -> Answer;
+    /// The dialog `ask` says, opened, its answer to come; none if no dialog can open. Never
+    /// waits for it.
+    fn browse(&mut self, ask: &Ask) -> Option<Answer>;
 }
 
-/// The platform's own dialogs, through rfd's async API.
-#[derive(Debug, Default)]
-pub struct Native;
+/// The platform's own dialogs, through rfd's async API, each the app window's.
+///
+/// On macOS, rfd begins each panel as a sheet on the window it's given. Given none, it takes
+/// `NSApp`'s main window, which is none while the app isn't the active one (a click sent by
+/// another process, such as System Events', doesn't make it so), and then the first window
+/// in `NSApp`'s list, which needn't be the one drawn: a panel begun on a window not shown is
+/// never seen. And with no window at all it runs the panel's own modal loop, which would
+/// hold the UI thread until the panel closed. So the app's window is given as each panel's
+/// parent, and with no handle for it no panel opens (the app asks for a typed path instead).
+/// Each panel brings the window, and so its sheet, to the front, the app made the active one.
+pub struct Native {
+    /// A dialog with nothing asked of it yet but its parent, the app's window (on macOS),
+    /// from which each dialog starts; none if that window has no handle.
+    base: Option<rfd::AsyncFileDialog>,
+    /// The app's egui context, to bring its window to the front.
+    ctx: egui::Context,
+}
+
+impl Native {
+    /// The platform's dialogs, each on the window eframe made for the app (`creation`'s).
+    pub fn on(creation: &eframe::CreationContext<'_>) -> Self {
+        use wgpu::rwh::HasWindowHandle as _;
+        let base = rfd::AsyncFileDialog::new();
+        // Linux's portal dialogs keep their own place, as they have: a parent there is a
+        // handle exported for another process, and rfd's export of one isn't needed.
+        let base = if cfg!(target_os = "macos") {
+            creation
+                .window_handle()
+                .ok()
+                .map(|_| base.set_parent(creation))
+        } else {
+            Some(base)
+        };
+        if base.is_none() {
+            tracing::warn!(
+                "the window has no handle: Open asks for a typed path, and Browse… opens nothing"
+            );
+        }
+        Native {
+            base,
+            ctx: creation.egui_ctx.clone(),
+        }
+    }
+}
 
 impl Browse for Native {
-    fn browse(&mut self, ask: &Ask) -> Answer {
-        let mut dialog = rfd::AsyncFileDialog::new().set_title(&ask.title);
+    fn browse(&mut self, ask: &Ask) -> Option<Answer> {
+        let mut dialog = self.base.clone()?.set_title(&ask.title);
         for filter in &ask.filters {
             dialog = dialog.add_filter(filter.name, filter.extensions);
         }
@@ -76,7 +119,12 @@ impl Browse for Native {
             Pick::Open => Box::pin(dialog.pick_file()) as Pin<Box<dyn Future<Output = _>>>,
             Pick::Save => Box::pin(dialog.save_file()),
         };
-        Box::pin(async move { picked.await.map(|handle| handle.path().to_path_buf()) })
+        // The window, its sheet on it, brought to the front and made key, the app the active
+        // one, once this frame ends (if it isn't already).
+        self.ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        Some(Box::pin(async move {
+            picked.await.map(|handle| handle.path().to_path_buf())
+        }))
     }
 }
 
