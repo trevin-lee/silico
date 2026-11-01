@@ -115,6 +115,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "angle",
         "read_logs",
         "timeline",
+        "meshes",
         "sketch",
     ];
     let destructive = [
@@ -136,6 +137,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "sketch_unjoin",
         "sketch_merge",
         "sketch_extend",
+        "sketch_join",
     ];
     for tool in sent["tools"].as_array().unwrap() {
         let name = tool["name"].as_str().unwrap();
@@ -189,6 +191,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "sketch_unjoin",
         "sketch_merge",
         "sketch_extend",
+        "sketch_join",
     ] {
         assert!(said(name, "Edit inside a transaction"), "{name}");
         assert!(said(name, "`model: \"current\"`"), "{name}");
@@ -376,9 +379,11 @@ fn every_example_holds_to_its_tools_schemas() {
     // 4, and drag_end's 3; M5.10's 8: sketch's 2, sketch_add's 2, and sketch_remove's 4; its
     // geometry edits' 13: sketch_split's 4, sketch_trim's 3, sketch_unjoin's 3, and
     // sketch_merge's 3; and sketch_extend's 9; cache_clear's refusal of a cache that leads out
-    // of the workspace (the contract lows); M5.2's 10: undo's 6, and redo's 4; and M5.4's Save
-    // As, commit's 3: its request, its result, and a file already there.
-    assert_eq!(seen, 182);
+    // of the workspace (the contract lows); M5.2's 10: undo's 6, and redo's 4; M5.4's Save
+    // As, commit's 3: its request, its result, and a file already there; M5.10's
+    // sketch_join's 4; and M5.5's 5, meshes': its request, its result, and its refusals of a
+    // suppressed feature and of a response too long, for several bodies and for one.
+    assert_eq!(seen, 191);
 }
 
 #[test]

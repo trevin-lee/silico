@@ -1442,6 +1442,7 @@ mod constructed {
                     12 => Form::Angle {
                         a,
                         b,
+                        reversed: flag,
                         value: angle,
                         driving,
                     },

@@ -30,6 +30,7 @@
           "drag_begin",
           "drag_move",
           "drag_end",
+          "meshes",
           "sketch",
           "sketch_add",
           "sketch_remove",
@@ -38,6 +39,7 @@
           "sketch_unjoin",
           "sketch_merge",
           "sketch_extend",
+          "sketch_join",
           "undo",
           "redo",
           "rebuild"
@@ -97,6 +99,7 @@
           "drag_begin",
           "drag_move",
           "drag_end",
+          "meshes",
           "sketch",
           "sketch_add",
           "sketch_remove",
@@ -105,6 +108,7 @@
           "sketch_unjoin",
           "sketch_merge",
           "sketch_extend",
+          "sketch_join",
           "undo",
           "redo",
           "rebuild"

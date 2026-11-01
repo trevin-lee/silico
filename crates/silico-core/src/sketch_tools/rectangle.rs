@@ -82,14 +82,14 @@ impl Rectangle {
                         press: at,
                         dragged: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
             }
             (State::Pressed { press, dragged, .. }, Event::Move(at)) => {
                 if distance(at, *press) > step.pointer.tolerance {
                     *dragged = true;
                 }
-                Outcome::nothing()
+                Outcome::default()
             }
             (
                 State::Pressed {
@@ -112,20 +112,20 @@ impl Rectangle {
                         first,
                         pressed: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
             }
             (State::Clicked { pressed, .. }, Event::Press(_)) => {
                 *pressed = true;
-                Outcome::nothing()
+                Outcome::default()
             }
             (State::Clicked { first, pressed }, Event::Release(at)) => {
                 if !*pressed {
-                    Outcome::nothing()
+                    Outcome::default()
                 } else if distance(at, first.at) <= step.pointer.tolerance {
                     // A double-click's second click, at the first point.
                     *pressed = false;
-                    Outcome::nothing()
+                    Outcome::default()
                 } else {
                     let first = first.clone();
                     let outcome = self.finish(step, &first, at);
@@ -140,7 +140,7 @@ impl Rectangle {
                     outcome
                 }
             }
-            _ => Outcome::nothing(),
+            _ => Outcome::default(),
         };
         self.draw(step, event, preview);
         outcome

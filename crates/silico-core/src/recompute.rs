@@ -92,6 +92,28 @@ impl fmt::Display for Key {
     }
 }
 
+impl Key {
+    /// The key `text` writes, as [`Display`](fmt::Display) writes one: exactly 64 lowercase
+    /// hex digits (a `meshes` request's `held` gives one back). None for any other text.
+    pub fn parse(text: &str) -> Option<Key> {
+        let digits = text.as_bytes();
+        if digits.len() != 64 {
+            return None;
+        }
+        let digit = |d: u8| match d {
+            b'0'..=b'9' => Some(d - b'0'),
+            b'a'..=b'f' => Some(d - b'a' + 10),
+            _ => None,
+        };
+        let mut key = [0u8; 32];
+        for (byte, pair) in key.iter_mut().zip(digits.chunks_exact(2)) {
+            let [high, low] = pair else { return None };
+            *byte = (digit(*high)? << 4) | digit(*low)?;
+        }
+        Some(Key(key))
+    }
+}
+
 impl fmt::Debug for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Key({self})")
@@ -4543,6 +4565,35 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_reads_back_from_the_64_lowercase_hex_digits_it_writes_and_from_nothing_else() {
+        // By hand: 0x00, 0x01, ..., 0x1f, written two digits a byte.
+        let mut bytes = [0u8; 32];
+        for (at, byte) in bytes.iter_mut().enumerate() {
+            *byte = at as u8;
+        }
+        let text: String = (0..32u8).map(|b| format!("{b:02x}")).collect();
+        assert_eq!(text.len(), 64);
+        assert_eq!(Key::parse(&text), Some(Key(bytes)));
+        assert_eq!(Key(bytes).to_string(), text);
+        assert_eq!(Key::parse(&"f".repeat(64)), Some(Key([0xff; 32])));
+        assert_eq!(Key::parse(&"a9".repeat(32)), Some(Key([0xa9; 32])));
+        for bad in [
+            String::new(),
+            "0".repeat(63),
+            "0".repeat(65),
+            "0".repeat(128),
+            format!("A{}", "0".repeat(63)),
+            format!("{}F", "0".repeat(63)),
+            format!("g{}", "0".repeat(63)),
+            format!("{} ", "0".repeat(63)),
+            format!("-{}", "0".repeat(63)),
+            format!("é{}", "0".repeat(62)),
+        ] {
+            assert_eq!(Key::parse(&bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn a_step_counts_change_is_waited_for_and_nothing_else_ends_the_wait() {

@@ -777,6 +777,203 @@ fn a_case_freecad_answers_otherwise_run_to_run_is_known_only_by_its_rule_on_a_so
 }
 
 #[test]
+fn a_merge_silico_makes_where_freecads_varies_hides_only_freecads_rollback() {
+    let known = [sketch_edit::Known {
+        case: "c",
+        shows: sketch_edit::Shows::VariesMade,
+        why: "FreeCAD varies",
+    }];
+    let rolled = "FreeCAD refused (its solve failed); Silico made the edit".to_owned();
+    // FreeCAD's merge failing and rolled back, Silico making it: shown as known, never a
+    // difference, and never stale.
+    let v = Verdict {
+        case: "c".to_owned(),
+        how: vec![rolled.clone()],
+        made: true,
+        rolled_back: true,
+        ..Verdict::default()
+    };
+    let (differ, shown, stale) = without_known(vec![v], &known);
+    assert!(
+        differ.is_empty() && stale.is_empty(),
+        "{differ:?} {stale:?}"
+    );
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert!(shown[0].contains("varies run to run"), "{shown:?}");
+    // FreeCAD making the merge too: compared as any case. Agreeing, nothing shows; differing
+    // (another degree of freedom, a constraint re-pointed), it's a difference, and the entry
+    // isn't stale, as FreeCAD's answer still varies.
+    let v = Verdict {
+        case: "c".to_owned(),
+        made: true,
+        ..Verdict::default()
+    };
+    let (differ, shown, stale) = without_known(vec![v], &known);
+    assert!(differ.is_empty() && shown.is_empty() && stale.is_empty());
+    let v = Verdict {
+        case: "c".to_owned(),
+        how: vec!["degrees of freedom: Silico 7, FreeCAD 8".to_owned()],
+        made: true,
+        ..Verdict::default()
+    };
+    let (differ, shown, stale) = without_known(vec![v], &known);
+    assert_eq!(differ.len(), 1, "{differ:?}");
+    assert!(shown.is_empty() && stale.is_empty(), "{shown:?} {stale:?}");
+    // Silico refusing it (by a rule or none), or the case with a problem of its own though
+    // Silico made the edit, FreeCAD's merge rolled back or not: compared, and the known case
+    // a problem.
+    for rolled_back in [false, true] {
+        for (rule, made, problem) in [
+            (None, false, false),
+            (Some(Rule::MergeSolveFails), false, false),
+            (None, true, true),
+        ] {
+            let what = format!("{rule:?} made {made} problem {problem} rolled back {rolled_back}");
+            let v = Verdict {
+                case: "c".to_owned(),
+                how: vec![rolled.clone()],
+                rule: rule.clone(),
+                made,
+                problem,
+                rolled_back,
+                ..Verdict::default()
+            };
+            let (differ, shown, stale) = without_known(vec![v], &known);
+            assert_eq!(differ.len(), 1, "{what}");
+            assert!(shown.is_empty(), "{what}");
+            assert_eq!(stale.len(), 1, "{what}");
+            assert!(stale[0].contains("no longer makes the edit"), "{stale:?}");
+        }
+    }
+    // A refusal agreeing with FreeCAD's, Silico not making the edit: still a problem.
+    let v = Verdict {
+        case: "c".to_owned(),
+        refused: true,
+        rolled_back: true,
+        ..Verdict::default()
+    };
+    let (differ, shown, stale) = without_known(vec![v], &known);
+    assert!(differ.is_empty() && shown.is_empty() && stale.len() == 1);
+}
+
+#[test]
+fn the_known_merge_freecad_varies_on_is_the_one_its_entry_says_and_a_crash_there_is_compared() {
+    // KNOWN's edit_78_52, as seed 78 makes it, on Silico's side alone: if the generator or the
+    // merge changes, its entry is about another case and must be redone. The arc a0000016
+    // (centre p0000014 at (31.807, -12.943), start p0000011 at (31.807, -16.418): radius
+    // 3.475) has its end p0000015 merged onto the circle c0000026's centre p0000025, 31 mm
+    // away; Silico places the end there, 27.75 mm from the arc's centre, and its solve from
+    // there is clean, the arc's radius 22.05.
+    let mut sweep = silico_oracle::generate::sketch_edit_cases(78, 500).unwrap();
+    let case = sweep.swap_remove(52);
+    assert_eq!(case.name, "edit_78_52");
+    assert_eq!(
+        case.edit,
+        Edit::Merge {
+            points: vec!["p0000025".to_owned(), "p0000015".to_owned()],
+        }
+    );
+    let mut worker = SketchWorker::start().unwrap();
+    let p = prepare(&case, &mut worker).unwrap();
+    assert!(p.problems.is_empty(), "{:?}", p.problems);
+    assert_eq!(rule(&p), None, "{:?}", p.silico);
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("Silico didn't make the merge: {:?}", p.silico);
+    };
+    assert!(
+        s.ours.conflicting.is_empty()
+            && s.ours.redundant.is_empty()
+            && s.ours.partially_redundant.is_empty(),
+        "{:?}",
+        s.ours
+    );
+    let solved = s.ours.outcome.as_ref().unwrap();
+    let at = |point: &str| solved.point(&id(point)).unwrap();
+    let from = |a: [f64; 2], b: [f64; 2]| libm::hypot(b[0] - a[0], b[1] - a[1]);
+    let (centre, start, end) = (at("p0000014"), at("p0000011"), at("p0000025"));
+    assert!(
+        (from(centre, start) - 22.05).abs() < 0.005,
+        "{centre:?} {start:?}"
+    );
+    assert!(
+        (from(centre, end) - from(centre, start)).abs() < 1e-6,
+        "{centre:?} {start:?} {end:?}"
+    );
+    // A FreeCAD crash, hang, or raise there is no rollback: compared, a difference, never
+    // shown as known, and the entry not stale, as Silico still makes the merge.
+    for theirs in [
+        Theirs::Lost("FreeCAD crashed".to_owned()),
+        Theirs::Failed("RuntimeError: doctored".to_owned()),
+    ] {
+        let v = verdict(&p, Some(&theirs));
+        assert!(v.made && !v.rolled_back, "{v:?}");
+        let (differ, shown, stale) = without_known(vec![v], KNOWN);
+        assert_eq!(differ.len(), 1, "{theirs:?}");
+        assert!(shown.is_empty() && stale.is_empty(), "{shown:?} {stale:?}");
+    }
+    // Its merge's solve failing: Silico refuses it, so it made no edit, and the entry is stale.
+    let mut failed = s.clone();
+    failed.ours.outcome = Err(silico_core::Error::new(
+        silico_core::ErrorCode::SolveFailed,
+        "doctored",
+    ));
+    let failed = Prepared {
+        silico: SilicoSide::Edited(failed),
+        ..p.clone()
+    };
+    let v = verdict(&failed, Some(&Theirs::Lost("FreeCAD crashed".to_owned())));
+    assert!(!v.made, "{v:?}");
+    let (_, shown, stale) = without_known(vec![v], KNOWN);
+    assert!(shown.is_empty(), "{shown:?}");
+    assert!(
+        stale.len() == 1 && stale[0].starts_with("edit_78_52: "),
+        "{stale:?}"
+    );
+}
+
+#[test]
+fn the_known_merge_silico_refuses_as_holding_its_own_curve_is_the_one_its_entry_says() {
+    // KNOWN's edit_58_356, as seed 58 makes it: the symmetric k0000019 would mirror an end of
+    // n0000005 about n0000005 itself, which Silico refuses by MergeHoldsOwn.
+    let mut sweep = silico_oracle::generate::sketch_edit_cases(58, 500).unwrap();
+    let case = sweep.swap_remove(356);
+    assert_eq!(case.name, "edit_58_356");
+    let mut worker = SketchWorker::start().unwrap();
+    let p = prepare(&case, &mut worker).unwrap();
+    assert!(p.problems.is_empty(), "{:?}", p.problems);
+    assert!(
+        matches!(rule(&p), Some(Rule::MergeHoldsOwn(id)) if id == "k0000019"),
+        "{:?}",
+        p.silico
+    );
+}
+
+#[test]
+fn an_arc_extend_whose_solve_fails_is_no_edit_made() {
+    // `sketch-extend-sweep --seed 43 --count 500`'s case 212, whose solve fails from the
+    // written end (ExtendSolveFails, #se-an-arc-swept-a-whole-turn): Silico refuses it, so a
+    // VariesMade entry for it is stale whatever FreeCAD answers.
+    let mut sweep = silico_oracle::generate::sketch_extend_cases(43, 500).unwrap();
+    let case = sweep.swap_remove(212);
+    assert_eq!(case.name, "extend_43_212");
+    let mut worker = SketchWorker::start().unwrap();
+    let p = prepare(&case, &mut worker).unwrap();
+    assert_eq!(rule(&p), Some(Rule::ExtendSolveFails), "{:?}", p.silico);
+    assert!(matches!(&p.silico, SilicoSide::Edited(s) if s.ours.outcome.is_err()));
+    let known = [sketch_edit::Known {
+        case: "extend_43_212",
+        shows: sketch_edit::Shows::VariesMade,
+        why: "doctored",
+    }];
+    for theirs in [None, Some(Theirs::Lost("FreeCAD crashed".to_owned()))] {
+        let v = verdict(&p, theirs.as_ref());
+        assert!(!v.made, "{v:?}");
+        let (_, shown, stale) = without_known(vec![v], &known);
+        assert!(shown.is_empty() && stale.len() == 1, "{shown:?} {stale:?}");
+    }
+}
+
+#[test]
 fn a_generated_sweep_is_the_same_for_a_seed_and_every_sketch_is_drawn_as_it_solves() {
     let first = silico_oracle::generate::sketch_edit_cases(7, 30).unwrap();
     let again = silico_oracle::generate::sketch_edit_cases(7, 30).unwrap();
@@ -1313,6 +1510,8 @@ fn a_merge_whose_solve_silico_cant_take_agrees_where_freecads_solves_or_rolls_ba
     let v = verdict(p, theirs[0].as_ref());
     agrees(&v);
     assert!(v.refused && v.excused.is_empty(), "{v:?}");
+    // The verdict records the rollback, as a VariesMade case reads it.
+    assert!(v.rolled_back, "{v:?}");
     assert_eq!(
         v.modulo,
         [
@@ -2242,7 +2441,10 @@ fn a_varying_case_is_shown_known_only_while_silicos_side_is_its_rules_refusal() 
         shows: sketch_edit::Shows::Varies(Rule::MergeHoldsOwn(String::new())),
         why: "varies here",
     }];
-    let (differ, shown, stale) = without_known(vec![verdict(p, theirs[0].as_ref())], &known);
+    let v = verdict(p, theirs[0].as_ref());
+    // Refused: Silico didn't make the edit.
+    assert!(!v.made, "{v:?}");
+    let (differ, shown, stale) = without_known(vec![v], &known);
     assert!(differ.is_empty() && stale.is_empty() && shown.len() == 1);
     let mut problem = p.clone();
     problem
@@ -2266,6 +2468,8 @@ fn a_varying_case_is_shown_known_only_while_silicos_side_is_its_rules_refusal() 
         ("a problem of its own", problem),
     ] {
         let v = verdict(&other, theirs[0].as_ref());
+        // Gated or refused, Silico made no edit.
+        assert!(!v.made, "{what}: {v:?}");
         let (differ, shown, stale) = without_known(vec![v], &known);
         assert!(
             differ.len() == 1 && shown.is_empty() && stale.len() == 1,
@@ -2665,7 +2869,10 @@ fn a_merge_from_apart_agrees_and_silicos_other_points_moved_before_the_solve_are
     let prepared = vec![prepare(&case, &mut worker).unwrap()];
     let p = &prepared[0];
     let theirs = freecad_outcomes(&prepared).unwrap();
-    agrees(&verdict(p, theirs[0].as_ref()));
+    let v = verdict(p, theirs[0].as_ref());
+    agrees(&v);
+    // Silico made the edit, as its side says.
+    assert!(v.made, "{v:?}");
     // The lone p0000007, which neither solve moves: Silico's solved place 0.9e-8 mm one way
     // and FreeCAD's 0.9e-8 the other, each within 1e-8 of where it started, agree (1.8e-8
     // apart, within twice that); 1.1e-8 each way, each solve has moved it, so it isn't
@@ -2915,7 +3122,8 @@ fn reported(v: &Verdict, why: &str) {
 #[test]
 fn an_extend_refused_for_another_reason_than_the_notes_is_a_difference() {
     // Each extend refusal the note gives, as Silico makes it, with one thing about it changed:
-    // its code, its field, the curve it names, or its words. None is the note's any more.
+    // its code, its field, the curve it names, or its words. None is the note's any more, but
+    // a held end in other words, which is matched by what it names.
     let names = [
         "extend_held_end",
         "extend_probe_line_by_0",
@@ -2951,6 +3159,12 @@ fn an_extend_refused_for_another_reason_than_the_notes_is_a_difference() {
         ];
         for (what, change) in &changes {
             let wrong = refused_otherwise(p, change);
+            // A held end is matched by its code and the line and end it names, not its
+            // words, so a reword can't lose it: the same rule, in other words.
+            if p.name == "extend_held_end" && *what == "its words" {
+                assert_eq!(rule(&wrong), Some(Rule::ExtendHeld), "{} by {what}", p.name);
+                continue;
+            }
             assert!(rule(&wrong).is_none(), "{} by {what}", p.name);
             reported(
                 &verdict(&wrong, fc.as_ref()),

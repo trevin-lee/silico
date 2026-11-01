@@ -143,10 +143,10 @@ enum CenterState {
     },
 }
 
-/// The sweep from `last` to the pointer's angle, the short way round.
+/// The sweep from `last` to the pointer's angle, the short way round: in (−π, π].
 fn turn(last: f64, now: f64) -> f64 {
-    use std::f64::consts::{PI, TAU};
-    (now - last + PI).rem_euclid(TAU) - PI
+    let d = now - last;
+    libm::atan2(libm::sin(d), libm::cos(d))
 }
 
 impl Centerpoint {
@@ -216,14 +216,14 @@ impl Centerpoint {
                         press: at,
                         dragged: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
             }
             (CenterState::Pressed { press, dragged, .. }, Event::Move(at)) => {
                 if distance(at, *press) > step.pointer.tolerance {
                     *dragged = true;
                 }
-                Outcome::nothing()
+                Outcome::default()
             }
             (
                 CenterState::Pressed {
@@ -245,7 +245,7 @@ impl Centerpoint {
                         centre,
                         pressed: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
             }
             (
@@ -253,11 +253,11 @@ impl Centerpoint {
                 Event::Press(_),
             ) => {
                 *pressed = true;
-                Outcome::nothing()
+                Outcome::default()
             }
             (CenterState::Centre { centre, pressed }, Event::Release(at)) => {
                 if !*pressed {
-                    Outcome::nothing()
+                    Outcome::default()
                 } else {
                     *pressed = false;
                     let centre = centre.clone();
@@ -275,7 +275,7 @@ impl Centerpoint {
                 Event::Release(at),
             ) => {
                 if !*pressed {
-                    Outcome::nothing()
+                    Outcome::default()
                 } else {
                     *pressed = false;
                     let (centre, start, swept) = (centre.clone(), start.clone(), *swept);
@@ -286,7 +286,7 @@ impl Centerpoint {
                     outcome
                 }
             }
-            _ => Outcome::nothing(),
+            _ => Outcome::default(),
         };
         self.draw(step, event, preview);
         outcome
@@ -301,7 +301,7 @@ impl Centerpoint {
                 centre,
                 pressed: false,
             };
-            return Outcome::nothing();
+            return Outcome::default();
         }
         if one_place(start.at, centre.at) {
             self.state = CenterState::Centre {
@@ -318,7 +318,7 @@ impl Centerpoint {
             return Outcome::said(Message::TooFar);
         }
         self.state = Self::sweep_from(centre, start);
-        Outcome::nothing()
+        Outcome::default()
     }
 
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
@@ -423,16 +423,16 @@ fn finish_centerpoint(
         return Outcome::said(Message::TooFar);
     }
     let Some(end) = end_on_circle(step, centre, start, at) else {
-        return Outcome::nothing();
+        return Outcome::default();
     };
     if on_top(step, start, &end) || swept == 0.0 {
-        return Outcome::nothing();
+        return Outcome::default();
     }
-    // An end the pointer put on the centre (a point there, with a tolerance past the
-    // radius), or at the start's place: no arc.
-    let on_centre = centre.shared().is_some() && centre.shared() == end.shared();
+    // An end at the start's place, or (as the gate measures it) at the centre: no arc. The
+    // end is on the circle (`end_on_circle`), so at the centre only for a radius under the
+    // floor, which the check above refuses.
     let drawn = oriented(centre.at, start.at, end.at, swept);
-    if on_centre || one_place(end.at, centre.at) || drawn.too_small() {
+    if drawn.too_small() {
         return Outcome::said(Message::TooSmall);
     }
     if !reach(&[&end]) || !drawn.sized() {
@@ -533,14 +533,14 @@ impl ThreePoint {
                         press: at,
                         dragged: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
             }
             (ThreeState::Pressed { press, dragged, .. }, Event::Move(at)) => {
                 if distance(at, *press) > step.pointer.tolerance {
                     *dragged = true;
                 }
-                Outcome::nothing()
+                Outcome::default()
             }
             (
                 ThreeState::Pressed {
@@ -562,7 +562,7 @@ impl ThreePoint {
                         start,
                         pressed: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
             }
             (
@@ -570,11 +570,11 @@ impl ThreePoint {
                 Event::Press(_),
             ) => {
                 *pressed = true;
-                Outcome::nothing()
+                Outcome::default()
             }
             (ThreeState::Start { start, pressed }, Event::Release(at)) => {
                 if !*pressed {
-                    Outcome::nothing()
+                    Outcome::default()
                 } else {
                     *pressed = false;
                     let start = start.clone();
@@ -590,13 +590,13 @@ impl ThreePoint {
                 Event::Release(at),
             ) => {
                 if !*pressed {
-                    Outcome::nothing()
+                    Outcome::default()
                 } else {
                     *pressed = false;
                     let tolerance = step.pointer.tolerance;
                     if distance(at, start.at) <= tolerance || distance(at, end.at) <= tolerance {
                         // On an end: a double-click's second click.
-                        Outcome::nothing()
+                        Outcome::default()
                     } else {
                         let (start, end) = (start.clone(), end.clone());
                         let outcome = finish_three(step, &start, &end, at);
@@ -607,7 +607,7 @@ impl ThreePoint {
                     }
                 }
             }
-            _ => Outcome::nothing(),
+            _ => Outcome::default(),
         };
         self.draw(step, event, preview);
         outcome
@@ -622,7 +622,7 @@ impl ThreePoint {
                 start,
                 pressed: false,
             };
-            return Outcome::nothing();
+            return Outcome::default();
         }
         if one_place(start.at, end.at) || !reach(&[&end]) {
             let message = if one_place(start.at, end.at) {
@@ -641,7 +641,7 @@ impl ThreePoint {
             end,
             pressed: false,
         };
-        Outcome::nothing()
+        Outcome::default()
     }
 
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
@@ -780,7 +780,7 @@ impl Tangent {
                         press: at,
                         dragged: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
                 Err(message) => Outcome::said(message),
             },
@@ -788,7 +788,7 @@ impl Tangent {
                 if distance(at, *press) > step.pointer.tolerance {
                     *dragged = true;
                 }
-                Outcome::nothing()
+                Outcome::default()
             }
             (
                 TangentState::Pressed {
@@ -810,16 +810,16 @@ impl Tangent {
                         base,
                         pressed: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
             }
             (TangentState::Clicked { pressed, .. }, Event::Press(_)) => {
                 *pressed = true;
-                Outcome::nothing()
+                Outcome::default()
             }
             (TangentState::Clicked { base, pressed }, Event::Release(at)) => {
                 if !*pressed {
-                    Outcome::nothing()
+                    Outcome::default()
                 } else {
                     *pressed = false;
                     let base = base.clone();
@@ -830,11 +830,11 @@ impl Tangent {
                             }
                             outcome
                         }
-                        None => Outcome::nothing(),
+                        None => Outcome::default(),
                     }
                 }
             }
-            _ => Outcome::nothing(),
+            _ => Outcome::default(),
         };
         self.draw(step, event, preview);
         outcome

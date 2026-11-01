@@ -504,3 +504,78 @@ fn a_merge_of_touching_ends_solves_and_its_points_are_one() {
     );
     assert_eq!(checked["problems"], json!([]), "{checked}");
 }
+
+#[test]
+fn a_split_then_a_join_solves_cleanly_both_ways_and_gives_the_sketch_back() {
+    // On PlaneGCS, inside a transaction. The bracket's L, fully defined (dofs 0), split at
+    // the middle of na000003: one freedom more, the split point's slide along the line,
+    // nothing conflicting or redundant; joined at the split point, fully defined again, the
+    // sketch as it was before the split. The base's hole cb000001 (radius 2.75 about
+    // (40, 12), its diameter held) split at (42.75, 12) and (37.25, 12): its two points'
+    // slides round the circle free (dofs 2); joined at the second, the arc ending there
+    // keeps the circle's ID, and the circle is as it was, fully defined.
+    let f = bracket();
+    f.ran("begin", r#"{"session": "s1"}"#);
+    let read = |sketch: &str| {
+        f.ran(
+            "sketch",
+            &json!({"session": "s1", "model": "current", "sketch": sketch}).to_string(),
+        )
+    };
+    let members = |read: &Value| {
+        let mut read = read.clone();
+        read.as_object_mut().unwrap().remove("dofs");
+        read.as_object_mut().unwrap().remove("state");
+        read
+    };
+    for (sketch, curve, at, point, freed) in [
+        ("s0000001", "na000003", json!([[30, 5]]), "pa000007", 1),
+        (
+            "s0000002",
+            "cb000001",
+            json!([[42.75, 12], [37.25, 12]]),
+            "pb000004",
+            2,
+        ),
+    ] {
+        let before = read(sketch);
+        assert_eq!(
+            (&before["state"], &before["dofs"]),
+            (&json!("fully_defined"), &json!(0))
+        );
+        let ids = if freed == 1 {
+            json!(["pa000007", "na000007", "ka00000d"])
+        } else {
+            json!(["pb000003", "pb000004", "cb000003"])
+        };
+        let split = f.ran(
+            "sketch_split",
+            &json!({"session": "s1", "revision": f.revision(), "sketch": sketch, "curve": curve, "at": at, "ids": ids}).to_string(),
+        );
+        assert_eq!(split["changed"], true, "{split}");
+        let split_read = read(sketch);
+        assert_eq!(
+            (&split_read["state"], &split_read["dofs"]),
+            (&json!("under_defined"), &json!(freed)),
+            "{split_read}"
+        );
+        for constraint in split_read["constraints"].as_array().unwrap() {
+            assert_eq!(constraint["state"], "satisfied", "{constraint}");
+        }
+        assert_eq!(f.problems(), [], "{sketch}");
+        let joined = f.ran(
+            "sketch_join",
+            &json!({"session": "s1", "revision": f.revision(), "sketch": sketch, "point": point})
+                .to_string(),
+        );
+        assert_eq!(joined["modified"][0], curve, "{joined}");
+        assert_eq!(joined.get("curve"), None, "{joined}");
+        let after = read(sketch);
+        assert_eq!(
+            (&after["state"], &after["dofs"]),
+            (&json!("fully_defined"), &json!(0))
+        );
+        assert_eq!(members(&after), members(&before), "{sketch}");
+        assert_eq!(f.problems(), [], "{sketch}");
+    }
+}

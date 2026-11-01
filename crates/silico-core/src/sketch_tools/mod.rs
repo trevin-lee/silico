@@ -176,10 +176,6 @@ pub struct AddToken {
 }
 
 impl Outcome {
-    fn nothing() -> Self {
-        Outcome::default()
-    }
-
     fn added(members: Members) -> Self {
         Outcome {
             add: Some(members),

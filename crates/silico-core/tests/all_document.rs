@@ -72,6 +72,8 @@ mod adversarial_mass_properties;
 mod adversarial_measures;
 #[path = "adversarial_meshes_read.rs"]
 mod adversarial_meshes_read;
+#[path = "adversarial_meshes_wire.rs"]
+mod adversarial_meshes_wire;
 #[path = "adversarial_read_logs.rs"]
 mod adversarial_read_logs;
 #[path = "adversarial_references.rs"]
@@ -148,6 +150,8 @@ mod session_export;
 mod session_fresh;
 #[path = "session_logs.rs"]
 mod session_logs;
+#[path = "session_meshes.rs"]
+mod session_meshes;
 #[path = "session_rebuild.rs"]
 mod session_rebuild;
 #[path = "session_reload.rs"]
@@ -172,6 +176,8 @@ mod session_workspace;
 mod shared_result_checks;
 #[path = "wire_commands.rs"]
 mod wire_commands;
+#[path = "wire_meshes.rs"]
+mod wire_meshes;
 #[path = "wire_session_commands.rs"]
 mod wire_session_commands;
 #[path = "wire_session_reads.rs"]

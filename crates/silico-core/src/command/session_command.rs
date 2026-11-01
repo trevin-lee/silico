@@ -37,6 +37,7 @@ pub enum SessionCommand {
     DragBegin,
     DragMove,
     DragEnd,
+    Meshes,
     Sketch,
     SketchAdd,
     SketchRemove,
@@ -45,13 +46,14 @@ pub enum SessionCommand {
     SketchUnjoin,
     SketchMerge,
     SketchExtend,
+    SketchJoin,
     Undo,
     Redo,
 }
 
 impl SessionCommand {
     /// Every command that runs in a session, in the design's order (M4.1's, then M5.0's).
-    pub const ALL: [SessionCommand; 36] = [
+    pub const ALL: [SessionCommand; 38] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -78,6 +80,7 @@ impl SessionCommand {
         SessionCommand::DragBegin,
         SessionCommand::DragMove,
         SessionCommand::DragEnd,
+        SessionCommand::Meshes,
         SessionCommand::Sketch,
         SessionCommand::SketchAdd,
         SessionCommand::SketchRemove,
@@ -86,6 +89,7 @@ impl SessionCommand {
         SessionCommand::SketchUnjoin,
         SessionCommand::SketchMerge,
         SessionCommand::SketchExtend,
+        SessionCommand::SketchJoin,
         SessionCommand::Undo,
         SessionCommand::Redo,
     ];
@@ -119,6 +123,7 @@ impl SessionCommand {
             SessionCommand::DragBegin => Command::DragBegin,
             SessionCommand::DragMove => Command::DragMove,
             SessionCommand::DragEnd => Command::DragEnd,
+            SessionCommand::Meshes => Command::Meshes,
             SessionCommand::Sketch => Command::Sketch,
             SessionCommand::SketchAdd => Command::SketchAdd,
             SessionCommand::SketchRemove => Command::SketchRemove,
@@ -127,6 +132,7 @@ impl SessionCommand {
             SessionCommand::SketchUnjoin => Command::SketchUnjoin,
             SessionCommand::SketchMerge => Command::SketchMerge,
             SessionCommand::SketchExtend => Command::SketchExtend,
+            SessionCommand::SketchJoin => Command::SketchJoin,
             SessionCommand::Undo => Command::Undo,
             SessionCommand::Redo => Command::Redo,
         }
@@ -244,6 +250,7 @@ pub enum ReadCommand {
     Distance,
     Angle,
     Render,
+    Meshes,
     Sketch,
     Timeline,
 }
@@ -251,7 +258,7 @@ pub enum ReadCommand {
 impl ReadCommand {
     /// Every command that reads a model, in the design's order (that of
     /// [`SessionCommand::ALL`]).
-    pub const ALL: [ReadCommand; 9] = [
+    pub const ALL: [ReadCommand; 10] = [
         ReadCommand::Check,
         ReadCommand::Elements,
         ReadCommand::Query,
@@ -260,6 +267,7 @@ impl ReadCommand {
         ReadCommand::Angle,
         ReadCommand::Render,
         ReadCommand::Timeline,
+        ReadCommand::Meshes,
         ReadCommand::Sketch,
     ];
 
@@ -273,6 +281,7 @@ impl ReadCommand {
             ReadCommand::Distance => SessionCommand::Distance,
             ReadCommand::Angle => SessionCommand::Angle,
             ReadCommand::Render => SessionCommand::Render,
+            ReadCommand::Meshes => SessionCommand::Meshes,
             ReadCommand::Sketch => SessionCommand::Sketch,
             ReadCommand::Timeline => SessionCommand::Timeline,
         }

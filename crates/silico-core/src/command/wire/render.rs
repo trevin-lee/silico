@@ -78,7 +78,7 @@ impl RenderRequest {
 /// A camera, as M4.1 writes one: its projection, the eye and the target as lengths, `up`
 /// as a direction, and the field of the projection given, the other `null`. A field that
 /// doesn't belong to its projection, or one of its own missing, is refused naming it.
-fn read_camera(f: &mut RequestFields<'_>) -> Option<Camera> {
+pub(super) fn read_camera(f: &mut RequestFields<'_>) -> Option<Camera> {
     let projects = f.word("projection", &PROJECTIONS, "projections");
     let eye = f.point("eye");
     let target = f.point("target");
@@ -154,7 +154,7 @@ fn projection_fields(
 
 /// A camera as a result writes it: in the document's quantities, as it was drawn, so
 /// nothing is rounded here.
-fn answered_to_wire(camera: &AnsweredCamera) -> Json<'static> {
+pub(super) fn answered_to_wire(camera: &AnsweredCamera) -> Json<'static> {
     let (projection, view_height, field_of_view) = match camera.projection {
         AnsweredProjection::Orthographic { view_height } => {
             ("orthographic", Json::length(view_height), Json::null())
@@ -175,7 +175,7 @@ fn answered_to_wire(camera: &AnsweredCamera) -> Json<'static> {
 
 /// A request's camera, written back as a client writes it: its numbers were read from the
 /// request's digits, so rounding them to the document's quantities gives those digits.
-fn requested_to_wire(camera: &Camera) -> Json<'static> {
+pub(super) fn requested_to_wire(camera: &Camera) -> Json<'static> {
     match AnsweredCamera::rounded(camera) {
         Some(answered) => answered_to_wire(&answered),
         None => Json::null(),

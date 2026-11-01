@@ -752,6 +752,12 @@ pub(crate) fn eye_outside<K: Kernel>(
     Ok(())
 }
 
+/// The level a body at no depth asks (a box reaching the eye's plane, or none, in a
+/// perspective view): the finest there is, so the kernel meshes it at its floor. `meshes`
+/// answers such a body's level as the floor its mesh was made at (`command::meshes`), the
+/// one level that names its mesh; `render` asks the kernel the same.
+pub(crate) const NO_DEPTH_LEVEL: f64 = f64::MIN_POSITIVE;
+
 /// The level `body` is meshed at for `camera`'s view, `height` pixels high: half a pixel at
 /// its nearest depth along the view (its box's; a point's pixel scales with its depth, not
 /// its distance), its power of two; for a box wholly behind the eye, which only `meshes`
@@ -763,7 +769,7 @@ pub(crate) fn level_of(camera: &Camera, height: u32, body: &Body) -> f64 {
         .map_or(0.0, |bounds| meshing_depth(camera, bounds));
     half_pixel_at(camera, height, depth)
         .and_then(mesh_level)
-        .unwrap_or(f64::MIN_POSITIVE)
+        .unwrap_or(NO_DEPTH_LEVEL)
 }
 
 /// A body's display mesh, the level its view asked for (`mesh_level` of its half pixel, or

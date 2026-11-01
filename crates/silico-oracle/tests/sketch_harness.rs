@@ -125,7 +125,8 @@ fn every_form_goes_to_freecads_constraint_of_it() {
           {"id": "k0000006", "type": "equal", "a": "c0000001", "b": "a0000001"},
           {"id": "k0000007", "type": "tangent_on", "a": "n0000001", "at": "p0000002", "b": "c0000001", "direction": "opposite"},
           {"id": "k0000008", "type": "symmetric", "a": "p0000003", "b": "p0000002", "about": "p0000001"},
-          {"id": "k0000009", "type": "midpoint", "point": "p0000005", "line": "n0000002"}
+          {"id": "k0000009", "type": "midpoint", "point": "p0000005", "line": "n0000002"},
+          {"id": "k000000a", "type": "angle", "a": "n0000001", "b": "x_axis", "reversed": true, "value": 180, "driving": false}
         ]"#,
     );
     let m = model(&s);
@@ -140,6 +141,8 @@ fn every_form_goes_to_freecads_constraint_of_it() {
         ("Tangent", vec![0, 2, 2], None),
         ("Symmetric", vec![1, 2, 0, 2, 0, 1], None),
         ("Symmetric", vec![1, 1, 1, 2, 3, 2], None),
+        // Reversed: FreeCAD's start-point form, n1 from its start, the x axis from its end.
+        ("Angle", vec![0, 1, -1, 2], Some(PI)),
     ];
     assert_eq!(ours.len(), want.len());
     for (c, (kind, ints, value)) in ours.iter().zip(want) {
@@ -206,7 +209,7 @@ fn every_sketch_case_matches_freecad() {
     // by Silico's sketch worker and by FreeCAD 1.1.3.
     let dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle"));
     let cases = silico_oracle::sketch::load(dir).unwrap();
-    assert_eq!(cases.len(), 16);
+    assert_eq!(cases.len(), 18);
     let differences = silico_oracle::sketch::run(&cases).unwrap();
     assert!(
         differences.is_empty(),
