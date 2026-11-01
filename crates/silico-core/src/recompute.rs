@@ -5597,6 +5597,20 @@ mod tests {
             y: [-0.0, 1.0, -0.0],
         };
         assert_eq!(faces_line(&on(SketchPlane::Face(all))), line);
+        // A reversed top's x, −X: its sign in the bits (bff0…), another key than +X's.
+        let reversed = FaceFrame {
+            x: [-1.0, 0.0, 0.0],
+            ..top
+        };
+        assert_eq!(
+            faces_line(&on(SketchPlane::Face(reversed))),
+            "faces frame \
+             0000000000000000 0000000000000000 4024000000000000 \
+             bff0000000000000 0000000000000000 0000000000000000 \
+             0000000000000000 3ff0000000000000 0000000000000000 \
+             region loop circle 0000000000000000 c000000000000000 3ff0000000000000"
+        );
+        assert_ne!(key(reversed), key(top));
     }
 
     /// Keys outlive a run, so their spelling is pinned: computed by hand with Python's

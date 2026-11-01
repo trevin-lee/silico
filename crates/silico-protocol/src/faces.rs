@@ -56,14 +56,16 @@ pub struct FaceFrame {
     pub y: [f64; 3],
 }
 
-/// How far from perpendicular a frame's x and y may be: |x · y| at most 1e-14. OCCT builds
-/// the faces' plane from the normal and x alone, normalizing x and making its own y as
-/// n × x, while a point is placed along the frame's own y. The two y's are apart by about
-/// |x · y|, so at the largest reach, 1e6 mm ([`MAX_LENGTH`]), a point placed on the frame
-/// is within 1e6 · 1e-14 = 1e-8 mm of where OCCT puts an arc's end, inside its 1e-7
-/// ([`LENGTH_TOLERANCE`]). The core makes y from n × x, so its frames are square to a few
-/// roundings, far inside this.
-pub const FACE_FRAME_SQUARENESS: f64 = 1e-14;
+/// How far from perpendicular a frame's x and y may be: |x · y| at most 16ε (4 ·
+/// `UNIT_SLACK`, about 3.6e-15), a few roundings, as the core makes them (y = n × x,
+/// normalized, is square to x to about 1.7e-16). OCCT builds the faces' plane from the
+/// normal and x alone, normalizing x and making its own y as n × x, while a point is placed
+/// along the frame's own y. The two y's are apart by about |x · y|, so at the largest
+/// reach, 1e6 mm ([`MAX_LENGTH`]), a point placed on the frame is within 1e6 · 3.6e-15 ≈
+/// 3.6e-9 mm of where OCCT puts an arc's end: the frame's share beside the 1e-7
+/// ([`LENGTH_TOLERANCE`]) an arc's end may be off its circle (`Curve::off_circle`), which
+/// the origin planes have to themselves.
+pub const FACE_FRAME_SQUARENESS: f64 = 4.0 * UNIT_SLACK;
 
 /// How far a frame's origin may be from the model's: √3 times the reach, and the rounding
 /// of working it out (4 · 4ε, as a sweep's longest vector has). The origin is n(n·p), the
@@ -91,15 +93,19 @@ pub enum FaceFrameError {
 }
 
 impl FaceFrame {
-    /// The frame of a sketch on a plane through `on_plane` with the unit normal `n`, its x
+    /// The frame of a sketch on a plane through `on_plane` with the normal `n`, its x
     /// following the stored `axis` (one of model space's six signed unit axes), exactly as
-    /// docs/ports/attacher.md's frame says: o = n(n·p); x = (a − n(n·a)) / |a − n(n·a)|,
+    /// docs/ports/attacher.md's frame says, n first made a unit (`describe`'s normals are
+    /// unit only to `NORMAL_LENGTH_TOLERANCE`, 1e-6: o = n(n·p) of one 1e-6 long, on a face
+    /// √3 · 1e6 out, is about 3 mm off its plane): o = n(n·p); x = (a − n(n·a)) / |a − n(n·a)|,
     /// projected once more (x ← (x − n(n·x)) / |…|), since the first division leaves x·n
     /// off by about 1e-16 / |a − n(n·a)|; y = n × x, normalized; every component + 0, so a
     /// zero is +0 whatever the sign `describe` gave it. A `reversed` sketch is the frame of
     /// −n and −a: o is the same, and x negated, y the same, exactly.
     ///
-    /// Refused if any input isn't finite, if the axis lies along the normal (|a − n(n·a)|
+    /// Refused as invalid if any input isn't finite or the normal has no length to make a
+    /// unit of (zero, or too long or short to square); as `AxisAlongNormal` if the axis
+    /// lies along the normal (|a − n(n·a)|
     /// under [`MIN_AXIS_OFF_NORMAL`]), or if the frame made isn't one [`FaceFrame::check`]
     /// takes (its origin past [`MAX_FRAME_ORIGIN`]).
     pub fn from_normal(
@@ -118,6 +124,14 @@ impl FaceFrame {
                 ))));
             }
         }
+        let length = vec3::norm(n);
+        if !(length > 0.0 && length.is_finite()) {
+            return Err(FaceFrameError::Invalid(frame_invalid(format!(
+                "the face's normal must have a length to make a unit of, got {n:?}, {} long",
+                format_number(length)
+            ))));
+        }
+        let n = n.map(|c| c / length);
         let project = |v: [f64; 3]| {
             let along = vec3::dot(n, v);
             [0, 1, 2].map(|k| v[k] - n[k] * along)
@@ -168,7 +182,7 @@ impl FaceFrame {
         let d = vec3::dot(self.x, self.y);
         if d.abs() > FACE_FRAME_SQUARENESS {
             return Err(frame_invalid(format!(
-                "the face frame's x axis {:?} and y axis {:?} must be perpendicular, to 1e-14: their dot product is {}",
+                "the face frame's x axis {:?} and y axis {:?} must be perpendicular, to 16ε (3.6e-15): their dot product is {}",
                 self.x,
                 self.y,
                 format_number(d)
@@ -203,29 +217,30 @@ impl SketchPlane {
     }
 
     /// Where the sketch's (0, 0) is in model space: the model's origin for an origin plane,
-    /// a face frame's origin for a face's.
+    /// a face frame's origin for a face's, each component + 0, as the faces step's key takes
+    /// it, so a −0 the key reads as +0 never reaches the kernel as −0.
     pub fn origin(self) -> [f64; 3] {
         match self {
             SketchPlane::Xy | SketchPlane::Xz | SketchPlane::Yz => [0.0; 3],
-            SketchPlane::Face(frame) => frame.origin,
+            SketchPlane::Face(frame) => frame.origin.map(|c| c + 0.0),
         }
     }
 
-    /// The direction of the sketch's x in model space.
+    /// The direction of the sketch's x in model space (a face frame's + 0, as its origin).
     pub fn x_axis(self) -> [f64; 3] {
         match self {
             SketchPlane::Xy | SketchPlane::Xz => [1.0, 0.0, 0.0],
             SketchPlane::Yz => [0.0, 1.0, 0.0],
-            SketchPlane::Face(frame) => frame.x,
+            SketchPlane::Face(frame) => frame.x.map(|c| c + 0.0),
         }
     }
 
-    /// The direction of the sketch's y in model space.
+    /// The direction of the sketch's y in model space (a face frame's + 0, as its origin).
     pub fn y_axis(self) -> [f64; 3] {
         match self {
             SketchPlane::Xy => [0.0, 1.0, 0.0],
             SketchPlane::Xz | SketchPlane::Yz => [0.0, 0.0, 1.0],
-            SketchPlane::Face(frame) => frame.y,
+            SketchPlane::Face(frame) => frame.y.map(|c| c + 0.0),
         }
     }
 
@@ -898,7 +913,7 @@ mod tests {
         assert_eq!(tilted().check(), Ok(()));
         let reversed = reversed_top([0.0, 0.0, 10.0]);
         assert_eq!(reversed.check(), Ok(()));
-        // An axis 4ε long or short of 1 (UNIT_SLACK), and x and y 1e-14 off square: within
+        // An axis 4ε long or short of 1 (UNIT_SLACK), and x and y 16ε off square: within
         // the rules.
         for off in [
             FaceFrame {
@@ -1020,7 +1035,7 @@ mod tests {
                 x: [lean, 2e-14, 0.0],
                 y: [0.0, 1.0, 0.0],
             },
-            "the face frame's x axis [1.0, 2e-14, 0.0] and y axis [0.0, 1.0, 0.0] must be perpendicular, to 1e-14: their dot product is 2e-14",
+            "the face frame's x axis [1.0, 2e-14, 0.0] and y axis [0.0, 1.0, 0.0] must be perpendicular, to 16ε (3.6e-15): their dot product is 2e-14",
         );
     }
 

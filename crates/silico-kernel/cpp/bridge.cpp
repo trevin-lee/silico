@@ -309,7 +309,7 @@ FaceOut describe_face(const TopoDS_Face &face, double precision) {
     out.normal = point3(normal.XYZ());
     // The plane's own location, a point on it as OCCT stores it (the face's location
     // applied by the adaptor), not measured: where a sketch on the face is placed from.
-    out.origin = point3(plane.Location().XYZ());
+    out.location = point3(plane.Location().XYZ());
     break;
   }
   case GeomAbs_Cylinder: {

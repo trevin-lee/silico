@@ -157,10 +157,10 @@ fn a_bad_frame_is_refused_before_regions_whatever_they_hold() {
 #[test]
 fn a_frames_squareness_times_a_sketchs_reach_is_within_occts_tolerance() {
     // OCCT builds the faces' plane from the normal and x, and makes its own y, n × x̂. A
-    // frame whose y leans s = 1e-14 towards x: x = +X, y = (s, √(1 − s²), 0) = (s, 1, 0)
+    // frame whose y leans s = 16ε (2⁻⁴⁸ ≈ 3.6e-15) towards x: x = +X, y = (s, √(1 − s²), 0) = (s, 1, 0)
     // in floating point, n = x × y / |x × y| = +Z, OCCT's y = Z × X = +Y. The sketch's
-    // (0, 1e6) is placed at (1e6 · s, 1e6, 0) = (1e-8, 1e6, 0); OCCT's is (0, 1e6, 0):
-    // 1e-8 apart, a tenth of OCCT's 1e-7.
+    // (0, 1e6) is placed at (1e6 · s, 1e6, 0) ≈ (3.6e-9, 1e6, 0); OCCT's is (0, 1e6, 0):
+    // 3.6e-9 apart, the frame's share beside the 1e-7 an arc's end may be off its circle.
     let s = FACE_FRAME_SQUARENESS;
     let frame = FaceFrame {
         y: [s, libm::sqrt(1.0 - s * s), 0.0],
@@ -172,7 +172,8 @@ fn a_frames_squareness_times_a_sketchs_reach_is_within_occts_tolerance() {
     assert_eq!(plane.normal(), [0.0, 0.0, 1.0]);
     let placed = plane.place([0.0, MAX_LENGTH]);
     let gap = off(placed, [0.0, MAX_LENGTH, 0.0]);
-    assert!(gap <= 1.000_000_1e-8, "{gap}");
+    assert_eq!(FACE_FRAME_SQUARENESS, libm::ldexp(1.0, -48));
+    assert!(gap > 3.5e-9 && gap < 3.6e-9, "{gap}");
     const { assert!(FACE_FRAME_SQUARENESS * MAX_LENGTH * 10.0 <= LENGTH_TOLERANCE) };
     // Twice as far off square is refused.
     refused(
@@ -180,7 +181,7 @@ fn a_frames_squareness_times_a_sketchs_reach_is_within_occts_tolerance() {
             y: [2.0 * s, 1.0, 0.0],
             ..xy()
         },
-        "must be perpendicular, to 1e-14",
+        "must be perpendicular, to 16ε (3.6e-15)",
     );
 }
 
@@ -332,6 +333,92 @@ fn from_normal_refuses_inputs_that_arent_finite_and_an_origin_past_its_reach() {
         panic!("taken")
     };
     assert!(e.message.contains("origin must be within"), "{}", e.message);
+}
+
+#[test]
+fn a_normal_a_hair_off_a_unit_gives_the_frame_of_the_unit_normal() {
+    // `describe` takes a normal 1e-6 off a unit. n = (1, 2, 2)/3 on a plane 1e6 out along
+    // it (p = 1e6 · n), and the same n made 1 + 1e-7 long: the same frame, to 4ε (the
+    // origin to 4ε of its 1e6), its origin on the plane. Taken as it came, the long n would
+    // put o = n(n·p) (1 + 1e-7)² · 1e6 out, 0.2 mm off the plane.
+    let n = [1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0];
+    let p = n.map(|c| c * 1e6);
+    let long = n.map(|c| c * (1.0 + 1e-7));
+    for a in [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0]] {
+        let unit = framed(p, n, a);
+        let near = framed(p, long, a);
+        assert!(off(near.x, unit.x) <= 4.0 * f64::EPSILON, "{:?}", near.x);
+        assert!(off(near.y, unit.y) <= 4.0 * f64::EPSILON, "{:?}", near.y);
+        assert!(
+            off(near.origin, unit.origin) <= 4.0 * f64::EPSILON * 1e6,
+            "{:?} vs {:?}",
+            near.origin,
+            unit.origin
+        );
+        // On the plane: n · o is the plane's offset, 1e6, to a few roundings of it.
+        assert!(
+            (dot(n, near.origin) - 1e6).abs() <= 1e-8,
+            "{:?}",
+            near.origin
+        );
+    }
+}
+
+#[test]
+fn a_normal_of_no_length_or_none_to_measure_is_refused_as_invalid_naming_the_normal() {
+    // Zero, not a number, or too long to square (|n|² overflows): refused as invalid,
+    // naming the face's normal, never as an axis along it.
+    for n in [
+        [0.0, 0.0, 0.0],
+        [-0.0, 0.0, -0.0],
+        [f64::NAN, 0.0, 1.0],
+        [0.0, f64::INFINITY, 0.0],
+        [1e200, 0.0, 0.0],
+        [5e-324, 0.0, 0.0],
+    ] {
+        match FaceFrame::from_normal([0.0; 3], n, [1.0, 0.0, 0.0]) {
+            Err(FaceFrameError::Invalid(e)) => {
+                assert_eq!(e.parameter, "plane", "{n:?}");
+                assert!(
+                    e.message.contains("the face's normal"),
+                    "{n:?}: {}",
+                    e.message
+                );
+            }
+            other => panic!("{n:?}: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_box_corners_diagonal_origin_needs_the_bounds_rounding() {
+    // The far corner of a box a kilometre out on every axis, on a face whose normal is
+    // the diagonal: o = n(n·p) is the corner itself, √3 · 1e6 out, but worked out it comes
+    // to 1732050.8075688777, past the bare √3 · 1e6 (1732050.8075688772), so the bound
+    // carries the rounding (MAX_FRAME_ORIGIN).
+    let n = unit([1.0, 1.0, 1.0]);
+    for p in [[1e6; 3], [-1e6; 3]] {
+        let frame = framed(p, n, [1.0, 0.0, 0.0]);
+        let reach = libm::sqrt(dot(frame.origin, frame.origin));
+        assert!(reach > 1.732_050_807_568_877_2e6, "{p:?}: {reach}");
+        assert!(reach <= MAX_FRAME_ORIGIN, "{p:?}: {reach}");
+    }
+}
+
+#[test]
+fn a_frames_axes_and_origin_reach_the_kernel_as_plus_zeros() {
+    // A frame of −0s keys as the one of +0s (the faces step's line takes each + 0), so
+    // what's sent must be the same: its origin and axes each + 0.
+    let frame = FaceFrame {
+        origin: [-0.0, -0.0, 7.0],
+        x: [-1.0, -0.0, -0.0],
+        y: [-0.0, 1.0, -0.0],
+    };
+    let plane = SketchPlane::Face(frame);
+    let bits = |v: [f64; 3]| v.map(f64::to_bits);
+    assert_eq!(bits(plane.origin()), bits([0.0, 0.0, 7.0]));
+    assert_eq!(bits(plane.x_axis()), bits([-1.0, 0.0, 0.0]));
+    assert_eq!(bits(plane.y_axis()), bits([0.0, 1.0, 0.0]));
 }
 
 /// Angles biased to the edges: none, a hair, the quarter turns and their neighbours, 45°,

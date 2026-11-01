@@ -94,7 +94,7 @@ fn planes(d: &Description) -> Vec<([f64; 3], [f64; 3], [f64; 3])> {
 }
 
 /// Axis-aligned frames at the edge of `FaceFrame::check`'s tolerances: x and y each 4ε
-/// (`UNIT_SLACK`) long or short of a unit, and y leaning 1e-14 (`FACE_FRAME_SQUARENESS`)
+/// (`UNIT_SLACK`) long or short of a unit, and y leaning 16ε (`FACE_FRAME_SQUARENESS`)
 /// towards x or away, from (0, 0, 0) and from (0, 0, 5).
 fn frames_at_the_edge() -> Vec<FaceFrame> {
     let slack = 4.0 * f64::EPSILON;
@@ -108,7 +108,7 @@ fn frames_at_the_edge() -> Vec<FaceFrame> {
         up([1.0 + slack, 0.0, 0.0], [0.0, 1.0, 0.0], 0.0),
         up([1.0 - slack, 0.0, 0.0], [0.0, 1.0 + slack, 0.0], 5.0),
         up([1.0, 0.0, 0.0], [lean, 1.0, 0.0], 0.0),
-        // Both at once: y leaning a hair under 1e-14, as x's 4ε stretch multiplies it.
+        // Both at once: y leaning a hair under 16ε, as x's 4ε stretch multiplies it.
         up(
             [1.0 + slack, 0.0, 0.0],
             [-0.99 * lean, 1.0 - slack, 0.0],
@@ -125,7 +125,7 @@ fn a_frame_at_the_edge_of_its_tolerances_with_a_kilometre_sketch_makes_valid_fac
     // face's Geom_Plane from the normal, so the far corners were 1e6 · 0.9e-12 = 9e-7 mm off
     // the plane, nine times OCCT's 1e-7: the request the protocol accepted came back
     // ResultInvalid. Now a frame has no normal of its own (it's x × y), and its axes are
-    // unit to 4ε and square to 1e-14: a kilometre square is made, valid, on every frame at
+    // unit to 4ε and square to 16ε: a kilometre square is made, valid, on every frame at
     // the edge of those.
     for frame in frames_at_the_edge() {
         assert_eq!(frame.check(), Ok(()), "{frame:?}");
@@ -166,7 +166,7 @@ fn a_kilometre_half_disc_on_a_frame_at_the_edge_of_its_tolerances_makes_valid_fa
     // the frame's x and then its y. OCCT builds the arc on its own frame, x normalized and
     // y = n × x, and its ends where that frame puts them; the vertices are where the
     // frame's own x and y put them. At the edge of the tolerances the two are within
-    // 9.99e5 · 4ε ≈ 9e-10 (a stretched axis) and 9.99e5 · 1e-14 ≈ 1e-8 (a lean): inside
+    // 9.99e5 · 4ε ≈ 9e-10 (a stretched axis) and 9.99e5 · 16ε ≈ 3.5e-9 (a lean): inside
     // OCCT's 1e-7, so valid faces of area π r² / 2.
     let r = 9.99e5;
     for frame in frames_at_the_edge() {
@@ -176,6 +176,22 @@ fn a_kilometre_half_disc_on_a_frame_at_the_edge_of_its_tolerances_makes_valid_fa
             let s = summarize(&built.shape).unwrap();
             assert!(s.valid, "{frame:?} from {from}");
             assert_close("a half disc's area", s.area, PI * r * r / 2.0, 1e-9);
+            // Its box, the arc's far side included, so it bulges the way it says: from 0,
+            // u −r..r and v 0..r; from −π/2, u 0..r and v −r..r; at the frame's height.
+            // (Every frame here has x along +X and y along +Y, to 4ε and 16ε.)
+            let z = frame.origin[2];
+            let want = if from == 0.0 {
+                [[-r, 0.0, z], [r, r, z]]
+            } else {
+                [[0.0, -r, z], [r, r, z]]
+            };
+            let got = s.bounds.unwrap();
+            for c in 0..2 {
+                assert!(
+                    point_off(got[c], want[c]) <= 1e-6,
+                    "{frame:?} from {from}: box {got:?}, want {want:?}"
+                );
+            }
         }
     }
     // Within the old rule (each axis unit and the pair square to 1e-12) but past the new:

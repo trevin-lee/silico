@@ -183,13 +183,16 @@ fn regions(plane: SketchPlane) -> FaceRegions {
 
 #[test]
 fn faces_have_the_real_kernels_history_area_and_box() {
-    // On every plane whose axes are model space's, a face frame's (the reversed top) among
-    // them, where the fake is exact: on a tilted frame the kernel's volume and centre of
-    // faces are 0 only to rounding (silico-core's adversarial_fake_face_frame checks the
-    // fake's measures there against their closed forms).
+    // On every plane, both face frames among them. Where the plane's axes are model space's
+    // the fake is exact: the same volume (0), centre, and box to 1e-9. On the tilted frame
+    // the kernel's faces enclose 0 only to rounding (about 1e-16), with a centre of that
+    // rounding's, and its box of a tilted circle or arc is tight to about 1e-6, so there the
+    // volume is 0 to 1e-12 of the area, the centre isn't compared, and the box is to 1e-6;
+    // the history, counts, and area are the kernel's on every plane.
     let real = pool();
     let fake = FakeKernel::new(2).unwrap();
-    for plane in planes::square() {
+    for plane in planes::every() {
+        let square = planes::square().contains(&plane);
         let request = || KernelRequest::make_faces(&regions(plane)).unwrap();
         let real_faces = done(real.submit(real.generation(), request()));
         let fake_faces = done(fake.submit(fake.generation(), request()));
@@ -218,8 +221,17 @@ fn faces_have_the_real_kernels_history_area_and_box() {
                 real_summary.vertices
             )
         );
-        assert_eq!(fake_summary.volume, real_summary.volume);
-        assert_eq!(fake_summary.center, real_summary.center);
+        if square {
+            assert_eq!(fake_summary.volume, real_summary.volume, "{plane:?}");
+            assert_eq!(fake_summary.center, real_summary.center, "{plane:?}");
+        } else {
+            assert_eq!(fake_summary.volume, 0.0);
+            assert!(
+                real_summary.volume.abs() <= 1e-12 * real_summary.area,
+                "{plane:?}: {}",
+                real_summary.volume
+            );
+        }
         assert!(
             (fake_summary.area - real_summary.area).abs() < 1e-9 * real_summary.area,
             "{plane:?}: {} and {}",
@@ -227,9 +239,10 @@ fn faces_have_the_real_kernels_history_area_and_box() {
             real_summary.area
         );
         let (fake_box, real_box) = (fake_summary.bounds.unwrap(), real_summary.bounds.unwrap());
+        let tolerance = if square { 1e-9 } else { 1e-6 };
         for (f, r) in fake_box.iter().flatten().zip(real_box.iter().flatten()) {
             assert!(
-                (f - r).abs() < 1e-9,
+                (f - r).abs() < tolerance,
                 "{plane:?}: {fake_box:?}, {real_box:?}"
             );
         }

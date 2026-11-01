@@ -273,15 +273,16 @@ mod ffi {
     }
 
     /// A face as `describe` finds it (`silico_protocol::FaceDescription`): its surface, area,
-    /// and centre of area; a plane's outward `normal` and its own location (`origin`); a
-    /// cylinder's, cone's, sphere's, or torus's axis (`origin`, `direction`); a cylinder's,
-    /// cone's, or sphere's `radius`, or a torus's major `radius` and minor `radius2`; and a
-    /// cone's half-angle, `angle`. Unused fields are 0.
+    /// and centre of area; a plane's outward `normal` and its own `location`; a cylinder's,
+    /// cone's, sphere's, or torus's axis (`origin`, `direction`); a cylinder's, cone's, or
+    /// sphere's `radius`, or a torus's major `radius` and minor `radius2`; and a cone's
+    /// half-angle, `angle`. Unused fields are 0.
     struct FaceOut {
         surface: SurfaceType,
         area: f64,
         centroid: Point3,
         normal: Point3,
+        location: Point3,
         origin: Point3,
         direction: Point3,
         radius: f64,
@@ -1001,7 +1002,7 @@ pub fn describe(
             let surface = match f.surface {
                 ffi::SurfaceType::Plane => Surface::Plane {
                     normal: point(&f.normal),
-                    location: point(&f.origin),
+                    location: point(&f.location),
                 },
                 ffi::SurfaceType::Cylinder => Surface::Cylinder {
                     axis,
@@ -1601,8 +1602,8 @@ pub fn make_faces(regions: &FaceRegions) -> Result<Built, KernelError> {
     // axes, its normal the plane's one normal, x × y normalized (`SketchPlane::normal`),
     // which every sweep of the faces reads too: an origin plane's exactly its axis. OCCT
     // takes x as it comes and makes its own y, n × x; a face frame's x and y are square to
-    // 1e-14 (`FaceFrame::check`), so a point placed a kilometre along the frame's y is within
-    // 1e-8 of OCCT's, inside its tolerance.
+    // 16ε (`FaceFrame::check`), so a point placed a kilometre along the frame's y is within
+    // about 3.6e-9 of OCCT's, inside its tolerance.
     let normal = plane.normal();
     let reversed = normal.map(|c| -c);
     let mut points = Vec::new();
