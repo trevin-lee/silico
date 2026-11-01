@@ -181,24 +181,11 @@ fn a_sketch_on_a_slanted_face_whose_frame_origin_is_past_a_kilometre_but_whose_p
         near(f.x[k], x[k], 1e-12, "the frame's x");
         near(normal_of(&f)[k], n[k], 1e-12, "the frame's normal");
     }
-    // Built, 8 mm³; or, if Silico decides a frame's origin must be within reach too, a
-    // refusal of the sketch that says so as the document has it, never a faces request
-    // refused on `plane` as a bug in the profile.
-    match model.outcome(&id("p0000002")) {
-        Some(FeatureOutcome::Built { built, .. }) => {
-            let s = built.summary().unwrap();
-            near(s.volume, 8.0, 1e-6, "the pad's volume");
-            assert!(s.valid);
-        }
-        other => {
-            let errors: Vec<_> = model.errors().collect();
-            assert!(
-                errors.iter().any(|e| e.feature() == Some("s0000002")
-                    && !e.suggestion().unwrap_or("").contains("bug")),
-                "p0000002: {other:?}"
-            );
-        }
-    }
+    // Built, 8 mm³: the frame's origin is within the frame's own reach (√3 · 1e6, its
+    // norm 1.045e6), and every point placed within a kilometre on each axis.
+    let s = built_summary(&model, "p0000002");
+    near(s.volume, 8.0, 1e-6, "the pad's volume");
+    assert!(s.valid);
 }
 
 #[test]
@@ -227,17 +214,11 @@ fn two_alike_sketches_on_one_slanted_face_refused_alike_are_each_refused_in_thei
         features.push(pad(padded, None, sketch, &one_side("1")));
     }
     let model = publish(&engine(), &features);
+    // Each built, its own body, 8 mm³: one faces step between them, neither refused.
     for padded in ["p0000002", "p0000003"] {
-        match model.outcome(&id(padded)) {
-            Some(FeatureOutcome::Built { .. }) => {}
-            Some(FeatureOutcome::Failed(e)) => {
-                assert_eq!(e.feature(), Some(padded), "{e:?}");
-            }
-            Some(FeatureOutcome::Blocked { on }) => {
-                assert_ne!(on.as_str(), "p0000002", "{padded} blocked on the other pad");
-            }
-            other => panic!("{padded}: {other:?}"),
-        }
+        let s = built_summary(&model, padded);
+        near(s.volume, 8.0, 1e-6, padded);
+        assert!(s.valid, "{padded}");
     }
 }
 
@@ -522,11 +503,10 @@ fn a_sketch_on_a_pockets_floor_is_placed_on_the_floor_and_pads_up_from_it() {
 }
 
 #[test]
-fn a_sketch_on_a_boxs_top_after_a_fillet_of_a_vertical_edge_is_found_in_the_fillet_or_broken_with_candidates()
- {
+fn a_sketch_on_a_boxs_top_after_a_fillet_of_a_vertical_edge_is_found_in_the_fillet() {
     // The fillet rounds a vertical edge, which trims the top face's outline but not its
-    // plane. The top is either found in the fillet's solid (z = 10) or reference_broken on
-    // plane.face with candidates: never blocked, a bug, or re-pointed to another plane.
+    // plane: the top, modified one from one, keeps its name, and is found in the fillet's
+    // solid (z = 10), the pad onto it the filleted box and 24.
     let cube = box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0);
     let first = publish(&engine(), std::slice::from_ref(&cube));
     let edge = edge_between(&first, "b0000001", [10.0, 10.0, 0.0], [10.0, 10.0, 10.0]);
@@ -546,22 +526,320 @@ fn a_sketch_on_a_boxs_top_after_a_fillet_of_a_vertical_edge_is_found_in_the_fill
         pad("p0000001", Some("f0000001"), "s0000001", &one_side("3")),
     ];
     let model = publish(&engine(), &features);
-    match model.outcome(&id("s0000001")) {
-        Some(FeatureOutcome::Sketch(_)) => {
-            assert_eq!(frame_of(&model, "s0000001").origin, [0.0, 0.0, 10.0]);
-            let filleted = built_summary(&model, "f0000001").volume;
+    let outcome = model.outcome(&id("s0000001"));
+    assert!(
+        matches!(outcome, Some(FeatureOutcome::Sketch(_))),
+        "{outcome:?}"
+    );
+    assert_eq!(frame_of(&model, "s0000001").origin, [0.0, 0.0, 10.0]);
+    let filleted = built_summary(&model, "f0000001").volume;
+    near(
+        built_summary(&model, "p0000001").volume,
+        filleted + 24.0,
+        1e-6,
+        "pad",
+    );
+}
+
+#[test]
+fn a_sketch_on_a_boxs_top_after_a_fuse_with_another_box_is_found_in_the_fuse_and_pads_onto_it() {
+    // Found by the tests review: on the fake, every face found is refused as not planar, so
+    // nothing showed the face found through the solid that consumed its maker. A 10 mm box
+    // b1, a 1 mm box b2 at (10, 0, 0) against its +X side (a fuse of boxes apart makes two
+    // solids, which Silico refuses until bodies exist), and their fuse; then s1 on b1's top,
+    // `+x`, a 4 × 2 rectangle from (1, 1), padded 3 onto the fuse. The top, untouched by
+    // the fuse, is found in its solid (b1 is consumed): the frame ((0, 0, 10), +X, +Y, +Z),
+    // by hand, and the pad 1000 + 1 + 24 = 1025, from (0, 0, 0) to (11, 10, 13).
+    let fuse = r#"{"id": "f0000001", "type": "fuse", "v": 1, "name": "Both", "base": "b0000001", "tool": "b0000002"}"#;
+    let features = vec![
+        box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0),
+        box_at("b0000002", [10.0, 0.0, 0.0], 1.0, 1.0, 1.0),
+        fuse.to_owned(),
+        on_face(
+            "s0000001",
+            &face("b0000001.box.Face6", "+x", false),
+            [1.0, 1.0],
+            4.0,
+            2.0,
+        ),
+        pad("p0000001", Some("f0000001"), "s0000001", &one_side("3")),
+    ];
+    let model = publish(&engine(), &features);
+    let f = frame_of(&model, "s0000001");
+    assert_eq!(
+        (f.origin, f.x, f.y, normal_of(&f)),
+        (
+            [0.0, 0.0, 10.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0]
+        )
+    );
+    let s = built_summary(&model, "p0000001");
+    near(s.volume, 1025.0, 1e-9, "the pad onto the fuse");
+    let [low, high] = s.bounds.unwrap();
+    for k in 0..3 {
+        near(low[k], [0.0, 0.0, 0.0][k], 1e-7, "the low corner");
+        near(high[k], [11.0, 10.0, 13.0][k], 1e-7, "the high corner");
+    }
+}
+
+#[test]
+fn a_sketch_on_a_boxs_top_after_a_fillet_of_a_bottom_edge_is_found_in_the_fillet() {
+    // The fillet rounds the box's bottom front edge (y = 0, z = 0), which no edge of the
+    // top touches: the top is kept, its name with it, and found in the fillet's solid. The
+    // frame ((0, 0, 10), +X, +Y); the pad of a 4 × 2 rectangle, 3 high, onto the fillet:
+    // the filleted box, 1000 − (1 − π/4) · 10 = 997.85, and 24, its top at 13.
+    let cube = box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0);
+    let first = publish(&engine(), std::slice::from_ref(&cube));
+    let edge = edge_between(&first, "b0000001", [0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
+    let fillet = format!(
+        r#"{{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "b0000001", "edges": [{edge:?}], "radius": 1}}"#
+    );
+    let features = vec![
+        cube,
+        fillet,
+        on_face(
+            "s0000001",
+            &face("b0000001.box.Face6", "+x", false),
+            [1.0, 1.0],
+            4.0,
+            2.0,
+        ),
+        pad("p0000001", Some("f0000001"), "s0000001", &one_side("3")),
+    ];
+    let model = publish(&engine(), &features);
+    let f = frame_of(&model, "s0000001");
+    assert_eq!(
+        (f.origin, f.x, f.y),
+        ([0.0, 0.0, 10.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    );
+    let filleted = 1000.0 - (1.0 - std::f64::consts::FRAC_PI_4) * 10.0;
+    near(
+        built_summary(&model, "f0000001").volume,
+        filleted,
+        1e-6,
+        "the fillet",
+    );
+    let s = built_summary(&model, "p0000001");
+    near(s.volume, filleted + 24.0, 1e-6, "the pad onto the fillet");
+    near(s.bounds.unwrap()[1][2], 13.0, 1e-7, "the pad's top");
+}
+
+#[test]
+fn a_sketch_on_a_boxs_top_after_a_pad_under_it_is_found_in_the_pad() {
+    // A pad consumes the box: a 2 × 2 square from (2, 2) on xy, padded 1 down (reversed)
+    // onto the box, which leaves its top as it was. s1 on the box's top is found in the
+    // pad's solid: the frame ((0, 0, 10), +X, +Y); its pad, 3 high, onto the first: 1000 +
+    // 4 + 24 = 1028, from (0, 0, −1) to (10, 10, 13).
+    let under = r#"{"type": "one_side", "length": 1, "reversed": true}"#;
+    let features = vec![
+        box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0),
+        rectangle("s0000009", "xy", [2.0, 2.0], 2.0, 2.0),
+        pad("p0000009", Some("b0000001"), "s0000009", under),
+        on_face(
+            "s0000001",
+            &face("b0000001.box.Face6", "+x", false),
+            [1.0, 1.0],
+            4.0,
+            2.0,
+        ),
+        pad("p0000001", Some("p0000009"), "s0000001", &one_side("3")),
+    ];
+    let model = publish(&engine(), &features);
+    near(
+        built_summary(&model, "p0000009").volume,
+        1004.0,
+        1e-9,
+        "the pad under the box",
+    );
+    let f = frame_of(&model, "s0000001");
+    assert_eq!(
+        (f.origin, f.x, f.y),
+        ([0.0, 0.0, 10.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    );
+    let s = built_summary(&model, "p0000001");
+    near(s.volume, 1028.0, 1e-9, "the pad on top");
+    let [low, high] = s.bounds.unwrap();
+    for k in 0..3 {
+        near(low[k], [0.0, 0.0, -1.0][k], 1e-7, "the low corner");
+        near(high[k], [10.0, 10.0, 13.0][k], 1e-7, "the high corner");
+    }
+}
+
+#[test]
+fn a_sketch_on_a_top_a_slot_split_in_two_is_broken_with_both_pieces_as_candidates() {
+    // A slot across the whole top (a box 2 wide, from y = −1 to 11, z = 8 to 13, cut from
+    // the cube) splits Face6 in two, each a piece ranked by OCCT's order
+    // (`c0000001.cut.Face(M1/2 b0000001.box.Face6)`, `M2/2`): the face as it was is gone
+    // from the cut's map. s1 on it is reference_broken on plane.face, never re-pointed to a
+    // piece, the two pieces its candidates (each shares its one source).
+    let cut = r#"{"id": "c0000001", "type": "cut", "v": 1, "name": "Slot", "base": "b0000001", "tool": "t0000001"}"#;
+    let features = vec![
+        box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0),
+        box_at("t0000001", [4.0, -1.0, 8.0], 2.0, 12.0, 5.0),
+        cut.to_owned(),
+        on_face(
+            "s0000001",
+            &face("b0000001.box.Face6", "+x", false),
+            [1.0, 1.0],
+            2.0,
+            2.0,
+        ),
+    ];
+    let model = publish(&engine(), &features);
+    near(
+        built_summary(&model, "c0000001").volume,
+        1000.0 - 2.0 * 10.0 * 2.0,
+        1e-9,
+        "the slotted cube",
+    );
+    let Some(FeatureOutcome::Broken { errors, total }) = model.outcome(&id("s0000001")) else {
+        panic!("{:?}", model.outcome(&id("s0000001")));
+    };
+    assert_eq!(*total, 1);
+    let e = &errors[0];
+    assert_eq!(e.code(), ErrorCode::ReferenceBroken);
+    assert_eq!(e.parameter(), Some("plane.face"));
+    assert_eq!(
+        e.message(),
+        "plane.face, \"b0000001.box.Face6\", names no face of the solids live at the sketch's place: it isn't one of the faces they're made from, or an edit before this sketch removed or remade it"
+    );
+    assert_eq!(
+        e.candidates(),
+        [
+            "c0000001.cut.Face(M1/2 b0000001.box.Face6)",
+            "c0000001.cut.Face(M2/2 b0000001.box.Face6)",
+        ]
+    );
+    assert!(model.frame(&id("s0000001")).is_none());
+}
+
+#[test]
+fn a_stored_token_that_isnt_the_default_turns_the_sketch_on_the_boxs_top() {
+    // Face6 (n = +Z) stored `+y`, where its default is `+x`: x = +Y, y = n × x = (−1, 0,
+    // 0), by hand. A 4 × 2 rectangle from (1, −3), padded 3 as a body of its own: u from 1
+    // to 5 along +Y, v from −3 to −1 along −X, so the pad spans x 1..3, y 1..5, z 10..13
+    // (a resolver that took the default, x = +X, would put it at x 1..5, y −3..−1).
+    let features = vec![
+        box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0),
+        on_face(
+            "s0000001",
+            &face("b0000001.box.Face6", "+y", false),
+            [1.0, -3.0],
+            4.0,
+            2.0,
+        ),
+        pad("p0000001", None, "s0000001", &one_side("3")),
+    ];
+    let model = publish(&engine(), &features);
+    let f = frame_of(&model, "s0000001");
+    assert_eq!(
+        (f.origin, f.x, f.y, normal_of(&f)),
+        (
+            [0.0, 0.0, 10.0],
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0]
+        )
+    );
+    let s = built_summary(&model, "p0000001");
+    near(s.volume, 24.0, 1e-9, "the pad");
+    let [low, high] = s.bounds.unwrap();
+    for k in 0..3 {
+        near(low[k], [1.0, 1.0, 10.0][k], 1e-7, "the pad's low corner");
+        near(high[k], [3.0, 5.0, 13.0][k], 1e-7, "the pad's high corner");
+    }
+}
+
+#[test]
+fn a_face_tilted_past_45_degrees_keeps_its_stored_token_and_its_y_turns_with_it() {
+    // docs/ports/attacher.md, *A tilted face's continuous turn*: n(θ) = (cos θ, 0, sin θ),
+    // the token `+y`, chosen below 45° (X wins), kept past it (where Z would win and the
+    // default be `+x`). The face here is a prism's slanted side, a triangle (0, 0), (10, 0),
+    // (0, b) on xz padded along y (the document's chamfers take one distance, so its two
+    // distances can't tilt a bevel): its hypotenuse's outward normal is (b, 0, 10)/√(100 +
+    // b²), so tan θ = 10/b. b = 10.36 gives θ = 43.99°, b = 9.66 gives 46.01°. Each way x =
+    // +Y, and y = n × x = (−sin θ, 0, cos θ) = (−10, 0, b)/√(100 + b²), by hand: Silico's y
+    // turns smoothly with the face, where FreeCAD's turns 90° about it between them.
+    for b in [10.36, 9.66] {
+        let length = (100.0f64 + b * b).sqrt();
+        let n = [b / length, 0.0, 10.0 / length];
+        let prism = vec![
+            polygon("s0000009", "xz", &[[0.0, 0.0], [10.0, 0.0], [0.0, b]]),
+            pad("p0000009", None, "s0000009", &one_side("10")),
+        ];
+        let first = publish(&engine(), &prism);
+        let side = planar_face(&first, "p0000009", n, None);
+        let mut features = prism.clone();
+        features.push(on_face(
+            "s0000001",
+            &face(&side, "+y", false),
+            [1.0, 1.0],
+            1.0,
+            1.0,
+        ));
+        let model = publish(&engine(), &features);
+        let f = frame_of(&model, "s0000001");
+        let theta = libm::atan(10.0 / b).to_degrees();
+        let y = [-10.0 / length, 0.0, b / length];
+        for k in 0..3 {
             near(
-                built_summary(&model, "p0000001").volume,
-                filleted + 24.0,
-                1e-6,
-                "pad",
+                f.x[k],
+                [0.0, 1.0, 0.0][k],
+                1e-12,
+                &format!("x at {theta:.2}°"),
             );
+            near(f.y[k], y[k], 1e-12, &format!("y at {theta:.2}°"));
+            near(normal_of(&f)[k], n[k], 1e-12, &format!("n at {theta:.2}°"));
         }
-        Some(FeatureOutcome::Broken { errors, .. }) => {
-            assert_eq!(errors[0].code(), ErrorCode::ReferenceBroken);
-            assert_eq!(errors[0].parameter(), Some("plane.face"));
-            assert!(!errors[0].candidates().is_empty(), "{errors:?}");
-        }
-        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn fifty_sketches_on_a_boxs_top_each_padded_onto_the_last_build_in_fifty_rounds() {
+    // The robustness review's chain: a box B, then K = 50 times a sketch S_k on B's top and
+    // a pad P_k of it onto P_{k−1} (P_1 onto B). Each pad's fuse leaves B's top one face,
+    // its name kept, so S_k is found in P_{k−1}: each frame ((0, 0, 10), +X, +Y). Each S_k a
+    // 0.5 × 0.5 square of its own on the top, padded 1: 1000 + 50 · 0.25 = 1012.5, from (0,
+    // 0, 0) to (10, 10, 11).
+    let mut features = vec![box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0)];
+    for k in 0..50 {
+        let (column, row) = ((k % 10) as f64, (k / 10) as f64);
+        let sketch = format!("s{:07}", k + 1);
+        let base = if k == 0 {
+            "b0000001".to_owned()
+        } else {
+            format!("p{k:07}")
+        };
+        features.push(on_face(
+            &sketch,
+            &face("b0000001.box.Face6", "+x", false),
+            [0.5 + 0.9 * column, 0.5 + 1.8 * row],
+            0.5,
+            0.5,
+        ));
+        features.push(pad(
+            &format!("p{:07}", k + 1),
+            Some(&base),
+            &sketch,
+            &one_side("1"),
+        ));
+    }
+    let model = publish(&engine(), &features);
+    for k in 1..=50 {
+        let f = frame_of(&model, &format!("s{k:07}"));
+        assert_eq!(
+            (f.origin, f.x, f.y),
+            ([0.0, 0.0, 10.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+            "s{k:07}"
+        );
+    }
+    let s = built_summary(&model, "p0000050");
+    near(s.volume, 1012.5, 1e-9, "the last pad");
+    let [low, high] = s.bounds.unwrap();
+    for k in 0..3 {
+        near(low[k], 0.0, 1e-7, "the low corner");
+        near(high[k], [10.0, 10.0, 11.0][k], 1e-7, "the high corner");
     }
 }
