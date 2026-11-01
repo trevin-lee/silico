@@ -6529,10 +6529,17 @@ fn create_sketch(h: &mut AppHarness, plane: &str) {
     });
 }
 
-/// The sketch bar's Finish Sketch (`true`) or Cancel clicked, and sketch mode closed.
+/// The sketch bar's Finish Sketch (`true`) or Cancel clicked, and sketch mode closed: once
+/// the sketch is read and the bar laid out with its state (it's centred, so it moves as
+/// that appears).
 fn leave_sketch(h: &mut AppHarness, finish: bool) {
     let word = if finish { "Finish Sketch" } else { "Cancel" };
-    h.get_by_role_and_label(Role::Toolbar, "SKETCH")
+    step_until(h, "the sketch read", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.read.is_some())
+    });
+    step(h);
+    step(h);
+    h.get_by_role_and_label(Role::Toolbar, "Sketch")
         .get_by_label(word)
         .click();
     step_until(h, "sketch mode closed", |h| sketch_mode(h).is_none());
@@ -6581,12 +6588,23 @@ fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_i
         fields_of(&text_of(&f, &h), "Sketch1"),
         Some(empty_sketch("Sketch1", r#""xy""#))
     );
-    // The Sketch tab's row in the toolbar's place, the palette's status the empty
-    // sketch's, the status bar's too; Undo off while it's open, as in a dialog.
-    assert!(h.query_by_role_and_label(Role::Toolbar, "CREATE").is_none());
+    // The sketch bar in the canvas, naming it and its plane; the palette's status the
+    // empty sketch's; the status bar what's edited; Undo off while it's open, as in a
+    // dialog, and the dialogs too.
     step_until(&mut h, "its status", |h| {
-        anywhere(h, "Status: Fully Defined") && anywhere(h, "Editing Sketch1")
+        let palette = h.query_by_role_and_label(Role::Group, "Sketch Palette");
+        palette.is_some_and(|p| p.query_by_label("Empty").is_some())
+            && anywhere(h, "Editing Sketch1")
+            && h.get_by_role_and_label(Role::Toolbar, "Sketch")
+                .query_by_label("on XY")
+                .is_some()
     });
+    assert!(
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Box")
+            .accesskit_node()
+            .is_disabled()
+    );
     assert!(
         h.get_by_role_and_label(Role::Button, "Undo")
             .accesskit_node()
@@ -6594,7 +6612,7 @@ fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_i
     );
     leave_sketch(&mut h, true);
     assert!(fields_of(&text_of(&f, &h), "Sketch1").is_some());
-    assert!(h.query_by_role_and_label(Role::Toolbar, "CREATE").is_some());
+    assert!(h.query_by_role_and_label(Role::Toolbar, "Sketch").is_none());
     // One undo takes the whole sketch back.
     h.get_by_role_and_label(Role::Button, "Undo").click();
     step(&mut h);
@@ -6830,21 +6848,8 @@ const FOUR_SKETCHES: &str = r#"{
 }
 "#;
 
-/// The texts of the browser's Sketches group, in order: each row's eye, prefix, and name.
-fn sketches_group(h: &AppHarness) -> Vec<String> {
-    h.get_by_role_and_label(Role::Pane, "Browser")
-        .get_by_role_and_label(Role::Group, "Sketches")
-        .query_all(egui_kittest::kittest::by().recursive(true))
-        .filter_map(|node| {
-            let node = node.accesskit_node();
-            node.label().or_else(|| node.value())
-        })
-        .filter(|text| !text.is_empty())
-        .collect()
-}
-
 #[test]
-fn the_browser_prefixes_each_sketch_by_its_state_as_solidworks_does() {
+fn each_sketch_is_read_for_its_browser_prefix_by_its_state_as_solidworks_prefixes_it() {
     use silico_protocol::{SolveStatus, Solved};
     let f = fixture();
     // The values each sends: the origin and the axes' ends (6), each point's two, and the
@@ -6870,19 +6875,17 @@ fn the_browser_prefixes_each_sketch_by_its_state_as_solidworks_does() {
         })
     });
     let (mut h, _) = f.opened("four.silico", FOUR_SKETCHES);
+    // What the browser's rows are prefixed by (drawn by the browser's port).
+    let prefixes = |h: &AppHarness| {
+        ["s0000001", "s0000002", "s0000003", "s0000004"]
+            .map(|id| h.state().tabs()[0].prefixes.prefix(&sketch_id(id)))
+    };
     step_until(&mut h, "the prefixes", |h| {
-        let texts = sketches_group(h);
-        let before = |name: &str| {
-            texts
-                .iter()
-                .position(|text| text == name)
-                .and_then(|at| at.checked_sub(1))
-                .map(|at| texts[at].clone())
-        };
-        before("Loose").as_deref() == Some("(–)")
-            && before("Tight").as_deref() == Some("(+)")
-            && before("Stuck").as_deref() == Some("(?)")
-            && before("Fixed").as_deref() == Some("Hide Fixed")
+        h.state().tabs()[0]
+            .prefixes
+            .state(&sketch_id("s0000004"))
+            .is_some()
+            && prefixes(h) == [Some("(–)"), Some("(+)"), Some("(?)"), None]
     });
     // Each sketch read once for the model, however many frames pass.
     let reads = h.state().tabs()[0].prefixes.reads;
@@ -6938,18 +6941,26 @@ fn a_face_sketch_whose_face_broke_opens_says_its_plane_problem_and_draws_flat() 
     );
     let flat = silico_app::sketch::draw::Flat::fit(rect, &read);
     let project = |at| flat.project(at);
+    let view = silico_app::sketch::draw::View {
+        project: &project,
+        scale: flat.scale(),
+        visible: None,
+        chord_tolerance: silico_app::sketch::style::SKETCH_CHORD_TOLERANCE,
+    };
     let drawn = silico_app::sketch::draw::drawing(
         &read,
-        &project,
-        silico_app::sketch::draw::Scale(0.1),
-        &silico_app::theme::SKETCH_LIGHT,
-        silico_app::sketch::draw::Shown {
-            dimensions: true,
-            constraints: true,
-        },
+        &view,
+        silico_app::sketch::draw::Shown::default(),
         &Default::default(),
     );
-    assert_eq!(drawn.len(), 6);
+    // The origin (within the fit too), the triangle's fill (its one region), three sides,
+    // and three corners.
+    assert_eq!(drawn.len(), 8);
+    assert!(
+        drawn
+            .iter()
+            .any(|d| matches!(d, silico_app::sketch::draw::Drawn::Fill { .. }))
+    );
     for item in &drawn {
         assert!(
             item.positions().iter().all(|p| rect.contains(*p)),

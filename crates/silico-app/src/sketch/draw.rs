@@ -1,10 +1,11 @@
-//! A sketch drawn (docs/design/m5.0-app.md, section 9, *Colours by state*): what the newest
-//! `sketch` read holds, as data first ([`drawing`]: each stroke, dot, glyph, and text, with
-//! the member it's of and its colour by state), then turned into egui's shapes by one
-//! function ([`to_shapes`]), so a restyle touches only that and `theme`'s values. The
-//! projection from the sketch's millimetres to the screen is a closure, so nothing here
-//! knows of a camera: the viewport gives its own, and a sketch whose face broke is drawn
-//! flat ([`Flat`]).
+//! A sketch drawn as the approved prototype draws it (docs/design/m5-ui/, `js/sketch.js`;
+//! docs/design/m5.0-app.md, section 9, *Colours by state*): what the newest `sketch` read
+//! holds, as data first ([`drawing`]: each stroke, fill, point, glyph, arrowhead, and label,
+//! with the member it's of and its colour by state), and a tool's preview likewise
+//! ([`preview`]); then turned into egui's shapes by one function ([`to_shapes`]), so a
+//! restyle touches only that and `style`'s values. The projection from the sketch's
+//! millimetres to the screen is a closure, so nothing here knows of a camera: the viewport
+//! gives its own, and a sketch whose face broke is drawn flat ([`Flat`]).
 //!
 //! Where a relation's glyph or a dimension stands is worked out once, in the sketch's
 //! millimetres, at the view's scale ([`placed`]), so hit-testing ([`super::hit`]) finds them
@@ -13,16 +14,26 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{FRAC_1_SQRT_2, TAU};
 
-use eframe::egui::{self, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke};
-use silico_core::command::sketch::SketchRead;
+use eframe::egui::{self, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
+use silico_core::command::sketch::{Region, SketchRead};
 use silico_core::document::{ElementId, ElementKind, Form, Reference, SketchConstraint};
+use silico_core::kernel::SketchPlane;
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
+use silico_core::sketch_tools::{Preview, Relation};
 
-use crate::theme::SketchStyle;
+use super::style::*;
 
 /// The most segments one curve's polyline has, however near the view: past it, a curve far
 /// larger than the screen strays further than the chord tolerance, off the screen.
 pub const MAX_CURVE_SEGMENTS: usize = 1024;
+
+/// The most grid lines drawn across either way: a view too far out for the grid's steps
+/// draws none.
+pub const MAX_GRID_LINES: usize = 400;
+
+/// The most vertices a profile's fill is worked out for: past them, the fill (an ear
+/// clipping, quadratic in them) is left out.
+pub const MAX_FILL_VERTICES: usize = 2000;
 
 /// How many segments an angle dimension's arc has.
 const ANGLE_ARC_SEGMENTS: usize = 24;
@@ -40,21 +51,61 @@ impl Scale {
     }
 }
 
-/// What's shown: the palette's Show Dimensions and Show Constraints.
+/// How the sketch is seen: the projection from its millimetres to screen points (none for
+/// a place it can't show), the scale there, the part of its plane in view (its lower and
+/// upper corners, for the grid; none for no grid), and how far a curve's polyline may stray
+/// from it, in points.
+pub struct View<'a> {
+    pub project: &'a dyn Fn([f64; 2]) -> Option<Pos2>,
+    pub scale: Scale,
+    pub visible: Option<([f64; 2], [f64; 2])>,
+    pub chord_tolerance: f32,
+}
+
+impl View<'_> {
+    /// `at` projected, if it's a place on the screen.
+    fn at(&self, at: [f64; 2]) -> Option<Pos2> {
+        (self.project)(at).filter(|p| p.x.is_finite() && p.y.is_finite())
+    }
+
+    /// The screen's direction from `at` along the sketch's `direction`, as a unit vector.
+    fn direction(&self, at: [f64; 2], direction: [f64; 2]) -> Option<Vec2> {
+        let step = self.scale.0.max(f64::MIN_POSITIVE);
+        let from = self.at(at)?;
+        let to = self.at(add(at, mul(direction, step)))?;
+        let d = to - from;
+        (d.length() > 0.0 && d.length().is_finite()).then(|| d / d.length())
+    }
+}
+
+/// What's shown: the palette's Show toggles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shown {
+    pub profile: bool,
+    pub points: bool,
     pub dimensions: bool,
     pub constraints: bool,
 }
 
+impl Default for Shown {
+    fn default() -> Self {
+        Shown {
+            profile: true,
+            points: true,
+            dimensions: true,
+            constraints: true,
+        }
+    }
+}
+
 /// A relation's glyph (fusion.md, *Sketch mode*): one kind for each relation the document
-/// has (a coincidence is a shared point, so none), and the redundant relation's own (open
-/// item 28).
+/// has (a coincidence of points is a shared point, drawn as none; a point on a curve shows
+/// the coincident glyph), and the redundant relation's own (open item 28).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GlyphKind {
     Horizontal,
     Vertical,
-    On,
+    Coincident,
     Midpoint,
     Tangent,
     Perpendicular,
@@ -64,46 +115,94 @@ pub enum GlyphKind {
     Redundant,
 }
 
-/// One thing drawn, in screen points, with the member it's of (a dimension's lines and text
-/// are its constraint's).
+/// What a stroke is: a curve (construction dashed), a dimension's line, the grid's, an
+/// axis, a tool's entity under way, an inference line, or the pointer's crosshair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrokeKind {
+    Curve { dashed: bool },
+    Dimension,
+    GridMinor,
+    GridMajor,
+    Axis,
+    Preview,
+    Guide,
+    Crosshair,
+}
+
+/// What a label is: a dimension's value, or a tool's word beside the pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelKind {
+    Dimension,
+    Tool,
+}
+
+/// One thing drawn, in screen points, with the member it's of, if any (a dimension's lines,
+/// arrowheads, and value are its constraint's; a profile's fill is its region's first
+/// curve's), its colour by state, and whether it's selected (drawn white over a halo).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Drawn {
-    /// A curve's polyline, or a dimension's line (`thin`).
     Stroke {
-        of: ElementId,
+        of: Option<ElementId>,
+        kind: StrokeKind,
         points: Vec<Pos2>,
         colour: Color32,
-        dashed: bool,
-        thin: bool,
+        selected: bool,
     },
-    Dot {
-        of: ElementId,
-        at: Pos2,
+    Fill {
+        of: Option<ElementId>,
+        triangles: Vec<[Pos2; 3]>,
         colour: Color32,
     },
+    Point {
+        of: Option<ElementId>,
+        at: Pos2,
+        colour: Color32,
+        selected: bool,
+    },
+    Origin {
+        at: Pos2,
+    },
     Glyph {
-        of: ElementId,
+        of: Option<ElementId>,
         kind: GlyphKind,
         at: Pos2,
         colour: Color32,
+        selected: bool,
     },
-    /// A dimension's value.
-    Text {
+    /// An arrowhead, its tip at `tip`, its body along `toward` (a unit vector).
+    Arrow {
         of: ElementId,
+        tip: Pos2,
+        toward: Vec2,
+        colour: Color32,
+        selected: bool,
+    },
+    Label {
+        of: Option<ElementId>,
+        kind: LabelKind,
         at: Pos2,
         text: String,
+        colour: Color32,
+        selected: bool,
+    },
+    /// A snap onto a point.
+    Ring {
+        at: Pos2,
         colour: Color32,
     },
 }
 
 impl Drawn {
-    /// The member it's of.
-    pub fn of(&self) -> &ElementId {
+    /// The member it's of, if any.
+    pub fn of(&self) -> Option<&ElementId> {
         match self {
             Drawn::Stroke { of, .. }
-            | Drawn::Dot { of, .. }
+            | Drawn::Fill { of, .. }
+            | Drawn::Point { of, .. }
             | Drawn::Glyph { of, .. }
-            | Drawn::Text { of, .. } => of,
+            | Drawn::Label { of, .. } => of.as_ref(),
+            Drawn::Arrow { of, .. } => Some(of),
+            Drawn::Origin { .. } | Drawn::Ring { .. } => None,
         }
     }
 
@@ -111,9 +210,25 @@ impl Drawn {
     pub fn colour(&self) -> Color32 {
         match self {
             Drawn::Stroke { colour, .. }
-            | Drawn::Dot { colour, .. }
+            | Drawn::Fill { colour, .. }
+            | Drawn::Point { colour, .. }
             | Drawn::Glyph { colour, .. }
-            | Drawn::Text { colour, .. } => *colour,
+            | Drawn::Arrow { colour, .. }
+            | Drawn::Label { colour, .. }
+            | Drawn::Ring { colour, .. } => *colour,
+            Drawn::Origin { .. } => SKETCH_ORIGIN,
+        }
+    }
+
+    /// Whether it's drawn as selected.
+    pub fn selected(&self) -> bool {
+        match self {
+            Drawn::Stroke { selected, .. }
+            | Drawn::Point { selected, .. }
+            | Drawn::Glyph { selected, .. }
+            | Drawn::Arrow { selected, .. }
+            | Drawn::Label { selected, .. } => *selected,
+            Drawn::Fill { .. } | Drawn::Origin { .. } | Drawn::Ring { .. } => false,
         }
     }
 
@@ -121,9 +236,13 @@ impl Drawn {
     pub fn positions(&self) -> Vec<Pos2> {
         match self {
             Drawn::Stroke { points, .. } => points.clone(),
-            Drawn::Dot { at, .. } | Drawn::Glyph { at, .. } | Drawn::Text { at, .. } => {
-                vec![*at]
-            }
+            Drawn::Fill { triangles, .. } => triangles.iter().flatten().copied().collect(),
+            Drawn::Point { at, .. }
+            | Drawn::Origin { at }
+            | Drawn::Glyph { at, .. }
+            | Drawn::Label { at, .. }
+            | Drawn::Ring { at, .. } => vec![*at],
+            Drawn::Arrow { tip, .. } => vec![*tip],
         }
     }
 }
@@ -145,10 +264,12 @@ pub(crate) enum Curve {
     },
 }
 
-/// The read's geometry, found by ID: each point's solved place, and each curve.
+/// The read's geometry, found by ID: each point's solved place, and each curve, with its
+/// kind and, for a line or an arc, its end points' IDs.
 pub(crate) struct Geometry<'a> {
     points: BTreeMap<&'a ElementId, [f64; 2]>,
     curves: BTreeMap<&'a ElementId, (Curve, ElementKind)>,
+    ends: BTreeMap<&'a ElementId, (&'a ElementId, &'a ElementId)>,
     /// The middle of the points' bounds: what a dimension stands away from.
     pub(crate) middle: [f64; 2],
 }
@@ -162,20 +283,22 @@ impl<'a> Geometry<'a> {
             .map(|p| (&p.id, [p.x.mm(), p.y.mm()]))
             .collect();
         let mut curves = BTreeMap::new();
+        let mut ends = BTreeMap::new();
         for line in &sketch.lines {
             if let (Some(&from), Some(&to)) = (points.get(&line.from), points.get(&line.to)) {
                 curves.insert(&line.id, (Curve::Line { from, to }, ElementKind::Line));
+                ends.insert(&line.id, (&line.from, &line.to));
             }
         }
         for circle in &sketch.circles {
             if let Some(&centre) = points.get(&circle.center) {
-                let circle_curve = Curve::Round {
+                let round = Curve::Round {
                     centre,
                     radius: circle.radius.mm(),
                     start: 0.0,
                     sweep: TAU,
                 };
-                curves.insert(&circle.id, (circle_curve, ElementKind::Circle));
+                curves.insert(&circle.id, (round, ElementKind::Circle));
             }
         }
         for arc in &sketch.arcs {
@@ -186,13 +309,14 @@ impl<'a> Geometry<'a> {
             ) {
                 let from = angle(sub(start, centre));
                 let to = angle(sub(end, centre));
-                let arc_curve = Curve::Round {
+                let round = Curve::Round {
                     centre,
                     radius: length(sub(start, centre)),
                     start: from,
                     sweep: (to - from).rem_euclid(TAU),
                 };
-                curves.insert(&arc.id, (arc_curve, ElementKind::Arc));
+                curves.insert(&arc.id, (round, ElementKind::Arc));
+                ends.insert(&arc.id, (&arc.start, &arc.end));
             }
         }
         let middle = bounds(points.values().copied()).map_or([0.0, 0.0], |(lo, hi)| {
@@ -201,6 +325,7 @@ impl<'a> Geometry<'a> {
         Geometry {
             points,
             curves,
+            ends,
             middle,
         }
     }
@@ -252,12 +377,14 @@ pub(crate) struct PlacedGlyph {
     pub(crate) at: [f64; 2],
 }
 
-/// A dimension, placed in the sketch's millimetres: its leader and extension lines, and its
-/// value's text and where it stands.
+/// A dimension, placed in the sketch's millimetres: its extension and dimension lines, its
+/// arrowheads (each tip, and the direction its body runs from it), and its value's text and
+/// where it stands.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlacedDimension {
     pub(crate) of: ElementId,
     pub(crate) lines: Vec<Vec<[f64; 2]>>,
+    pub(crate) arrows: Vec<([f64; 2], [f64; 2])>,
     pub(crate) text: String,
     pub(crate) text_at: [f64; 2],
 }
@@ -269,16 +396,11 @@ pub(crate) struct Placed {
     pub(crate) dimensions: Vec<PlacedDimension>,
 }
 
-/// Where each constraint of `read` is drawn, at `scale`, with `style`'s offsets: each
-/// relation's glyph beside each member it names (stacked, in the constraints' order, where
-/// a member has several), and each dimension, as SolidWorks draws one, from the geometry it
-/// measures, its text at the middle of its line, offset outward from the sketch's middle.
-pub(crate) fn placed(
-    read: &SketchRead,
-    geometry: &Geometry,
-    scale: Scale,
-    style: &SketchStyle,
-) -> Placed {
+/// Where each constraint of `read` is drawn, at `scale`: each relation's glyph beside each
+/// member it names (stacked, in the constraints' order, where a member has several), and
+/// each dimension, as SolidWorks draws one, from the geometry it measures, its value at
+/// the middle of its line, off the side away from the sketch's middle.
+pub(crate) fn placed(read: &SketchRead, geometry: &Geometry, scale: Scale) -> Placed {
     let mut placed = Placed::default();
     let mut stacked: BTreeMap<Reference, usize> = BTreeMap::new();
     let flagged = |id: &ElementId| {
@@ -289,7 +411,7 @@ pub(crate) fn placed(
     };
     for constraint in &read.members.constraints {
         if constraint.form.is_dimension() {
-            if let Some(dimension) = dimension(constraint, geometry, scale, style) {
+            if let Some(dimension) = dimension(constraint, geometry, scale) {
                 placed.dimensions.push(dimension);
             }
             continue;
@@ -305,7 +427,7 @@ pub(crate) fn placed(
         };
         for member in on {
             let count = stacked.entry(member.clone()).or_insert(0);
-            if let Some(at) = glyph_place(member, *count, geometry, scale, style) {
+            if let Some(at) = glyph_place(member, *count, geometry, scale) {
                 placed.glyphs.push(PlacedGlyph {
                     of: constraint.id.clone(),
                     kind,
@@ -319,14 +441,14 @@ pub(crate) fn placed(
 }
 
 /// A relation's glyph and the members it stands beside: each it names but its anchor (a
-/// symmetry's `about`), or the point a tangency is at.
+/// symmetry's `about`, a point's curve), or the point a tangency is at.
 fn relation(form: &Form) -> Option<(GlyphKind, Vec<&Reference>)> {
     Some(match form {
         Form::Horizontal { line } => (GlyphKind::Horizontal, vec![line]),
         Form::Vertical { line } => (GlyphKind::Vertical, vec![line]),
         Form::HorizontalPoints { a, b } => (GlyphKind::Horizontal, vec![a, b]),
         Form::VerticalPoints { a, b } => (GlyphKind::Vertical, vec![a, b]),
-        Form::On { point, .. } => (GlyphKind::On, vec![point]),
+        Form::On { point, .. } => (GlyphKind::Coincident, vec![point]),
         Form::Parallel { a, b } => (GlyphKind::Parallel, vec![a, b]),
         Form::Perpendicular { a, b } => (GlyphKind::Perpendicular, vec![a, b]),
         Form::Equal { a, b } => (GlyphKind::Equal, vec![a, b]),
@@ -345,31 +467,31 @@ fn relation(form: &Form) -> Option<(GlyphKind, Vec<&Reference>)> {
     })
 }
 
-/// Where the `count`th glyph beside `member` stands: beside a point, up and to its right;
-/// beside a line, off its middle on its left, along it; beside a circle or an arc, outside
-/// it, at 45° or its middle. Each further one a step on. None for the origin and the axes,
-/// which aren't drawn.
+/// Where the `count`th glyph beside `member` stands, as the prototype places them: beside a
+/// line, a share of its way along it, off its right side (below a line drawn left to
+/// right), each further one a step along; beside a point, below and left of it, each
+/// further one a step left; beside a circle or an arc, outside it, at 45° or its middle.
+/// None for the origin and the axes, which aren't drawn.
 fn glyph_place(
     member: &Reference,
     count: usize,
     geometry: &Geometry,
     scale: Scale,
-    style: &SketchStyle,
 ) -> Option<[f64; 2]> {
-    let (offset, step) = (scale.mm(style.glyph_offset), scale.mm(style.glyph_step));
+    let (offset, step) = (scale.mm(SKETCH_GLYPH_OFFSET), scale.mm(SKETCH_GLYPH_STEP));
     let along = step * count as f64;
     let Reference::Element(_) = member else {
         return None;
     };
     if let Some(p) = geometry.point(member) {
-        return Some([p[0] + offset + along, p[1] + offset]);
+        return Some([p[0] - offset - along, p[1] - offset]);
     }
     match geometry.curve(member)? {
         Curve::Line { from, to } => {
             let t = unit(sub(to, from)).unwrap_or([1.0, 0.0]);
-            let n = [-t[1], t[0]];
-            let m = [mid(from[0], to[0]), mid(from[1], to[1])];
-            Some(add(add(m, mul(n, offset)), mul(t, along)))
+            let right = [t[1], -t[0]];
+            let at = add(from, mul(sub(to, from), SKETCH_GLYPH_ALONG));
+            Some(add(add(at, mul(right, offset)), mul(t, along)))
         }
         Curve::Round {
             centre,
@@ -392,10 +514,10 @@ fn dimension(
     constraint: &SketchConstraint,
     geometry: &Geometry,
     scale: Scale,
-    style: &SketchStyle,
 ) -> Option<PlacedDimension> {
-    let offset = scale.mm(style.dimension_offset);
-    let gap = scale.mm(style.dimension_text_gap);
+    let offset = scale.mm(SKETCH_DIMENSION_OFFSET);
+    let gap = scale.mm(SKETCH_EXTENSION_GAP);
+    let past = scale.mm(SKETCH_EXTENSION_PAST);
     let driving = constraint.form.driving().unwrap_or(true);
     let text = |value: String| {
         if driving { value } else { format!("({value})") }
@@ -408,19 +530,35 @@ fn dimension(
         }
     };
     let of = constraint.id.clone();
-    // Two points apart, along the line between them: extension lines out from each, the
-    // dimension line between their ends, the text beyond its middle.
+    // From `a` and `b`, standing off along `n`: extension lines out from each (a gap off
+    // the geometry, a little past the dimension line), the dimension line between them, an
+    // arrowhead at each of its ends, and the value at its middle.
+    let standing = |a: [f64; 2], b: [f64; 2], a1: [f64; 2], b1: [f64; 2], n: [f64; 2], value| {
+        let t = unit(sub(b1, a1)).unwrap_or([1.0, 0.0]);
+        PlacedDimension {
+            of: of.clone(),
+            lines: vec![
+                vec![add(a, mul(n, gap)), add(a1, mul(n, past))],
+                vec![add(b, mul(n, gap)), add(b1, mul(n, past))],
+                vec![a1, b1],
+            ],
+            arrows: vec![(a1, t), (b1, mul(t, -1.0))],
+            text: text(value),
+            text_at: [mid(a1[0], b1[0]), mid(a1[1], b1[1])],
+        }
+    };
     let aligned = |a: [f64; 2], b: [f64; 2], value: String| {
         let t = unit(sub(b, a)).unwrap_or([1.0, 0.0]);
         let m = [mid(a[0], b[0]), mid(a[1], b[1])];
         let n = away(m, [-t[1], t[0]]);
-        let (a2, b2) = (add(a, mul(n, offset)), add(b, mul(n, offset)));
-        PlacedDimension {
-            of: of.clone(),
-            lines: vec![vec![a, a2], vec![b, b2], vec![a2, b2]],
-            text: text(value),
-            text_at: add(m, mul(n, offset + gap)),
-        }
+        standing(
+            a,
+            b,
+            add(a, mul(n, offset)),
+            add(b, mul(n, offset)),
+            n,
+            value,
+        )
     };
     Some(match &constraint.form {
         Form::Length { line, value, .. } => {
@@ -435,9 +573,9 @@ fn dimension(
         Form::DistanceX { a, b, value, .. } | Form::DistanceY { a, b, value, .. } => {
             let (pa, pb) = (geometry.point(a)?, geometry.point(b)?);
             // The axis it measures along, and the one it stands off along.
-            let (along, off) = match constraint.form {
-                Form::DistanceX { .. } => (0, 1),
-                _ => (1, 0),
+            let off = match constraint.form {
+                Form::DistanceX { .. } => 1,
+                _ => 0,
             };
             let m = [mid(pa[0], pb[0]), mid(pa[1], pb[1])];
             let outward = m[off] >= geometry.middle[off];
@@ -446,19 +584,28 @@ fn dimension(
             } else {
                 pa[off].min(pb[off]) - offset
             };
-            let sign = if outward { 1.0 } else { -1.0 };
-            let at = |p: [f64; 2], level: f64| {
-                let mut q = [0.0; 2];
-                q[along] = p[along];
+            let mut n = [0.0; 2];
+            n[off] = if outward { 1.0 } else { -1.0 };
+            let at = |p: [f64; 2]| {
+                let mut q = p;
                 q[off] = level;
                 q
             };
-            let (a2, b2) = (at(pa, level), at(pb, level));
+            let extension = |p: [f64; 2]| {
+                let mut from = p;
+                from[off] += n[off] * gap;
+                let mut to = at(p);
+                to[off] += n[off] * past;
+                vec![from, to]
+            };
+            let (a1, b1) = (at(pa), at(pb));
+            let t = unit(sub(b1, a1)).unwrap_or([1.0, 0.0]);
             PlacedDimension {
                 of,
-                lines: vec![vec![pa, a2], vec![pb, b2], vec![a2, b2]],
+                lines: vec![extension(pa), extension(pb), vec![a1, b1]],
+                arrows: vec![(a1, t), (b1, mul(t, -1.0))],
                 text: text(value.to_string()),
-                text_at: at(m, level + sign * gap),
+                text_at: [mid(a1[0], b1[0]), mid(a1[1], b1[1])],
             }
         }
         Form::PointLineDistance {
@@ -469,13 +616,13 @@ fn dimension(
                 return None;
             };
             let foot = foot(p, from, to);
-            let t = unit(sub(p, foot)).unwrap_or([0.0, 1.0]);
-            let m = [mid(p[0], foot[0]), mid(p[1], foot[1])];
+            let t = unit(sub(foot, p)).unwrap_or([0.0, -1.0]);
             PlacedDimension {
                 of,
                 lines: vec![vec![p, foot]],
+                arrows: vec![(p, t), (foot, mul(t, -1.0))],
                 text: text(value.to_string()),
-                text_at: add(m, mul([-t[1], t[0]], gap)),
+                text_at: [mid(p[0], foot[0]), mid(p[1], foot[1])],
             }
         }
         Form::Radius { curve, value, .. } | Form::Diameter { curve, value, .. } => {
@@ -488,25 +635,31 @@ fn dimension(
             else {
                 return None;
             };
-            // Out through an arc's middle; for a circle, away from the sketch's middle,
-            // or at 45° from a circle about it.
+            // Out through an arc's middle; for a circle, away from the sketch's middle, or
+            // at 45° from a circle about it.
             let u = if sweep < TAU {
                 direction(start + sweep / 2.0)
             } else {
                 unit(sub(centre, geometry.middle)).unwrap_or([FRAC_1_SQRT_2, FRAC_1_SQRT_2])
             };
             let rim = add(centre, mul(u, radius));
-            let diameter = matches!(constraint.form, Form::Diameter { .. });
-            let (from, word) = if diameter {
-                (sub(centre, mul(u, radius)), "Ø")
+            let beyond = add(centre, mul(u, radius + offset));
+            let (lines, arrows, word) = if matches!(constraint.form, Form::Diameter { .. }) {
+                let far = sub(centre, mul(u, radius));
+                (
+                    vec![vec![far, beyond]],
+                    vec![(rim, mul(u, -1.0)), (far, u)],
+                    "Ø",
+                )
             } else {
-                (centre, "R")
+                (vec![vec![centre, beyond]], vec![(rim, mul(u, -1.0))], "R")
             };
             PlacedDimension {
                 of,
-                lines: vec![vec![from, rim]],
+                lines,
+                arrows,
                 text: text(format!("{word}{value}")),
-                text_at: add(centre, mul(u, radius + gap)),
+                text_at: beyond,
             }
         }
         Form::Angle {
@@ -526,17 +679,22 @@ fn dimension(
             let corner = crossing(a0, da, b0, db).unwrap_or(a0);
             let from = angle(da);
             let sweep = value.degrees().to_radians();
+            let on = |at: f64| add(corner, mul(direction(at), offset));
             let arc: Vec<[f64; 2]> = (0..=ANGLE_ARC_SEGMENTS)
-                .map(|k| {
-                    let at = from + sweep * k as f64 / ANGLE_ARC_SEGMENTS as f64;
-                    add(corner, mul(direction(at), offset))
-                })
+                .map(|k| on(from + sweep * k as f64 / ANGLE_ARC_SEGMENTS as f64))
                 .collect();
+            // The arrows along the arc's tangent, each pointing out of it.
+            let sign = if sweep < 0.0 { -1.0 } else { 1.0 };
+            let tangent = |at: f64| mul([-direction(at)[1], direction(at)[0]], sign);
             PlacedDimension {
                 of,
                 lines: vec![arc],
+                arrows: vec![
+                    (on(from), tangent(from)),
+                    (on(from + sweep), mul(tangent(from + sweep), -1.0)),
+                ],
                 text: text(format!("{value}°")),
-                text_at: add(corner, mul(direction(from + sweep / 2.0), offset + gap)),
+                text_at: on(from + sweep / 2.0),
             }
         }
         _ => return None,
@@ -544,86 +702,86 @@ fn dimension(
 }
 
 /// The colour of a point or a curve in state `state`, of a sketch in state `sketch`: a
-/// sketch not solved to buildable geometry colours every member its own way (§2: invalid
-/// yellow, unsolvable red); otherwise each member's own state.
-pub fn member_colour(
-    style: &SketchStyle,
-    sketch: SketchState,
-    state: Option<MemberState>,
-    selected: bool,
-) -> Color32 {
-    if selected {
-        return style.selected;
-    }
+/// sketch not solved to buildable geometry colours every member its own way (unsolvable
+/// red, invalid yellow); otherwise each member's own state.
+pub fn member_colour(sketch: SketchState, state: Option<MemberState>) -> Color32 {
     match (sketch, state) {
-        (SketchState::NoSolution, _) => style.no_solution,
-        (SketchState::Invalid, _) => style.invalid,
-        (_, Some(MemberState::FullyDefined)) => style.fully_defined,
-        (_, Some(MemberState::OverDefined)) => style.over_defined,
-        (_, Some(MemberState::UnderDefined) | None) => style.under_defined,
+        (SketchState::NoSolution, _) => SKETCH_OVER_DEFINED,
+        (SketchState::Invalid, _) => SKETCH_INVALID,
+        (_, Some(MemberState::FullyDefined)) => SKETCH_FULLY_DEFINED,
+        (_, Some(MemberState::OverDefined)) => SKETCH_OVER_DEFINED,
+        (_, Some(MemberState::UnderDefined) | None) => SKETCH_UNDER_DEFINED,
     }
 }
 
 /// The colour of a constraint of form `form` in state `state`, of a sketch in state
 /// `sketch`: one in conflict, or a dimension repeating others, over defined; a relation
-/// repeating others its own glyph's colour; a driven dimension gray; one unsolved, on a
-/// sketch with no buildable solution, that sketch's colour; a driving dimension as fully
-/// defined geometry, and a relation in the glyphs' colour.
+/// repeating others its own glyph's colour; one unsolved, on a sketch with no buildable
+/// solution, that sketch's colour; a driven dimension gray; a driving one in the dimensions'
+/// colour, and a relation in the glyphs'.
 pub fn constraint_colour(
-    style: &SketchStyle,
     sketch: SketchState,
     form: &Form,
     state: Option<ConstraintState>,
-    selected: bool,
 ) -> Color32 {
-    if selected {
-        return style.selected;
-    }
     let dimension = form.is_dimension();
     match state {
-        Some(ConstraintState::Conflicting) => style.over_defined,
+        Some(ConstraintState::Conflicting) => SKETCH_OVER_DEFINED,
         Some(ConstraintState::Redundant | ConstraintState::PartiallyRedundant) if dimension => {
-            style.over_defined
+            SKETCH_OVER_DEFINED
         }
-        Some(ConstraintState::Redundant | ConstraintState::PartiallyRedundant) => style.redundant,
-        Some(ConstraintState::Unsolved) if sketch == SketchState::NoSolution => style.no_solution,
-        Some(ConstraintState::Unsolved) if sketch == SketchState::Invalid => style.invalid,
-        _ if form.driving() == Some(false) => style.driven,
-        _ if dimension => style.fully_defined,
-        _ => style.glyph,
+        Some(ConstraintState::Redundant | ConstraintState::PartiallyRedundant) => SKETCH_REDUNDANT,
+        Some(ConstraintState::Unsolved) if sketch == SketchState::NoSolution => SKETCH_OVER_DEFINED,
+        Some(ConstraintState::Unsolved) if sketch == SketchState::Invalid => SKETCH_INVALID,
+        _ if form.driving() == Some(false) => SKETCH_DRIVEN,
+        _ if dimension => SKETCH_DIMENSION,
+        _ => SKETCH_GLYPH_ICON,
     }
 }
 
-/// What's drawn of `read`, projected by `project` (the sketch's millimetres to screen
-/// points; none for a place it can't show), at `scale`, with `style`, the members in
-/// `selected` in the selection's colour: each curve a polyline (an arc or a circle within
-/// the style's chord tolerance of itself), construction dashed; each point a dot; and, as
-/// `shown` says, each relation's glyphs and each dimension.
+/// The colours of the plane's two axes, the sketch's x and y: the model's axes they lie
+/// along, for an origin plane; red and blue for a face's (as the prototype draws one).
+pub fn axis_colours(plane: Option<&SketchPlane>) -> [Color32; 2] {
+    match plane {
+        Some(SketchPlane::Xy) => [AXIS_X, AXIS_Y],
+        Some(SketchPlane::Xz) => [AXIS_X, AXIS_Z],
+        Some(SketchPlane::Yz) => [AXIS_Y, AXIS_Z],
+        Some(SketchPlane::Face(_)) | None => [AXIS_X, AXIS_Z],
+    }
+}
+
+/// What's drawn of `read`, seen through `view`, the members in `selected` drawn selected:
+/// the plane's grid and axes (where the view says what's in it) and the origin; the
+/// profile's fill (unless the sketch is over defined); each curve a polyline (an arc or a
+/// circle within the view's chord tolerance of itself), construction dashed; each point a
+/// square; and each relation's glyphs and each dimension; each as `shown` says.
 pub fn drawing(
     read: &SketchRead,
-    project: &dyn Fn([f64; 2]) -> Option<Pos2>,
-    scale: Scale,
-    style: &SketchStyle,
+    view: &View<'_>,
     shown: Shown,
     selected: &BTreeSet<ElementId>,
 ) -> Vec<Drawn> {
-    let project = |at: [f64; 2]| project(at).filter(|p| p.x.is_finite() && p.y.is_finite());
     let geometry = Geometry::of(read);
     let sketch = read.states.state;
     let states = &read.states;
-    let sketch_members = &read.members;
-    let mut drawn = Vec::new();
-    let construction: BTreeMap<&ElementId, bool> = sketch_members
+    let members = &read.members;
+    let mut drawn = grid(view, axis_colours(read.plane.as_ref().ok()));
+    if let Some(at) = view.at([0.0, 0.0]) {
+        drawn.push(Drawn::Origin { at });
+    }
+    if shown.profile && sketch != SketchState::OverDefined {
+        for region in &read.regions {
+            if let Some(fill) = region_fill(region, &geometry, view) {
+                drawn.push(fill);
+            }
+        }
+    }
+    let construction: BTreeMap<&ElementId, bool> = members
         .lines
         .iter()
         .map(|l| (&l.id, l.construction))
-        .chain(
-            sketch_members
-                .circles
-                .iter()
-                .map(|c| (&c.id, c.construction)),
-        )
-        .chain(sketch_members.arcs.iter().map(|a| (&a.id, a.construction)))
+        .chain(members.circles.iter().map(|c| (&c.id, c.construction)))
+        .chain(members.arcs.iter().map(|a| (&a.id, a.construction)))
         .collect();
     for (id, curve, _) in geometry.curves() {
         let state = states
@@ -632,10 +790,8 @@ pub fn drawing(
             .or_else(|| states.circles.get(id))
             .or_else(|| states.arcs.get(id))
             .copied();
-        let colour = member_colour(style, sketch, state, selected.contains(id));
-        let dashed = construction.get(id).copied().unwrap_or(false);
         let points = match curve {
-            Curve::Line { from, to } => vec![project(from), project(to)],
+            Curve::Line { from, to } => vec![view.at(from), view.at(to)],
             Curve::Round {
                 centre,
                 radius,
@@ -646,64 +802,55 @@ pub fn drawing(
                 radius,
                 start,
                 sweep,
-                &project,
-                style.chord_tolerance,
+                view.project,
+                view.chord_tolerance,
             ),
+        };
+        let kind = StrokeKind::Curve {
+            dashed: construction.get(id).copied().unwrap_or(false),
         };
         for run in runs(points) {
             drawn.push(Drawn::Stroke {
-                of: id.clone(),
+                of: Some(id.clone()),
+                kind,
                 points: run,
-                colour,
-                dashed,
-                thin: false,
+                colour: member_colour(sketch, state),
+                selected: selected.contains(id),
             });
         }
     }
-    for (id, at) in geometry.points() {
-        let colour = member_colour(
-            style,
-            sketch,
-            states.points.get(id).copied(),
-            selected.contains(id),
-        );
-        if let Some(at) = project(at) {
-            drawn.push(Drawn::Dot {
-                of: id.clone(),
-                at,
-                colour,
-            });
+    if shown.points {
+        for (id, at) in geometry.points() {
+            if let Some(at) = view.at(at) {
+                drawn.push(Drawn::Point {
+                    of: Some(id.clone()),
+                    at,
+                    colour: member_colour(sketch, states.points.get(id).copied()),
+                    selected: selected.contains(id),
+                });
+            }
         }
     }
-    let placed = placed(read, &geometry, scale, style);
-    let forms: BTreeMap<&ElementId, &Form> = sketch_members
+    let placed = placed(read, &geometry, view.scale);
+    let forms: BTreeMap<&ElementId, &Form> = members
         .constraints
         .iter()
         .map(|c| (&c.id, &c.form))
         .collect();
     let colour_of = |id: &ElementId| {
-        forms.get(id).map_or(style.glyph, |form| {
-            constraint_colour(
-                style,
-                sketch,
-                form,
-                states.constraints.get(id).copied(),
-                selected.contains(id),
-            )
+        forms.get(id).map_or(SKETCH_GLYPH_ICON, |form| {
+            constraint_colour(sketch, form, states.constraints.get(id).copied())
         })
     };
     if shown.constraints {
         for glyph in &placed.glyphs {
-            if let Some(at) = project(glyph.at) {
-                let colour = match glyph.kind {
-                    GlyphKind::Redundant if !selected.contains(&glyph.of) => style.redundant,
-                    _ => colour_of(&glyph.of),
-                };
+            if let Some(at) = view.at(glyph.at) {
                 drawn.push(Drawn::Glyph {
-                    of: glyph.of.clone(),
+                    of: Some(glyph.of.clone()),
                     kind: glyph.kind,
                     at,
-                    colour,
+                    colour: colour_of(&glyph.of),
+                    selected: selected.contains(&glyph.of),
                 });
             }
         }
@@ -711,25 +858,435 @@ pub fn drawing(
     if shown.dimensions {
         for dimension in &placed.dimensions {
             let colour = colour_of(&dimension.of);
+            let selected = selected.contains(&dimension.of);
             for line in &dimension.lines {
-                for run in runs(line.iter().map(|&p| project(p)).collect()) {
+                for run in runs(line.iter().map(|&p| view.at(p)).collect()) {
                     drawn.push(Drawn::Stroke {
-                        of: dimension.of.clone(),
+                        of: Some(dimension.of.clone()),
+                        kind: StrokeKind::Dimension,
                         points: run,
                         colour,
-                        dashed: false,
-                        thin: true,
+                        selected,
                     });
                 }
             }
-            if let Some(at) = project(dimension.text_at) {
-                drawn.push(Drawn::Text {
-                    of: dimension.of.clone(),
+            for &(tip, along) in &dimension.arrows {
+                if let (Some(at), Some(toward)) = (view.at(tip), view.direction(tip, along)) {
+                    drawn.push(Drawn::Arrow {
+                        of: dimension.of.clone(),
+                        tip: at,
+                        toward,
+                        colour,
+                        selected,
+                    });
+                }
+            }
+            if let Some(at) = view.at(dimension.text_at) {
+                drawn.push(Drawn::Label {
+                    of: Some(dimension.of.clone()),
+                    kind: LabelKind::Dimension,
                     at,
                     text: dimension.text.clone(),
                     colour,
+                    selected,
                 });
             }
+        }
+    }
+    drawn
+}
+
+/// The grid on the plane, over the part of it in view, every 5 mm (10, then 50, as the view
+/// draws a millimetre smaller), each 50 mm's line stronger; and its two axes, in `axes`'
+/// colours. None where the view gives no part of the plane, or would need more than
+/// [`MAX_GRID_LINES`] lines across.
+fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
+    let Some((lo, hi)) = view.visible else {
+        return Vec::new();
+    };
+    let per_mm = 1.0 / view.scale.0;
+    let step: i64 = if per_mm > 6.0 {
+        5
+    } else if per_mm > 2.0 {
+        10
+    } else {
+        50
+    };
+    let span = |a: usize| ((hi[a] - lo[a]) / step as f64).abs();
+    if !(span(0).is_finite() && span(1).is_finite())
+        || span(0) > MAX_GRID_LINES as f64
+        || span(1) > MAX_GRID_LINES as f64
+    {
+        return Vec::new();
+    }
+    let mut drawn = Vec::new();
+    for across in [0, 1] {
+        let first = (lo[across] / step as f64).floor() as i64;
+        let last = (hi[across] / step as f64).ceil() as i64;
+        for k in first..=last {
+            let at = (k * step) as f64;
+            let ends = if across == 0 {
+                [[at, lo[1]], [at, hi[1]]]
+            } else {
+                [[lo[0], at], [hi[0], at]]
+            };
+            let kind = if (k * step) % 50 == 0 {
+                StrokeKind::GridMajor
+            } else {
+                StrokeKind::GridMinor
+            };
+            let colour = match kind {
+                StrokeKind::GridMajor => SKETCH_GRID_MAJOR,
+                _ => SKETCH_GRID_MINOR,
+            };
+            if let Some(run) = runs(ends.iter().map(|&p| view.at(p)).collect()).pop() {
+                drawn.push(Drawn::Stroke {
+                    of: None,
+                    kind,
+                    points: run,
+                    colour,
+                    selected: false,
+                });
+            }
+        }
+    }
+    // The axes: the sketch's x along y = 0, its y along x = 0.
+    for (axis, colour) in [0, 1].into_iter().zip(axes) {
+        let ends = if axis == 0 {
+            [[lo[0], 0.0], [hi[0], 0.0]]
+        } else {
+            [[0.0, lo[1]], [0.0, hi[1]]]
+        };
+        if let Some(run) = runs(ends.iter().map(|&p| view.at(p)).collect()).pop() {
+            drawn.push(Drawn::Stroke {
+                of: None,
+                kind: StrokeKind::Axis,
+                points: run,
+                colour: colour.gamma_multiply(SKETCH_AXIS_ALPHA),
+                selected: false,
+            });
+        }
+    }
+    drawn
+}
+
+/// The fill of `region`: its outer loop's polygon less its holes', in triangles (an ear
+/// clipping, each hole joined to the outside by a bridge), projected. None where a loop
+/// can't be walked or projected, or holds more than [`MAX_FILL_VERTICES`].
+fn region_fill(region: &Region, geometry: &Geometry, view: &View<'_>) -> Option<Drawn> {
+    let tolerance = view.scale.mm(view.chord_tolerance);
+    let outer = walk(&region.outer, geometry, tolerance)?;
+    let holes: Vec<Vec<[f64; 2]>> = region
+        .holes
+        .iter()
+        .map(|hole| walk(hole, geometry, tolerance))
+        .collect::<Option<_>>()?;
+    let count = outer.len() + holes.iter().map(Vec::len).sum::<usize>();
+    if count > MAX_FILL_VERTICES {
+        return None;
+    }
+    let triangles = triangulate(outer, holes)
+        .into_iter()
+        .map(|t| Some([view.at(t[0])?, view.at(t[1])?, view.at(t[2])?]))
+        .collect::<Option<Vec<_>>>()?;
+    Some(Drawn::Fill {
+        of: region.outer.first().cloned(),
+        triangles,
+        colour: SKETCH_PROFILE_FILL,
+    })
+}
+
+/// The polygon a loop of `curves` walks, in order, in the sketch's millimetres, its arcs
+/// within `tolerance` of themselves: each curve run from the end the last one ended at
+/// (the first, toward the one after it). None for a curve the read hasn't, or a loop whose
+/// curves don't meet end to end.
+fn walk(curves: &[ElementId], geometry: &Geometry, tolerance: f64) -> Option<Vec<[f64; 2]>> {
+    let polyline = |id: &ElementId| -> Option<Vec<[f64; 2]>> {
+        Some(match geometry.curves.get(id)?.0 {
+            Curve::Line { from, to } => vec![from, to],
+            Curve::Round {
+                centre,
+                radius,
+                start,
+                sweep,
+            } => {
+                let n = segments(radius / tolerance.max(f64::MIN_POSITIVE), sweep, 1.0);
+                (0..=n)
+                    .map(|k| {
+                        add(
+                            centre,
+                            mul(direction(start + sweep * k as f64 / n as f64), radius),
+                        )
+                    })
+                    .collect()
+            }
+        })
+    };
+    let [first, rest @ ..] = curves else {
+        return None;
+    };
+    // A lone curve: a circle's whole turn.
+    if rest.is_empty() {
+        let mut ring = polyline(first)?;
+        ring.pop();
+        return Some(ring);
+    }
+    let ends = |id: &ElementId| geometry.ends.get(id).copied();
+    let (start, end) = ends(first)?;
+    let (next_start, next_end) = ends(&rest[0])?;
+    let forward = end == next_start || end == next_end;
+    let mut at = if forward { end } else { start };
+    let mut polygon = polyline(first)?;
+    if !forward {
+        polygon.reverse();
+    }
+    polygon.pop();
+    for id in rest {
+        let (start, end) = ends(id)?;
+        let mut piece = polyline(id)?;
+        if start == at {
+            at = end;
+        } else if end == at {
+            at = start;
+            piece.reverse();
+        } else {
+            return None;
+        }
+        piece.pop();
+        polygon.extend(piece);
+    }
+    Some(polygon)
+}
+
+/// `outer` less `holes`, in triangles: `outer` turned counter-clockwise and each hole
+/// clockwise, each hole joined to the polygon by a bridge from its rightmost vertex to the
+/// nearest vertex the bridge crosses no edge to reach, then ears clipped. A polygon too
+/// degenerate to clip gives what was clipped of it.
+pub(crate) fn triangulate(
+    mut outer: Vec<[f64; 2]>,
+    mut holes: Vec<Vec<[f64; 2]>>,
+) -> Vec<[[f64; 2]; 3]> {
+    if signed_area(&outer) < 0.0 {
+        outer.reverse();
+    }
+    for hole in &mut holes {
+        if signed_area(hole) > 0.0 {
+            hole.reverse();
+        }
+    }
+    holes.retain(|hole| hole.len() >= 3);
+    // The rightmost holes first, as each bridge goes right, to what's merged already.
+    holes.sort_by(|a, b| rightmost(b).1[0].total_cmp(&rightmost(a).1[0]));
+    let mut polygon = outer;
+    for (n, hole) in holes.iter().enumerate() {
+        let (m_at, m) = rightmost(hole);
+        let others: Vec<&Vec<[f64; 2]>> = holes.iter().skip(n + 1).collect();
+        let clear = |p: [f64; 2]| {
+            let crosses = |ring: &[[f64; 2]]| {
+                (0..ring.len()).any(|i| {
+                    let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                    a != p && b != p && a != m && b != m && segments_cross(m, p, a, b)
+                })
+            };
+            !crosses(&polygon) && !crosses(hole) && !others.iter().any(|o| crosses(o))
+        };
+        let Some(bridge) = (0..polygon.len())
+            .filter(|&i| clear(polygon[i]))
+            .min_by(|&i, &j| length(sub(polygon[i], m)).total_cmp(&length(sub(polygon[j], m))))
+        else {
+            continue;
+        };
+        let p = polygon[bridge];
+        let mut joined = Vec::with_capacity(polygon.len() + hole.len() + 2);
+        joined.extend_from_slice(&polygon[..=bridge]);
+        joined.extend((0..=hole.len()).map(|k| hole[(m_at + k) % hole.len()]));
+        joined.push(p);
+        joined.extend_from_slice(&polygon[bridge + 1..]);
+        polygon = joined;
+    }
+    clip_ears(polygon)
+}
+
+/// A counter-clockwise polygon's ears clipped, one at a time, until a triangle is left.
+fn clip_ears(mut polygon: Vec<[f64; 2]>) -> Vec<[[f64; 2]; 3]> {
+    let mut triangles = Vec::new();
+    let mut misses = 0;
+    let mut i = 0;
+    while polygon.len() > 3 && misses < polygon.len() {
+        let n = polygon.len();
+        let (a, b, c) = (
+            polygon[(i + n - 1) % n],
+            polygon[i % n],
+            polygon[(i + 1) % n],
+        );
+        let convex = cross(sub(b, a), sub(c, b)) > 0.0;
+        let empty = convex
+            && polygon
+                .iter()
+                .all(|&p| p == a || p == b || p == c || !inside_triangle(p, a, b, c));
+        if empty {
+            triangles.push([a, b, c]);
+            polygon.remove(i % n);
+            misses = 0;
+        } else {
+            i += 1;
+            misses += 1;
+        }
+        i %= polygon.len().max(1);
+    }
+    if polygon.len() == 3 && cross(sub(polygon[1], polygon[0]), sub(polygon[2], polygon[1])) > 0.0 {
+        triangles.push([polygon[0], polygon[1], polygon[2]]);
+    }
+    triangles
+}
+
+/// The vertex of `ring` furthest right (the first of those as far), and its place.
+fn rightmost(ring: &[[f64; 2]]) -> (usize, [f64; 2]) {
+    ring.iter().copied().enumerate().fold(
+        (0, ring.first().copied().unwrap_or([0.0, 0.0])),
+        |best, (i, p)| {
+            if p[0] > best.1[0] { (i, p) } else { best }
+        },
+    )
+}
+
+/// Twice a polygon's signed area: positive counter-clockwise.
+pub(crate) fn signed_area(ring: &[[f64; 2]]) -> f64 {
+    (0..ring.len())
+        .map(|i| cross(ring[i], ring[(i + 1) % ring.len()]))
+        .sum::<f64>()
+        / 2.0
+}
+
+/// Whether `p` lies inside the counter-clockwise triangle `a`, `b`, `c` or on its edges.
+fn inside_triangle(p: [f64; 2], a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> bool {
+    cross(sub(b, a), sub(p, a)) >= 0.0
+        && cross(sub(c, b), sub(p, b)) >= 0.0
+        && cross(sub(a, c), sub(p, c)) >= 0.0
+}
+
+/// Whether the segments from `a` to `b` and from `c` to `d` cross, each passing between the
+/// other's ends.
+fn segments_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let side = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| cross(sub(q, p), sub(r, p));
+    let (d1, d2) = (side(c, d, a), side(c, d, b));
+    let (d3, d4) = (side(a, b, c), side(a, b, d));
+    d1 * d2 < 0.0 && d3 * d4 < 0.0
+}
+
+/// What's drawn of a tool's preview (the core's `sketch_tools::Preview`), seen through
+/// `view`: the entity under way dashed, its points, the dotted inference lines, the
+/// relations the pointer shows as glyphs beside it (a snap onto a point as a ring), the
+/// pointer's crosshair, and the length of the line under way beside it.
+pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
+    let mut drawn = Vec::new();
+    let stroke = |points: Vec<Option<Pos2>>, kind, colour, drawn: &mut Vec<Drawn>| {
+        for run in runs(points) {
+            drawn.push(Drawn::Stroke {
+                of: None,
+                kind,
+                points: run,
+                colour,
+                selected: false,
+            });
+        }
+    };
+    for guide in &preview.guides {
+        stroke(
+            guide.iter().map(|&p| view.at(p)).collect(),
+            StrokeKind::Guide,
+            SKETCH_GUIDE,
+            &mut drawn,
+        );
+    }
+    for line in &preview.lines {
+        stroke(
+            line.iter().map(|&p| view.at(p)).collect(),
+            StrokeKind::Preview,
+            SKETCH_PREVIEW,
+            &mut drawn,
+        );
+    }
+    for &(centre, radius) in &preview.circles {
+        let points = round_points(centre, radius, 0.0, TAU, view.project, view.chord_tolerance);
+        stroke(points, StrokeKind::Preview, SKETCH_PREVIEW, &mut drawn);
+    }
+    for arc in &preview.arcs {
+        let from = angle(sub(arc.start, arc.center));
+        let sweep = (angle(sub(arc.end, arc.center)) - from).rem_euclid(TAU);
+        let radius = length(sub(arc.start, arc.center));
+        let points = round_points(
+            arc.center,
+            radius,
+            from,
+            sweep,
+            view.project,
+            view.chord_tolerance,
+        );
+        stroke(points, StrokeKind::Preview, SKETCH_PREVIEW, &mut drawn);
+    }
+    for &p in preview.points.iter().chain(&preview.construction_points) {
+        if let Some(at) = view.at(p) {
+            drawn.push(Drawn::Point {
+                of: None,
+                at,
+                colour: SKETCH_PREVIEW,
+                selected: false,
+            });
+        }
+    }
+    let mut stacked = 0.0;
+    for shown in &preview.shown {
+        let Some(at) = view.at(shown.at) else {
+            continue;
+        };
+        let (kind, colour) = match &shown.relation {
+            Relation::Shared(_) | Relation::Origin => {
+                drawn.push(Drawn::Ring {
+                    at,
+                    colour: SKETCH_SNAP,
+                });
+                (GlyphKind::Coincident, SKETCH_SNAP)
+            }
+            Relation::Midpoint(_) => (GlyphKind::Midpoint, SKETCH_GUIDE),
+            Relation::On(_) => (GlyphKind::Coincident, SKETCH_GUIDE),
+            Relation::Horizontal | Relation::HorizontalPoints(_) => {
+                (GlyphKind::Horizontal, SKETCH_GUIDE)
+            }
+            Relation::Vertical | Relation::VerticalPoints(_) => (GlyphKind::Vertical, SKETCH_GUIDE),
+            Relation::Perpendicular(_) => (GlyphKind::Perpendicular, SKETCH_GUIDE),
+            Relation::Parallel(_) => (GlyphKind::Parallel, SKETCH_GUIDE),
+            Relation::Tangent(_) => (GlyphKind::Tangent, SKETCH_GUIDE),
+        };
+        drawn.push(Drawn::Glyph {
+            of: None,
+            kind,
+            at: at + SKETCH_SHOWN_AT + Vec2::new(stacked, 0.0),
+            colour,
+            selected: false,
+        });
+        stacked += SKETCH_GLYPH_STEP;
+    }
+    if let Some(pointer) = preview.pointer.and_then(|p| view.at(p)) {
+        let arm = SKETCH_CROSSHAIR_ARM;
+        for (dx, dy) in [(arm, 0.0), (0.0, arm)] {
+            let d = Vec2::new(dx, dy);
+            stroke(
+                vec![Some(pointer - d), Some(pointer + d)],
+                StrokeKind::Crosshair,
+                SKETCH_CROSSHAIR,
+                &mut drawn,
+            );
+        }
+        if let Some([from, to]) = preview.lines.last() {
+            drawn.push(Drawn::Label {
+                of: None,
+                kind: LabelKind::Tool,
+                at: pointer + SKETCH_TOOL_LABEL_AT,
+                text: format!("{:.2} mm", length(sub(*to, *from))),
+                colour: SKETCH_DIMENSION,
+                selected: false,
+            });
         }
     }
     drawn
@@ -738,7 +1295,7 @@ pub fn drawing(
 /// The polyline of a circle or an arc about `centre`, of `radius`, from the angle `start`
 /// through `sweep`, its vertices on the curve and its chords within `tolerance` screen
 /// points of it: as many segments as that needs at the projection's largest stretch about
-/// the centre, at most [`MAX_CURVE_SEGMENTS`].
+/// the centre, at most [`MAX_CURVE_SEGMENTS`]; a whole turn ending where it starts.
 pub(crate) fn round_points(
     centre: [f64; 2],
     radius: f64,
@@ -747,14 +1304,14 @@ pub(crate) fn round_points(
     project: &dyn Fn([f64; 2]) -> Option<Pos2>,
     tolerance: f32,
 ) -> Vec<Option<Pos2>> {
-    let segments = segments(stretch(centre, radius, project) * radius, sweep, tolerance);
+    let project = |at: [f64; 2]| project(at).filter(|p| p.x.is_finite() && p.y.is_finite());
+    let segments = segments(stretch(centre, radius, &project) * radius, sweep, tolerance);
     let mut points: Vec<Option<Pos2>> = (0..=segments)
         .map(|k| {
             let at = start + sweep * k as f64 / segments as f64;
             project(add(centre, mul(direction(at), radius)))
         })
         .collect();
-    // A whole turn ends exactly where it starts, not a rounding away.
     if sweep >= TAU
         && let Some(&first) = points.first()
         && let Some(last) = points.last_mut()
@@ -794,6 +1351,9 @@ pub(crate) fn segments(radius: f64, sweep: f64, tolerance: f32) -> usize {
 /// where it can't be worked out (the centre or the rim unprojected).
 fn stretch(centre: [f64; 2], radius: f64, project: &dyn Fn([f64; 2]) -> Option<Pos2>) -> f64 {
     let at = |p: [f64; 2]| project(p).map(|p| [f64::from(p.x), f64::from(p.y)]);
+    if radius <= 0.0 {
+        return 0.0;
+    }
     let (Some(c), Some(x), Some(y)) = (
         at(centre),
         at(add(centre, [radius, 0.0])),
@@ -801,9 +1361,6 @@ fn stretch(centre: [f64; 2], radius: f64, project: &dyn Fn([f64; 2]) -> Option<P
     ) else {
         return f64::INFINITY;
     };
-    if radius <= 0.0 {
-        return 0.0;
-    }
     let (a, c2) = ((x[0] - c[0]) / radius, (x[1] - c[1]) / radius);
     let (b, d) = ((y[0] - c[0]) / radius, (y[1] - c[1]) / radius);
     let sum = a * a + b * b + c2 * c2 + d * d;
@@ -835,119 +1392,343 @@ fn runs(points: Vec<Option<Pos2>>) -> Vec<Vec<Pos2>> {
 }
 
 /// The one function that turns what's drawn into egui's shapes, with `style`'s sizes: a
-/// restyle of sketch mode is this, and `theme`'s values.
-pub fn to_shapes(painter: &Painter, drawn: &[Drawn], style: &SketchStyle) -> Vec<Shape> {
+/// restyle of sketch mode is this, and `style`'s values. A selected item is drawn white
+/// over a wider halo.
+pub fn to_shapes(painter: &Painter, drawn: &[Drawn]) -> Vec<Shape> {
     let mut shapes = Vec::new();
+    let halo = Stroke::new(SKETCH_SELECTED_HALO_WIDTH, SKETCH_SELECTED_HALO);
     for item in drawn {
         match item {
             Drawn::Stroke {
+                kind,
                 points,
                 colour,
-                dashed,
-                thin,
+                selected,
                 ..
             } => {
-                let width = if *thin {
-                    style.dimension_line_width
-                } else {
-                    style.line_width
+                let (width, dash) = match kind {
+                    StrokeKind::Curve { dashed } => (
+                        SKETCH_STROKE_WIDTH,
+                        dashed.then_some(SKETCH_CONSTRUCTION_DASH),
+                    ),
+                    StrokeKind::Dimension => (SKETCH_DIMENSION_WIDTH, None),
+                    StrokeKind::GridMinor | StrokeKind::GridMajor | StrokeKind::Axis => {
+                        (SKETCH_GRID_WIDTH, None)
+                    }
+                    StrokeKind::Preview => (SKETCH_PREVIEW_WIDTH, Some(SKETCH_CONSTRUCTION_DASH)),
+                    StrokeKind::Guide => (SKETCH_GRID_WIDTH, Some(SKETCH_GUIDE_DASH)),
+                    StrokeKind::Crosshair => (SKETCH_GRID_WIDTH, None),
                 };
-                let stroke = Stroke::new(width, *colour);
-                if *dashed {
-                    shapes.extend(Shape::dashed_line(points, stroke, style.dash, style.gap));
+                let stroke = if *selected {
+                    shapes.push(Shape::line(points.clone(), halo));
+                    Stroke::new(SKETCH_SELECTED_WIDTH, SKETCH_SELECTED_STROKE)
                 } else {
-                    shapes.push(Shape::line(points.clone(), stroke));
+                    Stroke::new(width, *colour)
+                };
+                match dash {
+                    Some([dash, gap]) => {
+                        shapes.extend(Shape::dashed_line(points, stroke, dash, gap))
+                    }
+                    None => shapes.push(Shape::line(points.clone(), stroke)),
                 }
             }
-            Drawn::Dot { at, colour, .. } => {
-                shapes.push(Shape::circle_filled(*at, style.point_radius, *colour));
+            Drawn::Fill {
+                triangles, colour, ..
+            } => {
+                let mut mesh = egui::Mesh::default();
+                for triangle in triangles {
+                    let base = mesh.vertices.len() as u32;
+                    for &p in triangle {
+                        mesh.colored_vertex(p, *colour);
+                    }
+                    mesh.add_triangle(base, base + 1, base + 2);
+                }
+                shapes.push(Shape::mesh(mesh));
+            }
+            Drawn::Point {
+                at,
+                colour,
+                selected,
+                ..
+            } => {
+                let square = Rect::from_center_size(*at, Vec2::splat(SKETCH_POINT_SIZE));
+                if *selected {
+                    let wide = square.expand(SKETCH_SELECTED_HALO_WIDTH / 2.0);
+                    shapes.push(Shape::rect_filled(wide, 0.0, SKETCH_SELECTED_HALO));
+                    shapes.push(Shape::rect_filled(square, 0.0, SKETCH_SELECTED_STROKE));
+                } else {
+                    shapes.push(Shape::rect_filled(square, 0.0, *colour));
+                }
+            }
+            Drawn::Origin { at } => {
+                shapes.push(Shape::circle_stroke(
+                    *at,
+                    SKETCH_ORIGIN_RADIUS,
+                    Stroke::new(SKETCH_ORIGIN_WIDTH, SKETCH_ORIGIN),
+                ));
             }
             Drawn::Glyph {
-                kind, at, colour, ..
-            } => shapes.extend(glyph(painter, *kind, *at, *colour, style)),
-            Drawn::Text {
-                at, text, colour, ..
-            } => shapes.push(label(
-                painter,
-                *at,
+                kind,
+                at,
+                colour,
+                selected,
+                ..
+            } => shapes.extend(glyph(*kind, *at, *colour, *selected)),
+            Drawn::Arrow {
+                tip,
+                toward,
+                colour,
+                selected,
+                ..
+            } => {
+                let colour = if *selected {
+                    SKETCH_SELECTED_STROKE
+                } else {
+                    *colour
+                };
+                let base = *tip + *toward * SKETCH_ARROW_LENGTH;
+                let side = toward.rot90() * SKETCH_ARROW_HALF_WIDTH;
+                shapes.push(Shape::convex_polygon(
+                    vec![*tip, base + side, base - side],
+                    colour,
+                    Stroke::NONE,
+                ));
+            }
+            Drawn::Label {
+                kind,
+                at,
                 text,
-                *colour,
-                style.dimension_text_size,
-            )),
+                colour,
+                selected,
+                ..
+            } => shapes.extend(label(painter, *kind, *at, text, *colour, *selected)),
+            Drawn::Ring { at, colour } => {
+                shapes.push(Shape::circle_stroke(
+                    *at,
+                    SKETCH_SNAP_RADIUS,
+                    Stroke::new(SKETCH_SNAP_WIDTH, *colour),
+                ));
+            }
         }
     }
     shapes
 }
 
-/// A glyph of `kind` at `at`, in `colour`: one function for each kind, so each can be drawn
-/// its own way. Plain text labels for now.
-fn glyph(
+/// A label's shapes: its box (a dimension's dark, a tool's as a floating panel), then its
+/// text, centred at `at` (a tool's from its left).
+fn label(
     painter: &Painter,
-    kind: GlyphKind,
+    kind: LabelKind,
+    at: Pos2,
+    text: &str,
+    colour: Color32,
+    selected: bool,
+) -> Vec<Shape> {
+    let (size, fill, border) = match kind {
+        LabelKind::Dimension => (
+            CANVAS_TEXT_SIZE,
+            SKETCH_LABEL_FILL,
+            selected.then_some(SKETCH_SELECTED_STROKE),
+        ),
+        LabelKind::Tool => (CANVAS_LABEL_SIZE, FLOATING_BG, Some(GRAY_350)),
+    };
+    let colour = if selected {
+        SKETCH_SELECTED_STROKE
+    } else {
+        colour
+    };
+    let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(size), colour);
+    let box_size = Vec2::new(
+        galley.size().x + 2.0 * SKETCH_LABEL_PAD,
+        SKETCH_LABEL_HEIGHT,
+    );
+    let frame = match kind {
+        LabelKind::Dimension => Rect::from_center_size(at, box_size),
+        LabelKind::Tool => Rect::from_min_size(at, box_size),
+    };
+    let mut shapes = vec![Shape::rect_filled(
+        frame,
+        CornerRadius::same(SKETCH_GLYPH_RADIUS),
+        fill,
+    )];
+    if let Some(border) = border {
+        shapes.push(Shape::rect_stroke(
+            frame,
+            CornerRadius::same(SKETCH_GLYPH_RADIUS),
+            Stroke::new(1.0, border),
+            egui::StrokeKind::Inside,
+        ));
+    }
+    let corner = frame.center() - galley.size() / 2.0;
+    shapes.push(Shape::galley(corner, galley, colour));
+    shapes
+}
+
+/// A glyph of `kind` at `at`: its box (bordered in `colour` where that says a state, white
+/// over a halo if selected), then its icon, drawn by one function for each kind, in the
+/// prototype's 20-unit icon square scaled into the box.
+fn glyph(kind: GlyphKind, at: Pos2, colour: Color32, selected: bool) -> Vec<Shape> {
+    let side = Rect::from_center_size(at, Vec2::splat(SKETCH_GLYPH_SIDE));
+    let radius = CornerRadius::same(SKETCH_GLYPH_RADIUS);
+    let mut shapes = Vec::new();
+    if selected {
+        shapes.push(Shape::rect_filled(
+            side.expand(SKETCH_SELECTED_HALO_WIDTH / 2.0),
+            radius,
+            SKETCH_SELECTED_HALO,
+        ));
+    }
+    let border = match (selected, colour == SKETCH_GLYPH_ICON) {
+        (true, _) => SKETCH_SELECTED_STROKE,
+        (false, true) => SKETCH_GLYPH_BORDER,
+        (false, false) => colour,
+    };
+    shapes.push(Shape::rect_filled(side, radius, SKETCH_GLYPH_FILL));
+    shapes.push(Shape::rect_stroke(
+        side,
+        radius,
+        Stroke::new(1.0, border),
+        egui::StrokeKind::Inside,
+    ));
+    let icon = Icon { at, colour };
+    shapes.extend(match kind {
+        GlyphKind::Horizontal => horizontal_icon(icon),
+        GlyphKind::Vertical => vertical_icon(icon),
+        GlyphKind::Coincident => coincident_icon(icon),
+        GlyphKind::Midpoint => midpoint_icon(icon),
+        GlyphKind::Tangent => tangent_icon(icon),
+        GlyphKind::Perpendicular => perpendicular_icon(icon),
+        GlyphKind::Parallel => parallel_icon(icon),
+        GlyphKind::Equal => equal_icon(icon),
+        GlyphKind::Symmetric => symmetric_icon(icon),
+        GlyphKind::Redundant => redundant_icon(icon),
+    });
+    shapes
+}
+
+/// An icon's place and colour: the prototype's icons are drawn in a 20-unit square, scaled
+/// to 0.6 of it about the glyph's centre.
+#[derive(Clone, Copy)]
+struct Icon {
     at: Pos2,
     colour: Color32,
-    style: &SketchStyle,
-) -> Vec<Shape> {
-    let size = style.glyph_size;
-    match kind {
-        GlyphKind::Horizontal => horizontal_glyph(painter, at, colour, size),
-        GlyphKind::Vertical => vertical_glyph(painter, at, colour, size),
-        GlyphKind::On => on_glyph(painter, at, colour, size),
-        GlyphKind::Midpoint => midpoint_glyph(painter, at, colour, size),
-        GlyphKind::Tangent => tangent_glyph(painter, at, colour, size),
-        GlyphKind::Perpendicular => perpendicular_glyph(painter, at, colour, size),
-        GlyphKind::Parallel => parallel_glyph(painter, at, colour, size),
-        GlyphKind::Equal => equal_glyph(painter, at, colour, size),
-        GlyphKind::Symmetric => symmetric_glyph(painter, at, colour, size),
-        GlyphKind::Redundant => redundant_glyph(painter, at, colour, size),
+}
+
+impl Icon {
+    const SCALE: f32 = 0.6;
+
+    /// The icon square's `(x, y)`, on the screen.
+    fn p(self, x: f32, y: f32) -> Pos2 {
+        self.at + Vec2::new(x - 10.0, y - 10.0) * Self::SCALE
+    }
+
+    fn stroke(self) -> Stroke {
+        Stroke::new(SKETCH_GLYPH_ICON_WIDTH, self.colour)
+    }
+
+    /// A line from `a` to `b`, in the icon square, at `opacity`.
+    fn line(self, a: (f32, f32), b: (f32, f32), opacity: f32) -> Shape {
+        let stroke = Stroke::new(SKETCH_GLYPH_ICON_WIDTH, self.colour.gamma_multiply(opacity));
+        Shape::line_segment([self.p(a.0, a.1), self.p(b.0, b.1)], stroke)
+    }
+
+    fn ring(self, centre: (f32, f32), radius: f32) -> Shape {
+        Shape::circle_stroke(
+            self.p(centre.0, centre.1),
+            radius * Self::SCALE,
+            self.stroke(),
+        )
+    }
+
+    fn dot(self, centre: (f32, f32), radius: f32) -> Shape {
+        Shape::circle_filled(
+            self.p(centre.0, centre.1),
+            radius * Self::SCALE,
+            self.colour,
+        )
     }
 }
 
-fn horizontal_glyph(painter: &Painter, at: Pos2, colour: Color32, size: f32) -> Vec<Shape> {
-    vec![label(painter, at, "H", colour, size)]
+fn horizontal_icon(i: Icon) -> Vec<Shape> {
+    vec![
+        i.line((3.5, 10.0), (16.5, 10.0), 1.0),
+        i.line((3.5, 7.0), (3.5, 13.0), 0.5),
+        i.line((16.5, 7.0), (16.5, 13.0), 0.5),
+    ]
 }
 
-fn vertical_glyph(painter: &Painter, at: Pos2, colour: Color32, size: f32) -> Vec<Shape> {
-    vec![label(painter, at, "V", colour, size)]
+fn vertical_icon(i: Icon) -> Vec<Shape> {
+    vec![
+        i.line((10.0, 3.5), (10.0, 16.5), 1.0),
+        i.line((7.0, 3.5), (13.0, 3.5), 0.5),
+        i.line((7.0, 16.5), (13.0, 16.5), 0.5),
+    ]
 }
 
-fn on_glyph(painter: &Painter, at: Pos2, colour: Color32, size: f32) -> Vec<Shape> {
-    vec![label(painter, at, "On", colour, size)]
+fn coincident_icon(i: Icon) -> Vec<Shape> {
+    vec![i.ring((10.0, 10.0), 5.5), i.dot((10.0, 10.0), 1.8)]
 }
 
-fn midpoint_glyph(painter: &Painter, at: Pos2, colour: Color32, size: f32) -> Vec<Shape> {
-    vec![label(painter, at, "Mid", colour, size)]
+fn midpoint_icon(i: Icon) -> Vec<Shape> {
+    vec![
+        i.line((3.0, 13.0), (17.0, 13.0), 1.0),
+        Shape::convex_polygon(
+            vec![i.p(10.0, 7.5), i.p(13.5, 13.0), i.p(6.5, 13.0)],
+            i.colour,
+            Stroke::NONE,
+        ),
+    ]
 }
 
-fn tangent_glyph(painter: &Painter, at: Pos2, colour: Color32, size: f32) -> Vec<Shape> {
-    vec![label(painter, at, "Tan", colour, size)]
+fn tangent_icon(i: Icon) -> Vec<Shape> {
+    vec![
+        i.ring((10.0, 12.0), 4.5),
+        i.line((3.0, 7.5), (17.0, 7.5), 1.0),
+    ]
 }
 
-fn perpendicular_glyph(painter: &Painter, at: Pos2, colour: Color32, size: f32) -> Vec<Shape> {
-    vec![label(painter, at, "Perp", colour, size)]
+fn perpendicular_icon(i: Icon) -> Vec<Shape> {
+    vec![
+        i.line((4.0, 16.0), (16.0, 16.0), 1.0),
+        i.line((10.0, 16.0), (10.0, 4.0), 1.0),
+    ]
 }
 
-fn parallel_glyph(painter: &Painter, at: Pos2, colour: Color32, size: f32) -> Vec<Shape> {
-    vec![label(painter, at, "Par", colour, size)]
+fn parallel_icon(i: Icon) -> Vec<Shape> {
+    vec![
+        i.line((6.0, 16.0), (11.0, 4.0), 1.0),
+        i.line((10.0, 16.0), (15.0, 4.0), 1.0),
+    ]
 }
 
-fn equal_glyph(painter: &Painter, at: Pos2, colour: Color32, size: f32) -> Vec<Shape> {
-    vec![label(painter, at, "=", colour, size)]
+fn equal_icon(i: Icon) -> Vec<Shape> {
+    vec![
+        i.line((4.5, 7.5), (15.5, 7.5), 1.0),
+        i.line((4.5, 12.5), (15.5, 12.5), 1.0),
+    ]
 }
 
-fn symmetric_glyph(painter: &Painter, at: Pos2, colour: Color32, size: f32) -> Vec<Shape> {
-    vec![label(painter, at, "Sym", colour, size)]
+fn symmetric_icon(i: Icon) -> Vec<Shape> {
+    let mut shapes = Shape::dashed_line(&[i.p(10.0, 3.0), i.p(10.0, 17.0)], i.stroke(), 1.2, 1.0);
+    for (a, b) in [
+        ((6.0, 6.0), (6.0, 14.0)),
+        ((14.0, 6.0), (14.0, 14.0)),
+        ((3.5, 6.0), (6.0, 6.0)),
+        ((3.5, 14.0), (6.0, 14.0)),
+        ((14.0, 6.0), (16.5, 6.0)),
+        ((14.0, 14.0), (16.5, 14.0)),
+    ] {
+        shapes.push(i.line(a, b, 1.0));
+    }
+    shapes
 }
 
-fn redundant_glyph(painter: &Painter, at: Pos2, colour: Color32, size: f32) -> Vec<Shape> {
-    vec![label(painter, at, "Red", colour, size)]
-}
-
-/// `text` centred at `at`, `size` points high, in `colour`.
-fn label(painter: &Painter, at: Pos2, text: &str, colour: Color32, size: f32) -> Shape {
-    let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(size), colour);
-    let corner = at - galley.size() / 2.0;
-    Shape::galley(corner, galley, colour)
+/// A redundant relation's own: an exclamation mark, as a warning is.
+fn redundant_icon(i: Icon) -> Vec<Shape> {
+    vec![
+        i.line((10.0, 4.0), (10.0, 12.0), 1.0),
+        i.dot((10.0, 15.5), 1.4),
+    ]
 }
 
 /// A sketch drawn flat in a rectangle of the screen, with no frame in 3D behind it: a
@@ -1002,10 +1783,15 @@ impl Flat {
             self.middle[1] - (f64::from(at.y) - f64::from(self.centre.y)) / self.zoom,
         ])
     }
+
+    /// Millimetres per screen point.
+    pub fn scale(&self) -> Scale {
+        Scale(1.0 / self.zoom)
+    }
 }
 
 /// The smallest box holding `points`: none for none.
-fn bounds(points: impl Iterator<Item = [f64; 2]>) -> Option<([f64; 2], [f64; 2])> {
+pub(crate) fn bounds(points: impl Iterator<Item = [f64; 2]>) -> Option<([f64; 2], [f64; 2])> {
     points.fold(None, |found, p| {
         Some(match found {
             None => (p, p),
@@ -1030,13 +1816,16 @@ pub(crate) fn foot(p: [f64; 2], from: [f64; 2], to: [f64; 2]) -> [f64; 2] {
 /// Where the line through `a` along `da` meets the one through `b` along `db`: none if
 /// they're parallel.
 fn crossing(a: [f64; 2], da: [f64; 2], b: [f64; 2], db: [f64; 2]) -> Option<[f64; 2]> {
-    let cross = da[0] * db[1] - da[1] * db[0];
-    if cross == 0.0 || !cross.is_finite() {
+    let c = cross(da, db);
+    if c == 0.0 || !c.is_finite() {
         return None;
     }
-    let ab = sub(b, a);
-    let t = (ab[0] * db[1] - ab[1] * db[0]) / cross;
+    let t = cross(sub(b, a), db) / c;
     Some(add(a, mul(da, t)))
+}
+
+fn cross(a: [f64; 2], b: [f64; 2]) -> f64 {
+    a[0] * b[1] - a[1] * b[0]
 }
 
 pub(crate) fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
@@ -1047,7 +1836,7 @@ pub(crate) fn add(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] + b[0], a[1] + b[1]]
 }
 
-fn mul(a: [f64; 2], k: f64) -> [f64; 2] {
+pub(crate) fn mul(a: [f64; 2], k: f64) -> [f64; 2] {
     [a[0] * k, a[1] * k]
 }
 

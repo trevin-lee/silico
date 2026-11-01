@@ -2014,6 +2014,15 @@ impl Tab {
         self.advance(sessions);
     }
 
+    /// A drawing tool chosen in sketch mode (M5.11b's), or none (Esc's): its preview let
+    /// go of either way. Nothing outside sketch mode.
+    pub fn sketch_tool(&mut self, tool: Option<silico_core::sketch_tools::ToolKind>) {
+        if let Some(mode) = self.sketch.as_mut() {
+            mode.tool = tool;
+            mode.preview = silico_core::sketch_tools::Preview::default();
+        }
+    }
+
     /// Delete in sketch mode: the selection removed (`sketch_remove`), or a lone split point
     /// joined (`sketch_join`), once what's asked before has answered; the selection let
     /// go. A refusal is said. Nothing with nothing selected, or before the sketch is known.

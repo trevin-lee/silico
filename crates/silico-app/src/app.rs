@@ -82,6 +82,16 @@ fn typing(ui: &Ui) -> bool {
     })
 }
 
+/// The name of the sketch open in `tab`, as its browser row gives it ("Sketch" until it's
+/// added and listed).
+fn sketch_name(tab: &Tab) -> String {
+    tab.sketch
+        .as_ref()
+        .and_then(|mode| mode.sketch.as_ref())
+        .and_then(|id| tab.browser.sketches.iter().find(|row| &row.id == id))
+        .map_or_else(|| "Sketch".to_owned(), |row| row.name.clone())
+}
+
 /// What the app is asking the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Asking {
@@ -291,7 +301,7 @@ impl<P: Clients + 'static> App<P> {
             };
             tree.ui(&mut panes, ui);
         });
-        self.sketch_palette(ui);
+        self.sketch_canvas(ui, &mut started);
         self.ask(ui, &mut started);
         if self.quitting && self.tabs.is_empty() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -484,6 +494,11 @@ impl<P: Clients + 'static> App<P> {
             .active_place()
             .and_then(|at| self.tabs.get(at))
             .is_some_and(Tab::in_sketch);
+        // Ctrl+Enter (⌘↵) finishes the sketch (the prototype's key).
+        let finish = in_sketch
+            && ui.input_mut(|input| {
+                input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter))
+            });
         let delete = in_sketch
             && !typing(ui)
             && ui.input_mut(|input| {
@@ -499,6 +514,9 @@ impl<P: Clients + 'static> App<P> {
         }
         if delete {
             tab.sketch_delete(sessions);
+        }
+        if finish {
+            tab.finish_sketch(sessions, true);
         }
         if undo && tab.undoable() {
             tab.step(sessions, true);
@@ -523,7 +541,7 @@ impl<P: Clients + 'static> App<P> {
             self.close(id);
         }
         (
-            save || undo || redo || stop || close || enter || rebuild || delete,
+            save || undo || redo || stop || close || enter || rebuild || delete || finish,
             dialog_key,
         )
     }
@@ -741,22 +759,6 @@ impl<P: Clients + 'static> App<P> {
             .exact_size(theme::TITLE_BAR_HEIGHT * 2.0)
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
-                    // While a sketch is open, the Sketch tab's row (fusion.md, *Sketch mode*).
-                    if let Some(tab) = tab.as_mut().filter(|tab| tab.in_sketch()) {
-                        let enabled = !tab.closing();
-                        match sketch::bar::sketch_bar(ui, enabled) {
-                            BarAction::None => {}
-                            BarAction::Finish => {
-                                tab.finish_sketch(sessions, true);
-                                *started = true;
-                            }
-                            BarAction::Cancel => {
-                                tab.finish_sketch(sessions, false);
-                                *started = true;
-                            }
-                        }
-                        return;
-                    }
                     ui.label(RichText::new("DESIGN").strong());
                     ui.separator();
                     ui.label(RichText::new("SOLID").strong());
@@ -844,27 +846,11 @@ impl<P: Clients + 'static> App<P> {
                         (_, None) => String::new(),
                     };
                     ui.label(said);
-                    // In a sketch (docs/ux/solidworks.md, §2): the pointer's coordinates, the
-                    // state, and what's being edited.
+                    // In a sketch (docs/ux/solidworks.md, §2): what's edited, the pointer's
+                    // coordinates, and the state.
                     if let Some(mode) = &tab.sketch {
                         ui.separator();
-                        if let Some([x, y]) = mode.pointer {
-                            ui.label(format!("{x:.3} mm, {y:.3} mm"));
-                        }
-                        if let Some(state) = mode.state() {
-                            ui.label(sketch::state_words(state));
-                        }
-                        let name = mode.sketch.as_ref().and_then(|id| {
-                            tab.browser
-                                .sketches
-                                .iter()
-                                .find(|row| &row.id == id)
-                                .map(|row| row.name.clone())
-                        });
-                        ui.label(match name {
-                            Some(name) => format!("Editing {name}"),
-                            None => "Editing Sketch".to_owned(),
-                        });
+                        sketch::bar::status_ui(ui, &mode.status(&sketch_name(tab)));
                         ui.separator();
                     }
                     let stoppable = tab.stoppable();
@@ -890,30 +876,39 @@ impl<P: Clients + 'static> App<P> {
             });
     }
 
-    /// The Sketch Palette (fusion.md, *Sketch mode*), floating in the canvas's top right
-    /// while a sketch is open in the tab shown.
-    fn sketch_palette(&mut self, ui: &mut Ui) {
+    /// Sketch mode's panels in the canvas while a sketch is open in the tab shown (the
+    /// prototype's): the sketch bar at the canvas's top centre, its Finish Sketch and Cancel
+    /// taken, and the Sketch Palette at its right.
+    fn sketch_canvas(&mut self, ui: &mut Ui, started: &mut bool) {
+        let sessions = &self.sessions;
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return;
         };
-        let revision = tab.revision;
+        let name = sketch_name(tab);
+        let (revision, enabled, id) = (tab.revision, !tab.closing(), tab.id);
         let Some(mode) = tab.sketch.as_mut() else {
             return;
         };
         let canvas = self.canvas.unwrap_or_else(|| ui.ctx().content_rect());
+        let bar = mode.bar_view(&name, enabled);
         let view = mode.palette_view(revision);
-        egui::Window::new("SKETCH PALETTE")
-            .id(egui::Id::new(("sketch_palette", tab.id.to_string())))
-            .default_pos(canvas.right_top() + theme::SKETCH_PALETTE_FROM_CORNER)
-            .constrain_to(canvas)
-            .resizable(false)
+        let mut action = BarAction::None;
+        egui::Area::new(egui::Id::new(("sketch_bar", id.to_string())))
+            .fixed_pos(canvas.center_top() + egui::vec2(0.0, sketch::style::SKETCH_BAR_FROM_TOP))
+            .pivot(egui::Align2::CENTER_TOP)
+            .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar));
+        // Pinned at the canvas's top right, under the ViewCube, as the prototype's is.
+        egui::Area::new(egui::Id::new(("sketch_palette", id.to_string())))
+            .fixed_pos(canvas.right_top() + sketch::style::PALETTE_FROM_CORNER)
             .show(ui.ctx(), |ui| {
-                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-                    node.set_role(egui::accesskit::Role::Group);
-                    node.set_label("Sketch Palette");
-                });
-                sketch::bar::palette(ui, &view, &mut mode.settings);
+                sketch::bar::palette(ui, &view, &mut mode.settings)
             });
+        match action {
+            BarAction::None => {}
+            BarAction::Finish => tab.finish_sketch(sessions, true),
+            BarAction::Cancel => tab.finish_sketch(sessions, false),
+        }
+        *started |= action != BarAction::None;
     }
 
     /// A file changed on disk while edits are held (section 4): Reload (`rollback`, after

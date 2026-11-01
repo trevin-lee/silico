@@ -232,7 +232,6 @@ impl<P: Clients + 'static> Panes<'_, P> {
             for name in ["Origin", "X", "Y", "Z", "XY", "XZ", "YZ"] {
                 let shown = RowView {
                     name,
-                    prefix: None,
                     selected: None,
                     health: Health::Healthy,
                     said: None,
@@ -251,7 +250,6 @@ impl<P: Clients + 'static> Panes<'_, P> {
             browser,
             hidden,
             said,
-            prefixes,
             ..
         } = &mut *tab;
         for (name, rows) in [("Bodies", &browser.bodies), ("Sketches", &browser.sketches)] {
@@ -263,15 +261,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
                         .as_ref()
                         .and_then(|by| said.get(by.as_str()))
                         .map(|said| said.message.as_str());
-                    // A sketch's state's prefix (docs/ux/solidworks.md, §2), before its name.
-                    let prefix = if sketches {
-                        prefixes.prefix(&each.id)
-                    } else {
-                        None
-                    };
                     let shown = RowView {
                         name: &each.name,
-                        prefix,
                         selected: Some(selected.as_ref() == Some(&each.id)),
                         health: each.health,
                         said: text,
@@ -486,18 +477,17 @@ fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxErr
     silico_core::document::json::read(crate::dialog::quoted(name).as_bytes())
 }
 
-/// What a browser row shows: its name, a sketch's state's prefix, whether it's selected (if
-/// it's selectable), its health, and its mark's text.
+/// What a browser row shows: its name, whether it's selected (if it's selectable), its
+/// health, and its mark's text.
 struct RowView<'a> {
     name: &'a str,
-    prefix: Option<&'static str>,
     selected: Option<bool>,
     health: Health,
     said: Option<&'a str>,
 }
 
-/// A browser row: its eye (the tab's visibility, never saved), its prefix, if it has one,
-/// its name (selectable if `selected` is given, its response returned), and its mark.
+/// A browser row: its eye (the tab's visibility, never saved), its name (selectable if
+/// `selected` is given, its response returned), and its mark.
 fn row(
     ui: &mut Ui,
     hidden: &mut std::collections::BTreeSet<String>,
@@ -505,7 +495,6 @@ fn row(
 ) -> Option<egui::Response> {
     let RowView {
         name,
-        prefix,
         selected,
         health,
         said,
@@ -534,9 +523,6 @@ fn row(
             } else {
                 hidden.remove(name);
             }
-        }
-        if let Some(prefix) = prefix {
-            ui.label(prefix);
         }
         let response = match selected {
             Some(selected) => Some(ui.selectable_label(selected, name)),

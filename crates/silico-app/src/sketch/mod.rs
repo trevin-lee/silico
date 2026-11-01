@@ -12,6 +12,7 @@
 pub mod bar;
 pub mod draw;
 pub mod hit;
+pub mod style;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -21,24 +22,61 @@ use silico_core::Error;
 use silico_core::command::sketch::SketchRead;
 use silico_core::command::{ModelChoice, Problems, Revision, Running, SessionId, Sessions};
 use silico_core::document::{ElementId, ElementKind, FeatureId, Reference};
-use silico_core::kernel::Clients;
+use silico_core::kernel::{Clients, SketchPlane};
 use silico_core::sketch_states::SketchState;
+use silico_core::sketch_tools::{Preview, ToolKind};
 
 use crate::tab::{Row, said};
-use crate::theme::SketchStyle;
-use bar::{PaletteView, Settings};
-use draw::{Scale, Shown, drawing, to_shapes};
+use bar::{PaletteView, Settings, StateShown, StatusLine};
+use draw::{Scale, Shown, View, bounds, drawing, preview, to_shapes};
 use hit::{Hit, hit};
+use style::*;
 
-/// A sketch's state as SolidWorks words it in the status bar (docs/ux/solidworks.md, §2,
-/// *Definition states*).
-pub fn state_words(state: SketchState) -> &'static str {
+/// A sketch's state as sketch mode shows it (SolidWorks' five states, in the prototype's
+/// words): an empty sketch "Empty"; an under-defined one with its degrees of freedom left.
+pub fn state_shown(read: &SketchRead) -> StateShown {
+    let empty = read.members.elements().next().is_none();
+    let (words, colour) = match read.states.state {
+        _ if empty => ("Empty".to_owned(), TEXT_SUBDUED),
+        SketchState::UnderDefined => (
+            format!("Under defined · {} DOF", read.states.dofs),
+            SKETCH_UNDER_DEFINED,
+        ),
+        SketchState::FullyDefined => ("Fully defined".to_owned(), SKETCH_FULLY_DEFINED),
+        SketchState::OverDefined => ("Over defined".to_owned(), SKETCH_OVER_DEFINED),
+        SketchState::NoSolution => ("No solution found".to_owned(), SKETCH_OVER_DEFINED),
+        SketchState::Invalid => ("Invalid solution found".to_owned(), SKETCH_INVALID),
+    };
+    StateShown { words, colour }
+}
+
+/// A word on what the state means, as the palette says it.
+fn hint(state: SketchState) -> Option<&'static str> {
     match state {
-        SketchState::UnderDefined => "Under Defined",
-        SketchState::FullyDefined => "Fully Defined",
-        SketchState::OverDefined => "Over Defined",
-        SketchState::NoSolution => "No Solution Found",
-        SketchState::Invalid => "Invalid Solution Found",
+        SketchState::UnderDefined => {
+            Some("Blue curves can still move. Add relations or dimensions.")
+        }
+        SketchState::OverDefined => Some(
+            "The red constraints repeat or conflict with others. Make a dimension driven, or delete one.",
+        ),
+        SketchState::NoSolution => {
+            Some("No position meets every constraint. Delete or change one.")
+        }
+        SketchState::Invalid => {
+            Some("It solves only to geometry that can't be built, such as a zero-length line.")
+        }
+        SketchState::FullyDefined => None,
+    }
+}
+
+/// A plane's name, as the sketch bar says it, and its axes' letters, as the status bar's
+/// coordinates are given.
+pub fn plane_words(plane: Option<&SketchPlane>) -> (&'static str, [&'static str; 2]) {
+    match plane {
+        Some(SketchPlane::Xy) => ("XY", ["x", "y"]),
+        Some(SketchPlane::Xz) => ("XZ", ["x", "z"]),
+        Some(SketchPlane::Yz) => ("YZ", ["y", "z"]),
+        Some(SketchPlane::Face(_)) | None => ("a face", ["u", "v"]),
     }
 }
 
@@ -120,6 +158,9 @@ pub struct SketchMode {
     /// The members selected, each with its kind.
     pub selection: BTreeSet<Hit>,
     pub settings: Settings,
+    /// The drawing tool chosen (M5.11b's), and what it draws as it's used.
+    pub tool: Option<ToolKind>,
+    pub preview: Preview,
     /// The pointer on the sketch's plane, in millimetres, as the viewport last gave it.
     pub pointer: Option<[f64; 2]>,
 }
@@ -138,6 +179,8 @@ impl SketchMode {
             reads: 0,
             selection: BTreeSet::new(),
             settings: Settings::default(),
+            tool: None,
+            preview: Preview::default(),
             pointer: None,
         }
     }
@@ -251,12 +294,12 @@ impl SketchMode {
 
     /// One frame of the viewport's: the pointer's place on the plane kept for the status
     /// bar, each press taken as a click on what's under it (within the pick tolerance at
-    /// the view's scale there), and the sketch drawn with `painter`.
-    pub fn frame(&mut self, painter: &Painter, input: &FrameInput<'_>, style: &SketchStyle) {
+    /// the view's scale there), and the sketch, and the tool's preview, drawn with
+    /// `painter`, the grid over the part of the plane the painter's rectangle shows.
+    pub fn frame(&mut self, painter: &Painter, input: &FrameInput<'_>) {
         self.pointer = input.pointer.and_then(|p| (input.to_plane)(p));
-        let around = input
-            .pointer
-            .unwrap_or_else(|| painter.clip_rect().center());
+        let clip = painter.clip_rect();
+        let around = input.pointer.unwrap_or_else(|| clip.center());
         let scale = scale_at(input.to_plane, around).unwrap_or(Scale(1.0));
         let clicks: Vec<(Option<Hit>, bool)> = match self.drawable() {
             Some(read) => input
@@ -266,8 +309,7 @@ impl SketchMode {
                 .map(|event| {
                     let found = scale_at(input.to_plane, event.at).and_then(|scale| {
                         let at = (input.to_plane)(event.at)?;
-                        let tolerance = scale.mm(style.pick_tolerance);
-                        hit(read, at, tolerance, scale, style)
+                        hit(read, at, scale.mm(SKETCH_PICK_TOLERANCE), scale)
                     });
                     (found, event.ctrl)
                 })
@@ -277,11 +319,29 @@ impl SketchMode {
         for (found, ctrl) in clicks {
             self.click(found, ctrl);
         }
-        if let Some(read) = self.drawable() {
-            let selected = self.selected_ids();
-            let drawn = drawing(read, input.project, scale, style, self.shown(), &selected);
-            painter.extend(to_shapes(painter, &drawn, style));
-        }
+        let corners = [
+            clip.left_top(),
+            clip.right_top(),
+            clip.left_bottom(),
+            clip.right_bottom(),
+        ];
+        let visible = corners
+            .iter()
+            .map(|&c| (input.to_plane)(c))
+            .collect::<Option<Vec<_>>>()
+            .and_then(|corners| bounds(corners.into_iter()));
+        let view = View {
+            project: input.project,
+            scale,
+            visible,
+            chord_tolerance: SKETCH_CHORD_TOLERANCE,
+        };
+        let mut drawn = match self.drawable() {
+            Some(read) => drawing(read, &view, self.shown(), &self.selected_ids()),
+            None => Vec::new(),
+        };
+        drawn.extend(preview(&self.preview, &view));
+        painter.extend(to_shapes(painter, &drawn));
     }
 
     /// The IDs selected.
@@ -292,6 +352,8 @@ impl SketchMode {
     /// What the palette's settings show.
     pub fn shown(&self) -> Shown {
         Shown {
+            profile: self.settings.show_profile,
+            points: self.settings.show_points,
             dimensions: self.settings.show_dimensions,
             constraints: self.settings.show_constraints,
         }
@@ -320,7 +382,9 @@ impl SketchMode {
             _ => None,
         };
         PaletteView {
-            status: self.state().map(state_words),
+            state: self.drawable().map(state_shown),
+            hint: self.state().and_then(hint),
+            tool: self.tool,
             said,
             plane_problem: self.plane_problem().map(|error| {
                 (
@@ -328,6 +392,33 @@ impl SketchMode {
                     error.suggestion().map(str::to_owned),
                 )
             }),
+        }
+    }
+}
+
+impl SketchMode {
+    /// What the status bar says of the sketch, named `name`: that it's being edited, the
+    /// pointer's coordinates on its plane, and its state.
+    pub fn status(&self, name: &str) -> StatusLine {
+        let plane = self.drawable().and_then(|read| read.plane.as_ref().ok());
+        let [u, v] = plane_words(plane).1;
+        StatusLine {
+            editing: format!("Editing {name}"),
+            coordinates: self
+                .pointer
+                .map(|[x, y]| format!("{u} {x:.3} · {v} {y:.3} mm")),
+            state: self.drawable().map(state_shown),
+        }
+    }
+
+    /// What the sketch bar shows of the sketch, named `name`.
+    pub fn bar_view(&self, name: &str, enabled: bool) -> bar::BarView {
+        let plane = self.drawable().and_then(|read| read.plane.as_ref().ok());
+        bar::BarView {
+            name: name.to_owned(),
+            plane: plane_words(plane).0.to_owned(),
+            state: self.drawable().map(state_shown),
+            enabled,
         }
     }
 }

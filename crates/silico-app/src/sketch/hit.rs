@@ -8,8 +8,10 @@ use std::f64::consts::TAU;
 use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, ElementKind};
 
-use super::draw::{Curve, Geometry, Scale, add, angle, direction, dot, foot, length, placed, sub};
-use crate::theme::SketchStyle;
+use super::draw::{
+    Curve, Geometry, Scale, add, angle, direction, dot, foot, length, mul, placed, sub,
+};
+use super::style::{SKETCH_GLYPH_SIDE, SKETCH_LABEL_HEIGHT};
 
 /// A member under the pointer: its ID and its kind.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -20,16 +22,10 @@ pub struct Hit {
 
 /// What of `read` is at `at` (the sketch's millimetres), within `tolerance` millimetres: the
 /// nearest point, or, with none that near, the nearest curve, or else the nearest relation
-/// glyph or dimension (placed at `scale` with `style`'s sizes, as they're drawn), a glyph
-/// or a dimension's text taking the pointer anywhere within its half size. Ties go to the
-/// lower ID. None for nothing that near, a tolerance below zero, or a place that isn't one.
-pub fn hit(
-    read: &SketchRead,
-    at: [f64; 2],
-    tolerance: f64,
-    scale: Scale,
-    style: &SketchStyle,
-) -> Option<Hit> {
+/// glyph or dimension (placed at `scale`, as they're drawn), a glyph or a dimension's value
+/// taking the pointer anywhere within half its height. Ties go to the lower ID. None for
+/// nothing that near, a tolerance below zero, or a place that isn't one.
+pub fn hit(read: &SketchRead, at: [f64; 2], tolerance: f64, scale: Scale) -> Option<Hit> {
     if !(at[0].is_finite() && at[1].is_finite()) || tolerance.is_nan() || tolerance < 0.0 {
         return None;
     }
@@ -58,9 +54,9 @@ pub fn hit(
     if let Some(hit) = near(curves) {
         return Some(hit);
     }
-    let placed = placed(read, &geometry, scale, style);
-    let glyph_half = scale.mm(style.glyph_size) / 2.0;
-    let text_half = scale.mm(style.dimension_text_size) / 2.0;
+    let placed = placed(read, &geometry, scale);
+    let glyph_half = scale.mm(SKETCH_GLYPH_SIDE) / 2.0;
+    let text_half = scale.mm(SKETCH_LABEL_HEIGHT) / 2.0;
     let mut constraints: Vec<(f64, &ElementId, ElementKind)> = placed
         .glyphs
         .iter()
@@ -98,8 +94,7 @@ pub(crate) fn distance(curve: Curve, at: [f64; 2]) -> f64 {
             if sweep >= TAU || within {
                 (length(off) - radius).abs()
             } else {
-                let end =
-                    |a: f64| add(centre, [direction(a)[0] * radius, direction(a)[1] * radius]);
+                let end = |a: f64| add(centre, mul(direction(a), radius));
                 length(sub(at, end(start))).min(length(sub(at, end(start + sweep))))
             }
         }
