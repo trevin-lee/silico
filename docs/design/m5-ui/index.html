@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Silico — UI prototype</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app" class="app" role="application" aria-label="Silico">
+  <header id="appbar" aria-label="Application bar"></header>
+  <nav id="toolbar" aria-label="Toolbar"></nav>
+  <div id="main">
+    <aside id="browser" class="panel" aria-label="Browser"></aside>
+    <section id="canvas-wrap" aria-label="Viewport" tabindex="0">
+      <canvas id="gl"></canvas>
+      <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="canvas-ui"></div>
+    </section>
+    <aside id="right" class="panel" aria-label="Properties"></aside>
+  </div>
+  <section id="start" aria-label="Start" hidden></section>
+  <footer id="timeline" aria-label="Timeline"></footer>
+  <div id="status" role="status" aria-label="Status bar"></div>
+</div>
+<div id="floating"></div>
+<div id="toasts" aria-live="polite"></div>
+<div id="proto" aria-label="Prototype controls"></div>
+
+<script>window.__errs=[];window.addEventListener("error",function(e){window.__errs.push(e.message+" @"+(e.filename||"").split("/").pop()+":"+e.lineno);var d=document.getElementById("errlog");if(!d){d=document.createElement("pre");d.id="errlog";d.style.cssText="position:fixed;left:0;top:0;z-index:99999;background:#400;color:#fff;font:11px monospace;margin:0;padding:4px;max-width:60vw;white-space:pre-wrap";document.body.appendChild(d)}d.textContent=window.__errs.join("\n")});</script>
+<script src="vendor/three.min.js"></script>
+<script src="js/icons.js"></script>
+<script src="js/geometry.js"></script>
+<script src="js/viewport.js"></script>
+<script src="js/app.js"></script>
+<script src="js/sketch.js"></script>
+<script src="js/interact.js"></script>
+</body>
+</html>
