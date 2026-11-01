@@ -851,11 +851,10 @@ pub(super) fn tangent_arc(from: Xy, direction: Xy, to: Xy) -> Option<(Xy, bool)>
     if across == 0.0 {
         return None;
     }
-    // The centre is `s` along the normal, on the side the end is: finite exactly when `s` is
-    // (the normal is a unit vector, and `from` within a kilometre).
+    // The centre is `s` along the normal: finite exactly when `s` is (the normal is a unit
+    // vector, and `from` within a kilometre).
     let s = dot(d, d) / (2.0 * across);
-    s.is_finite()
-        .then(|| (add(from, scale(n, s)), across > 0.0))
+    s.is_finite().then(|| (add(from, scale(n, s)), s > 0.0))
 }
 
 /// Which way the arc from `start` through `middle` to `end` turns: counter-clockwise from
