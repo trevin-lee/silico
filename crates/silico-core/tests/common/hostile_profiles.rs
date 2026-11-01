@@ -9,7 +9,7 @@
 use std::f64::consts::PI;
 
 use proptest::prelude::*;
-use silico_core::document::Plane;
+use silico_core::document::OriginPlane;
 
 use super::draw::Draw;
 
@@ -84,7 +84,7 @@ pub struct Hostile {
     pub pieces: Vec<Piece>,
     pub origin: [f64; 2],
     pub angle: f64,
-    pub plane: Plane,
+    pub plane: OriginPlane,
 }
 
 impl Hostile {
@@ -121,7 +121,7 @@ impl Hostile {
     /// The sketch.
     pub fn draw(&self) -> Draw {
         let mut d = Draw::new();
-        d.sketch.plane = self.plane;
+        d.sketch.plane = self.plane.into();
         let (c, s) = (libm::cos(self.angle), libm::sin(self.angle));
         for (k, piece) in self.pieces.iter().enumerate() {
             let cell = 30.0 * k as f64;
@@ -340,7 +340,7 @@ pub fn hostile() -> impl Strategy<Value = Hostile> {
         1 => prop::sample::select(vec![PI / 2.0, 1e-9, 0.3, -2.0]),
         1 => -PI..PI,
     ];
-    let plane = prop::sample::select(Plane::ALL.to_vec());
+    let plane = prop::sample::select(OriginPlane::ALL.to_vec());
     (
         prop::collection::vec(piece, 1..=4),
         reach.clone(),

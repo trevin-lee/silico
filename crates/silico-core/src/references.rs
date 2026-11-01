@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::document::{ElementName, FeatureId, PROBLEMS_LISTED};
-use crate::kernel::ElementKind;
+use crate::kernel::{ElementKind, ElementRef};
 use crate::naming::{ElementMap, Maker, Name, OpCode, TypeWord};
 use crate::{Error, ErrorCode};
 
@@ -72,6 +72,76 @@ impl EdgeNames {
     }
 }
 
+/// What a stored reference's name finds of an element of one kind in some solids' maps
+/// ([`look_up`]): a fillet's edge in its base's, a face sketch's face in the solids live at
+/// its place.
+#[derive(Debug)]
+pub(crate) enum Lookup {
+    /// An element of the kind looked for, in the map at place `map` among those searched,
+    /// and the name that found it.
+    Found {
+        map: usize,
+        element: ElementRef,
+        name: Name,
+    },
+    /// It isn't a name, or it finds an element no reference may take (by an unstable name,
+    /// N3, or of another kind): why, and the name, if it's one, for its candidates.
+    Refused { why: String, name: Option<Name> },
+    /// It finds nothing in any of the maps: the name, and, if one of the features it names
+    /// is of another type now, why in those terms (the caller words the rest, as its maps
+    /// are).
+    Missing { name: Name, retyped: Option<String> },
+}
+
+/// What the stored name `text` finds of an element of `kind` in `maps`, searched in order,
+/// the first that holds it deciding: the one step every stored reference takes (a fillet's
+/// or chamfer's edges, a face sketch's face), so they read a name, refuse an unstable one
+/// or one of another kind, and say a retyped feature, alike. `makers` says how each feature
+/// makes its elements, to read the name.
+pub(crate) fn look_up(
+    text: &str,
+    kind: ElementKind,
+    maps: &[&ElementMap],
+    makers: &dyn Fn(&FeatureId) -> Option<Maker>,
+) -> Lookup {
+    let name = match Name::parse(text, makers) {
+        Ok(name) => name,
+        Err(error) => {
+            return Lookup::Refused {
+                why: format!("isn't a name: {error}"),
+                name: None,
+            };
+        }
+    };
+    for (at, map) in maps.iter().enumerate() {
+        let Some(element) = map.element(&name) else {
+            continue;
+        };
+        let why = if map.is_unstable(&name) {
+            unstable(element.kind)
+        } else if element.kind != kind {
+            format!("names {}, not {}", element.kind.a_word(), kind.a_word())
+        } else {
+            return Lookup::Found {
+                map: at,
+                element,
+                name,
+            };
+        };
+        return Lookup::Refused {
+            why,
+            name: Some(name),
+        };
+    }
+    let retyped = retyped(&name, makers).map(|(feature, said, made)| {
+        format!(
+            "names an element a {said} made, but {feature} is a {made} now: its elements are \
+             another's"
+        )
+    });
+    Lookup::Missing { name, retyped }
+}
+
 /// The edge numbers `edges` (feature `feature`'s, in order) name in `map`, each once, with
 /// the names that find them (for the kernel's errors to name them as the document does); or
 /// the broken ones' errors, the first [`PROBLEMS_LISTED`], each with its candidates, and
@@ -94,41 +164,35 @@ pub(crate) fn resolve(
     let mut broken = Vec::new();
     let mut more = 0u64;
     for (i, edge) in edges.iter().enumerate() {
-        let name = Name::parse(edge.as_str(), makers);
-        let why = match &name {
-            Err(error) => format!("isn't a name: {error}"),
-            Ok(name) => match map.element(name) {
-                Some(element) if map.is_unstable(name) => unstable(element.kind),
-                Some(element) if element.kind == ElementKind::Edge => {
-                    if seen.insert(element.index) {
-                        found.push(element.index);
-                    }
-                    names.insert(element.index, i, edge.as_str());
-                    continue;
+        let (why, name) = match look_up(edge.as_str(), ElementKind::Edge, &[map], makers) {
+            Lookup::Found { element, .. } => {
+                if seen.insert(element.index) {
+                    found.push(element.index);
                 }
-                Some(element) => format!("names {}, not an edge", element.kind.a_word()),
-                None => match retyped(name, makers) {
-                    Some((feature, said, made)) => format!(
-                        "names an element a {said} made, but {feature} is a {made} now: its \
-                         elements are another's"
-                    ),
-                    None => format!(
+                names.insert(element.index, i, edge.as_str());
+                continue;
+            }
+            Lookup::Refused { why, name } => (why, name),
+            Lookup::Missing { name, retyped } => (
+                retyped.unwrap_or_else(|| {
+                    format!(
                         "names no element of {}'s solid: it isn't one of the elements that \
                          solid is made from, or an edit before this feature removed or remade it",
                         map.feature()
-                    ),
-                },
-            },
+                    )
+                }),
+                Some(name),
+            ),
         };
         if broken.len() >= PROBLEMS_LISTED {
             more += 1;
             continue;
         }
         let candidates = match &name {
-            Ok(name) => index
+            Some(name) => index
                 .get_or_insert_with(|| Candidates::of(&[map], ElementKind::Edge))
                 .of_name(name),
-            Err(_) => Vec::new(),
+            None => Vec::new(),
         };
         broken.push(
             refused(
@@ -324,7 +388,7 @@ impl Index {
 /// A feature `name` names an element of (itself, or one it's made from, the nearest first),
 /// the type `name` says it is, and the type it is now, if they differ (a box made a
 /// cylinder, a cut made a common, under its ID).
-fn retyped<'a>(
+pub(crate) fn retyped<'a>(
     name: &'a Name,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
 ) -> Option<(&'a FeatureId, &'static str, &'static str)> {

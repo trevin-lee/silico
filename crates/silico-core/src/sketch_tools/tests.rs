@@ -62,7 +62,7 @@ fn line(name: &str, from: &str, to: &str) -> SketchLine {
 
 fn empty() -> Sketch {
     Sketch {
-        plane: Plane::Xy,
+        plane: Plane::Origin(crate::document::OriginPlane::Xy),
         points: Vec::new(),
         lines: Vec::new(),
         circles: Vec::new(),

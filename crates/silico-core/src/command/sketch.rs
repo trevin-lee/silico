@@ -10,17 +10,18 @@
 //! the rebuild found, and asks no worker anything: neither the sketch worker nor the kernel
 //! (M5.0's A8: "`sketch` and `timeline` need none").
 
-use super::elements::worded;
+use super::elements::{built, worded};
 use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
 use crate::document::{ElementId, ElementKind, FeatureId, Operation, Plane, Sketch};
 use crate::kernel::Clients;
 use crate::profile::{self, Profile};
-use crate::recompute::Model;
+use crate::recompute::{FeatureOutcome, Model};
 use crate::references::CANDIDATES;
 use crate::sketch::suppressed_sketch;
 use crate::sketch_states::{self, SketchStates};
 use crate::worker::SILICO_BUG;
 use crate::{Error, ErrorCode};
+use silico_protocol::SketchPlane;
 
 impl<P: Clients + 'static> Sessions<P> {
     /// `sketch` (M5.10): the sketch `sketch` of the model `model` names (decision 33), as
@@ -54,8 +55,9 @@ impl<P: Clients + 'static> Sessions<P> {
 pub struct SketchRead {
     /// The sketch's ID, as the request named it.
     pub sketch: FeatureId,
-    /// The plane it's drawn on.
-    pub plane: Plane,
+    /// The plane it's drawn on, as its rebuild resolved it: an origin plane's, or, for a
+    /// sketch on a face, the face's frame (docs/ports/attacher.md, F1 and F2).
+    pub plane: SketchPlane,
     /// The sketch in its document form: its points, circles' radii, and reference
     /// dimensions' values as the solve gave them, written as a save writes them (M3.4); or,
     /// for a sketch that wasn't solved, as stored.
@@ -92,6 +94,7 @@ pub struct Region {
 /// whose outcome is no state ([`sketch_states::states`]).
 fn read_sketch(model: &Model, id: &FeatureId) -> Result<SketchRead, Problems> {
     let sketch = sketch_of(model, id)?;
+    let plane = plane_of(model, id, &sketch.plane)?;
     let diagnosed = match model.diagnosed(id) {
         Some(Ok(diagnosed)) => diagnosed,
         // A worker's failure, as every read refuses with the fault the model kept.
@@ -120,13 +123,49 @@ fn read_sketch(model: &Model, id: &FeatureId) -> Result<SketchRead, Problems> {
     every_member_stated(id, &members, &states)?;
     Ok(SketchRead {
         sketch: id.clone(),
-        plane: sketch.plane,
+        plane,
         members,
         states,
         regions,
         profile_problems,
         profile_problems_total,
     })
+}
+
+/// The sketch `id`'s plane, `plane` as its document writes it, as `model`'s rebuild resolved
+/// it: an origin plane's, or its face's frame. A sketch on a face whose face wasn't resolved
+/// is refused with its own failure, as `check` reports it (its face's reference broken, its
+/// face's solid failed, or the worker's failure describing it), as a read of a feature's
+/// solid refuses one that didn't build.
+fn plane_of(model: &Model, id: &FeatureId, plane: &Plane) -> Result<SketchPlane, Problems> {
+    if let Some(origin) = plane.origin() {
+        return Ok(origin.into());
+    }
+    if let Some(frame) = model.frame(id) {
+        return Ok(SketchPlane::Face(*frame));
+    }
+    match model.outcome(id) {
+        Some(
+            FeatureOutcome::Failed(_)
+            | FeatureOutcome::Broken { .. }
+            | FeatureOutcome::Blocked { .. },
+        ) => match built(model, id, false) {
+            Err(problems) => Err(problems),
+            Ok(_) => Err(unplaced(id).into()),
+        },
+        _ => Err(unplaced(id).into()),
+    }
+}
+
+/// A bug's refusal: a sketch on a face the model holds no frame of, though it doesn't say
+/// why.
+fn unplaced(id: &FeatureId) -> Error {
+    Error::new(
+        ErrorCode::Internal,
+        format!("the model holds no frame of the sketch {id}, on a face, nor why"),
+    )
+    .with_feature(id.as_str())
+    .with_suggestion(SILICO_BUG)
 }
 
 /// The state `states` gives the member `id` of `kind`, as its word: none only if it gives
@@ -260,7 +299,7 @@ mod tests {
         // The line comes after every point in the format's order, so the second point is
         // named first; with it stated, the line; with that, nothing.
         let sketch = Sketch {
-            plane: Plane::Xy,
+            plane: crate::document::OriginPlane::Xy.into(),
             points: vec![point("p0000001"), point("p0000002")],
             lines: vec![SketchLine {
                 id: ElementId::new("n0000001").unwrap(),

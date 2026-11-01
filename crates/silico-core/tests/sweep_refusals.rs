@@ -9,7 +9,7 @@ use super::draw;
 
 use silico_core::ErrorCode;
 use silico_core::document::SweepFeature;
-use silico_core::document::{ElementId, FeatureId, Plane};
+use silico_core::document::{ElementId, FeatureId, OriginPlane};
 use silico_core::profile::{CurveKind, Edge, Loop, Profile, Region};
 use silico_core::sweep::{Measured, check_regions, check_result, unprofiled};
 use silico_protocol::{Curve, MEASURE_PRECISION};
@@ -310,7 +310,7 @@ fn round(n: usize, x: f64) -> Region {
 
 fn regions(regions: Vec<Region>) -> Profile {
     Profile {
-        plane: Plane::Xy,
+        plane: OriginPlane::Xy.into(),
         regions,
     }
 }

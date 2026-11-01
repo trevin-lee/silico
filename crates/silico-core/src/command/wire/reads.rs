@@ -350,7 +350,8 @@ pub struct TimelineEntrySchema {
     pub name: String,
     /// Whether it's suppressed.
     pub suppressed: bool,
-    /// The features it names: its `base` and `tool`, then its `sketch`, in that order.
+    /// The features it names: its `base` and `tool`, then its `sketch`, then, for a sketch on
+    /// a face, the feature its `plane.face` begins with, in that order.
     pub inputs: Vec<FeatureId>,
     pub health: HealthSchema,
     /// How many problems the model has on it, whose text `check` gives.

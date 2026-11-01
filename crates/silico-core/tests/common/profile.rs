@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use silico_core::document::{
     Checked, Coordinate, Document, ElementId, Feature, FeatureId, FeatureVersion, FormatVersion,
-    Invalid, Name, NamingScheme, Operation, Plane, Sketch, SketchArc, SketchCircle, SketchLine,
-    SketchPoint, Units,
+    Invalid, Name, NamingScheme, Operation, OriginPlane, Sketch, SketchArc, SketchCircle,
+    SketchLine, SketchPoint, Units,
 };
 use silico_core::profile::{Profile, Refused, profile};
 use silico_core::sketch::SketchSolution;
@@ -42,7 +42,7 @@ impl Draw {
     pub fn new() -> Self {
         Draw {
             sketch: Sketch {
-                plane: Plane::Xy,
+                plane: OriginPlane::Xy.into(),
                 points: Vec::new(),
                 lines: Vec::new(),
                 circles: Vec::new(),

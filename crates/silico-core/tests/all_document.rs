@@ -64,6 +64,8 @@ mod adversarial_command;
 mod adversarial_disk;
 #[path = "adversarial_document.rs"]
 mod adversarial_document;
+#[path = "adversarial_face_plane.rs"]
+mod adversarial_face_plane;
 #[path = "adversarial_fingerprint.rs"]
 mod adversarial_fingerprint;
 #[path = "adversarial_mass_properties.rs"]
@@ -120,6 +122,8 @@ mod command;
 mod disk;
 #[path = "document.rs"]
 mod document;
+#[path = "face_sketch.rs"]
+mod face_sketch;
 #[path = "fingerprint.rs"]
 mod fingerprint;
 #[path = "mass_properties.rs"]

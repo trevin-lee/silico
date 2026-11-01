@@ -14,9 +14,9 @@ use super::model::{
 };
 use super::quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 use super::sketch::{
-    CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, Form, LineSide, MemberPaths,
-    Plane, Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
-    TangentSide, member_id,
+    AxisToken, CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, FacePlane, Form,
+    LineSide, MemberPaths, OriginPlane, Plane, Reference, Sketch, SketchArc, SketchCircle,
+    SketchConstraint, SketchLine, SketchPoint, TangentSide, member_id,
 };
 use crate::naming::{NAMING_SCHEME_NUMBER, UNRECORDED_NAMING_SCHEME};
 use crate::{Error, ErrorCode};
@@ -1010,22 +1010,79 @@ fn sketch(fields: &mut Fields) -> Result<Sketch, Error> {
     Ok(sketch)
 }
 
+/// A sketch's `plane`: an origin plane's word (`xy`, `xz`, `yz`), or a face plane's object
+/// (`{"face": ..., "x": ..., "reversed": ...}`, docs/ports/attacher.md), read as an extent's
+/// object is ([`face_plane`]).
 fn plane(fields: &mut Fields) -> Result<Plane, Error> {
     let node = fields.take("plane")?;
-    let at = node.at;
-    let text = string(node, fields.feature(), "plane")?;
-    Plane::ALL
+    let feature = fields.feature();
+    let text = match &node.value {
+        Value::Object(_) => return face_plane(node, feature).map(Plane::Face),
+        Value::String(text) => text,
+        _ => {
+            return Err(wrong_kind(
+                feature,
+                "plane",
+                &node,
+                "an origin plane's word (xy, xz, or yz) or a face plane",
+            ));
+        }
+    };
+    OriginPlane::ALL
         .into_iter()
         .find(|p| p.as_str() == text)
+        .map(Plane::Origin)
         .ok_or_else(|| {
             refuse(
-                fields.feature(),
+                feature,
                 "plane",
-                at,
-                format!("plane {} isn't a sketch plane", shown(&text)),
-                "the planes are xy, xz, and yz",
+                node.at,
+                format!("plane {} isn't a sketch plane", shown(text)),
+                r#"the planes are xy, xz, and yz, or a face's: {"face": "<its name>", "x": "+x", "reversed": false}"#,
             )
         })
+}
+
+/// A face plane's object: its `face`, an element's name (whether it's a face's, and of
+/// what, is the gate's to say, as a fillet's edges are); its `x`, one of the six axis
+/// tokens; and its `reversed`, each there, of its type, and nothing else.
+fn face_plane(node: Node, feature: Option<&str>) -> Result<FacePlane, Error> {
+    let mut plane = Fields::of(node, feature, Some("plane"), "plane")?.under("plane");
+    let face_node = plane.take("face")?;
+    let face = match &face_node.value {
+        Value::String(text) => ElementName::new(text).ok_or_else(|| {
+            refuse(
+                feature,
+                "plane.face",
+                face_node.at,
+                "plane.face is empty",
+                "write the face's name, as Silico names it (feature.type.Face...), of a feature before this sketch",
+            )
+        })?,
+        _ => {
+            return Err(wrong_kind(
+                feature,
+                "plane.face",
+                &face_node,
+                "a face's name, a string",
+            ));
+        }
+    };
+    let x_node = plane.take("x")?;
+    let at = x_node.at;
+    let word = string(x_node, feature, "plane.x")?;
+    let x = AxisToken::of_word(&word).ok_or_else(|| {
+        refuse(
+            feature,
+            "plane.x",
+            at,
+            format!("plane.x {} isn't an axis", shown(&word)),
+            "write plane.x as one of +x, -x, +y, -y, +z, and -z: the global axis the sketch's x follows",
+        )
+    })?;
+    let reversed = boolean(&mut plane, "reversed")?;
+    plane.finish()?;
+    Ok(FacePlane { face, x, reversed })
 }
 
 /// The list of `kind`'s elements, each item an object read by `item`, named as `paths`

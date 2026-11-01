@@ -391,6 +391,52 @@ fn a_normal_of_no_length_or_none_to_measure_is_refused_as_invalid_naming_the_nor
 }
 
 #[test]
+fn a_normal_off_a_unit_by_more_than_describes_tolerance_is_refused_saying_its_true_length() {
+    // `describe` gives a plane's normal a unit to 1e-6 (NORMAL_LENGTH_TOLERANCE): one off
+    // it by more is a fault in what described the face, refused with its length as it is.
+    // 1e-160 long squares into the subnormals (1e-320, partial underflow), 1e200 long past
+    // f64's range (inf): each said as its own length, not a rounded or infinite one.
+    for (n, said) in [
+        (
+            [1e-160, 0.0, 0.0],
+            "the face's normal must be a unit vector to 1e-6, got [1e-160, 0.0, 0.0], 1e-160 long",
+        ),
+        (
+            [1e200, 0.0, 0.0],
+            "the face's normal must be a unit vector to 1e-6, got [1e200, 0.0, 0.0], 1e200 long",
+        ),
+        (
+            [0.0, 0.0, 1.0 + 2e-6],
+            "the face's normal must be a unit vector to 1e-6, got [0.0, 0.0, 1.000002], 1.000002 long",
+        ),
+        (
+            [0.0, 0.0, 0.0],
+            "the face's normal must be a unit vector to 1e-6, got [0.0, 0.0, 0.0], 0 long",
+        ),
+    ] {
+        match FaceFrame::from_normal([0.0; 3], n, [1.0, 0.0, 0.0]) {
+            Err(FaceFrameError::Invalid(e)) => {
+                assert_eq!(e.parameter, "plane", "{n:?}");
+                assert_eq!(e.message, said, "{n:?}");
+            }
+            other => panic!("{n:?}: {other:?}"),
+        }
+    }
+    // (0, 0, 1 + 1e-6), at the tolerance, on a face at z = 1000: taken, made a unit, so
+    // o = n̂(n̂·p) = (0, 0, 1000) to 4ε of it. Unnormalized, n(n·p) would put it 2e-3 up.
+    let n = [0.0, 0.0, 1.0 + 1e-6];
+    let frame = FaceFrame::from_normal([3.0, -4.0, 1000.0], n, [1.0, 0.0, 0.0]).unwrap();
+    assert!(
+        (frame.origin[2] - 1000.0).abs() <= 4.0 * f64::EPSILON * 1000.0,
+        "{:?}",
+        frame.origin
+    );
+    assert_eq!((frame.origin[0], frame.origin[1]), (0.0, 0.0));
+    assert_eq!(frame.x, [1.0, 0.0, 0.0]);
+    assert_eq!(frame.y, [0.0, 1.0, 0.0]);
+}
+
+#[test]
 fn a_box_corners_diagonal_origin_needs_the_bounds_rounding() {
     // The far corner of a box a kilometre out on every axis, on a face whose normal is
     // the diagonal: o = n(n·p) is the corner itself, √3 · 1e6 out, but worked out it comes

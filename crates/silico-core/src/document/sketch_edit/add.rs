@@ -171,7 +171,7 @@ fn limits_at_the_requests_lists(
     let only = |kind: Option<ElementKind>| {
         let of = |k: ElementKind| kind == Some(k);
         Sketch {
-            plane: sketch.plane,
+            plane: sketch.plane.clone(),
             points: if of(ElementKind::Point) {
                 members.points.clone()
             } else {
