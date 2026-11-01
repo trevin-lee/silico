@@ -121,8 +121,8 @@ pub(crate) enum Defaulted {
     /// Why there's none: the face's name is broken, or its solid failed or was blocked, as a
     /// rebuild would place the sketch ([`Placed`], never a frame).
     Refused(Placed),
-    /// The solid that holds it couldn't be described: why, as its solid's read gives it,
-    /// naming no sketch (a kernel fault is worded as it was met, then put on the sketch).
+    /// The solid that holds it couldn't be described: why, as met, naming no sketch (a
+    /// kernel fault is worded as it was met, then put on the sketch).
     Undescribed(Error),
     /// A solid that could hold it isn't built yet, the feature named.
     Waits(FeatureId),
@@ -171,9 +171,9 @@ fn placed<'a>(
     let (normal, location) = match found_face(sketch, text, related, others, makers)? {
         Found::Plane { normal, location } => (normal, location),
         Found::Not(placed) => return Ok(placed),
-        Found::Undescribed(error) => {
-            return Ok(Placed::Failed(error.with_feature(sketch.as_str())));
-        }
+        // As met: describing the solid, which names no feature of its own. A read of the
+        // sketch names it, the feature the fault stopped (`elements::worded_of`).
+        Found::Undescribed(error) => return Ok(Placed::Failed(error)),
     };
     Ok(match frame(normal, location, plane.x, plane.reversed) {
         Ok(frame) => Placed::Frame(frame),
@@ -1064,8 +1064,13 @@ mod tests {
         let Resolved::Placed(Placed::Failed(e)) = placed else {
             panic!("{placed:?}");
         };
-        assert_eq!(e.code(), ErrorCode::WorkerCrashed);
-        assert_eq!(e.feature(), Some("s0000001"));
+        // As met, describing the box: it names no feature, so it's worded as the box's read
+        // words it, and a read of the sketch then names the sketch (`elements::worded_of`).
+        assert_eq!(
+            e,
+            Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
+        );
+        assert_eq!(e.feature(), None);
     }
 
     #[test]

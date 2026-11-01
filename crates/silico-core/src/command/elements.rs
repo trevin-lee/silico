@@ -181,7 +181,7 @@ pub(crate) fn built<'m>(
             )),
         )
         .into()),
-        Some(FeatureOutcome::Failed(error)) => Err(worded(error).into()),
+        Some(FeatureOutcome::Failed(error)) => Err(worded_of(error, id).into()),
         Some(FeatureOutcome::Broken { errors, total }) => Err(Problems::with_unlisted(
             errors.iter().map(worded).collect(),
             total.saturating_sub(errors.len() as u64),
@@ -196,7 +196,7 @@ pub(crate) fn built<'m>(
                     .iter()
                     .find(|error| error.code().is_kernel_fault())
             }) {
-                return Err(worded(fault).into());
+                return Err(worded_of(fault, on).into());
             }
             Err(named(
                 Error::new(
@@ -374,6 +374,20 @@ pub(crate) fn worded(error: &Error) -> Error {
         kept_fault(error)
     } else {
         error.clone()
+    }
+}
+
+/// `error`, held in the outcome of the feature `holder`, as a read of that feature gives it:
+/// [`worded`], and naming `holder` where it met no feature of its own (a face sketch's face
+/// whose solid couldn't be described: the fault was met describing the solid, which names
+/// none, so it's worded as met, never as a crash of the sketch's, then put on the feature it
+/// stopped). A worker that couldn't be had names none, whichever feature asked for it.
+pub(crate) fn worded_of(error: &Error, holder: &FeatureId) -> Error {
+    let worded = worded(error);
+    if worded.feature().is_none() && error.code() != ErrorCode::WorkerUnavailable {
+        worded.with_feature(holder.as_str())
+    } else {
+        worded
     }
 }
 

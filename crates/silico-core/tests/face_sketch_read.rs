@@ -639,3 +639,69 @@ fn a_face_sketch_placed_whose_solve_was_refused_reads_its_frame_and_the_solves_r
     assert_eq!(result["solve_problem"]["feature"], "s0000001", "{read}");
     assert_eq!(result["state"], "no_solution");
 }
+
+#[test]
+fn a_face_sketch_whose_faces_solid_couldnt_be_described_reads_the_fault_as_the_solids_read_words_it()
+ {
+    // The box builds, but describing it crashes the worker, with no advice of the worker's
+    // own. The fault was met describing the box, which names no feature, so a read of the
+    // box's solid says to try again alone; the sketch on its top crashed nothing, so its
+    // plane_problem, naming it, says the same, never to report a feature that crashed the
+    // worker. Written out by hand.
+    let kernel = FakeKernel::new(2).unwrap();
+    kernel.refuse(|op| {
+        matches!(op, Op::DescribeAll { .. })
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+    });
+    let features = vec![
+        cube(),
+        on("s0000001", &face("b0000001.box.Face6", "+x", false)),
+    ];
+    let crashed = opened_on(kernel, FakeSketches::new(), &features);
+    let suggestion = "check with fresh to try it again";
+    let read = crashed.read("s0000001");
+    assert_eq!(read["ok"], true, "{read}");
+    assert_eq!(read["result"]["plane"], Value::Null, "{read}");
+    assert_eq!(
+        read["result"]["plane_problem"],
+        json!({
+            "code": "worker_crashed",
+            "message": "the kernel worker crashed",
+            "feature": "s0000001",
+            "elements": [],
+            "elements_total": 0,
+            "parameter": null,
+            "cause": null,
+            "suggestion": suggestion,
+            "candidates": [],
+            "advice": null,
+        }),
+        "{read}"
+    );
+    // The suggestion a read of the box's solid gives.
+    let elements = crashed.call(
+        "elements",
+        &json!({"session": "s1", "model": "current", "feature": "b0000001", "after": null, "limit": 1})
+            .to_string(),
+    );
+    assert_eq!(elements["ok"], false, "{elements}");
+    assert_eq!(elements["errors"][0]["code"], "worker_crashed");
+    assert_eq!(
+        elements["errors"][0]["suggestion"], suggestion,
+        "{elements}"
+    );
+    // check's model fault, beside its result, words it alike.
+    let checked = crashed.call(
+        "check",
+        &json!({"session": "s1", "model": "current", "fresh": false}).to_string(),
+    );
+    assert_eq!(checked["ok"], true, "{checked}");
+    assert_eq!(
+        checked["model"]["fault"]["code"], "worker_crashed",
+        "{checked}"
+    );
+    assert_eq!(
+        checked["model"]["fault"]["suggestion"], suggestion,
+        "{checked}"
+    );
+}

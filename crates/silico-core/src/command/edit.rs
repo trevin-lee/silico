@@ -22,7 +22,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use super::elements::worded;
+use super::elements::{worded, worded_of};
 use super::{ExtendBy, Gated, NewMembers, Problems};
 use crate::document::chain::{self, Rewired};
 use crate::document::json::{self, Member, Node, Plain, Value};
@@ -979,7 +979,7 @@ pub(super) fn with_default_x(inserted: Inserted, model: &Model) -> Result<Insert
         // rebuild puts it.
         Some(Defaulted::Undescribed(error)) => {
             let sketch = sketch_id(checked, index)?;
-            return Err(worded(&error).with_feature(sketch.as_str()).into());
+            return Err(worded_of(&error, &sketch).into());
         }
         Some(Defaulted::Waits(on)) => {
             return Err(bug(&format!(
