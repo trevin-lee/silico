@@ -573,7 +573,22 @@ impl ViewRegion {
     /// (t the tangent of half its angle, a the aspect); an orthographic view's rectangle,
     /// `view_height` high, about the target, every depth.
     pub fn frustum(camera: &Camera, frame: &Frame, width: u32, height: u32) -> ViewRegion {
+        ViewRegion::frustum_widened(camera, frame, width, height, 0.0)
+    }
+
+    /// [`ViewRegion::frustum`] with each side moved out by `pixels` of the image (at every
+    /// depth, perspective: a pixel is `2t / height` of its depth there; orthographic,
+    /// `view_height / height`): what a line drawn `pixels` wide each side of its centre can
+    /// reach the image from.
+    pub fn frustum_widened(
+        camera: &Camera,
+        frame: &Frame,
+        width: u32,
+        height: u32,
+        pixels: f64,
+    ) -> ViewRegion {
         let aspect = f64::from(width) / f64::from(height);
+        let rows = f64::from(height);
         let side = |normal: [f64; 3], offset: f64, open: bool| HalfSpace {
             normal,
             offset,
@@ -581,8 +596,9 @@ impl ViewRegion {
         };
         let (origin, sides) = match camera.projection {
             Projection::Perspective { field_of_view } => {
-                let ty = libm::tan(field_of_view.to_radians() / 2.0);
-                let tx = ty * aspect;
+                let t = libm::tan(field_of_view.to_radians() / 2.0);
+                let more = pixels * 2.0 * t / rows;
+                let (ty, tx) = (t + more, t * aspect + more);
                 (
                     camera.eye,
                     [
@@ -595,7 +611,9 @@ impl ViewRegion {
                 )
             }
             Projection::Orthographic { view_height } => {
-                let (half_up, half_right) = (view_height / 2.0, view_height * aspect / 2.0);
+                let more = pixels * view_height / rows;
+                let (half_up, half_right) =
+                    (view_height / 2.0 + more, view_height * aspect / 2.0 + more);
                 (
                     camera.target,
                     [

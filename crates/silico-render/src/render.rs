@@ -729,14 +729,21 @@ impl Renderer {
         let mut instances = Vec::new();
         let mut lines = LineDrawableBuilder::new(ctx);
         lines.enable_alpha_blending();
+        // An edge's stroke reaches half its width past its line, so edges are placed by the
+        // frustum widened by it: a plain one's, and a highlighted one's (the wider).
+        let strokes = [
+            view.stroke_frustum(EDGE_WIDTH, pixels_per_point),
+            view.stroke_frustum(HIGHLIGHTED_EDGE_WIDTH, pixels_per_point),
+        ];
         for &(number, lit) in drawn {
             let uploaded = bodies
                 .get_mut(&number)
                 .ok_or_else(|| format!("body {number} isn't uploaded"))?;
-            // A body that can have no pixel isn't placed: no face, no edge.
+            // A body that can have no pixel, by its edges' widest stroke, isn't placed: no
+            // face, no edge.
             if uploaded
                 .bounds
-                .is_none_or(|bounds| view.frustum.class_of_box(bounds) == Class::Out)
+                .is_none_or(|bounds| strokes[1].class_of_box(bounds) == Class::Out)
             {
                 for face in &mut uploaded.faces {
                     face.placed = false;
@@ -745,7 +752,7 @@ impl Renderer {
             }
             uploaded.settle(view, lit);
             uploaded.faces(ctx, number, lit, view, &mut instances, uploads)?;
-            edges(&mut lines, number, uploaded, lit, view);
+            edges(&mut lines, number, uploaded, lit, view, &strokes);
         }
         *placed = placing.elapsed();
         let highlighted = drawn
@@ -998,6 +1005,9 @@ struct View {
     frustum: ViewRegion,
     /// The pyramid as a region, about the eye; none for an orthographic view.
     inside: Option<ViewRegion>,
+    /// The camera it's of, for the frustum an edge's stroke reaches the image from
+    /// ([`View::stroke_frustum`]).
+    camera: Camera,
 }
 
 impl View {
@@ -1045,6 +1055,7 @@ impl View {
                     pyramid: None,
                     frustum,
                     inside: None,
+                    camera: camera.clone(),
                     projection: ViewProjection::Orthographic {
                         camera_mode: OrthographicCameraMode::NearPlaneCenter,
                         vertical_world_size: view_height as f32,
@@ -1070,6 +1081,7 @@ impl View {
                     corner: corner_sec2(tan, width, height),
                     pyramid: Some(pyramid_slope(tan, height)),
                     frustum,
+                    camera: camera.clone(),
                     inside: Some(ViewRegion::pyramid(
                         camera.eye,
                         &frame,
@@ -1099,17 +1111,26 @@ impl View {
         ]
     }
 
-    /// Where a face with the box `bounds` and the corners `vertices` is drawn in this view:
-    /// not at all where its box is wholly outside the image's frustum or the pyramid, or its
+    /// The frustum a line drawn `width` points wide, at `pixels_per_point`, reaches the image
+    /// from: the image's, each side out by half the stroke in pixels.
+    fn stroke_frustum(&self, width: f32, pixels_per_point: f32) -> ViewRegion {
+        let half = f64::from(width) / 2.0 * f64::from(pixels_per_point);
+        ViewRegion::frustum_widened(&self.camera, &self.frame, self.width, self.height, half)
+    }
+
+    /// Where a face (or an edge) with the box `bounds` and the corners `vertices` is drawn in
+    /// this view: not at all where its box is wholly outside `frustum` (the image's, or for an
+    /// edge, the one its stroke reaches it from) or the pyramid, or its
     /// corners are wholly outside the pyramid (no clipping: the eight corners, then its
     /// vertices); as it is where its box or its corners are wholly in the pyramid; and cut to
     /// it only where its own corners cross it.
     fn place<'a>(
         &self,
+        frustum: &ViewRegion,
         bounds: Bounds,
         vertices: impl Fn() -> Box<dyn Iterator<Item = [f64; 3]> + 'a>,
     ) -> Placed {
-        if self.frustum.class_of_box(bounds) == Class::Out {
+        if frustum.class_of_box(bounds) == Class::Out {
             return Placed::Not;
         }
         let Some(inside) = &self.inside else {
@@ -1467,7 +1488,7 @@ impl Uploaded {
             // A face is cut to a perspective view's pyramid only where its own corners
             // cross it, about the eye, and cut again for each view that moves the pyramid;
             // one not placed keeps what it holds, for when a view brings it back.
-            let placed = view.place(face.bounds, vertices);
+            let placed = view.place(&view.frustum, face.bounds, vertices);
             face.placed = placed != Placed::Not;
             let (anchor, cut) = match placed {
                 Placed::Not => continue,
@@ -1589,6 +1610,7 @@ fn edges(
     uploaded: &Uploaded,
     lit: &Lit,
     view: &View,
+    strokes: &[ViewRegion; 2],
 ) {
     let mut batch = lines
         .batch(format!("Body{body}"))
@@ -1605,8 +1627,7 @@ fn edges(
         let Some(bounds) = *bounds else {
             continue;
         };
-        let placed = view.place(bounds, || Box::new(points.iter().copied()));
-        if points.len() < 2 || placed == Placed::Not {
+        if points.len() < 2 {
             continue;
         }
         let highlighted = lit.edge(number);
@@ -1619,6 +1640,16 @@ fn edges(
             (true, Highlight::Outline) => (EDGE_WIDTH, EDGE, outlined()),
             (false, _) => (EDGE_WIDTH, EDGE, OutlineMaskPreference::NONE),
         };
+        // By the frustum its stroke reaches the image from, not its line's alone.
+        let stroke = if width > EDGE_WIDTH {
+            &strokes[1]
+        } else {
+            &strokes[0]
+        };
+        let placed = view.place(stroke, bounds, || Box::new(points.iter().copied()));
+        if placed == Placed::Not {
+            continue;
+        }
         let style = |strip: re_renderer::LineStripBuilder<'_, '_>| {
             strip
                 .radius(Size::new_ui_points(width / 2.0))
@@ -2993,7 +3024,7 @@ mod tests {
             (([-1.0, -1.0, -1.0], [1.0, 2.0, 1.0]), super::Placed::Cut),
             (([-1.0, -2.0, -1.0], [1.0, -1.0, 1.0]), super::Placed::Not),
         ] {
-            assert_eq!(view.place(b, corners(b)), want, "{b:?}");
+            assert_eq!(view.place(&view.frustum, b, corners(b)), want, "{b:?}");
         }
         let ortho = unchecked(&RenderScene {
             bodies: vec![],
@@ -3008,7 +3039,10 @@ mod tests {
             ids: false,
         });
         let behind = ([-1.0, -1e12, -1.0], [1.0, 2.0, 1.0]);
-        assert_eq!(ortho.place(behind, corners(behind)), super::Placed::Whole);
+        assert_eq!(
+            ortho.place(&ortho.frustum, behind, corners(behind)),
+            super::Placed::Whole
+        );
     }
 
     #[test]
@@ -3385,6 +3419,70 @@ mod tests {
                     let seen = ids(r, &scene);
                     assert!(seen.iter().all(|id| *id == [0, 0]), "{x}");
                     assert_eq!(states(r), [(placed, false)], "{x}");
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn an_edge_past_the_images_side_by_less_than_its_stroke_is_drawn_to_it() {
+        on_lavapipe(
+            "an_edge_past_the_images_side_by_less_than_its_stroke_is_drawn_to_it",
+            |r| {
+                // Orthographic about the origin from −y, 48 mm over 48 rows, 64 wide: a pixel
+                // is a millimetre, the image's right side at x = 32. An edge along z from −10
+                // to 10 at x = 32.25 is a quarter pixel past the side, its 2-pixel stroke
+                // reaching 0.75 into the image: by hand the last column (its centres 0.75 from
+                // the line) is the edge's from row 16 to 32. At 32 + 3, a stroke and a pixel
+                // past the side, it can't reach the image: none of it. Highlighted, its stroke
+                // is 4 pixels: at 33.25 it reaches the last column too (its centres 1.75 from
+                // the line), and plain it wouldn't.
+                let edge_at = |x: f64, lit: bool| RenderScene {
+                    bodies: vec![RenderBody {
+                        body: 1,
+                        mesh: Mesh {
+                            positions: vec![],
+                            normals: vec![],
+                            triangles: vec![],
+                            face_triangles: vec![],
+                            edge_points: vec![[x, 0.0, -10.0], [x, 0.0, 10.0]],
+                            edge_point_counts: vec![2],
+                            valid: None,
+                        },
+                        highlight_faces: vec![],
+                        highlight_edges: if lit { vec![0] } else { vec![] },
+                    }],
+                    camera: Camera {
+                        projection: Projection::Orthographic { view_height: 48.0 },
+                        eye: [0.0, -10.0, 0.0],
+                        target: [0.0; 3],
+                        up: [0.0, 0.0, 1.0],
+                    },
+                    width: 64,
+                    height: 48,
+                    ids: true,
+                };
+                let edge = [1, silico_protocol::EDGE_BIT | 1];
+                for (x, lit, drawn) in [
+                    (32.25, false, true),
+                    (35.0, false, false),
+                    (33.25, true, true),
+                    (33.25, false, false),
+                ] {
+                    let seen = ids(r, &edge_at(x, lit));
+                    let last: Vec<[u32; 2]> = (16..=32).map(|row| seen[row * 64 + 63]).collect();
+                    if drawn {
+                        assert!(last.iter().all(|id| *id == edge), "{x} {lit}: {last:?}");
+                    } else {
+                        assert!(seen.iter().all(|id| *id == [0, 0]), "{x} {lit}");
+                    }
+                    // Nothing but the last column, and only the edge.
+                    for (i, id) in seen.iter().enumerate() {
+                        assert!(
+                            *id == [0, 0] || (i % 64 == 63 && *id == edge),
+                            "{x} {lit}: pixel {i}"
+                        );
+                    }
                 }
             },
         );
