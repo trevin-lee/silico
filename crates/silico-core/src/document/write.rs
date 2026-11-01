@@ -609,14 +609,18 @@ fn constraint(constraint: &SketchConstraint) -> Out<'_> {
         Form::Angle {
             a,
             b,
+            reversed,
             value,
             driving: d,
-        } => vec![
-            ("a", r(a)),
-            ("b", r(b)),
-            ("value", angle(*value)),
-            ("driving", driving(d)),
-        ],
+        } => {
+            // `reversed` only as true, after `b` (one spelling, as a feature's `suppressed`).
+            let mut out = vec![("a", r(a)), ("b", r(b))];
+            if *reversed {
+                out.push(("reversed", boolean(true)));
+            }
+            out.extend([("value", angle(*value)), ("driving", driving(d))]);
+            out
+        }
         Form::Radius {
             curve,
             value,
