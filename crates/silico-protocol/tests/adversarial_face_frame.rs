@@ -490,6 +490,28 @@ fn point() -> impl Strategy<Value = [f64; 3]> {
     [c.clone(), c.clone(), c]
 }
 
+/// The input a run of the property below found (n nearly −Y, p a kilometre out on X and −Y,
+/// so |n·p| ≈ 1.26e6, past MAX_LENGTH): the origin is n(n·p) to a few ε of |p|, on the
+/// plane, and the frame passes the check.
+#[test]
+fn a_frames_origin_past_max_length_on_its_axis_is_n_n_dot_p_to_rounding() {
+    let n = {
+        let raw = [0.304, -0.953, 0.0];
+        let l = libm::sqrt(dot(raw, raw));
+        raw.map(|c| c / l)
+    };
+    let p = [1e6, -1e6, 0.0];
+    let frame = FaceFrame::from_normal(p, n, [1.0, 0.0, 0.0]).unwrap();
+    assert_eq!(frame.check(), Ok(()));
+    let offset = dot(n, p);
+    assert!(offset.abs() > MAX_LENGTH, "{offset}");
+    let o = n.map(|c| c * offset);
+    let size = libm::sqrt(dot(p, p));
+    assert!(off(frame.origin, o) <= 8.0 * f64::EPSILON * size, "{:?} vs {o:?}", frame.origin);
+    // On the plane: its offset along n is n·p.
+    assert!((dot(n, frame.origin) - offset).abs() <= 8.0 * f64::EPSILON * size);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(4000))]
 
@@ -539,9 +561,12 @@ proptest! {
         prop_assert!(dot(frame.x, a) > 0.0);
         let normal = SketchPlane::Face(frame).normal();
         prop_assert!(off(normal, n) <= 8.0 * f64::EPSILON, "{:?} vs {:?}", normal, n);
+        // o = n(n·p) to rounding: the dot product of three terms and the normal made a unit
+        // first each round by a few ε of |p|, which can reach √3·1e6, past MAX_LENGTH.
         let offset = dot(n, p);
         let o = n.map(|c| c * offset);
-        prop_assert!(off(frame.origin, o) <= 4.0 * f64::EPSILON * MAX_LENGTH, "{:?}", frame.origin);
+        let size = libm::sqrt(dot(p, p)).max(1.0);
+        prop_assert!(off(frame.origin, o) <= 8.0 * f64::EPSILON * size, "{:?}", frame.origin);
         // The reversed sketch's frame, of −n and −a: the same origin and y, x negated.
         let reversed = FaceFrame::from_normal(p, n.map(|c| -c), a.map(|c| -c));
         prop_assert_eq!(
