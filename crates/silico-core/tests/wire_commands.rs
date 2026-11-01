@@ -223,6 +223,28 @@ fn open_shapes(schema: &serde_json::Value, at: &str, found: &mut Vec<String>) {
     }
 }
 
+/// The fields the document's schema leaves optional in the constraint form `form` (a sketch
+/// read's constraint, found in the document's by its `type`).
+fn optional_in_the_document(document: &serde_json::Value, form: &serde_json::Value) -> Vec<String> {
+    let of_type = |f: &serde_json::Value| f.pointer("/properties/type/const").cloned();
+    let Some(own) = document["$defs"]["SketchConstraint"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| of_type(f) == of_type(form))
+    else {
+        panic!("no document form like {form}")
+    };
+    let required = own["required"].as_array().unwrap();
+    own["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|key| !required.contains(&(*key).clone().into()))
+        .cloned()
+        .collect()
+}
+
 #[test]
 fn every_object_of_the_commands_snapshots_is_closed_and_requires_its_fields() {
     let document: serde_json::Value =
@@ -238,6 +260,22 @@ fn every_object_of_the_commands_snapshots_is_closed_and_requires_its_fields() {
                 defs.retain(|name, def| {
                     name != "NewFeature" && document["$defs"].get(name) != Some(def)
                 });
+            }
+        }
+        // A constraint the sketch read gives is as the document writes it: a field the
+        // document's form leaves optional (an angle's `reversed`, written only as true) is
+        // the document's, not the wire's to require. Each such field is taken out before
+        // the check, so every other field of the form must still be required.
+        if let Some(serde_json::Value::Array(forms)) =
+            value.pointer_mut("/result/$defs/SketchConstraintRead/oneOf")
+        {
+            for form in forms {
+                for key in optional_in_the_document(&document, form) {
+                    let properties = form["properties"].as_object_mut().unwrap();
+                    assert!(properties.remove(&key).is_some(), "{of}: {key}");
+                    let required = form["required"].as_array().unwrap();
+                    assert!(!required.contains(&key.clone().into()), "{of}: {key}");
+                }
             }
         }
         let mut found = Vec::new();
@@ -2212,6 +2250,34 @@ fn a_sketch_request_is_read_written_back_and_holds_to_its_schema_and_its_result_
     ] {
         holds(&schema, &result.replacen(from, to, 1), to);
     }
+    // An angle's reversed, as the document writes it: left out, or true after b, never
+    // false (the document's own schema's, the read's other fields required beside it).
+    let equal = r#""type": "equal", "a": "cb000001", "b": "cb000002", "state": "satisfied""#;
+    let angle = |reversed: &str| {
+        result.replacen(
+            equal,
+            &format!(
+                r#""type": "angle", "a": "nb000001", "b": "nb000002", {reversed}"value": 60, "driving": true, "state": "satisfied""#
+            ),
+            1,
+        )
+    };
+    holds(&schema, &angle(""), "an angle as drawn");
+    holds(
+        &schema,
+        &angle(r#""reversed": true, "#),
+        "an angle reversed",
+    );
+    fails(
+        &schema,
+        &angle(r#""reversed": false, "#),
+        "an angle's reversed false",
+    );
+    fails(
+        &schema,
+        &angle("").replacen(r#""driving": true, "#, "", 1),
+        "an angle with no driving",
+    );
 }
 
 #[test]
