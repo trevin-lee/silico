@@ -65,7 +65,8 @@ fn run() -> Result<(), String> {
     // The first adapter the worker would try (adapters() refuses an empty list).
     let adapters = silico_render::adapters(RenderAdapter::Software)?;
     let adapter = &adapters[0];
-    let mut renderer = Renderer::new(adapter)?;
+    let (device, queue) = silico_render::render::device(adapter)?;
+    let mut renderer = Renderer::new(adapter, device, queue, silico_render::render::OUTPUT_FORMAT)?;
     let context = started.elapsed();
     let rendering = Instant::now();
     let rendered = renderer

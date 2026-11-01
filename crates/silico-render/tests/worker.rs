@@ -570,50 +570,63 @@ fn edges_are_drawn_darker_than_the_faces_they_bound() {
 
 #[test]
 fn a_face_seen_at_an_angle_is_lit_by_lamberts_law_by_hand() {
-    // Orthographic, from the corner (back (1, −1, 1)/√3, up (−1, 1, 2)/√6, right (1, 1,
-    // 0)/√2): the key light, back + up/2 − right/2 made unit, is (0.0197, −0.7268,
-    // 0.9856)/1.2247, and the fill, back − 3up/10 + 3right/5, (1.1241, −0.2756,
-    // 0.3324)/1.2042. The top face's normal (0, 0, 1) takes 0.30 + 0.65 × 0.8047 + 0.20 ×
-    // 0.2760 = 0.8783 of the albedo, in linear light.
+    // re_renderer's light (docs/design/m5.0-app.md, section 10): in linear light, the albedo
+    // times 0.2 + max(0, n · l1) + 0.5 max(0, n · l2), at most 1, with l1 = (1, 2, 3)/√14 and
+    // l2 = (−1, −3, −5)/√35 in the camera's frame (right, up, back), the camera fixed in the
+    // world. From the corner (back (1, −1, 1)/√3, up (−1, 1, 2)/√6, right (1, 1, 0)/√2), a
+    // normal n is (n · right, n · up, n · back) there, by hand:
+    // - the top (0, 0, 1): (0, 2/√6, 1/√3), l1's share (4/√6 + 3/√3)/√14 = 0.899, l2's
+    //   none: 1.099, so 1;
+    // - the right (1, 0, 0): (1/√2, −1/√6, 1/√3), (1/√2 − 2/√6 + 3/√3)/√14 = 0.434: 0.634;
+    // - the front (0, −1, 0): (−1/√2, −1/√6, 1/√3), (−1/√2 − 2/√6 + 3/√3)/√14 = 0.056:
+    //   0.256.
+    // l2 is behind each of them.
+    let (r2, r3, r6, r14) = (2f64.sqrt(), 3f64.sqrt(), 6f64.sqrt(), 14f64.sqrt());
+    let faces = [
+        ("top", [1, 6], 1.0),
+        (
+            "right",
+            [1, 2],
+            0.2 + (1.0 / r2 - 2.0 / r6 + 3.0 / r3) / r14,
+        ),
+        (
+            "front",
+            [1, 3],
+            0.2 + (-1.0 / r2 - 2.0 / r6 + 3.0 / r3) / r14,
+        ),
+    ];
     let mut w = worker();
     let size = 300;
-    let (image, ids) = render(&mut w, corner(size));
-    let ids = ids.unwrap();
-    let top = pixels_of(&ids, size, [1, 6]);
-    let (col, row) = top[top.len() / 2];
-    let light = 0.30 + 0.65 * (0.9856 / 1.2247) + 0.20 * (0.3324 / 1.2042);
-    let got = image.at(col, row);
-    for k in 0..3 {
-        let want = srgb(linear(BODY[k]) * light);
-        assert!(
-            (f64::from(got[k]) - want).abs() <= 1.0,
-            "the top face {got:?}, want {want} in {k}"
-        );
-    }
-    // Perspective, the eye 20 from the front face's centre: the lights are fixed to the
-    // camera, the same everywhere. From the front (back (0, −1, 0), up (0, 0, 1), right (1,
-    // 0, 0)) the key is (−0.5, −1, 0.5)/√1.5 and the fill (0.6, −1, −0.3)/√1.45, so the
-    // front face, its normal (0, −1, 0), takes 0.30 + 0.65/√1.5 + 0.20/√1.45 everywhere.
-    let mut scene = front_of_a_box(200, 200);
+    let assert_lit = |scene: RenderScene, w: &mut Worker, how: &str| {
+        let (image, ids) = render(w, scene);
+        let ids = ids.unwrap();
+        for (name, id, light) in faces {
+            let pixels = pixels_of(&ids, size, id);
+            // Two of its pixels, a third and two thirds through: a light fixed to the
+            // camera is the same at every point of a plane, in perspective too.
+            for (col, row) in [pixels[pixels.len() / 3], pixels[pixels.len() * 2 / 3]] {
+                let got = image.at(col, row);
+                for k in 0..3 {
+                    let want = srgb(linear(BODY[k]) * light);
+                    assert!(
+                        (f64::from(got[k]) - want).abs() <= 1.0,
+                        "{how}: the {name} face at ({col}, {row}) {got:?}, want {want} in {k}"
+                    );
+                }
+            }
+        }
+    };
+    assert_lit(corner(size), &mut w, "orthographic");
+    let mut scene = corner(size);
+    let d = 80.0 / 3.0f64.sqrt();
     scene.camera = Camera {
         projection: Projection::Perspective {
-            field_of_view: 120.0,
+            field_of_view: 60.0,
         },
-        eye: [20.0, -20.0, 5.0],
-        target: [20.0, 0.0, 5.0],
-        up: [0.0, 0.0, 1.0],
+        eye: [20.0 + d, 10.0 - d, 5.0 + d],
+        ..scene.camera
     };
-    let (image, ids) = render(&mut w, scene);
-    assert_eq!(ids.unwrap()[100 * 200 + 100], [1, 3]);
-    let light = 0.30 + 0.65 / 1.5f64.sqrt() + 0.20 / 1.45f64.sqrt();
-    let got = image.at(100, 100);
-    for k in 0..3 {
-        let want = srgb(linear(BODY[k]) * light);
-        assert!(
-            (f64::from(got[k]) - want).abs() <= 1.0,
-            "the front face {got:?}, want {want} in {k}"
-        );
-    }
+    assert_lit(scene, &mut w, "perspective");
 }
 
 #[test]

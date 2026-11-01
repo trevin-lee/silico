@@ -259,11 +259,11 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::AddFeature => (
             "Add a feature",
-            "Add a feature at the end of the session's timeline (`before: null`), or before another: then each input it takes (its base, its tool) that a feature after it consumed is consumed by it instead, that feature's field rewired to it, listed in `rewired`. Give the revision the edit was made against, as the session's last answer says it.",
+            "Add a feature at the end of the session's timeline (`before: null`), or before another: then each input it takes (its base, its tool) that a feature after it consumed is consumed by it instead, that feature's field rewired to it, listed in `rewired`. A sketch on a face may leave out its plane's `x`: the core writes the face's `default_x`, as `elements` reports it, waiting for the model's rebuild. Give the revision the edit was made against, as the session's last answer says it.",
         ),
         Command::SetField => (
             "Set a field",
-            "Set one field of one feature, by the feature's ID and the field's path (`extent.length`; a sketch's members by their IDs). Give the revision the edit was made against.",
+            "Set one field of one feature, by the feature's ID and the field's path (`extent.length`, a sketch's `plane` or its face plane's `plane.face`; a sketch's members by their IDs). Give the revision the edit was made against.",
         ),
         Command::RemoveFeature => (
             "Remove a feature",

@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+pub use crate::document::AxisToken;
 use crate::document::{Angle, FeatureId, Length, Measure};
 use crate::kernel::{
     Axis, Description, EdgeCurve, EdgeDescription, ElementKind, ElementRef, FaceDescription,
@@ -221,7 +222,7 @@ fn entry(map: &ElementMap, id: &FeatureId, element: Element) -> Result<Entry, Er
             );
             entry.centroid = Some(point(face.centroid)?);
             match face.surface {
-                Surface::Plane { normal } => {
+                Surface::Plane { normal, .. } => {
                     entry.normal = Some(direction(normal));
                     entry.default_x = Some(AxisToken::default_x(normal));
                 }
@@ -512,62 +513,6 @@ impl ElementType {
             | ElementType::Hyperbola
             | ElementType::Parabola => kind == ElementKind::Edge,
             ElementType::Point => kind == ElementKind::Vertex,
-        }
-    }
-}
-
-/// A global axis, as a sketch on a face names its x (F1): `+x`, `-x`, `+y`, `-y`, `+z`, `-z`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AxisToken {
-    PlusX,
-    MinusX,
-    PlusY,
-    MinusY,
-    PlusZ,
-    MinusZ,
-}
-
-impl AxisToken {
-    pub const ALL: [AxisToken; 6] = [
-        AxisToken::PlusX,
-        AxisToken::MinusX,
-        AxisToken::PlusY,
-        AxisToken::MinusY,
-        AxisToken::PlusZ,
-        AxisToken::MinusZ,
-    ];
-
-    pub fn word(self) -> &'static str {
-        match self {
-            AxisToken::PlusX => "+x",
-            AxisToken::MinusX => "-x",
-            AxisToken::PlusY => "+y",
-            AxisToken::MinusY => "-y",
-            AxisToken::PlusZ => "+z",
-            AxisToken::MinusZ => "-z",
-        }
-    }
-
-    /// The default x of a sketch on a planar face of outward normal `n` (F1: FreeCAD's legacy
-    /// nearest-axis table, in global axes, docs/ports/attacher.md): the axis `n` is nearest,
-    /// ties going to x, then y, then z; nearest x gives `+y` if `n` points along +x, else
-    /// `-y`; nearest y gives `-x` if it points along +y, else `+x`; nearest z gives `+x`.
-    pub fn default_x(n: [f64; 3]) -> Self {
-        let [x, y, z] = n.map(f64::abs);
-        if x >= y && x >= z {
-            if n[0] > 0.0 {
-                AxisToken::PlusY
-            } else {
-                AxisToken::MinusY
-            }
-        } else if y >= z {
-            if n[1] > 0.0 {
-                AxisToken::MinusX
-            } else {
-                AxisToken::PlusX
-            }
-        } else {
-            AxisToken::PlusX
         }
     }
 }

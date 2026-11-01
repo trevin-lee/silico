@@ -1,12 +1,13 @@
 //! The render worker (ARCHITECTURE.md, Process model; docs/design/m4.6-render.md): the
 //! worker loop every worker shares (`silico_worker`), drawing scenes with `re_renderer`. It
-//! keeps its render context between renders; stopping the worker is what gives the
-//! context's memory back (the core will, after a large render and when it's idle: the
+//! keeps its render context between renders, on a device of its own, and with it the last
+//! scene's bodies uploaded, so another view of them uploads nothing; stopping the worker is
+//! what gives the context's memory back (the core will, after a large render and when it's idle: the
 //! design's step 3).
 
 use silico_protocol::{Failure, Op, Refusal, Reply};
 
-use crate::render::{RenderFailure, Renderer};
+use crate::render::{self, RenderFailure, Renderer};
 
 /// The render worker's platform: it has no C++ to read floating-point traps through, and
 /// reading them from Rust takes inline assembly, so they're unchecked, as data (R5).
@@ -81,6 +82,12 @@ fn refused(failure: RenderFailure) -> Failure {
             refusal: Refusal::OutOfMemory,
             cause: Some(cause),
         },
+        // A render's scene passed its check, so this is a frame's or an upload's, never
+        // the worker's; refused as the check refuses, all the same.
+        RenderFailure::Invalid(invalid) => Failure::new(Refusal::InvalidParameter {
+            parameter: invalid.parameter.to_owned(),
+            message: invalid.message,
+        }),
         RenderFailure::Failed(what) => internal(what),
     }
 }
@@ -92,7 +99,10 @@ fn render_context(policy: RenderAdapter) -> Result<Renderer, Failure> {
     let mut tried = Vec::new();
     for adapter in crate::adapters(policy).map_err(unavailable)? {
         let name = adapter.get_info().name;
-        match Renderer::new(&adapter) {
+        let made = render::device(&adapter).and_then(|(device, queue)| {
+            Renderer::new(&adapter, device, queue, render::OUTPUT_FORMAT)
+        });
+        match made {
             Ok(renderer) => {
                 tracing::info!(adapter = name, "render context");
                 return Ok(renderer);

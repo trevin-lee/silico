@@ -45,7 +45,8 @@ pub use export::{
     export_deflection, export_rounding,
 };
 pub use faces::{
-    ArcEnd, Curve, FaceRegions, MAX_ARC_ANGLE, MAX_FACE_CURVES, Region, SizeProblem, SketchPlane,
+    ArcEnd, Curve, FACE_FRAME_SQUARENESS, FaceFrame, FaceFrameError, FaceRegions, MAX_ARC_ANGLE,
+    MAX_FACE_CURVES, MAX_FRAME_ORIGIN, MIN_AXIS_OFF_NORMAL, Region, SizeProblem, SketchPlane,
     area_and_perimeter, distance, loop_area, on_circle, sliver,
 };
 pub use frame::{
@@ -72,7 +73,7 @@ pub use render::{
     Camera, EDGE_BIT, Frame, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
     MAX_RENDER_FACES, MAX_RENDER_SIDE, MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW,
     MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT, MIN_VIEW_HEIGHT_OF_REACH, PixelId, Projection,
-    RenderAdapter, RenderBody, RenderScene,
+    RenderAdapter, RenderBody, RenderScene, check_render_mesh,
 };
 pub use sketch::{
     Algorithm, DragBegin, Dragged, Follow, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,

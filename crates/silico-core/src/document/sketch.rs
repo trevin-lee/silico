@@ -11,7 +11,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 
 use super::json::{Node, Value};
-use super::model::{ID_ALPHABET, ID_LENGTH};
+use super::model::{ElementName, FeatureId, ID_ALPHABET, ID_LENGTH};
 use super::quantity::{Angle, Length};
 
 /// A sketch: its plane, its geometry, and its constraints.
@@ -267,38 +267,201 @@ impl ElementKind {
     }
 }
 
-/// The plane a sketch is drawn on: one of the origin's, oriented as FreeCAD's (D6). On
-/// `xy`, the sketch's x is +X and its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal
-/// −Y); on `yz`, x is +Y and y +Z (normal +X).
+/// The plane a sketch is drawn on: one of the origin's, by its word (D6), or a planar face
+/// of the model, by its name, with the axis the sketch's x follows and whether it's flipped
+/// (docs/ports/attacher.md, F1 and F2; M5.9).
+#[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(untagged)]
+pub enum Plane {
+    Origin(OriginPlane),
+    Face(FacePlane),
+}
+
+impl Plane {
+    /// The origin plane it is, if it's one.
+    pub fn origin(&self) -> Option<OriginPlane> {
+        match self {
+            Plane::Origin(plane) => Some(*plane),
+            Plane::Face(_) => None,
+        }
+    }
+
+    /// The face plane it is, if it's one.
+    pub fn face(&self) -> Option<&FacePlane> {
+        match self {
+            Plane::Origin(_) => None,
+            Plane::Face(face) => Some(face),
+        }
+    }
+}
+
+impl From<OriginPlane> for Plane {
+    fn from(plane: OriginPlane) -> Self {
+        Plane::Origin(plane)
+    }
+}
+
+/// One of the origin's planes, oriented as FreeCAD's (D6). On `xy`, the sketch's x is +X
+/// and its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal −Y); on `yz`, x is +Y and
+/// y +Z (normal +X).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-pub enum Plane {
+pub enum OriginPlane {
     Xy,
     Xz,
     Yz,
 }
 
-impl Plane {
+impl OriginPlane {
     /// As the file writes it.
     pub fn as_str(self) -> &'static str {
         match self {
-            Plane::Xy => "xy",
-            Plane::Xz => "xz",
-            Plane::Yz => "yz",
+            OriginPlane::Xy => "xy",
+            OriginPlane::Xz => "xz",
+            OriginPlane::Yz => "yz",
         }
     }
 
-    pub const ALL: [Plane; 3] = [Plane::Xy, Plane::Xz, Plane::Yz];
+    pub const ALL: [OriginPlane; 3] = [OriginPlane::Xy, OriginPlane::Xz, OriginPlane::Yz];
 }
 
 /// The plane as the kernel takes it, for faces made on it (`KernelRequest::make_faces`).
-impl From<Plane> for silico_protocol::SketchPlane {
-    fn from(plane: Plane) -> Self {
+impl From<OriginPlane> for silico_protocol::SketchPlane {
+    fn from(plane: OriginPlane) -> Self {
         match plane {
-            Plane::Xy => silico_protocol::SketchPlane::Xy,
-            Plane::Xz => silico_protocol::SketchPlane::Xz,
-            Plane::Yz => silico_protocol::SketchPlane::Yz,
+            OriginPlane::Xy => silico_protocol::SketchPlane::Xy,
+            OriginPlane::Xz => silico_protocol::SketchPlane::Xz,
+            OriginPlane::Yz => silico_protocol::SketchPlane::Yz,
         }
+    }
+}
+
+/// A sketch on a planar face (docs/ports/attacher.md, *What Silico does*): the face, by its
+/// name in Silico's form, found in the solids live at the sketch's place at each rebuild;
+/// the global axis the sketch's x follows, projected onto the face; and whether the sketch
+/// is flipped, its normal and x negated and its y kept. Where it then sits is the
+/// rebuild's to say: nothing of the frame is stored.
+#[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FacePlane {
+    /// The face, by its name, as Silico names it (`k7f2qx3m.box.Face6`), of a feature
+    /// before the sketch.
+    pub face: ElementName,
+    /// The global axis the sketch's x follows: projected onto the face, it's the sketch's x.
+    pub x: AxisToken,
+    /// Whether the sketch is flipped: its normal into the face's solid, not out of it, and
+    /// its x against the axis's projection; its y kept.
+    pub reversed: bool,
+}
+
+impl FacePlane {
+    /// The feature the face's name begins with: the face's own feature, the outermost of
+    /// its name (`k7f2qx3m` of `k7f2qx3m.box.Face6`, and of a fuse's `k7f2qx3m.box.Face6`
+    /// kept from its base), as `Name::parse` reads it of every name that parses. None for
+    /// text that begins with no ID (which the gate refuses).
+    pub fn feature(&self) -> Option<FeatureId> {
+        let text = self.face.as_str();
+        let id = text.get(..ID_LENGTH)?;
+        if text.as_bytes().get(ID_LENGTH) != Some(&b'.') {
+            return None;
+        }
+        FeatureId::new(id)
+    }
+}
+
+/// A global axis, signed, as a sketch on a face names its x (F1): `+x`, `-x`, `+y`, `-y`,
+/// `+z`, `-z`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AxisToken {
+    PlusX,
+    MinusX,
+    PlusY,
+    MinusY,
+    PlusZ,
+    MinusZ,
+}
+
+impl AxisToken {
+    pub const ALL: [AxisToken; 6] = [
+        AxisToken::PlusX,
+        AxisToken::MinusX,
+        AxisToken::PlusY,
+        AxisToken::MinusY,
+        AxisToken::PlusZ,
+        AxisToken::MinusZ,
+    ];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            AxisToken::PlusX => "+x",
+            AxisToken::MinusX => "-x",
+            AxisToken::PlusY => "+y",
+            AxisToken::MinusY => "-y",
+            AxisToken::PlusZ => "+z",
+            AxisToken::MinusZ => "-z",
+        }
+    }
+
+    /// The token `word` writes, if it's one.
+    pub fn of_word(word: &str) -> Option<Self> {
+        AxisToken::ALL
+            .into_iter()
+            .find(|token| token.word() == word)
+    }
+
+    /// The axis as a unit vector of model space.
+    pub fn axis(self) -> [f64; 3] {
+        match self {
+            AxisToken::PlusX => [1.0, 0.0, 0.0],
+            AxisToken::MinusX => [-1.0, 0.0, 0.0],
+            AxisToken::PlusY => [0.0, 1.0, 0.0],
+            AxisToken::MinusY => [0.0, -1.0, 0.0],
+            AxisToken::PlusZ => [0.0, 0.0, 1.0],
+            AxisToken::MinusZ => [0.0, 0.0, -1.0],
+        }
+    }
+
+    /// The default x of a sketch on a planar face of outward normal `n` (F1: FreeCAD's legacy
+    /// nearest-axis table, in global axes, docs/ports/attacher.md): the axis `n` is nearest,
+    /// ties going to x, then y, then z; nearest x gives `+y` if `n` points along +x, else
+    /// `-y`; nearest y gives `-x` if it points along +y, else `+x`; nearest z gives `+x`.
+    pub fn default_x(n: [f64; 3]) -> Self {
+        let [x, y, z] = n.map(f64::abs);
+        if x >= y && x >= z {
+            if n[0] > 0.0 {
+                AxisToken::PlusY
+            } else {
+                AxisToken::MinusY
+            }
+        } else if y >= z {
+            if n[1] > 0.0 {
+                AxisToken::MinusX
+            } else {
+                AxisToken::PlusX
+            }
+        } else {
+            AxisToken::PlusX
+        }
+    }
+}
+
+impl fmt::Display for AxisToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.word())
+    }
+}
+
+impl JsonSchema for AxisToken {
+    fn schema_name() -> Cow<'static, str> {
+        "AxisToken".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "A global axis, signed, as a sketch on a face names its x.",
+            "type": "string",
+            "enum": AxisToken::ALL.map(AxisToken::word)
+        })
     }
 }
 
@@ -905,6 +1068,37 @@ pub const CONSTRAINT_TYPES: [&str; 21] = [
 #[cfg(test)]
 mod tests {
     use super::super::json::{MAX_TREE_BYTES, Node};
+    use super::AxisToken;
+
+    #[test]
+    fn default_x_decides_the_45_degree_ties_as_the_notes_table_does() {
+        // docs/ports/attacher.md, *The 45° ties*: each normal with components bitwise equal
+        // in magnitude, so the tie is exact; ties go to x, then y.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let t = 1.0 / 3.0_f64.sqrt();
+        for (normal, want) in [
+            // X = Y: X wins, n along +x.
+            ([s, s, 0.0], AxisToken::PlusY),
+            ([s, -s, 0.0], AxisToken::PlusY),
+            // X = Z: X wins.
+            ([s, 0.0, s], AxisToken::PlusY),
+            // Y = Z: Y wins, along +y, then against it.
+            ([0.0, s, s], AxisToken::MinusX),
+            ([0.0, -s, s], AxisToken::PlusX),
+            // All three: X wins.
+            ([t, t, t], AxisToken::PlusY),
+        ] {
+            assert_eq!(AxisToken::default_x(normal), want, "{normal:?}");
+        }
+    }
+
+    #[test]
+    fn default_x_of_a_normal_with_no_length_is_x_nearest_and_not_along_plus_x() {
+        // No face's normal: but a zero, of either sign, is never "along +x", so the tie to x
+        // gives -y, as for any normal whose x isn't positive.
+        assert_eq!(AxisToken::default_x([0.0; 3]), AxisToken::MinusY);
+        assert_eq!(AxisToken::default_x([-0.0, 0.0, 0.0]), AxisToken::MinusY);
+    }
 
     #[test]
     fn a_list_the_reader_reads_has_fewer_members_than_a_place_of_eight_digits() {

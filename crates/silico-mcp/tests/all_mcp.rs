@@ -15,6 +15,7 @@ mod contract;
 mod drag_commands;
 mod errors;
 mod exact;
+mod face_plane_commands;
 mod handshake;
 mod hostile;
 mod lines;

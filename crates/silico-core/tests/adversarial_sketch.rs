@@ -1311,7 +1311,7 @@ proptest! {
         prop_assert_eq!(unplaced(&verdict(&reopened)), unplaced(&first), "{}", saved);
         // Each list held sorted by ID now, with the same elements.
         let (a, b) = (sketch_in(&document), sketch_in(&reopened));
-        prop_assert_eq!(a.plane, b.plane);
+        prop_assert_eq!(&a.plane, &b.plane);
         let mut ids: Vec<_> = a.elements().map(|(id, kind)| (kind, id.clone())).collect();
         let mut reopened_ids: Vec<_> = b.elements().map(|(id, kind)| (kind, id.clone())).collect();
         prop_assert!(reopened_ids.windows(2).all(|w| w[0].0 != w[1].0 || w[0].1 <= w[1].1));
@@ -1330,8 +1330,8 @@ mod constructed {
     use super::*;
     use silico_core::document::{
         Angle, Coordinate, Direction, Document, ElementId, Feature, FeatureVersion, Form,
-        FormatVersion, Length, LineSide, Name, NamingScheme, Plane, Reference, SketchArc,
-        SketchCircle, SketchConstraint, SketchLine, SketchPoint, TangentSide, Units,
+        FormatVersion, Length, LineSide, Name, NamingScheme, OriginPlane, Plane, Reference,
+        SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint, TangentSide, Units,
     };
 
     fn element() -> impl Strategy<Value = ElementId> {
@@ -1510,7 +1510,7 @@ mod constructed {
         );
         let constraint = (element(), form()).prop_map(|(id, form)| SketchConstraint { id, form });
         (
-            prop::sample::select(Plane::ALL.to_vec()),
+            prop::sample::select(OriginPlane::ALL.to_vec()).prop_map(Plane::from),
             prop::collection::vec(point, 0..5),
             prop::collection::vec(line, 0..4),
             prop::collection::vec(circle, 0..3),

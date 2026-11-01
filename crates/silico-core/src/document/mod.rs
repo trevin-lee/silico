@@ -30,8 +30,8 @@ pub(crate) use index::FeatureIndex;
 pub(crate) use index::looked_up;
 pub use model::{
     Axis, ChamferSize, Document, ElementName, Extent, ExtentValue, FEATURE_TYPES, Feature,
-    FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET, ID_LENGTH, Made, Name, NamingScheme,
-    Operation, PadExtent, PocketExtent, Position, SweepFeature, TurnExtent, Units,
+    FeatureId, FeatureVersion, FormatVersion, ID_ALPHABET, ID_LENGTH, Made, Name, NameField,
+    NamingScheme, Operation, PadExtent, PocketExtent, Position, SweepFeature, TurnExtent, Units,
 };
 #[cfg(test)]
 pub(crate) use model::{cloned, compared};
@@ -39,9 +39,9 @@ pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub(crate) use reach::changed as changed_features;
 pub use reach::{Before, QuotedIds, net_reach, net_reach_but, with_users};
 pub use sketch::{
-    CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, Form, LineSide, Plane,
-    Reference, Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
-    TangentSide,
+    AxisToken, CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, FacePlane, Form,
+    LineSide, OriginPlane, Plane, Reference, Sketch, SketchArc, SketchCircle, SketchConstraint,
+    SketchLine, SketchPoint, TangentSide,
 };
 pub(crate) use sketch::{MemberPaths, member_id};
 pub use sketch_gate::{MAX_ANGLE_DEGREES, MAX_REFERENCE_LENGTH};

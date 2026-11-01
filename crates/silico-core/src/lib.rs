@@ -26,6 +26,7 @@ pub mod elements;
 mod error;
 pub mod export;
 pub mod extend;
+mod face_plane;
 #[cfg(feature = "fake")]
 pub mod fake;
 pub mod file;

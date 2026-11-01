@@ -268,6 +268,7 @@ fn a_free_line_is_under_defined_by_four_degrees_and_open_at_both_ends() {
             "profile_problems": [open_end("p0000001", "n0000001"), open_end("p0000002", "n0000001")],
             "profile_problems_total": 2,
             "solve_problem": null,
+            "plane_problem": null,
         })
     );
 }
@@ -317,6 +318,7 @@ fn two_driving_lengths_that_differ_over_define_the_line_given_as_stored() {
             "profile_problems": [],
             "profile_problems_total": 0,
             "solve_problem": conflict,
+            "plane_problem": null,
         })
     );
     // The same error `check` reports for the sketch: the read solves it as the rebuild did.
@@ -580,6 +582,7 @@ fn an_empty_sketch_is_fully_defined_with_no_degrees_of_freedom_and_no_curves_for
             )],
             "profile_problems_total": 1,
             "solve_problem": null,
+            "plane_problem": null,
         })
     );
 }

@@ -14,6 +14,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Counts from a command line fed to `(0..n).map(..).collect()`: `collect` sizes the Vec up front, so `usize::MAX` panics (capacity overflow) and 1e15 aborts on allocation
 - Derived measures in fixed point sized for their inputs' units (millionths of a mm³ in an i64 hold 9.2e12 mm³, a cube 21 m on a side, while the gate admits 1 km sides): take the largest values the gate admits through every derived quantity (volume, area, products of lengths)
 - Absolute tolerances on quantities that scale with the part (OCCT's `GeomLib::NormEstim` orients a pole's or apex's normal only when \|dP/du × dP/dv\| a 1e-5 step away is over 1e-8): a ball under 0.0316 mm radius or a cone slenderer than 1:1000 gets a normal pointing into the solid
+- An angular or orthonormality tolerance multiplied by the largest reach the same request admits (a face frame's axes 1e-12 off perpendicular, a sketch point 1e6 out: 1e-6 mm off the plane, ten times OCCT's 1e-7): the check passes and the kernel's validity refuses with a cause about something else; build at the leanest frame and the farthest point together
 - Two rules composed into a third (a direction within 4ε of unit length times a length up to the limit, then checked as a vector at most the limit): the product lands a few ulps past it and is refused naming a parameter the caller never sent; search the boundary with `next_up`/`next_down`
 - Parallel tests by an exact zero (a cross product `== 0.0`) beside others at a rounded tolerance (an angle of 0 at the nanodegree): two axes an ulp from parallel are taken as skew and their distance across the cross product is 0 (coplanar lines that cross 5e16 mm away); end one sketch line of a revolve's axis an ulp off
 - Refusals written as `change <= k * before`: NaN makes every comparison false, so the refusal is skipped; an infinite result or a negative (inverted) base passes too
@@ -117,6 +118,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Revolve a side leaning just off parallel to the axis (its length within 1e-7 of its length along the axis): OCCT makes a cylinder, not a cone, and calls the solid valid
 - Revolve a profile that touches its axis only at a corner (a cone's apex where its slanted side meets the side on the axis, a diamond's tip): OCCT generates a degenerate edge from that vertex (two, when MakeRevol copies one two faces share), so a history rule of "on the axis, it generates nothing" refuses the commonest revolve
 - Bases of several solids (a fuse of two boxes apart, which M2 accepts) under a feature that checks its result is one solid: the extra solid is blamed on the feature ("doesn't reach its base", "cuts its base in two")
+- Frames worked out from a slanted plane (the model's origin projected onto it): the projection is the plane's point nearest the origin, but on a plane like x + 0.1y = 1.05e6 it is past a per-component reach limit where the face's points aren't; a reach check of the frame refuses geometry whose every point is within reach
+- Reach checks applied to a profile's placed points but not to the other sketch values placed on the same frame (a revolve's axis line, a construction line): the kernel request is refused naming a point the document never wrote
 - A sweep's vector, or a revolution's axis, in the faces' own plane, given to a kernel operation that leaves the plane to the core: OCCT builds a solid of volume 0 that `BRepCheck` calls valid
 - OCCT makers that share their input's topology (`MakePrism`, `MakeRevol` without copying): they add curves and locations to the input's edges, so the input's bytes change and each later sweep of the same shape in one process writes different bytes; compare the input's bytes before and after, and sweep it twice
 - Revolve with a side or corner exactly 1e-7 from the axis, or across it by less than 1e-7: OCCT throws (`NCollection_Sequence::Value`, `BRep_API: command not done`)
@@ -319,6 +322,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 
 - Reads that redo work a model already did (a sketch read solving its sketch again) on a shared pool whose take starts a worker whenever none is idle: N reads at once start N workers, kept idle for ever; count the starts against the design's bound on workers
 - Reads that redo a model's step against a model whose step failed transiently (a worker crash under the rebuild): the read answers a result the model never had, beside the envelope's fault naming the same feature
+- Rebuilds that iterate to a fixed point, one round per link of a chain (each sketch on a face of the last pad): per-round work over every item still waiting, each walking every feature before it, is n³; time chains of 100 and 200 links and compare the ratio (4 is n², 8 is n³)
 
 ## Oracles and comparisons
 
@@ -348,6 +352,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A fake's step read by its grammar but not its values (a fillet of edge 13 of a box, a radius of -1, an edge listed twice): bytes no request could make are taken as its own
 - Hand-written topology tables (each face's edges, each edge's vertices) for primitives: compare with the real kernel's move history, cones whose cap OCCT drops included
 - A fake's refusal built by hand where the worker client words the real one (`failure_error` adds a suggestion to every refusal): send the same bad request to both and compare every field of the error, not only code, parameter, and message
+- A fake's measure that's exact only for frames whose axes each lie along one model axis (a box of a sketch's box's corners placed): a circle on a frame tilted about X matches the kernel, one tilted about (1, 1, 0) doesn't; test fakes on frames tilted about a diagonal
 
 ## Caches and files the core writes
 
@@ -381,3 +386,9 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - A body built but never measured (its summary refused or failed): code that culls, fits, or checks the eye by the body's box leaves it out of every view, so a camera on it draws nothing as Ok and an eye inside it is taken
 - A value the command normalizes, passed back as answered (a camera's up already of unit length and perpendicular): renormalizing in f64 isn't a fixed point, so the answer changes in its last bits every round trip
 - Worker meshes of fewer faces or edges than the solid (counts the model already holds in its summary): answered Ok, named short, with nothing saying the rest are missing
+- A body drawn in f32 about its own centre and moved into view by an instance transform (uploaded once, for every view): its precision follows its own extent, not the view, so a 1 km rod seen 5 mm from its end, or a 1 mm box with one undrawn edge point 1 km off, is drawn ~extent × 3e-8 out (14 pixels at a 0.5° view); compare with the same scene drawn about the eye or target
+- A precision rule that picks a point to draw about by its straight distance where only the part across the view counts (an orthographic target 6e5 along the ray from a 1 km face, "farther than the half diagonal, so about the face's centre"): the face is drawn several pixels off at the least zoom; move an orthographic target along its ray, which must change nothing, and compare
+- Parts of one image drawn about different points (faces about their centres, edges about the eye or target): where f32 about the far point fails (a 0.001° view 1e5 mm off, an orthographic target 1e6 along the ray), the edges part from their faces by 5 to 16 pixels; check each edge's pixels against its projection, not only the faces'
+- Range limits a check sets once for every image size (a field of view down to 0.001°, a view height down to 1e-5 of the reach): f32's position and depth are coarse by a fixed fraction of the scene, so at 2048 to 4096 rows hidden faces show through their neighbours along shared edges; draw at the limit at the tallest size
+- A perspective near plane fitted to the farthest point in the scene (a millionth of the reach): a second body 1 km off clips a close look at a small part whole
+- A long planar face meshed as two triangles (as OCCT meshes a plane), seen close from before its middle at a narrow angle (318 m either way at 48 mm, 0.5°): its corners are ~1e8 pixels off the image and lavapipe's clipping drops half the face; the same face cut into 10,000 strips is drawn whole

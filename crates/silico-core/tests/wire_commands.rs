@@ -433,12 +433,14 @@ fn every_object_of_the_commands_snapshots_is_closed_and_requires_its_fields() {
         let mut value = snapshot_value(of).unwrap();
         // A document type a request or result holds keeps the document's own schema
         // (`wire_shape`): the document's definitions, as the document's schema has them, and
-        // a new feature, the document's feature less its fingerprint
-        // (wire_session_commands.rs checks it), aren't the wire's to close.
+        // a new feature, the document's feature less its fingerprint, with its face plane
+        // whose x may be left out (wire_session_commands.rs checks both), aren't the wire's
+        // to close.
         for part in ["request", "result"] {
             if let Some(defs) = value[part]["$defs"].as_object_mut() {
                 defs.retain(|name, def| {
-                    name != "NewFeature" && document["$defs"].get(name) != Some(def)
+                    !matches!(name.as_str(), "NewFeature" | "FacePlaneRequest")
+                        && document["$defs"].get(name) != Some(def)
                 });
             }
         }

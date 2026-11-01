@@ -220,9 +220,10 @@ fn same_values(before: &Feature, after: &Feature) -> bool {
 
 /// The features of `features` that `document` has, and every feature of `document` that
 /// uses one of them, directly or through others ([`Operation::uses`](super::Operation::uses):
-/// the solids it consumes and the sketch it sweeps). An ID `document` hasn't is left out.
+/// the solids it consumes, the sketch it sweeps, and a sketch's face's feature). An ID
+/// `document` hasn't is left out.
 pub fn with_users(document: &Document, features: &BTreeSet<FeatureId>) -> BTreeSet<FeatureId> {
-    let mut users: BTreeMap<&FeatureId, Vec<&FeatureId>> = BTreeMap::new();
+    let mut users: BTreeMap<FeatureId, Vec<&FeatureId>> = BTreeMap::new();
     for feature in &document.features {
         for used in feature.operation.uses() {
             users.entry(used).or_default().push(&feature.id);
