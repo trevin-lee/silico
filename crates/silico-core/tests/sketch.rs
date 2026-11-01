@@ -283,6 +283,153 @@ fn every_constraint_form_reads_and_writes_back_in_schema_order() {
     assert!(validate(&document).is_ok(), "{:#?}", validate(&document));
 }
 
+/// The base sketch, its lines na (pa → pb, along x) and nb (pa → pc, along y), with these
+/// constraints, in canonical form.
+fn canonical_with_two_lines(constraints: &[&str]) -> String {
+    format!(
+        r#"{{
+  "silico": 1,
+  "units": {{"length": "mm", "resolution": "1nm"}},
+  "naming": 5,
+  "features": [
+    {{
+      "id": "k7f2qx3m",
+      "type": "sketch",
+      "v": 1,
+      "name": "S",
+      "plane": "xy",
+      "points": [
+        {{"id": "pa000000", "x": 0, "y": 0, "construction": false}},
+        {{"id": "pb000000", "x": 10, "y": 0, "construction": false}},
+        {{"id": "pc000000", "x": 0, "y": 10, "construction": false}}
+      ],
+      "lines": [
+        {{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}},
+        {{"id": "nb000000", "from": "pa000000", "to": "pc000000", "construction": false}}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {}
+      ]
+    }}
+  ]
+}}
+"#,
+        constraints.join(",\n        ")
+    )
+}
+
+#[test]
+fn an_angle_reversed_is_written_only_as_true_after_b_and_one_without_it_keeps_its_bytes() {
+    // The chain-corner decision (2026-10-31): `reversed` takes b's direction from its `to`
+    // to its `from`; written only as true, placed after b. An angle that leaves it out is
+    // as it always was, its bytes unchanged. b may be an axis (no gate rule).
+    let text = canonical_with_two_lines(&[
+        r#"{"id": "k0000000", "type": "angle", "a": "na000000", "b": "nb000000", "reversed": true, "value": 60, "driving": true}"#,
+        r#"{"id": "k0000001", "type": "angle", "a": "nb000000", "b": "x_axis", "reversed": true, "value": -150, "driving": false}"#,
+        r#"{"id": "k0000002", "type": "angle", "a": "na000000", "b": "nb000000", "value": 90, "driving": false}"#,
+    ]);
+    let document = read(text.as_bytes()).unwrap();
+    assert_eq!(write(&document).unwrap(), text);
+    let sketch = sketch_of(&text);
+    let angle =
+        |a: Reference, b: Reference, reversed: bool, value: &str, driving: bool| Form::Angle {
+            a,
+            b,
+            reversed,
+            value: silico_core::document::Angle::parse(value).unwrap(),
+            driving,
+        };
+    let (na, nb) = (
+        Reference::Element(el("na000000")),
+        Reference::Element(el("nb000000")),
+    );
+    assert_eq!(
+        sketch.constraints[0].form,
+        angle(na.clone(), nb.clone(), true, "60", true)
+    );
+    assert_eq!(
+        sketch.constraints[1].form,
+        angle(nb.clone(), Reference::XAxis, true, "-150", false)
+    );
+    assert_eq!(
+        sketch.constraints[2].form,
+        angle(na, nb, false, "90", false)
+    );
+    // The gate takes it, an axis as b included.
+    assert!(validate(&document).is_ok(), "{:#?}", validate(&document));
+    // Written in any order, it's written back after b; and a file with no reversed angle
+    // gets none.
+    let shuffled = constrained(
+        r#"{"driving": true, "value": 30, "reversed": true, "b": "x_axis", "a": "na000000", "type": "angle", "id": "k0000000"}"#,
+    );
+    let written = write(&read(shuffled.as_bytes()).unwrap()).unwrap();
+    assert!(
+        written.contains(r#"{"id": "k0000000", "type": "angle", "a": "na000000", "b": "x_axis", "reversed": true, "value": 30, "driving": true}"#),
+        "{written}"
+    );
+    let drawn = canonical_with_two_lines(&[
+        r#"{"id": "k0000000", "type": "angle", "a": "na000000", "b": "nb000000", "value": 90, "driving": true}"#,
+    ]);
+    assert_eq!(
+        write(&read(drawn.as_bytes()).unwrap()).unwrap(),
+        drawn,
+        "an angle without reversed keeps its bytes"
+    );
+    // The schema takes true, and only true.
+    let schema: serde_json::Value =
+        serde_json::from_str(&silico_core::document::schema().unwrap()).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&serde_json::from_str(&text).unwrap()));
+    assert!(validator.is_valid(&serde_json::from_str(&drawn).unwrap()));
+    let refused = text.replace(r#""reversed": true"#, r#""reversed": false"#);
+    assert!(!validator.is_valid(&serde_json::from_str(&refused).unwrap()));
+}
+
+#[test]
+fn an_angles_reversed_false_or_not_true_or_on_another_form_is_refused_naming_it() {
+    let angle = |reversed: &str| {
+        constrained(&format!(
+            r#"{{"id": "k0000000", "type": "angle", "a": "na000000", "b": "x_axis", "reversed": {reversed}, "value": 30, "driving": true}}"#
+        ))
+    };
+    let cases = [
+        (
+            angle("false"),
+            "constraints.k0000000.reversed is false: an angle measured to b as drawn leaves reversed out",
+            "remove reversed; write it only as true",
+        ),
+        (
+            angle(r#""true""#),
+            "constraints.k0000000.reversed is a string, not true",
+            "write constraints.k0000000.reversed as true",
+        ),
+        (
+            angle("1"),
+            "constraints.k0000000.reversed is a number, not true",
+            "write constraints.k0000000.reversed as true",
+        ),
+        (
+            angle("null"),
+            "constraints.k0000000.reversed is null, not true",
+            "write constraints.k0000000.reversed as true",
+        ),
+        (
+            constrained(
+                r#"{"id": "k0000000", "type": "parallel", "a": "na000000", "b": "x_axis", "reversed": true}"#,
+            ),
+            "constraints.k0000000 has a key it can't have: \"reversed\"",
+            "remove \"reversed\" (or check its spelling)",
+        ),
+    ];
+    for (text, message, suggestion) in cases {
+        let error = read_error(&text);
+        assert_error(&error, "constraints.k0000000.reversed", message);
+        assert_eq!(error.suggestion(), Some(suggestion), "{error:?}");
+    }
+}
+
 /// A point at (x, y), as written, read back as the f64 it holds.
 fn coordinate_of(x: &str) -> f64 {
     let text = document(&fields(

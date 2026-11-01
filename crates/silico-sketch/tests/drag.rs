@@ -459,6 +459,7 @@ fn chain(links: usize) -> (SketchSystem, Geometry) {
                         tag,
                         a: before,
                         b: line,
+                        reversed: false,
                         value: angle,
                     });
                 }

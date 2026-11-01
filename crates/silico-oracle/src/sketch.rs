@@ -307,14 +307,17 @@ pub fn freecad_sketch(sketch: &Sketch, translation: &Translation) -> Result<Free
             Form::Perpendicular { a, b } => {
                 make("Perpendicular", vec![curve(a)?, curve(b)?], None, true)
             }
+            // FreeCAD's angle with explicit start points (Sketch.cpp's addAngleConstraint
+            // with PointPos): `a` from its start, `b` from its end when reversed.
             Form::Angle {
                 a,
                 b,
+                reversed,
                 value,
                 driving,
             } => make(
                 "Angle",
-                vec![curve(a)?, curve(b)?],
+                vec![curve(a)?, 1, curve(b)?, if *reversed { 2 } else { 1 }],
                 Some(value.degrees().to_radians()),
                 *driving,
             ),

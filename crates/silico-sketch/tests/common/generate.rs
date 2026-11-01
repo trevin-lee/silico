@@ -162,7 +162,13 @@ impl Gen {
                     7 => SolverConstraint::Parallel { tag, a, b },
                     8 => SolverConstraint::Perpendicular { tag, a, b },
                     9 => SolverConstraint::EqualLength { tag, a, b },
-                    _ => SolverConstraint::Angle { tag, a, b, value },
+                    _ => SolverConstraint::Angle {
+                        tag,
+                        a,
+                        b,
+                        reversed: false,
+                        value,
+                    },
                 })
             }
             _ => {
@@ -315,8 +321,17 @@ pub fn residuals(s: &SketchSystem, v: &[f64], c: &SolverConstraint) -> Vec<f64> 
             };
             vec![e / scale]
         }
-        SolverConstraint::Angle { a, b, value, .. } => {
+        SolverConstraint::Angle {
+            a,
+            b,
+            reversed,
+            value,
+            ..
+        } => {
+            // Reversed, b's direction runs from its end to its start (PlaneGCS's l2p1 and
+            // l2p2 swapped).
             let (d1, d2) = (dir(s, v, a), dir(s, v, b));
+            let d2 = if reversed { (-d2.0, -d2.1) } else { d2 };
             let t = libm::atan2(d1.1, d1.0) + v[value.0 as usize];
             let (x2, y2) = (
                 d2.0 * libm::cos(t) + d2.1 * libm::sin(t),

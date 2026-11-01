@@ -447,6 +447,57 @@
         {"id": "k000000c", "type": "parallel", "a": "n0000001", "b": "n0000006"}
       ],
       "note": "FreeCAD's testSlotCase whole: the slot plate (CreateSlotPlateSet), solved, and its inner set (CreateSlotPlateInnerSet), a circle and a hole of three lines and an arc, drawn where Silico solves it from FreeCAD's drawing. The inner set has 9 degrees of freedom, so where it ends depends on where the solve starts: drawn so, both keep it, and the plate's face is 8650.331462 mm² by hand (silico-kernel's profile_faces); FreeCAD's own drawing solves to another solution, 8607.71344. Approved by the maintainer, 2026-10-22."
+    },
+    {
+      "id": "s000000g",
+      "type": "sketch",
+      "v": 1,
+      "name": "triangle_30_60_90_as_seen",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10.7, "y": -0.6, "construction": false},
+        {"id": "p0000003", "x": 8.1, "y": 3.9, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false},
+        {"id": "n0000003", "from": "p0000003", "to": "p0000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000003", "type": "horizontal", "line": "n0000001"},
+        {"id": "k0000004", "type": "length", "line": "n0000001", "value": 10, "driving": true},
+        {"id": "k0000005", "type": "angle", "a": "n0000002", "b": "n0000001", "reversed": true, "value": 60, "driving": true},
+        {"id": "k0000006", "type": "angle", "a": "n0000001", "b": "n0000003", "reversed": true, "value": 30, "driving": true}
+      ],
+      "note": "triangle_30_60_90 with its corners' angles written as they're seen, each from the ray along one line to the ray back along the other (b reversed: FreeCAD's Angle with b's end as its start): at B from BC to BA, 60; at A from AB to AC, 30. Drawn as triangle_30_60_90 is; it solves to its corners, A (0, 0), B (10, 0), C (7.5, 2.5√3), fully constrained. Approved under the maintainer's delegation, 2026-10-31."
+    },
+    {
+      "id": "s000000h",
+      "type": "sketch",
+      "v": 1,
+      "name": "line_thirty_from_the_x_axis_reversed",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": -8, "y": 5.5, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true},
+        {"id": "k0000003", "type": "length", "line": "n0000001", "value": 10, "driving": true},
+        {"id": "k0000004", "type": "angle", "a": "n0000001", "b": "x_axis", "reversed": true, "value": 30, "driving": true}
+      ],
+      "note": "A line from the origin, 10 long, 30 degrees from the x axis taken the other way (b reversed: FreeCAD's Angle with the axis's end as its start): SolidWorks' 30 degrees from horizontal for a line at 150. It solves to (−5√3, 5), fully constrained. Approved under the maintainer's delegation, 2026-10-31."
     }
   ]
 }

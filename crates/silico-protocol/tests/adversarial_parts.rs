@@ -369,6 +369,7 @@ fn build(plan: &Plan) -> SketchSystem {
                 tag,
                 a: geo(0),
                 b: geo(1),
+                reversed: false,
                 value: v,
             },
             10 => S::EqualLength {

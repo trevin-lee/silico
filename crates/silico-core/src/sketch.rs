@@ -1470,10 +1470,17 @@ impl Translation {
                 a: self.line(a)?.geometry,
                 b: self.line(b)?.geometry,
             },
-            Form::Angle { a, b, value, .. } => S::Angle {
+            Form::Angle {
+                a,
+                b,
+                reversed,
+                value,
+                ..
+            } => S::Angle {
                 tag,
                 a: self.line(a)?.geometry,
                 b: self.line(b)?.geometry,
+                reversed: *reversed,
                 value: self.fixed(value.degrees().to_radians()),
             },
             Form::Radius { curve, value, .. } => S::Radius {
@@ -2449,13 +2456,17 @@ impl Translation {
                 Form::Angle {
                     a,
                     b,
+                    reversed,
                     value,
                     driving: false,
                 } => {
                     let (la, lb) = (self.line(a)?, self.line(b)?);
                     let measured = angle_between(
                         direction(self.xy(values, la.from), self.xy(values, la.to)),
-                        direction(self.xy(values, lb.from), self.xy(values, lb.to)),
+                        against(
+                            direction(self.xy(values, lb.from), self.xy(values, lb.to)),
+                            *reversed,
+                        ),
                     );
                     // On the stored value's turn, as 1.1.3's solve leaves it, then reduced
                     // as it writes it back: the measure plus the whole turns that takes.
@@ -2709,9 +2720,17 @@ impl Translation {
             S::Perpendicular { a, b, .. } => {
                 carried((angle_between(dir(a), dir(b)).abs() - PI / 2.0).abs(), a, b)
             }
-            S::Angle { a, b, value, .. } => {
-                carried(wrap(angle_between(dir(a), dir(b)) - v(value)).abs(), a, b)
-            }
+            S::Angle {
+                a,
+                b,
+                reversed,
+                value,
+                ..
+            } => carried(
+                wrap(angle_between(dir(a), against(dir(b), reversed)) - v(value)).abs(),
+                a,
+                b,
+            ),
             S::EqualLength { a, b, .. } => {
                 let (a0, a1) = self.ends(values, a);
                 let (b0, b1) = self.ends(values, b);
@@ -2841,6 +2860,13 @@ fn at(values: &[f64], v: Value) -> f64 {
 
 fn direction(from: [f64; 2], to: [f64; 2]) -> [f64; 2] {
     [to[0] - from[0], to[1] - from[1]]
+}
+
+/// Direction `d`, or, `reversed`, the other way: an angle's `b` taken from its `to` to its
+/// `from`. Negating is exact, so the angle to it is the solver's, bit for bit (PlaneGCS
+/// reads the same two differences with their signs swapped).
+fn against(d: [f64; 2], reversed: bool) -> [f64; 2] {
+    if reversed { [-d[0], -d[1]] } else { d }
 }
 
 /// The angle from direction `a` to `b`, counter-clockwise, in (−π, π].
