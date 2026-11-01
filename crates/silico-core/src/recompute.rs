@@ -456,7 +456,10 @@ impl Model {
     /// broke (its first hundred: [`Model::error_count`] counts them all). A pad, pocket,
     /// revolve, or groove refused for its sketch (no profile, several regions, an axis
     /// across it) has one error, naming it, whose elements are the sketch's at fault; the
-    /// sketch, solved, has none (design S3, S5, S6).
+    /// sketch, solved, has none (design S3, S5, S6). But a kernel fault met describing the
+    /// solid a face sketch's face is on, which names no feature: kept as met, so it's
+    /// worded as the solid's read words it, and a read names the sketch it stopped
+    /// (`elements::worded_of`).
     pub fn errors(&self) -> impl Iterator<Item = &Error> {
         self.features
             .iter()

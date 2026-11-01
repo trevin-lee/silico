@@ -1035,14 +1035,15 @@ fn no_default(placed: Placed, model: &Model, sketch: &FeatureId, face: &str) -> 
         Placed::Failed(error) => worded(&error).into(),
         Placed::Blocked(root) => {
             // Stopped by a kernel fault, which isn't the document's: refused with the fault
-            // itself, as a read of the solid is (`elements`).
+            // itself, naming the root whose outcome holds it, as a read of the solid is
+            // (`elements`).
             if let Some(fault) = model.outcome(&root).and_then(|outcome| {
                 outcome
                     .errors()
                     .iter()
                     .find(|error| error.code().is_kernel_fault())
             }) {
-                return worded(fault).into();
+                return worded_of(fault, &root).into();
             }
             Error::new(
                 ErrorCode::InvalidInput,

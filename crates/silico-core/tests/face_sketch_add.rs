@@ -525,6 +525,98 @@ fn a_face_of_a_solid_that_couldnt_be_described_is_refused_with_the_kept_fault() 
 }
 
 #[test]
+fn a_face_of_a_pad_blocked_on_a_sketch_a_description_crash_failed_names_that_sketch() {
+    // b1 builds, but describing it crashes the worker: s1, on b1's top, fails with the
+    // fault as met (naming no feature); p1, padding s1, is blocked on s1. s2 on p1's top,
+    // without x, is refused with the fault, naming s1, the root whose outcome holds it, as
+    // a read of p1's solid names it. The fault met no feature, so it says to try again
+    // alone. Written out by hand.
+    let kernel = planar_boxes();
+    kernel.refuse(|op| {
+        matches!(op, Op::DescribeAll { .. })
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+    });
+    let mut s1 = without_x("s0000001", "b0000001.box.Face6");
+    s1["plane"]["x"] = json!("+x");
+    let f = opened_on(
+        kernel,
+        &[
+            cube(),
+            s1.to_string(),
+            pad("p0000001", Some("b0000001"), "s0000001", &one_side("3")),
+        ],
+    );
+    let (revision, text) = (f.revision(), f.text());
+    let fault = json!({
+        "code": "worker_crashed",
+        "message": "the kernel worker crashed",
+        "feature": "s0000001",
+        "elements": [],
+        "elements_total": 0,
+        "parameter": null,
+        "cause": null,
+        "suggestion": "check with fresh to try it again",
+        "candidates": [],
+        "advice": null,
+    });
+    let answer = f.add(
+        None,
+        &without_x("s0000002", "p0000001.pad.Face(G s0000001.sketch.Face1)"),
+    );
+    f.refused(&answer, &fault, revision, &text);
+    // A read of p1's solid gives the same.
+    let read = f.call(
+        "elements",
+        &json!({"session": "s1", "model": "current", "feature": "p0000001", "after": null, "limit": 1}),
+    );
+    assert_eq!(read["errors"][0], fault, "{read}");
+}
+
+#[test]
+fn a_worker_that_couldnt_be_had_names_no_feature_in_a_read_of_the_solid_or_of_one_blocked_on_it() {
+    // The box's build finds no kernel worker: that says nothing of the box, so a read of its
+    // solid, or of the fillet blocked on it, names no feature, by elements or by
+    // mass_properties alike, its suggestion to try again alone. Written out by hand.
+    let kernel = FakeKernel::new(2).unwrap();
+    kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Box { .. })).then(|| {
+            Error::new(
+                ErrorCode::WorkerUnavailable,
+                "no kernel worker could be had",
+            )
+        })
+    });
+    let fillet = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "b0000001", "edges": ["b0000001.box.Edge1"], "radius": 1}"#;
+    let f = opened_on(kernel, &[cube(), fillet.to_owned()]);
+    let unavailable = json!({
+        "code": "worker_unavailable",
+        "message": "no kernel worker could be had",
+        "feature": null,
+        "elements": [],
+        "elements_total": 0,
+        "parameter": null,
+        "cause": null,
+        "suggestion": "check with fresh to try it again",
+        "candidates": [],
+        "advice": null,
+    });
+    for feature in ["b0000001", "f0000001"] {
+        let listed = f.call(
+            "elements",
+            &json!({"session": "s1", "model": "current", "feature": feature, "after": null, "limit": 1}),
+        );
+        assert_eq!(listed["ok"], false, "{feature}: {listed}");
+        assert_eq!(listed["errors"][0], unavailable, "{feature}: {listed}");
+        let measured = f.call(
+            "mass_properties",
+            &json!({"session": "s1", "model": "current", "feature": feature}),
+        );
+        assert_eq!(measured["ok"], false, "{feature}: {measured}");
+        assert_eq!(measured["errors"][0], unavailable, "{feature}: {measured}");
+    }
+}
+
+#[test]
 fn inside_a_transaction_the_answer_names_the_model_read_with_its_fault_beside_the_result() {
     // An unrelated cylinder crashed the worker: the model the face was read from holds the
     // fault, and the add, made inside a transaction (so no commit names a model), answers
