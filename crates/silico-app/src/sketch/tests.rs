@@ -1403,6 +1403,28 @@ fn a_frames_presses_select_ctrl_adds_and_a_press_on_nothing_clears() {
     // so its click clears the selection.
     frame(&mut mode, &press(pos2(300.0, 308.0), false), None);
     assert!(mode.selection.is_empty());
+    // And 7 points (0.7 mm) off it, on the pick's edge: selected.
+    frame(&mut mode, &press(pos2(300.0, 307.0), false), None);
+    assert_eq!(selected(&mode), ["na000003"]);
+    // A press on a member that a read taken before its release no longer holds: a click on
+    // nothing.
+    frame(
+        &mut mode,
+        &[event(PointerAction::Press, pos2(500.0, 400.0), false)],
+        None,
+    );
+    let mut fewer = rectangle(Vec::new());
+    fewer.lines.remove(1);
+    mode.took(Read {
+        model: None,
+        result: Ok(under(fewer)),
+    });
+    frame(
+        &mut mode,
+        &[event(PointerAction::Release, pos2(500.0, 400.0), false)],
+        None,
+    );
+    assert!(mode.selection.is_empty());
 }
 
 #[test]
@@ -1641,7 +1663,7 @@ fn each_constraint_states_colour_on_each_sketch_state_is_its_own() {
     );
     // Each row: the constraint's state and form, then its colour on a sketch under defined,
     // fully defined, over defined, with no solution, and invalid.
-    let table: [(ConstraintState, &Form, [egui::Color32; 5]); 12] = [
+    let table: [(ConstraintState, &Form, [egui::Color32; 5]); 15] = [
         (Satisfied, &dimension, [dim; 5]),
         (Satisfied, &relation, [rel; 5]),
         (Satisfied, &driven, [SKETCH_DRIVEN; 5]),
@@ -1658,6 +1680,9 @@ fn each_constraint_states_colour_on_each_sketch_state_is_its_own() {
             &driven,
             [SKETCH_DRIVEN, SKETCH_DRIVEN, SKETCH_DRIVEN, over, inv],
         ),
+        (Conflicting, &driven, [over; 5]),
+        (Redundant, &driven, [over; 5]),
+        (PartiallyRedundant, &driven, [over; 5]),
     ];
     for (state, form, colours) in table {
         for (sketch, want) in SketchState::ALL.into_iter().zip(colours) {
@@ -1666,6 +1691,20 @@ fn each_constraint_states_colour_on_each_sketch_state_is_its_own() {
                 want,
                 "{state:?} {} on {sketch:?}",
                 form.type_name()
+            );
+        }
+    }
+    // A constraint given no state: as one satisfied.
+    for (form, want) in [
+        (&dimension, dim),
+        (&driven, SKETCH_DRIVEN),
+        (&relation, rel),
+    ] {
+        for sketch in SketchState::ALL {
+            assert_eq!(
+                draw::constraint_colour(sketch, form, None),
+                want,
+                "{sketch:?}"
             );
         }
     }
@@ -1861,8 +1900,10 @@ fn a_circles_and_an_arcs_fill_stay_within_the_chord_bound_of_their_area() {
     });
     circle.regions = vec![region(&["ca000001"], &[])];
     let disc = fill_area(&region_fills(&circle, HAND));
-    let full = PI * 100.0;
-    assert!(disc <= full && disc >= full - TAU * 10.0 * stray, "{disc}");
+    // r/tolerance = 400 would ask 45 chords; a fill's curve has at most 32: the inscribed
+    // 32-gon, 16·100·sin(π/16) = 312.1445, within 2.02 of π·100.
+    assert!((disc - 312.144_515_225_805_2).abs() < 1e-6, "{disc}");
+    assert!(PI * 100.0 - disc < 2.02);
     // A 20 × 10 rectangle whose top is an arc about (10, 10), bulging up through a half turn:
     // the arc in the middle of the loop. 200 + 50π.
     let mut arched = under(sketch_of(
@@ -2077,11 +2118,182 @@ fn the_states_words_are_coloured_for_the_theme_they_stand_on() {
         for (shown, visuals) in [(&on_dark, &dark), (&on_light, &light)] {
             let ratio = contrast(shown.colour, visuals.window_fill);
             assert!(
-                ratio >= 2.5,
+                ratio >= 3.0,
                 "{} on {}: {ratio}",
                 shown.words,
                 visuals.dark_mode
             );
         }
     }
+    // On the light theme: over defined and no solution in its error colour, and every other
+    // state's colour its own (SketchState::ALL's order: under, fully, over, no solution,
+    // invalid; then empty).
+    let on_light: Vec<egui::Color32> = reads
+        .iter()
+        .map(|read| state_shown(read, &light).colour)
+        .collect();
+    assert_eq!(on_light[2], light.error_fg_color);
+    assert_eq!(on_light[3], light.error_fg_color);
+    let distinct: std::collections::BTreeSet<[u8; 4]> = [0, 1, 2, 4, 5]
+        .iter()
+        .map(|&n| on_light[n].to_array())
+        .collect();
+    assert_eq!(distinct.len(), 5);
+}
+
+#[test]
+fn a_fills_scale_is_the_power_of_two_at_or_below_the_views() {
+    assert_eq!(draw::fill_scale(Scale(0.1)), (-4, Scale(0.0625)));
+    assert_eq!(draw::fill_scale(Scale(0.125)), (-3, Scale(0.125)));
+    for odd in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert_eq!(draw::fill_scale(Scale(odd)), (0, Scale(1.0)), "{odd}");
+    }
+}
+
+/// A projection to the screen, and its way back.
+type Projection = Box<dyn Fn([f64; 2]) -> Option<Pos2>>;
+type Unprojection = Box<dyn Fn(Pos2) -> Option<[f64; 2]>>;
+
+/// A view of the plane at `zoom` points a millimetre, panned `pan` points right: the
+/// projection, and its way back.
+fn zoomed(zoom: f64, pan: f64) -> (Projection, Unprojection) {
+    (
+        Box::new(move |p: [f64; 2]| {
+            Some(pos2(
+                (100.0 + pan + zoom * p[0]) as f32,
+                (500.0 - zoom * p[1]) as f32,
+            ))
+        }),
+        Box::new(move |p: Pos2| {
+            Some([
+                (f64::from(p.x) - 100.0 - pan) / zoom,
+                (500.0 - f64::from(p.y)) / zoom,
+            ])
+        }),
+    )
+}
+
+/// `n` frames of `mode` seen at `zoom`, panned `pan`.
+fn frames_at(mode: &mut SketchMode, zoom: f64, pan: f64, n: usize) {
+    let (project, to_plane) = zoomed(zoom, pan);
+    with_painter(|painter| {
+        for _ in 0..n {
+            let input = FrameInput {
+                events: &[],
+                pointer: None,
+                project: &*project,
+                to_plane: &*to_plane,
+            };
+            mode.frame(painter, &input);
+        }
+    });
+}
+
+/// The area of the last frame's fill, in square millimetres at `zoom`.
+fn drawn_fill(mode: &SketchMode, zoom: f64) -> Option<f64> {
+    mode.last_drawn().iter().find_map(|d| match d {
+        Drawn::Fill { triangles, .. } => Some(f64::from(area(triangles)) / (zoom * zoom)),
+        _ => None,
+    })
+}
+
+#[test]
+fn the_plates_cache_is_keyed_on_the_read_the_scale_the_view_and_whats_shown() {
+    let mut mode = mode_on(plate());
+    // At 10 points a millimetre, 0.1 mm a point: the fill worked out at 1/16.
+    frames_at(&mut mode, 10.0, 0.0, 3);
+    assert_eq!((mode.drawings, mode.fill_builds), (1, 1));
+    let cached = mode.fill_at(-4).unwrap().to_vec();
+    let read = mode.drawable().unwrap().clone();
+    assert_eq!(cached, region_fills(&read, Scale(0.0625)));
+    // To 20 (another power of two) and back, and again: the two kept, neither worked out
+    // again.
+    frames_at(&mut mode, 20.0, 0.0, 2);
+    frames_at(&mut mode, 10.0, 0.0, 2);
+    frames_at(&mut mode, 20.0, 0.0, 2);
+    assert_eq!((mode.drawings, mode.fill_builds), (4, 2));
+    frames_at(&mut mode, 10.0, 0.0, 2);
+    let before = drawn_fill(&mode, 10.0).unwrap();
+    assert_eq!((mode.drawings, mode.fill_builds), (5, 2));
+    // A new read, one hole's circle gone: both worked out again; the fill grows by the
+    // hole as its chords drew it. At 1/16 a hole would take 28 chords, and 60 × 28 + 4
+    // vertices don't fit (1,684² + 60 · 1,684 is past 2.5 million), so it's worked out at
+    // 1/8: 2·acos(1 − 1/80) = 0.3164 rad a chord, 20 to a turn, a 20-gon of
+    // 10 · 6.25 · sin(π/10) = 19.3136 (to the screen triangles' f32 rounding).
+    let mut fewer = read.clone();
+    fewer
+        .members
+        .circles
+        .retain(|c| c.id.as_str() != "cc000000");
+    fewer.regions[0]
+        .holes
+        .retain(|h| h[0].as_str() != "cc000000");
+    mode.took(Read {
+        model: None,
+        result: Ok(fewer),
+    });
+    frames_at(&mut mode, 10.0, 0.0, 2);
+    assert_eq!((mode.drawings, mode.fill_builds), (6, 3));
+    let grown = drawn_fill(&mode, 10.0).unwrap() - before;
+    assert!((grown - 19.313_562).abs() < 2e-3, "{grown}");
+    // Show Profile off: drawn again, the fill kept but not drawn.
+    mode.settings.show_profile = false;
+    frames_at(&mut mode, 10.0, 0.0, 2);
+    assert_eq!((mode.drawings, mode.fill_builds), (7, 3));
+    assert_eq!(drawn_fill(&mode, 10.0), None);
+    mode.settings.show_profile = true;
+    frames_at(&mut mode, 10.0, 0.0, 1);
+    // A pan of 50 points at the same zoom: drawn again, the fill kept.
+    frames_at(&mut mode, 10.0, 50.0, 2);
+    assert_eq!((mode.drawings, mode.fill_builds), (9, 3));
+    assert!(drawn_fill(&mode, 10.0).is_some());
+}
+
+#[test]
+fn the_plate_zoomed_far_in_keeps_a_fill_worked_out_coarser_within_the_work_bound() {
+    // 80 points a millimetre: 0.0125 mm a point, the fill asked at 1/128. Its holes at
+    // their 32 segments would be 60 × 32 + 4 vertices, past the bound; it's worked out
+    // coarser till it fits, and is never left out.
+    let mut mode = mode_on(plate());
+    frames_at(&mut mode, 80.0, 0.0, 2);
+    let fills = mode.fill_at(-7).unwrap();
+    assert_eq!(fills.len(), 1);
+    // A polygon of n vertices with h holes bridged clips into n + 2h − 2 triangles.
+    let vertices = fills[0].triangles.len() + 2 - 2 * 60;
+    assert!(
+        vertices * vertices + 60 * vertices <= draw::MAX_FILL_WORK,
+        "{vertices}"
+    );
+    assert!(vertices < 60 * draw::MAX_FILL_SEGMENTS, "{vertices}");
+    let got = fill_area(fills);
+    let want = 6000.0 - 60.0 * PI * 6.25;
+    assert!(got > want && got < want + 60.0 * 2.0, "{got}");
+    assert!(drawn_fill(&mode, 80.0).is_some());
+}
+
+#[test]
+fn each_holes_bridge_goes_where_it_crosses_no_other_hole() {
+    // C, furthest right, bridges first; then A, a tall slot; then B, whose nearest vertex,
+    // C's (30, 9.5), lies across A. B must bridge elsewhere, or A's slot is filled over.
+    let outer = vec![[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]];
+    let square = |x0: f64, x1: f64, y0: f64, y1: f64| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    let c = square(30.0, 31.0, 9.5, 10.5);
+    let a = square(24.0, 25.0, 1.0, 19.0);
+    let b = square(20.0, 21.0, 9.5, 10.5);
+    let triangles = triangulate(outer, vec![c, a, b]);
+    for p in [
+        [24.5, 5.0],
+        [24.5, 10.2],
+        [24.5, 15.0],
+        [20.5, 10.0],
+        [30.5, 10.0],
+    ] {
+        assert!(!covered(&triangles, p), "{p:?} covered");
+    }
+    for p in [[22.5, 10.0], [27.5, 10.0]] {
+        assert!(covered(&triangles, p), "{p:?} uncovered");
+    }
+    // 800 less C's 1, A's 18, and B's 1.
+    let total: f64 = triangles.iter().map(|t| signed_area(&t[..]).abs()).sum();
+    assert!((total - 780.0).abs() < 1e-9, "{total}");
 }

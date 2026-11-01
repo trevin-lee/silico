@@ -7302,3 +7302,166 @@ fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_pre
     assert_eq!(h.state().tabs()[0].prefixes.reads, 7);
     assert_eq!(never_waits::waits(), 0);
 }
+
+/// Ctrl (⌘) and `key` pressed, a frame after the last answer so the status read is of the
+/// revision it came to, and everything it sent answered.
+fn chord(h: &mut AppHarness, key: eframe::egui::Key) {
+    step(h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+    step(h);
+    settled(h);
+}
+
+fn undos(h: &AppHarness) -> usize {
+    h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Undo(_)))
+        .count()
+}
+
+/// SKETCHED with a second sketch, Bar: one line from (0, 30) to (20, 30).
+fn two_sketches() -> String {
+    SKETCHED.replace(
+        "  ]\n}",
+        r#"  ,
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Bar", "plane": "xy", "points": [{"id": "pd000000", "x": 0, "y": 30, "construction": false}, {"id": "pe000000", "x": 20, "y": 30, "construction": false}], "lines": [{"id": "nd000000", "from": "pd000000", "to": "pe000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}"#,
+    )
+}
+
+#[test]
+fn a_sketch_opened_while_the_last_ones_finish_waits_and_its_undo_never_passes_where_it_opened() {
+    let f = fixture();
+    let text = two_sketches();
+    let (mut h, _) = f.opened("two.silico", &text);
+    step_until(&mut h, "its sketches", |h| shows(h, "Browser", "Bar"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    delete_line(&mut h, "na000000");
+    // The second delete sent, and before it answers, Finish, then Edit Sketch on Bar: the
+    // Finish is still to be taken, so Bar doesn't open yet.
+    let sessions = Arc::clone(h.state().sessions());
+    select_member(&mut h, "nb000000", silico_core::document::ElementKind::Line);
+    let tab = &mut h.state_mut().tabs_mut()[0];
+    tab.sketch_delete(&sessions);
+    tab.finish_sketch(&sessions, true);
+    assert!(!tab.can_sketch());
+    tab.edit_sketch(&sessions, &sketch_id("s0000002"));
+    assert!(tab.sketch.is_none());
+    settled(&mut h);
+    // Now it opens, after both deletes and the Finish.
+    double_click(&mut h, "Browser", "Bar");
+    sketch_read(&mut h);
+    settled(&mut h);
+    let opened = text_of(&f, &h);
+    assert!(!opened.contains("na000000") && !opened.contains("nb000000"));
+    // Its undo is off: nothing of its own to undo, the Triangle's Finish behind it.
+    let sent = undos(&h);
+    chord(&mut h, eframe::egui::Key::Z);
+    assert_eq!(undos(&h), sent);
+    assert_eq!(text_of(&f, &h), opened);
+    leave_sketch(&mut h, false);
+    assert_eq!(text_of(&f, &h), opened);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_second_undo_queued_inside_sketch_mode_is_dropped_at_where_it_opened() {
+    let f = fixture();
+    let (mut h, before) = triangle_open(&f, true);
+    delete_line(&mut h, "na000000");
+    // Two undos asked before either answers (as a client could): the first brings it back
+    // to where it opened; the second, come up there, is dropped, never undoing the rename.
+    let sessions = Arc::clone(h.state().sessions());
+    let tab = &mut h.state_mut().tabs_mut()[0];
+    tab.step(&sessions, true);
+    tab.step(&sessions, true);
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(undos(&h), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_after_an_undo_inside_keeps_what_was_undone_undone() {
+    let f = fixture();
+    let (mut h, before) = triangle_open(&f, true);
+    delete_line(&mut h, "na000000");
+    delete_line(&mut h, "nb000000");
+    chord(&mut h, eframe::egui::Key::Z);
+    let finished = text_of(&f, &h);
+    assert!(finished.contains("nb000000") && !finished.contains("na000000"));
+    leave_sketch(&mut h, true);
+    // Redo off at Finish's end: the undone delete isn't redone past it.
+    assert!(!h.state().tabs()[0].redoable());
+    let sent = h.state().tabs()[0].sent.len();
+    chord(&mut h, eframe::egui::Key::Y);
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert_eq!(text_of(&f, &h), finished);
+    // One Undo takes sketch mode's edits back, the rename kept; Redo gives them back.
+    chord(&mut h, eframe::egui::Key::Z);
+    assert_eq!(text_of(&f, &h), before);
+    chord(&mut h, eframe::egui::Key::Y);
+    assert_eq!(text_of(&f, &h), finished);
+    assert!(!h.state().tabs()[0].redoable());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_undone_back_to_where_a_sketch_began_the_transaction_leaves_none_open() {
+    let f = fixture();
+    let (mut h, before) = triangle_open(&f, false);
+    delete_line(&mut h, "na000000");
+    chord(&mut h, eframe::egui::Key::Z);
+    assert_eq!(text_of(&f, &h), before);
+    leave_sketch(&mut h, true);
+    let tab = &h.state().tabs()[0];
+    assert!(!tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_inside_sketch_mode_never_gives_back_what_was_undone_before_it_opened() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    select(&mut h, "Plate");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    chord(&mut h, eframe::egui::Key::Z);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert!(h.state().tabs()[0].redoable());
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].redoable());
+    let sent = h.state().tabs()[0].sent.len();
+    chord(&mut h, eframe::egui::Key::Y);
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_or_cancel_back_at_where_it_opened_by_an_undo_changes_nothing_of_the_undo_stack() {
+    for finish in [true, false] {
+        let f = fixture();
+        let (mut h, before) = triangle_open(&f, true);
+        delete_line(&mut h, "na000000");
+        chord(&mut h, eframe::egui::Key::Z);
+        assert_eq!(text_of(&f, &h), before);
+        let sent = undos(&h);
+        leave_sketch(&mut h, finish);
+        // Nothing grouped, nothing undone: the state is where it opened.
+        assert_eq!(undos(&h), sent, "finish: {finish}");
+        assert_eq!(text_of(&f, &h), before);
+        // The next Undo is the rename's.
+        chord(&mut h, eframe::egui::Key::Z);
+        assert_eq!(text_of(&f, &h), SKETCHED, "finish: {finish}");
+        assert_eq!(never_waits::waits(), 0);
+    }
+}

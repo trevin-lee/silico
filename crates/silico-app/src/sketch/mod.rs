@@ -39,8 +39,8 @@ use style::*;
 /// words: an empty sketch "Empty", an under-defined one with its degrees of freedom left),
 /// in a colour for text on the theme `visuals` are of: the canvas's state colours on the
 /// dark theme, as the prototype has them; on a light one, colours that mean the same and
-/// stand out from its panels: the selection's blue (not egui's light theme's pale fill), and
-/// the theme's own strong text, error, and warning colours.
+/// stand out from its panels: the selection's blue (not egui's light theme's pale fill), the
+/// theme's own strong text and error colours, and its warning colour darkened.
 pub fn state_shown(read: &SketchRead, visuals: &Visuals) -> StateShown {
     let empty = read.members.elements().next().is_none();
     let dark = visuals.dark_mode;
@@ -68,11 +68,20 @@ pub fn state_shown(read: &SketchRead, visuals: &Visuals) -> StateShown {
         ),
         SketchState::Invalid => (
             "Invalid solution found".to_owned(),
-            pick(SKETCH_INVALID, visuals.warn_fg_color),
+            pick(
+                SKETCH_INVALID,
+                visuals
+                    .warn_fg_color
+                    .lerp_to_gamma(Color32::BLACK, DARKENED_ON_LIGHT),
+            ),
         ),
     };
     StateShown { words, colour }
 }
+
+/// How far toward black the light theme's warning colour is taken for an invalid sketch's
+/// words: egui's own is under 3:1 on its panels.
+const DARKENED_ON_LIGHT: f32 = 0.3;
 
 /// A word on what the state means, as the palette says it.
 fn hint(state: SketchState) -> Option<&'static str> {
@@ -186,7 +195,10 @@ pub enum Deletion {
 
 /// What a frame's drawing was of: the read (by how many it has taken), the selection, what's
 /// shown, and the view, by where it puts three places of the plane, its scale, its
-/// rectangle, and the part of the plane in it. A frame with the same key draws the same.
+/// rectangle, and the part of the plane in it. A frame with the same key draws the same for
+/// an affine view (the flat one, an orthographic camera), whose three places fix it; a
+/// perspective one could move and keep them, so when the perspective viewport is wired, the
+/// view is to be keyed on its camera.
 #[derive(Debug, Clone, PartialEq)]
 struct DrawnOf {
     read: u64,
@@ -206,6 +218,9 @@ pub struct SketchMode {
     /// The sketch open: an existing one's, or, for Create Sketch, its ID once its add has
     /// answered.
     pub sketch: Option<FeatureId>,
+    /// The revision it opened at, once everything asked before it has answered (set by its
+    /// own opening alone): its undo goes no further back, and is off till it's known.
+    pub opened_at: Option<Revision>,
     /// The newest `sketch` read answered, and the one in flight, with the published
     /// revision it was asked at.
     pub read: Option<Read>,
@@ -215,9 +230,10 @@ pub struct SketchMode {
     /// drawing and a fill are of.
     pub reads: u64,
     taken: u64,
-    /// The profile's fill, worked out once for each read and each power-of-two scale, and
-    /// how many times it has been: what a test counts.
-    fills: Option<((u64, i32), Vec<RegionFill>)>,
+    /// The profile's fill, worked out once for each read and each power-of-two scale (the
+    /// last two such kept, so a zoom back and forth across one doesn't work it out each
+    /// time), and how many times it has been: what a test counts.
+    fills: Vec<((u64, i32), Vec<RegionFill>)>,
     pub fill_builds: u64,
     /// The last frame's drawing, and how many drawings it has worked out.
     drawn: Option<(DrawnOf, Vec<Drawn>)>,
@@ -247,12 +263,13 @@ impl SketchMode {
         SketchMode {
             serial,
             sketch,
+            opened_at: None,
             read: None,
             reading: None,
             asked: None,
             reads: 0,
             taken: 0,
-            fills: None,
+            fills: Vec::new(),
             fill_builds: 0,
             drawn: None,
             drawings: 0,
@@ -400,7 +417,14 @@ impl SketchMode {
                 }
                 PointerAction::Release => {
                     if let Some((found, ctrl)) = self.pressed.take() {
-                        self.click(found, ctrl);
+                        // What the press was on, if the read now still holds it: a read
+                        // taken between the press and its release may have let it go.
+                        let held = found.filter(|hit| {
+                            self.drawable().is_some_and(|read| {
+                                read.members.elements().any(|(id, _)| id == &hit.id)
+                            })
+                        });
+                        self.click(held, ctrl);
                     }
                 }
                 PointerAction::Cancel => self.pressed = None,
@@ -456,18 +480,39 @@ impl SketchMode {
         }
         let (bucket, at) = fill_scale(view.scale);
         let key = (self.taken, bucket);
-        if self.fills.as_ref().is_none_or(|(had, _)| *had != key) {
+        self.fills.retain(|(had, _)| had.0 == self.taken);
+        if !self.fills.iter().any(|(had, _)| *had == key) {
             self.fill_builds += 1;
-            self.fills = Some((key, region_fills(read, at)));
+            self.fills.push((key, region_fills(read, at)));
+            if self.fills.len() > 2 {
+                self.fills.remove(0);
+            }
         }
         let fills = self
             .fills
-            .as_ref()
+            .iter()
+            .find(|(had, _)| *had == key)
             .map_or(&[][..], |(_, fills)| fills.as_slice());
         let drawn = drawing(read, view, of.shown, &of.selected, fills);
         self.drawings += 1;
         self.drawn = Some((of, drawn.clone()));
         drawn
+    }
+
+    /// The last frame's drawing, if one was worked out: what a test reads.
+    pub fn last_drawn(&self) -> &[Drawn] {
+        self.drawn
+            .as_ref()
+            .map_or(&[][..], |(_, drawn)| drawn.as_slice())
+    }
+
+    /// The fill worked out for the newest read at the power-of-two scale `bucket`, if it's
+    /// kept: what a test reads.
+    pub fn fill_at(&self, bucket: i32) -> Option<&[RegionFill]> {
+        self.fills
+            .iter()
+            .find(|(had, _)| *had == (self.taken, bucket))
+            .map(|(_, fills)| fills.as_slice())
     }
 
     /// The IDs selected.

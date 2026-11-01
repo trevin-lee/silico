@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{FRAC_1_SQRT_2, TAU};
 
 use eframe::egui::{self, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
-use silico_core::command::sketch::SketchRead;
+use silico_core::command::sketch::{Region, SketchRead};
 use silico_core::document::{ElementId, ElementKind, Form, Reference, SketchConstraint};
 use silico_core::kernel::SketchPlane;
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
@@ -32,9 +32,20 @@ pub const MAX_CURVE_SEGMENTS: usize = 1024;
 const GRID_LEAST_SPACING: f32 = 8.0;
 
 /// The most work a profile's fill is worked out for, in vertex pairs: the ear clipping's
-/// (the vertices squared) and the bridges' (each hole against every vertex). Past it, the
-/// fill is left out.
-pub const MAX_FILL_WORK: usize = 16_000_000;
+/// (the vertices squared) and the bridges' (each hole against every vertex). A fill that
+/// would take more is worked out coarser until it fits: about 8 ms of a frame, once a read,
+/// at most (the 60-hole plate's 1,500 vertices take 6.6 ms in a release build).
+pub const MAX_FILL_WORK: usize = 2_500_000;
+
+/// The fewest and the most segments one curve of a fill has: a circle stays a ring, and a
+/// curve far larger than the screen takes no more of the fill's work.
+pub const MIN_FILL_SEGMENTS: usize = 8;
+pub const MAX_FILL_SEGMENTS: usize = 32;
+
+/// How many times a fill is worked out coarser, each at twice the last scale, before it's
+/// left out: by then every curve is at its fewest segments (2^40 times the tolerance), so a
+/// fill that doesn't fit then never will.
+const FILL_COARSENINGS: usize = 40;
 
 /// The layout's own rules, the prototype's: a line's glyph a share of its way along it;
 /// glyphs on one member this far apart; a glyph box's corner; a shown relation's glyph and a
@@ -793,31 +804,44 @@ pub fn fill_scale(scale: Scale) -> (i32, Scale) {
 }
 
 /// Each region of `read`'s profile filled, worked out in the sketch's millimetres at `scale`
-/// (its arcs within the chord tolerance at that scale), so a frame only projects it: the
-/// plane-to-screen map takes triangles to triangles. A region whose loops can't be walked,
-/// or whose fill would take more than [`MAX_FILL_WORK`], has none.
+/// (its arcs within the chord tolerance at that scale, each of [`MIN_FILL_SEGMENTS`] to
+/// [`MAX_FILL_SEGMENTS`] segments), so a frame only projects it: the plane-to-screen map
+/// takes triangles to triangles. A region whose fill would take more than
+/// [`MAX_FILL_WORK`] is worked out coarser, at twice the scale each time, till it fits: a
+/// fill that strays more from the curves, never none. A region whose loops can't be walked,
+/// or that doesn't fit with every curve at its fewest segments, has none.
 pub fn region_fills(read: &SketchRead, scale: Scale) -> Vec<RegionFill> {
     let geometry = Geometry::of(read);
-    let tolerance = scale.mm(SKETCH_CHORD_TOLERANCE);
     read.regions
         .iter()
-        .filter_map(|region| {
-            let outer = walk(&region.outer, &geometry, tolerance)?;
-            let holes: Vec<Vec<[f64; 2]>> = region
-                .holes
-                .iter()
-                .map(|hole| walk(hole, &geometry, tolerance))
-                .collect::<Option<_>>()?;
-            let count = outer.len() + holes.iter().map(Vec::len).sum::<usize>();
-            let work = count
-                .saturating_mul(count)
-                .saturating_add(holes.len().saturating_mul(count));
-            (work <= MAX_FILL_WORK).then(|| RegionFill {
+        .filter_map(|region| region_fill(region, &geometry, scale))
+        .collect()
+}
+
+/// `region` filled at `scale`, or coarser till it fits.
+fn region_fill(region: &Region, geometry: &Geometry, scale: Scale) -> Option<RegionFill> {
+    let mut at = scale.0;
+    for _ in 0..FILL_COARSENINGS {
+        let tolerance = at * f64::from(SKETCH_CHORD_TOLERANCE);
+        let outer = walk(&region.outer, geometry, tolerance)?;
+        let holes: Vec<Vec<[f64; 2]>> = region
+            .holes
+            .iter()
+            .map(|hole| walk(hole, geometry, tolerance))
+            .collect::<Option<_>>()?;
+        let count = outer.len() + holes.iter().map(Vec::len).sum::<usize>();
+        let work = count
+            .saturating_mul(count)
+            .saturating_add(holes.len().saturating_mul(count));
+        if work <= MAX_FILL_WORK {
+            return Some(RegionFill {
                 of: region.outer.first().cloned(),
                 triangles: triangulate(outer, holes),
-            })
-        })
-        .collect()
+            });
+        }
+        at *= 2.0;
+    }
+    None
 }
 
 /// What's drawn of `read`, seen through `view`, the members in `selected` drawn selected:
@@ -1077,7 +1101,8 @@ fn walk(curves: &[ElementId], geometry: &Geometry, tolerance: f64) -> Option<Vec
                 start,
                 sweep,
             } => {
-                let n = segments(radius / tolerance.max(f64::MIN_POSITIVE), sweep, 1.0);
+                let n = segments(radius / tolerance.max(f64::MIN_POSITIVE), sweep, 1.0)
+                    .clamp(MIN_FILL_SEGMENTS, MAX_FILL_SEGMENTS);
                 (0..=n)
                     .map(|k| {
                         add(
