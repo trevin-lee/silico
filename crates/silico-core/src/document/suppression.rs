@@ -39,7 +39,7 @@ pub(crate) enum Cause {
     Names(NameField),
     /// A name it stores (by where it's stored) has a maker (by its place in the timeline)
     /// that reaches the feature's base only as a suppressed boolean's tool.
-    Lost { edge: NameField, maker: usize },
+    Lost { field: NameField, maker: usize },
     /// An input it needs (`base` or `tool`) has no unsuppressed feature up its chain.
     Chain(&'static str),
 }
@@ -266,7 +266,7 @@ fn lost(
         .and_then(|f| base_of(&f.operation))
         .and_then(|b| links.place(b))
         .filter(|&b| b < at)?;
-    made.iter().find_map(|&(edge, maker)| {
+    made.iter().find_map(|&(field, maker)| {
         let mut step = maker;
         let mut through = None;
         while step != base {
@@ -277,7 +277,7 @@ fn lost(
             }
             step = next;
         }
-        through.map(|boolean| (boolean, Cause::Lost { edge, maker }))
+        through.map(|boolean| (boolean, Cause::Lost { field, maker }))
     })
 }
 
@@ -395,12 +395,12 @@ pub(crate) fn unsuppressed_dependent(
             field.to_string(),
             format!("{field} names an element of {p}, which {is}"),
         ),
-        Cause::Lost { edge, maker } => {
+        Cause::Lost { field, maker } => {
             let maker = features.get(maker).map_or("", |f| f.id.as_str());
             (
-                edge.to_string(),
+                field.to_string(),
                 format!(
-                    "{edge} names an element of {maker}, which reaches its base only as {p}'s tool, and {p} {is}"
+                    "{field} names an element of {maker}, which reaches its base only as {p}'s tool, and {p} {is}"
                 ),
             )
         }

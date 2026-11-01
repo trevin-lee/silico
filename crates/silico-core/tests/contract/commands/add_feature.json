@@ -11,7 +11,7 @@
         "type": "string"
       },
       "AxisToken": {
-        "description": "A global axis, signed, as a sketch on a face names its x: projected onto the face, it's the sketch's x.",
+        "description": "A global axis, signed, as a sketch on a face names its x.",
         "enum": [
           "+x",
           "-x",
@@ -1528,7 +1528,7 @@
         "type": "string"
       },
       "AxisToken": {
-        "description": "A global axis, signed, as a sketch on a face names its x: projected onto the face, it's the sketch's x.",
+        "description": "A global axis, signed, as a sketch on a face names its x.",
         "enum": [
           "+x",
           "-x",

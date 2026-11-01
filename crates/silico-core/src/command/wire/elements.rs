@@ -402,22 +402,6 @@ impl JsonSchema for MeasureNameSchema {
     }
 }
 
-/// A sketch's default x on a planar face.
-pub struct AxisTokenSchema;
-
-impl JsonSchema for AxisTokenSchema {
-    fn schema_name() -> Cow<'static, str> {
-        "AxisToken".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        words(
-            "A global axis, signed, as a sketch on a face names its x.",
-            AxisToken::ALL.map(AxisToken::word),
-        )
-    }
-}
-
 /// A range's bound: a number, as its measure is written.
 pub struct BoundSchema;
 
@@ -553,7 +537,7 @@ pub struct EntrySchema {
     /// length holds.
     pub apex: Option<[Length; 3]>,
     /// For a planar face, the axis a sketch on it takes as its x by default.
-    pub default_x: Option<AxisTokenSchema>,
+    pub default_x: Option<AxisToken>,
 }
 
 /// `elements`' result: a page of entries.

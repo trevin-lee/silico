@@ -3726,7 +3726,7 @@
             "type": "string"
           },
           "AxisToken": {
-            "description": "A global axis, signed, as a sketch on a face names its x: projected onto the face, it's the sketch's x.",
+            "description": "A global axis, signed, as a sketch on a face names its x.",
             "enum": [
               "+x",
               "-x",
@@ -5244,7 +5244,7 @@
             "type": "string"
           },
           "AxisToken": {
-            "description": "A global axis, signed, as a sketch on a face names its x: projected onto the face, it's the sketch's x.",
+            "description": "A global axis, signed, as a sketch on a face names its x.",
             "enum": [
               "+x",
               "-x",
@@ -7651,7 +7651,7 @@
             "type": "string"
           },
           "AxisToken": {
-            "description": "A global axis, signed, as a sketch on a face names its x: projected onto the face, it's the sketch's x.",
+            "description": "A global axis, signed, as a sketch on a face names its x.",
             "enum": [
               "+x",
               "-x",
@@ -17519,7 +17519,7 @@
                 "description": "Its ID. Unique, but in a document the gate refuses for an ID used twice."
               },
               "inputs": {
-                "description": "The features it names: its `base` and `tool`, then its `sketch`, in that order.",
+                "description": "The features it names: its `base` and `tool`, then its `sketch`, then, for a sketch on\na face, the feature its `plane.face` begins with, in that order.",
                 "items": {
                   "$ref": "#/$defs/FeatureId"
                 },

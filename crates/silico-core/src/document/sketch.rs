@@ -458,7 +458,7 @@ impl JsonSchema for AxisToken {
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "A global axis, signed, as a sketch on a face names its x: projected onto the face, it's the sketch's x.",
+            "description": "A global axis, signed, as a sketch on a face names its x.",
             "type": "string",
             "enum": AxisToken::ALL.map(AxisToken::word)
         })
