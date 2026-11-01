@@ -2071,6 +2071,66 @@ fn a_crossing_a_nanometre_inside_an_end_counts_and_one_outside_doesnt() {
 }
 
 #[test]
+fn lines_that_only_meet_keep_the_quadrant_rule_opposite() {
+    // Strictly inside both is exact: where the vertex is on one line's end, behind its start,
+    // or on an axis, they don't cross, and the sector opposite the along-rays reads the
+    // reflex. A is (10, 10)-(30, 10) in the first three.
+    // - B from (30, 20) to A's middle (20, 10): B's `to` there, its ray back, 45°; A's tie,
+    //   its `to`, 180°. θ = 135, both against. At (22.5, 5.67), 300°, opposite:
+    //   `{A, B, 225}`.
+    // - B from A's middle (20, 10) to (30, 0): its `from` there, 315°; A's 180°. θ = 135
+    //   (A's first), A's against. At (22.5, 14.33), 60°, opposite: `{B, A, reversed, 225}`.
+    // - B from (20, 15) to (30, 25), on y = x − 5, meeting A at (15, 10), half B's length
+    //   behind its start: A's `from` nearer, 0°; B's `from`, 45°. θ = 45. At (10.3, 8.29),
+    //   200°, opposite: `{B, A, 315}`.
+    // - The line (-9.5, -10)-(11.5, 11), on y = x − 0.5, across the x axis at (0.5, 0),
+    //   within one unit of the origin: its `from` nearer, 45°; the axis's +x. θ = 45. At
+    //   (-4.2, -1.71), 200°, opposite: `{line, x_axis, 315}`.
+    let a = || with_line(empty(), "n000000a", [10.0, 10.0], [30.0, 10.0]);
+    let x_axis = Reference::XAxis;
+    let cases: Vec<(Sketch, [[f64; 2]; 2], [f64; 2], Form)> = vec![
+        (
+            with_line(a(), "n000000b", [30.0, 20.0], [20.0, 10.0]),
+            [[14.0, 10.0], [25.0, 15.0]],
+            [22.5, 5.67],
+            angle("n000000a", "n000000b", false, "225"),
+        ),
+        (
+            with_line(a(), "n000000b", [20.0, 10.0], [30.0, 0.0]),
+            [[14.0, 10.0], [25.0, 5.0]],
+            [22.5, 14.33],
+            angle("n000000b", "n000000a", true, "225"),
+        ),
+        (
+            with_line(a(), "n000000b", [20.0, 15.0], [30.0, 25.0]),
+            [[14.0, 10.0], [25.0, 20.0]],
+            [10.3, 8.29],
+            angle("n000000b", "n000000a", false, "315"),
+        ),
+        (
+            with_line(empty(), "n0000001", [-9.5, -10.0], [11.5, 11.0]),
+            [[5.0, 4.5], [40.0, 0.2]],
+            [-4.2, -1.71],
+            Form::Angle {
+                a: r("n0000001"),
+                b: x_axis,
+                reversed: false,
+                value: deg("315"),
+                driving: true,
+            },
+        ),
+    ];
+    for (s, picks, at, want) in cases {
+        let mut d = Dim::new(s);
+        d.click(picks[0][0], picks[0][1])
+            .click(picks[1][0], picks[1][1])
+            .click(at[0], at[1])
+            .escape();
+        assert_eq!(d.placed(), want, "{picks:?} {at:?}");
+    }
+}
+
+#[test]
 fn a_right_click_locks_a_quadrant_beside_the_along_rays() {
     // The corner: at (5, 20), beside, `{B, A, reversed, 135}`, locked; placed at (25, 13),
     // where unlocked it's `{A, B, 45}`: the reversed 135 is kept.
@@ -2086,19 +2146,26 @@ fn a_line_ending_on_anothers_middle_takes_the_others_to_end() {
     // A T: A (10, 10)-(30, 10) and B from A's middle (20, 10) to (30, 20). B's `from` is the
     // vertex, along it, 45°; A's ends are as near, so its `to` (FreeCAD's tie), 180°.
     // θ = 135, A's against. The pointer at (14, 5), 219.8°: after A's ray, beside,
-    // `{A, B, 45}`.
+    // `{A, B, 45}`. And, B ending on A, the lines don't cross (the vertex is inside A, not
+    // B), so the sector opposite the along-rays keeps the quadrant rule's reflex: at
+    // (22.5, 5.67), 300°, from A's ray round to B's, `{A, B, reversed, 225}`.
     let s = with_line(
         with_line(empty(), "n000000a", [10.0, 10.0], [30.0, 10.0]),
         "n000000b",
         [20.0, 10.0],
         [30.0, 20.0],
     );
-    let mut d = Dim::new(s);
-    d.click(14.0, 10.0)
-        .click(25.0, 15.0)
-        .click(14.0, 5.0)
-        .escape();
-    assert_eq!(d.placed(), angle("n000000a", "n000000b", false, "45"));
+    for (at, want) in [
+        ([14.0, 5.0], angle("n000000a", "n000000b", false, "45")),
+        ([22.5, 5.67], angle("n000000a", "n000000b", true, "225")),
+    ] {
+        let mut d = Dim::new(s.clone());
+        d.click(14.0, 10.0)
+            .click(25.0, 15.0)
+            .click(at[0], at[1])
+            .escape();
+        assert_eq!(d.placed(), want, "{at:?}");
+    }
 }
 
 #[test]
