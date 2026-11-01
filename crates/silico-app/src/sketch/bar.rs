@@ -10,6 +10,13 @@ use silico_core::sketch_tools::ToolKind;
 
 use super::style::*;
 
+/// The palette's layout: its title row's height; a section's heading's text size and its
+/// small text's; and a state's dot's radius, in points.
+const TITLE_HEIGHT: f32 = 26.0;
+const HEAD_SIZE: f32 = 10.0;
+const SMALL_SIZE: f32 = 11.0;
+const DOT_RADIUS: f32 = 4.0;
+
 /// What the sketch bar was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarAction {
@@ -39,11 +46,18 @@ pub struct BarView {
 /// state, Cancel, and Finish Sketch with its key.
 pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
     let mut action = BarAction::None;
+    let visuals = ui.visuals().clone();
+    let (fill, accent, strong, weak) = (
+        visuals.window_fill,
+        visuals.selection.bg_fill,
+        visuals.strong_text_color(),
+        visuals.weak_text_color(),
+    );
     // One row, whatever room the canvas leaves: its words are never wrapped away.
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
     egui::Frame::new()
-        .fill(FLOATING_BG)
-        .stroke(Stroke::new(1.0, SELECTION))
+        .fill(fill)
+        .stroke(Stroke::new(1.0, accent))
         .corner_radius(CornerRadius::same(6))
         .inner_margin(Margin {
             left: 10,
@@ -58,18 +72,18 @@ pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
             });
             ui.horizontal(|ui| {
                 egui::Frame::new()
-                    .fill(SELECTION)
+                    .fill(accent)
                     .corner_radius(CornerRadius::same(3))
                     .inner_margin(Margin::symmetric(6, 1))
                     .show(ui, |ui| {
                         ui.label(
                             RichText::new("SKETCH")
-                                .size(PALETTE_HEAD_SIZE)
-                                .color(TEXT_STRONG),
+                                .size(HEAD_SIZE)
+                                .color(visuals.selection.stroke.color),
                         );
                     });
-                ui.label(RichText::new(&view.name).color(TEXT_STRONG));
-                ui.label(RichText::new(format!("on {}", view.plane)).color(TEXT_SUBDUED));
+                ui.label(RichText::new(&view.name).color(strong));
+                ui.label(RichText::new(format!("on {}", view.plane)).color(weak));
                 if let Some(state) = &view.state {
                     state_dot(ui, state.colour);
                     ui.label(RichText::new(&state.words).color(state.colour));
@@ -83,8 +97,10 @@ pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
                 {
                     action = BarAction::Cancel;
                 }
-                let finish = egui::Button::new(RichText::new("Finish Sketch").color(TEXT_STRONG))
-                    .fill(SELECTION);
+                let finish = egui::Button::new(
+                    RichText::new("Finish Sketch").color(visuals.selection.stroke.color),
+                )
+                .fill(accent);
                 let key = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
                     egui::Modifiers::COMMAND,
                     egui::Key::Enter,
@@ -159,9 +175,10 @@ pub fn tool_name(tool: ToolKind) -> &'static str {
 /// The Sketch Palette (the prototype's `.palette`): its title, then Status, Tool, Show,
 /// and the colours' legend, each a section; Look At off until the viewport's camera.
 pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
+    let visuals = ui.visuals().clone();
     egui::Frame::new()
-        .fill(FLOATING_BG)
-        .stroke(Stroke::new(1.0, PANEL_BORDER))
+        .fill(visuals.window_fill)
+        .stroke(visuals.window_stroke)
         .corner_radius(CornerRadius::same(6))
         .shadow(egui::Shadow {
             offset: [0, 6],
@@ -170,36 +187,33 @@ pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
             color: Color32::from_black_alpha(140),
         })
         .show(ui, |ui| {
-            ui.set_width(PALETTE_WIDTH);
+            ui.set_width(SKETCH_PALETTE_WIDTH);
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Group);
                 node.set_label("Sketch Palette");
             });
             ui.spacing_mut().item_spacing.y = 2.0;
             let (title, _) = ui.allocate_exact_size(
-                Vec2::new(PALETTE_WIDTH, PALETTE_TITLE_HEIGHT),
+                Vec2::new(SKETCH_PALETTE_WIDTH, TITLE_HEIGHT),
                 Sense::hover(),
             );
             ui.put(
                 title.shrink2(Vec2::new(10.0, 0.0)),
                 egui::Label::new(
                     RichText::new("SKETCH PALETTE")
-                        .size(PALETTE_SMALL_SIZE)
-                        .color(TEXT_STRONG),
+                        .size(SMALL_SIZE)
+                        .color(visuals.strong_text_color()),
                 ),
             );
             section(ui, "Status", |ui| status_section(ui, view));
-            section(ui, "Tool", |ui| {
-                match view.tool {
-                    Some(tool) => {
-                        ui.label(RichText::new(tool_name(tool)).color(TEXT_STRONG));
-                        ui.checkbox(&mut settings.automatic_relations, "Automatic relations");
-                    }
-                    None => {
-                        ui.label(small("None. Line L, Smart Dimension D").color(TEXT_SUBDUED));
-                    }
+            section(ui, "Tool", |ui| match view.tool {
+                Some(tool) => {
+                    ui.label(RichText::new(tool_name(tool)).color(visuals.strong_text_color()));
+                    ui.checkbox(&mut settings.automatic_relations, "Automatic relations");
                 }
-                ui.checkbox(&mut settings.construction, "Construction");
+                None => {
+                    ui.label(small("None").color(visuals.weak_text_color()));
+                }
             });
             section(ui, "Show", |ui| {
                 ui.checkbox(&mut settings.show_profile, "Profile");
@@ -226,19 +240,21 @@ fn status_section(ui: &mut Ui, view: &PaletteView) {
             });
         }
         None => {
-            ui.label(small("Reading the sketch…").color(TEXT_SUBDUED));
+            ui.label(small("Reading the sketch…").color(ui.visuals().weak_text_color()));
         }
     }
     if let Some(hint) = view.hint {
-        ui.label(small(hint).color(TEXT_SUBDUED));
+        ui.label(small(hint).color(ui.visuals().weak_text_color()));
     }
     if let Some(said) = &view.said {
-        ui.label(small(said).color(SKETCH_OVER_DEFINED));
+        ui.label(small(said).color(ui.visuals().error_fg_color));
     }
     if let Some((message, suggestion)) = &view.plane_problem {
-        ui.label(small(&format!("The sketch's plane: {message}")).color(SKETCH_OVER_DEFINED));
+        ui.label(
+            small(&format!("The sketch's plane: {message}")).color(ui.visuals().error_fg_color),
+        );
         if let Some(suggestion) = suggestion {
-            ui.label(small(suggestion).color(TEXT_SUBDUED));
+            ui.label(small(suggestion).color(ui.visuals().weak_text_color()));
         }
     }
 }
@@ -268,7 +284,7 @@ fn legend(ui: &mut Ui) {
         let [dash, gap] = SKETCH_CONSTRUCTION_DASH;
         ui.painter().extend(egui::Shape::dashed_line(
             &[swatch.left_center(), swatch.right_center()],
-            Stroke::new(2.0, TEXT_SUBDUED),
+            Stroke::new(2.0, ui.visuals().weak_text_color()),
             dash / 2.0,
             gap / 2.0,
         ));
@@ -284,23 +300,23 @@ fn section(ui: &mut Ui, heading: &str, contents: impl FnOnce(&mut Ui)) {
         .show(ui, |ui| {
             ui.label(
                 RichText::new(heading.to_uppercase())
-                    .size(PALETTE_HEAD_SIZE)
-                    .color(TEXT_SUBDUED),
+                    .size(HEAD_SIZE)
+                    .color(ui.visuals().weak_text_color()),
             );
             contents(ui);
         });
 }
 
 fn small(text: &str) -> RichText {
-    RichText::new(text).size(PALETTE_SMALL_SIZE)
+    RichText::new(text).size(SMALL_SIZE)
 }
 
 /// A state's dot, in `colour`.
 fn state_dot(ui: &mut Ui, colour: Color32) {
-    let side = 2.0 * STATE_DOT_RADIUS;
+    let side = 2.0 * DOT_RADIUS;
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
     ui.painter()
-        .circle_filled(rect.center(), STATE_DOT_RADIUS, colour);
+        .circle_filled(rect.center(), DOT_RADIUS, colour);
 }
 
 /// What the status bar says of an open sketch (docs/ux/solidworks.md, §2: the pointer's

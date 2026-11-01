@@ -6535,10 +6535,19 @@ fn create_sketch(h: &mut AppHarness, plane: &str) {
 fn leave_sketch(h: &mut AppHarness, finish: bool) {
     let word = if finish { "Finish Sketch" } else { "Cancel" };
     step_until(h, "the sketch read", |h| {
-        sketch_mode(h).is_some_and(|mode| mode.read.is_some())
+        sketch_mode(h).is_some_and(|mode| mode.drawable().is_some())
     });
-    step(h);
-    step(h);
+    let place = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Toolbar, "Sketch")
+            .get_by_label(word)
+            .accesskit_node()
+            .bounding_box()
+    };
+    let last = std::cell::Cell::new(place(h));
+    step_until(h, "the bar laid out", |h| {
+        let now = place(h);
+        now == last.replace(now)
+    });
     h.get_by_role_and_label(Role::Toolbar, "Sketch")
         .get_by_label(word)
         .click();
@@ -6589,12 +6598,11 @@ fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_i
         Some(empty_sketch("Sketch1", r#""xy""#))
     );
     // The sketch bar in the canvas, naming it and its plane; the palette's status the
-    // empty sketch's; the status bar what's edited; Undo off while it's open, as in a
-    // dialog, and the dialogs too.
+    // empty sketch's; Undo off, nothing of sketch mode's own to undo (never its own add);
+    // and the dialogs off.
     step_until(&mut h, "its status", |h| {
         let palette = h.query_by_role_and_label(Role::Group, "Sketch Palette");
         palette.is_some_and(|p| p.query_by_label("Empty").is_some())
-            && anywhere(h, "Editing Sketch1")
             && h.get_by_role_and_label(Role::Toolbar, "Sketch")
                 .query_by_label("on XY")
                 .is_some()
@@ -6659,7 +6667,7 @@ fn cancel_of_a_sketch_after_earlier_edits_undoes_to_where_it_opened_byte_for_byt
     let opened_at = h.state().tabs()[0].revision;
     create_sketch(&mut h, "YZ plane");
     settled(&mut h);
-    assert_eq!(sketch_mode(&h).unwrap().opened_at, Some(opened_at));
+    assert_eq!(h.state().tabs()[0].sketch_opened_at(), Some(opened_at));
     assert!(fields_of(&text_of(&f, &h), "Sketch1").is_some());
     leave_sketch(&mut h, false);
     assert_eq!(text_of(&f, &h), before);
@@ -6685,7 +6693,7 @@ fn edit_sketch_from_the_browser_opens_it_at_the_revision_its_asked_at_and_reads_
     assert_eq!(mode.sketch, Some(sketch_id("s0000001")));
     sketch_read(&mut h);
     settled(&mut h);
-    assert_eq!(sketch_mode(&h).unwrap().opened_at, Some(at));
+    assert_eq!(h.state().tabs()[0].sketch_opened_at(), Some(at));
     let read = sketch_mode(&h).unwrap().drawable().unwrap();
     let lines: Vec<&str> = read.members.lines.iter().map(|l| l.id.as_str()).collect();
     assert_eq!(lines, ["na000000", "nb000000", "nc000000"]);
@@ -6952,6 +6960,7 @@ fn a_face_sketch_whose_face_broke_opens_says_its_plane_problem_and_draws_flat() 
         &view,
         silico_app::sketch::draw::Shown::default(),
         &Default::default(),
+        &silico_app::sketch::draw::region_fills(&read, flat.scale()),
     );
     // The origin (within the fit too), the triangle's fill (its one region), three sides,
     // and three corners.
@@ -7090,7 +7099,8 @@ fn a_refused_read_is_kept_and_said_and_delete_still_goes_to_the_core() {
     });
     let said = {
         let mode = sketch_mode(&h).unwrap();
-        mode.palette_view(h.state().tabs()[0].revision).said
+        mode.palette_view(h.state().tabs()[0].revision, &eframe::egui::Visuals::dark())
+            .said
     };
     let said = said.unwrap();
     step_until(&mut h, "it said", |h| anywhere(h, &said));
@@ -7103,5 +7113,192 @@ fn a_refused_read_is_kept_and_said_and_delete_still_goes_to_the_core() {
         Some(&Sent::SketchEdit("sketch_remove"))
     );
     assert!(!text_of(&f, &h).contains("na000000"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// `member`, a line, selected and deleted in the open sketch, and everything answered.
+fn delete_line(h: &mut AppHarness, member: &str) {
+    select_member(h, member, silico_core::document::ElementKind::Line);
+    h.key_press(eframe::egui::Key::Delete);
+    step(h);
+    settled(h);
+}
+
+/// SKETCHED open, with Plate renamed KPlate first if `edited`; then Triangle opened in
+/// sketch mode and read. The text before sketch mode opened, and the revision it opened at.
+fn triangle_open(f: &Fixture, edited: bool) -> (AppHarness, String) {
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    if edited {
+        select(&mut h, "Plate");
+        type_name(&mut h, "K");
+        settled(&mut h);
+    }
+    let before = text_of(f, &h);
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    settled(&mut h);
+    (h, before)
+}
+
+#[test]
+fn finish_after_two_deletes_inside_a_transaction_is_one_undo_step_back_to_before_it_opened() {
+    let f = fixture();
+    let (mut h, before) = triangle_open(&f, true);
+    assert!(before.contains(r#""name": "KPlate""#));
+    delete_line(&mut h, "na000000");
+    delete_line(&mut h, "nb000000");
+    let text = text_of(&f, &h);
+    assert!(!text.contains("na000000") && !text.contains("nb000000"));
+    leave_sketch(&mut h, true);
+    let undos = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .sent
+            .iter()
+            .filter(|sent| matches!(sent, Sent::Undo(_)))
+            .count()
+    };
+    assert_eq!(undos(&h), 0);
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step(&mut h);
+    settled(&mut h);
+    // One undo, of both deletes at once: the text before sketch mode opened, the rename kept.
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(undos(&h), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_after_a_delete_that_began_the_transaction_rolls_it_back_and_leaves_none_open() {
+    let f = fixture();
+    let (mut h, before) = triangle_open(&f, false);
+    assert_eq!(before, SKETCHED);
+    delete_line(&mut h, "na000000");
+    assert!(!text_of(&f, &h).contains("na000000"));
+    leave_sketch(&mut h, false);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    let tab = &h.state().tabs()[0];
+    assert!(!tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_after_a_delete_following_an_earlier_edit_undoes_to_where_it_opened() {
+    let f = fixture();
+    let (mut h, before) = triangle_open(&f, true);
+    let opened_at = h.state().tabs()[0].sketch_opened_at().unwrap();
+    delete_line(&mut h, "na000000");
+    leave_sketch(&mut h, false);
+    assert_eq!(text_of(&f, &h), before);
+    let tab = &h.state().tabs()[0];
+    assert!(tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_step_inside_sketch_mode_never_past_where_it_opened() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, before) = triangle_open(&f, true);
+    let undo_on = |h: &AppHarness| h.state().tabs()[0].undoable();
+    // Nothing of sketch mode's to undo yet, though the rename is: off.
+    assert!(!undo_on(&h));
+    delete_line(&mut h, "na000000");
+    delete_line(&mut h, "nb000000");
+    let lines = |f: &Fixture, h: &AppHarness| {
+        let text = text_of(f, h);
+        ["na000000", "nb000000", "nc000000"]
+            .into_iter()
+            .filter(|line| text.contains(line))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(lines(&f, &h), ["nc000000"]);
+    let press = |h: &mut AppHarness, key| {
+        // A frame first, so the status read is of the revision the last step came to.
+        step(h);
+        h.key_press_modifiers(Modifiers::COMMAND, key);
+        step(h);
+        settled(h);
+    };
+    // Ctrl+Z: the second delete back.
+    press(&mut h, Key::Z);
+    assert_eq!(lines(&f, &h), ["nb000000", "nc000000"]);
+    // Ctrl+Y: gone again.
+    press(&mut h, Key::Y);
+    assert_eq!(lines(&f, &h), ["nc000000"]);
+    // Twice more: both back, at where it opened; a third does nothing.
+    press(&mut h, Key::Z);
+    press(&mut h, Key::Z);
+    assert_eq!(text_of(&f, &h), before);
+    assert!(sketch_mode(&h).is_some());
+    let sent = h.state().tabs()[0].sent.len();
+    press(&mut h, Key::Z);
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert_eq!(text_of(&f, &h), before);
+    assert!(!undo_on(&h));
+    // Redo gives back only what it undid: twice, then nothing.
+    press(&mut h, Key::Y);
+    press(&mut h, Key::Y);
+    assert_eq!(lines(&f, &h), ["nc000000"]);
+    assert!(!h.state().tabs()[0].redoable());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn after_an_edit_each_sketch_is_read_once_more_and_a_changed_state_shows_its_prefix() {
+    use silico_protocol::{SolveStatus, Solved};
+    let f = fixture();
+    f.sketches.answer(|system| {
+        let sent = FakeSketches::as_sent(system);
+        Ok(match system.values.len() {
+            8 => Solved {
+                dofs: 2,
+                free: system.unknowns.clone(),
+                ..sent
+            },
+            11 => Solved {
+                conflicting: system.constraints.iter().filter_map(|c| c.tag()).collect(),
+                ..sent
+            },
+            12 => Solved {
+                status: SolveStatus::Failed,
+                algorithm: None,
+                ..sent
+            },
+            _ => sent,
+        })
+    });
+    let (mut h, _) = f.opened("four.silico", FOUR_SKETCHES);
+    let prefixes = |h: &AppHarness| {
+        ["s0000001", "s0000002", "s0000003", "s0000004"]
+            .map(|id| h.state().tabs()[0].prefixes.prefix(&sketch_id(id)))
+    };
+    step_until(&mut h, "the prefixes", |h| {
+        prefixes(h) == [Some("(–)"), Some("(+)"), Some("(?)"), None]
+    });
+    assert_eq!(h.state().tabs()[0].prefixes.reads, 4);
+    // Loose's one point deleted, in sketch mode: empty, it's fully defined. Its prefix
+    // comes from sketch mode's own read; the other three are read once more, of the model
+    // the edit published.
+    double_click(&mut h, "Browser", "Loose");
+    sketch_read(&mut h);
+    select_member(
+        &mut h,
+        "pa000001",
+        silico_core::document::ElementKind::Point,
+    );
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "the prefixes again", |h| {
+        h.state().tabs()[0].prefixes.reads == 7
+            && prefixes(h) == [None, Some("(+)"), Some("(?)"), None]
+    });
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].prefixes.reads, 7);
     assert_eq!(never_waits::waits(), 0);
 }

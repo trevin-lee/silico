@@ -70,12 +70,9 @@ enum Queued {
         members: Vec<String>,
         body: Body,
     },
-    /// A dialog (or sketch mode) opened, numbered `serial`: the revision it opens at is the
-    /// one everything asked before it comes to, which its Cancel undoes back to and its OK
-    /// groups from.
-    Opened {
-        serial: u64,
-    },
+    /// A dialog (or sketch mode) opened: the revision it opens at is the one everything
+    /// asked before it comes to, which its Cancel undoes back to and its OK groups from.
+    Opened,
     /// Create Sketch's new sketch (`add_feature`), for sketch mode numbered `serial`.
     AddSketch {
         serial: u64,
@@ -194,7 +191,7 @@ impl Edits {
                 | Queued::Revert { .. }
                 | Queued::Step { .. }
                 | Queued::Add { .. }
-                | Queued::Opened { .. }
+                | Queued::Opened
                 | Queued::AddSketch { .. }
                 | Queued::SketchRemove { .. }
                 | Queued::SketchJoin { .. }
@@ -526,10 +523,12 @@ impl Tab {
     /// Whether Undo can step: an edit still to answer (the undo waits behind it), or an
     /// edit to undo as the status of the tab's newest revision counts them; never while
     /// another step is under way, whose answer moves the counts, nor while a dialog is open,
-    /// whose Cancel undoes its edits.
+    /// whose Cancel undoes its edits. In sketch mode, as SolidWorks allows, but never past
+    /// the state it opened at.
     pub fn undoable(&self) -> bool {
         self.transaction
-            && !self.editing()
+            && !self.in_dialog()
+            && self.sketch_lets_undo()
             && !self.stepping()
             && (!self.edits.idle()
                 || (self.synced()
@@ -540,16 +539,45 @@ impl Tab {
 
     /// Whether Redo can step: an edit undone, and none made since, as the status of the
     /// tab's newest revision counts them; never while a step is under way, nor while a
-    /// dialog is open.
+    /// dialog is open. In sketch mode, only what it undid itself.
     pub fn redoable(&self) -> bool {
         self.transaction
-            && !self.editing()
+            && !self.in_dialog()
+            && self.sketch.as_ref().is_none_or(|mode| mode.undone > 0)
             && self.edits.idle()
             && !self.stepping()
             && self.synced()
             && self
                 .transaction()
                 .is_some_and(|transaction| transaction.redo > 0)
+    }
+
+    /// Whether sketch mode, if it's open, lets an undo step: it has opened (everything asked
+    /// before it has answered), and the session isn't at the state it opened at (for Create
+    /// Sketch, the state its add came to).
+    fn sketch_lets_undo(&self) -> bool {
+        let Some(mode) = &self.sketch else {
+            return true;
+        };
+        mode.undo_floor
+            .or(self.dialog_base)
+            .is_some_and(|floor| self.state_of(self.revision) != self.state_of(floor))
+    }
+
+    /// The name of the sketch open, as its browser row gives it ("Sketch" until it's added
+    /// and listed): what the sketch bar and the status bar call it.
+    pub fn sketch_name(&self) -> String {
+        self.sketch
+            .as_ref()
+            .and_then(|mode| mode.sketch.as_ref())
+            .and_then(|id| self.browser.sketches.iter().find(|row| &row.id == id))
+            .map_or_else(|| "Sketch".to_owned(), |row| row.name.clone())
+    }
+
+    /// The revision sketch mode opened at, once everything asked before it has answered:
+    /// what its Cancel undoes to, and its undo goes no further than.
+    pub fn sketch_opened_at(&self) -> Option<Revision> {
+        self.sketch.as_ref().and(self.dialog_base)
     }
 
     /// Whether it holds unsaved edits: the document changed, an edit under way, or a
@@ -634,8 +662,13 @@ impl Tab {
         if let Some(mode) = self.sketch.as_mut() {
             mode.poll(sessions, &self.id, self.published);
         }
-        self.prefixes
-            .poll(sessions, &self.id, &self.browser.sketches, self.published);
+        self.prefixes.poll(
+            sessions,
+            &self.id,
+            &self.browser.sketches,
+            self.published,
+            self.sketch.as_ref(),
+        );
     }
 
     /// The session as `response` left it, if that's no older than what the tab knows.
@@ -894,8 +927,10 @@ impl Tab {
                         .is_some_and(|mode| mode.serial == serial);
                     match response.result {
                         Ok(added) => {
+                            let at = self.revision;
                             if let Some(mode) = self.sketch.as_mut().filter(|_| ours) {
                                 mode.sketch = Some(added.feature.id.clone());
+                                mode.undo_floor = Some(at);
                                 self.selected = Some(added.feature.id);
                             }
                         }
@@ -1132,12 +1167,9 @@ impl Tab {
                         running: sessions.add_feature(&self.id, self.revision, None, feature),
                     });
                 }
-                Queued::Opened { serial } => {
+                Queued::Opened => {
                     self.dialog_base = Some(self.revision);
                     self.dialog_began = !self.transaction && !self.beginning;
-                    if let Some(mode) = self.sketch.as_mut().filter(|mode| mode.serial == serial) {
-                        mode.opened_at = Some(self.revision);
-                    }
                 }
                 Queued::AddSketch { serial, feature } => {
                     self.begin_if_none(sessions);
@@ -1200,7 +1232,7 @@ impl Tab {
                             running: sessions.rollback(&self.id),
                             then_close: false,
                         });
-                    } else if base == self.revision {
+                    } else if self.state_of(base) == self.state_of(self.revision) {
                         // Nothing of the dialog's changed the document.
                     } else if ok {
                         self.groups.push(Group {
@@ -1421,6 +1453,14 @@ impl Tab {
     /// answered.
     pub fn step<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, undo: bool) {
         self.message = None;
+        // Sketch mode's own steps, counted, so its Redo gives back only what it undid.
+        if let Some(mode) = self.sketch.as_mut() {
+            mode.undone = if undo {
+                mode.undone.saturating_add(1)
+            } else {
+                mode.undone.saturating_sub(1)
+            };
+        }
         self.edits.queue.push_back(Queued::Step { undo });
         self.advance(sessions);
     }
@@ -1767,9 +1807,7 @@ impl Tab {
         self.message = None;
         self.refused.clear();
         self.dialogs += 1;
-        self.edits.queue.push_back(Queued::Opened {
-            serial: self.dialogs,
-        });
+        self.edits.queue.push_back(Queued::Opened);
         self.dialogs
     }
 
@@ -1817,10 +1855,9 @@ impl Tab {
         // Sketch mode on a sketch with nothing of its own sent (a session reloads only with
         // no transaction open, and Create Sketch's add opens one): it opens at the reloaded
         // revision, its next read the reloaded sketch's.
-        if let Some(mode) = self.sketch.as_mut() {
+        if self.sketch.is_some() {
             self.dialog_base = Some(self.revision);
             self.dialog_began = true;
-            mode.opened_at = Some(self.revision);
         }
         let Some(dialog) = self.dialog.take() else {
             return;
@@ -1917,7 +1954,7 @@ impl Tab {
     }
 
     /// Whether a dialog or a sketch is open: its own OK or Finish, or its Cancel, ends its
-    /// edits, so Save, Save As, Undo, and Redo wait for that (section 9).
+    /// edits, so Save and Save As wait for that (section 9), and the dialogs.
     pub fn editing(&self) -> bool {
         self.in_dialog() || self.in_sketch()
     }
@@ -2002,6 +2039,19 @@ impl Tab {
         self.advance(sessions);
     }
 
+    /// The timeline's Edit: Edit Sketch for a sketch, Edit Feature for anything else.
+    pub fn edit_sketch_or_feature<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        id: &FeatureId,
+    ) {
+        if self.is_sketch(id) {
+            self.edit_sketch(sessions, id);
+        } else {
+            self.edit_feature(sessions, id);
+        }
+    }
+
     /// Finish Sketch (`ok`), its edits kept, one step for undo; or Cancel, undone back to
     /// the revision sketch mode opened at, or rolled back if its own edits began the
     /// transaction: as a dialog's OK and Cancel are ([`close_dialog`](Self::close_dialog)).
@@ -2037,6 +2087,8 @@ impl Tab {
             return;
         };
         mode.selection.clear();
+        // A new edit drops what was undone: Redo has nothing of sketch mode's to give back.
+        mode.undone = 0;
         self.message = None;
         self.edits.queue.push_back(match deletion {
             Deletion::Remove(members) => Queued::SketchRemove { sketch, members },

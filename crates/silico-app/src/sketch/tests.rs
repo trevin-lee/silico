@@ -20,7 +20,7 @@ use silico_core::sketch_tools::{Preview, Relation, Shown as Showing};
 
 use super::draw::{
     Drawn, Flat, GlyphKind, LabelKind, MAX_CURVE_SEGMENTS, Scale, Shown, StrokeKind, View, drawing,
-    preview, round_points, segments, signed_area, triangulate,
+    preview, region_fills, round_points, segments, signed_area, triangulate,
 };
 use super::hit::{Hit, hit};
 use super::style::*;
@@ -172,7 +172,13 @@ fn view() -> View<'static> {
 }
 
 fn drawn(read: &SketchRead) -> Vec<Drawn> {
-    drawing(read, &view(), Shown::default(), &Default::default())
+    drawing(
+        read,
+        &view(),
+        Shown::default(),
+        &Default::default(),
+        &region_fills(read, HAND),
+    )
 }
 
 /// What's drawn of the member `name`.
@@ -238,6 +244,7 @@ fn an_under_defined_rectangle_draws_blue_each_side_from_corner_to_corner_and_the
             ..Shown::default()
         },
         &Default::default(),
+        &[],
     );
     assert_eq!(hidden.len(), 5);
 }
@@ -336,7 +343,7 @@ fn an_over_defining_dimension_draws_red_a_driven_one_gray_in_parentheses() {
     assert!(
         of(&drawn, "ka000003")
             .iter()
-            .all(|d| d.colour() == SKETCH_DIMENSION)
+            .all(|d| d.colour() == SKETCH_DIMENSION_TEXT)
     );
 }
 
@@ -450,7 +457,7 @@ fn a_redundant_relation_gets_its_own_glyph_its_line_untouched_and_glyphs_stack_a
     );
     let drawn = drawn(&read);
     let (kind, first, colour) = glyph_of(&drawn, "ka000001");
-    assert_eq!((kind, colour), (GlyphKind::Horizontal, SKETCH_GLYPH_ICON));
+    assert_eq!((kind, colour), (GlyphKind::Horizontal, GRAY_700));
     let (kind, second, colour) = glyph_of(&drawn, "ka000002");
     assert_eq!((kind, colour), (GlyphKind::Redundant, SKETCH_REDUNDANT));
     assert_eq!(glyph_of(&drawn, "ka000003").0, GlyphKind::Horizontal);
@@ -468,6 +475,7 @@ fn a_redundant_relation_gets_its_own_glyph_its_line_untouched_and_glyphs_stack_a
             ..Shown::default()
         },
         &Default::default(),
+        &[],
     );
     assert!(hidden.iter().all(|d| !matches!(d, Drawn::Glyph { .. })));
     assert_eq!(hidden.len(), 9);
@@ -621,7 +629,7 @@ fn a_quarter_arcs_polyline_is_eight_chords_each_within_the_tolerance_of_the_arc(
         chord_tolerance: 0.5,
         ..view()
     };
-    let drawn = drawing(&read, &view, Shown::default(), &Default::default());
+    let drawn = drawing(&read, &view, Shown::default(), &Default::default(), &[]);
     let [Drawn::Stroke { points, .. }] = of(&drawn, "aa000001").as_slice() else {
         panic!("{drawn:?}");
     };
@@ -645,7 +653,9 @@ fn a_circle_is_closed_its_segments_set_by_the_projections_largest_stretch() {
     // points up and down, 100 across; its chords are counted for 300.
     let tall = |at: [f64; 2]| Some(pos2((10.0 * at[0]) as f32, (-30.0 * at[1]) as f32));
     let points = round_points([0.0, 0.0], 10.0, 0.0, TAU, &tall, 0.5);
-    assert_eq!(points.len(), segments(300.0, TAU, 0.5) + 1);
+    // 2·acos(1 − 0.5/300) = 0.11549 rad a chord: 2π takes ⌈54.4⌉ = 55.
+    assert_eq!(segments(300.0, TAU, 0.5), 55);
+    assert_eq!(points.len(), 56);
     assert_eq!(points.first(), points.last());
 }
 
@@ -716,6 +726,7 @@ fn the_profile_is_filled_less_its_holes_and_not_when_over_defined() {
             ..Shown::default()
         },
         &Default::default(),
+        &region_fills(&read, HAND),
     );
     assert!(off.iter().all(|d| !matches!(d, Drawn::Fill { .. })));
 }
@@ -759,53 +770,66 @@ fn ear_clipping_covers_a_concave_polygon_and_a_holed_one_exactly() {
 }
 
 #[test]
-fn the_grid_steps_with_the_zoom_its_axes_in_the_planes_colours() {
-    // Ten points a millimetre: a line every 5 mm. From (−1, −1) to (11, 6) in view: lines
-    // at x = −5, 0, 5, 10, 15 and y = −5, 0, 5, 10, those through 0 the 50 mm ones; then
-    // the two axes, the XY plane's x red and y green, at 55%.
+fn the_grid_is_the_viewports_its_steps_with_the_zoom_its_fade_and_its_axes_in_the_planes_colours() {
+    // Ten points a millimetre: the minor step, 10 mm, is 100 points apart. From (−1, −1) to
+    // (11, 6) in view: lines at x = 0 and 10, and y = 0; those through 0 the 50 mm ones.
+    // Then the two axes, the XY plane's x red and y green, whole.
     let read = under(rectangle(Vec::new()));
     let seen = View {
         visible: Some(([-1.0, -1.0], [11.0, 6.0])),
         ..view()
     };
-    let drawn = drawing(&read, &seen, Shown::default(), &Default::default());
-    let count = |kind| {
+    let drawn = drawing(&read, &seen, Shown::default(), &Default::default(), &[]);
+    let lines = |kind| {
         drawn
             .iter()
-            .filter(|d| matches!(d, Drawn::Stroke { kind: k, .. } if *k == kind))
-            .count()
+            .filter_map(|d| match d {
+                Drawn::Stroke {
+                    kind: k,
+                    points,
+                    colour,
+                    ..
+                } if *k == kind => Some((points.clone(), *colour)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
     };
-    assert_eq!(count(StrokeKind::GridMinor), 7);
-    assert_eq!(count(StrokeKind::GridMajor), 2);
-    let axes: Vec<egui::Color32> = drawn
-        .iter()
-        .filter_map(|d| match d {
-            Drawn::Stroke {
-                kind: StrokeKind::Axis,
-                colour,
-                ..
-            } => Some(*colour),
-            _ => None,
-        })
-        .collect();
+    let minor = lines(StrokeKind::GridMinor);
+    assert_eq!(minor.len(), 1);
+    // x = 10 runs (10, −1) to (10, 6): (200, 510) to (200, 440); 10 mm out of 200, faded to
+    // 95%.
+    assert_eq!(minor[0].0, vec![pos2(200.0, 510.0), pos2(200.0, 440.0)]);
     assert_eq!(
-        axes,
-        [AXIS_X.gamma_multiply(0.55), AXIS_Y.gamma_multiply(0.55)]
+        minor[0].1,
+        color32(VIEWPORT_GRID_MINOR).gamma_multiply(0.95)
     );
-    // Far out (a thousand millimetres a point), across ±10 km: too many lines, none drawn.
-    let far = View {
-        scale: Scale(1000.0),
-        visible: Some(([-1e7, -1e7], [1e7, 1e7])),
-        ..view()
+    assert_eq!(lines(StrokeKind::GridMajor).len(), 2);
+    let axes: Vec<egui::Color32> = lines(StrokeKind::Axis)
+        .into_iter()
+        .map(|(_, c)| c)
+        .collect();
+    assert_eq!(axes, [color32(AXIS_X), color32(AXIS_Y)]);
+    // At 2 mm a point the minor lines (5 points apart, under 8) go, the major (25) stay:
+    // x = −100, −50, 0, 50, 100 and y = 0. At 10 mm a point, all go. Past the fade, at
+    // 200 mm, none.
+    let out = |scale: f64, visible| {
+        let seen = View {
+            scale: Scale(scale),
+            visible: Some(visible),
+            ..view()
+        };
+        let drawn = drawing(&read, &seen, Shown::default(), &Default::default(), &[]);
+        let count = |kind| {
+            drawn
+                .iter()
+                .filter(|d| matches!(d, Drawn::Stroke { kind: k, .. } if *k == kind))
+                .count()
+        };
+        (count(StrokeKind::GridMinor), count(StrokeKind::GridMajor))
     };
-    let drawn = drawing(&read, &far, Shown::default(), &Default::default());
-    assert!(drawn.iter().all(|d| !matches!(
-        d,
-        Drawn::Stroke {
-            kind: StrokeKind::GridMinor | StrokeKind::GridMajor | StrokeKind::Axis,
-            ..
-        }
-    )));
+    assert_eq!(out(2.0, ([-120.0, -1.0], [120.0, 1.0])), (0, 6));
+    assert_eq!(out(10.0, ([-120.0, -1.0], [120.0, 1.0])), (0, 0));
+    assert_eq!(out(0.1, ([200.5, 200.5], [230.0, 230.0])), (0, 0));
 }
 
 #[test]
@@ -844,11 +868,17 @@ fn a_tools_preview_draws_its_line_dashed_its_guides_dotted_and_what_the_pointer_
     };
     assert_eq!(
         strokes(StrokeKind::Guide),
-        [(vec![pos2(200.0, 500.0), pos2(200.0, 300.0)], SKETCH_GUIDE)]
+        [(
+            vec![pos2(200.0, 500.0), pos2(200.0, 300.0)],
+            SKETCH_GUIDE_STROKE.color
+        )]
     );
     assert_eq!(
         strokes(StrokeKind::Preview),
-        [(vec![pos2(100.0, 500.0), pos2(200.0, 500.0)], SKETCH_PREVIEW)]
+        [(
+            vec![pos2(100.0, 500.0), pos2(200.0, 500.0)],
+            SKETCH_PREVIEW_STROKE.color
+        )]
     );
     assert_eq!(strokes(StrokeKind::Crosshair).len(), 2);
     let glyphs: Vec<(GlyphKind, Pos2, egui::Color32)> = drawn
@@ -864,20 +894,24 @@ fn a_tools_preview_draws_its_line_dashed_its_guides_dotted_and_what_the_pointer_
     assert_eq!(
         glyphs,
         [
-            (GlyphKind::Horizontal, pos2(218.0, 484.0), SKETCH_GUIDE),
-            (GlyphKind::Coincident, pos2(236.0, 484.0), SKETCH_SNAP),
+            (GlyphKind::Horizontal, pos2(218.0, 484.0), FOCUS),
+            (
+                GlyphKind::Coincident,
+                pos2(236.0, 484.0),
+                SKETCH_SNAP_STROKE.color
+            ),
         ]
     );
     assert!(drawn.contains(&Drawn::Ring {
         at: pos2(200.0, 500.0),
-        colour: SKETCH_SNAP
+        colour: SKETCH_SNAP_STROKE.color
     }));
     assert!(drawn.contains(&Drawn::Label {
         of: None,
         kind: LabelKind::Tool,
         at: pos2(214.0, 512.0),
         text: "10.00 mm".to_owned(),
-        colour: SKETCH_DIMENSION,
+        colour: SKETCH_DIMENSION_TEXT,
         selected: false,
     }));
     assert!(preview(&Preview::default(), &view()).is_empty());
@@ -1000,7 +1034,7 @@ fn an_empty_sketch_draws_only_the_origin_and_hits_nothing() {
         }]
     );
     assert_eq!(hit(&read, [0.0, 0.0], 100.0, HAND), None);
-    assert_eq!(state_shown(&read).words, "Empty");
+    assert_eq!(state_shown(&read, &egui::Visuals::dark()).words, "Empty");
 }
 
 #[test]
@@ -1029,7 +1063,7 @@ fn places_the_projection_cant_show_break_a_curve_and_nothing_drawn_isnt_a_number
         project: &half,
         ..view()
     };
-    let drawn = drawing(&read, &view, Shown::default(), &Default::default());
+    let drawn = drawing(&read, &view, Shown::default(), &Default::default(), &[]);
     for d in &drawn {
         for p in d.positions() {
             assert!(p.x.is_finite() && p.y.is_finite(), "{d:?}");
@@ -1087,7 +1121,7 @@ fn huge_coordinates_draw_finite_and_a_huge_circle_takes_at_most_the_cap() {
         visible: Some(([1e6 - 1.0, -1e6 - 1.0], [1e6 + 1.0, -1e6 + 1.0])),
         chord_tolerance: SKETCH_CHORD_TOLERANCE,
     };
-    let drawn = drawing(&read, &view, Shown::default(), &Default::default());
+    let drawn = drawing(&read, &view, Shown::default(), &Default::default(), &[]);
     let [Drawn::Stroke { points, .. }] = of(&drawn, "ca000001")
         .into_iter()
         .filter(|d| matches!(d, Drawn::Stroke { .. }))
@@ -1246,7 +1280,7 @@ fn a_flat_sketch_fills_its_rectangle_but_the_margin_and_maps_back() {
         visible: None,
         chord_tolerance: SKETCH_CHORD_TOLERANCE,
     };
-    let drawn = drawing(&read, &view, Shown::default(), &Default::default());
+    let drawn = drawing(&read, &view, Shown::default(), &Default::default(), &[]);
     for d in &drawn {
         assert!(d.positions().iter().all(|p| rect.contains(*p)), "{d:?}");
     }
@@ -1274,13 +1308,21 @@ fn unhand(at: Pos2) -> Option<[f64; 2]> {
     ])
 }
 
-fn press(at: Pos2, ctrl: bool) -> PointerEvent {
+fn event(action: PointerAction, at: Pos2, ctrl: bool) -> PointerEvent {
     PointerEvent {
-        action: PointerAction::Press,
+        action,
         at,
         shift: false,
         ctrl,
     }
+}
+
+/// A click at `at`: a press, then its release.
+fn press(at: Pos2, ctrl: bool) -> [PointerEvent; 2] {
+    [
+        event(PointerAction::Press, at, ctrl),
+        event(PointerAction::Release, at, ctrl),
+    ]
 }
 
 fn mode_on(read: SketchRead) -> SketchMode {
@@ -1315,29 +1357,51 @@ fn a_frames_presses_select_ctrl_adds_and_a_press_on_nothing_clears() {
     // The corner (0, 0) is at (100, 500); a press 2 points off is within the 7-point pick.
     frame(
         &mut mode,
-        &[press(pos2(102.0, 500.0), false)],
+        &press(pos2(102.0, 500.0), false),
         Some(pos2(250.0, 450.0)),
     );
     assert_eq!(selected(&mode), ["pa000001"]);
     // The pointer at (250, 450) is (15, 5) on the plane.
     assert_eq!(mode.pointer, Some([15.0, 5.0]));
     // Ctrl on the top side's middle, (20, 20): (300, 300), 3 points off it.
-    frame(&mut mode, &[press(pos2(300.0, 303.0), true)], None);
+    frame(&mut mode, &press(pos2(300.0, 303.0), true), None);
     assert_eq!(selected(&mode), ["na000003", "pa000001"]);
     assert_eq!(mode.pointer, None);
     // Ctrl on the corner again takes it away; a plain press on the right side replaces all.
-    frame(&mut mode, &[press(pos2(100.0, 500.0), true)], None);
+    frame(&mut mode, &press(pos2(100.0, 500.0), true), None);
     assert_eq!(selected(&mode), ["na000003"]);
-    frame(&mut mode, &[press(pos2(500.0, 400.0), false)], None);
+    frame(&mut mode, &press(pos2(500.0, 400.0), false), None);
     assert_eq!(selected(&mode), ["na000002"]);
     // A press on nothing, 10 mm from every side, clears it; a move selects nothing.
-    frame(&mut mode, &[press(pos2(300.0, 400.0), false)], None);
+    frame(&mut mode, &press(pos2(300.0, 400.0), false), None);
     assert!(mode.selection.is_empty());
-    let moved = PointerEvent {
-        action: PointerAction::Move,
-        ..press(pos2(100.0, 500.0), false)
-    };
+    let moved = event(PointerAction::Move, pos2(100.0, 500.0), false);
     frame(&mut mode, &[moved], None);
+    assert!(mode.selection.is_empty());
+    // Selected on the release: a press alone selects nothing yet, and a press cancelled
+    // (the pointer gone, a navigation tool taking over) leaves the selection as it was.
+    frame(&mut mode, &press(pos2(500.0, 400.0), false), None);
+    assert_eq!(selected(&mode), ["na000002"]);
+    frame(
+        &mut mode,
+        &[event(PointerAction::Press, pos2(100.0, 500.0), false)],
+        None,
+    );
+    assert_eq!(selected(&mode), ["na000002"]);
+    frame(
+        &mut mode,
+        &[event(PointerAction::Cancel, pos2(100.0, 500.0), false)],
+        None,
+    );
+    frame(
+        &mut mode,
+        &[event(PointerAction::Release, pos2(100.0, 500.0), false)],
+        None,
+    );
+    assert_eq!(selected(&mode), ["na000002"]);
+    // A press 8 points (0.8 mm) off the top side, past the 7-point pick: nothing under it,
+    // so its click clears the selection.
+    frame(&mut mode, &press(pos2(300.0, 308.0), false), None);
     assert!(mode.selection.is_empty());
 }
 
@@ -1347,7 +1411,7 @@ fn a_selected_member_is_drawn_selected_its_state_colour_kept() {
     let selected = [id("na000001"), id("ka000001"), id("pa000002")]
         .into_iter()
         .collect();
-    let drawn = drawing(&read, &view(), Shown::default(), &selected);
+    let drawn = drawing(&read, &view(), Shown::default(), &selected, &[]);
     for name in ["na000001", "ka000001", "pa000002"] {
         assert!(of(&drawn, name).iter().all(|d| d.selected()), "{name}");
     }
@@ -1379,7 +1443,7 @@ fn every_kind_turns_into_shapes_none_left_out() {
     ]
     .into_iter()
     .collect();
-    let mut drawn = drawing(&read, &view(), Shown::default(), &selected);
+    let mut drawn = drawing(&read, &view(), Shown::default(), &selected, &[]);
     drawn.extend(preview(
         &Preview {
             pointer: Some([1.0, 1.0]),
@@ -1461,12 +1525,14 @@ fn the_palette_says_a_refused_read_of_the_tabs_revision_and_waits_on_an_older_on
         model: Some(r(2)),
         result: Err(refused),
     });
-    assert_eq!(mode.palette_view(r(3)).said, None);
+    assert_eq!(mode.palette_view(r(3), &egui::Visuals::dark()).said, None);
     assert_eq!(
-        mode.palette_view(r(2)).said.as_deref(),
+        mode.palette_view(r(2), &egui::Visuals::dark())
+            .said
+            .as_deref(),
         Some("the document has no feature s0000001")
     );
-    assert_eq!(mode.palette_view(r(2)).state, None);
+    assert_eq!(mode.palette_view(r(2), &egui::Visuals::dark()).state, None);
 }
 
 #[test]
@@ -1477,7 +1543,7 @@ fn the_states_words_are_the_prototypes_and_the_prefixes_solidworks() {
         .iter()
         .map(|&s| {
             read.states.state = s;
-            let shown = state_shown(&read);
+            let shown = state_shown(&read, &egui::Visuals::dark());
             (shown.words, shown.colour, prefix(s))
         })
         .collect();
@@ -1511,16 +1577,18 @@ fn the_status_line_names_the_sketch_its_pointer_by_the_planes_axes_and_its_state
     read.states.dofs = 2;
     read.plane = Ok(OriginPlane::Xz.into());
     let mut mode = mode_on(read);
-    let line = mode.status("Sketch1");
+    let line = mode.status("Sketch1", &egui::Visuals::dark());
     assert_eq!(line.editing, "Editing Sketch1");
     assert_eq!(line.coordinates, None);
     assert_eq!(line.state.unwrap().words, "Under defined · 2 DOF");
     mode.pointer = Some([15.0, -5.25]);
     assert_eq!(
-        mode.status("Sketch1").coordinates.as_deref(),
+        mode.status("Sketch1", &egui::Visuals::dark())
+            .coordinates
+            .as_deref(),
         Some("x 15.000 · z -5.250 mm")
     );
-    let bar = mode.bar_view("Sketch1", true);
+    let bar = mode.bar_view("Sketch1", true, &egui::Visuals::dark());
     assert_eq!((bar.name.as_str(), bar.plane.as_str()), ("Sketch1", "XZ"));
     // A face whose frame broke: by u and v.
     if let Some(Read {
@@ -1533,12 +1601,487 @@ fn the_status_line_names_the_sketch_its_pointer_by_the_planes_axes_and_its_state
         ));
     }
     assert_eq!(
-        mode.status("Top").coordinates.as_deref(),
+        mode.status("Top", &egui::Visuals::dark())
+            .coordinates
+            .as_deref(),
         Some("u 15.000 · v -5.250 mm")
     );
     assert_eq!(
-        mode.palette_view(silico_core::command::Revision::OPENED)
-            .plane_problem,
+        mode.palette_view(
+            silico_core::command::Revision::OPENED,
+            &egui::Visuals::dark()
+        )
+        .plane_problem,
         Some(("gone".to_owned(), None))
     );
+}
+
+#[test]
+fn each_constraint_states_colour_on_each_sketch_state_is_its_own() {
+    use ConstraintState::{Conflicting, PartiallyRedundant, Redundant, Satisfied, Unsolved};
+    let dimension = Form::Length {
+        line: element("na000001"),
+        value: mm("40"),
+        driving: true,
+    };
+    let driven = Form::Length {
+        line: element("na000001"),
+        value: mm("40"),
+        driving: false,
+    };
+    let relation = Form::Horizontal {
+        line: element("na000001"),
+    };
+    let (dim, rel, over, red, inv) = (
+        SKETCH_DIMENSION_TEXT,
+        GRAY_700,
+        SKETCH_OVER_DEFINED,
+        SKETCH_REDUNDANT,
+        SKETCH_INVALID,
+    );
+    // Each row: the constraint's state and form, then its colour on a sketch under defined,
+    // fully defined, over defined, with no solution, and invalid.
+    let table: [(ConstraintState, &Form, [egui::Color32; 5]); 12] = [
+        (Satisfied, &dimension, [dim; 5]),
+        (Satisfied, &relation, [rel; 5]),
+        (Satisfied, &driven, [SKETCH_DRIVEN; 5]),
+        (Conflicting, &dimension, [over; 5]),
+        (Conflicting, &relation, [over; 5]),
+        (Redundant, &dimension, [over; 5]),
+        (Redundant, &relation, [red; 5]),
+        (PartiallyRedundant, &dimension, [over; 5]),
+        (PartiallyRedundant, &relation, [red; 5]),
+        (Unsolved, &dimension, [dim, dim, dim, over, inv]),
+        (Unsolved, &relation, [rel, rel, rel, over, inv]),
+        (
+            Unsolved,
+            &driven,
+            [SKETCH_DRIVEN, SKETCH_DRIVEN, SKETCH_DRIVEN, over, inv],
+        ),
+    ];
+    for (state, form, colours) in table {
+        for (sketch, want) in SketchState::ALL.into_iter().zip(colours) {
+            assert_eq!(
+                draw::constraint_colour(sketch, form, Some(state)),
+                want,
+                "{state:?} {} on {sketch:?}",
+                form.type_name()
+            );
+        }
+    }
+    // Every constraint state is in the table.
+    assert_eq!(
+        ConstraintState::ALL.len(),
+        table
+            .iter()
+            .map(|row| row.0)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    );
+    // A member with no state given reads under defined, unless the sketch has no solution
+    // or an invalid one.
+    use MemberState::{FullyDefined, OverDefined};
+    for (sketch, state, want) in [
+        (SketchState::UnderDefined, None, SKETCH_UNDER_DEFINED),
+        (SketchState::FullyDefined, None, SKETCH_UNDER_DEFINED),
+        (SketchState::NoSolution, None, SKETCH_OVER_DEFINED),
+        (SketchState::Invalid, None, SKETCH_INVALID),
+        (SketchState::Invalid, Some(FullyDefined), SKETCH_INVALID),
+        (
+            SketchState::OverDefined,
+            Some(OverDefined),
+            SKETCH_OVER_DEFINED,
+        ),
+        (
+            SketchState::FullyDefined,
+            Some(FullyDefined),
+            SKETCH_FULLY_DEFINED,
+        ),
+    ] {
+        assert_eq!(
+            draw::member_colour(sketch, state),
+            want,
+            "{sketch:?} {state:?}"
+        );
+    }
+}
+
+fn arc(name: &str, center: &str, start: &str, end: &str) -> SketchArc {
+    SketchArc {
+        id: id(name),
+        center: id(center),
+        start: id(start),
+        end: id(end),
+        construction: false,
+    }
+}
+
+fn sketch_of(points: Vec<SketchPoint>, lines: Vec<SketchLine>, arcs: Vec<SketchArc>) -> Sketch {
+    Sketch {
+        plane: OriginPlane::Xy.into(),
+        points,
+        lines,
+        circles: Vec::new(),
+        arcs,
+        constraints: Vec::new(),
+    }
+}
+
+#[test]
+fn delete_joins_two_arcs_or_a_line_and_an_arc_at_their_point_and_removes_a_point_three_lines_meet()
+{
+    let point_hit = |name: &str| Hit {
+        id: id(name),
+        kind: ElementKind::Point,
+    };
+    let deleting = |sketch: Sketch, point: &str| {
+        let mut mode = mode_on(under(sketch));
+        mode.click(Some(point_hit(point)), false);
+        mode.deletion()
+    };
+    // A split arc's two pieces about pc000000: the first ends at pm000000, the second starts
+    // there.
+    let arcs = sketch_of(
+        vec![
+            point("pc000000", 0.0, 0.0),
+            point("ps000000", 10.0, 0.0),
+            point("pm000000", 0.0, 10.0),
+            point("pe000000", -10.0, 0.0),
+        ],
+        Vec::new(),
+        vec![
+            arc("aa000001", "pc000000", "ps000000", "pm000000"),
+            arc("aa000002", "pc000000", "pm000000", "pe000000"),
+        ],
+    );
+    assert_eq!(
+        deleting(arcs, "pm000000"),
+        Some(Deletion::Join(id("pm000000")))
+    );
+    // A line ending where an arc starts.
+    let line_and_arc = sketch_of(
+        vec![
+            point("pc000000", 0.0, 0.0),
+            point("pq000000", 10.0, -10.0),
+            point("ps000000", 10.0, 0.0),
+            point("pm000000", 0.0, 10.0),
+        ],
+        vec![line("na000001", "pq000000", "ps000000")],
+        vec![arc("aa000001", "pc000000", "ps000000", "pm000000")],
+    );
+    assert_eq!(
+        deleting(line_and_arc, "ps000000"),
+        Some(Deletion::Join(id("ps000000")))
+    );
+    // Three lines at pp000000: not a split's two pieces, so removed (the core refuses a point
+    // curves use, and says so).
+    let three = sketch_of(
+        vec![
+            point("pp000000", 0.0, 0.0),
+            point("pa000000", 10.0, 0.0),
+            point("pb000000", 0.0, 10.0),
+            point("pd000000", -10.0, 0.0),
+        ],
+        vec![
+            line("na000001", "pa000000", "pp000000"),
+            line("na000002", "pp000000", "pb000000"),
+            line("na000003", "pp000000", "pd000000"),
+        ],
+        Vec::new(),
+    );
+    assert_eq!(
+        deleting(three, "pp000000"),
+        Some(Deletion::Remove(vec![element("pp000000")]))
+    );
+}
+
+/// The area of `fills`' triangles, in square millimetres.
+fn fill_area(fills: &[draw::RegionFill]) -> f64 {
+    fills
+        .iter()
+        .flat_map(|f| f.triangles.iter())
+        .map(|t| signed_area(&t[..]).abs())
+        .sum()
+}
+
+fn region(outer: &[&str], holes: &[&[&str]]) -> Region {
+    Region {
+        outer: outer.iter().map(|n| id(n)).collect(),
+        holes: holes
+            .iter()
+            .map(|h| h.iter().map(|n| id(n)).collect())
+            .collect(),
+    }
+}
+
+#[test]
+fn a_profile_with_a_side_written_backwards_fills_the_same() {
+    let mut sketch = rectangle(Vec::new());
+    // The top side from pa000004 to pa000003: against the loop's way round.
+    sketch.lines[2] = line("na000003", "pa000004", "pa000003");
+    let mut read = under(sketch);
+    read.regions = vec![region(
+        &["na000001", "na000002", "na000003", "na000004"],
+        &[],
+    )];
+    let fills = region_fills(&read, HAND);
+    assert!((fill_area(&fills) - 800.0).abs() < 1e-9);
+    let drawn = drawing(
+        &read,
+        &view(),
+        Shown::default(),
+        &Default::default(),
+        &fills,
+    );
+    let filled = drawn.iter().find_map(|d| match d {
+        Drawn::Fill { triangles, .. } => Some(area(triangles)),
+        _ => None,
+    });
+    assert!(
+        filled.is_some_and(|a| (a - 80_000.0).abs() < 1.0),
+        "{filled:?}"
+    );
+}
+
+#[test]
+fn a_circles_and_an_arcs_fill_stay_within_the_chord_bound_of_their_area() {
+    // At a tenth of a millimetre a point, the chords stray at most 0.25 points, 0.025 mm:
+    // a fill falls short of the true area by at most its perimeter times that.
+    let stray = 0.25 * 0.1;
+    let mut circle = under(sketch_of(
+        vec![point("pa000001", 0.0, 0.0)],
+        Vec::new(),
+        Vec::new(),
+    ));
+    circle.members.circles.push(SketchCircle {
+        id: id("ca000001"),
+        center: id("pa000001"),
+        radius: Coordinate::new(10.0).unwrap(),
+        construction: false,
+    });
+    circle.regions = vec![region(&["ca000001"], &[])];
+    let disc = fill_area(&region_fills(&circle, HAND));
+    let full = PI * 100.0;
+    assert!(disc <= full && disc >= full - TAU * 10.0 * stray, "{disc}");
+    // A 20 × 10 rectangle whose top is an arc about (10, 10), bulging up through a half turn:
+    // the arc in the middle of the loop. 200 + 50π.
+    let mut arched = under(sketch_of(
+        vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 20.0, 0.0),
+            point("pa000003", 20.0, 10.0),
+            point("pa000004", 0.0, 10.0),
+            point("pc000000", 10.0, 10.0),
+        ],
+        vec![
+            line("na000001", "pa000001", "pa000002"),
+            line("na000002", "pa000002", "pa000003"),
+            line("na000003", "pa000004", "pa000001"),
+        ],
+        vec![arc("aa000001", "pc000000", "pa000003", "pa000004")],
+    ));
+    arched.regions = vec![region(
+        &["na000001", "na000002", "aa000001", "na000003"],
+        &[],
+    )];
+    let got = fill_area(&region_fills(&arched, HAND));
+    let want = 200.0 + 50.0 * PI;
+    assert!(
+        got <= want + 1e-9 && got >= want - PI * 10.0 * stray,
+        "{got}"
+    );
+}
+
+/// Whether `p` lies inside any of `triangles` (or on one's edge).
+fn covered(triangles: &[[[f64; 2]; 3]], p: [f64; 2]) -> bool {
+    triangles.iter().any(|&[a, b, c]| {
+        let side = |u: [f64; 2], v: [f64; 2]| {
+            (v[0] - u[0]) * (p[1] - u[1]) - (v[1] - u[1]) * (p[0] - u[0])
+        };
+        let (d1, d2, d3) = (side(a, b), side(b, c), side(c, a));
+        (d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0) || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0)
+    })
+}
+
+#[test]
+fn a_profiles_hole_is_left_uncovered_and_the_rest_covered() {
+    let outer = vec![[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]];
+    let hole = vec![[10.0, 5.0], [20.0, 5.0], [20.0, 15.0], [10.0, 15.0]];
+    let triangles = triangulate(outer, vec![hole]);
+    // The hole's middle, and a point just inside its edge, uncovered.
+    assert!(!covered(&triangles, [15.0, 10.0]));
+    assert!(!covered(&triangles, [10.5, 14.5]));
+    // Around it, and either side, covered.
+    for p in [
+        [5.0, 5.0],
+        [30.0, 10.0],
+        [15.0, 2.0],
+        [15.0, 18.0],
+        [9.5, 10.0],
+    ] {
+        assert!(covered(&triangles, p), "{p:?}");
+    }
+}
+
+/// A 100 × 60 plate with 60 holes of 5 mm across, in ten columns and six rows 10 mm apart,
+/// its profile one region.
+fn plate() -> SketchRead {
+    let mut points = vec![
+        point("pa000001", 0.0, 0.0),
+        point("pa000002", 100.0, 0.0),
+        point("pa000003", 100.0, 60.0),
+        point("pa000004", 0.0, 60.0),
+    ];
+    let mut circles = Vec::new();
+    for row in 0..6 {
+        for column in 0..10 {
+            let n = row * 10 + column;
+            points.push(point(
+                &format!("pc{n:06}"),
+                5.0 + 10.0 * column as f64,
+                5.0 + 10.0 * row as f64,
+            ));
+            circles.push(SketchCircle {
+                id: id(&format!("cc{n:06}")),
+                center: id(&format!("pc{n:06}")),
+                radius: Coordinate::new(2.5).unwrap(),
+                construction: false,
+            });
+        }
+    }
+    let mut sketch = rectangle(Vec::new());
+    sketch.points = points;
+    sketch.circles = circles;
+    let holes: Vec<Vec<ElementId>> = (0..60).map(|n| vec![id(&format!("cc{n:06}"))]).collect();
+    let mut read = under(sketch);
+    read.regions = vec![Region {
+        outer: ["na000001", "na000002", "na000003", "na000004"]
+            .iter()
+            .map(|n| id(n))
+            .collect(),
+        holes,
+    }];
+    read
+}
+
+#[test]
+fn a_plate_with_sixty_holes_fills_less_its_holes_and_steady_frames_reuse_the_drawing_and_fill() {
+    // The plate's area less 60 holes of radius 2.5, 6,000 − 375π: each hole's chords stray
+    // inward from its circle, so the fill covers a little more than that, by at most the
+    // holes' perimeters times the chord bound.
+    let read = plate();
+    let fills = region_fills(&read, Scale(0.125));
+    assert_eq!(fills.len(), 1);
+    let want = 6000.0 - 60.0 * PI * 6.25;
+    let stray = 0.25 * 0.125;
+    let got = fill_area(&fills);
+    assert!(
+        got >= want && got <= want + 60.0 * TAU * 2.5 * stray,
+        "{got} for {want}"
+    );
+    // Steady frames, nothing changing, draw what the first worked out: one drawing, one
+    // fill. A selection redraws, and reuses the fill; a zoom within a power of two
+    // redraws, and reuses it; past one, it's worked out again.
+    let mut mode = mode_on(read);
+    let at = |zoom: f32| {
+        move |p: [f64; 2]| {
+            Some(pos2(
+                (100.0 + f64::from(zoom) * p[0]) as f32,
+                (500.0 - f64::from(zoom) * p[1]) as f32,
+            ))
+        }
+    };
+    let back = |zoom: f32| {
+        move |p: Pos2| {
+            Some([
+                (f64::from(p.x) - 100.0) / f64::from(zoom),
+                (500.0 - f64::from(p.y)) / f64::from(zoom),
+            ])
+        }
+    };
+    let frames = |mode: &mut SketchMode, zoom: f32, n: usize| {
+        let (project, to_plane) = (at(zoom), back(zoom));
+        with_painter(|painter| {
+            for _ in 0..n {
+                let input = FrameInput {
+                    events: &[],
+                    pointer: None,
+                    project: &project,
+                    to_plane: &to_plane,
+                };
+                mode.frame(painter, &input);
+            }
+        });
+    };
+    frames(&mut mode, 10.0, 20);
+    assert_eq!((mode.drawings, mode.fill_builds), (1, 1));
+    mode.click(
+        Some(Hit {
+            id: id("na000001"),
+            kind: ElementKind::Line,
+        }),
+        false,
+    );
+    frames(&mut mode, 10.0, 5);
+    assert_eq!((mode.drawings, mode.fill_builds), (2, 1));
+    // 10 points a mm is 0.1 mm a point, in [1/16, 1/8); 12 is 0.0833, too.
+    frames(&mut mode, 12.0, 5);
+    assert_eq!((mode.drawings, mode.fill_builds), (3, 1));
+    frames(&mut mode, 20.0, 5);
+    assert_eq!((mode.drawings, mode.fill_builds), (4, 2));
+}
+
+#[test]
+fn the_yz_planes_words_and_axes() {
+    let yz = silico_core::kernel::SketchPlane::Yz;
+    assert_eq!(plane_words(Some(&yz)), ("YZ", ["y", "z"]));
+    assert_eq!(
+        draw::axis_colours(Some(&yz)),
+        [color32(AXIS_Y), color32(AXIS_Z)]
+    );
+}
+
+/// WCAG's contrast ratio of two colours.
+fn contrast(a: egui::Color32, b: egui::Color32) -> f64 {
+    let luminance = |c: egui::Color32| {
+        let channel = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                libm::pow((v + 0.055) / 1.055, 2.4)
+            }
+        };
+        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+    };
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+#[test]
+fn the_states_words_are_coloured_for_the_theme_they_stand_on() {
+    let (dark, light) = (egui::Visuals::dark(), egui::Visuals::light());
+    assert_ne!(dark.window_fill, light.window_fill);
+    let mut read = under(rectangle(Vec::new()));
+    let mut reads = Vec::new();
+    for state in SketchState::ALL {
+        read.states.state = state;
+        reads.push(read.clone());
+    }
+    let mut empty = read.clone();
+    empty.members = sketch_of(Vec::new(), Vec::new(), Vec::new());
+    reads.push(empty);
+    for read in &reads {
+        let (on_dark, on_light) = (state_shown(read, &dark), state_shown(read, &light));
+        assert_ne!(on_dark.colour, on_light.colour, "{}", on_dark.words);
+        for (shown, visuals) in [(&on_dark, &dark), (&on_light, &light)] {
+            let ratio = contrast(shown.colour, visuals.window_fill);
+            assert!(
+                ratio >= 2.5,
+                "{} on {}: {ratio}",
+                shown.words,
+                visuals.dark_mode
+            );
+        }
+    }
 }

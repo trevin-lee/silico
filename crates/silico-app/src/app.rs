@@ -82,15 +82,11 @@ fn typing(ui: &Ui) -> bool {
     })
 }
 
-/// The name of the sketch open in `tab`, as its browser row gives it ("Sketch" until it's
-/// added and listed).
-fn sketch_name(tab: &Tab) -> String {
-    tab.sketch
-        .as_ref()
-        .and_then(|mode| mode.sketch.as_ref())
-        .and_then(|id| tab.browser.sketches.iter().find(|row| &row.id == id))
-        .map_or_else(|| "Sketch".to_owned(), |row| row.name.clone())
-}
+/// Where sketch mode's panels stand in the canvas, as the prototype's: the sketch bar below
+/// its top, centred; the palette at its right, below the ViewCube.
+const SKETCH_BAR_FROM_TOP: f32 = 10.0;
+const PALETTE_FROM_CORNER: egui::Vec2 =
+    egui::Vec2::new(-12.0 - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
 
 /// What the app is asking the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -846,13 +842,6 @@ impl<P: Clients + 'static> App<P> {
                         (_, None) => String::new(),
                     };
                     ui.label(said);
-                    // In a sketch (docs/ux/solidworks.md, §2): what's edited, the pointer's
-                    // coordinates, and the state.
-                    if let Some(mode) = &tab.sketch {
-                        ui.separator();
-                        sketch::bar::status_ui(ui, &mode.status(&sketch_name(tab)));
-                        ui.separator();
-                    }
                     let stoppable = tab.stoppable();
                     if ui
                         .add_enabled(stoppable, egui::Button::new("Stop"))
@@ -884,22 +873,23 @@ impl<P: Clients + 'static> App<P> {
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return;
         };
-        let name = sketch_name(tab);
+        let name = tab.sketch_name();
         let (revision, enabled, id) = (tab.revision, !tab.closing(), tab.id);
         let Some(mode) = tab.sketch.as_mut() else {
             return;
         };
         let canvas = self.canvas.unwrap_or_else(|| ui.ctx().content_rect());
-        let bar = mode.bar_view(&name, enabled);
-        let view = mode.palette_view(revision);
+        let visuals = ui.visuals().clone();
+        let bar = mode.bar_view(&name, enabled, &visuals);
+        let view = mode.palette_view(revision, &visuals);
         let mut action = BarAction::None;
         egui::Area::new(egui::Id::new(("sketch_bar", id.to_string())))
-            .fixed_pos(canvas.center_top() + egui::vec2(0.0, sketch::style::SKETCH_BAR_FROM_TOP))
+            .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
             .pivot(egui::Align2::CENTER_TOP)
             .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar));
         // Pinned at the canvas's top right, under the ViewCube, as the prototype's is.
         egui::Area::new(egui::Id::new(("sketch_palette", id.to_string())))
-            .fixed_pos(canvas.right_top() + sketch::style::PALETTE_FROM_CORNER)
+            .fixed_pos(canvas.right_top() + PALETTE_FROM_CORNER)
             .show(ui.ctx(), |ui| {
                 sketch::bar::palette(ui, &view, &mut mode.settings)
             });

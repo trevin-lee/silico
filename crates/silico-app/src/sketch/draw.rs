@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{FRAC_1_SQRT_2, TAU};
 
 use eframe::egui::{self, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
-use silico_core::command::sketch::{Region, SketchRead};
+use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, ElementKind, Form, Reference, SketchConstraint};
 use silico_core::kernel::SketchPlane;
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
@@ -27,13 +27,33 @@ use super::style::*;
 /// larger than the screen strays further than the chord tolerance, off the screen.
 pub const MAX_CURVE_SEGMENTS: usize = 1024;
 
-/// The most grid lines drawn across either way: a view too far out for the grid's steps
-/// draws none.
-pub const MAX_GRID_LINES: usize = 400;
+/// The least spacing of the grid's lines on the screen, in points: a step closer is left
+/// out (the minor lines first, then the major).
+const GRID_LEAST_SPACING: f32 = 8.0;
 
-/// The most vertices a profile's fill is worked out for: past them, the fill (an ear
-/// clipping, quadratic in them) is left out.
-pub const MAX_FILL_VERTICES: usize = 2000;
+/// The most work a profile's fill is worked out for, in vertex pairs: the ear clipping's
+/// (the vertices squared) and the bridges' (each hole against every vertex). Past it, the
+/// fill is left out.
+pub const MAX_FILL_WORK: usize = 16_000_000;
+
+/// The layout's own rules, the prototype's: a line's glyph a share of its way along it;
+/// glyphs on one member this far apart; a glyph box's corner; a shown relation's glyph and a
+/// tool's label from the pointer; the crosshair's arms and a snap's ring; how far extension
+/// lines run past a dimension's line; and a dimension's line's width and a grid line's, in
+/// points.
+const GLYPH_ALONG: f64 = 0.28;
+const GLYPH_STEP: f32 = 18.0;
+const GLYPH_RADIUS: u8 = 3;
+const SHOWN_AT: Vec2 = Vec2::new(18.0, -16.0);
+const TOOL_LABEL_AT: Vec2 = Vec2::new(14.0, 12.0);
+const CROSSHAIR_ARM: f32 = 8.0;
+const SNAP_RADIUS: f32 = 6.0;
+const EXTENSION_PAST: f32 = 5.0;
+const DIMENSION_LINE_WIDTH: f32 = 1.0;
+const GRID_LINE_WIDTH: f32 = 1.0;
+/// A dimension's value's box's height, and a glyph's icon's stroke's width.
+const LABEL_HEIGHT: f32 = 18.0;
+const ICON_WIDTH: f32 = 1.3;
 
 /// How many segments an angle dimension's arc has.
 const ANGLE_ARC_SEGMENTS: usize = 24;
@@ -216,7 +236,7 @@ impl Drawn {
             | Drawn::Arrow { colour, .. }
             | Drawn::Label { colour, .. }
             | Drawn::Ring { colour, .. } => *colour,
-            Drawn::Origin { .. } => SKETCH_ORIGIN,
+            Drawn::Origin { .. } => SKETCH_ORIGIN_RING.color,
         }
     }
 
@@ -478,7 +498,7 @@ fn glyph_place(
     geometry: &Geometry,
     scale: Scale,
 ) -> Option<[f64; 2]> {
-    let (offset, step) = (scale.mm(SKETCH_GLYPH_OFFSET), scale.mm(SKETCH_GLYPH_STEP));
+    let (offset, step) = (scale.mm(SKETCH_GLYPH_OFFSET), scale.mm(GLYPH_STEP));
     let along = step * count as f64;
     let Reference::Element(_) = member else {
         return None;
@@ -490,7 +510,7 @@ fn glyph_place(
         Curve::Line { from, to } => {
             let t = unit(sub(to, from)).unwrap_or([1.0, 0.0]);
             let right = [t[1], -t[0]];
-            let at = add(from, mul(sub(to, from), SKETCH_GLYPH_ALONG));
+            let at = add(from, mul(sub(to, from), GLYPH_ALONG));
             Some(add(add(at, mul(right, offset)), mul(t, along)))
         }
         Curve::Round {
@@ -516,8 +536,8 @@ fn dimension(
     scale: Scale,
 ) -> Option<PlacedDimension> {
     let offset = scale.mm(SKETCH_DIMENSION_OFFSET);
-    let gap = scale.mm(SKETCH_EXTENSION_GAP);
-    let past = scale.mm(SKETCH_EXTENSION_PAST);
+    let gap = scale.mm(SKETCH_DIMENSION_GAP);
+    let past = scale.mm(EXTENSION_PAST);
     let driving = constraint.form.driving().unwrap_or(true);
     let text = |value: String| {
         if driving { value } else { format!("({value})") }
@@ -734,20 +754,70 @@ pub fn constraint_colour(
         Some(ConstraintState::Unsolved) if sketch == SketchState::NoSolution => SKETCH_OVER_DEFINED,
         Some(ConstraintState::Unsolved) if sketch == SketchState::Invalid => SKETCH_INVALID,
         _ if form.driving() == Some(false) => SKETCH_DRIVEN,
-        _ if dimension => SKETCH_DIMENSION,
-        _ => SKETCH_GLYPH_ICON,
+        _ if dimension => SKETCH_DIMENSION_TEXT,
+        _ => GRAY_700,
     }
 }
 
 /// The colours of the plane's two axes, the sketch's x and y: the model's axes they lie
-/// along, for an origin plane; red and blue for a face's (as the prototype draws one).
+/// along, for an origin plane; X's and Z's for a face's (as the prototype draws one).
 pub fn axis_colours(plane: Option<&SketchPlane>) -> [Color32; 2] {
-    match plane {
+    let [u, v] = match plane {
         Some(SketchPlane::Xy) => [AXIS_X, AXIS_Y],
         Some(SketchPlane::Xz) => [AXIS_X, AXIS_Z],
         Some(SketchPlane::Yz) => [AXIS_Y, AXIS_Z],
         Some(SketchPlane::Face(_)) | None => [AXIS_X, AXIS_Z],
+    };
+    [color32(u), color32(v)]
+}
+
+/// A profile's region filled: its triangles, in the sketch's millimetres, and the curve it's
+/// drawn as of (its outer loop's first).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionFill {
+    pub of: Option<ElementId>,
+    pub triangles: Vec<[[f64; 2]; 3]>,
+}
+
+/// The scale a fill is worked out at for a view at `scale`: the power of two at or below it,
+/// so a fill worked out once serves every zoom within a factor of two (its chords then stray
+/// at most the chord tolerance at that zoom, less further in), and that power's exponent,
+/// its key.
+pub fn fill_scale(scale: Scale) -> (i32, Scale) {
+    if !(scale.0 > 0.0 && scale.0.is_finite()) {
+        return (0, Scale(1.0));
     }
+    let (_, exponent) = libm::frexp(scale.0);
+    let bucket = exponent - 1;
+    (bucket, Scale(libm::ldexp(1.0, bucket)))
+}
+
+/// Each region of `read`'s profile filled, worked out in the sketch's millimetres at `scale`
+/// (its arcs within the chord tolerance at that scale), so a frame only projects it: the
+/// plane-to-screen map takes triangles to triangles. A region whose loops can't be walked,
+/// or whose fill would take more than [`MAX_FILL_WORK`], has none.
+pub fn region_fills(read: &SketchRead, scale: Scale) -> Vec<RegionFill> {
+    let geometry = Geometry::of(read);
+    let tolerance = scale.mm(SKETCH_CHORD_TOLERANCE);
+    read.regions
+        .iter()
+        .filter_map(|region| {
+            let outer = walk(&region.outer, &geometry, tolerance)?;
+            let holes: Vec<Vec<[f64; 2]>> = region
+                .holes
+                .iter()
+                .map(|hole| walk(hole, &geometry, tolerance))
+                .collect::<Option<_>>()?;
+            let count = outer.len() + holes.iter().map(Vec::len).sum::<usize>();
+            let work = count
+                .saturating_mul(count)
+                .saturating_add(holes.len().saturating_mul(count));
+            (work <= MAX_FILL_WORK).then(|| RegionFill {
+                of: region.outer.first().cloned(),
+                triangles: triangulate(outer, holes),
+            })
+        })
+        .collect()
 }
 
 /// What's drawn of `read`, seen through `view`, the members in `selected` drawn selected:
@@ -760,6 +830,7 @@ pub fn drawing(
     view: &View<'_>,
     shown: Shown,
     selected: &BTreeSet<ElementId>,
+    fills: &[RegionFill],
 ) -> Vec<Drawn> {
     let geometry = Geometry::of(read);
     let sketch = read.states.state;
@@ -770,9 +841,18 @@ pub fn drawing(
         drawn.push(Drawn::Origin { at });
     }
     if shown.profile && sketch != SketchState::OverDefined {
-        for region in &read.regions {
-            if let Some(fill) = region_fill(region, &geometry, view) {
-                drawn.push(fill);
+        for fill in fills {
+            let triangles = fill
+                .triangles
+                .iter()
+                .map(|t| Some([view.at(t[0])?, view.at(t[1])?, view.at(t[2])?]))
+                .collect::<Option<Vec<_>>>();
+            if let Some(triangles) = triangles {
+                drawn.push(Drawn::Fill {
+                    of: fill.of.clone(),
+                    triangles,
+                    colour: SKETCH_PROFILE_FILL,
+                });
             }
         }
     }
@@ -838,7 +918,7 @@ pub fn drawing(
         .map(|c| (&c.id, &c.form))
         .collect();
     let colour_of = |id: &ElementId| {
-        forms.get(id).map_or(SKETCH_GLYPH_ICON, |form| {
+        forms.get(id).map_or(GRAY_700, |form| {
             constraint_colour(sketch, form, states.constraints.get(id).copied())
         })
     };
@@ -896,55 +976,64 @@ pub fn drawing(
     drawn
 }
 
-/// The grid on the plane, over the part of it in view, every 5 mm (10, then 50, as the view
-/// draws a millimetre smaller), each 50 mm's line stronger; and its two axes, in `axes`'
-/// colours. None where the view gives no part of the plane, or would need more than
-/// [`MAX_GRID_LINES`] lines across.
+/// The grid on the plane, as the viewport's is: a line every 10 mm, each 50 mm's stronger,
+/// fading out linearly from the origin to 200 mm, over the part of the plane in view; a
+/// step whose lines would stand closer than [`GRID_LEAST_SPACING`] on the screen left out
+/// (the minor lines first). And its two axes, in `axes`' colours. None where the view gives
+/// no part of the plane.
 fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
     let Some((lo, hi)) = view.visible else {
         return Vec::new();
     };
-    let per_mm = 1.0 / view.scale.0;
-    let step: i64 = if per_mm > 6.0 {
-        5
-    } else if per_mm > 2.0 {
-        10
-    } else {
-        50
-    };
-    let span = |a: usize| ((hi[a] - lo[a]) / step as f64).abs();
-    if !(span(0).is_finite() && span(1).is_finite())
-        || span(0) > MAX_GRID_LINES as f64
-        || span(1) > MAX_GRID_LINES as f64
-    {
+    let fade = f64::from(VIEWPORT_GRID_FADE_MM);
+    let (lo, hi) = (
+        [lo[0].max(-fade), lo[1].max(-fade)],
+        [hi[0].min(fade), hi[1].min(fade)],
+    );
+    if !(lo[0] <= hi[0] && lo[1] <= hi[1]) {
         return Vec::new();
     }
+    let spaced = |mm: f32| {
+        view.scale.0 > 0.0 && f64::from(mm) / view.scale.0 >= f64::from(GRID_LEAST_SPACING)
+    };
+    let (minor, major) = (
+        f64::from(VIEWPORT_GRID_MINOR_MM),
+        f64::from(VIEWPORT_GRID_MAJOR_MM),
+    );
+    let step = if spaced(VIEWPORT_GRID_MINOR_MM) {
+        minor
+    } else if spaced(VIEWPORT_GRID_MAJOR_MM) {
+        major
+    } else {
+        return Vec::new();
+    };
     let mut drawn = Vec::new();
     for across in [0, 1] {
-        let first = (lo[across] / step as f64).floor() as i64;
-        let last = (hi[across] / step as f64).ceil() as i64;
+        let first = (lo[across] / step).ceil() as i64;
+        let last = (hi[across] / step).floor() as i64;
         for k in first..=last {
-            let at = (k * step) as f64;
+            let at = k as f64 * step;
             let ends = if across == 0 {
                 [[at, lo[1]], [at, hi[1]]]
             } else {
                 [[lo[0], at], [hi[0], at]]
             };
-            let kind = if (k * step) % 50 == 0 {
-                StrokeKind::GridMajor
+            let is_major = (at / major).fract() == 0.0;
+            let (kind, colour) = if is_major {
+                (StrokeKind::GridMajor, color32(VIEWPORT_GRID_MAJOR))
             } else {
-                StrokeKind::GridMinor
+                (StrokeKind::GridMinor, color32(VIEWPORT_GRID_MINOR))
             };
-            let colour = match kind {
-                StrokeKind::GridMajor => SKETCH_GRID_MAJOR,
-                _ => SKETCH_GRID_MINOR,
-            };
+            let faded = (1.0 - at.abs() / fade) as f32;
+            if faded <= 0.0 {
+                continue;
+            }
             if let Some(run) = runs(ends.iter().map(|&p| view.at(p)).collect()).pop() {
                 drawn.push(Drawn::Stroke {
                     of: None,
                     kind,
                     points: run,
-                    colour,
+                    colour: colour.gamma_multiply(faded),
                     selected: false,
                 });
             }
@@ -952,6 +1041,10 @@ fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
     }
     // The axes: the sketch's x along y = 0, its y along x = 0.
     for (axis, colour) in [0, 1].into_iter().zip(axes) {
+        let other = 1 - axis;
+        if !(lo[other] <= 0.0 && 0.0 <= hi[other]) {
+            continue;
+        }
         let ends = if axis == 0 {
             [[lo[0], 0.0], [hi[0], 0.0]]
         } else {
@@ -962,38 +1055,12 @@ fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
                 of: None,
                 kind: StrokeKind::Axis,
                 points: run,
-                colour: colour.gamma_multiply(SKETCH_AXIS_ALPHA),
+                colour,
                 selected: false,
             });
         }
     }
     drawn
-}
-
-/// The fill of `region`: its outer loop's polygon less its holes', in triangles (an ear
-/// clipping, each hole joined to the outside by a bridge), projected. None where a loop
-/// can't be walked or projected, or holds more than [`MAX_FILL_VERTICES`].
-fn region_fill(region: &Region, geometry: &Geometry, view: &View<'_>) -> Option<Drawn> {
-    let tolerance = view.scale.mm(view.chord_tolerance);
-    let outer = walk(&region.outer, geometry, tolerance)?;
-    let holes: Vec<Vec<[f64; 2]>> = region
-        .holes
-        .iter()
-        .map(|hole| walk(hole, geometry, tolerance))
-        .collect::<Option<_>>()?;
-    let count = outer.len() + holes.iter().map(Vec::len).sum::<usize>();
-    if count > MAX_FILL_VERTICES {
-        return None;
-    }
-    let triangles = triangulate(outer, holes)
-        .into_iter()
-        .map(|t| Some([view.at(t[0])?, view.at(t[1])?, view.at(t[2])?]))
-        .collect::<Option<Vec<_>>>()?;
-    Some(Drawn::Fill {
-        of: region.outer.first().cloned(),
-        triangles,
-        colour: SKETCH_PROFILE_FILL,
-    })
 }
 
 /// The polygon a loop of `curves` walks, in order, in the sketch's millimetres, its arcs
@@ -1060,7 +1127,8 @@ fn walk(curves: &[ElementId], geometry: &Geometry, tolerance: f64) -> Option<Vec
 
 /// `outer` less `holes`, in triangles: `outer` turned counter-clockwise and each hole
 /// clockwise, each hole joined to the polygon by a bridge from its rightmost vertex to the
-/// nearest vertex the bridge crosses no edge to reach, then ears clipped. A polygon too
+/// nearest vertex the bridge crosses no edge to reach (tried nearest first, the first clear
+/// one taken), then ears clipped. A polygon too
 /// degenerate to clip gives what was clipped of it.
 pub(crate) fn triangulate(
     mut outer: Vec<[f64; 2]>,
@@ -1090,10 +1158,15 @@ pub(crate) fn triangulate(
             };
             !crosses(&polygon) && !crosses(hole) && !others.iter().any(|o| crosses(o))
         };
-        let Some(bridge) = (0..polygon.len())
-            .filter(|&i| clear(polygon[i]))
-            .min_by(|&i, &j| length(sub(polygon[i], m)).total_cmp(&length(sub(polygon[j], m))))
-        else {
+        // The nearest vertex first, the first clear one taken: most bridges are to the
+        // nearest, so few are tried.
+        let mut nearest: Vec<usize> = (0..polygon.len()).collect();
+        nearest.sort_by(|&i, &j| {
+            length(sub(polygon[i], m))
+                .total_cmp(&length(sub(polygon[j], m)))
+                .then(i.cmp(&j))
+        });
+        let Some(bridge) = nearest.into_iter().find(|&i| clear(polygon[i])) else {
             continue;
         };
         let p = polygon[bridge];
@@ -1195,7 +1268,7 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
         stroke(
             guide.iter().map(|&p| view.at(p)).collect(),
             StrokeKind::Guide,
-            SKETCH_GUIDE,
+            SKETCH_GUIDE_STROKE.color,
             &mut drawn,
         );
     }
@@ -1203,13 +1276,18 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
         stroke(
             line.iter().map(|&p| view.at(p)).collect(),
             StrokeKind::Preview,
-            SKETCH_PREVIEW,
+            SKETCH_PREVIEW_STROKE.color,
             &mut drawn,
         );
     }
     for &(centre, radius) in &preview.circles {
         let points = round_points(centre, radius, 0.0, TAU, view.project, view.chord_tolerance);
-        stroke(points, StrokeKind::Preview, SKETCH_PREVIEW, &mut drawn);
+        stroke(
+            points,
+            StrokeKind::Preview,
+            SKETCH_PREVIEW_STROKE.color,
+            &mut drawn,
+        );
     }
     for arc in &preview.arcs {
         let from = angle(sub(arc.start, arc.center));
@@ -1223,14 +1301,19 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
             view.project,
             view.chord_tolerance,
         );
-        stroke(points, StrokeKind::Preview, SKETCH_PREVIEW, &mut drawn);
+        stroke(
+            points,
+            StrokeKind::Preview,
+            SKETCH_PREVIEW_STROKE.color,
+            &mut drawn,
+        );
     }
     for &p in preview.points.iter().chain(&preview.construction_points) {
         if let Some(at) = view.at(p) {
             drawn.push(Drawn::Point {
                 of: None,
                 at,
-                colour: SKETCH_PREVIEW,
+                colour: SKETCH_PREVIEW_STROKE.color,
                 selected: false,
             });
         }
@@ -1244,37 +1327,35 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
             Relation::Shared(_) | Relation::Origin => {
                 drawn.push(Drawn::Ring {
                     at,
-                    colour: SKETCH_SNAP,
+                    colour: SKETCH_SNAP_STROKE.color,
                 });
-                (GlyphKind::Coincident, SKETCH_SNAP)
+                (GlyphKind::Coincident, SKETCH_SNAP_STROKE.color)
             }
-            Relation::Midpoint(_) => (GlyphKind::Midpoint, SKETCH_GUIDE),
-            Relation::On(_) => (GlyphKind::Coincident, SKETCH_GUIDE),
-            Relation::Horizontal | Relation::HorizontalPoints(_) => {
-                (GlyphKind::Horizontal, SKETCH_GUIDE)
-            }
-            Relation::Vertical | Relation::VerticalPoints(_) => (GlyphKind::Vertical, SKETCH_GUIDE),
-            Relation::Perpendicular(_) => (GlyphKind::Perpendicular, SKETCH_GUIDE),
-            Relation::Parallel(_) => (GlyphKind::Parallel, SKETCH_GUIDE),
-            Relation::Tangent(_) => (GlyphKind::Tangent, SKETCH_GUIDE),
+            Relation::Midpoint(_) => (GlyphKind::Midpoint, FOCUS),
+            Relation::On(_) => (GlyphKind::Coincident, FOCUS),
+            Relation::Horizontal | Relation::HorizontalPoints(_) => (GlyphKind::Horizontal, FOCUS),
+            Relation::Vertical | Relation::VerticalPoints(_) => (GlyphKind::Vertical, FOCUS),
+            Relation::Perpendicular(_) => (GlyphKind::Perpendicular, FOCUS),
+            Relation::Parallel(_) => (GlyphKind::Parallel, FOCUS),
+            Relation::Tangent(_) => (GlyphKind::Tangent, FOCUS),
         };
         drawn.push(Drawn::Glyph {
             of: None,
             kind,
-            at: at + SKETCH_SHOWN_AT + Vec2::new(stacked, 0.0),
+            at: at + SHOWN_AT + Vec2::new(stacked, 0.0),
             colour,
             selected: false,
         });
-        stacked += SKETCH_GLYPH_STEP;
+        stacked += GLYPH_STEP;
     }
     if let Some(pointer) = preview.pointer.and_then(|p| view.at(p)) {
-        let arm = SKETCH_CROSSHAIR_ARM;
+        let arm = CROSSHAIR_ARM;
         for (dx, dy) in [(arm, 0.0), (0.0, arm)] {
             let d = Vec2::new(dx, dy);
             stroke(
                 vec![Some(pointer - d), Some(pointer + d)],
                 StrokeKind::Crosshair,
-                SKETCH_CROSSHAIR,
+                SKETCH_CROSSHAIR_STROKE.color,
                 &mut drawn,
             );
         }
@@ -1282,9 +1363,9 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
             drawn.push(Drawn::Label {
                 of: None,
                 kind: LabelKind::Tool,
-                at: pointer + SKETCH_TOOL_LABEL_AT,
+                at: pointer + TOOL_LABEL_AT,
                 text: format!("{:.2} mm", length(sub(*to, *from))),
-                colour: SKETCH_DIMENSION,
+                colour: SKETCH_DIMENSION_TEXT,
                 selected: false,
             });
         }
@@ -1411,13 +1492,14 @@ pub fn to_shapes(painter: &Painter, drawn: &[Drawn]) -> Vec<Shape> {
                         SKETCH_STROKE_WIDTH,
                         dashed.then_some(SKETCH_CONSTRUCTION_DASH),
                     ),
-                    StrokeKind::Dimension => (SKETCH_DIMENSION_WIDTH, None),
-                    StrokeKind::GridMinor | StrokeKind::GridMajor | StrokeKind::Axis => {
-                        (SKETCH_GRID_WIDTH, None)
+                    StrokeKind::Dimension => (DIMENSION_LINE_WIDTH, None),
+                    StrokeKind::GridMinor | StrokeKind::GridMajor => (GRID_LINE_WIDTH, None),
+                    StrokeKind::Axis => (VIEWPORT_GRID_AXIS_WIDTH, None),
+                    StrokeKind::Preview => {
+                        (SKETCH_PREVIEW_STROKE.width, Some(SKETCH_CONSTRUCTION_DASH))
                     }
-                    StrokeKind::Preview => (SKETCH_PREVIEW_WIDTH, Some(SKETCH_CONSTRUCTION_DASH)),
-                    StrokeKind::Guide => (SKETCH_GRID_WIDTH, Some(SKETCH_GUIDE_DASH)),
-                    StrokeKind::Crosshair => (SKETCH_GRID_WIDTH, None),
+                    StrokeKind::Guide => (SKETCH_GUIDE_STROKE.width, Some(SKETCH_GUIDE_DASH)),
+                    StrokeKind::Crosshair => (SKETCH_CROSSHAIR_STROKE.width, None),
                 };
                 let stroke = if *selected {
                     shapes.push(Shape::line(points.clone(), halo));
@@ -1463,8 +1545,8 @@ pub fn to_shapes(painter: &Painter, drawn: &[Drawn]) -> Vec<Shape> {
             Drawn::Origin { at } => {
                 shapes.push(Shape::circle_stroke(
                     *at,
-                    SKETCH_ORIGIN_RADIUS,
-                    Stroke::new(SKETCH_ORIGIN_WIDTH, SKETCH_ORIGIN),
+                    SKETCH_ORIGIN_RING_RADIUS,
+                    Stroke::new(SKETCH_ORIGIN_RING.width, SKETCH_ORIGIN_RING.color),
                 ));
             }
             Drawn::Glyph {
@@ -1486,8 +1568,8 @@ pub fn to_shapes(painter: &Painter, drawn: &[Drawn]) -> Vec<Shape> {
                 } else {
                     *colour
                 };
-                let base = *tip + *toward * SKETCH_ARROW_LENGTH;
-                let side = toward.rot90() * SKETCH_ARROW_HALF_WIDTH;
+                let base = *tip + *toward * SKETCH_DIMENSION_ARROW[0];
+                let side = toward.rot90() * (SKETCH_DIMENSION_ARROW[1] / 2.0);
                 shapes.push(Shape::convex_polygon(
                     vec![*tip, base + side, base - side],
                     colour,
@@ -1505,8 +1587,8 @@ pub fn to_shapes(painter: &Painter, drawn: &[Drawn]) -> Vec<Shape> {
             Drawn::Ring { at, colour } => {
                 shapes.push(Shape::circle_stroke(
                     *at,
-                    SKETCH_SNAP_RADIUS,
-                    Stroke::new(SKETCH_SNAP_WIDTH, *colour),
+                    SNAP_RADIUS,
+                    Stroke::new(SKETCH_SNAP_STROKE.width, *colour),
                 ));
             }
         }
@@ -1527,10 +1609,10 @@ fn label(
     let (size, fill, border) = match kind {
         LabelKind::Dimension => (
             CANVAS_TEXT_SIZE,
-            SKETCH_LABEL_FILL,
+            SKETCH_DIMENSION_LABEL_BG,
             selected.then_some(SKETCH_SELECTED_STROKE),
         ),
-        LabelKind::Tool => (CANVAS_LABEL_SIZE, FLOATING_BG, Some(GRAY_350)),
+        LabelKind::Tool => (CANVAS_LABEL_SIZE, SKETCH_GLYPH_BG, Some(GRAY_350)),
     };
     let colour = if selected {
         SKETCH_SELECTED_STROKE
@@ -1539,8 +1621,8 @@ fn label(
     };
     let galley = painter.layout_no_wrap(text.to_owned(), FontId::proportional(size), colour);
     let box_size = Vec2::new(
-        galley.size().x + 2.0 * SKETCH_LABEL_PAD,
-        SKETCH_LABEL_HEIGHT,
+        galley.size().x + 2.0 * f32::from(SKETCH_DIMENSION_LABEL_PADDING.left),
+        LABEL_HEIGHT,
     );
     let frame = match kind {
         LabelKind::Dimension => Rect::from_center_size(at, box_size),
@@ -1548,13 +1630,13 @@ fn label(
     };
     let mut shapes = vec![Shape::rect_filled(
         frame,
-        CornerRadius::same(SKETCH_GLYPH_RADIUS),
+        CornerRadius::same(GLYPH_RADIUS),
         fill,
     )];
     if let Some(border) = border {
         shapes.push(Shape::rect_stroke(
             frame,
-            CornerRadius::same(SKETCH_GLYPH_RADIUS),
+            CornerRadius::same(GLYPH_RADIUS),
             Stroke::new(1.0, border),
             egui::StrokeKind::Inside,
         ));
@@ -1568,8 +1650,8 @@ fn label(
 /// over a halo if selected), then its icon, drawn by one function for each kind, in the
 /// prototype's 20-unit icon square scaled into the box.
 fn glyph(kind: GlyphKind, at: Pos2, colour: Color32, selected: bool) -> Vec<Shape> {
-    let side = Rect::from_center_size(at, Vec2::splat(SKETCH_GLYPH_SIDE));
-    let radius = CornerRadius::same(SKETCH_GLYPH_RADIUS);
+    let side = Rect::from_center_size(at, Vec2::splat(SKETCH_GLYPH_SIZE));
+    let radius = CornerRadius::same(GLYPH_RADIUS);
     let mut shapes = Vec::new();
     if selected {
         shapes.push(Shape::rect_filled(
@@ -1578,12 +1660,12 @@ fn glyph(kind: GlyphKind, at: Pos2, colour: Color32, selected: bool) -> Vec<Shap
             SKETCH_SELECTED_HALO,
         ));
     }
-    let border = match (selected, colour == SKETCH_GLYPH_ICON) {
+    let border = match (selected, colour == GRAY_700) {
         (true, _) => SKETCH_SELECTED_STROKE,
-        (false, true) => SKETCH_GLYPH_BORDER,
+        (false, true) => SKETCH_GLYPH_STROKE,
         (false, false) => colour,
     };
-    shapes.push(Shape::rect_filled(side, radius, SKETCH_GLYPH_FILL));
+    shapes.push(Shape::rect_filled(side, radius, SKETCH_GLYPH_BG));
     shapes.push(Shape::rect_stroke(
         side,
         radius,
@@ -1623,12 +1705,12 @@ impl Icon {
     }
 
     fn stroke(self) -> Stroke {
-        Stroke::new(SKETCH_GLYPH_ICON_WIDTH, self.colour)
+        Stroke::new(ICON_WIDTH, self.colour)
     }
 
     /// A line from `a` to `b`, in the icon square, at `opacity`.
     fn line(self, a: (f32, f32), b: (f32, f32), opacity: f32) -> Shape {
-        let stroke = Stroke::new(SKETCH_GLYPH_ICON_WIDTH, self.colour.gamma_multiply(opacity));
+        let stroke = Stroke::new(ICON_WIDTH, self.colour.gamma_multiply(opacity));
         Shape::line_segment([self.p(a.0, a.1), self.p(b.0, b.1)], stroke)
     }
 
