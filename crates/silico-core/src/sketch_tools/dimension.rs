@@ -568,7 +568,7 @@ impl SmartDimension {
                     modify.text = text;
                     modify.touched = true;
                 }
-                Outcome::nothing()
+                Outcome::default()
             }
             DimensionEvent::Enter => match self.modify.take() {
                 Some(modify) => {
@@ -579,7 +579,7 @@ impl SmartDimension {
                         Outcome::said(message)
                     })
                 }
-                None => Outcome::nothing(),
+                None => Outcome::default(),
             },
             DimensionEvent::Escape => match self.modify.take() {
                 Some(modify) => self
@@ -588,29 +588,29 @@ impl SmartDimension {
                 None if self.picks.pop().is_some() => {
                     self.lock = None;
                     self.pressed = false;
-                    Outcome::nothing()
+                    Outcome::default()
                 }
                 None => {
                     self.restart();
                     Outcome::left()
                 }
             },
-            _ if self.modify.is_some() => Outcome::nothing(),
+            _ if self.modify.is_some() => Outcome::default(),
             DimensionEvent::Press(_) => {
                 self.pressed = true;
-                Outcome::nothing()
+                Outcome::default()
             }
-            DimensionEvent::Move(_) => Outcome::nothing(),
+            DimensionEvent::Move(_) => Outcome::default(),
             DimensionEvent::Release(at) if self.pressed => {
                 self.pressed = false;
                 self.click(&view, &pointer, at)
             }
-            DimensionEvent::Release(_) => Outcome::nothing(),
+            DimensionEvent::Release(_) => Outcome::default(),
             DimensionEvent::RightClick(at) => {
                 if let Ok(offered) = offered(&view, &self.picks, at, None, false) {
                     self.lock = Some(offered.measure);
                 }
-                Outcome::nothing()
+                Outcome::default()
             }
         };
         if outcome.message.is_none() {
@@ -675,7 +675,7 @@ impl SmartDimension {
         {
             self.picks.push(hit);
             self.lock = None;
-            return Outcome::nothing();
+            return Outcome::default();
         }
         let locked = self.lock == Some(Measure::PointLine);
         match offered(view, &self.picks, at, self.lock, locked) {
@@ -695,10 +695,10 @@ impl SmartDimension {
                     form: offered.form,
                     touched: false,
                 });
-                Outcome::nothing()
+                Outcome::default()
             }
             Err(Some(message)) => Outcome::said(message),
-            Err(None) => Outcome::nothing(),
+            Err(None) => Outcome::default(),
         }
     }
 
