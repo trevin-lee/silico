@@ -274,6 +274,24 @@ fn optional(feature: &Feature, key: &str) -> Option<&'static str> {
 /// takes `false` for it by removing it, as the reader refuses `false` (decision 4).
 const SUPPRESSED: &str = "suppressed";
 
+/// The member a sketch's angle has when it takes `b` from its `to` to its `from`, and
+/// leaves out otherwise: so `set_field` adds it with `true` and takes `false` or `null` for
+/// it by removing it, as the reader refuses `false`, as for `suppressed`.
+const REVERSED: &str = "reversed";
+
+/// Whether `node` is a sketch's angle: an object of type `angle`, at the depth of a
+/// constraint (`path`, two steps into a sketch's tree: its list, then the member).
+fn is_angle(feature: &Feature, depth: usize, node: &Node) -> bool {
+    matches!(feature.operation, Operation::Sketch(_))
+        && depth == 2
+        && match &node.value {
+            Value::Object(members) => members
+                .iter()
+                .any(|m| m.key == "type" && m.value.value.as_str() == Some("angle")),
+            _ => false,
+        }
+}
+
 /// The sketch, and the kind of its members the list `key` holds, if `feature` is a sketch
 /// and `key` one of its lists of members.
 fn member_list<'a>(feature: &'a Feature, key: &str) -> Option<(&'a Sketch, ElementKind)> {
@@ -341,10 +359,18 @@ fn resolve(feature: &Feature, tree: &Node, field: &str) -> Result<Target, Error>
     for (depth, segment) in segments.iter().enumerate().skip(1) {
         match &node.value {
             Value::Object(members) => {
-                let i = members
-                    .iter()
-                    .position(|m| m.key == *segment)
-                    .ok_or_else(missing)?;
+                let Some(i) = members.iter().position(|m| m.key == *segment) else {
+                    // An angle's `reversed`, which it may leave out, is there to set.
+                    if *segment == REVERSED
+                        && depth + 1 == segments.len()
+                        && matches!(list, Some((_, ElementKind::Constraint)))
+                        && is_angle(feature, depth, node)
+                    {
+                        steps.push(Step::Absent(REVERSED));
+                        return Ok(Target { steps, sketched });
+                    }
+                    return Err(missing());
+                };
                 steps.push(Step::Member(i));
                 node = members.get(i).map(|m| &m.value).ok_or_else(missing)?;
             }
@@ -566,12 +592,9 @@ fn found(tree: &Node, steps: &[Step]) -> Plain {
 
 /// `value` put where `steps` reach in `tree`, the tree of `feature`: in place of what's
 /// there, or as a member added; a member the feature may leave out (its note, a pad's
-/// base) set to `null` removed (the design's section 5), and `suppressed` set to `false`.
+/// base) set to `null` removed (the design's section 5), and `suppressed` set to `false`;
+/// and a sketch angle's `reversed` set to `false` or `null` removed.
 fn put(feature: &Feature, tree: &mut Node, steps: &[Step], value: Node) {
-    let removes = |key: &str, value: &Node| {
-        (value.value == Value::Null && optional(feature, key).is_some())
-            || (key == SUPPRESSED && value.value == Value::Bool(false))
-    };
     let Some((last, path)) = steps.split_last() else {
         return;
     };
@@ -587,6 +610,14 @@ fn put(feature: &Feature, tree: &mut Node, steps: &[Step], value: Node) {
             None => return,
         }
     }
+    let angle = is_angle(feature, path.len(), node);
+    let removes = |key: &str, value: &Node| {
+        let off = matches!(value.value, Value::Null | Value::Bool(false));
+        (path.is_empty()
+            && ((value.value == Value::Null && optional(feature, key).is_some())
+                || (key == SUPPRESSED && value.value == Value::Bool(false))))
+            || (angle && key == REVERSED && off)
+    };
     match (last, &mut node.value) {
         (Step::Absent(key), Value::Object(members)) => {
             if !removes(key, &value) {
@@ -598,8 +629,7 @@ fn put(feature: &Feature, tree: &mut Node, steps: &[Step], value: Node) {
             }
         }
         (Step::Member(i), Value::Object(members)) => {
-            let removed =
-                path.is_empty() && members.get(*i).is_some_and(|m| removes(&m.key, &value));
+            let removed = members.get(*i).is_some_and(|m| removes(&m.key, &value));
             if removed {
                 members.remove(*i);
             } else if let Some(member) = members.get_mut(*i) {
@@ -1671,7 +1701,7 @@ fn names_its_scheme(root: &Node) -> bool {
 /// system's randomness, five bytes (as the cache's secret is read, [`crate::system_random`])
 /// for the eight characters of an ID, or, in this crate's own tests only, bytes they give
 /// (never through the API, the Rust API, or a request).
-pub(super) struct FeatureIds {
+pub(crate) struct FeatureIds {
     #[cfg(test)]
     given: Option<std::collections::VecDeque<[u8; 5]>>,
 }
@@ -1684,7 +1714,7 @@ const ID_TRIES: usize = 16;
 
 impl FeatureIds {
     /// IDs from the system's randomness.
-    pub(super) fn system() -> Self {
+    pub(crate) fn system() -> Self {
         FeatureIds {
             #[cfg(test)]
             given: None,
@@ -1749,7 +1779,7 @@ impl FeatureIds {
     /// edit's `ids` given as `null`) that isn't `taken`: one of the sketch's, or one drawn
     /// for the same edit before it. From the same source as a feature's, with the same
     /// alphabet and length.
-    pub(super) fn next_member(
+    pub(crate) fn next_member(
         &mut self,
         taken: &dyn Fn(&ElementId) -> bool,
     ) -> Result<ElementId, Error> {
@@ -1798,6 +1828,110 @@ fn id_of(bytes: [u8; 5]) -> Result<FeatureId, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sketch with lines na (along x) and nb (along y), an angle between them (`angle`,
+    /// its fields after `b`) and a parallel.
+    fn angled(angle: &str) -> Document {
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pa000000", "x": 0, "y": 0, "construction": false}}, {{"id": "pb000000", "x": 10, "y": 0, "construction": false}}, {{"id": "pc000000", "x": 0, "y": 10, "construction": false}}], "lines": [{{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}}, {{"id": "nb000000", "from": "pa000000", "to": "pc000000", "construction": false}}], "circles": [], "arcs": [], "constraints": [{{"id": "k0000001", "type": "angle", "a": "na000000", "b": "nb000000", {angle}"value": 90, "driving": false}}, {{"id": "k0000002", "type": "parallel", "a": "na000000", "b": "x_axis"}}]}}]}}"#
+        );
+        document::read(text.as_bytes()).unwrap()
+    }
+
+    /// `field` of the sketch set to `value`: the values before and after, and the feature's
+    /// constraints as the candidate's text writes them.
+    fn set(document: &Document, field: &str, value: &str) -> (Plain, Plain, Option<String>) {
+        let id = FeatureId::new("k7f2qx3m").unwrap();
+        let value = json::read(value.as_bytes()).unwrap();
+        let (values, candidate) = set_field(document, &id, field, value).unwrap();
+        let text = candidate.map(|c| String::from_utf8(c.parts().0.to_vec()).unwrap());
+        (values.before, values.after, text)
+    }
+
+    #[test]
+    fn set_field_adds_an_angles_reversed_with_true_and_removes_it_with_false_or_null() {
+        let field = "constraints.k0000001.reversed";
+        let drawn = angled("");
+        let reversed = angled(r#""reversed": true, "#);
+        // Added: written after b.
+        let (before, after, text) = set(&drawn, field, "true");
+        assert_eq!((before, after), (Plain::Null, Plain::Bool(true)));
+        let text = text.unwrap();
+        assert!(
+            text.contains(r#""a": "na000000", "b": "nb000000", "reversed": true, "value": 90"#),
+            "{text}"
+        );
+        // Removed, by false and by null, both ways back to the angle as drawn.
+        for off in ["false", "null"] {
+            let (before, after, text) = set(&reversed, field, off);
+            assert_eq!((before, after), (Plain::Bool(true), Plain::Null), "{off}");
+            let text = text.unwrap();
+            assert!(!text.contains("reversed"), "{off}: {text}");
+            let back = document::read(text.as_bytes()).unwrap();
+            assert!(back.features[0].canonically_eq(&drawn.features[0]), "{off}");
+        }
+        // On an angle as drawn, false and null change nothing; true on a reversed one neither.
+        for off in ["false", "null"] {
+            assert_eq!(set(&drawn, field, off).2, None, "{off}");
+        }
+        assert_eq!(set(&reversed, field, "true").2, None);
+    }
+
+    #[test]
+    fn set_field_keeps_a_pads_and_a_revolves_extent_reversed_false_written() {
+        // An extent's `reversed` is required, written false or true: only a sketch angle's
+        // is left out when false.
+        let sketch = r#"{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
+        for (feature, want) in [
+            (
+                r#"{"id": "f0000001", "type": "pad", "v": 1, "name": "P", "sketch": "k7f2qx3m", "extent": {"type": "one_side", "length": 5, "reversed": true}}"#,
+                r#""extent": {"type": "one_side", "length": 5, "reversed": false}"#,
+            ),
+            (
+                r#"{"id": "f0000001", "type": "revolve", "v": 1, "name": "R", "sketch": "k7f2qx3m", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": true}}"#,
+                r#""extent": {"type": "one_side", "angle": 90, "reversed": false}"#,
+            ),
+        ] {
+            let text = format!(
+                r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{sketch}, {feature}]}}"#
+            );
+            let document = document::read(text.as_bytes()).unwrap();
+            let id = FeatureId::new("f0000001").unwrap();
+            let value = json::read(b"false").unwrap();
+            let (values, candidate) = set_field(&document, &id, "extent.reversed", value).unwrap();
+            assert_eq!(
+                (values.before, values.after),
+                (Plain::Bool(true), Plain::Bool(false))
+            );
+            let written = String::from_utf8(candidate.unwrap().parts().0.to_vec()).unwrap();
+            assert!(written.contains(want), "{written}");
+        }
+    }
+
+    #[test]
+    fn set_field_refuses_reversed_on_a_member_that_isnt_an_angle_and_a_wrong_kind() {
+        let id = FeatureId::new("k7f2qx3m").unwrap();
+        let refused = |document: &Document, field: &str, value: &str| {
+            let value = json::read(value.as_bytes()).unwrap();
+            match set_field(document, &id, field, value) {
+                Ok(_) => panic!("{field} = taken"),
+                Err(problems) => problems.errors()[0].clone(),
+            }
+        };
+        let drawn = angled("");
+        // A parallel has no reversed, nor a point, nor a path below one.
+        for field in [
+            "constraints.k0000002.reversed",
+            "points.pa000000.reversed",
+            "constraints.k0000001.reversed.x",
+        ] {
+            let e = refused(&drawn, field, "true");
+            assert_eq!(e.parameter(), Some("field"), "{field}: {e}");
+        }
+        // A reversed that isn't true or false or null: the reader's refusal of it.
+        let e = refused(&drawn, "constraints.k0000001.reversed", "1");
+        assert_eq!(e.parameter(), Some("constraints.k0000001.reversed"), "{e}");
+    }
 
     #[test]
     fn five_bytes_map_onto_the_alphabet_five_bits_a_character() {

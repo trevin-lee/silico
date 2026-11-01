@@ -6716,6 +6716,7 @@ dependencies = [
  "silico-worker",
  "smallvec",
  "tracing",
+ "tracing-subscriber",
  "wgpu",
 ]
 

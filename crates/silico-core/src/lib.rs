@@ -44,6 +44,7 @@ pub mod selection;
 pub mod sketch;
 pub mod sketch_judge;
 pub mod sketch_states;
+pub mod sketch_tools;
 pub mod step_worker;
 pub mod sweep;
 pub mod timeline;

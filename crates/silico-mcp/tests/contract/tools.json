@@ -4855,6 +4855,10 @@
                   "driving": {
                     "type": "boolean"
                   },
+                  "reversed": {
+                    "const": true,
+                    "description": "`b`'s direction taken from its `to` to its `from`, so the angle is to the ray\nthat leaves a corner `b` ends at (written only as true; an angle measured to `b`\nas drawn leaves it out)."
+                  },
                   "type": {
                     "const": "angle",
                     "type": "string"
@@ -6716,6 +6720,10 @@
                   },
                   "driving": {
                     "type": "boolean"
+                  },
+                  "reversed": {
+                    "const": true,
+                    "description": "`b`'s direction taken from its `to` to its `from`, so the angle is to the ray\nthat leaves a corner `b` ends at (written only as true; an angle measured to `b`\nas drawn leaves it out)."
                   },
                   "type": {
                     "const": "angle",
@@ -9123,6 +9131,10 @@
                   },
                   "driving": {
                     "type": "boolean"
+                  },
+                  "reversed": {
+                    "const": true,
+                    "description": "`b`'s direction taken from its `to` to its `from`, so the angle is to the ray\nthat leaves a corner `b` ends at (written only as true; an angle measured to `b`\nas drawn leaves it out)."
                   },
                   "type": {
                     "const": "angle",
@@ -20607,6 +20619,10 @@
                   "id": {
                     "$ref": "#/$defs/ElementId"
                   },
+                  "reversed": {
+                    "const": true,
+                    "description": "`b`'s direction taken from its `to` to its `from`, so the angle is to the ray\nthat leaves a corner `b` ends at (written only as true; an angle measured to `b`\nas drawn leaves it out)."
+                  },
                   "state": {
                     "$ref": "#/$defs/ConstraintState"
                   },
@@ -21634,6 +21650,10 @@
                   },
                   "driving": {
                     "type": "boolean"
+                  },
+                  "reversed": {
+                    "const": true,
+                    "description": "`b`'s direction taken from its `to` to its `from`, so the angle is to the ray\nthat leaves a corner `b` ends at (written only as true; an angle measured to `b`\nas drawn leaves it out)."
                   },
                   "type": {
                     "const": "angle",

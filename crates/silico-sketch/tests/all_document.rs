@@ -61,5 +61,7 @@ mod sketch_edit;
 mod sketch_read;
 #[path = "sketch_states.rs"]
 mod sketch_states;
+#[path = "sketch_tools.rs"]
+mod sketch_tools;
 #[path = "worker.rs"]
 mod worker;
