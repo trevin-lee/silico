@@ -51,7 +51,8 @@ use silico_protocol::{
     pyramid_slope, reach_of_points,
 };
 
-/// The background: a flat light grey, sRGB.
+/// A render's background: a flat light grey, sRGB. A frame's is the caller's
+/// ([`Frame::background`]).
 pub const BACKGROUND: [u8; 3] = [230, 233, 237];
 /// Fusion's default appearance (steel, satin), sRGB.
 pub const BODY: [u8; 3] = [170, 175, 182];
@@ -200,6 +201,10 @@ pub struct Frame<'a> {
     /// The pixels to read back for picking, if any: [`Renderer::take_picking`] gives what
     /// they found, a frame or two later.
     pub picking: Option<PixelRect>,
+    /// The colour behind the bodies, sRGB and not premultiplied, as the app's theme gives
+    /// its viewport's (`VIEWPORT_BG`): opaque, its alpha 255, since the frame is composited
+    /// opaque. A render's is its own ([`BACKGROUND`]).
+    pub background: [u8; 4],
 }
 
 /// What a picking rectangle found nearest its centre.
@@ -466,7 +471,15 @@ impl Renderer {
             .iter()
             .map(|&b| (b, lit.get(&b).unwrap_or(&plain)))
             .collect();
-        let built = self.build(&view, frame.pixels_per_point, &drawn, picking, None);
+        let [red, green, blue, _] = frame.background;
+        let built = self.build(
+            &view,
+            frame.pixels_per_point,
+            &drawn,
+            picking,
+            None,
+            srgb([red, green, blue]),
+        );
         #[cfg(test)]
         let built = match self.fail_frames {
             0 => built,
@@ -636,6 +649,15 @@ impl Renderer {
                 numbers.dedup();
             }
         }
+        let [red, green, blue, alpha] = frame.background;
+        if alpha != 255 {
+            return Err(InvalidParameter {
+                parameter: "background",
+                message: format!(
+                    "background [{red}, {green}, {blue}, {alpha}] must be opaque, its alpha 255: the frame is composited opaque"
+                ),
+            });
+        }
         if let Some(rect) = frame.picking {
             let sides = rect.size.iter().all(|s| (1..=MAX_PICKING_SIDE).contains(s));
             let corner = rect
@@ -772,6 +794,7 @@ impl Renderer {
             &drawn,
             scene.ids.then_some((whole, picking)),
             Some(screenshot),
+            srgb(BACKGROUND),
         );
         self.ctx.before_submit();
         let (commands, _view) = built?;
@@ -783,8 +806,8 @@ impl Renderer {
     /// frame `re_renderer`'s already begun: each face an instance moved into the view, its
     /// mesh uploaded where it has none; each edge a strip placed in the view; highlights
     /// drawn in each body's [`Lit::style`]; the picking rectangle and its readback's identifier, and
-    /// the image's, if asked. The command buffer that draws it into the view's target, and
-    /// the view, to composite.
+    /// the image's, if asked; behind it all, `background`. The command buffer that draws it
+    /// into the view's target, and the view, to composite.
     fn build(
         &mut self,
         view: &View,
@@ -792,6 +815,7 @@ impl Renderer {
         drawn: &[(u32, &Lit)],
         picking: Option<(RectInt, u64)>,
         screenshot: Option<u64>,
+        background: Rgba,
     ) -> Result<(wgpu::CommandBuffer, ViewBuilder), String> {
         let Renderer {
             ctx,
@@ -882,7 +906,7 @@ impl Renderer {
                 .map_err(|e| format!("couldn't schedule the image's readback: {e}"))?;
         }
         let commands = builder
-            .draw(ctx, srgb(BACKGROUND))
+            .draw(ctx, background)
             .map_err(|e| format!("couldn't draw: {e}"))?;
         Ok((commands, builder))
     }

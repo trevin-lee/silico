@@ -49,8 +49,12 @@ fn frame<'a>(
         bodies,
         highlights,
         picking,
+        background: VIEWPORT_BG,
     }
 }
+
+/// The app's viewport's background, #000000 (its theme's `VIEWPORT_BG`).
+const VIEWPORT_BG: [u8; 4] = [0, 0, 0, 255];
 
 fn rect(min: [i32; 2], size: [u32; 2]) -> PixelRect {
     PixelRect { min, size }
@@ -496,12 +500,10 @@ fn a_frame_is_composited_into_the_pass_and_a_refused_one_not_at_all() {
             let commands = r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
             let pixels = composited(r, Some(commands));
             let at = |x: u32, y: u32| pixels[usize::try_from(y * WIDTH + x).unwrap()];
-            // The corner is the background, opaque; the centre is the front face, not it.
-            let [red, green, blue] = BACKGROUND;
+            // The corner is the frame's background, opaque; the centre is the front face, not
+            // it.
             let corner = at(1, 1);
-            for (got, want) in corner.iter().zip([red, green, blue, 255]) {
-                assert!(got.abs_diff(want) <= 2, "{corner:?}");
-            }
+            assert_eq!(corner, VIEWPORT_BG);
             assert_ne!(at(32, 26), corner);
             assert_eq!(at(32, 26)[3], 255);
             // Composited again, without another frame: the same frame.
@@ -511,6 +513,63 @@ fn a_frame_is_composited_into_the_pass_and_a_refused_one_not_at_all() {
             broken.eye = broken.target;
             assert!(r.prepare(&frame(&broken, &[1], &[], None)).is_err());
             assert!(composited(r, None).iter().all(|p| *p == [0, 0, 0, 0]));
+        },
+    );
+}
+
+#[test]
+fn a_frames_background_is_the_colour_it_gives_and_a_renders_its_own() {
+    on_lavapipe(
+        "render::frame_tests::a_frames_background_is_the_colour_it_gives_and_a_renders_its_own",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            // Each colour at the corner, off the box, to 1 of 255 (sRGB to linear and back);
+            // the box's front face at the centre the same whatever's behind it.
+            let mut centres = vec![];
+            for background in [
+                VIEWPORT_BG,
+                [255, 255, 255, 255],
+                [12, 200, 77, 255],
+                [230, 233, 237, 255],
+            ] {
+                let commands = r
+                    .prepare(&Frame {
+                        background,
+                        ..frame(&camera, &[1], &[], None)
+                    })
+                    .unwrap();
+                let pixels = composited(r, Some(commands));
+                let at = |x: u32, y: u32| pixels[usize::try_from(y * WIDTH + x).unwrap()];
+                for (x, y) in [(1, 1), (62, 46), (32, 5)] {
+                    let got = at(x, y);
+                    for k in 0..4 {
+                        assert!(
+                            got[k].abs_diff(background[k]) <= 1,
+                            "{background:?} at ({x}, {y}): {got:?}"
+                        );
+                    }
+                }
+                centres.push(at(32, 26));
+            }
+            assert!(centres.windows(2).all(|w| w[0] == w[1]), "{centres:?}");
+            // One not opaque is refused, naming it: the frame is composited opaque.
+            for alpha in [0, 128, 254] {
+                let translucent = Frame {
+                    background: [12, 200, 77, alpha],
+                    ..frame(&camera, &[1], &[], None)
+                };
+                assert_eq!(refused(r, &translucent), "background");
+            }
+            // A render keeps its own, the light grey.
+            let [red, green, blue] = BACKGROUND;
+            let rendered = r.render(&front_of_a_box(WIDTH, HEIGHT)).unwrap();
+            let mut reader = png::Decoder::new(std::io::Cursor::new(rendered.png))
+                .read_info()
+                .unwrap();
+            let mut rgb = vec![0; reader.output_buffer_size().unwrap()];
+            reader.next_frame(&mut rgb).unwrap();
+            assert_eq!(rgb[..3], [red, green, blue]);
         },
     );
 }
