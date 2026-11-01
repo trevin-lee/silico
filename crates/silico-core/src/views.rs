@@ -908,6 +908,13 @@ mod tests {
             (101.0f64 * 101.0 + 2.0).sqrt()
         );
         assert_eq!(reach([0.0; 3], []), 0.0);
+        // A box off the origin, (1, 2, 3) to (5, 6, 7), from (4, 4, 4): its farthest
+        // corner is 3 back along x, 2 either way along y, and 3 on along z: √22. From
+        // (6, 6, 6), at or past its high side in x and y, its low corner is farthest: 5, 4,
+        // and 3 back, √50.
+        let off = [[1.0, 2.0, 3.0], [5.0, 6.0, 7.0]];
+        assert_eq!(reach([4.0; 3], [off]), 22f64.sqrt());
+        assert_eq!(reach([6.0; 3], [off]), 50f64.sqrt());
         assert_eq!(least_view_height(1e5), 1.01);
         assert_eq!(
             joined([BLOCK, far]),
