@@ -31,13 +31,13 @@ impl Point {
             }
             Event::Press(_) => {
                 self.pressed = true;
-                Outcome::nothing()
+                Outcome::default()
             }
             Event::Release(at) if self.pressed => {
                 self.pressed = false;
                 place(step, at)
             }
-            _ => Outcome::nothing(),
+            _ => Outcome::default(),
         };
         if let Event::Press(at) | Event::Move(at) | Event::Release(at) = event {
             let placed = placed_at(step, at);

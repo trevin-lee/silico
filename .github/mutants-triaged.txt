@@ -389,3 +389,14 @@ crates/silico-core/src/command/session/drag.rs | Session<C>::begin_drag | replac
 # drag's revision, the edit's base, so `sketch_replaced` makes no candidate, no solve runs,
 # and the edit answers unchanged with no commit: the same result, nothing written.
 crates/silico-core/src/command/session/drag.rs | Session<C>::end_drag_with | replace || with && | #307
+# The sketch tools (#335). `to_segment`'s `span > 0.0`: a span of 0 is a line of no length,
+# which lies within the pick tolerance only where its point does, and the pointer shares a
+# point before it looks at curves, so the foot is never read. `tangent_arc`'s `across > 0.0`:
+# an `across` of 0 returned just above. `counter_clockwise`'s `< 0.0`: its cross product is
+# `circumcentre`'s, which returns none for 0 before `counter_clockwise` is asked. The tool's
+# tolerance, `context.tolerance > 0.0`: at 0 either side gives 0 (or −0, which every
+# comparison takes as 0).
+crates/silico-core/src/sketch_tools/geometry.rs | to_segment | replace > with >= | #335
+crates/silico-core/src/sketch_tools/infer.rs | tangent_arc | replace > with >= | #335
+crates/silico-core/src/sketch_tools/infer.rs | counter_clockwise | replace < with <= | #335
+crates/silico-core/src/sketch_tools/mod.rs | SketchTool::handle | replace > with >= | #335

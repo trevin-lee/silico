@@ -172,10 +172,6 @@ pub struct AddToken {
 static TOOL_SERIALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl Outcome {
-    fn nothing() -> Self {
-        Outcome::default()
-    }
-
     fn added(members: Members) -> Self {
         Outcome {
             add: Some(members),

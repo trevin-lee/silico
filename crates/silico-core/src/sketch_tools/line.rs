@@ -143,14 +143,14 @@ impl Line {
                         press: at,
                         dragged: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
             }
             (State::Pressed { press, dragged, .. }, Event::Move(at)) => {
                 if distance(at, *press) > step.pointer.tolerance {
                     *dragged = true;
                 }
-                Outcome::nothing()
+                Outcome::default()
             }
             (
                 State::Pressed {
@@ -175,21 +175,21 @@ impl Line {
                         last: Start::of(start.clone()),
                         pressed: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
             }
             (State::Chain { pressed, .. }, Event::Press(_)) => {
                 *pressed = true;
-                Outcome::nothing()
+                Outcome::default()
             }
             (State::Chain { last, pressed }, Event::Release(at)) => {
                 if !*pressed {
                     // A release whose press this tool didn't see.
-                    Outcome::nothing()
+                    Outcome::default()
                 } else {
                     *pressed = false;
                     match segment(step, last, at) {
-                        Click::Ignored => Outcome::nothing(),
+                        Click::Ignored => Outcome::default(),
                         Click::Refused(message) => Outcome::said(message),
                         Click::Added(members, end, end_at, closes) => {
                             if closes {
@@ -210,9 +210,9 @@ impl Line {
                 Event::DoubleClick(_) | Event::EndChain | Event::Enter,
             ) => {
                 self.end_chain();
-                Outcome::nothing()
+                Outcome::default()
             }
-            _ => Outcome::nothing(),
+            _ => Outcome::default(),
         };
         self.draw(step, event, preview);
         outcome

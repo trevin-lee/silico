@@ -743,11 +743,12 @@ pub(super) fn along(
     let d = sub(end, start);
     unit(d)?;
     let tolerance = angle_tolerance();
-    let sign = |v: f64| if v < 0.0 { -1.0 } else { 1.0 };
+    // Each direction is the line's through `start`, either way along it: the end is moved
+    // onto it ([`onto`]), which its sign doesn't change.
     let axis = if libm::atan2(d[1].abs(), d[0].abs()) <= tolerance {
-        Some((Along::Horizontal, [sign(d[0]), 0.0]))
+        Some((Along::Horizontal, [1.0, 0.0]))
     } else if libm::atan2(d[0].abs(), d[1].abs()) <= tolerance {
-        Some((Along::Vertical, [0.0, sign(d[1])]))
+        Some((Along::Vertical, [0.0, 1.0]))
     } else {
         None
     };
@@ -781,20 +782,13 @@ pub(super) fn along(
         .filter(|(_, _, of)| *of == EndOf::Line)
         .map(|(id, out, _)| (id, *out))
         .collect();
-    let toward = |dir: Xy| {
-        if dot(dir, d) < 0.0 {
-            scale(dir, -1.0)
-        } else {
-            dir
-        }
-    };
     let perpendicular = nearest(lines.iter().filter_map(|(id, out)| {
         let off = (angle_between(d, *out) - std::f64::consts::FRAC_PI_2).abs();
         (off <= tolerance).then(|| {
             (
                 off,
                 id.as_str().to_owned(),
-                (Along::Perpendicular((*id).clone()), toward(left(*out))),
+                (Along::Perpendicular((*id).clone()), left(*out)),
             )
         })
     }));
@@ -808,15 +802,15 @@ pub(super) fn along(
             (
                 off,
                 id.as_str().to_owned(),
-                (Along::Parallel((*id).clone()), toward(*out)),
+                (Along::Parallel((*id).clone()), *out),
             )
         })
     }))
     .map(|(a, direction)| (vec![a], direction))
 }
 
-/// `end` moved onto the ray from `start` along `direction` (a unit vector), as far along it
-/// as it was.
+/// `end` moved onto the line through `start` along `direction` (a unit vector, either way
+/// along the line: its sign changes nothing), its foot there.
 pub(super) fn onto(start: Xy, direction: Xy, end: Xy) -> Xy {
     add(start, scale(direction, dot(sub(end, start), direction)))
 }
@@ -836,9 +830,11 @@ pub(super) fn tangent_arc(from: Xy, direction: Xy, to: Xy) -> Option<(Xy, bool)>
     if across == 0.0 {
         return None;
     }
+    // The centre is `s` along the normal, on the side the end is: finite exactly when `s` is
+    // (the normal is a unit vector, and `from` within a kilometre).
     let s = dot(d, d) / (2.0 * across);
-    let centre = add(from, scale(n, s));
-    (centre[0].is_finite() && centre[1].is_finite()).then_some((centre, s > 0.0))
+    s.is_finite()
+        .then(|| (add(from, scale(n, s)), across > 0.0))
 }
 
 /// Which way the arc from `start` through `middle` to `end` turns: counter-clockwise from

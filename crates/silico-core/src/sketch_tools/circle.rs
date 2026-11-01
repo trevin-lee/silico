@@ -79,14 +79,14 @@ impl Circle {
                         press: at,
                         dragged: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
             }
             (State::Pressed { press, dragged, .. }, Event::Move(at)) => {
                 if distance(at, *press) > step.pointer.tolerance {
                     *dragged = true;
                 }
-                Outcome::nothing()
+                Outcome::default()
             }
             (
                 State::Pressed {
@@ -109,19 +109,19 @@ impl Circle {
                         centre,
                         pressed: false,
                     };
-                    Outcome::nothing()
+                    Outcome::default()
                 }
             }
             (State::Clicked { pressed, .. }, Event::Press(_)) => {
                 *pressed = true;
-                Outcome::nothing()
+                Outcome::default()
             }
             (State::Clicked { centre, pressed }, Event::Release(at)) => {
                 if !*pressed {
-                    Outcome::nothing()
+                    Outcome::default()
                 } else if distance(at, centre.at) <= step.pointer.tolerance {
                     *pressed = false;
-                    Outcome::nothing()
+                    Outcome::default()
                 } else {
                     let centre = centre.clone();
                     let outcome = finish(step, &centre, at);
@@ -136,7 +136,7 @@ impl Circle {
                     outcome
                 }
             }
-            _ => Outcome::nothing(),
+            _ => Outcome::default(),
         };
         self.draw(step, event, preview);
         outcome

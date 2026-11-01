@@ -1602,3 +1602,562 @@ fn another_tools_token_answers_nothing() {
     assert_eq!(again.add, None, "{again:?}");
     assert!(matches!(again.message, Some(Message::PointThere(_))));
 }
+
+// --- The mutants run's survivors (#335, on 6c192d1e) ---------------------------------------
+
+/// Every tool but the point, each pressed at `(12, 14)` (the tangent arc at the line's end
+/// `(20, 10)`), with the point to press, in `one_line()` with `extra` points added.
+fn pressing(extra: &[(&str, f64, f64)]) -> Vec<(ToolKind, Drive, Xy)> {
+    ToolKind::ALL
+        .into_iter()
+        .filter(|k| *k != ToolKind::Point)
+        .map(|kind| {
+            let mut s = one_line();
+            for (name, x, y) in extra {
+                s.points.push(point(name, *x, *y));
+            }
+            let at = if kind == ToolKind::TangentArc {
+                [20.0, 10.0]
+            } else {
+                [12.0, 14.0]
+            };
+            (kind, Drive::new(kind, s), at)
+        })
+        .collect()
+}
+
+#[test]
+fn a_move_exactly_the_tolerance_from_the_press_isnt_a_drag() {
+    // Pressed, moved 0.5 mm (exactly the tolerance) away, released where pressed: the
+    // pointer never left the tolerance, so it's a click, and the tool waits for its next.
+    // Had the move made it a drag, the release at the press would end it, too small.
+    for (kind, mut d, at) in pressing(&[]) {
+        d.press(at[0], at[1])
+            .to(at[0] + 0.5, at[1])
+            .release(at[0], at[1]);
+        assert!(d.tool.busy(), "{kind:?}");
+        assert!(d.adds().is_empty() && d.messages.is_empty(), "{kind:?}");
+    }
+}
+
+#[test]
+fn a_release_exactly_the_tolerance_from_the_press_is_a_click() {
+    // Pressed and released 0.5 mm away (exactly the tolerance), with nothing between, and
+    // a point 0.4 past the release, which a drag's second point would take: a click, so the
+    // tool waits, adding nothing. The centrepoint and 3-point arcs wait either way, so their
+    // next state shows: a click's draws a line to the pointer, a drag's an arc.
+    for (kind, mut d, at) in pressing(&[("q0000009", 12.9, 14.0), ("q0000008", 20.9, 10.3)]) {
+        d.press(at[0], at[1]).release(at[0] + 0.5, at[1]);
+        assert!(d.tool.busy(), "{kind:?}");
+        assert!(d.adds().is_empty() && d.messages.is_empty(), "{kind:?}");
+        if matches!(kind, ToolKind::CenterpointArc | ToolKind::ThreePointArc) {
+            d.to(30.0, 41.0);
+            assert!(d.tool.preview().arcs.is_empty(), "{kind:?}");
+        }
+    }
+}
+
+#[test]
+fn a_press_and_a_far_release_with_no_move_drags_an_arcs_second_point() {
+    // Pressed at (12, 14), released at (30, 41): a drag, so the centrepoint arc's start and
+    // the 3-point arc's end are set, and one more click draws each.
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.press(12.0, 14.0)
+        .release(30.0, 41.0)
+        .to(5.0, 40.0)
+        .click(-5.0, 30.0);
+    assert_eq!(d.adds().len(), 1);
+    let mut d = Drive::new(ToolKind::ThreePointArc, empty());
+    d.press(12.0, 14.0).release(30.0, 41.0).click(10.0, 35.0);
+    assert_eq!(d.adds().len(), 1);
+}
+
+#[test]
+fn an_arcs_second_click_on_its_first_is_ignored_not_taken() {
+    // A double-click's second click on the first point: ignored, so the next clicks make
+    // the arc as if it hadn't been (the standard arcs of the earlier tests).
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.click(10.0, 10.0)
+        .click(10.2, 10.0)
+        .click(18.0, 16.0)
+        .to(13.0, 20.0)
+        .click(4.0, 18.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (10, 10)",
+            "point (18, 16)",
+            "point (4, 18)",
+            "arc (10, 10) (18, 16)->(4, 18)",
+        ])]
+    );
+    let mut d = Drive::new(ToolKind::ThreePointArc, empty());
+    d.click(10.0, 10.0)
+        .click(10.2, 10.0)
+        .click(30.0, 10.0)
+        .click(20.0, 20.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (20, 10)",
+            "point (10, 10)",
+            "point (30, 10)",
+            "arc (20, 10) (30, 10)->(10, 10)",
+        ])]
+    );
+}
+
+#[test]
+fn an_arcs_first_point_past_a_kilometre_is_too_far() {
+    for kind in [ToolKind::CenterpointArc, ToolKind::ThreePointArc] {
+        let mut d = Drive::new(kind, empty());
+        d.click(2e6, 5.0);
+        assert_eq!(d.messages, [Message::TooFar], "{kind:?}");
+        assert!(!d.tool.busy(), "{kind:?}");
+    }
+}
+
+#[test]
+fn a_centrepoint_arcs_end_near_an_axis_is_where_the_axis_crosses_its_circle() {
+    // Centre (50, 5), start (60, 5), radius 10; swept clockwise toward (58.6, 0.1). On the
+    // circle that way, (58.69, 0.05), the pointer finds the x axis, at its foot, off the
+    // circle: the end goes where the axis crosses the circle, (50 + √75, 0), with `on` it.
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.click(50.0, 5.0)
+        .click(60.0, 5.0)
+        .to(59.5, 2.0)
+        .click(58.6, 0.1);
+    let at = format!("({}, 0)", mm(50.0 + 75f64.sqrt()));
+    assert!(
+        d.adds()[0].contains(&format!("on {at} x_axis")),
+        "{:?}",
+        d.adds()
+    );
+}
+
+#[test]
+fn a_centrepoint_arcs_end_by_a_line_that_crosses_its_circle_far_off_is_free() {
+    // Centre (50, 50), start (60, 50); swept clockwise to (50, 40). There the pointer finds
+    // the line y = 40.3, 0.3 off, at its foot off the circle; the line crosses the circle at
+    // 50 ± √5.91, 2.4 mm from the end, past the tolerance: the end stays on the circle, at
+    // (50, 40), with no relation.
+    let mut s = empty();
+    s.points.push(point("q0000001", 30.0, 40.3));
+    s.points.push(point("q0000002", 80.0, 40.3));
+    s.lines.push(line("n0000001", "q0000001", "q0000002"));
+    let mut d = Drive::new(ToolKind::CenterpointArc, s);
+    d.click(50.0, 50.0)
+        .click(60.0, 50.0)
+        .to(57.0, 43.0)
+        .click(50.0, 40.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (50, 50)",
+            "point (60, 50)",
+            "point (50, 40)",
+            "arc (50, 50) (50, 40)->(60, 50)",
+        ])]
+    );
+}
+
+#[test]
+fn an_arc_and_a_circle_of_exactly_a_kilometre_are_drawn() {
+    // A centrepoint arc about the origin from (1e6, 0) to (0, 1e6), and a circle about the
+    // origin through (1e6, 0): radius exactly a kilometre, the most the solver takes.
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.click(0.1, 0.1)
+        .click(1e6, 0.0)
+        .to(7e5, 7e5)
+        .click(0.0, 1e6);
+    assert_eq!(d.adds().len(), 1, "{:?}", d.messages);
+    let mut d = Drive::new(ToolKind::Circle, empty());
+    d.drag([0.1, 0.1], [1e6, 0.0]);
+    assert!(d.adds()[0].contains(&"circle (0, 0) r1000000".to_owned()));
+}
+
+#[test]
+fn a_centrepoint_arc_swept_all_round_back_onto_its_start_draws_nothing() {
+    // Centre (10, 10), start (18, 16), swept counter-clockwise all the way round, the end
+    // clicked 0.12 mm from the start: on it, nothing, still waiting.
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.click(10.0, 10.0)
+        .click(18.0, 16.0)
+        .to(10.0, 20.0)
+        .to(0.0, 10.0)
+        .to(10.0, 0.0)
+        .to(20.0, 10.0)
+        .click(18.2, 15.9);
+    assert!(d.adds().is_empty() && d.messages.is_empty());
+    assert!(d.tool.busy());
+}
+
+#[test]
+fn a_centrepoint_arc_too_small_by_its_chord_or_its_end_alone_is_refused() {
+    // With a 1e-9 tolerance: radius 10, the end 5e-8 round from the start: its chord alone
+    // under 1e-7, too small.
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.tolerance = 1e-9;
+    d.click(10.0, 10.0)
+        .click(20.0, 10.0)
+        .click(20.0, 10.0 + 5e-8);
+    assert!(d.adds().is_empty());
+    assert_eq!(d.messages, [Message::TooSmall]);
+    // Relations off, a 1e-12 tolerance: centre (0, 0), start (1.0000000005e-7, 0), the end on
+    // the point (0, 0.99999999e-7), a 1e-15 off the circle: the centre to the end alone is
+    // under 1e-7, too small.
+    let mut s = empty();
+    s.points.push(point("q0000001", 0.0, 0.99999999e-7));
+    let mut d = Drive::new(ToolKind::CenterpointArc, s);
+    d.automatic = false;
+    d.tolerance = 1e-12;
+    d.click(0.0, 0.0)
+        .click(1.0000000005e-7, 0.0)
+        .click(0.0, 0.99999999e-7);
+    assert!(d.adds().is_empty());
+    assert_eq!(d.messages, [Message::TooSmall]);
+}
+
+#[test]
+fn a_tangent_arcs_base_whose_curve_changed_ends_the_gesture() {
+    // Pressed on the line's end (20, 10); the line goes, and another from (20, 30) to that
+    // point comes (another client's edit): the point now ends another curve, so the gesture
+    // ends, and the release adds nothing.
+    let mut d = Drive::new(ToolKind::TangentArc, one_line());
+    d.press(20.0, 10.0).to(25.0, 15.0);
+    removed(&mut d, &["n0000001"]);
+    d.sketch.points.push(point("q0000003", 20.0, 30.0));
+    d.sketch
+        .lines
+        .push(line("n0000003", "q0000003", "q0000002"));
+    d.to(30.0, 20.0).release(30.0, 20.0);
+    assert!(d.adds().is_empty());
+    assert!(!d.tool.busy());
+}
+
+#[test]
+fn a_tangent_arc_by_two_clicks() {
+    // Clicked on the line's end (20, 10), then at (20, 20): the arc of the drag's test; and
+    // a second click on the base adds nothing and says nothing, still waiting.
+    let mut d = Drive::new(ToolKind::TangentArc, one_line());
+    d.click(20.0, 10.0).click(20.2, 10.1);
+    assert!(d.adds().is_empty() && d.messages.is_empty());
+    assert!(d.tool.busy());
+    d.click(20.0, 20.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (20, 15)",
+            "point (20, 20)",
+            "arc (20, 15) #(20, 10)->(20, 20)",
+            "tangent_at line #(10, 10)-#(20, 10) arc (20, 15) #(20, 10)->(20, 20) at #(20, 10) same",
+        ])]
+    );
+}
+
+#[test]
+fn a_tangent_arc_whose_centre_is_past_a_kilometre_says_in_line() {
+    // The line (8.9e5, 10)-(9e5, 10), leaving its end along +x; the end 44,710 mm on and
+    // 1,000 up, so s = (dx² + 1000²)/2000 = 999,995: the centre (9e5, 1,000,005), past a
+    // kilometre, though the radius isn't and every point is within reach. In line.
+    let mut s = empty();
+    s.points.push(point("q0000001", 8.9e5, 10.0));
+    s.points.push(point("q0000002", 9e5, 10.0));
+    s.lines.push(line("n0000001", "q0000001", "q0000002"));
+    let dx = (2.0 * 999_995.0 * 1000.0 - 1e6f64).sqrt();
+    let mut d = Drive::new(ToolKind::TangentArc, s);
+    d.drag([9e5, 10.0], [9e5 + dx, 1010.0]);
+    assert!(d.adds().is_empty());
+    assert_eq!(d.messages, [Message::InLine]);
+}
+
+#[test]
+fn a_circles_radius_on_a_point_shows_it_shared_and_round_its_own_centre_or_the_origin_is_free() {
+    // The radius over the point (6, 8): the preview shows it shared.
+    let mut s = empty();
+    s.points.push(point("q0000001", 6.0, 8.0));
+    let mut d = Drive::new(ToolKind::Circle, s);
+    d.press(20.0, 20.0).to(6.1, 8.1);
+    assert!(shown(&d).contains(&Relation::Shared(id("q0000001"))));
+    // A circle on the point (10, 10), pressed 0.4 right of it and released 0.4 left: the
+    // radius isn't through its own centre, but where released, 0.4.
+    let mut d = Drive::new(ToolKind::Circle, lone());
+    d.press(10.4, 10.0).release(9.6, 10.0);
+    assert_eq!(d.adds(), [sorted(&["circle #(10, 10) r0.4"])]);
+    // The same about the origin.
+    let mut d = Drive::new(ToolKind::Circle, empty());
+    d.press(0.4, 0.0).release(-0.4, 0.0);
+    assert!(d.adds()[0].contains(&"circle (0, 0) r0.4".to_owned()));
+}
+
+#[test]
+fn a_centrepoint_arcs_end_on_its_centre_adds_nothing() {
+    // Swept a quarter turn, then the end clicked on the centre: no direction to put the end
+    // in, so nothing, and nothing said.
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.click(10.0, 10.0)
+        .click(18.0, 16.0)
+        .to(13.0, 20.0)
+        .click(10.0, 10.0);
+    assert!(d.adds().is_empty() && d.messages.is_empty());
+    assert!(d.tool.busy());
+}
+
+#[test]
+fn a_lines_first_point_keeps_its_middle_crossing_or_curve_through_the_drag() {
+    // Lines (10, 30)-(50, 30) and (33, 10)-(33, 60). A line dragged from the first's middle,
+    // from their crossing, and from the first at (20, 30), 30 right and 40 up: each start
+    // keeps its relations, the sketch unchanged under it.
+    let mut s = empty();
+    s.points.push(point("q0000001", 10.0, 30.0));
+    s.points.push(point("q0000002", 50.0, 30.0));
+    s.points.push(point("q0000003", 33.0, 10.0));
+    s.points.push(point("q0000004", 33.0, 60.0));
+    s.lines.push(line("n0000001", "q0000001", "q0000002"));
+    s.lines.push(line("n0000002", "q0000003", "q0000004"));
+    for (press, want) in [
+        (
+            [30.1, 30.1],
+            vec!["midpoint (30, 30) line #(10, 30)-#(50, 30)"],
+        ),
+        (
+            [33.1, 30.1],
+            vec![
+                "on (33, 30) line #(10, 30)-#(50, 30)",
+                "on (33, 30) line #(33, 10)-#(33, 60)",
+            ],
+        ),
+        ([20.0, 30.2], vec!["on (20, 30) line #(10, 30)-#(50, 30)"]),
+    ] {
+        let mut d = Drive::new(ToolKind::Line, s.clone());
+        d.drag(press, [press[0] + 30.0, press[1] + 40.0]);
+        for line in want {
+            assert!(
+                d.adds()[0].contains(&line.to_owned()),
+                "{press:?}: {:?}",
+                d.adds()
+            );
+        }
+    }
+}
+
+#[test]
+fn two_curves_crossing_past_the_tolerance_arent_a_crossing() {
+    // The lines y = 20 and y = 19 + 0.02 x cross at (50, 20). A click at (60, 20.1) is near
+    // both, 10 from the crossing: on the nearer only, not at the crossing.
+    let mut s = empty();
+    for (k, (a, b)) in [([0.0, 20.0], [100.0, 20.0]), ([0.0, 19.0], [100.0, 21.0])]
+        .into_iter()
+        .enumerate()
+    {
+        let (p, q) = (format!("q000000{k}"), format!("r000000{k}"));
+        s.points.push(point(&p, a[0], a[1]));
+        s.points.push(point(&q, b[0], b[1]));
+        s.lines.push(line(&format!("n000000{k}"), &p, &q));
+    }
+    let mut d = Drive::new(ToolKind::Point, s);
+    d.click(60.0, 20.1);
+    let made = &d.made[0];
+    assert_eq!(made.constraints.len(), 1, "{made:?}");
+    assert!((made.points[0].x.mm() - 60.0).abs() < 0.01, "{made:?}");
+}
+
+#[test]
+fn a_horizontal_or_vertical_lines_end_follows_a_guide_along_its_own_line_only() {
+    // The point (40.45, 20.45), woken mid-drag. A line from (10, 20) to (40, 20.9) is
+    // horizontal, its end (40, 20); the point is 0.45 off both its x and its y, but the
+    // guide moves the end along the line only, to (40.45, 20). The same for a vertical line
+    // from (20, 10) to (20.9, 40), its end (20, 40), and the point (20.45, 40.45): (20,
+    // 40.45).
+    for (q, from, to, want) in [
+        (
+            [40.45, 20.45],
+            [10.0, 20.0],
+            [40.0, 20.9],
+            "point (40.45, 20)",
+        ),
+        (
+            [20.45, 40.45],
+            [20.0, 10.0],
+            [20.9, 40.0],
+            "point (20, 40.45)",
+        ),
+    ] {
+        let mut s = empty();
+        s.points.push(point("q0000001", q[0], q[1]));
+        let mut d = Drive::new(ToolKind::Line, s);
+        d.press(from[0], from[1])
+            .to(q[0] + 0.05, q[1] + 0.05)
+            .to(to[0], to[1])
+            .release(to[0], to[1]);
+        assert!(d.adds()[0].contains(&want.to_owned()), "{:?}", d.adds());
+    }
+}
+
+#[test]
+fn a_slanted_lines_end_follows_a_guide_to_a_woken_point() {
+    // The point (40.3, 5), woken mid-drag; a line from (10, 20) to (40, 32), slanted: its end
+    // moves onto the point's vertical, (40.3, 32), with no relation.
+    let mut s = empty();
+    s.points.push(point("q0000001", 40.3, 5.0));
+    let mut d = Drive::new(ToolKind::Line, s);
+    d.press(10.0, 20.0)
+        .to(40.4, 5.1)
+        .to(40.0, 32.0)
+        .release(40.0, 32.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (10, 20)",
+            "point (40.3, 32)",
+            "line (10, 20)-(40.3, 32)",
+        ])]
+    );
+}
+
+#[test]
+fn a_line_leaving_an_arc_along_y_is_tangent_and_vertical() {
+    // The arc about (50, 50), radius 10, from 180° to 0°: past its end (60, 50) it runs
+    // along +y exactly. A line to (60.3, 80): tangent and vertical both.
+    let s = with_arc(empty(), [50.0, 50.0], 10.0, 180.0, 0.0);
+    let mut d = Drive::new(ToolKind::Line, s);
+    d.drag([60.0, 50.0], [60.3, 80.0]);
+    assert_eq!(types(&d), ["tangent_at", "vertical"]);
+}
+
+#[test]
+fn a_line_drawn_back_along_another_is_parallel() {
+    // A line ending at (20, 20), leaving it at 30°; a line from there back at 211° and 209°
+    // (1° off the reverse): parallel.
+    let mut s = empty();
+    let back = toward([20.0, 20.0], 210.0, 10.0);
+    s.points.push(point("q0000001", 20.0, 20.0));
+    s.points.push(point("q0000002", back[0], back[1]));
+    s.lines.push(line("n0000001", "q0000002", "q0000001"));
+    for deg in [211.0, 209.0] {
+        let mut d = Drive::new(ToolKind::Line, s.clone());
+        d.drag([20.0, 20.0], toward([20.0, 20.0], deg, 20.0));
+        assert_eq!(types(&d), ["parallel"], "{deg}°");
+    }
+}
+
+/// IDs `f0000001`, `f0000002`, ... the first not taken each time: so one taken is never
+/// given again only if the tool says it's taken.
+struct FirstFree;
+
+impl NewIds for FirstFree {
+    fn next(&mut self, taken: &dyn Fn(&ElementId) -> bool) -> Result<ElementId, Error> {
+        Ok((1..)
+            .map(|k| ElementId::new(&format!("f{k:07}")).unwrap())
+            .find(|id| !taken(id))
+            .unwrap())
+    }
+}
+
+#[test]
+fn what_a_tool_added_keeps_its_ids_taken_before_a_read_shows_them() {
+    // Each tool makes two adds against a read that never catches up, its IDs from the first
+    // free: no ID of the first add's lines, circles, arcs, or constraints is given again.
+    let sketch = empty();
+    let sid = sketch_id();
+    let context = Context {
+        sketch_id: &sid,
+        revision: Revision::OPENED,
+        sketch: &sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+    };
+    let keys = Modifiers::default();
+    for (kind, clicks) in [
+        (
+            ToolKind::Line,
+            &[[10.0, 10.0], [40.0, 10.3], [40.2, 30.0]][..],
+        ),
+        (
+            ToolKind::Circle,
+            &[[10.0, 10.0], [13.0, 14.0], [50.0, 50.0], [53.0, 54.0]][..],
+        ),
+        (
+            ToolKind::ThreePointArc,
+            &[
+                [10.0, 10.0],
+                [30.0, 10.0],
+                [20.0, 20.0],
+                [60.0, 60.0],
+                [80.0, 60.0],
+                [70.0, 70.0],
+            ][..],
+        ),
+    ] {
+        let mut tool = SketchTool::new(kind);
+        let mut ids = FirstFree;
+        let mut given: Vec<ElementId> = Vec::new();
+        for &at in clicks {
+            tool.handle(&context, &mut ids, Event::Press(at), keys);
+            if let Some(m) = tool
+                .handle(&context, &mut ids, Event::Release(at), keys)
+                .add
+            {
+                given.extend(m.points.iter().map(|x| x.id.clone()));
+                given.extend(m.lines.iter().map(|x| x.id.clone()));
+                given.extend(m.circles.iter().map(|x| x.id.clone()));
+                given.extend(m.arcs.iter().map(|x| x.id.clone()));
+                given.extend(m.constraints.iter().map(|x| x.id.clone()));
+            }
+        }
+        let mut unique = given.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), given.len(), "{kind:?}: {given:?}");
+        assert!(given.len() >= 4, "{kind:?}: {given:?}");
+    }
+}
+
+#[test]
+fn the_point_tool_is_busy_while_pressed() {
+    let mut d = Drive::new(ToolKind::Point, empty());
+    d.press(12.0, 34.0);
+    assert!(d.tool.busy());
+    d.release(12.0, 34.0);
+    assert!(!d.tool.busy());
+}
+
+#[test]
+fn a_square_level_with_its_first_corner_goes_up() {
+    // Shift, from (50, 50) to (80, 50): the offset (30, 0), the square's opposite corner
+    // (80, 80), a zero offset taken as up.
+    let mut d = Drive::new(ToolKind::CornerRectangle, empty());
+    d.keys.shift = true;
+    d.drag([50.0, 50.0], [80.0, 50.0]);
+    assert!(
+        d.adds()[0].contains(&"point (80, 80)".to_owned()),
+        "{:?}",
+        d.adds()
+    );
+}
+
+#[test]
+fn a_rectangle_from_a_shared_point_is_drawn() {
+    let mut d = Drive::new(ToolKind::CornerRectangle, lone());
+    d.drag([10.0, 10.0], [40.0, 30.0]);
+    assert_eq!(d.made.len(), 1);
+    assert_eq!(d.made[0].points.len(), 3);
+    assert!(d.adds()[0].contains(&"line #(10, 10)-(40, 10)".to_owned()));
+}
+
+#[test]
+fn a_rectangle_with_no_width_or_one_of_exactly_the_floor_is_too_small() {
+    // No width: from (10, 10) to (10, 40).
+    let mut d = Drive::new(ToolKind::CornerRectangle, empty());
+    d.click(10.0, 10.0).click(10.0, 40.0);
+    assert_eq!(d.messages, [Message::TooSmall]);
+    // Relations off, a 1e-9 tolerance: a width of exactly 1e-7 (0 to 1e-7), and a height.
+    for (from, to) in [([0.0, 10.0], [1e-7, 40.0]), ([10.0, 0.0], [40.0, 1e-7])] {
+        let mut d = Drive::new(ToolKind::CornerRectangle, empty());
+        d.automatic = false;
+        d.tolerance = 1e-9;
+        d.click(from[0], from[1]).click(to[0], to[1]);
+        assert!(d.adds().is_empty(), "{from:?}");
+        assert_eq!(d.messages, [Message::TooSmall], "{from:?}");
+    }
+}
