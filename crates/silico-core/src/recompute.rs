@@ -2699,33 +2699,6 @@ impl Plan {
         else {
             return SweepPlan::Waits;
         };
-        // A revolve's or groove's axis placed on a face's frame, within reach, as its
-        // profile is: refused naming the axis as the document does, not by the revolution
-        // request's check of a point the document never wrote.
-        if let (Some((origin, _)), silico_protocol::SketchPlane::Face(_)) = (axis, plane) {
-            let at = plane.place(origin);
-            if !at
-                .iter()
-                .all(|c| c.is_finite() && c.abs() <= silico_protocol::MAX_LENGTH)
-            {
-                let named = operation.axis().map_or("axis", |a| a.as_str());
-                return SweepPlan::Refused(
-                    Error::new(
-                        ErrorCode::InvalidInput,
-                        format!(
-                            "axis {named}, placed on its sketch's face, passes through {at:?}: past 1e6 mm (a kilometre) of the model's origin, as far as an axis may be"
-                        ),
-                    )
-                    .with_feature(feature.id.as_str())
-                    .with_parameter("axis")
-                    .with_element(named)
-                    .with_suggestion(format!(
-                        "turn the {} about a line of the sketch nearer its face's origin",
-                        kind.word()
-                    )),
-                );
-            }
-        }
         let faces = self.add(Step::Faces(Arc::new(profile.faces(plane))), &feature.id);
         let step = match sweep_step(feature, kind, plane, axis, faces, base.map(|b| b.1)) {
             Ok(step) => step,
@@ -4528,22 +4501,20 @@ fn placed_faces(
             );
             continue;
         }
-        // The rest of the live solids built, read only for a broken name's candidates.
+        // The rest of the live solids, read only for a broken name's candidates (a solid
+        // whose map couldn't be named offers none).
         let others = || {
             features
                 .iter()
                 .enumerate()
                 .take(at)
                 .filter(|(j, feature)| is_live(*j, feature) && descends.get(*j) != Some(&true))
-                .filter_map(|(j, feature)| match live(j, feature) {
-                    Some(Ok(solid @ Live::Built { .. })) => Some(solid),
-                    _ => None,
-                })
+                .filter_map(|(j, feature)| live(j, feature)?.ok())
                 .collect()
         };
         match crate::face_plane::place(&planned.id, face, &related, &others, &|f| plan.maker(f)) {
             Resolved::Placed(Placed::Frame(frame)) => {
-                let placed = match placeable(&planned.id, frame, swept.get(&planned.id)) {
+                let placed = match placeable(document, &planned.id, frame, swept.get(&planned.id)) {
                     Some(error) => Placed::Failed(error),
                     None => Placed::Frame(frame),
                 };
@@ -4560,22 +4531,57 @@ fn placed_faces(
     faces
 }
 
-/// Why the sketch `sketch`, its face's frame resolved as `frame`, can't be placed there, if
-/// it can't: a profile (`swept`'s, if a feature sweeps it) placed past a kilometre
-/// ([`beyond_reach`](crate::face_plane::beyond_reach)), `invalid_input` on the sketch's
-/// `plane`, in the document's terms, so no later request is refused naming a value the
-/// document never wrote. (A frame no sketch can be placed on at all is refused as it's
-/// made: `face_plane::place`.)
+/// Why the sketch `sketch` of `document`, its face's frame resolved as `frame`, can't be
+/// placed there, if it can't (docs/ports/attacher.md, *The frame*): its profile (`swept`'s,
+/// if a feature sweeps it), or the axis a revolve or groove of it turns about, placed past
+/// a kilometre on any axis of the model ([`beyond_reach`](crate::face_plane::beyond_reach)):
+/// `invalid_input` naming the sketch and `plane`, in the document's terms, so no later
+/// request is refused naming a value the document never wrote. (A frame no sketch can be
+/// placed on at all is refused as it's made: `face_plane::place`.) An axis that's no axis
+/// of the profile is its feature's own refusal, left to its plan.
 fn placeable(
+    document: &Checked,
     sketch: &FeatureId,
     frame: silico_protocol::FaceFrame,
     swept: Option<&Swept>,
 ) -> Option<Error> {
-    let profile = swept?.profile.as_ref().ok()?;
-    crate::face_plane::beyond_reach(
-        sketch,
-        &profile.faces(silico_protocol::SketchPlane::Face(frame)),
-    )
+    let swept = swept?;
+    let profile = swept.profile.as_ref().ok()?;
+    let plane = silico_protocol::SketchPlane::Face(frame);
+    if let Some(error) = crate::face_plane::beyond_reach(sketch, &profile.faces(plane)) {
+        return Some(error);
+    }
+    document.document().features.iter().find_map(|feature| {
+        let turns = matches!(
+            feature.operation.made(),
+            Made::Sweep(SweepFeature::Revolve | SweepFeature::Groove)
+        );
+        if feature.suppressed || !turns || feature.operation.sketch() != Some(sketch) {
+            return None;
+        }
+        let line = crate::sweep::check_axis(document, &feature.id, &swept.solution, profile).ok()?;
+        let at = plane.place(line.origin);
+        let within = at
+            .iter()
+            .all(|c| c.is_finite() && c.abs() <= silico_protocol::MAX_LENGTH);
+        let named = feature.operation.axis().map_or("axis", |a| a.as_str());
+        (!within).then(|| {
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "{}'s axis {named}, placed on the sketch's face's frame, passes through {at:?}: past 1e6 mm (a kilometre) of the model's origin, as far as an axis may be",
+                    feature.id
+                ),
+            )
+            .with_feature(sketch.as_str())
+            .with_parameter("plane")
+            .with_element(named)
+            .with_suggestion(format!(
+                "draw {}'s axis nearer the face's origin, or put the sketch on a face nearer the model's origin",
+                feature.id
+            ))
+        })
+    })
 }
 
 /// What became of each feature of `source`, from its steps' results, and the bodies.

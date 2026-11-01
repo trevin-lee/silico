@@ -13,8 +13,10 @@ use silico_core::document::{
     AxisToken, ElementName, FacePlane, Operation, Plane, chain, read, suppression, validate, write,
 };
 use silico_core::fake::{FakeKernel, FakeSketches};
+use silico_core::kernel::Op;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::timeline::{Excepted, timeline};
+use silico_protocol::{Primitive, Reply, Surface};
 use sweeps::*;
 
 /// A face plane's object, as the file writes it.
@@ -566,4 +568,98 @@ fn a_sketch_on_a_face_is_never_blocked_by_a_solid_its_name_couldnt_be_in() {
         "{}",
         errors[0].message()
     );
+}
+
+/// The fake answering every whole description as `faces` says of each face (by the shape's
+/// expression, its number from 1), the fake's own edges and vertices kept.
+fn described_as(engine: &Recompute<FakeKernel>, faces: fn(&str, usize) -> Surface) {
+    engine.kernel().answer_instead(move |op| {
+        let Op::DescribeAll { shape } = op else {
+            return None;
+        };
+        let made = FakeKernel::describe(shape)?;
+        let mut description = FakeKernel::described(shape)?;
+        for (i, face) in description.faces.iter_mut().enumerate() {
+            face.surface = faces(&made, i + 1);
+        }
+        Some(Reply::DescribedAll(description))
+    });
+}
+
+#[test]
+fn a_faces_refusal_waits_for_every_live_solid_so_its_candidates_are_the_same_however_slow_a_branch()
+{
+    // s1 is on b1's top, which the fake is made to describe as no plane (b1 has one planar
+    // face, its Face1); the rest of every solid is planar (normal +Z, through z = 5). An
+    // unrelated branch, b2 padded from s3 on its top into p3, is live at s1's place too, and
+    // p3 waits a round for s3's face. s1's not-planar refusal, whose candidates are read from
+    // every live solid, waits for p3, so they're b1's Face1 and then four of p3's planar faces
+    // by name, whatever round or speed b2's make has: here held up to 80 ms each time.
+    fn surfaces(made: &str, face: usize) -> Surface {
+        let plane = Surface::Plane {
+            normal: [0.0, 0.0, 1.0],
+            location: [0.0, 0.0, 5.0],
+        };
+        if made.starts_with("box") && face != 1 {
+            Surface::Other
+        } else {
+            plane
+        }
+    }
+    let features = [
+        cube(),
+        box_at("b0000002", [20.0, 0.0, 0.0], 5.0, 5.0, 5.0),
+        rectangle("s0000003", "xy", [21.0, 1.0], 2.0, 2.0).replace(
+            r#""plane": "xy""#,
+            &format!(r#""plane": {}"#, face("b0000002.box.Face6", "+x", false)),
+        ),
+        pad("p0000003", Some("b0000002"), "s0000003", &one_side("1")),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+    ];
+    let mut seen = Vec::new();
+    for delay in [0u64, 30, 80] {
+        let engine = engine();
+        described_as(&engine, surfaces);
+        let hold = engine
+            .kernel()
+            .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 5.0));
+        let run = engine.start(checked_document(&strs(&features)));
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+        hold.release();
+        let model = match run.wait_timeout(WAIT) {
+            Ok(Ok(RunOutcome::Published(model))) => model,
+            other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+        };
+        assert!(matches!(
+            model.outcome(&id("p0000003")),
+            Some(FeatureOutcome::Built { .. })
+        ));
+        let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id("s0000001")) else {
+            panic!("{:?}", model.outcome(&id("s0000001")));
+        };
+        let candidates = errors[0].candidates().to_vec();
+        assert_eq!(candidates.len(), 5, "{candidates:?}");
+        assert_eq!(candidates[0], "b0000001.box.Face1");
+        let p3 = model.element_map(&id("p0000003")).unwrap();
+        for name in &candidates[1..] {
+            let parsed =
+                silico_core::naming::Name::parse(name, &|f| model_maker(&model, f)).unwrap();
+            assert!(p3.element(&parsed).is_some(), "{name} isn't p3's");
+        }
+        seen.push(candidates);
+    }
+    assert!(seen.windows(2).all(|w| w[0] == w[1]), "{seen:?}");
+}
+
+/// What the feature `id` of `model`'s document is, as a name's parser asks.
+fn model_maker(
+    model: &Model,
+    id: &silico_core::document::FeatureId,
+) -> Option<silico_core::naming::Maker> {
+    model
+        .document()
+        .features
+        .iter()
+        .find(|f| &f.id == id)
+        .map(|f| silico_core::naming::Maker::of(&f.operation))
 }

@@ -341,13 +341,14 @@ fn a_sketch_on_a_chamfers_bevel_pads_a_prism_square_to_it() {
 }
 
 #[test]
-fn a_revolve_about_an_axis_placed_past_a_kilometre_is_refused_naming_the_revolve_and_its_axis() {
+fn a_revolve_about_an_axis_placed_past_a_kilometre_is_refused_naming_the_sketch_and_its_plane() {
     // A cube from z = 999990 to the kilometre, its top front edge chamfered 1: the bevel's
     // o = (0, −499999.5, 499999.5), x = +X, y = (0, 1, 1)/√2. The bevel's points have v =
     // 1e6/√2 ≈ 707106.78. A square there, revolved 1° about a construction line at v = 1e6
     // (within a kilometre, as drawn), whose placed point is o + 1e6·y = (0, 207106.78,
-    // 1207106.78): past a kilometre in z. Either the revolve builds, or it's refused as
-    // `invalid_input` on the revolve naming its axis: never a bug, a crash, or the sketch.
+    // 1207106.78): past a kilometre in z. Refused, as docs/ports/attacher.md has it, on the
+    // sketch's `plane`, naming the axis line nb000001, as `invalid_input`, and the revolve
+    // blocked by it: never a bug, a crash, or a refusal of a point the document never wrote.
     let cube = box_at("b0000001", [0.0, 0.0, 999990.0], 10.0, 10.0, 10.0);
     let first = publish(&engine(), std::slice::from_ref(&cube));
     let edge = edge_between(&first, "b0000001", [0.0, 0.0, 1e6], [10.0, 0.0, 1e6]);
@@ -374,30 +375,22 @@ fn a_revolve_about_an_axis_placed_past_a_kilometre_is_refused_naming_the_revolve
         ),
     ];
     let model = publish(&engine(), &features);
-    let f = frame_of(&model, "s0000001");
-    near(f.origin[2], 499999.5, 1e-6, "the bevel's origin");
-    // BREAKS: `beyond_reach` checks the profile's points placed on the frame, so that "no
-    // later request is refused naming a value the document never wrote", but not the
-    // revolve's axis: the revolution request is refused by the protocol's check, on
-    // `axis`, naming the placed point [0, 207107.28, 1207106.28], which the document
-    // doesn't hold, with the advice "give the revolution a valid axis". The refusal should
-    // say which of the sketch's lines it is (nb000001) and where it lands, as the profile's
-    // refusal does.
-    match model.outcome(&id("r0000001")) {
-        Some(FeatureOutcome::Built { built, .. }) => {
-            assert!(built.summary().unwrap().valid);
-        }
-        Some(FeatureOutcome::Failed(e)) => {
-            assert_eq!(e.code(), ErrorCode::InvalidInput, "{e:?}");
-            assert_eq!(e.feature(), Some("r0000001"), "{e:?}");
-            assert_eq!(e.parameter(), Some("axis"), "{e:?}");
-            assert!(
-                e.message().contains("nb000001") || e.elements().iter().any(|n| n == "nb000001"),
-                "the refusal doesn't name the axis line: {e:?}"
-            );
-        }
-        other => panic!("{other:?}"),
-    }
+    // Found by break-it, now fixed: the reach was checked of the profile's points placed on
+    // the frame, not of the revolve's axis, so the revolution request was refused by the
+    // protocol's check, on `axis`, naming the placed point, which the document doesn't
+    // hold, with the advice "give the revolution a valid axis".
+    let Some(FeatureOutcome::Failed(e)) = model.outcome(&id("s0000001")) else {
+        panic!("{:?}", model.outcome(&id("s0000001")));
+    };
+    assert_eq!(e.code(), ErrorCode::InvalidInput, "{e:?}");
+    assert_eq!(e.feature(), Some("s0000001"), "{e:?}");
+    assert_eq!(e.parameter(), Some("plane"), "{e:?}");
+    assert_eq!(e.elements(), ["nb000001"], "{e:?}");
+    assert!(e.message().contains("r0000001's axis nb000001"), "{e:?}");
+    assert_eq!(
+        model.outcome(&id("r0000001")),
+        Some(&FeatureOutcome::Blocked { on: id("s0000001") })
+    );
 }
 
 /// A chain `depth` deep: the box, then at each level a 4 × 2 rectangle from (1, 1) on the

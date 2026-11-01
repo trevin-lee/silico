@@ -94,8 +94,9 @@ pub(crate) enum Placed {
 /// order: only they can hold it (a name's element is in no solid but those made from its
 /// feature), so only they are searched, waited for while one isn't built, or block the
 /// sketch where one failed; `others`, the rest of the live solids built, are read only for
-/// a broken name's candidates, so they're asked for (and named) only then. `makers` says
-/// what each feature a name mentions is, as the gate read the name.
+/// a broken name's candidates, so they're asked for (and named) only then, and the refusal
+/// waits until each has settled. `makers` says what each feature a name mentions is, as the
+/// gate read the name.
 pub(crate) fn place<'a>(
     sketch: &FeatureId,
     plane: &FacePlane,
@@ -162,14 +163,33 @@ fn placed<'a>(
             ));
         };
         let Surface::Plane { normal, location } = face.surface else {
+            // Its candidates are read from every live solid, so the refusal waits until
+            // each has settled: the same candidates, whichever round it comes in.
+            let others = others();
+            if let Some(on) = waiting(&others) {
+                return Err(on);
+            }
             let what = crate::elements::surface_type(&face.surface).word();
             return Ok(broken(
                 &format!(
                     "names a face that isn't planar: OCCT types its surface a {what}, and a sketch sits only on a face typed a plane"
                 ),
-                planar_faces(&name, related, &others()),
+                planar_faces(&name, related, &others),
             ));
         };
+        // A normal no plane has (not finite, or of no length): the kernel's describe gave it
+        // badly, a fault in Silico, not the document's.
+        if !normal.iter().all(|c| c.is_finite()) || silico_protocol::vec3::norm(normal) == 0.0 {
+            return Ok(Placed::Failed(
+                Error::new(
+                    ErrorCode::Internal,
+                    format!("the kernel described the sketch's face's normal as {normal:?}, which no plane has"),
+                )
+                .with_feature(sketch.as_str())
+                .with_elements([cut_short(text)])
+                .with_suggestion(crate::worker::SILICO_BUG),
+            ));
+        }
         return Ok(match frame(normal, location, plane.x, plane.reversed) {
             Ok(frame) => Placed::Frame(frame),
             Err(FaceFrameError::AxisAlongNormal(off)) => {
@@ -194,10 +214,7 @@ fn placed<'a>(
         });
     }
     // Not in any related solid built: one not built yet may hold it, or one that failed.
-    if let Some(on) = related.iter().find_map(|solid| match solid {
-        Live::Waits(on) => Some(on.clone()),
-        Live::Built { .. } | Live::Failed(_) => None,
-    }) {
+    if let Some(on) = waiting(related) {
         return Err(on);
     }
     if let Some(root) = related.iter().find_map(|solid| match solid {
@@ -206,7 +223,13 @@ fn placed<'a>(
     }) {
         return Ok(Placed::Blocked(root));
     }
+    // Refused once every live solid has settled, so the candidates, read from them all,
+    // are the same whichever round the refusal comes in (docs/ports/attacher.md, *In
+    // rounds*).
     let others = others();
+    if let Some(on) = waiting(&others) {
+        return Err(on);
+    }
     let maps: Vec<&ElementMap> = built(related)
         .into_iter()
         .chain(built(&others))
@@ -224,6 +247,14 @@ fn placed<'a>(
         &why,
         Candidates::of(&maps, ElementKind::Face).of_name(&name),
     ))
+}
+
+/// The feature of the first of `solids` not built yet, if one isn't.
+fn waiting(solids: &[Live<'_>]) -> Option<FeatureId> {
+    solids.iter().find_map(|solid| match solid {
+        Live::Waits(on) => Some(on.clone()),
+        Live::Built { .. } | Live::Failed(_) => None,
+    })
 }
 
 /// The solids built of `solids`: each one's map and description.
