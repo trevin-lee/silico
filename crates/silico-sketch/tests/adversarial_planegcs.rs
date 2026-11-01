@@ -345,6 +345,7 @@ fn a_line_drawn_with_no_length_is_refused_by_the_check() {
         tag,
         a: l,
         b: m,
+        reversed: false,
         value: one,
     });
     let angle = b.system(Algorithm::DogLeg);

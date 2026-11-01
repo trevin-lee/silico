@@ -221,7 +221,7 @@ fn entry(map: &ElementMap, id: &FeatureId, element: Element) -> Result<Entry, Er
             );
             entry.centroid = Some(point(face.centroid)?);
             match face.surface {
-                Surface::Plane { normal } => {
+                Surface::Plane { normal, .. } => {
                     entry.normal = Some(direction(normal));
                     entry.default_x = Some(AxisToken::default_x(normal));
                 }

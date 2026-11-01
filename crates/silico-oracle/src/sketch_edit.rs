@@ -1097,6 +1097,12 @@ pub struct Verdict {
     pub crashed: bool,
     /// The note's rule Silico's refusal is, if it refused by one.
     pub rule: Option<Rule>,
+    /// Silico made the edit: its result through the gate, and its solve succeeding.
+    pub made: bool,
+    /// FreeCAD's merge failed (-1) and was rolled back, its sketch as the case drew it
+    /// ([`rolled_back()`]): the one outcome of FreeCAD's that a [`Shows::VariesMade`] case
+    /// leaves uncompared.
+    pub rolled_back: bool,
     /// The case itself has a problem, or the harness: its sketch not drawn as it solves or
     /// not solving, FreeCAD's model of it malformed or conflicting before the edit, or the
     /// harness's own code around FreeCAD's edit failing.
@@ -1136,6 +1142,13 @@ pub enum Shows {
     /// is shown as known, its report with it, never as an agreement or a difference. Silico's
     /// side otherwise is compared, and the known case a problem.
     Varies(Rule),
+    /// A merge Silico makes ([`Verdict::made`]), the case itself without a problem, where
+    /// FreeCAD 1.1.3's solve from the points apart fails in some runs and not others: where
+    /// it failed and its merge was rolled back ([`Verdict::rolled_back`]), the case is shown
+    /// as known, its report with it, never as a difference; where FreeCAD made the merge too,
+    /// or crashed, hung, or raised, the two are compared as in any case. Silico not making the
+    /// edit, or a problem of the case's, is compared, and the known case a problem.
+    VariesMade,
 }
 
 /// The case file's differences the note doesn't explain, each reported with its judgment;
@@ -1207,11 +1220,23 @@ pub const KNOWN: &[Known] = &[
         shows: Shows::Varies(Rule::MergeHoldsOwn(String::new())),
         why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which the symmetric k0000018 would mirror an end of n0000005 about n0000005 itself, which Silico refuses (#se-a-curve-s-own-point-constrained, #se-the-merged-sketch-is-gated); FreeCAD makes the merge, its solve succeeding (0), in 4 of 6 runs alone and in the one whole sweep, and rolls it back (#se-any-result-whose-solve-is-worse) in 2, but an answer that varies is no oracle",
     },
+    // `sketch-edit-sweep --seed 58 --count 500`'s case 356.
+    Known {
+        case: "edit_58_356",
+        shows: Shows::Varies(Rule::MergeHoldsOwn(String::new())),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which the symmetric k0000019 would mirror an end of n0000005 about n0000005 itself, which Silico refuses (#se-a-curve-s-own-point-constrained, #se-the-merged-sketch-is-gated); FreeCAD makes the merge, its solve succeeding (0, 7 degrees of freedom), in 5 of 12 runs alone and 1 of 2 whole sweeps, and rolls it back (#se-any-result-whose-solve-is-worse) in the rest, but an answer that varies is no oracle",
+    },
     // `sketch-edit-sweep --seed 78 --count 500`'s case 227.
     Known {
         case: "edit_78_227",
         shows: Shows::Varies(Rule::MergeSolveUnbuildable),
         why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, whose solve puts the symmetric k0000029's two points at one place, which Silico refuses (#se-so-does-any-refusal-of-the to #se-a-line-the-solve-shortens-to); FreeCAD's merge is rolled back (#se-any-result-whose-solve-is-worse), in 2 of 4 whole sweeps as a conflict with constraints redundant as well (-3, a rollback not measured elsewhere), in the rest (and alone) in a form the note gives, but an answer that varies is no oracle",
+    },
+    // `sketch-edit-sweep --seed 78 --count 500`'s case 52.
+    Known {
+        case: "edit_78_52",
+        shows: Shows::VariesMade,
+        why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, the arc a0000016's end p0000015 onto the circle c0000026's centre p0000025, 31 mm away. Silico places the end at the kept point's place (#se-the-first-point-the-request-names), 27.75 mm from the arc's centre where its radius is 3.475, and its solve from there is clean (the arc's radius 22.05, every constraint held), so it makes the merge; FreeCAD's arc can't hold an end off its circle, so no placed solve compares FreeCAD's from that start, and FreeCAD's own, from the points apart, fails (-1) in 1 of 2 whole sweeps and 1 of 6 runs alone, which its Coincident command rolls back (#se-any-result-whose-solve-is-worse), and is clean in the rest, agreeing: the reverse the note gives (#se-the-reverse-comes-too-points-merged), but an answer that varies is no oracle; where FreeCAD makes the merge, the two are compared",
     },
     // `sketch-edit-sweep --seed 84 --count 500`'s case 352.
     Known {
@@ -1230,6 +1255,23 @@ fn same_kind(v: &Verdict, want: &Rule) -> bool {
             .is_some_and(|r| std::mem::discriminant(r) == std::mem::discriminant(want))
 }
 
+/// Whether a [`Shows::Varies`] or [`Shows::VariesMade`] case's Silico side, in `v`, is still
+/// the one its entry holds it to, so the entry isn't stale, whatever FreeCAD answered.
+fn still_varies(shows: &Shows, v: &Verdict) -> bool {
+    match shows {
+        Shows::Difference(_) => false,
+        Shows::Varies(rule) => same_kind(v, rule),
+        Shows::VariesMade => !v.problem && v.made,
+    }
+}
+
+/// Whether `v` is shown as a varying case's known outcome, not compared: a [`Shows::Varies`]
+/// case whatever FreeCAD answered, a [`Shows::VariesMade`] one only where FreeCAD's merge
+/// was rolled back.
+fn shown_as_varying(shows: &Shows, v: &Verdict) -> bool {
+    still_varies(shows, v) && (!matches!(shows, Shows::VariesMade) || v.rolled_back)
+}
+
 /// `verdicts` less the [`KNOWN`] differences that showed: the cases that differ, a line for
 /// each known one that showed, and a problem for each known one of these cases that didn't.
 pub fn without_known(
@@ -1243,10 +1285,23 @@ pub fn without_known(
         };
         let difference = match &k.shows {
             Shows::Difference(difference) => *difference,
-            Shows::Varies(rule) if same_kind(v, rule) => continue,
+            shows if still_varies(shows, v) => continue,
             Shows::Varies(rule) => {
                 missing.push(format!(
                     "{}: FreeCAD varies run to run here, but Silico's side is no longer the note's rule {rule:?} ({}); it now reads: {}",
+                    k.case,
+                    k.why,
+                    if v.how.is_empty() {
+                        "no difference".to_owned()
+                    } else {
+                        v.how.join("; ")
+                    }
+                ));
+                continue;
+            }
+            Shows::VariesMade => {
+                missing.push(format!(
+                    "{}: FreeCAD varies run to run here, but Silico no longer makes the edit ({}); it now reads: {}",
                     k.case,
                     k.why,
                     if v.how.is_empty() {
@@ -1273,7 +1328,7 @@ pub fn without_known(
     }
     for v in verdicts {
         match known.iter().find(|k| k.case == v.case) {
-            Some(k) if matches!(&k.shows, Shows::Varies(rule) if same_kind(&v, rule)) => {
+            Some(k) if shown_as_varying(&k.shows, &v) => {
                 let report = if v.how.is_empty() {
                     "agreed this run".to_owned()
                 } else {
@@ -1499,12 +1554,42 @@ fn merge_judged(
     })
 }
 
+/// Silico's refusal of `p`, if it refused: its edit refused, or, its result through the gate,
+/// a merge's solve (#se-no-automatic-fix-up) or an arc extend's failing from the written end
+/// (#se-an-arc-swept-a-whole-turn). None for a result the gate refuses, which is no refusal.
+fn silico_refused(p: &Prepared) -> Option<String> {
+    match &p.silico {
+        SilicoSide::Refused(why) => Some(format!("its edit refused: {why}")),
+        SilicoSide::Gated(_) => None,
+        SilicoSide::Edited(s) => match (&p.edit, &s.ours.outcome) {
+            // A merge's solve settles it (#se-no-automatic-fix-up).
+            (Edit::Merge { .. }, Err(e)) => Some(format!("its merge's solve refused: {e}")),
+            // An arc extend's solve failing from the written end refuses it
+            // (#se-an-arc-swept-a-whole-turn).
+            (Edit::Extend { .. }, Err(_)) if rule(p) == Some(Rule::ExtendSolveFails) => {
+                Some(format!(
+                    "its extend's solve refused: {}",
+                    s.ours
+                        .outcome
+                        .as_ref()
+                        .err()
+                        .map(ToString::to_string)
+                        .unwrap_or_default()
+                ))
+            }
+            _ => None,
+        },
+    }
+}
+
 /// How `p` came out, FreeCAD's side `theirs` (none when its plan refuses).
 pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
     let mut v = Verdict {
         case: p.name.clone(),
         how: p.problems.clone(),
         rule: rule(p),
+        made: matches!(&p.silico, SilicoSide::Edited(s) if s.ours.outcome.is_ok()),
+        rolled_back: rolled_back(p, theirs),
         problem: !p.problems.is_empty(),
         ..Verdict::default()
     };
@@ -1553,28 +1638,7 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
             return finish(v);
         }
     };
-    let silico_refusal: Option<String> = match &p.silico {
-        SilicoSide::Refused(why) => Some(format!("its edit refused: {why}")),
-        SilicoSide::Gated(_) => None,
-        SilicoSide::Edited(s) => match (&p.edit, &s.ours.outcome) {
-            // A merge's solve settles it (#se-no-automatic-fix-up).
-            (Edit::Merge { .. }, Err(e)) => Some(format!("its merge's solve refused: {e}")),
-            // An arc extend's solve failing from the written end refuses it
-            // (#se-an-arc-swept-a-whole-turn).
-            (Edit::Extend { .. }, Err(_)) if rule(p) == Some(Rule::ExtendSolveFails) => {
-                Some(format!(
-                    "its extend's solve refused: {}",
-                    s.ours
-                        .outcome
-                        .as_ref()
-                        .err()
-                        .map(ToString::to_string)
-                        .unwrap_or_default()
-                ))
-            }
-            _ => None,
-        },
-    };
+    let silico_refusal = silico_refused(p);
     match (silico_refusal, fc_refusal) {
         // Two refusals agree only where Silico's is one the note gives, for its reason, and
         // the note doesn't pin FreeCAD's outcome as another than a refusal.
@@ -2348,7 +2412,9 @@ fn extend_rule(
         let [radius, from, to] = arc_from_points(c, s, e)?;
         Some((radius, to - from, by.amount().to_radians()))
     };
-    if r.message.contains("changes nothing") {
+    // An increment of 0, or a turn too small to move the end: refused as input. (A line its
+    // constraints hold also "changes nothing", but as a result: below.)
+    if r.code == "invalid_input" && r.message.contains("changes nothing") {
         if by.amount() == 0.0 {
             return Some(Rule::ExtendZero);
         }
@@ -2365,10 +2431,15 @@ fn extend_rule(
         if !(member.kind == "line" && names_end) {
             return None;
         }
-        if r.message.contains("its constraints hold it where it is") {
-            return Some(Rule::ExtendHeld);
+        // A drag that didn't end in a frame: its solve ending otherwise, or reaching geometry
+        // that can't be built. Its code and the line and end it names are the held line's
+        // too, so only its words ("the drag") tell it apart.
+        if r.message.contains("the drag") {
+            return Some(Rule::ExtendFrame);
         }
-        return (r.message.contains("the drag")).then_some(Rule::ExtendFrame);
+        // A line its constraints hold where it is: the result, naming the line and its
+        // moving end and nothing else, whatever its words.
+        return (r.elements.len() == 2).then_some(Rule::ExtendHeld);
     }
     if r.message.contains("long or flipped") {
         return match member.kind {
@@ -2519,8 +2590,12 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
             let still = fc_untouched(p, fc);
             still.then(|| {
                 format!(
-                    "an extend that moves nothing: Silico refuses it ({NOTE}:{}), FreeCAD reports success with nothing moved",
-                    if *rule == Rule::ExtendZero { 298 } else { 304 }
+                    "an extend that moves nothing: Silico refuses it ({NOTE}#{}), FreeCAD reports success with nothing moved",
+                    if *rule == Rule::ExtendZero {
+                        "se-an-increment-of-0-since-it"
+                    } else {
+                        "se-each-result-is-checked-by-the"
+                    }
                 )
             })
         }
@@ -4040,6 +4115,18 @@ fn name_place(
     }
 }
 
+/// A reference as what it names: an angle's are its lines, whatever end FreeCAD's
+/// start-point form takes each from ([`angle_reversed`] says which way).
+fn named_ref(kind: &str, [g, p]: [i32; 2]) -> [i32; 2] {
+    if kind == "Angle" { [g, 0] } else { [g, p] }
+}
+
+/// Whether an angle's references take one line from its end (its start-point form with an
+/// odd number of ends: `reversed`, the same equation whichever line it is).
+fn angle_reversed(kind: &str, refs: &[[i32; 2]]) -> bool {
+    kind == "Angle" && refs.iter().filter(|[_, p]| *p == 2).count() % 2 == 1
+}
+
 fn key(
     kind: &str,
     refs: &[[i32; 2]],
@@ -4047,7 +4134,16 @@ fn key(
     name: &dyn Fn(i32, i32, bool) -> String,
 ) -> Key {
     let ends = matches!(kind, "Tangent" | "Perpendicular");
-    let mut named: Vec<String> = refs.iter().map(|[g, p]| name(*g, *p, ends)).collect();
+    let mut named: Vec<String> = refs
+        .iter()
+        .map(|&r| {
+            let [g, p] = named_ref(kind, r);
+            name(g, p, ends)
+        })
+        .collect();
+    if angle_reversed(kind, refs) {
+        named.push("reversed".to_owned());
+    }
     if unordered(kind) {
         named.sort();
     } else if kind == "Symmetric" && named.len() == 3 {
@@ -4070,6 +4166,8 @@ fn pairs(kind: &str, ints: &[i32]) -> Vec<[i32; 2]> {
         ("Horizontal" | "Vertical" | "Distance", 4) => &[true, true],
         ("Distance" | "PointOnObject", 3) => &[true, false],
         ("Parallel" | "Perpendicular" | "Equal" | "Angle" | "Tangent", 2) => &[false, false],
+        // An angle with start points (`reversed`): each line and the end it's taken from.
+        ("Angle", 4) => &[true, true],
         ("Tangent", 3) => &[true, false],
         ("Tangent", 4) => &[true, true],
         ("Symmetric", 5) => &[true, true, false],
@@ -4533,7 +4631,10 @@ fn compare_edited(
             continue;
         };
         let refs = pairs(c.kind, &c.ints);
-        if refs.iter().any(|r| ours_touches(r, ends(c.kind))) {
+        if refs
+            .iter()
+            .any(|&r| ours_touches(&named_ref(c.kind, r), ends(c.kind)))
+        {
             ours_touched.insert(id.clone());
             continue;
         }
@@ -4545,7 +4646,10 @@ fn compare_edited(
         if c.kind == "Coincident" {
             continue;
         }
-        if c.refs.iter().any(|r| fc_touches(r, ends(&c.kind))) {
+        if c.refs
+            .iter()
+            .any(|&r| fc_touches(&named_ref(&c.kind, r), ends(&c.kind)))
+        {
             theirs_touched.insert(i);
             continue;
         }

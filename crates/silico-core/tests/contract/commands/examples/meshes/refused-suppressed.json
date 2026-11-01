@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "bbbbbbbb is suppressed, so it has no solid to mesh", "feature": "bbbbbbbb", "elements": [], "elements_total": 0, "parameter": "features.0", "cause": null, "suggestion": "unsuppress it first, or name a feature that isn't suppressed", "candidates": [], "advice": null}

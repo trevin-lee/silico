@@ -1,4 +1,5 @@
-//! `sketch_split`, `sketch_trim`, `sketch_unjoin`, and `sketch_merge` (docs/design/m5.0-app.md,
+//! `sketch_split`, `sketch_trim`, `sketch_unjoin`, `sketch_merge`, `sketch_extend`, and
+//! `sketch_join` (docs/design/m5.0-app.md,
 //! section 7, *The sketch edits*), through the sessions' own command called by name, as a
 //! transport calls it (`Sessions::call`), on the fake kernel and the fake sketch solver.
 //! Expected values: the design's examples, byte for byte (each file the design's own block);
@@ -15,12 +16,16 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use silico_core::cache::Cache;
 use silico_core::command::wire::sketch_edits::{
-    SketchMergeRequest, SketchSplitRequest, SketchTrimRequest, SketchUnjoinRequest,
+    SketchExtendRequest, SketchJoinRequest, SketchMergeRequest, SketchSplitRequest,
+    SketchTrimRequest, SketchUnjoinRequest,
 };
 use silico_core::command::wire::{Layout, ToWire, write};
-use silico_core::command::{Answered, Call, Revision, SessionCommand, SessionId, Sessions};
+use silico_core::command::{
+    Answered, Call, ExtendBy, Revision, SessionCommand, SessionId, Sessions,
+};
 use silico_core::document::json::{Node, read};
-use silico_core::document::{ElementId, FeatureId};
+use silico_core::document::{ElementId, FeatureId, Length};
+use silico_core::extend::End;
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::sketch::SketchSolver;
 use silico_protocol::{SketchGeometry, SketchSystem, SolveStatus, Solved};
@@ -321,6 +326,10 @@ fn unjoin(revision: u64, sketch: &str, point: &str, curve: &str, ids: Value) -> 
     json!({"session": "s1", "revision": revision, "sketch": sketch, "point": point, "curve": curve, "ids": ids}).to_string()
 }
 
+fn join(revision: u64, sketch: &str, point: &str) -> String {
+    json!({"session": "s1", "revision": revision, "sketch": sketch, "point": point}).to_string()
+}
+
 fn merge(revision: u64, sketch: &str, points: &[&str]) -> String {
     json!({"session": "s1", "revision": revision, "sketch": sketch, "points": points}).to_string()
 }
@@ -411,8 +420,19 @@ fn the_geometry_edits_examples_are_the_designs_own_text() {
         (
             "sketch_merge",
             "#### `sketch_merge`",
-            "## 8. The layout",
+            "#### `sketch_extend`",
             &["request", "result", "refused-both-ends"],
+        ),
+        (
+            "sketch_join",
+            "#### `sketch_join`",
+            "## 8. The layout",
+            &[
+                "request",
+                "result",
+                "refused-not-held",
+                "refused-not-shared",
+            ],
         ),
     ] {
         let blocks = design(from, to);
@@ -501,6 +521,30 @@ fn each_request_is_read_and_written_back_and_holds_to_its_schema_and_its_result_
     );
     assert_eq!(written(&request), text);
     holds(&schema_of("sketch_merge", "request"), &text, "merge");
+    let text = example("sketch_join/request");
+    let request = SketchJoinRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        request,
+        SketchJoinRequest {
+            session: s1(),
+            revision: revision(13),
+            sketch: fid("s0000001"),
+            point: eid("pa000007"),
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(&schema_of("sketch_join", "request"), &text, "join");
+    // A join takes no ids, nor anything else it doesn't name.
+    fails(
+        &schema_of("sketch_join", "request"),
+        r#"{"session": "s1", "revision": 13, "sketch": "s0000001", "point": "pa000007", "ids": null}"#,
+        "join with ids",
+    );
+    fails(
+        &schema_of("sketch_join", "request"),
+        r#"{"session": "s1", "revision": 13, "sketch": "s0000001"}"#,
+        "join without a point",
+    );
     // `ids` null, written back as null, and held by the schema; a request without it isn't.
     let text = r#"{"session": "s1", "revision": 1, "sketch": "s0000001", "curve": "na000001", "at": [[30, 0]], "ids": null}"#;
     let request = SketchSplitRequest::read(&parsed(text)).unwrap();
@@ -527,6 +571,7 @@ fn each_request_is_read_and_written_back_and_holds_to_its_schema_and_its_result_
         "sketch_trim",
         "sketch_unjoin",
         "sketch_merge",
+        "sketch_join",
     ] {
         let result = example(&format!("{of}/result"));
         let schema = schema_of(of, "result");
@@ -559,10 +604,19 @@ fn each_request_is_read_and_written_back_and_holds_to_its_schema_and_its_result_
                 "sketch_split" => "SketchSplitResult",
                 "sketch_trim" => "SketchTrimResult",
                 "sketch_unjoin" => "SketchUnjoinResult",
+                "sketch_join" => "SketchJoinResult",
                 _ => "SketchMergeResult",
             }
         );
     }
+    let schema = schema_of("sketch_join", "result");
+    let mut value = example_value("sketch_join/result");
+    value["references"] = json!(["not an id"]);
+    fails(&schema, &value.to_string(), "join's references");
+    value["references"] = json!([]);
+    // The joined curve is in `modified`; the result has no field of its own for it.
+    value["curve"] = json!("na000001");
+    fails(&schema, &value.to_string(), "join with a curve field");
     for of in ["sketch_split", "sketch_trim"] {
         let schema = schema_of(of, "result");
         let mut value = example_value(&format!("{of}/result"));
@@ -578,6 +632,8 @@ fn each_request_is_read_and_written_back_and_holds_to_its_schema_and_its_result_
         "sketch_trim/refused-symmetric",
         "sketch_unjoin/refused-not-shared",
         "sketch_merge/refused-both-ends",
+        "sketch_join/refused-not-held",
+        "sketch_join/refused-not-shared",
     ] {
         holds(&error_schema(), &example(name), name);
     }
@@ -1034,6 +1090,7 @@ fn an_edit_against_a_stale_revision_is_a_conflict() {
             "sketch_merge",
             merge(1, "s0000001", &["pa000004", "pa000005"]),
         ),
+        ("sketch_join", join(1, "s0000001", "pa000007")),
     ] {
         assert_eq!(f.refused(command, &request), conflict, "{command}");
     }
@@ -1827,6 +1884,590 @@ fn a_split_of_an_arc_or_a_circle_lists_the_features_storing_a_name_made_from_it_
     assert_eq!(result["references"], json!(["f000000c"]), "{result}");
 }
 
+// ------------------------------------------------------------------ sketch_extend
+
+fn extend(revision: u64, sketch: &str, curve: &str, end: &str, by: Value) -> String {
+    json!({"session": "s1", "revision": revision, "sketch": sketch, "curve": curve, "end": end, "by": by}).to_string()
+}
+
+#[test]
+fn the_extends_examples_are_the_designs_own_text_and_its_requests_read_and_write_back() {
+    let files = [
+        "request",
+        "result",
+        "request-next-curve",
+        "refused-no-next-curve",
+        "refused-not-a-line-or-arc",
+        "refused-zero",
+        "refused-to-nothing",
+        "refused-off-line",
+        "refused-held",
+    ];
+    let blocks = design("#### `sketch_extend`", "#### `sketch_join`");
+    assert_eq!(blocks.len(), files.len());
+    for (block, file) in blocks.iter().zip(files) {
+        assert_eq!(
+            format!("{block}\n"),
+            example(&format!("sketch_extend/{file}")),
+            "{file}"
+        );
+    }
+    let mut found: Vec<String> = std::fs::read_dir(contract("commands/examples/sketch_extend"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    found.sort();
+    let mut want: Vec<String> = files.iter().map(|f| format!("{f}.json")).collect();
+    want.sort();
+    assert_eq!(found, want);
+    // Each request, read and written back, held by the schema.
+    let schema = schema_of("sketch_extend", "request");
+    let text = example("sketch_extend/request");
+    let request = SketchExtendRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        request,
+        SketchExtendRequest {
+            session: s1(),
+            revision: revision(13),
+            sketch: fid("s0000001"),
+            curve: eid("na000002"),
+            end: End::End,
+            by: ExtendBy::Length(Length::from_nm(2_000_000)),
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(&schema, &text, "extend");
+    let text = example("sketch_extend/request-next-curve");
+    let request = SketchExtendRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(request.by, ExtendBy::NextCurve);
+    assert_eq!(written(&request), text);
+    holds(&schema, &text, "extend to the next curve");
+    for by in [
+        r#"{"type": "angle", "angle": -12.5}"#,
+        r#"{"type": "point", "point": [0.1, -3]}"#,
+    ] {
+        let text = format!(
+            r#"{{"session": "s1", "revision": 2, "sketch": "s0000001", "curve": "na000002", "end": "start", "by": {by}}}"#
+        );
+        let request = SketchExtendRequest::read(&parsed(&text)).unwrap();
+        assert_eq!(request.end, End::Start);
+        // Written back as the API writes it, its nested `by` breaking the object onto
+        // lines, and read again as the same request.
+        let again = SketchExtendRequest::read(&parsed(&written(&request))).unwrap();
+        assert_eq!(again, request);
+        assert!(written(&request).contains(&format!("\n  \"by\": {by}\n")));
+        holds(&schema, &text, by);
+    }
+    for bad in [
+        r#""end": "mid", "by": {"type": "next_curve"}"#,
+        r#""end": "end", "by": {"type": "length"}"#,
+        r#""end": "end", "by": {"type": "length", "length": 2, "angle": 3}"#,
+        r#""end": "end", "by": {"type": "point", "point": [1]}"#,
+        r#""end": "end", "by": 2"#,
+    ] {
+        let text = format!(
+            r#"{{"session": "s1", "revision": 2, "sketch": "s0000001", "curve": "na000002", {bad}}}"#
+        );
+        fails(&schema, &text, bad);
+    }
+    let result = example("sketch_extend/result");
+    let schema = schema_of("sketch_extend", "result");
+    holds(&schema, &result, "extend's result");
+    assert_eq!(schema["title"], "SketchExtendResult");
+    let value: Value = serde_json::from_str(&result).unwrap();
+    for (key, bad) in [
+        ("modified", json!(["PA000003"])),
+        ("changed", json!(1)),
+        ("commit", json!({})),
+    ] {
+        let mut wrong = value.clone();
+        wrong[key] = bad;
+        fails(&schema, &wrong.to_string(), key);
+    }
+    for file in &files[3..] {
+        holds(
+            &error_schema(),
+            &example(&format!("sketch_extend/{file}")),
+            file,
+        );
+    }
+}
+
+#[test]
+fn an_extend_writes_its_end_exactly_where_named_whatever_the_fakes_frame_says() {
+    // The fake's frame nudges the dragged point a thousandth of where it began off the
+    // cursor (`FakeSketches::dragged`): the end is written at the target, (60, 7), exactly,
+    // the frame seeding only the rest (Fable, 2026-10-29), and the edit's solve then asked.
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let solves = f.sketches.requests().len();
+    let result = f.ran(
+        "sketch_extend",
+        &extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 2}),
+        ),
+    );
+    assert_eq!(
+        result,
+        json!({"sketch": "s0000001", "added": [], "modified": ["pa000003"], "removed": [], "changed": true, "commit": null})
+    );
+    assert_eq!(
+        member(&f.sketch("s0000001"), "points", "pa000003"),
+        &json!({"id": "pa000003", "x": 60, "y": 7, "construction": false})
+    );
+    // The begin's solve, the move, and the edit's solve.
+    assert_eq!(f.sketches.requests().len(), solves + 2);
+    assert!(!f.sketches.drag_calls().is_empty());
+}
+
+#[test]
+fn an_extend_whose_solve_conflicts_or_fails_is_refused_leaving_the_text_byte_for_byte() {
+    for inside in [true, false] {
+        let f = opened(&bracket());
+        f.checked();
+        if inside {
+            f.begin();
+        }
+        let text = f.text();
+        let file = std::fs::read(f.path()).unwrap();
+        let request = extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 2}),
+        );
+        // Only the extended sketch's solve conflicts (the begin's is the sketch's as it was):
+        // the edit's solve is worse than before, refusing it.
+        answering_edits(&f, conflicting);
+        let refused = f.refused("sketch_extend", &request);
+        assert_eq!(
+            refused,
+            json!([error(
+                "over_constrained",
+                "after the extend, the sketch's constraints conflict: these 1 can't all hold",
+                Some("s0000001"),
+                &["ka000001"],
+                None,
+                Some(WORSE),
+                Some("remove or change one of the constraints named")
+            )]),
+            "inside: {inside}"
+        );
+        answering_edits(&f, failing);
+        let refused = f.refused("sketch_extend", &request);
+        assert_eq!(refused[0]["code"], "solve_failed", "{refused}");
+        assert_eq!(
+            refused[0]["message"],
+            "after the extend, no solver could meet the sketch's constraints"
+        );
+        assert_eq!((f.text(), f.revision()), (text.clone(), revision(1)));
+        assert_eq!(std::fs::read(f.path()).unwrap(), file);
+        f.sketches
+            .answer(|system| Ok(FakeSketches::as_sent(system)));
+        let result = f.ran("sketch_extend", &request);
+        assert_eq!(result["changed"], true);
+        assert_eq!(result["commit"].is_null(), inside, "{result}");
+    }
+}
+
+#[test]
+fn cancel_naming_sketch_extend_stops_its_begin_solve_and_leaves_the_session_as_it_was() {
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let text = f.text();
+    f.sketches.hold();
+    let request = extend(
+        1,
+        "s0000001",
+        "na000002",
+        "end",
+        json!({"type": "length", "length": 2}),
+    );
+    let running = match f.sessions.call("sketch_extend", &request) {
+        Call::Running(calling) => calling,
+        Call::Unknown => panic!("no sketch_extend"),
+    };
+    assert!(f.sketches.wait_held(HANG), "the extend's solve never came");
+    let cancelled = f
+        .sessions
+        .cancel(&s1(), SessionCommand::SketchExtend)
+        .result
+        .unwrap();
+    assert!(cancelled.stopped);
+    let Ok(answered) = running.wait_timeout(HANG) else {
+        panic!("sketch_extend didn't answer in {HANG:?}")
+    };
+    let envelope: Value = serde_json::from_str(&answered.text).unwrap();
+    assert_eq!(
+        envelope["errors"],
+        json!([error(
+            "cancelled",
+            "sketch_extend was cancelled before it finished",
+            None,
+            &[],
+            None,
+            None,
+            Some(
+                "run it again when you want its answer; every rebuild step that finished is kept in the cache"
+            )
+        )])
+    );
+    assert!(f.sketches.stops() >= 1);
+    f.sketches.release();
+    assert_eq!((f.text(), f.revision()), (text, revision(1)));
+    assert_eq!(f.ran("sketch_extend", &request)["changed"], true);
+}
+
+#[test]
+fn cancel_naming_sketch_extend_stops_its_move_and_leaves_the_session_as_it_was() {
+    // The begin's solve answers, and holds what comes after it: the line's one move, which
+    // the cancel then stops (the fake's held move failing as a killed worker does).
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let text = f.text();
+    let solves = f.sketches.requests().len();
+    let holding = f.sketches.clone();
+    f.sketches.answer(move |system| {
+        holding.hold();
+        Ok(FakeSketches::as_sent(system))
+    });
+    let request = extend(
+        1,
+        "s0000001",
+        "na000002",
+        "end",
+        json!({"type": "length", "length": 2}),
+    );
+    let running = match f.sessions.call("sketch_extend", &request) {
+        Call::Running(calling) => calling,
+        Call::Unknown => panic!("no sketch_extend"),
+    };
+    assert!(f.sketches.wait_held(HANG), "the extend's move never came");
+    let cancelled = f
+        .sessions
+        .cancel(&s1(), SessionCommand::SketchExtend)
+        .result
+        .unwrap();
+    assert!(cancelled.stopped);
+    let Ok(answered) = running.wait_timeout(HANG) else {
+        panic!("sketch_extend didn't answer in {HANG:?}")
+    };
+    let envelope: Value = serde_json::from_str(&answered.text).unwrap();
+    assert_eq!(
+        envelope["errors"],
+        json!([error(
+            "cancelled",
+            "sketch_extend was cancelled before it finished",
+            None,
+            &[],
+            None,
+            None,
+            Some(
+                "run it again when you want its answer; every rebuild step that finished is kept in the cache"
+            )
+        )])
+    );
+    // The begin's solve alone was asked, and the move was what stopped.
+    assert_eq!(f.sketches.requests().len(), solves + 1);
+    assert!(
+        f.sketches
+            .drag_calls()
+            .iter()
+            .any(|c| matches!(c, silico_core::fake::DragCall::Move(_)))
+    );
+    assert_eq!(f.sketches.stops(), 1);
+    f.sketches
+        .answer(|system| Ok(FakeSketches::as_sent(system)));
+    f.sketches.release();
+    assert_eq!((f.text(), f.revision()), (text, revision(1)));
+    assert_eq!(f.ran("sketch_extend", &request)["changed"], true);
+}
+
+#[test]
+fn an_extend_whose_solve_or_move_its_sessions_close_stops_answers_not_open_as_a_closed_session() {
+    // The sessions dropped while the extend's begin solve, or its line's one move, is held:
+    // its session closes, which stops it. No client stopped it, so the extend answers as
+    // every command of a session that isn't open does (the design's `close`), never
+    // `cancelled`, nor the drag's words for a stopped solve.
+    for at_move in [false, true] {
+        let f = opened(&bracket());
+        f.checked();
+        f.begin();
+        if at_move {
+            let holding = f.sketches.clone();
+            f.sketches.answer(move |system| {
+                holding.hold();
+                Ok(FakeSketches::as_sent(system))
+            });
+        } else {
+            f.sketches.hold();
+        }
+        let request = extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 2}),
+        );
+        let running = match f.sessions.call("sketch_extend", &request) {
+            Call::Running(calling) => calling,
+            Call::Unknown => panic!("no sketch_extend"),
+        };
+        assert!(f.sketches.wait_held(HANG), "the extend's solve never came");
+        let Fixture {
+            dir,
+            sketches,
+            sessions,
+        } = f;
+        let dropper = std::thread::spawn(move || drop(sessions));
+        let Ok(answered) = running.wait_timeout(HANG) else {
+            panic!("sketch_extend didn't answer in {HANG:?}")
+        };
+        let envelope: Value = serde_json::from_str(&answered.text).unwrap();
+        assert_eq!(
+            envelope["errors"],
+            json!([error(
+                "invalid_input",
+                "no session s1 is open",
+                None,
+                &[],
+                Some("session"),
+                None,
+                Some(
+                    "open the document again: a session ends when it's closed or its client goes away"
+                )
+            )]),
+            "at the move: {at_move}: {envelope}"
+        );
+        assert_eq!(sketches.stops(), 1, "at the move: {at_move}");
+        assert_eq!(
+            sketches
+                .drag_calls()
+                .iter()
+                .any(|c| matches!(c, silico_core::fake::DragCall::Move(_))),
+            at_move
+        );
+        dropper.join().unwrap();
+        sketches.release();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("bracket.silico")).unwrap(),
+            bracket()
+        );
+    }
+}
+
+#[test]
+fn an_extend_whose_begin_solve_crashes_is_refused_as_the_crash_not_begun_from_the_file() {
+    // The begin's solve is the worker's crash: the extend is refused as it, not begun from
+    // the file's coordinates as a sketch whose solve fails for the sketch is.
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let text = f.text();
+    let answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&answered);
+    f.sketches.answer(move |system| {
+        if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            Err(silico_core::Error::new(
+                silico_core::ErrorCode::WorkerCrashed,
+                "the sketch worker crashed",
+            ))
+        } else {
+            Ok(FakeSketches::as_sent(system))
+        }
+    });
+    let request = extend(
+        1,
+        "s0000001",
+        "na000002",
+        "end",
+        json!({"type": "length", "length": 2}),
+    );
+    let refused = f.refused("sketch_extend", &request);
+    assert_eq!(
+        refused,
+        json!([error(
+            "worker_crashed",
+            "the sketch worker crashed",
+            Some("s0000001"),
+            &[],
+            None,
+            None,
+            None
+        )])
+    );
+    assert_eq!(answered.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(f.sketches.drag_calls().is_empty());
+    assert_eq!((f.text(), f.revision()), (text, revision(1)));
+}
+
+#[test]
+fn an_extend_whose_move_the_worker_cant_reach_names_the_line_its_end_and_the_increment() {
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let text = f.text();
+    f.sketches.answer_moves(|_, _| {
+        Err(silico_core::Error::new(
+            silico_core::ErrorCode::KernelFailed,
+            "the drag's frame is out of the solver's reach",
+        ))
+    });
+    let refused = f.refused(
+        "sketch_extend",
+        &extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 2}),
+        ),
+    );
+    assert_eq!(
+        refused,
+        json!([error(
+            "kernel_failed",
+            "the drag's frame is out of the solver's reach",
+            Some("s0000001"),
+            &["na000002", "pa000003"],
+            Some("by"),
+            None,
+            Some("extend it by less, or change what moves with its end")
+        )])
+    );
+    assert_eq!((f.text(), f.revision()), (text, revision(1)));
+}
+
+#[test]
+fn extends_are_undone_and_redone_byte_for_byte_and_a_stale_one_is_a_conflict() {
+    let f = opened(&bracket());
+    f.begin();
+    let opened = f.text();
+    f.ran(
+        "sketch_extend",
+        &extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 2}),
+        ),
+    );
+    let extended = f.text();
+    assert_ne!(extended, opened);
+    let refused = f.refused(
+        "sketch_extend",
+        &extend(
+            1,
+            "s0000001",
+            "na000002",
+            "end",
+            json!({"type": "length", "length": 1}),
+        ),
+    );
+    assert_eq!(refused[0]["code"], "conflict");
+    assert_eq!(refused[0]["parameter"], "revision");
+    answer(f.sessions.undo(&s1(), revision(2), None))
+        .result
+        .unwrap();
+    assert_eq!(f.text(), opened);
+    answer(f.sessions.redo(&s1(), revision(3), None))
+        .result
+        .unwrap();
+    assert_eq!(f.text(), extended);
+}
+
+#[test]
+fn an_extend_of_what_isnt_a_sketch_or_a_malformed_one_is_refused_exactly() {
+    let f = opened(&bracket());
+    let text = f.text();
+    let refused = f.refused(
+        "sketch_extend",
+        &extend(
+            1,
+            "p0000001",
+            "na000002",
+            "end",
+            json!({"type": "next_curve"}),
+        ),
+    );
+    assert_eq!(
+        refused,
+        json!([with_candidates(
+            error(
+                "invalid_input",
+                "p0000001 is a pad, not a sketch",
+                None,
+                &[],
+                Some("sketch"),
+                None,
+                Some("name a sketch of the document, by its ID")
+            ),
+            &["s0000001", "s0000002", "s0000003"]
+        )])
+    );
+    let refused = f.refused(
+        "sketch_extend",
+        &extend(
+            1,
+            "s0000001",
+            "na00000z",
+            "end",
+            json!({"type": "next_curve"}),
+        ),
+    );
+    assert_eq!(
+        refused,
+        json!([error(
+            "invalid_input",
+            "the sketch has no member na00000z",
+            Some("s0000001"),
+            &[],
+            Some("curve"),
+            None,
+            Some("name a line or an arc of this sketch by its ID")
+        )])
+    );
+    let refused = f.refused(
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 1, "sketch": "s0000001", "curve": "na000002", "end": "mid", "by": {"type": "length", "length": 1}}"#,
+    );
+    assert_eq!(refused[0]["parameter"], "end", "{refused}");
+    assert_eq!(
+        refused[0]["candidates"],
+        json!(["start", "end"]),
+        "{refused}"
+    );
+    let refused = f.refused(
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 1, "sketch": "s0000001", "curve": "na000002", "end": "end", "by": {"type": "far"}}"#,
+    );
+    assert_eq!(refused[0]["parameter"], "by.type", "{refused}");
+    assert_eq!(
+        refused[0]["candidates"],
+        json!(["length", "angle", "point", "next_curve"])
+    );
+    let refused = f.refused(
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 1, "sketch": "s0000001", "curve": "na000002", "end": "end", "by": {"type": "point", "point": [1, "x"]}}"#,
+    );
+    assert_eq!(refused[0]["parameter"], "by.point.1", "{refused}");
+    let refused = f.refused(
+        "sketch_extend",
+        r#"{"session": "s1", "revision": 1, "sketch": "s0000001", "curve": "na000002", "end": "end", "by": {"type": "length", "length": 1.0000001}}"#,
+    );
+    assert_eq!(refused[0]["parameter"], "by.length", "{refused}");
+    assert_eq!(f.text(), text);
+}
+
 #[test]
 fn a_clean_edit_asks_the_solver_once_never_for_the_sketchs_solve_before_it() {
     // Each edit whose solve is clean needs no judgment against the sketch before it: one
@@ -2137,4 +2778,378 @@ fn an_edit_whose_solve_its_sessions_close_stops_answers_not_open_as_a_closed_ses
         std::fs::read_to_string(dir.path().join("bracket.silico")).unwrap(),
         bracket()
     );
+}
+
+#[test]
+fn the_designs_join_on_the_bracket_is_its_result_and_its_refusals_are_its_text() {
+    // The design's split of na000001 at revision 12, then its join at revision 13: the L
+    // profile again, but for ka000009, the distance of 60 between pa000001 and pa000002
+    // the split made it (nothing is retyped).
+    let f = opened(&bracket());
+    f.checked();
+    f.inside_at(12);
+    let before = f.sketch("s0000001");
+    f.ran("sketch_split", &example("sketch_split/request"));
+    let split_text = f.text();
+    // The corner pa000003, two lines square to each other; a hole's centre, its circle's
+    // alone: each the design's refusal, the session as it was.
+    assert_eq!(
+        f.refused("sketch_join", &join(13, "s0000001", "pa000003")),
+        json!([example_value("sketch_join/refused-not-held")])
+    );
+    assert_eq!(
+        f.refused("sketch_join", &join(13, "s0000002", "pb000001")),
+        json!([example_value("sketch_join/refused-not-shared")])
+    );
+    assert_eq!((f.text(), f.revision()), (split_text, revision(13)));
+    let solves = f.sketches.requests().len();
+    let envelope = f.call("sketch_join", &example("sketch_join/request"));
+    assert_eq!(
+        envelope["result"],
+        example_value("sketch_join/result"),
+        "{envelope}"
+    );
+    assert_eq!(
+        envelope["session"],
+        json!({"id": "s1", "path": f.path().to_str().unwrap(), "revision": 14, "transaction": true, "reloaded": false})
+    );
+    // The edit's solve, and only it, a clean one.
+    assert_eq!(f.sketches.requests().len(), solves + 1);
+    let mut expected = before.clone();
+    for constraint in expected["constraints"].as_array_mut().unwrap() {
+        if constraint["id"] == "ka000009" {
+            *constraint = json!({"id": "ka000009", "type": "distance", "a": "pa000001", "b": "pa000002", "value": 60, "driving": true});
+        }
+    }
+    assert_eq!(f.sketch("s0000001"), expected);
+    assert_eq!(
+        member(&expected, "lines", "na000001"),
+        &json!({"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false})
+    );
+}
+
+#[test]
+fn a_split_then_a_join_gives_the_text_back_byte_for_byte_and_lists_the_fillet_it_reaches() {
+    // na000003, from pa000003 to pa000004, whose end the bracket's fillet names (its
+    // p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000004)), carries only a horizontal:
+    // split at (30, 5) and joined at the split point, the text is the one before the split,
+    // byte for byte, inside a transaction and out (there, as the save writes it, after a
+    // format has saved it so once); both list the fillet.
+    let whole = document(&[
+        S0000001, P0000001, S0000002, H0000001, S0000003, H0000002, F0000001,
+    ]);
+    let canonical =
+        silico_core::document::write(&silico_core::document::read(whole.as_bytes()).unwrap())
+            .unwrap();
+    for inside in [true, false] {
+        let f = opened(&canonical);
+        f.checked();
+        if inside {
+            f.begin();
+        } else {
+            answer(f.sessions.format(&s1(), None, true)).result.unwrap();
+            f.checked();
+        }
+        let text = f.text();
+        let at = f.revision().number();
+        let split = f.ran(
+            "sketch_split",
+            &split(at, "s0000001", "na000003", json!([[30, 5]]), json!(null)),
+        );
+        assert_eq!(split["references"], json!(["f0000001"]));
+        let point = split["added"][0].as_str().unwrap().to_owned();
+        let piece = split["pieces"][1].as_str().unwrap().to_owned();
+        let tangent = split["added"][2].as_str().unwrap().to_owned();
+        if !inside {
+            f.checked();
+        }
+        let joined = f.ran("sketch_join", &join(at + 1, "s0000001", &point));
+        assert_eq!(joined["added"], json!([]));
+        assert_eq!(joined["modified"], json!(["na000003"]));
+        assert_eq!(joined["removed"], json!([point, piece, tangent]));
+        assert_eq!(joined["references"], json!(["f0000001"]));
+        assert_eq!(joined["changed"], true);
+        assert_eq!(f.text(), text, "inside: {inside}");
+        if inside {
+            assert_eq!(joined["commit"], Value::Null);
+        } else {
+            assert_eq!(joined["commit"]["written"], true, "{joined}");
+            assert_eq!(std::fs::read_to_string(f.path()).unwrap(), text);
+        }
+        // The name the fillet stores is as it was: never re-pointed.
+        assert_eq!(
+            f.sketch("f0000001")["edges"],
+            json!(["p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000004)"])
+        );
+    }
+}
+
+#[test]
+fn a_join_whose_name_the_other_piece_made_lists_the_feature_whose_name_then_finds_nothing() {
+    // The fillet names pa000004, which after a split of na000004 is the start of the kept
+    // piece; a split of na000003 puts it at the far end, the other piece's: either way the
+    // join lists the fillet. A join of na000001's split, whose points no feature names,
+    // lists none.
+    let f = opened(&document(&[
+        S0000001, P0000001, S0000002, H0000001, S0000003, H0000002, F0000001,
+    ]));
+    f.begin();
+    for (revision, curve, at, references) in [
+        (1, "na000001", json!([[30, 0]]), json!([])),
+        (3, "na000004", json!([[5, 30]]), json!(["f0000001"])),
+    ] {
+        let split = f.ran(
+            "sketch_split",
+            &split(revision, "s0000001", curve, at, json!(null)),
+        );
+        let point = split["added"][0].as_str().unwrap().to_owned();
+        let joined = f.ran("sketch_join", &join(revision + 1, "s0000001", &point));
+        assert_eq!(joined["references"], references, "{curve}");
+    }
+}
+
+#[test]
+fn a_join_is_undone_and_redone_byte_for_byte() {
+    let f = opened(&bracket());
+    f.begin();
+    let split = f.ran(
+        "sketch_split",
+        &split(1, "s0000001", "na000003", json!([[30, 5]]), json!(null)),
+    );
+    let after_split = f.text();
+    let point = split["added"][0].as_str().unwrap().to_owned();
+    f.ran("sketch_join", &join(2, "s0000001", &point));
+    let after_join = f.text();
+    answer(f.sessions.undo(&s1(), revision(3), None))
+        .result
+        .unwrap();
+    assert_eq!(f.text(), after_split);
+    answer(f.sessions.redo(&s1(), revision(4), None))
+        .result
+        .unwrap();
+    assert_eq!(f.text(), after_join);
+}
+
+#[test]
+fn a_join_whose_solve_conflicts_where_the_sketch_didnt_is_refused_and_the_session_kept() {
+    // The fake answers the split's sketch (eight points sent, the origin among them) as
+    // sent, and the joined one (seven) with its first constraint, ka000001, in conflict:
+    // worse than before, refused, the text and the revision as they were.
+    let f = opened(&bracket());
+    f.checked();
+    f.begin();
+    let split = f.ran(
+        "sketch_split",
+        &split(1, "s0000001", "na000003", json!([[30, 5]]), json!(null)),
+    );
+    let point = split["added"][0].as_str().unwrap().to_owned();
+    let text = f.text();
+    f.sketches.answer(|system| {
+        Ok(match points_sent(system) {
+            7 => conflicting(system),
+            _ => FakeSketches::as_sent(system),
+        })
+    });
+    let refused = f.refused("sketch_join", &join(2, "s0000001", &point));
+    assert_eq!(
+        refused,
+        json!([error(
+            "over_constrained",
+            "after the join, the sketch's constraints conflict: these 1 can't all hold",
+            Some("s0000001"),
+            &["ka000001"],
+            None,
+            Some(WORSE),
+            Some("remove or change one of the constraints named")
+        )])
+    );
+    assert_eq!((f.text(), f.revision()), (text, revision(2)));
+    // A join whose solve fails, the same.
+    f.sketches.answer(|system| {
+        Ok(match points_sent(system) {
+            7 => failing(system),
+            _ => FakeSketches::as_sent(system),
+        })
+    });
+    let refused = f.refused("sketch_join", &join(2, "s0000001", &point));
+    assert_eq!(refused[0]["code"], "solve_failed", "{refused}");
+    assert_eq!(
+        refused[0]["message"],
+        "after the join, no solver could meet the sketch's constraints"
+    );
+    // The solver well again, the same request is made.
+    f.sketches
+        .answer(|system| Ok(FakeSketches::as_sent(system)));
+    f.ran("sketch_join", &join(2, "s0000001", &point));
+}
+
+#[test]
+fn a_join_in_a_sketch_already_in_conflict_isnt_refused_for_that_conflict() {
+    // Every solve's first constraint sent in conflict, the split's sketch and the joined one
+    // alike: ka000001, flagged before the join and after it, at the same rank, isn't the
+    // join's (FreeCAD main's rollback: nothing newly flagged). The join is made.
+    let f = opened(&bracket());
+    f.begin();
+    f.sketches.answer(|system| Ok(conflicting(system)));
+    // The split's IDs given, each after ka000001, so it's the first sent every time.
+    f.ran(
+        "sketch_split",
+        &split(
+            1,
+            "s0000001",
+            "na000003",
+            json!([[30, 5]]),
+            json!(["pa000007", "na000007", "ka00000d"]),
+        ),
+    );
+    let point = "pa000007";
+    let solves = f.sketches.requests().len();
+    let joined = f.ran("sketch_join", &join(2, "s0000001", point));
+    assert_eq!(joined["changed"], true, "{joined}");
+    // The join's solve, then the solve before it, which a conflict after it asks for.
+    assert_eq!(f.sketches.requests().len(), solves + 2);
+    assert_eq!(f.revision(), revision(3));
+}
+
+#[test]
+fn malformed_joins_and_joins_of_what_isnt_two_pieces_are_refused_the_session_as_it_was() {
+    // break-it on the join's request: a fixed reference, null, a number, no point, `ids`
+    // (a join takes none), a pad named as the sketch, and a constraint named as the point.
+    let f = opened(&bracket());
+    f.begin();
+    let text = f.text();
+    for (arguments, parameter, message) in [
+        (
+            json!({"session": "s1", "revision": 1, "sketch": "s0000001", "point": "origin"}),
+            "point",
+            Some("point must be a point's ID, as the sketch holds it, got \"origin\""),
+        ),
+        (
+            json!({"session": "s1", "revision": 1, "sketch": "s0000001", "point": null}),
+            "point",
+            Some("point must be a point's ID, as the sketch holds it, got null"),
+        ),
+        (
+            json!({"session": "s1", "revision": 1, "sketch": "s0000001"}),
+            "point",
+            None,
+        ),
+        (
+            json!({"session": "s1", "revision": 1, "sketch": "s0000001", "point": "pa000001", "ids": null}),
+            "ids",
+            None,
+        ),
+        (
+            json!({"session": "s1", "revision": 1, "sketch": "p0000001", "point": "pa000001"}),
+            "sketch",
+            Some("p0000001 is a pad, not a sketch"),
+        ),
+        (
+            json!({"session": "s1", "revision": 1, "sketch": "s0000001", "point": "ka000001"}),
+            "point",
+            Some("constraint ka000001 isn't a point: a join takes the point two pieces share"),
+        ),
+    ] {
+        let refused = f.refused("sketch_join", &arguments.to_string());
+        assert_eq!(refused.as_array().unwrap().len(), 1, "{refused}");
+        assert_eq!(refused[0]["code"], "invalid_input", "{refused}");
+        assert_eq!(refused[0]["parameter"], parameter, "{refused}");
+        if let Some(message) = message {
+            assert_eq!(refused[0]["message"], message, "{refused}");
+        }
+    }
+    assert_eq!((f.text(), f.revision()), (text, revision(1)));
+}
+
+#[test]
+fn a_split_circle_joined_at_either_split_point_lists_the_circle_in_modified() {
+    // The base's hole cb000001, radius 2.75 about pb000001 (40, 12), its diameter kb000001
+    // and kb000002 equal to cb000002, split at (42.75, 12), at.0, pb000003, and
+    // (37.25, 12), at.1, pb000004: cb000001 runs from pb000003 to pb000004, cb000003 from
+    // pb000004 back. Joined at at.1's point, cb000001, which ends there, is the circle
+    // again, the text as before the split; at at.0's, cb000003 is, of radius 2.75 (from
+    // pb000001 to its start, pb000004), and the two constraints name it. Either way the
+    // joined curve is the one curve in `modified`, first, and the other arc is in
+    // `removed`, with the two points.
+    for (point, kept, other, constraints) in [
+        ("pb000004", "cb000001", "cb000003", json!([])),
+        (
+            "pb000003",
+            "cb000003",
+            "cb000001",
+            json!(["kb000001", "kb000002"]),
+        ),
+    ] {
+        let f = opened(&bracket());
+        f.begin();
+        let before = f.sketch("s0000002");
+        f.ran(
+            "sketch_split",
+            &split(
+                1,
+                "s0000002",
+                "cb000001",
+                json!([[42.75, 12], [37.25, 12]]),
+                json!(["pb000003", "pb000004", "cb000003"]),
+            ),
+        );
+        let joined = f.ran("sketch_join", &join(2, "s0000002", point));
+        let mut modified = vec![json!(kept)];
+        modified.extend(constraints.as_array().unwrap().iter().cloned());
+        assert_eq!(joined["modified"], Value::Array(modified), "{point}");
+        assert_eq!(
+            joined["removed"],
+            json!(["pb000003", "pb000004", other]),
+            "{point}"
+        );
+        let sketch = f.sketch("s0000002");
+        assert_eq!(sketch["arcs"], json!([]), "{point}");
+        assert_eq!(
+            member(&sketch, "circles", kept),
+            &json!({"id": kept, "center": "pb000001", "radius": 2.75, "construction": false}),
+            "{point}"
+        );
+        if point == "pb000004" {
+            assert_eq!(sketch, before);
+        }
+    }
+}
+
+#[test]
+fn a_join_that_would_hold_the_joined_lines_own_point_off_itself_is_refused_the_session_kept() {
+    // na000001 split at (30, 0): na000001 from pa000001 to pa000007, na000007 on to
+    // pa000002. A point_line_distance of pa000001, na000001's own start, 1 from na000007's
+    // line (the fake solver takes it as stored): re-pointed by the join, it would hold
+    // na000001's own point off na000001 itself.
+    // Refused, naming it, the text and the revision as they were.
+    let f = opened(&bracket());
+    f.begin();
+    f.ran(
+        "sketch_split",
+        &split(
+            1,
+            "s0000001",
+            "na000001",
+            json!([[30, 0]]),
+            json!(["pa000007", "na000007", "ka00000d"]),
+        ),
+    );
+    f.ran(
+        "sketch_add",
+        &json!({"session": "s1", "revision": 2, "sketch": "s0000001", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": [{"id": "ka00000e", "type": "point_line_distance", "point": "pa000001", "line": "na000007", "value": 1, "side": "left", "driving": true}]}).to_string(),
+    );
+    let text = f.text();
+    assert_eq!(
+        f.refused("sketch_join", &join(3, "s0000001", "pa000007")),
+        json!([error(
+            "invalid_input",
+            "the join would make constraint ka00000e hold pa000001, a point of na000001, on na000001 itself",
+            Some("s0000001"),
+            &["ka00000e", "pa000001", "na000001"],
+            Some("point"),
+            None,
+            Some("remove the constraint first, or leave the pieces apart")
+        )])
+    );
+    assert_eq!((f.text(), f.revision()), (text, revision(3)));
 }

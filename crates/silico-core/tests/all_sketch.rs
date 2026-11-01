@@ -28,6 +28,8 @@ mod within;
 
 #[path = "adversarial_decision5_parts.rs"]
 mod adversarial_decision5_parts;
+#[path = "adversarial_drag_commands.rs"]
+mod adversarial_drag_commands;
 #[path = "adversarial_drag_session.rs"]
 mod adversarial_drag_session;
 #[path = "adversarial_load_path.rs"]
@@ -48,6 +50,8 @@ mod adversarial_sketch_extend;
 mod adversarial_sketch_extend_to;
 #[path = "adversarial_sketch_features.rs"]
 mod adversarial_sketch_features;
+#[path = "adversarial_sketch_join.rs"]
+mod adversarial_sketch_join;
 #[path = "adversarial_sketch_merge_tangent.rs"]
 mod adversarial_sketch_merge_tangent;
 #[path = "adversarial_sketch_solve.rs"]
@@ -70,6 +74,8 @@ mod adversarial_warm;
 mod chain;
 #[path = "drag_session.rs"]
 mod drag_session;
+#[path = "session_drag.rs"]
+mod session_drag;
 #[path = "sketch.rs"]
 mod sketch;
 #[path = "sketch_add.rs"]
@@ -88,6 +94,8 @@ mod sketch_features;
 mod sketch_features_gate;
 #[path = "sketch_gate.rs"]
 mod sketch_gate;
+#[path = "sketch_join.rs"]
+mod sketch_join;
 #[path = "sketch_solve.rs"]
 mod sketch_solve;
 #[path = "sketch_split.rs"]

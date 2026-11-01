@@ -131,12 +131,12 @@ fn the_cuts_top_and_its_hole_measure_as_their_shapes_do() {
     let Geometry::Face(face) = &top.geometry else {
         panic!("{top:?}")
     };
-    assert_eq!(
-        face.surface,
-        Surface::Plane {
-            normal: [0.0, 0.0, 1.0]
-        }
-    );
+    let Surface::Plane { normal, location } = face.surface else {
+        panic!("{face:?}")
+    };
+    assert_eq!(normal, [0.0, 0.0, 1.0]);
+    // The plane's own location is on it: z = 10, exactly.
+    assert_eq!(location[2], 10.0, "{location:?}");
     assert!((face.area - (800.0 - 6.25 * PI)).abs() < 1e-9, "{face:?}");
     for (got, want) in face.centroid.iter().zip([20.0, 10.0, 10.0]) {
         assert!((got - want).abs() < 1e-9, "{face:?}");

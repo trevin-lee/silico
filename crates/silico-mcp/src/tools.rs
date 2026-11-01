@@ -160,6 +160,7 @@ fn effect(command: Command) -> Effect {
         | Command::Distance
         | Command::Angle
         | Command::Timeline
+        | Command::Meshes
         | Command::Sketch => Effect::Reads,
         // An edit outside a transaction saves at once; commit and format save the file.
         Command::Commit
@@ -170,12 +171,17 @@ fn effect(command: Command) -> Effect {
         | Command::ReplaceText
         | Command::MoveFeature
         | Command::SuppressFeature
+        | Command::DragEnd
         | Command::SketchAdd
         | Command::SketchRemove
         | Command::SketchSplit
         | Command::SketchTrim
         | Command::SketchUnjoin
-        | Command::SketchMerge => Effect::Changes { destructive: true },
+        | Command::SketchMerge
+        | Command::SketchExtend
+        | Command::SketchJoin => Effect::Changes { destructive: true },
+        // A drag is held by the server, and its moves change no file.
+        Command::DragBegin | Command::DragMove => Effect::Changes { destructive: false },
         // `replace: true` writes over a file at `to`, or at `path`.
         Command::Render | Command::Export => Effect::Changes { destructive: true },
         // A new document is only made where nothing is; the rest change what the server
@@ -283,6 +289,18 @@ fn words(command: Command) -> (&'static str, String) {
             "Remove from a sketch",
             "Remove members of one sketch by ID: a constraint; a curve, with its points no other curve uses and every constraint on what goes; a point only if no curve uses it. A sketch left under or over defined, or unsolvable, isn't refused: `check` reports it. Give the revision the edit was made against.",
         ),
+        Command::DragBegin => (
+            "Begin a drag",
+            "Begin dragging one sketch's point (`point`), or a curve's edge (`curve`, and `press`, where on it the press landed, in the sketch's coordinates), the other null: a line's edge moves the line whole, a circle's or an arc's sizes it through the cursor. Every point dragged is pinned below every constraint, so dimensions hold. The result lists the points of the part that moves. One drag is open in a session at once; it ends at `drag_end`, at any edit, undo, or reload of the session, or if its worker fails. A sketch whose constraints conflict can't be dragged.",
+        ),
+        Command::DragMove => (
+            "Move a drag",
+            "Move the open drag's cursor to `to`, in the sketch's coordinates, and get the frame: the part's points and free radii where the solve put them (`solved`), or none (`failed`, `invalid`, or `dropped` when a newer move replaced it before it was solved). Send moves only once `drag_begin` has answered. A frame changes nothing: only `drag_end` edits the document.",
+        ),
+        Command::DragEnd => (
+            "End a drag",
+            "End the open drag: with `to`, the sketch moved there from where the drag began and solved as a whole, its points saved as one edit (`kept: cursor`); with `to: null`, or if the move or the solve fails, the sketch is left as it began (`kept: begin`), with no edit. Refused, the sketch as it was, if its solve then flags a redundant constraint the solve before the drag didn't: a problem the sketch had already isn't the drag's.",
+        ),
         Command::SketchSplit => (
             "Split a sketch curve",
             "Split one line or arc of a sketch at a position on it (within 1e-7 mm), or a circle at two, into pieces sharing a new point; the piece on the curve's start side keeps its ID, and `references` lists the features whose stored names the curve reached, which now find only that piece. Constraints on the curve follow the pieces (a length becomes a distance of the outer ends). `ids` gives the new members' IDs in `added`'s order, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
@@ -295,9 +313,17 @@ fn words(command: Command) -> (&'static str, String) {
             "Unjoin a sketch point",
             "Pull one curve off a point it shares with others: it gets a new point at the same place, keeping its own constraints; the others keep the point and its constraints. `check` then warns of the two points as `ends_not_joined` until something moves them. `ids` is the new point's ID, a list of one, or null for the core's. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
         ),
+        Command::SketchExtend => (
+            "Extend a sketch curve",
+            "Extend one line's or arc's `start` or `end`: `by` a length (a line's, in mm) or an angle (an arc's, in degrees), positive to lengthen; to a point on its line or circle; or to the next curve it meets past the end, which the core finds. A line's end moves through the solver's drag, so its constraints win and curves sharing the end follow; the end is then put exactly where named. Nothing is added to hold it there: to join it to the curve it meets, merge the two points (`sketch_merge`). Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's, but a line's end moves only in a sketch whose constraints agree; in one that conflicts it's refused `over_constrained`, naming the conflict, as a drag is. Give the revision the edit was made against.",
+        ),
         Command::SketchMerge => (
             "Merge sketch points",
             "Make two or more points of a sketch one: the first named survives at its own coordinates, and the others' curves and constraints move to it. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): name first the point the constraints hold. `silico fmt --merge-touching` merges every `ends_not_joined` cluster so. Give the revision the edit was made against.",
+        ),
+        Command::SketchJoin => (
+            "Join a split's pieces",
+            "Join the two pieces a split left at a point into one curve again, split's inverse: two lines held on one line by a `tangent_at` (`same`) at the point, or two arcs about one centre (a split circle's two arcs make its circle again). Name the point they share. The piece that ends there keeps its ID and takes the other's far end (it's the one curve in `modified`, the other piece in `removed`); the other piece, the point, and the constraints naming the point go, and constraints on the other piece move to the kept one. Nothing is retyped: a split's distance of the outer ends stays a distance. `references` lists the features whose stored names either piece reached. Refused for a piece's length, midpoint, or equal with another line, which would then measure the whole line: remove it, or dimension the outer ends. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
         ),
         Command::Text => (
             "Document text",
@@ -351,6 +377,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Read a sketch",
             "A sketch as the model solved it: its plane in 3D, its state (under, fully, or over defined, no solution, or invalid) and degrees of freedom, each point, curve, and constraint as the document writes it, at its solved values, with its own state, the regions its profile makes or why it makes none, and why it wasn't solved.",
         ),
+        Command::Meshes => (
+            "Display meshes",
+            "The display meshes of the model's bodies for a view (a named view or a camera, and its size in pixels), as the app's viewport draws them: each body, or each feature named in `features`, at the largest power of two no coarser than half a pixel, from the meshes `render` makes. Each body's positions, normals, and triangles, its edges' polylines, each face and edge by its name, its `key`, and the half pixels its level `serves`. Pass back in `held` the `key` and `deflection` of each mesh already read: a body held is named, but its geometry isn't given again. To look at the model, `render` is cheaper.",
+        ),
         Command::Render => (
             "Render",
             "A PNG of the model's bodies from a named view or a camera, with elements highlighted, returned as an image beside the result, and written to `to` in the workspace if given.",
@@ -365,16 +395,20 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::ReplaceText
         | Command::MoveFeature
         | Command::SuppressFeature
+        | Command::DragEnd
         | Command::SketchAdd
         | Command::SketchRemove
         | Command::SketchSplit
         | Command::SketchTrim
         | Command::SketchUnjoin
-        | Command::SketchMerge => &[IN_A_TRANSACTION, READ_CURRENT],
+        | Command::SketchMerge
+        | Command::SketchExtend
+        | Command::SketchJoin => &[IN_A_TRANSACTION, READ_CURRENT],
         Command::Check
         | Command::MassProperties
         | Command::Render
         | Command::Timeline
+        | Command::Meshes
         | Command::Sketch
         | Command::Undo
         | Command::Redo => &[READ_CURRENT],
@@ -393,7 +427,9 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::Outline
         | Command::Schema
         | Command::CacheClear
-        | Command::Export => &[],
+        | Command::Export
+        | Command::DragBegin
+        | Command::DragMove => &[],
     };
     let mut description = what.to_owned();
     for tip in tips {

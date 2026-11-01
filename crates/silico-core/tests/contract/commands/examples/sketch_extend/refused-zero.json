@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "extending na000002 by 0 changes nothing", "feature": "s0000001", "elements": ["na000002"], "elements_total": 1, "parameter": "by", "cause": null, "suggestion": "give an increment other than 0", "candidates": [], "advice": null}

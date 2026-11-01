@@ -1470,10 +1470,17 @@ impl Translation {
                 a: self.line(a)?.geometry,
                 b: self.line(b)?.geometry,
             },
-            Form::Angle { a, b, value, .. } => S::Angle {
+            Form::Angle {
+                a,
+                b,
+                reversed,
+                value,
+                ..
+            } => S::Angle {
                 tag,
                 a: self.line(a)?.geometry,
                 b: self.line(b)?.geometry,
+                reversed: *reversed,
                 value: self.fixed(value.degrees().to_radians()),
             },
             Form::Radius { curve, value, .. } => S::Radius {
@@ -2449,13 +2456,14 @@ impl Translation {
                 Form::Angle {
                     a,
                     b,
+                    reversed,
                     value,
                     driving: false,
                 } => {
                     let (la, lb) = (self.line(a)?, self.line(b)?);
                     let measured = angle_between(
                         direction(self.xy(values, la.from), self.xy(values, la.to)),
-                        direction(self.xy(values, lb.from), self.xy(values, lb.to)),
+                        along(self.xy(values, lb.from), self.xy(values, lb.to), *reversed),
                     );
                     // On the stored value's turn, as 1.1.3's solve leaves it, then reduced
                     // as it writes it back: the measure plus the whole turns that takes.
@@ -2668,6 +2676,11 @@ impl Translation {
             let (a, b) = self.ends(values, g);
             direction(a, b)
         };
+        // A line's direction, or, `reversed`, from its end to its start.
+        let turned = |g: Geometry, reversed: bool| {
+            let (a, b) = self.ends(values, g);
+            along(a, b, reversed)
+        };
         // An angle carried by the smaller lever of `a` and `b`; not a number if neither
         // can move.
         let carried = |angle: f64, a: Geometry, b: Geometry| {
@@ -2709,9 +2722,17 @@ impl Translation {
             S::Perpendicular { a, b, .. } => {
                 carried((angle_between(dir(a), dir(b)).abs() - PI / 2.0).abs(), a, b)
             }
-            S::Angle { a, b, value, .. } => {
-                carried(wrap(angle_between(dir(a), dir(b)) - v(value)).abs(), a, b)
-            }
+            S::Angle {
+                a,
+                b,
+                reversed,
+                value,
+                ..
+            } => carried(
+                wrap(angle_between(dir(a), turned(b, reversed)) - v(value)).abs(),
+                a,
+                b,
+            ),
             S::EqualLength { a, b, .. } => {
                 let (a0, a1) = self.ends(values, a);
                 let (b0, b1) = self.ends(values, b);
@@ -2843,6 +2864,18 @@ fn direction(from: [f64; 2], to: [f64; 2]) -> [f64; 2] {
     [to[0] - from[0], to[1] - from[1]]
 }
 
+/// The direction of a line from `from` to `to`, or, `reversed`, from `to` to `from`: an
+/// angle's `b` taken the other way. Each difference taken as PlaneGCS takes it from the
+/// points it's given, the end first, not negated after, so a zero is +0 as the solver's is
+/// (−(a − a) is −0, and `atan2` reads the sign of a zero).
+fn along(from: [f64; 2], to: [f64; 2], reversed: bool) -> [f64; 2] {
+    if reversed {
+        direction(to, from)
+    } else {
+        direction(from, to)
+    }
+}
+
 /// The angle from direction `a` to `b`, counter-clockwise, in (−π, π].
 fn angle_between(a: [f64; 2], b: [f64; 2]) -> f64 {
     libm::atan2(a[0] * b[1] - a[1] * b[0], a[0] * b[0] + a[1] * b[1])
@@ -2865,4 +2898,26 @@ fn mirror(q: [f64; 2], a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     let t = (d[0] * (q[0] - a[0]) + d[1] * (q[1] - a[1])) / squared_distance(a, b);
     let foot = [a[0] + t * d[0], a[1] + t * d[1]];
     [2.0 * foot[0] - q[0], 2.0 * foot[1] - q[1]]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reversed_angle_to_a_line_of_no_length_is_measured_as_planegcs_takes_its_differences() {
+        // a runs along +x; b's ends are at one place. Taken from its end to its start, as
+        // PlaneGCS takes it from the swapped points, b's direction is (5 − 5, 5 − 5) =
+        // (+0, +0): the angle is atan2(1·0 − 0·0, 1·0 + 0·0) = atan2(+0, +0) = 0. Negating
+        // (+0, +0) instead gives (−0, −0), and atan2(+0, −0) = 180°.
+        let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 1, "y": 0, "construction": false}, {"id": "pc000000", "x": 5, "y": 5, "construction": false}, {"id": "pd000000", "x": 5, "y": 5, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pc000000", "to": "pd000000", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "r0000001", "type": "angle", "a": "na000000", "b": "nb000000", "reversed": true, "value": 0, "driving": false}]}]}"#;
+        let document = crate::document::read(text.as_bytes()).unwrap();
+        let Operation::Sketch(sketch) = &document.features[0].operation else {
+            panic!("{:?}", document.features[0].operation)
+        };
+        let t = Translation::new(sketch).unwrap();
+        let measured = t.references(&t.system.values).unwrap();
+        let id = ElementId::new("r0000001").unwrap();
+        assert_eq!(measured[&id], Measured::Angle(0.0));
+    }
 }

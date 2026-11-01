@@ -123,7 +123,7 @@ fn planar_face(shape: &Shape, normal: [f64; 3], z: f64) -> ElementRef {
         .iter()
         .enumerate()
         .filter(|(_, f)| {
-            matches!(f.surface, Surface::Plane { normal: n } if n == normal)
+            matches!(f.surface, Surface::Plane { normal: n, .. } if n == normal)
                 && (f.centroid[2] - z).abs() < 1e-9
         })
         .map(|(i, _)| i)
@@ -682,7 +682,7 @@ fn extents(shape: &Shape) -> Vec<(ElementRef, [f64; 3], [f64; 3])> {
     let d = describe_whole(shape).unwrap();
     let mut all = Vec::new();
     for (i, f) in d.faces.iter().enumerate() {
-        let Surface::Plane { normal } = f.surface else {
+        let Surface::Plane { normal, .. } = f.surface else {
             panic!("a cube's face isn't flat")
         };
         let axis = normal.iter().position(|c| c.abs() == 1.0).unwrap();

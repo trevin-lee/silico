@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use silico_core::drag::{
-    Begun, DRAG_MOVE_TIMEOUT, DragSession, Ended, Kept, MoveOutcome, MoveTicket, Notify, begin,
-    begin_with,
+    Begun, DRAG_MOVE_TIMEOUT, DragSession, DragStop, Ended, Kept, MoveOutcome, MoveTicket, Notify,
+    begin, begin_under, begin_with,
 };
 use silico_core::fake::{DragCall, FakeKernel, FakeSketches};
 use silico_core::recompute::{Recompute, SketchSolvers};
@@ -985,4 +985,35 @@ fn the_fakes_edge_drag_moves_a_lines_ends_by_the_cursors_offset_from_its_press()
     let moved = FakeSketches::dragged(&begin, [5.0, 4.0]);
     assert_eq!(moved.status, SolveStatus::Success);
     assert_eq!(moved.values.unwrap(), [3.0, 4.0, 7.004, 4.0]);
+}
+
+#[test]
+fn an_end_whose_move_to_its_cursor_is_stopped_is_cancelled_not_an_end_at_its_begin() {
+    // The end's move to a cursor no move reached, held in the worker, then the drag's stop
+    // (its command's cancel, its session's close): the end is refused as `cancelled`, the
+    // drag's words for a stopped solve, never answered as an end that kept its begin state.
+    let (solvers, started) = pool();
+    let stop = DragStop::new();
+    let Begun::Open { session, .. } =
+        begin_under(&solvers, None, &stop, |_| Ok(two_points())).unwrap()
+    else {
+        panic!("conflicting")
+    };
+    let fake = started.lock().unwrap()[0].clone();
+    fake.hold();
+    let ending = std::thread::spawn(move || session.end(Some([5.0, 5.0])));
+    assert!(fake.wait_held(WAIT));
+    stop.stop();
+    let ended = ending.join().unwrap();
+    fake.release();
+    let error = ended.unwrap_err();
+    assert_eq!(
+        (error.code(), error.message()),
+        (
+            ErrorCode::Cancelled,
+            "the drag's solve of its sketch was stopped"
+        )
+    );
+    assert_eq!(fake.stops(), 1);
+    assert_eq!(moves_of(&fake.drag_calls()), [[5.0, 5.0]]);
 }

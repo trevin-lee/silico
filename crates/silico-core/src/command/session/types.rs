@@ -17,8 +17,10 @@ use super::{Cancellable, Gated, Problems, ReadCommand, RunningCommand};
 #[cfg(doc)]
 use crate::document;
 use crate::document::chain::Rewired;
-use crate::document::json::{Node, Plain};
-use crate::document::{ElementId, Feature, FeatureId};
+use crate::document::json::{self, Node, Plain};
+use crate::document::sketch_edit::Members;
+use crate::document::write::{self, Layout, Out};
+use crate::document::{Angle, Coordinate, ElementId, Feature, FeatureId, Length, Plane, Sketch};
 use crate::recompute::{Model, StepCount};
 use crate::timeline::{Entry, Excepted, Timeline, timeline};
 use crate::warnings::Warnings;
@@ -915,6 +917,51 @@ pub struct NewMembers {
     pub constraints: Node,
 }
 
+impl NewMembers {
+    /// `members`, typed, as a `sketch_add` takes them: each list written as the document
+    /// writes a sketch's (each sorted by ID, every field the canonical writer's), then read
+    /// back as a request's list is. What a client that builds members in Rust sends, the
+    /// sketch tools' among them ([`crate::sketch_tools`]).
+    pub fn of(members: &Members) -> Result<NewMembers, Error> {
+        let sketch = Sketch {
+            // Not written: only the lists are.
+            plane: Plane::Xy,
+            points: members.points.clone(),
+            lines: members.lines.clone(),
+            circles: members.circles.clone(),
+            arcs: members.arcs.clone(),
+            constraints: members.constraints.clone(),
+        };
+        let [points, lines, circles, arcs, constraints] =
+            write::sketch_members(&sketch).map(|(_, items)| {
+                let list = Out::Array(items.into_iter().map(|(_, item)| item).collect());
+                // With no limit, writing can't fail, and what the writer writes, the reader
+                // reads; either failing is a bug.
+                let text = write::text(&list, Layout::OneLine, usize::MAX).map_err(|_| {
+                    Error::new(
+                        ErrorCode::Internal,
+                        "a sketch's members couldn't be written",
+                    )
+                    .with_suggestion(crate::worker::SILICO_BUG)
+                })?;
+                json::read(text.as_bytes()).map_err(|e| {
+                    Error::new(
+                        ErrorCode::Internal,
+                        format!("a sketch's members, as written, didn't read back: {e:?}"),
+                    )
+                    .with_suggestion(crate::worker::SILICO_BUG)
+                })
+            });
+        Ok(NewMembers {
+            points: points?,
+            lines: lines?,
+            circles: circles?,
+            arcs: arcs?,
+            constraints: constraints?,
+        })
+    }
+}
+
 /// What a sketch edit did (`sketch_add`, `sketch_remove`: docs/design/m5.0-app.md, section
 /// 7, *What a result lists*): the sketch, as the request named it; the members it made, in
 /// the order it made them; those it changed in place, and those it removed, each by kind,
@@ -928,6 +975,96 @@ pub struct SketchEdited {
     pub added: Vec<ElementId>,
     pub modified: Vec<ElementId>,
     pub removed: Vec<ElementId>,
+    pub changed: bool,
+    pub commit: Option<Committed>,
+}
+
+/// How far a `sketch_extend` takes its curve's end, or to where (docs/design/m5.0-app.md,
+/// section 7, `sketch_extend`): a line's by a length along it; an arc's by an angle around
+/// its circle, in degrees; to a point on the curve's carrier, put there exactly; or to the
+/// next curve it meets past the end, which the core finds (`extend::next_crossing`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtendBy {
+    Length(Length),
+    Angle(Angle),
+    Point([Coordinate; 2]),
+    NextCurve,
+}
+
+/// What a drag grabs (docs/design/m5.0-app.md, `drag_begin`): a sketch's point, by its ID;
+/// or a curve's edge, by the curve's ID, with where the press on it landed, in the sketch's
+/// coordinates.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DragGrab {
+    Point(ElementId),
+    Edge { curve: ElementId, press: [f64; 2] },
+}
+
+/// The drag open in a session, as `status` gives it: its sketch, and what it grabbed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DragOpen {
+    pub sketch: FeatureId,
+    pub grab: DragGrab,
+}
+
+/// What `drag_begin` answers: the sketch and what the drag grabbed, as the request named
+/// them; the sketch's degrees of freedom left; and the points of the part the drag moves,
+/// by ID, every other point staying where it began (a diagnostic: docs/design/m5.0-app.md,
+/// A5).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DragBegun {
+    pub sketch: FeatureId,
+    pub grab: DragGrab,
+    pub dofs: i32,
+    pub moves: Vec<ElementId>,
+}
+
+/// How a drag's frame ended (`drag_move`'s `frame`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameEnd {
+    /// The cursor solved for: the frame holds the part's points and free radii.
+    Solved,
+    /// The solver didn't reach the cursor, or the worker refused the move, keeping the drag.
+    Failed,
+    /// It reached geometry that can't be built (M3.7's `SolvedInvalid`).
+    Invalid,
+    /// A newer move replaced it before it was solved.
+    Dropped,
+}
+
+impl FrameEnd {
+    /// Its word, as the wire writes it.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            FrameEnd::Solved => "solved",
+            FrameEnd::Failed => "failed",
+            FrameEnd::Invalid => "invalid",
+            FrameEnd::Dropped => "dropped",
+        }
+    }
+}
+
+/// What `drag_move` answers: the cursor solved for, how its frame ended, and with
+/// [`FrameEnd::Solved`], every point of the part and each free radius of its circles and
+/// arcs, by ID; otherwise none, the client keeping its last frame. A diagnostic, not a
+/// result (docs/design/m5.0-app.md, A5): which moves are solved depends on the worker's
+/// speed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DragFrame {
+    pub to: [f64; 2],
+    pub frame: FrameEnd,
+    pub points: Vec<(ElementId, [f64; 2])>,
+    pub radii: Vec<(ElementId, f64)>,
+}
+
+/// What `drag_end` answers: the sketch, which state it kept (the cursor's, or the begin
+/// state's, for an Esc, a release where the drag began, or a final move or solve that
+/// failed), whether the document changed (one edit, at a new revision, if it did), and
+/// outside a transaction, the commit's result; none inside one, or if nothing changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DragEnded {
+    pub sketch: FeatureId,
+    pub kept: crate::drag::Kept,
     pub changed: bool,
     pub commit: Option<Committed>,
 }
@@ -949,15 +1086,32 @@ pub struct SketchCut {
     pub commit: Option<Committed>,
 }
 
+/// What a join did (`sketch_join`: docs/design/m5.0-app.md, section 7): as
+/// [`SketchEdited`] says it (the joined curve, the start-side piece's ID, in `modified`, the
+/// other piece in `removed`), with the features that store a name made from either piece's
+/// ID or its points' IDs, in timeline order: one made from the kept piece then finds the
+/// whole joined curve, one from the other piece or the shared point nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchJoined {
+    pub sketch: FeatureId,
+    pub added: Vec<ElementId>,
+    pub modified: Vec<ElementId>,
+    pub removed: Vec<ElementId>,
+    pub references: Vec<FeatureId>,
+    pub changed: bool,
+    pub commit: Option<Committed>,
+}
+
 /// What `status` says of a session, from what it holds: how many features its document has
 /// (none if its text doesn't read as one), whether the gate took it, the transaction open,
 /// if one is (the revision it began from, which `rollback` returns to, and its undo stack's
 /// counts), what's running on its thread, if anything is (a queued command, or its own
 /// reload), the published reads running, in the order they started, its current revision's
-/// rebuild, and what the last comparison of its file on disk found (docs/design/m5.0-app.md,
-/// section 6): none before one has ended, while its own save runs, and after a save that
-/// failed until the next.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// rebuild, the drag open, if one is (none once it has ended, however it ended), and what
+/// the last comparison of its file on disk found (docs/design/m5.0-app.md, section 6): none
+/// before one has ended, while its own save runs, and after a save that failed until the
+/// next.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Status {
     pub features: Option<usize>,
     pub gated: bool,
@@ -965,6 +1119,7 @@ pub struct Status {
     pub running: Option<RunningCommand>,
     pub reads: Vec<ReadCommand>,
     pub rebuild: Rebuild,
+    pub drag: Option<DragOpen>,
     pub disk: Option<crate::disk::Disk>,
 }
 

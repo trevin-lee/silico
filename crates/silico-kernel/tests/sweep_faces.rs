@@ -10,6 +10,7 @@
 use super::close;
 use super::imports;
 use super::oracle;
+use super::planes;
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::path::Path;
@@ -78,8 +79,11 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// The point at sketch coordinates `(x, y)` and `t` along the normal, in model space.
 fn at(plane: SketchPlane, [x, y]: [f64; 2], t: f64) -> [f64; 3] {
     add(
-        add(scale(plane.x_axis(), x), scale(plane.y_axis(), y)),
-        scale(plane.normal(), t),
+        plane.origin(),
+        add(
+            add(scale(plane.x_axis(), x), scale(plane.y_axis(), y)),
+            scale(plane.normal(), t),
+        ),
     )
 }
 
@@ -176,7 +180,7 @@ impl Extent {
 #[test]
 fn a_rectangle_padded_every_way_on_every_plane_is_its_box() {
     // 4 × 3 from (1, 2): 12 × the length, from where the form says to where it says.
-    for plane in SketchPlane::ALL {
+    for plane in planes::every() {
         let made = faces(&one(plane, rectangle(1.0, 2.0, 4.0, 3.0), vec![]));
         for extent in Extent::ALL {
             let (start, vector, [a, b]) = extent.sweep(plane.normal());
@@ -255,7 +259,7 @@ fn a_circle_a_ring_and_the_slot_plate_padded_are_their_areas_times_the_length() 
     ];
     // testBoxCase: 6 faces, and 10 × (16000 − 3200 · cot 50° + 800π) = 158281.553 by hand.
     assert!((10.0 * cases[2].3 - 158281.553).abs() < 1e-3);
-    for plane in SketchPlane::ALL {
+    for plane in planes::every() {
         for (name, outer, holes, area, counts) in cases.clone() {
             let made = faces(&one(plane, outer, holes));
             let built = prism(&made.shape, [0.0; 3], scale(plane.normal(), 10.0)).unwrap();
@@ -349,15 +353,15 @@ fn a_circle_turned_about_the_sketchs_y_axis_is_a_torus_segment_turning_the_right
     // (FreeCAD: a profile at +X about +Y turns toward −Z).
     let (big, r) = (30.0, 10.0);
     let reach = big + r;
-    for plane in SketchPlane::ALL {
+    for plane in planes::square() {
         let section = torus_section(plane, big, r);
         let y = plane.y_axis();
         let up = Axis {
-            origin: [0.0; 3],
+            origin: plane.origin(),
             direction: y,
         };
         let down = Axis {
-            origin: [0.0; 3],
+            origin: plane.origin(),
             direction: scale(y, -1.0),
         };
         let s45 = reach * libm::sin(radians(45.0));
@@ -427,10 +431,10 @@ fn a_circle_turned_about_the_sketchs_y_axis_is_a_torus_segment_turning_the_right
 fn a_rectangle_turned_about_its_own_side_is_a_cylinder() {
     // π·r²·h, and for θ, that times θ/360; its side on the axis.
     let (r, h) = (3.0, 7.0);
-    for plane in SketchPlane::ALL {
+    for plane in planes::square() {
         let made = faces(&one(plane, rectangle(0.0, 0.0, r, h), vec![]));
         let axis = Axis {
-            origin: [0.0; 3],
+            origin: plane.origin(),
             direction: plane.y_axis(),
         };
         for (start, angle, kind) in [

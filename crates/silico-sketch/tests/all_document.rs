@@ -33,6 +33,8 @@ mod adversarial_edge_drag;
 mod adversarial_extend;
 #[path = "adversarial_load_path.rs"]
 mod adversarial_load_path;
+#[path = "adversarial_sketch_extend.rs"]
+mod adversarial_sketch_extend;
 #[path = "adversarial_sketch_geometry_edits.rs"]
 mod adversarial_sketch_geometry_edits;
 #[path = "adversarial_sketch_read.rs"]
@@ -49,6 +51,8 @@ mod drag;
 mod extend;
 #[path = "session_sketch_edits.rs"]
 mod session_sketch_edits;
+#[path = "session_sketch_extend.rs"]
+mod session_sketch_extend;
 #[path = "session_sketch_geometry_edits.rs"]
 mod session_sketch_geometry_edits;
 #[path = "sketch_edit.rs"]
@@ -57,5 +61,7 @@ mod sketch_edit;
 mod sketch_read;
 #[path = "sketch_states.rs"]
 mod sketch_states;
+#[path = "sketch_tools.rs"]
+mod sketch_tools;
 #[path = "worker.rs"]
 mod worker;

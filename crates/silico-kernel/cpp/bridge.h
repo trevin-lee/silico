@@ -62,6 +62,7 @@ enum class BrepDefect : uint8_t;
 struct EdgeFact;
 struct EdgeFacts;
 struct TopologyFacts;
+struct FacePlane;
 struct FaceCurve;
 enum class CurveKind : uint8_t;
 struct CopyPlacement;
@@ -314,8 +315,8 @@ std::unique_ptr<Shape> translate(const Shape &shape, double dx, double dy, doubl
 // distinct, not crossing itself). Its edges and vertices are in the points' order.
 std::unique_ptr<Shape> make_polygon_face(rust::Slice<const Point3> points);
 
-// A face for each region on the plane through the origin with `normal`, its u axis along
-// `x_axis`, as FreeCAD's FaceMakerBullseye builds one (BRep_Builder: a Geom_Plane, the outer
+// A face for each region on `plane`, through its `origin` with its `normal`, its u axis
+// along its `x_axis`, as FreeCAD's FaceMakerBullseye builds one (BRep_Builder: a Geom_Plane, the outer
 // wire, then each hole), with nothing reoriented or fixed: a vertex for each of `points`,
 // an edge for each of `curves` between the vertices it names, a wire of each run of
 // `loop_curves[i]` curves in order, and a face of each run of `region_loops[j]` wires (its
@@ -323,7 +324,7 @@ std::unique_ptr<Shape> make_polygon_face(rust::Slice<const Point3> points);
 // (input 0's edge n, kept) and each point's vertex (input 0's vertex n, kept) to `history`,
 // numbered in the result. Rust checks the regions first; whether the faces are valid is the
 // caller's question.
-std::unique_ptr<Shape> make_faces(Point3 normal, Point3 x_axis, rust::Slice<const Point3> points,
+std::unique_ptr<Shape> make_faces(FacePlane plane, rust::Slice<const Point3> points,
                                   rust::Slice<const FaceCurve> curves,
                                   rust::Slice<const uint32_t> loop_curves,
                                   rust::Slice<const uint32_t> region_loops,

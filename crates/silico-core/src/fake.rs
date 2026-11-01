@@ -63,8 +63,8 @@ use std::time::{Duration, Instant};
 use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{
     Algorithm, DESCRIBE_BATCH, Description, DragBegin, EdgeCurve, EdgeDescription, FaceDescription,
-    Moved, PointPlace, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Surface, Tag,
-    area_and_perimeter, loop_area,
+    FaceFrame, Moved, PointPlace, Reply, ShapeSummary, SketchSystem, SolveStatus, Solved, Surface,
+    Tag, area_and_perimeter, loop_area,
 };
 
 use crate::kernel::{
@@ -2315,56 +2315,20 @@ impl Measured {
                 area += loop_area(curves, contour == 0);
             }
         }
-        let (mut low, mut high) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-        let mut include = |p: [f64; 2]| {
-            for k in 0..2 {
-                low[k] = low[k].min(p[k]);
-                high[k] = high[k].max(p[k]);
+        // On an origin plane, whose axes point along model space's, the box of the curves in
+        // the sketch's coordinates, its corners placed; on a face frame, in model space.
+        let bounds = match regions.plane {
+            SketchPlane::Face(frame) => frame_box(frame, regions),
+            plane @ (SketchPlane::Xy | SketchPlane::Xz | SketchPlane::Yz) => {
+                let [low, high] = sketch_box(regions);
+                [plane.place(low), plane.place(high)]
             }
         };
-        for curve in regions.curves() {
-            match *curve {
-                Curve::Line { start, end } => {
-                    include(start);
-                    include(end);
-                }
-                Curve::Circle { center, radius } => {
-                    include([center[0] - radius, center[1] - radius]);
-                    include([center[0] + radius, center[1] + radius]);
-                }
-                Curve::Arc {
-                    center,
-                    start,
-                    end,
-                    radius,
-                    start_angle,
-                    end_angle,
-                } => {
-                    include(start);
-                    include(end);
-                    // Each quarter turn the arc passes: where it reaches furthest along an
-                    // axis.
-                    let quarter = std::f64::consts::FRAC_PI_2;
-                    let (from, to) = (start_angle.min(end_angle), start_angle.max(end_angle));
-                    let mut k = libm::ceil(from / quarter);
-                    while k * quarter <= to {
-                        let [x, y] = match k.rem_euclid(4.0) as u8 {
-                            0 => [1.0, 0.0],
-                            1 => [0.0, 1.0],
-                            2 => [-1.0, 0.0],
-                            _ => [0.0, -1.0],
-                        };
-                        include([center[0] + radius * x, center[1] + radius * y]);
-                        k += 1.0;
-                    }
-                }
-            }
-        }
         Measured {
             volume: 0.0,
             area,
             moment: [0.0; 3],
-            bounds: [regions.plane.place(low), regions.plane.place(high)],
+            bounds,
         }
     }
 
@@ -2796,23 +2760,137 @@ impl FacesLayout {
     }
 }
 
-/// A plane's word in a shape's bytes: `xy`, `xz`, `yz`.
-fn plane_word(plane: SketchPlane) -> &'static str {
-    // The document's word for it (D6).
-    use crate::document::Plane;
-    match plane {
-        SketchPlane::Xy => Plane::Xy,
-        SketchPlane::Xz => Plane::Xz,
-        SketchPlane::Yz => Plane::Yz,
+/// The box around faces' curves in the sketch's own coordinates: each line's and arc's
+/// ends, each circle's square, and each quarter turn an arc passes, where it reaches
+/// furthest along an axis. On an origin plane, whose axes point along model space's, its
+/// corners placed are the faces' box.
+fn sketch_box(regions: &FaceRegions) -> [[f64; 2]; 2] {
+    let (mut low, mut high) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    let mut include = |p: [f64; 2]| {
+        for k in 0..2 {
+            low[k] = low[k].min(p[k]);
+            high[k] = high[k].max(p[k]);
+        }
+    };
+    for curve in regions.curves() {
+        match *curve {
+            Curve::Line { start, end } => {
+                include(start);
+                include(end);
+            }
+            Curve::Circle { center, radius } => {
+                include([center[0] - radius, center[1] - radius]);
+                include([center[0] + radius, center[1] + radius]);
+            }
+            Curve::Arc {
+                center,
+                start,
+                end,
+                radius,
+                start_angle,
+                end_angle,
+            } => {
+                include(start);
+                include(end);
+                // Each quarter turn the arc passes: where it reaches furthest along an
+                // axis.
+                let quarter = std::f64::consts::FRAC_PI_2;
+                let (from, to) = (start_angle.min(end_angle), start_angle.max(end_angle));
+                let mut k = libm::ceil(from / quarter);
+                while k * quarter <= to {
+                    let [x, y] = match k.rem_euclid(4.0) as u8 {
+                        0 => [1.0, 0.0],
+                        1 => [0.0, 1.0],
+                        2 => [-1.0, 0.0],
+                        _ => [0.0, -1.0],
+                    };
+                    include([center[0] + radius * x, center[1] + radius * y]);
+                    k += 1.0;
+                }
+            }
+        }
     }
-    .as_str()
+    [low, high]
+}
+
+/// The box in model space around faces' curves on a face frame, whose axes may point any
+/// way: each line's and arc's ends placed, and each circle's or arc's furthest reach along
+/// each axis k. About its centre a placed, a round is a + r(x cos t + y sin t), whose k-th
+/// coordinate reaches a_k ± r·√(x_k² + y_k²) at t = φ_k and φ_k + π, φ_k the angle of
+/// (x_k, y_k): a circle reaches both, an arc those it passes.
+fn frame_box(frame: FaceFrame, regions: &FaceRegions) -> [[f64; 3]; 2] {
+    let plane = SketchPlane::Face(frame);
+    let (mut low, mut high) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    let mut include = |k: usize, v: f64| {
+        low[k] = low[k].min(v);
+        high[k] = high[k].max(v);
+    };
+    // Whether `angle`, a turn on or back any number of times, is from `from` to `to`.
+    let passes = |angle: f64, from: f64, to: f64| {
+        let turns = libm::ceil((from - angle) / std::f64::consts::TAU);
+        angle + turns * std::f64::consts::TAU <= to
+    };
+    for curve in regions.curves() {
+        let (center, radius, sweep) = match *curve {
+            Curve::Line { start, end } => {
+                for p in [start, end] {
+                    let p = plane.place(p);
+                    (0..3).for_each(|k| include(k, p[k]));
+                }
+                continue;
+            }
+            Curve::Circle { center, radius } => (center, radius, None),
+            Curve::Arc {
+                center,
+                start,
+                end,
+                radius,
+                start_angle,
+                end_angle,
+            } => {
+                for p in [start, end] {
+                    let p = plane.place(p);
+                    (0..3).for_each(|k| include(k, p[k]));
+                }
+                (
+                    center,
+                    radius,
+                    Some((start_angle.min(end_angle), start_angle.max(end_angle))),
+                )
+            }
+        };
+        let a = plane.place(center);
+        for (k, a_k) in a.into_iter().enumerate() {
+            let reach = radius * libm::hypot(frame.x[k], frame.y[k]);
+            let phase = libm::atan2(frame.y[k], frame.x[k]);
+            for (angle, sign) in [(phase, 1.0), (phase + std::f64::consts::PI, -1.0)] {
+                if sweep.is_none_or(|(from, to)| passes(angle, from, to)) {
+                    include(k, a_k + sign * reach);
+                }
+            }
+        }
+    }
+    [low, high]
+}
+
+/// A plane in a shape's bytes: its word ([`SketchPlane::word`]), and a face frame's nine
+/// numbers after it, its origin, x, and y, each as Rust writes it (a zero of either sign as
+/// 0, as a curve's numbers are).
+fn plane_line(plane: SketchPlane) -> String {
+    let mut line = plane.word().to_owned();
+    if let SketchPlane::Face(frame) = plane {
+        for value in [frame.origin, frame.x, frame.y].into_iter().flatten() {
+            line.push_str(&format!(" {}", value + 0.0));
+        }
+    }
+    line
 }
 
 /// Faces as a line of a shape's bytes: `faces xy region loop line 0 0 4 0 ... loop circle 2
 /// 1.5 0.5`, every number as Rust writes it, which reads back as the same number (a zero of
 /// either sign written as 0).
 fn faces_line(regions: &FaceRegions) -> String {
-    let mut line = format!("faces {}", plane_word(regions.plane));
+    let mut line = format!("faces {}", plane_line(regions.plane));
     for region in &regions.regions {
         line.push_str(" region");
         for curves in region.loops() {
@@ -2864,7 +2942,7 @@ fn faces_line(regions: &FaceRegions) -> String {
 fn faces_text(regions: &FaceRegions) -> String {
     format!(
         "faces({}, {} regions, {} curves)",
-        plane_word(regions.plane),
+        regions.plane.word(),
         regions.regions.len(),
         regions.curves().count()
     )
@@ -2873,11 +2951,28 @@ fn faces_text(regions: &FaceRegions) -> String {
 /// The regions a `faces` line's words (after `faces`) say, if the protocol's check accepts
 /// them: the fake reads only what a request could have made.
 fn parse_faces(words: &[&str]) -> Option<FaceRegions> {
-    let (plane, rest) = words.split_first()?;
-    let plane = SketchPlane::ALL
-        .into_iter()
-        .find(|p| plane_word(*p) == *plane)?;
     let number = |w: &str| w.parse::<f64>().ok().filter(|v| v.is_finite());
+    let (plane, rest) = match words.split_first()? {
+        (&"frame", rest) => {
+            let (values, rest) = rest.split_first_chunk::<9>()?;
+            let mut values = values.iter().map(|w| number(w));
+            let mut next = || -> Option<[f64; 3]> {
+                Some([values.next()??, values.next()??, values.next()??])
+            };
+            let frame = FaceFrame {
+                origin: next()?,
+                x: next()?,
+                y: next()?,
+            };
+            (SketchPlane::Face(frame), rest)
+        }
+        (plane, rest) => (
+            SketchPlane::ORIGIN_PLANES
+                .into_iter()
+                .find(|p| p.word() == *plane)?,
+            rest,
+        ),
+    };
     let point = |x: &str, y: &str| Some([number(x)?, number(y)?]);
     let mut regions = Vec::new();
     // Each region's words, after the "region" that starts it.
@@ -3397,18 +3492,23 @@ impl SketchSolver for FakeSketches {
     }
 
     /// One move as the worker's `MoveOnce`: its begin, the move under no time but the
-    /// solver's own (`Duration::MAX`), and its end, whatever the move did.
+    /// solver's own (`Duration::MAX`), and its end, whatever the move did. One request, as
+    /// the worker's is, so one solve to a stopper: a stopper given out before it stops its
+    /// move, held or not, as a killed worker ends the request.
     fn move_once(
         &mut self,
         begin: DragBegin,
         to: [f64; 2],
     ) -> Result<crate::sketch::MovedOnce, Error> {
+        let before = lock(&self.shared.state).solves;
         let started = self.drag_begin(begin)?;
         if !started.conflicting.is_empty() {
             return Ok(crate::sketch::MovedOnce::Conflicting(started.conflicting));
         }
+        lock(&self.shared.state).solves = before;
         let moved = self.drag_move(to, Duration::MAX);
         let _ = self.drag_end();
+        lock(&self.shared.state).solves = before + 1;
         Ok(crate::sketch::MovedOnce::Moved(moved?))
     }
 

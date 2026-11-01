@@ -145,6 +145,16 @@ fn viewport(ui: &mut Ui) {
     ui.allocate_rect(rect, Sense::hover());
 }
 
+/// What a pane with no timeline yet says: that it's building, or that its rebuild was
+/// stopped (the status bar's Rebuild, or Ctrl+B, starts it again).
+fn building(tab: &Tab) -> &'static str {
+    if tab.rebuild_stopped() {
+        "Rebuild stopped"
+    } else {
+        "Building…"
+    }
+}
+
 /// A group of rows, labelled for the accessibility tree (the browser's Origin, Bodies, and
 /// Sketches, by type, as Fusion's browser groups them).
 fn group(ui: &mut Ui, name: &str, rows: impl FnOnce(&mut Ui)) {
@@ -218,7 +228,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             }
         });
         if tab.timeline.is_none() {
-            ui.weak("Building…");
+            ui.weak(building(tab));
             return;
         }
         let mut selected = tab.selected.clone();
@@ -267,7 +277,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             return;
         };
         let Some(timeline) = &tab.timeline else {
-            ui.weak("Building…");
+            ui.weak(building(tab));
             return;
         };
         let Some(entries) = &timeline.features else {

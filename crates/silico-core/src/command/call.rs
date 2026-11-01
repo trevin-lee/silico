@@ -26,8 +26,10 @@
 
 use std::time::Duration;
 
+use super::meshes::MeshesRead;
 use super::render::Rendering;
 use super::session::WeakSessions;
+use super::wire::drag::{DragBeginRequest, DragEndRequest, DragMoveRequest};
 use super::wire::edits::{
     AddFeatureRequest, MoveFeatureRequest, RemoveFeatureRequest, ReplaceTextRequest,
     SetFieldRequest, SuppressFeatureRequest,
@@ -36,14 +38,15 @@ use super::wire::elements::{ElementsRequest, QueryRequest};
 use super::wire::export::ExportRequest;
 use super::wire::logs::ReadLogsRequest;
 use super::wire::measure::{MassPropertiesRequest, PairRequest};
+use super::wire::meshes::MeshesRequest;
 use super::wire::reads::{CheckRequest, TextRequest, TimelineRequest};
 use super::wire::render::RenderRequest;
 use super::wire::schema::SchemaRequest;
 use super::wire::session::{CancelRequest, OpenRequest, VersionRequest};
 use super::wire::sketch::SketchRequest;
 use super::wire::sketch_edits::{
-    SketchAddRequest, SketchMergeRequest, SketchRemoveRequest, SketchSplitRequest,
-    SketchTrimRequest, SketchUnjoinRequest,
+    SketchAddRequest, SketchExtendRequest, SketchJoinRequest, SketchMergeRequest,
+    SketchRemoveRequest, SketchSplitRequest, SketchTrimRequest, SketchUnjoinRequest,
 };
 use super::wire::transaction::{CommitRequest, FormatRequest, SessionRequest, StepRequest};
 use super::wire::{self, Json, Layout, ToWire};
@@ -87,6 +90,10 @@ pub enum Command {
     MoveFeature,
     SuppressFeature,
     Timeline,
+    DragBegin,
+    DragMove,
+    DragEnd,
+    Meshes,
     Sketch,
     SketchAdd,
     SketchRemove,
@@ -94,6 +101,8 @@ pub enum Command {
     SketchTrim,
     SketchUnjoin,
     SketchMerge,
+    SketchExtend,
+    SketchJoin,
     Undo,
     Redo,
 }
@@ -101,7 +110,7 @@ pub enum Command {
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
     /// 7).
-    pub const ALL: [Command; 38] = [
+    pub const ALL: [Command; 44] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -131,6 +140,10 @@ impl Command {
         Command::MoveFeature,
         Command::SuppressFeature,
         Command::Timeline,
+        Command::DragBegin,
+        Command::DragMove,
+        Command::DragEnd,
+        Command::Meshes,
         Command::Sketch,
         Command::SketchAdd,
         Command::SketchRemove,
@@ -138,6 +151,8 @@ impl Command {
         Command::SketchTrim,
         Command::SketchUnjoin,
         Command::SketchMerge,
+        Command::SketchExtend,
+        Command::SketchJoin,
         Command::Undo,
         Command::Redo,
     ];
@@ -174,6 +189,10 @@ impl Command {
             Command::MoveFeature => "move_feature",
             Command::SuppressFeature => "suppress_feature",
             Command::Timeline => "timeline",
+            Command::DragBegin => "drag_begin",
+            Command::DragMove => "drag_move",
+            Command::DragEnd => "drag_end",
+            Command::Meshes => "meshes",
             Command::Sketch => "sketch",
             Command::SketchAdd => "sketch_add",
             Command::SketchRemove => "sketch_remove",
@@ -181,6 +200,8 @@ impl Command {
             Command::SketchTrim => "sketch_trim",
             Command::SketchUnjoin => "sketch_unjoin",
             Command::SketchMerge => "sketch_merge",
+            Command::SketchExtend => "sketch_extend",
+            Command::SketchJoin => "sketch_join",
             Command::Undo => "undo",
             Command::Redo => "redo",
         }
@@ -229,6 +250,10 @@ impl Command {
             | Command::MoveFeature
             | Command::SuppressFeature
             | Command::Timeline
+            | Command::DragBegin
+            | Command::DragMove
+            | Command::DragEnd
+            | Command::Meshes
             | Command::Sketch
             | Command::SketchAdd
             | Command::SketchRemove
@@ -236,6 +261,8 @@ impl Command {
             | Command::SketchTrim
             | Command::SketchUnjoin
             | Command::SketchMerge
+            | Command::SketchExtend
+            | Command::SketchJoin
             | Command::Undo
             | Command::Redo => false,
         }
@@ -453,6 +480,17 @@ fn rendered(response: Response<Rendering>) -> Answered {
         // None for an answer refused as too long to write, whose envelope holds no result.
         png: png.filter(|_| answer.ok),
         ..answer
+    }
+}
+
+/// `meshes`' response as [`Answered`]: its envelope, or, past the bytes a response may be,
+/// its refusal naming the field that makes it (`wire::meshes`).
+fn meshed(response: Response<MeshesRead>) -> Answered {
+    let (ok, text) = wire::meshes::answer_text(&response, Layout::OneLine);
+    Answered {
+        ok,
+        text,
+        png: None,
     }
 }
 
@@ -676,6 +714,19 @@ impl<P: Clients + 'static> Sessions<P> {
             Command::Timeline => typed(named, TimelineRequest::read(request), |r| {
                 self.timeline(&r.session, r.model)
             }),
+            Command::DragBegin => typed(named, DragBeginRequest::read(request), |r| {
+                self.drag_begin(&r.session, r.sketch, r.grab)
+            }),
+            Command::DragMove => typed(named, DragMoveRequest::read(request), |r| {
+                self.drag_move(&r.session, r.to)
+            }),
+            Command::DragEnd => typed(named, DragEndRequest::read(request), |r| {
+                self.drag_end(&r.session, r.to)
+            }),
+            Command::Meshes => match MeshesRequest::read(request) {
+                Ok(r) => Calling::waiting(self.meshes(&r.session, r.model, r.meshes), meshed),
+                Err(problems) => Calling::refused(named, problems),
+            },
             Command::Sketch => typed(named, SketchRequest::read(request), |r| {
                 self.sketch(&r.session, r.model, r.sketch)
             }),
@@ -697,6 +748,12 @@ impl<P: Clients + 'static> Sessions<P> {
             Command::SketchMerge => typed(named, SketchMergeRequest::read(request), |r| {
                 self.sketch_merge(&r.session, r.revision, r.sketch, r.points)
             }),
+            Command::SketchExtend => typed(named, SketchExtendRequest::read(request), |r| {
+                self.sketch_extend(&r.session, r.revision, r.sketch, r.curve, r.end, r.by)
+            }),
+            Command::SketchJoin => typed(named, SketchJoinRequest::read(request), |r| {
+                self.sketch_join(&r.session, r.revision, r.sketch, r.point)
+            }),
             Command::Undo => typed(named, StepRequest::read(request), |r| {
                 self.undo(&r.session, r.revision, r.to)
             }),
@@ -704,5 +761,99 @@ impl<P: Clients + 'static> Sessions<P> {
                 self.redo(&r.session, r.revision, r.to)
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use silico_protocol::{Camera, Mesh, Projection};
+
+    use super::*;
+    use crate::command::meshes::{MeshElement, MeshedBody};
+    use crate::command::render::AnsweredCamera;
+    use crate::document::FeatureId;
+    use crate::naming::{Maker, Name, OpCode};
+    use crate::recompute::Key;
+
+    /// `bodies` bodies sharing one mesh of `triangles` triangles: as long a response as
+    /// `bodies` times the mesh, for one mesh's memory.
+    fn read(bodies: usize, triangles: usize) -> Response<MeshesRead> {
+        let mesh = Arc::new(Mesh {
+            positions: vec![[0.0; 3]; 3],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            triangles: vec![[0, 1, 2]; triangles],
+            face_triangles: vec![u32::try_from(triangles).unwrap()],
+            valid: None,
+            edge_points: vec![],
+            edge_point_counts: vec![],
+        });
+        let name = Arc::new(
+            Name::parse("aaaaaaaa.cut.Face1", &|_: &FeatureId| {
+                Some(Maker::By(OpCode::Cut))
+            })
+            .unwrap(),
+        );
+        let body = MeshedBody {
+            feature: FeatureId::new("aaaaaaaa").unwrap(),
+            body: Some(1),
+            key: Key::parse(&"0".repeat(64)).unwrap(),
+            level: 0.03125,
+            deflection: 0.03125,
+            bounds: Some([[0.0; 3], [1.0; 3]]),
+            serves: [0.03125, 0.0625],
+            held: false,
+            mesh: Some(mesh),
+            faces: vec![MeshElement {
+                name,
+                stable: false,
+                count: Some(u32::try_from(triangles).unwrap()),
+            }],
+            edges: vec![],
+        };
+        let camera = AnsweredCamera::of(&Camera {
+            projection: Projection::Orthographic { view_height: 80.0 },
+            eye: [0.0, -100.0, 0.0],
+            target: [0.0; 3],
+            up: [0.0, 0.0, 1.0],
+        })
+        .unwrap();
+        Response {
+            session: None,
+            model: None,
+            result: Ok(MeshesRead {
+                camera,
+                bodies: vec![body; bodies],
+                coarser: "height",
+            }),
+        }
+    }
+
+    #[test]
+    fn meshes_by_name_is_refused_past_the_responses_limit_naming_features_as_meshes_says() {
+        // 1,000 bodies of 13,000 triangles each: at least 1,000 · (13,000 · 11 − 2 + 31 + 31)
+        // = 143,060,000 bytes, past the 134,217,728 a response may be. Refused as meshes'
+        // own refusal, naming `features`, never written whole and never the generic one.
+        let past = read(1000, 13_000);
+        let Ok(r) = &past.result else { panic!() };
+        assert_eq!(wire::meshes::least_length(r), 143_060_000);
+        const { assert!(143_060_000 > wire::MAX_RESPONSE_LEN) };
+        let answered = meshed(past);
+        assert!(!answered.ok);
+        let refused: serde_json::Value = serde_json::from_str(&answered.text).unwrap();
+        let e = &refused["errors"][0];
+        assert_eq!(e["parameter"], "features", "{refused}");
+        assert_eq!(
+            e["message"],
+            "the meshes would make a response of more than the 134217728 bytes a response may be"
+        );
+        assert!(answered.png.is_none());
+        // Within it: its envelope, on one line.
+        let small = read(2, 4);
+        let whole = wire::response_text(&small, Layout::OneLine);
+        let answered = meshed(small);
+        assert!(answered.ok);
+        assert_eq!(answered.text, whole);
     }
 }

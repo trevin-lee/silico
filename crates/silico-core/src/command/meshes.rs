@@ -1,28 +1,28 @@
-//! A model's display meshes for a view (docs/design/m5.0-app.md, `meshes`, M5.5; pending
-//! the maintainer, #196's decision 6(a)): each body at the largest power of two no coarser
-//! than half a pixel, from the cache `render` meshes into, so the viewport and an agent's
-//! render of one view mesh a body once and look the same (M4.6's R1). Every body asked is
-//! meshed, never culled to the view, so a pan never needs a read. Each mesh face and edge
-//! carries its element map's name and whether it's stable; each body its step's key, its
-//! box, and the half pixels its level serves, so a client reads again only when its view
-//! leaves them.
+//! A model's display meshes for a view (docs/design/m5.0-app.md, `meshes`, M5.5): each body
+//! at the largest power of two no coarser than half a pixel, from the cache `render` meshes
+//! into, so the viewport and an agent's render of one view mesh a body once and look the same
+//! (M4.6's R1). Every body asked is meshed, never culled to the view, so a pan never needs a
+//! read. Each mesh face and edge carries its element map's name and whether it's stable; each
+//! body its step's key, its box, and the half pixels its level serves, so a client reads
+//! again only when its view leaves them.
 //!
-//! The core's read, without its command: the session's read lane, the published reads'
-//! limit, the response's 128 MiB bound, and the wire's form wait for the maintainer's M5.0
-//! approval.
+//! The command, [`Sessions::meshes`], reads the current or the published model on the
+//! session's read lane, as `render` does, counted among the published reads a session runs.
+//! Its wire form, and the 128 MiB a response may be, are `wire::meshes`'.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use silico_protocol::{Camera, Mesh};
 
-use super::Problems;
 use super::elements::built;
 use super::render::{
-    AnsweredCamera, Body, asked_view, bodies, camera_for, eye_outside, level_of, meshed,
+    AnsweredCamera, Body, NO_DEPTH_LEVEL, asked_view, bodies, camera_for, eye_outside, level_of,
+    meshed,
 };
+use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
 use crate::document::FeatureId;
-use crate::kernel::{ElementKind, ElementRef, Kernel};
+use crate::kernel::{Clients, ElementKind, ElementRef, Kernel};
 use crate::meshes::{MeshCache, mesh_level};
 use crate::naming::{ElementMap, Name};
 use crate::recompute::{FeatureOutcome, Key, Model};
@@ -59,6 +59,10 @@ pub struct Held {
 pub struct MeshesRead {
     pub camera: AnsweredCamera,
     pub bodies: Vec<MeshedBody>,
+    /// The request's side whose fewer pixels mesh its bodies coarser: a camera's `height`,
+    /// or, for a named view, the side that bound its fit. What an answer too long to send
+    /// for one body names (`wire::meshes`).
+    pub coarser: &'static str,
 }
 
 /// A solid's display mesh, and what it's of.
@@ -70,7 +74,9 @@ pub struct MeshedBody {
     pub body: Option<u32>,
     /// Its step's key.
     pub key: Key,
-    /// The deflection its view asked for (`mesh_level` of its half pixel).
+    /// The deflection its view asked for (`mesh_level` of its half pixel); for a body at no
+    /// depth (a perspective view's, with no box or one reaching the eye's plane), the floor
+    /// its mesh was made at.
     pub level: f64,
     /// The deflection the kernel used: the level, or the body's floor, which is coarser.
     pub deflection: f64,
@@ -107,6 +113,32 @@ pub struct MeshesOn<'a, K: Kernel> {
     pub meshes: &'a MeshCache<Key>,
 }
 
+impl<P: Clients + 'static> Sessions<P> {
+    /// `meshes` (M5.5): the display meshes of the model `model` names (decision 33), as
+    /// `request` asks ([`meshes`]): meshed on the read's own client of the kernel, through the
+    /// meshes the sessions keep, which `render` meshes into too. A level the cache holds asks
+    /// the kernel nothing. The read's cancel, or its session closing, stops it. A published
+    /// read counts against the published reads a session runs at once.
+    pub fn meshes(
+        &self,
+        session: &SessionId,
+        model: ModelChoice,
+        request: Meshes,
+    ) -> Running<MeshesRead> {
+        let (_, cache) = self.render_on();
+        self.read_model(session, ReadCommand::Meshes, model, move |read| {
+            meshes(
+                read.model(),
+                &request,
+                &MeshesOn {
+                    kernel: read.kernel(),
+                    meshes: &cache,
+                },
+            )
+        })
+    }
+}
+
 /// Meshes `model`'s solids for the view `request` asks, on `on`. Refused, each reason named
 /// by its field: the view, the camera, and the size, as `render` refuses them (and a
 /// perspective eye inside a solid, `camera.eye`); a feature the document hasn't, a sketch, or
@@ -141,7 +173,7 @@ pub fn meshes<K: Kernel>(
         _ => return Err(refused),
     };
     // A named view fits every body, as render's does; a camera is taken as given.
-    let (camera, answered, _) = camera_for(asked, &all, request.width, request.height)?;
+    let (camera, answered, fit_side) = camera_for(asked, &all, request.width, request.height)?;
     let solids: Vec<Body> = chosen.iter().map(|(solid, _)| solid.clone()).collect();
     // An eye inside any body is refused, as render refuses it, asked for or not.
     eye_outside(&camera, &all, on.kernel, session_closed)?;
@@ -151,21 +183,26 @@ pub fn meshes<K: Kernel>(
         .map(|h| (h.key, h.deflection.to_bits()))
         .collect();
     // A body the client holds at the deflection it would be meshed at is answered without
-    // the kernel, whether or not the shared cache still keeps its mesh: the cache keeps
-    // steps' floors apart from their meshes, so a body held at its floor is known to be.
-    // Once a floor has been dropped from them too, the body is meshed again to learn it,
-    // and answered as it would have been: only the time differs.
-    let planned: Vec<(f64, f64)> = solids
+    // the kernel, whether or not the shared cache still keeps its mesh, when the cache knows
+    // that deflection: the floor a mesh met, or a level a mesh was made at as asked (so the
+    // floor is no coarser), kept apart from the meshes. Otherwise, a level under a floor
+    // not known, or one dropped from the cache's floors, the body is meshed to learn it,
+    // and its held entry compared with the deflection the kernel used: answered as it
+    // would have been, so only the time differs.
+    let planned: Vec<(f64, Option<f64>)> = solids
         .iter()
         .map(|solid| {
             let level = level_of(&camera, request.height, solid);
-            (level, on.meshes.deflection_for(&solid.key, level))
+            (level, on.meshes.known(&solid.key, level))
         })
         .collect();
+    let held_known = |solid: &Body, known: Option<f64>| {
+        known.is_some_and(|deflection| held.contains(&(solid.key, deflection.to_bits())))
+    };
     let to_mesh: Vec<&Body> = solids
         .iter()
         .zip(&planned)
-        .filter(|(solid, (_, deflection))| !held.contains(&(solid.key, deflection.to_bits())))
+        .filter(|(solid, (_, known))| !held_known(solid, *known))
         .map(|(solid, _)| solid)
         .collect();
     let mut made = meshed(
@@ -181,26 +218,27 @@ pub fn meshes<K: Kernel>(
         .iter()
         .zip(&chosen)
         .zip(planned)
-        .map(|((solid, (_, number)), (level, deflection))| {
+        .map(|((solid, (_, number)), (level, known))| {
             let map = model
                 .element_map(solid.id)
                 .ok_or_else(|| unnamed(solid.id))?;
-            let (level, deflection, mesh) = if held.contains(&(solid.key, deflection.to_bits())) {
-                (level, deflection, None)
-            } else {
-                let Some(made) = made.next() else {
-                    return Err(Problems::from(
-                        Error::new(
-                            ErrorCode::Internal,
-                            format!("{} was asked to be meshed, and no mesh came", solid.id),
-                        )
-                        .with_feature(solid.id.as_str())
-                        .with_suggestion(SILICO_BUG),
-                    ));
+            let (level, deflection, mesh) =
+                if let Some(deflection) = known.filter(|_| held_known(solid, known)) {
+                    (level, deflection, None)
+                } else {
+                    let Some(made) = made.next() else {
+                        return Err(Problems::from(
+                            Error::new(
+                                ErrorCode::Internal,
+                                format!("{} was asked to be meshed, and no mesh came", solid.id),
+                            )
+                            .with_feature(solid.id.as_str())
+                            .with_suggestion(SILICO_BUG),
+                        ));
+                    };
+                    consistent(solid, map, &made.mesh, on.meshes, made.deflection)?;
+                    (made.level, made.deflection, Some(made.mesh))
                 };
-                consistent(solid, map, &made.mesh, on.meshes, made.deflection)?;
-                (made.level, made.deflection, Some(made.mesh))
-            };
             // Held at the deflection the kernel used (a floor it didn't know before): the
             // client has it too.
             let is_held = held.contains(&(solid.key, deflection.to_bits()));
@@ -225,6 +263,13 @@ pub fn meshes<K: Kernel>(
                 (true, Some(floor_level)) => [0.0, 2.0 * floor_level],
                 _ => [level, 2.0 * level],
             };
+            // A body at no depth asked the finest level there is, a number that names no
+            // mesh: its level is the floor its mesh was made at (#331, Main).
+            let level = if level == NO_DEPTH_LEVEL {
+                deflection
+            } else {
+                level
+            };
             Ok(MeshedBody {
                 feature: solid.id.clone(),
                 body: *number,
@@ -243,6 +288,7 @@ pub fn meshes<K: Kernel>(
     Ok(MeshesRead {
         camera: answered,
         bodies,
+        coarser: fit_side.unwrap_or("height"),
     })
 }
 

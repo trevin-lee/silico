@@ -36,9 +36,10 @@
 //! [`edits`], for `add_feature`, `set_field`, `remove_feature`, `replace_text`, and
 //! `move_feature`; [`reads`], for `text`, `outline`, `check`, and `timeline`; [`cache`], for `cache_clear`;
 //! [`elements`], for `elements` and `query`; [`schema`]; [`measure`], for `mass_properties`,
-//! `distance`, and `angle`; [`render`]; [`export`]; [`sketch`]; and [`sketch_edits`], for
-//! `sketch_add`, `sketch_remove`, `sketch_split`, `sketch_trim`, `sketch_unjoin`, and
-//! `sketch_merge`).
+//! `distance`, and `angle`; [`render`]; [`export`]; [`drag`], for `drag_begin`,
+//! `drag_move`, and `drag_end`; [`meshes`]; [`sketch`]; and [`sketch_edits`], for `sketch_add`,
+//! `sketch_remove`, `sketch_split`, `sketch_trim`, `sketch_unjoin`, `sketch_merge`,
+//! `sketch_extend`, and `sketch_join`).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -125,6 +126,20 @@ impl<'a> Json<'a> {
         Json(Coordinate::new(value).map_or_else(null_out, write::coordinate))
     }
 
+    /// A value the kernel keeps in 32 bits (a mesh's normal's component): the shortest
+    /// decimal that reads back as the same `f32`, never an exponent, `-0` written `0`. A value
+    /// that isn't finite has no JSON, and is written `null`.
+    pub fn single(value: f32) -> Self {
+        if !value.is_finite() {
+            return Json::null();
+        }
+        // Rust's `Display` of an `f32` is the shortest decimal that reads back as it, in full.
+        Json(Out::Raw(format!(
+            "{}",
+            if value == 0.0 { 0.0 } else { value }
+        )))
+    }
+
     /// A direction (a normal, an axis): each component as a [`coordinate`](Json::coordinate)
     /// is written, but `-0` written `0`.
     pub fn direction(direction: [f64; 3]) -> Self {
@@ -143,6 +158,19 @@ impl<'a> Json<'a> {
 
     pub fn array(items: impl IntoIterator<Item = Json<'a>>) -> Self {
         Json(Out::Array(items.into_iter().map(|j| j.0).collect()))
+    }
+
+    /// An array written an item to a line, each item made by its closure only as it's
+    /// written and dropped once it is, none made past the response's limit: for a list of
+    /// large items (`meshes`' bodies), so a response holds one item's tree at a time.
+    /// Each item owns what it writes.
+    pub fn each<F: Fn() -> Json<'static> + 'a>(makes: impl IntoIterator<Item = F>) -> Self {
+        Json(Out::Each(
+            makes
+                .into_iter()
+                .map(|make| Box::new(move || make().0) as Box<dyn Fn() -> Out<'static> + 'a>)
+                .collect(),
+        ))
     }
 
     /// An object, its members in the order given: schema order, never sorted.
@@ -549,11 +577,34 @@ fn answer_within<T: ToWire>(
     layout: Layout,
     limit: usize,
 ) -> (bool, String) {
+    answer_within_or(response, layout, limit, |_| None)
+}
+
+/// [`answer_within`], a response too long refused for the reason `too_long` gives, given
+/// the response: a command whose result can pass the limit names the field that makes it
+/// (`meshes`); or, if it gives none, refused as any response too long is.
+fn answer_within_or<T: ToWire>(
+    response: &Response<T>,
+    layout: Layout,
+    limit: usize,
+    too_long: impl FnOnce(&Response<T>) -> Option<Error>,
+) -> (bool, String) {
     let _span = tracing::debug_span!("response_text", ?layout).entered();
     if let Ok(written) = text(&self::response(response).0, layout, limit) {
         return (response.result.is_ok(), written);
     }
-    let too_long = Problems::from(
+    refused_too_long(response, layout, limit, too_long(response))
+}
+
+/// The refusal of `response`, too long to write within `limit`: for `error`, or, if it's
+/// none, as any response too long is refused; with the response's session and model.
+fn refused_too_long<T>(
+    response: &Response<T>,
+    layout: Layout,
+    limit: usize,
+    error: Option<Error>,
+) -> (bool, String) {
+    let too_long = Problems::from(error.unwrap_or_else(|| {
         Error::new(
             ErrorCode::InvalidInput,
             format!("the response would be more than the {limit} bytes a response may be"),
@@ -562,8 +613,8 @@ fn answer_within<T: ToWire>(
             "a command that changes the document may have done its work before its answer was \
              written: read the session's revision before asking again",
         )
-        .with_suggestion("ask for less at once"),
-    );
+        .with_suggestion("ask for less at once")
+    }));
     let session = response.session.as_ref();
     let model = response.model.as_ref();
     let refusal = text(&refused(session, model, &too_long).0, layout, limit)
@@ -688,6 +739,14 @@ impl<'a> RequestFields<'a> {
                 });
                 None
             }
+        }
+    }
+
+    /// Every key not taken yet, taken unread: for an object whose tag was refused (`type`),
+    /// so the fields the tag would have decided aren't each refused as unknown too.
+    fn take_rest(&mut self) {
+        for taken in &mut self.taken {
+            *taken = true;
         }
     }
 
@@ -1805,6 +1864,16 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         Command::Timeline => {
             command_schema::<reads::TimelineRequestSchema, reads::TimelineResultSchema>
         }
+        Command::DragBegin => {
+            command_schema::<drag::DragBeginRequestSchema, drag::DragBeginResultSchema>
+        }
+        Command::DragMove => {
+            command_schema::<drag::DragMoveRequestSchema, drag::DragMoveResultSchema>
+        }
+        Command::DragEnd => command_schema::<drag::DragEndRequestSchema, drag::DragEndResultSchema>,
+        Command::Meshes => {
+            command_schema::<meshes::MeshesRequestSchema, meshes::MeshesResultSchema>
+        }
         Command::Sketch => {
             command_schema::<sketch::SketchRequestSchema, sketch::SketchResultSchema>
         }
@@ -1842,6 +1911,18 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
             command_schema::<
                 sketch_edits::SketchMergeRequestSchema,
                 sketch_edits::SketchMergeResultSchema,
+            >
+        }
+        Command::SketchExtend => {
+            command_schema::<
+                sketch_edits::SketchExtendRequestSchema,
+                sketch_edits::SketchExtendResultSchema,
+            >
+        }
+        Command::SketchJoin => {
+            command_schema::<
+                sketch_edits::SketchJoinRequestSchema,
+                sketch_edits::SketchJoinResultSchema,
             >
         }
         Command::Undo => {
@@ -1939,11 +2020,13 @@ pub fn snapshot(of: &str) -> Option<Result<String, Error>> {
 }
 
 pub mod cache;
+pub mod drag;
 pub mod edits;
 pub mod elements;
 pub mod export;
 pub mod logs;
 pub mod measure;
+pub mod meshes;
 pub mod reads;
 pub mod render;
 pub mod schema;

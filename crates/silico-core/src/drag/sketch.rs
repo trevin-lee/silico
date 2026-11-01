@@ -410,7 +410,8 @@ fn start(
 
 /// The sketch as solved on `solver` under `stop`, as its file would hold it; or, where the
 /// solve fails for the sketch (not the solver, nor a stop), as its file draws it, and why.
-fn solved_or_drawn(
+/// A drag begins from it, and so does an extend (`command::edit::sketch_extend`).
+pub(crate) fn solved_or_drawn(
     document: &Checked,
     feature: &FeatureId,
     sketch: &Sketch,
@@ -461,6 +462,11 @@ impl SketchDrag {
     /// Stops the move solving, as [`DragSession::cancel_move`] does.
     pub fn cancel_move(&self) -> bool {
         self.session.cancel_move()
+    }
+
+    /// Ends the drag without waiting, as [`DragSession::abandon`] does.
+    pub fn abandon(&self) {
+        self.session.abandon();
     }
 
     /// Whether the drag is still open.

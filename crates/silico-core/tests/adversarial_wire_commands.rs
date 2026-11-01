@@ -1036,6 +1036,10 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "move_feature",
                 "suppress_feature",
                 "timeline",
+                "drag_begin",
+                "drag_move",
+                "drag_end",
+                "meshes",
                 "sketch",
                 "sketch_add",
                 "sketch_remove",
@@ -1043,6 +1047,8 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "sketch_trim",
                 "sketch_unjoin",
                 "sketch_merge",
+                "sketch_extend",
+                "sketch_join",
                 "undo",
                 "redo"
             ]

@@ -34,8 +34,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use silico_protocol::{
-    DragBegin, Moved, SketchSystem, SolveStatus, Solved, SolverConstraint, Tag, Value,
-    check_drag_target,
+    DragBegin, Dragged, Moved, SketchGeometry, SketchSystem, SolveStatus, Solved, SolverConstraint,
+    Tag, Value, check_drag_target,
 };
 
 use crate::recompute::SketchSolvers;
@@ -115,6 +115,9 @@ struct Shared {
     state: Mutex<State>,
     changed: Condvar,
     notify: Option<Notify>,
+    /// The drag's whole work's stop (its begin's, given to [`begin_under`]): the end's move
+    /// to its cursor runs under it too, so what stops the end's solve stops that move.
+    stop: DragStop,
 }
 
 impl Shared {
@@ -192,6 +195,16 @@ impl DragStop {
         solve: impl FnOnce(&mut dyn SketchSolver) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let stopper = solver.stopper()?;
+        self.under(stopper, || solve(solver))
+    }
+
+    /// `solve`, a request `stopper` stops, stoppable by [`stop`](Self::stop): refused as
+    /// `cancelled` if it's stopped before it starts, or while it runs.
+    fn under<T>(
+        &self,
+        stopper: Option<SolveStopper>,
+        solve: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
         {
             let mut stopping = lock(&self.0);
             if stopping.stopped {
@@ -199,7 +212,7 @@ impl DragStop {
             }
             stopping.stopper = stopper;
         }
-        let result = solve(solver);
+        let result = solve();
         let mut stopping = lock(&self.0);
         stopping.stopper = None;
         if stopping.stopped {
@@ -267,12 +280,17 @@ pub fn begin_under(
         state: Mutex::new(State::default()),
         changed: Condvar::new(),
         notify,
+        stop: stop.clone(),
     });
     let running = Arc::clone(&shared);
     let back = solvers.clone();
+    // The begin's span, the drag's thread's parent: its moves' events are its caller's (a
+    // session's, filed in its logs).
+    let parent = tracing::Span::current();
     let thread = std::thread::Builder::new()
         .name("silico-drag".to_owned())
         .spawn(move || {
+            let _parent = parent.entered();
             let _guard = Unwinding(&running);
             if let Some(solver) = drag(&running, solver, &begin, &back) {
                 back.give_back(solver);
@@ -307,13 +325,110 @@ fn prepared(
     Ok((begin, started))
 }
 
-/// `begin`'s own check, as the worker makes it: refused naming its parameter.
+/// `begin`'s own check, as the worker makes it: refused naming its parameter. A part past
+/// `MAX_DRAG_UNKNOWNS` (the one check a single move doesn't make) is told what to drag
+/// instead (docs/design/m5.0-app.md, `drag_begin`).
 fn checked_begin(begin: &DragBegin) -> Result<(), Error> {
     begin.check().map_err(|invalid| {
+        if invalid.parameter == "press" {
+            return Error::new(ErrorCode::InvalidInput, invalid.message)
+                .with_parameter("press")
+                .with_suggestion(ON_THE_EDGE);
+        }
+        let suggestion = if begin.check_move().is_ok() {
+            "drag a point of a smaller connected part, or set the value with a dimension"
+        } else {
+            "change the value the message names"
+        };
         Error::new(ErrorCode::InvalidInput, invalid.message)
             .with_parameter(invalid.parameter)
-            .with_suggestion("change the value the message names")
-    })
+            .with_suggestion(suggestion)
+    })?;
+    if let Dragged::Edge { curve, press } = begin.dragged
+        && let Some(off) = off_the_edge(&begin.system, curve, press)
+        && off > silico_protocol::LENGTH_TOLERANCE
+    {
+        return Err(Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "the drag's press at ({}, {}) is {} mm off the edge it drags: a press lands on its edge",
+                silico_protocol::format_number(press[0]),
+                silico_protocol::format_number(press[1]),
+                silico_protocol::format_number(off)
+            ),
+        )
+        .with_parameter("press")
+        .with_suggestion(ON_THE_EDGE));
+    }
+    Ok(())
+}
+
+/// What a press is told to do: land on the edge it drags.
+const ON_THE_EDGE: &str =
+    "press a point of the edge, as a pick of it gives: a line's, or its circle's or arc's";
+
+/// How far `press` is from geometry `curve`'s edge in `system`, as the begin state draws it
+/// (a line's segment, a circle, an arc between its ends), in millimetres; none for geometry
+/// that isn't a curve, which the drag's own check refuses. Exactly, in `f64`: 0 for a press
+/// computed on the edge, within a few ulps.
+fn off_the_edge(
+    system: &SketchSystem,
+    curve: silico_protocol::Geometry,
+    press: [f64; 2],
+) -> Option<f64> {
+    let at = |v: Value| system.values.get(v.0 as usize).copied();
+    let point = |p: silico_protocol::PointValues| Some([at(p.x)?, at(p.y)?]);
+    let distance = silico_protocol::distance;
+    match system.geometry.get(curve.0 as usize)? {
+        SketchGeometry::Line { start, end } => {
+            let (a, b) = (point(*start)?, point(*end)?);
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let (px, py) = (press[0] - a[0], press[1] - a[1]);
+            let squared = dx * dx + dy * dy;
+            let t = if squared > 0.0 {
+                (px * dx + py * dy) / squared
+            } else {
+                0.0
+            };
+            // Beside the line, its distance from it measured across the line's unit direction,
+            // never by a foot rounded along the line (which put a press exactly the tolerance
+            // off a horizontal line a hair past it): exact for a line along an axis, whose
+            // direction is (±1, 0) or (0, ±1). Past an end, from that end.
+            Some(if t <= 0.0 {
+                distance(press, a)
+            } else if t >= 1.0 {
+                distance(press, b)
+            } else {
+                let length = libm::hypot(dx, dy);
+                ((dx / length) * py - (dy / length) * px).abs()
+            })
+        }
+        SketchGeometry::Circle { center, radius } => {
+            Some((distance(press, point(*center)?) - at(*radius)?).abs())
+        }
+        SketchGeometry::Arc {
+            center,
+            radius,
+            start_angle,
+            end_angle,
+            start,
+            end,
+        } => {
+            let c = point(*center)?;
+            let (from, to) = (at(*start_angle)?, at(*end_angle)?);
+            let angle = libm::atan2(press[1] - c[1], press[0] - c[0]);
+            // Counter-clockwise from its start's angle: within its sweep, or past it.
+            let turn = std::f64::consts::TAU;
+            let sweep = (to - from).rem_euclid(turn);
+            let into = (angle - from).rem_euclid(turn);
+            if into <= sweep {
+                Some((distance(press, c) - at(*radius)?).abs())
+            } else {
+                Some(distance(press, point(*start)?).min(distance(press, point(*end)?)))
+            }
+        }
+        SketchGeometry::Point(_) => None,
+    }
 }
 
 impl DragSession {
@@ -357,6 +472,27 @@ impl DragSession {
             }
             _ => false,
         }
+    }
+
+    /// Ends the drag with nothing kept, as [`end`](Self::end) with no cursor does, but
+    /// without waiting: a move solving now is stopped by restarting the worker, and the
+    /// drag's thread ends its worker's session and closes the drag on its own. Its own
+    /// [`end`](Self::end) (or its drop) then answers with nothing kept, joining the thread.
+    /// What a cancel from a thread that mustn't wait (an app's) calls.
+    pub fn abandon(&self) {
+        let mut state = lock(&self.shared.state);
+        if state.end.is_none() && state.ended.is_none() && state.closed.is_none() {
+            state.end = Some(None);
+            state.whole = true;
+            if let Some((_, Some(stopper))) = state.running.clone() {
+                state.cancelling = true;
+                stopper.stop();
+            }
+        }
+        drop(state);
+        // The drag's thread woken; the notifier is told by that thread as the moves settle,
+        // never on this one.
+        self.shared.changed.notify_all();
     }
 
     /// Whether the drag is still open: no end, no failure, no cancel yet.
@@ -563,7 +699,7 @@ fn drag(
             let last = state.last.clone();
             let whole = state.whole;
             drop(state);
-            let ended = ending(solver.as_mut(), begin, &part, to, last, whole);
+            let ended = ending(solver.as_mut(), begin, &part, to, last, whole, &shared.stop);
             let mut state = lock(&shared.state);
             state.closed = Some(no_drag("it ended"));
             state.ended = Some(ended);
@@ -686,6 +822,7 @@ fn ending(
     to: Option<[f64; 2]>,
     last: Option<([u64; 2], Vec<f64>)>,
     whole: bool,
+    stop: &DragStop,
 ) -> Result<Ended, Error> {
     let kept_begin = |why: Option<Error>| Ended {
         kept: Kept::Begin,
@@ -703,8 +840,10 @@ fn ending(
     let values = match last {
         Some((bits, values)) if bits == to.map(f64::to_bits) => Ok(values),
         _ => {
-            solver.session_stopper()?;
-            match solver.drag_move(to, DRAG_MOVE_TIMEOUT) {
+            // Under the drag's stop: an end that's stopped (its command's cancel, its
+            // session's close) stops this move, as a cancel stops a move.
+            let stopper = solver.session_stopper()?;
+            match stop.under(stopper, || solver.drag_move(to, DRAG_MOVE_TIMEOUT)) {
                 Ok(moved) => {
                     if let Err(error) = checked_frame(part, &moved) {
                         solver.distrust();
@@ -721,6 +860,7 @@ fn ending(
                         .with_suggestion("release the drag nearer where it began")),
                     }
                 }
+                Err(error) if error.code() == ErrorCode::Cancelled => return Err(error),
                 Err(error) if !error.code().is_kernel_fault() => Err(error),
                 Err(error) => return Err(error),
             }
@@ -870,14 +1010,18 @@ fn no_drag(why: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Begun, MoveOutcome, begin, lock};
+    use super::{Begun, MoveOutcome, begin, lock, off_the_edge};
+    use crate::Error;
     use crate::fake::FakeSketches;
     use crate::recompute::SketchSolvers;
-    use crate::sketch::SketchSolver;
+    use crate::sketch::{DragStarted, SketchSolver, SolveStopper};
     use silico_protocol::{
-        Algorithm, DragBegin, Geometry, PointOf, PointValues, SketchGeometry, SketchSystem, Value,
+        Algorithm, DragBegin, Geometry, Moved, PointOf, PointValues, SketchGeometry, SketchSystem,
+        Solved, Value,
     };
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     fn a_point() -> DragBegin {
         DragBegin {
@@ -893,6 +1037,191 @@ mod tests {
             },
             dragged: silico_protocol::Dragged::Point(PointOf::Point(Geometry(0))),
         }
+    }
+
+    /// The point of values `x` and `y` of a system.
+    fn values_at(x: u32, y: u32) -> PointValues {
+        PointValues {
+            x: Value(x),
+            y: Value(y),
+        }
+    }
+
+    /// A system of one curve, `geometry` 0, over `values`.
+    fn one_curve(values: Vec<f64>, curve: SketchGeometry) -> SketchSystem {
+        SketchSystem {
+            values,
+            unknowns: vec![],
+            geometry: vec![curve],
+            constraints: vec![],
+            algorithms: vec![Algorithm::DogLeg],
+        }
+    }
+
+    /// How far `press` is from the line from `a` to `b`.
+    fn off_line(a: [f64; 2], b: [f64; 2], press: [f64; 2]) -> f64 {
+        let system = one_curve(
+            vec![a[0], a[1], b[0], b[1]],
+            SketchGeometry::Line {
+                start: values_at(0, 1),
+                end: values_at(2, 3),
+            },
+        );
+        off_the_edge(&system, Geometry(0), press).unwrap()
+    }
+
+    /// `off` is `by hand` to within a few ulps: for a line along no axis, whose unit direction
+    /// isn't exact in binary.
+    fn about(off: f64, by_hand: f64) {
+        assert!(
+            (off - by_hand).abs() <= 4.0 * f64::EPSILON * by_hand,
+            "{off} for {by_hand}"
+        );
+    }
+
+    #[test]
+    fn a_press_beside_a_line_is_measured_across_it_and_one_past_an_end_from_that_end() {
+        // Up the y axis, from (0, 0) to (0, 4). (1, 3) is beside it, three quarters along
+        // (its foot (0, 3)): 1 across. Its foot's place along the line is the press's
+        // projection over the length squared, 12 / 16: reckoned over 4 + 4, 12 / 8, it would
+        // lie past the end, and be √2 from (0, 4).
+        assert_eq!(off_line([0.0, 0.0], [0.0, 4.0], [1.0, 3.0]), 1.0);
+        // On the line's own axis, past its end and before its start: from the nearer end, 1
+        // and 2. Projected as 0 + (5 + 4) = 9 over 16, or (-2 + 4) = 2 over 16, each would
+        // fall on the segment and read 0.
+        assert_eq!(off_line([0.0, 0.0], [0.0, 4.0], [0.0, 5.0]), 1.0);
+        assert_eq!(off_line([0.0, 0.0], [0.0, 4.0], [0.0, -2.0]), 2.0);
+        // A diagonal, from (0, 0) to (3, 4), of length 5 and direction (0.6, 0.8). (5.5, -1)
+        // is its midpoint (1.5, 2) and 5 along its normal (0.8, -0.6): 5 across it,
+        // |0.6 × -1 - 0.8 × 5.5|. Not 0.6 × -1 + 0.8 × 5.5 = 3.8, nor with the direction's y
+        // as 4 % 5 or 4 × 5.
+        about(off_line([0.0, 0.0], [3.0, 4.0], [5.5, -1.0]), 5.0);
+        // Past its ends along it: (6, 8) is 5 from (3, 4), and (-3, -4) 5 from (0, 0).
+        assert_eq!(off_line([0.0, 0.0], [3.0, 4.0], [6.0, 8.0]), 5.0);
+        assert_eq!(off_line([0.0, 0.0], [3.0, 4.0], [-3.0, -4.0]), 5.0);
+    }
+
+    #[test]
+    fn a_press_by_a_line_of_no_length_is_measured_from_its_point() {
+        // Both ends at (1, 2): a press at (4, 6) is 5 from it (3, 4, 5), and one on it 0.
+        // Its projection, 0 over a length squared of 0, is no number: a press measured by it
+        // would read NaN, never more than the tolerance, and be taken wherever it was.
+        assert_eq!(off_line([1.0, 2.0], [1.0, 2.0], [4.0, 6.0]), 5.0);
+        assert_eq!(off_line([1.0, 2.0], [1.0, 2.0], [1.0, 2.0]), 0.0);
+    }
+
+    #[test]
+    fn a_press_by_an_arc_away_from_the_origin_is_on_its_sweep_by_its_angle_about_its_center() {
+        // The quarter of radius 5 about (10, 20) from angle π to 3π/2: from (5, 20) to
+        // (10, 15).
+        let system = one_curve(
+            vec![
+                10.0,
+                20.0,
+                5.0,
+                std::f64::consts::PI,
+                3.0 * std::f64::consts::FRAC_PI_2,
+                5.0,
+                20.0,
+                10.0,
+                15.0,
+            ],
+            SketchGeometry::Arc {
+                center: values_at(0, 1),
+                radius: Value(2),
+                start_angle: Value(3),
+                end_angle: Value(4),
+                start: values_at(5, 6),
+                end: values_at(7, 8),
+            },
+        );
+        let off = |press: [f64; 2]| off_the_edge(&system, Geometry(0), press).unwrap();
+        // (4, 12) is (-6, -8) from the center, at 10, beyond the arc's middle (at angle
+        // π + 0.93, within the sweep): 10 - 5 off its circle. Its angle reckoned from the
+        // press's y plus the center's (atan2(32, -6)), or its x plus the center's
+        // (atan2(-8, 14)) or over it (atan2(-8, 0.4)), lies off the sweep, and the press
+        // would be measured from its nearer end instead, √45 from (10, 15).
+        assert_eq!(off([4.0, 12.0]), 5.0);
+        // (13, 11) is (3, -9) from the center, at angle -1.25, past the sweep's end: from
+        // its nearer end, (10, 15), 5, not from its circle (√90 - 5).
+        assert_eq!(off([13.0, 11.0]), 5.0);
+        // A circle about (10, 20) of radius 5: (4, 12) is 10 - 5 from it.
+        let circle = one_curve(
+            vec![10.0, 20.0, 5.0],
+            SketchGeometry::Circle {
+                center: values_at(0, 1),
+                radius: Value(2),
+            },
+        );
+        assert_eq!(off_the_edge(&circle, Geometry(0), [4.0, 12.0]), Some(5.0));
+    }
+
+    /// The fake, but its drag's requests stopped only in name: each stop counted, the move
+    /// solving left as it is (held, if the fake holds it), so a test can stop it again
+    /// while it still runs.
+    struct CountedStops {
+        fake: FakeSketches,
+        stops: Arc<AtomicUsize>,
+    }
+
+    impl SketchSolver for CountedStops {
+        fn solve(&mut self, system: SketchSystem) -> Result<Solved, Error> {
+            self.fake.solve(system)
+        }
+
+        fn session_stopper(&mut self) -> Result<Option<SolveStopper>, Error> {
+            let stops = Arc::clone(&self.stops);
+            Ok(Some(SolveStopper::new(move || {
+                stops.fetch_add(1, Ordering::SeqCst);
+            })))
+        }
+
+        fn drag_begin(&mut self, begin: DragBegin) -> Result<DragStarted, Error> {
+            self.fake.drag_begin(begin)
+        }
+
+        fn drag_move(&mut self, to: [f64; 2], timeout: Duration) -> Result<Moved, Error> {
+            self.fake.drag_move(to, timeout)
+        }
+
+        fn drag_end(&mut self) -> Result<(), Error> {
+            self.fake.drag_end()
+        }
+    }
+
+    #[test]
+    fn a_drag_abandoned_again_while_its_move_still_solves_stops_that_move_once() {
+        // A cancel of `drag_move` stops each of the drag's moves unanswered, each of which
+        // abandons the drag: the move solving and the one waiting abandon it twice. The
+        // first stops the move solving and ends the drag; the second, the drag already
+        // ending, stops nothing again, though the move hasn't yet answered.
+        let fake = FakeSketches::new();
+        let stops = Arc::new(AtomicUsize::new(0));
+        let solvers = {
+            let (fake, stops) = (fake.clone(), Arc::clone(&stops));
+            SketchSolvers::starting(move || {
+                Ok(Box::new(CountedStops {
+                    fake: fake.clone(),
+                    stops: Arc::clone(&stops),
+                }) as Box<dyn SketchSolver>)
+            })
+        };
+        let Begun::Open { session, .. } = begin(&solvers, a_point()).unwrap() else {
+            panic!("conflicting")
+        };
+        fake.hold();
+        let moving = session.move_to([1.0, 1.0]).unwrap();
+        assert!(fake.wait_held(Duration::from_secs(60)));
+        let waiting = session.move_to([2.0, 2.0]).unwrap();
+        session.abandon();
+        session.abandon();
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        fake.release();
+        assert_eq!(moving.wait(), MoveOutcome::Cancelled);
+        assert_eq!(waiting.wait(), MoveOutcome::Dropped);
+        assert!(!session.is_open());
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+        assert_eq!(session.end(None).unwrap().kept, super::Kept::Begin);
     }
 
     #[test]

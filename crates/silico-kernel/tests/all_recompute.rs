@@ -17,6 +17,8 @@ mod lateness;
 mod measuring;
 #[path = "../../silico-core/tests/common/model.rs"]
 mod model;
+#[path = "common/planes.rs"]
+mod planes;
 #[path = "common/running.rs"]
 mod running;
 #[path = "common/scripts.rs"]

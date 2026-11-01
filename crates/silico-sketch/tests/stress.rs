@@ -137,6 +137,7 @@ fn a_polygon(rng: &mut Rng) -> Builder {
                 tag,
                 a,
                 b: next,
+                reversed: false,
                 value: angle,
             });
         }
