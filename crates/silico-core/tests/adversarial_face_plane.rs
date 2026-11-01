@@ -799,27 +799,34 @@ fn call(sessions: &Sessions<Arc<FakeKernel>>, name: &str, arguments: &str) -> Va
 }
 
 #[test]
-fn the_sketch_read_of_a_face_sketch_blocked_upstream_is_refused_naming_the_root_not_a_bug() {
+fn the_sketch_read_of_a_face_sketch_blocked_upstream_answers_naming_the_root_not_a_bug() {
     // s2's face could only be in p1, which is blocked on s1 (not planar on the fake): the
-    // read of s2 is refused as check reports s2, blocked on s1, never `internal`.
+    // read of s2 answers, its plane null and its plane problem s2 blocked on s1, as check
+    // reports it, never `internal`; s1's, its own face refused.
     let dir = tempfile::tempdir().unwrap();
     let sessions = sessions_on(&dir, &chain(2));
-    for (sketch, code) in [("s0000001", "reference_broken"), ("s0000002", "blocked")] {
+    for (sketch, code) in [
+        ("s0000001", "reference_broken"),
+        ("s0000002", "invalid_input"),
+    ] {
         let read = call(
             &sessions,
             "sketch",
             &json!({"session": "s1", "model": "current", "sketch": sketch}).to_string(),
         );
-        assert_eq!(read["ok"], false, "{read}");
-        let error = &read["errors"][0];
-        assert_ne!(error["code"], "internal", "{sketch}: {read}");
+        assert_eq!(read["ok"], true, "{read}");
+        assert_eq!(read["result"]["plane"], Value::Null, "{read}");
+        let error = &read["result"]["plane_problem"];
+        assert_eq!(error["code"], code, "{sketch}: {read}");
+        assert_eq!(error["feature"], sketch, "{read}");
         if sketch == "s0000001" {
-            assert_eq!(error["code"], code, "{read}");
             assert_eq!(error["parameter"], "plane.face", "{read}");
         } else {
             assert!(
-                read.to_string().contains("s0000001"),
-                "{sketch}'s refusal names its root: {read}"
+                error["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("uses s0000001, which failed")),
+                "{sketch}'s plane problem names its root: {read}"
             );
         }
     }

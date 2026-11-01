@@ -200,7 +200,7 @@ It ends when a round resolves nothing new. A sketch still waiting then is blocke
 - `timeline`'s `inputs` gain the feature that makes the face: the name's own feature (`k7f2qx3m` of `k7f2qx3m.box.Face6`).
 - Suppressing a maker of the name suppresses the sketch with it (M5.1's dependents, which already list A4's face).
 - `move_feature` and `remove_feature` treat the name as a fillet's edge: a move to before a maker, or a removal of one, is refused by the gate as a cycle or a broken reference.
-- `sketch` reports the frame as resolved.
+- `sketch` reports the frame as resolved, or `plane` null with the refusal in `plane_problem` (the rest of the read whole, its sweeps still blocked on it).
 - `add_feature` and `set_field` take the face plane (M4.1 section 5). `add_feature` may leave out `plane.x`: the face is looked up as above in the model rebuilt up to the sketch's place, so the edit waits for that rebuild, and `x` is written as the face's `default_x`. A name that finds nothing is refused as `reference_broken`, with candidates, and the edit isn't made. `add_feature` leaving out `plane.x`, and `set_field` on `plane` as this says, are M5.9's next part (part 3): until it, a face plane is written whole, its `x` included. Its key test: `add_feature` with no `plane.x` on each of a cube's six faces writes F1's table's token (the faces' `default_x`), and one whose face isn't found is refused as `reference_broken` with candidates, the document unchanged.
 
 ### Where Silico differs from FreeCAD on purpose

@@ -21119,7 +21119,26 @@
                     "type": "array"
                   },
                   "plane": {
-                    "$ref": "#/$defs/SketchFrame"
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/SketchFrame"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The sketch's plane, as its rebuild resolved it: null when the rebuild couldn't\nresolve it (a sketch on a face whose face broke, or whose face's feature didn't\nbuild); `plane_problem` says why."
+                  },
+                  "plane_problem": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/Error"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Why `plane` is null: the rebuild's one error for the sketch, as `check` and a read of\na feature's solid give it. For a sketch on a face: its face's reference broken\n(`reference_broken`, with candidates, on `plane.face` or `plane.x`); the feature it's\nblocked on, if its face's feature didn't build; or the worker's failure describing\nthe face. Null when the rebuild resolved the plane. The rest of the read is the\nsketch as solved all the same."
                   },
                   "points": {
                     "description": "Each point, by ID, as the document writes it, at its solved place.",
@@ -21174,6 +21193,7 @@
                   "dofs",
                   "lines",
                   "plane",
+                  "plane_problem",
                   "points",
                   "profile_problems",
                   "profile_problems_total",

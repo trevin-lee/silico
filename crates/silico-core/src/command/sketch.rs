@@ -3,7 +3,9 @@
 //! agent, which reads the same thing (invariant 3). Its plane's frame in 3D; its state and
 //! degrees of freedom; each member in its document form, with its solved values in place of
 //! the stored ones and its definition state ([`crate::sketch_states`]); its profile's regions
-//! (M3.5), or why it makes none; and why it wasn't solved, if it wasn't.
+//! (M3.5), or why it makes none; and why it wasn't solved, if it wasn't. A sketch on a face
+//! whose face the rebuild couldn't resolve is read all the same, its 2D whole: its plane
+//! null, and the rebuild's error for it beside, as a refused solve's is.
 //!
 //! A model keeps each sketch's diagnosis beside its solve's outcome, both read from the
 //! answer its rebuild's solve gave ([`Model::diagnosed`]), so the read gives exactly what
@@ -29,7 +31,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// document doesn't have, or one that isn't a sketch, the document's first sketches the
     /// candidates, or a suppressed one, which is never solved; and with the rebuild's own
     /// error for a sketch it couldn't solve or diagnose for a reason that isn't the sketch's
-    /// (a worker's failure), as `check` reports it. Read as every model is
+    /// (a worker's failure), as `check` reports it. A sketch on a face that wasn't resolved
+    /// isn't refused: its plane is the rebuild's error for it ([`SketchRead::plane`]). Read
+    /// as every model is
     /// ([`read_model`](Self::read_model)): the current one queued, waiting for the revision's
     /// rebuild, or the newest published at once, counted among the session's published reads.
     pub fn sketch(
@@ -56,8 +60,12 @@ pub struct SketchRead {
     /// The sketch's ID, as the request named it.
     pub sketch: FeatureId,
     /// The plane it's drawn on, as its rebuild resolved it: an origin plane's, or, for a
-    /// sketch on a face, the face's frame (docs/ports/attacher.md, F1 and F2).
-    pub plane: SketchPlane,
+    /// sketch on a face, the face's frame (docs/ports/attacher.md, F1 and F2); or, for a
+    /// sketch on a face the rebuild couldn't resolve, its one error for it, as `check`
+    /// reports the sketch (its face's reference broken, with candidates; the feature it's
+    /// blocked on; or the worker's failure describing the face, the kernel fault kept). Its
+    /// 2D is read all the same: the rebuild solves a sketch before it places it.
+    pub plane: Result<SketchPlane, Error>,
     /// The sketch in its document form: its points, circles' radii, and reference
     /// dimensions' values as the solve gave them, written as a save writes them (M3.4); or,
     /// for a sketch that wasn't solved, as stored.
@@ -91,7 +99,8 @@ pub struct Region {
 /// the rebuild's solve read beside its outcome ([`Model::diagnosed`]), its members at their
 /// solved values, and its profile, from the solution. One the rebuild couldn't diagnose is
 /// refused with the rebuild's error, which says nothing of the sketch's state, as is one
-/// whose outcome is no state ([`sketch_states::states`]).
+/// whose outcome is no state ([`sketch_states::states`]); one on a face that wasn't
+/// resolved isn't, its plane the rebuild's error for it ([`plane_of`]).
 fn read_sketch(model: &Model, id: &FeatureId) -> Result<SketchRead, Problems> {
     let sketch = sketch_of(model, id)?;
     let plane = plane_of(model, id, &sketch.plane)?;
@@ -133,28 +142,33 @@ fn read_sketch(model: &Model, id: &FeatureId) -> Result<SketchRead, Problems> {
 }
 
 /// The sketch `id`'s plane, `plane` as its document writes it, as `model`'s rebuild resolved
-/// it: an origin plane's, or its face's frame. A sketch on a face whose face wasn't resolved
-/// is refused with its own failure, as `check` reports it (its face's reference broken, its
-/// face's solid failed, or the worker's failure describing it), as a read of a feature's
-/// solid refuses one that didn't build.
-fn plane_of(model: &Model, id: &FeatureId, plane: &Plane) -> Result<SketchPlane, Problems> {
+/// it: an origin plane's, or its face's frame; or, for a sketch on a face whose face wasn't
+/// resolved, the rebuild's one error for it, as `check` reports it and a read of a
+/// feature's solid words it (its face's reference broken, the feature it's blocked on, or
+/// the worker's failure describing the face, the kernel fault kept). Refused only as a bug:
+/// a sketch on a face the model holds neither a frame of nor a failure.
+fn plane_of(
+    model: &Model,
+    id: &FeatureId,
+    plane: &Plane,
+) -> Result<Result<SketchPlane, Error>, Problems> {
     if let Some(origin) = plane.origin() {
-        return Ok(origin.into());
+        return Ok(Ok(origin.into()));
     }
     if let Some(frame) = model.frame(id) {
-        return Ok(SketchPlane::Face(*frame));
+        return Ok(Ok(SketchPlane::Face(*frame)));
     }
-    match model.outcome(id) {
+    let failure = match model.outcome(id) {
         Some(
             FeatureOutcome::Failed(_)
             | FeatureOutcome::Broken { .. }
             | FeatureOutcome::Blocked { .. },
-        ) => match built(model, id, false) {
-            Err(problems) => Err(problems),
-            Ok(_) => Err(unplaced(id).into()),
-        },
-        _ => Err(unplaced(id).into()),
-    }
+        ) => built(model, id, false)
+            .err()
+            .and_then(|problems| problems.errors().first().cloned()),
+        _ => None,
+    };
+    failure.map(Err).ok_or_else(|| unplaced(id).into())
 }
 
 /// A bug's refusal: a sketch on a face the model holds no frame of, though it doesn't say

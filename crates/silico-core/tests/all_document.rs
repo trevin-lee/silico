@@ -124,6 +124,8 @@ mod disk;
 mod document;
 #[path = "face_sketch.rs"]
 mod face_sketch;
+#[path = "face_sketch_read.rs"]
+mod face_sketch_read;
 #[path = "fingerprint.rs"]
 mod fingerprint;
 #[path = "mass_properties.rs"]
