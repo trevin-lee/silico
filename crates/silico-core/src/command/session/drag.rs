@@ -94,9 +94,12 @@ impl OpenDrag {
 /// ([`answer`](Self::answer)): told by the drag of each change, with no lock of the drag's
 /// held. Its lock is taken under no session lock but the drag slot's, and holds none but the
 /// session's queue's, a leaf, asked whether the session closed as a move is kept.
-#[derive(Default)]
 struct Frames {
     pending: Mutex<Vec<PendingFrame>>,
+    /// The span of the command that began the drag: each frame's events are filed under it,
+    /// whichever thread answers the frame (the drag's own, or a `drag_move` that found its
+    /// frame already come), so `read_logs` files them alike whatever the scheduling.
+    span: tracing::Span,
 }
 
 /// A move sent: its frame's ticket, where its answer goes, the session as it was sent, and
@@ -155,7 +158,9 @@ impl Frames {
                     result: if closed || stop.closed() {
                         Err(Problems::from(not_open(info.id)))
                     } else {
-                        drag_frame(outcome).map_err(Problems::from)
+                        self.span
+                            .in_scope(|| drag_frame(outcome))
+                            .map_err(Problems::from)
                     },
                 },
             );
@@ -435,7 +440,10 @@ impl<C: Kernel + 'static> Session<C> {
         let held = published
             .as_ref()
             .and_then(|published| Held::of(&published.model, &sketch));
-        let frames = Arc::new(Frames::default());
+        let frames = Arc::new(Frames {
+            pending: Mutex::new(Vec::new()),
+            span: tracing::Span::current(),
+        });
         let notify: Notify = {
             let frames = Arc::clone(&frames);
             let waker = Arc::clone(&self.waker);
