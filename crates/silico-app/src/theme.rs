@@ -581,9 +581,9 @@ pub const START_ACTION_PADDING: f32 = 10.0;
 pub const START_ACTION_ICON_GAP: f32 = 10.0;
 pub const START_ACTION_GAP: f32 = 4.0;
 
-/// The primary action's fill and text, hovered (`.st-action.primary:hover`).
+/// The primary action's fill, hovered (`.st-action.primary:hover`: white, where a primary
+/// button's is Gray.850); its text is [`PRIMARY_BUTTON_HOVER_TEXT`].
 pub const START_PRIMARY_HOVER_BG: Color32 = GRAY_1000;
-pub const START_PRIMARY_HOVER_TEXT: Color32 = GRAY_0;
 
 /// The agents' note: the space above its rule, below it, its line height, and the space
 /// above Copy MCP config.

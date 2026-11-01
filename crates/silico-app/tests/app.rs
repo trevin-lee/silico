@@ -10942,15 +10942,12 @@ fn a_recent_document_no_longer_there_is_said_and_dropped_from_the_list() {
     )
     .unwrap();
     let mut h = f.remembering();
-    step(&mut h);
-    // Nothing at gone's path when the list was read: marked so.
-    assert_eq!(
-        recent_rows(&h),
-        [
-            ("gone.silico".to_owned(), format!("{gone_at}, not found")),
-            ("kept.silico".to_owned(), kept_at.to_owned())
-        ]
-    );
+    // Nothing at gone's path when the list was looked through: marked so, once looked.
+    let want = [
+        ("gone.silico".to_owned(), format!("{gone_at}, not found")),
+        ("kept.silico".to_owned(), kept_at.to_owned()),
+    ];
+    step_until(&mut h, "gone marked", |h| recent_rows(h) == want);
     let folder = f.dir.path().display().to_string();
     start_page(&h)
         .get_by_role_and_label(Role::Button, "gone.silico")
@@ -11004,14 +11001,28 @@ fn a_recent_document_refused_for_another_reason_stays_listed() {
     step_until(&mut h, "the refusal said", |h| {
         h.state().message().is_some()
     });
-    for _ in 0..20 {
-        step(&mut h);
-    }
     assert!(!h.state().message().unwrap().contains("Recent"));
-    assert_eq!(recent_names(&h), ["broken.silico"]);
+    // Another document opened after it: once that's listed, the list's thread has taken
+    // the refusal's check too, asked before it.
+    let other = f.file("other.silico", EXAMPLE);
+    let other_at = other.to_str().unwrap().to_owned();
+    open_and_wait(&mut h, &other);
+    let listed = |h: &AppHarness| -> Vec<String> {
+        h.state()
+            .recents()
+            .unwrap()
+            .list()
+            .iter()
+            .map(|recent| recent.path.clone())
+            .collect()
+    };
+    step_until(&mut h, "other listed", |h| {
+        listed(h).first() == Some(&other_at)
+    });
+    assert_eq!(listed(&h), [other_at.clone(), at.clone()]);
     assert_eq!(
         std::fs::read_to_string(f.recents_file()).unwrap(),
-        format!("silico recent-documents 1\n{at}\n")
+        format!("silico recent-documents 1\n{other_at}\n{at}\n")
     );
     assert_eq!(never_waits::waits(), 0);
 }
@@ -11107,13 +11118,18 @@ fn the_recents_file_is_read_off_the_ui_thread_and_an_open_meanwhile_comes_first(
 #[test]
 fn copy_mcp_config_copies_the_config_docs_mcp_md_gives() {
     let f = fixture();
-    let mut h = f.app_made(|app| app.serving_with("/opt/silico/bin/silico".to_owned()));
+    let mut h = f.app_made(|app| {
+        app.serving_with("/opt/silico/bin/silico".to_owned())
+            .documents_folder(None)
+    });
     step(&mut h);
+    // No folder to name: the note beside the button says to add one.
+    assert!(anywhere(&h, silico_app::start::NO_WORKSPACE_NOTE));
     start_page(&h)
         .get_by_role_and_label(Role::Button, "Copy MCP config")
         .click();
     step(&mut h);
-    // docs/mcp.md's form, written out by hand: no document, so no workspace.
+    // docs/mcp.md's form, written out by hand: no folder known, so no workspace.
     assert_eq!(
         copied(&h).as_deref(),
         Some(
@@ -11130,7 +11146,7 @@ fn copy_mcp_config_copies_the_config_docs_mcp_md_gives() {
     );
     step(&mut h);
     assert_eq!(copied(&h), None);
-    // A document open: its folder is the workspace.
+    // A document open: its folder is the workspace, and the note goes.
     let path = f.file("example.silico", EXAMPLE);
     open_and_wait(&mut h, &path);
     home_button(&h).click();
@@ -11153,6 +11169,173 @@ fn copy_mcp_config_copies_the_config_docs_mcp_md_gives() {
 }}
 "#
         ))
+    );
+    assert!(!anywhere(&h, silico_app::start::NO_WORKSPACE_NOTE));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The MCP config Copy MCP config copies for a server of `folder`, as docs/mcp.md gives it,
+/// written out by hand.
+fn config_serving(folder: &str) -> String {
+    format!(
+        r#"{{
+  "mcpServers": {{
+    "silico": {{
+      "command": "/opt/silico/bin/silico",
+      "args": ["serve", "--workspace", "{folder}"]
+    }}
+  }}
+}}
+"#
+    )
+}
+
+/// Copy MCP config clicked on the start page, and what it copied.
+fn copy_config(h: &mut AppHarness) -> Option<String> {
+    start_page(h)
+        .get_by_role_and_label(Role::Button, "Copy MCP config")
+        .click();
+    step(h);
+    copied(h)
+}
+
+#[test]
+fn with_no_document_copy_mcp_config_serves_the_newest_recent_ones_folder_then_documents() {
+    let f = fixture();
+    // The newest listed is gone, with its folder; the next is in a folder of its own.
+    let gone = f.dir.path().join("gone").join("a.silico");
+    let models = f.dir.path().join("models");
+    std::fs::create_dir(&models).unwrap();
+    let kept = models.join("b.silico");
+    std::fs::write(&kept, EXAMPLE).unwrap();
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!(
+            "silico recent-documents 1\n{}\n{}\n",
+            gone.to_str().unwrap(),
+            kept.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let documents = f.dir.path().join("Documents");
+    let file = f.recents_file();
+    let mut h = f.app_made(|app| {
+        app.serving_with("/opt/silico/bin/silico".to_owned())
+            .documents_folder(Some(documents.clone()))
+            .remembering(Recents::at(file))
+    });
+    step_until(&mut h, "gone marked missing", |h| {
+        h.state()
+            .recents()
+            .is_some_and(|recents| recents.list().first().is_some_and(|recent| recent.missing))
+    });
+    assert_eq!(
+        copy_config(&mut h),
+        Some(config_serving(models.to_str().unwrap()))
+    );
+    assert!(!anywhere(&h, silico_app::start::NO_WORKSPACE_NOTE));
+    // With no recent document left that will do: the Documents folder.
+    let mut bare = f.app_made(|app| {
+        app.serving_with("/opt/silico/bin/silico".to_owned())
+            .documents_folder(Some(documents.clone()))
+    });
+    step(&mut bare);
+    assert_eq!(
+        copy_config(&mut bare),
+        Some(config_serving(documents.to_str().unwrap()))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_no_list_kept_recent_says_so() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    assert!(
+        start_page(&h)
+            .query_by_label(silico_app::start::NOT_KEPT)
+            .is_some()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_home_a_documents_shortcuts_act_on_nothing_and_esc_and_ctrl_w_return_to_it() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle()
+            && h.state().tabs()[0].undoable()
+            && anywhere(h, "example.silico *")
+    });
+    let id = h.state().tabs()[0].id;
+    let held = |f: &Fixture| f.sessions.text(&id, None).wait().result.unwrap().text;
+    let before = held(&f);
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
+    // Undo, Redo, Save, Rebuild: none reaches the document hidden.
+    for key in [
+        eframe::egui::Key::Z,
+        eframe::egui::Key::Y,
+        eframe::egui::Key::S,
+        eframe::egui::Key::B,
+    ] {
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+        step(&mut h);
+    }
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(start_shown(&h));
+    assert_eq!(held(&f), before);
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    // Esc leaves Home for the document; so does Ctrl+W, which closes nothing.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::W);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(!anywhere(
+        &h,
+        "Save changes to example.silico before closing?"
+    ));
+    assert_eq!(held(&f), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_document_saved_as_another_file_is_listed_first_in_recent() {
+    let f = fixture();
+    let old = f.file("example.silico", EXAMPLE);
+    let mut h = f.remembering();
+    open_and_wait(&mut h, &old);
+    let copy = f.dir.path().join("copy.silico");
+    save_as(&mut h, &copy);
+    step_until(&mut h, "the tab of the new file", |h| {
+        h.state().tabs()[0].path == copy.to_str().unwrap()
+    });
+    home_button(&h).click();
+    step_until(&mut h, "Recent, the copy first", |h| {
+        start_shown(h) && recent_names(h) == ["copy.silico", "example.silico"]
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!(
+            "silico recent-documents 1\n{}\n{}\n",
+            copy.to_str().unwrap(),
+            old.to_str().unwrap()
+        )
     );
     assert_eq!(never_waits::waits(), 0);
 }
@@ -11256,6 +11439,10 @@ fn the_start_page_draws_in_the_themes_colours_on_lavapipe() {
                 .rect();
             let thumb = eframe::egui::pos2(row.left() + 6.0 + 4.0, row.center().y - 12.0);
             assert_eq!(pixel(thumb), [0x00, 0x00, 0x00, 0xff], "{row:?}");
+            // Home, on: Gray.250 behind its icon (`.ab-btn.on`), not the selection's blue.
+            let home = home_button(&h).rect();
+            let edge = eframe::egui::pos2(home.left() + 2.0, home.center().y);
+            assert_eq!(pixel(edge), [0x27, 0x26, 0x26, 0xff], "{home:?}");
             assert_eq!(never_waits::waits(), 0);
         },
     );

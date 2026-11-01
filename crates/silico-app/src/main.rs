@@ -52,11 +52,7 @@ fn main() -> ExitCode {
         .spawn(move || {
             let (kernel, sketches) = warming.warm(1, 1);
             tracing::info!(kernel, sketches, "warmed the workers");
-            if kernel > 0 && sketches > 0 {
-                told.ready();
-            } else {
-                told.cold();
-            }
+            told.started(kernel, sketches);
         });
     if let Err(e) = started {
         tracing::warn!("the workers can't be warmed ahead of the first rebuild: {e}");

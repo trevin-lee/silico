@@ -5,8 +5,9 @@
 //! column of its own at the left, Recent at the right, centred in the window. The warm
 //! start's state ([`Warm`]) is the status bar's while no document is open.
 
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use eframe::egui::text::{LayoutJob, TextFormat, TextWrapping};
 use eframe::egui::{
@@ -17,30 +18,7 @@ use eframe::egui::{
 use crate::icons::{Icon, IconSize};
 use crate::recent::{Recent, Recents};
 use crate::theme;
-
-/// Who to ask for a frame when something changes off the UI thread: the window's context,
-/// once its first frame has given it. Something told before then is seen by that frame.
-#[derive(Clone, Default)]
-pub(crate) struct Wake(Arc<Mutex<Option<egui::Context>>>);
-
-impl Wake {
-    /// `ctx` asked from now on.
-    pub(crate) fn set(&self, ctx: &egui::Context) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(ctx.clone());
-    }
-
-    /// A frame asked for, if the window has given its context.
-    pub(crate) fn wake(&self) {
-        if let Some(ctx) = self
-            .0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
-            ctx.request_repaint();
-        }
-    }
-}
+use crate::wake::Wake;
 
 /// How the warm start (decision 10) stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +64,16 @@ impl Warm {
     /// The workers couldn't be started ahead of time.
     pub fn cold(&self) {
         self.set(Warming::Cold);
+    }
+
+    /// The warm start ended, having started `kernel` kernel workers and `sketches` sketch
+    /// workers (`Sessions::warm`'s answer): ready if it started both kinds, else cold.
+    pub fn started(&self, kernel: usize, sketches: usize) {
+        if kernel > 0 && sketches > 0 {
+            self.ready();
+        } else {
+            self.cold();
+        }
     }
 
     fn set(&self, warming: Warming) {
@@ -153,6 +141,37 @@ pub fn mcp_config(command: &str, workspace: Option<&str>) -> String {
     )
 }
 
+/// The folder an MCP client is told to serve (docs/mcp.md: `--workspace`): that of the
+/// document `shown`, if one is; else of the newest recent document not found missing; else
+/// `documents`, the platform's Documents folder. A file system's root is never one: a
+/// server started there stops at once. None if none of them will do.
+pub fn workspace(
+    shown: Option<&str>,
+    recents: &[Recent],
+    documents: Option<&Path>,
+) -> Option<PathBuf> {
+    let folder_of = |path: &str| {
+        let path = std::path::absolute(path).unwrap_or_else(|_| PathBuf::from(path));
+        path.parent().map(Path::to_path_buf)
+    };
+    let usable = |folder: &PathBuf| folder.parent().is_some();
+    shown
+        .and_then(folder_of)
+        .filter(usable)
+        .or_else(|| {
+            recents
+                .iter()
+                .filter(|recent| !recent.missing)
+                .filter_map(|recent| folder_of(&recent.path))
+                .find(usable)
+        })
+        .or_else(|| documents.map(Path::to_path_buf).filter(usable))
+}
+
+/// What Copy MCP config says beside itself when it knows no workspace to name.
+pub const NO_WORKSPACE_NOTE: &str =
+    "Add \"--workspace\" and your models' folder to its args: a server needs one.";
+
 /// `text` as a JSON string: quoted, its quotes, backslashes, and control characters escaped.
 fn json_string(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
@@ -183,9 +202,17 @@ pub(crate) enum Act {
     CopyMcpConfig,
 }
 
+/// What the start page shows besides its own controls.
+pub(crate) struct Shown<'a> {
+    /// The documents opened lately, if the app keeps a list.
+    pub recents: Option<&'a Recents>,
+    /// Whether Copy MCP config knows a workspace to name: if not, it says so.
+    pub workspace_known: bool,
+}
+
 /// The start page, filling `ui` (the window's central panel): labelled `Start` for the
-/// accessibility tree. `recents`, if the app keeps a list.
-pub(crate) fn page(ui: &mut Ui, recents: Option<&Recents>) -> Act {
+/// accessibility tree.
+pub(crate) fn page(ui: &mut Ui, shown: &Shown<'_>) -> Act {
     let mut act = Act::None;
     ui.scope_builder(UiBuilder::new().id_salt("start"), |ui| {
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
@@ -205,12 +232,12 @@ pub(crate) fn page(ui: &mut Ui, recents: Option<&Recents>) -> Act {
                     ui.add_space((full - width) / 2.0 + theme::START_PADDING_SIDE);
                     ui.vertical(|ui| {
                         ui.set_width(theme::START_SIDE_WIDTH);
-                        side(ui, &mut act);
+                        side(ui, shown.workspace_known, &mut act);
                     });
                     ui.add_space(theme::START_COLUMN_GAP);
                     ui.vertical(|ui| {
                         ui.set_width(right);
-                        recent(ui, recents, &mut act);
+                        recent(ui, shown.recents, &mut act);
                     });
                 });
                 ui.add_space(theme::START_PADDING_BOTTOM);
@@ -220,7 +247,7 @@ pub(crate) fn page(ui: &mut Ui, recents: Option<&Recents>) -> Act {
 }
 
 /// The left column: the logo and name, New and Open, and the note for agents.
-fn side(ui: &mut Ui, act: &mut Act) {
+fn side(ui: &mut Ui, workspace_known: bool, act: &mut Act) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = theme::START_BRAND_GAP;
         ui.add(
@@ -270,7 +297,8 @@ fn side(ui: &mut Ui, act: &mut Act) {
         (" files. Agents edit the same files through ", &plain),
         ("silico serve", &mono),
         (
-            " (MCP). When one changes a part you have open, Silico reloads it.",
+            " (MCP). When one changes a part you have open, Silico reloads it, or asks first \
+             if you have unsaved edits.",
             &plain,
         ),
     ] {
@@ -281,6 +309,14 @@ fn side(ui: &mut Ui, act: &mut Act) {
     ui.add_space(theme::START_COPY_GAP);
     if copy_button(ui).clicked() {
         *act = Act::CopyMcpConfig;
+    }
+    if !workspace_known {
+        ui.add_space(theme::START_ACTION_GAP);
+        ui.label(
+            RichText::new(NO_WORKSPACE_NOTE)
+                .size(theme::HEADER_SIZE)
+                .color(theme::TEXT_SUBDUED),
+        );
     }
 }
 
@@ -298,7 +334,7 @@ fn action(ui: &mut Ui, icon: Icon, label: &str, key: Key, primary: bool) -> Resp
         (true, false) => (theme::PRIMARY_BUTTON_BG, theme::PRIMARY_BUTTON_TEXT),
         (true, true) => (
             theme::START_PRIMARY_HOVER_BG,
-            theme::START_PRIMARY_HOVER_TEXT,
+            theme::PRIMARY_BUTTON_HOVER_TEXT,
         ),
         (false, false) => (Color32::TRANSPARENT, theme::TEXT_DEFAULT),
         (false, true) => (theme::HOVER_BG, theme::TEXT_STRONG),
@@ -467,6 +503,11 @@ fn header(ui: &mut Ui, name: &str) {
     ui.add_space(theme::START_HEADER_GAP);
 }
 
+/// What Recent says when the app keeps no list: the platform named no folder for it, or its
+/// thread couldn't be started.
+pub const NOT_KEPT: &str =
+    "Recent documents aren't being kept: there's nowhere to keep their list.";
+
 /// The right column: the recent documents, newest first, labelled `Recent` for the
 /// accessibility tree, each a button by its file's name.
 fn recent(ui: &mut Ui, recents: Option<&Recents>, act: &mut Act) {
@@ -477,9 +518,11 @@ fn recent(ui: &mut Ui, recents: Option<&Recents>, act: &mut Act) {
             node.set_label("Recent");
         });
         let said = match recents {
+            None => Some(NOT_KEPT),
+            Some(recents) if !recents.is_kept() => Some(NOT_KEPT),
             Some(recents) if !recents.is_read() => Some("Reading the list of recent documents…"),
             Some(recents) if !recents.list().is_empty() => None,
-            _ => Some("No recent documents yet: each you open or make is listed here."),
+            Some(_) => Some("No recent documents yet: each you open or make is listed here."),
         };
         if let Some(said) = said {
             ui.label(RichText::new(said).color(theme::TEXT_SUBDUED));
@@ -536,7 +579,7 @@ fn row(ui: &mut Ui, recent: &Recent) -> Response {
         StrokeKind::Inside,
     );
     let (icon, tint) = if recent.missing {
-        (Icon::Warn, theme::TEXT_DEFAULT)
+        (Icon::Warn, theme::TEXT_DISABLED)
     } else {
         (Icon::Doc, theme::TEXT_SUBDUED)
     };
@@ -649,6 +692,61 @@ mod tests {
         let told = warm.clone();
         std::thread::spawn(move || told.ready()).join().unwrap();
         assert_eq!(asked.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_warm_start_is_ready_only_if_both_kinds_of_worker_started() {
+        for (kernel, sketches, want) in [
+            (1, 1, Warming::Ready),
+            (2, 1, Warming::Ready),
+            (0, 1, Warming::Cold),
+            (1, 0, Warming::Cold),
+            (0, 0, Warming::Cold),
+        ] {
+            let warm = Warm::new();
+            warm.started(kernel, sketches);
+            assert_eq!(warm.state(), want, "{kernel} {sketches}");
+        }
+    }
+
+    fn recent(path: &str, missing: bool) -> Recent {
+        Recent {
+            path: path.to_owned(),
+            missing,
+        }
+    }
+
+    #[test]
+    fn the_workspace_is_the_shown_documents_folder_then_a_recent_ones_then_documents() {
+        let documents = Some(Path::new("/home/me/Documents"));
+        let recents = [
+            recent("/gone/a.silico", true),
+            recent("/b.silico", false),
+            recent("/models/c.silico", false),
+            recent("/older/d.silico", false),
+        ];
+        let at = |shown, recents: &[Recent], documents| {
+            workspace(shown, recents, documents).map(|folder| folder.display().to_string())
+        };
+        // The document shown.
+        assert_eq!(
+            at(Some("/parts/e.silico"), &recents, documents).as_deref(),
+            Some("/parts")
+        );
+        // The newest recent one that isn't missing and isn't at the root.
+        assert_eq!(at(None, &recents, documents).as_deref(), Some("/models"));
+        // One shown at the root: the recent documents' instead.
+        assert_eq!(
+            at(Some("/e.silico"), &recents, documents).as_deref(),
+            Some("/models")
+        );
+        // None that will do: Documents; then nothing.
+        assert_eq!(
+            at(None, &recents[..2], documents).as_deref(),
+            Some("/home/me/Documents")
+        );
+        assert_eq!(at(None, &[], None), None);
+        assert_eq!(at(None, &[], Some(Path::new("/"))), None);
     }
 
     #[test]

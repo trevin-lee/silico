@@ -190,6 +190,9 @@ pub struct App<P: Clients + 'static> {
     warm: Option<Warm>,
     /// The `silico` an MCP client is told to run (Copy MCP config).
     silico: String,
+    /// The platform's Documents folder: the workspace Copy MCP config names when no
+    /// document is shown and none listed in Recent will do.
+    documents: Option<PathBuf>,
 }
 
 impl<P: Clients + 'static> App<P> {
@@ -223,7 +226,17 @@ impl<P: Clients + 'static> App<P> {
             recents: None,
             warm: None,
             silico: "silico".to_owned(),
+            documents: directories::UserDirs::new()
+                .and_then(|dirs| dirs.document_dir().map(std::path::Path::to_path_buf)),
         }
+    }
+
+    /// The app, Copy MCP config falling back to `documents` as the workspace (else to the
+    /// platform's Documents folder): a test's, or none.
+    #[must_use]
+    pub fn documents_folder(mut self, documents: Option<PathBuf>) -> Self {
+        self.documents = documents;
+        self
     }
 
     /// The app, keeping the documents it opens in `recents`, which its start page lists.
@@ -259,23 +272,21 @@ impl<P: Clients + 'static> App<P> {
         self.recents.as_ref()
     }
 
-    /// The MCP config Copy MCP config copies: the `silico` it was given, serving the folder
-    /// of the document shown, or else of the newest recent one, if there is either.
-    pub fn mcp_config(&self) -> String {
+    /// The workspace Copy MCP config names ([`start::workspace`]): the folder of the
+    /// document shown, else of the newest recent one found, else the Documents folder.
+    fn workspace(&self) -> Option<PathBuf> {
         let shown = self
             .active_place()
             .and_then(|at| self.tabs.get(at))
             .map(|tab| tab.path.as_str());
-        let newest = self
-            .recents
-            .as_ref()
-            .and_then(|recents| recents.list().first())
-            .map(|recent| recent.path.as_str());
-        let workspace = shown
-            .or(newest)
-            .map(|path| std::path::absolute(path).unwrap_or_else(|_| PathBuf::from(path)))
-            .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
-            .filter(|folder| !folder.as_os_str().is_empty());
+        let recents = self.recents.as_ref().map(Recents::list).unwrap_or_default();
+        start::workspace(shown, recents, self.documents.as_deref())
+    }
+
+    /// The MCP config Copy MCP config copies: the `silico` it was given, serving
+    /// [`workspace`](Self::workspace)'s folder, if there is one.
+    pub fn mcp_config(&self) -> String {
+        let workspace = self.workspace();
         start::mcp_config(
             &self.silico,
             workspace.as_deref().and_then(std::path::Path::to_str),
@@ -393,7 +404,11 @@ impl<P: Clients + 'static> App<P> {
                         // Nothing is drawn: the renderer lets go of what it held.
                         self.drawing.nothing_shown(ui.painter());
                     }
-                    start::page(ui, self.recents.as_ref())
+                    let shown = start::Shown {
+                        recents: self.recents.as_ref(),
+                        workspace_known: self.workspace().is_some(),
+                    };
+                    start::page(ui, &shown)
                 })
                 .inner;
             self.start_act(ui, act, &mut started);
@@ -442,21 +457,28 @@ impl<P: Clients + 'static> App<P> {
             start::Act::None => {}
             start::Act::New => self.asking = Some(Asking::Path { create: true }),
             start::Act::Open => self.asking = Some(Asking::Path { create: false }),
-            start::Act::Recent(path) => {
-                // One already open is shown; any other opened.
-                let open = self.tabs.iter().find(|tab| {
-                    std::path::absolute(&tab.path).is_ok_and(|at| at == std::path::Path::new(&path))
-                });
-                if let Some(tab) = open {
-                    self.active = Some(tab.id);
-                    self.home = false;
-                } else {
-                    self.open(&path, false);
-                    *started = true;
-                }
-            }
+            start::Act::Recent(path) => *started |= self.open_recent(&path),
             start::Act::CopyMcpConfig => ui.ctx().copy_text(self.mcp_config()),
         }
+    }
+
+    /// The recent document at `path` opened: its tab shown if it's open, nothing done if its
+    /// open is under way (a double-click, or a second click before the first answers), else
+    /// opened. Both compared by their absolute paths. Whether an open was started.
+    fn open_recent(&mut self, path: &str) -> bool {
+        let same = |other: &str| {
+            std::path::absolute(other).is_ok_and(|at| at == std::path::Path::new(path))
+        };
+        if let Some(tab) = self.tabs.iter().find(|tab| same(&tab.path)) {
+            self.active = Some(tab.id);
+            self.home = false;
+            return false;
+        }
+        if self.opening.iter().any(|opening| same(&opening.path)) {
+            return false;
+        }
+        self.open(path, false);
+        true
     }
 
     /// The frame's end, the window drawn: what's asked, as a modal; the window closed once
@@ -498,15 +520,11 @@ impl<P: Clients + 'static> App<P> {
     /// what the recent documents' thread has told, a document it dropped said.
     fn poll(&mut self) {
         let gone = self.recents.as_mut().map(Recents::poll).unwrap_or_default();
-        for path in gone {
-            let path = std::path::Path::new(&path);
-            let name = path.file_name().map_or_else(
-                || path.display().to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            let folder = path.parent().unwrap_or(path).display();
+        for recent in gone {
             self.message = Some(format!(
-                "{name} isn't in {folder} any more, so it's no longer listed in Recent"
+                "{} isn't in {} any more, so it's no longer listed in Recent",
+                recent.name(),
+                recent.folder()
             ));
             self.message_from = None;
         }
@@ -515,7 +533,14 @@ impl<P: Clients + 'static> App<P> {
         self.opening = pending;
         self.take_opens(answered);
         for tab in &mut self.tabs {
+            let path = tab.path.clone();
             tab.poll(&self.sessions);
+            // Saved as another file: listed in Recent as an open is.
+            if tab.path != path
+                && let Some(recents) = &self.recents
+            {
+                recents.opened(&tab.path);
+            }
             // Asked once nothing else is: kept on the tab meanwhile.
             if self.asking.is_none()
                 && let Some(path) = tab.take_replace_asked()
@@ -642,6 +667,28 @@ impl<P: Clients + 'static> App<P> {
             };
             return (escape || enter, None);
         }
+        // Ctrl+N and Ctrl+O: New's and Open's dialogs, as the File menu's and the start
+        // page's.
+        for (key, create) in [(Key::N, true), (Key::O, false)] {
+            if ui.input_mut(|input| {
+                input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))
+            }) {
+                self.asking = Some(Asking::Path { create });
+                return (false, None);
+            }
+        }
+        // The start page over the open documents (Home): no document's shortcut acts on the
+        // one hidden; Esc and Ctrl+W leave Home for it.
+        if self.home {
+            let leave = ui.input_mut(|input| {
+                input.consume_key(Modifiers::NONE, Key::Escape)
+                    || input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::W))
+            });
+            if leave {
+                self.home = false;
+            }
+            return (false, None);
+        }
         // Before Ctrl+S, which a Ctrl+Shift+S also is, its Shift aside.
         let save_as = ui.input_mut(|input| {
             input.consume_shortcut(&KeyboardShortcut::new(
@@ -653,16 +700,6 @@ impl<P: Clients + 'static> App<P> {
             self.save_as_path.clear();
             self.asking = self.active.map(Asking::SaveAs);
             return (false, None);
-        }
-        // Ctrl+N and Ctrl+O: New's and Open's dialogs, as the File menu's and the start
-        // page's.
-        for (key, create) in [(Key::N, true), (Key::O, false)] {
-            if ui.input_mut(|input| {
-                input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))
-            }) {
-                self.asking = Some(Asking::Path { create });
-                return (false, None);
-            }
         }
         let in_dialog = self
             .active_place()
@@ -930,10 +967,17 @@ impl<P: Clients + 'static> App<P> {
                 ui.horizontal_centered(|ui| {
                     // Home, at the far left: the start page, over the open documents.
                     let start_shown = self.start_shown();
+                    // On: Gray.250 behind a white icon (`.ab-btn.on`), not the selection's blue.
+                    let (fill, icon) = if start_shown {
+                        (theme::HOVER_BG, theme::TEXT_STRONG)
+                    } else {
+                        (egui::Color32::TRANSPARENT, theme::TEXT_DEFAULT)
+                    };
                     let home = ui
                         .add(
-                            egui::Button::image(crate::icons::icon(Icon::Home))
-                                .selected(start_shown),
+                            egui::Button::image(crate::icons::icon(Icon::Home).tint(icon))
+                                .fill(fill)
+                                .frame_when_inactive(start_shown),
                         )
                         .on_hover_text("Home: New, Open, and the documents opened lately");
                     home.widget_info(|| {
@@ -1681,6 +1725,31 @@ mod tests {
         app.poll();
         assert_eq!(names(&app), ["two.silico"]);
         assert_eq!(app.open_numbers.keys().collect::<Vec<_>>(), [&second]);
+    }
+
+    #[test]
+    fn a_recent_document_clicked_again_before_its_open_answers_opens_once() {
+        let (mut app, dir) = app();
+        let path = dir.path().join("one.silico");
+        std::fs::write(&path, BLOCK).unwrap();
+        let path = path.to_str().unwrap();
+        assert!(app.open_recent(path));
+        // A double-click's second click, or another before the open answers: nothing more.
+        assert!(!app.open_recent(path));
+        assert_eq!(app.opening.len(), 1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while app.tabs().is_empty() {
+            assert!(std::time::Instant::now() < deadline, "never opened");
+            app.poll();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // Opened: a click shows its tab, from Home, and opens nothing.
+        app.home = true;
+        assert!(!app.open_recent(path));
+        assert!(app.opening.is_empty());
+        assert_eq!(names(&app), ["one.silico"]);
+        assert!(!app.home);
+        assert_eq!(app.message(), None);
     }
 
     #[test]

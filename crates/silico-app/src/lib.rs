@@ -19,5 +19,6 @@ pub mod start;
 pub mod tab;
 pub mod theme;
 pub mod viewport;
+mod wake;
 
 pub use app::App;
