@@ -33,7 +33,11 @@ impl Dim {
             sketch,
             revision: Revision::OPENED,
             tolerance: TOLERANCE,
-            states: under(),
+            // Each add an independent dimension: the solve takes a freedom.
+            states: SketchStates {
+                dofs: 1000,
+                ..under()
+            },
             ids: Counter(100),
             made: Vec::new(),
             messages: Vec::new(),
@@ -62,6 +66,7 @@ impl Dim {
             assert_eq!(members.constraints.len(), 1, "{members:?}");
             self.made.push(members.clone());
             self.sketch = edited.sketch;
+            self.states.dofs -= 1;
         }
         if let Some(message) = &outcome.message {
             self.messages.push(message.clone());
@@ -1185,6 +1190,10 @@ fn smart_dimensions_messages_say_what_to_do() {
             Message::Solving,
             "the last dimension is still solving: place this one once it has",
         ),
+        (
+            Message::OfferOpen,
+            "the last dimension over-defines the sketch: make it driven, leave it, or cancel it before placing another",
+        ),
     ] {
         assert_eq!(message.text(), text);
     }
@@ -2218,6 +2227,107 @@ fn level_is_within_a_tenth_of_a_micrometre_not_at_it() {
     }
 }
 
+// --- Review #345, round 3 --------------------------------------------------------------
+
+#[test]
+fn a_dimension_that_leaves_a_solved_sketchs_freedoms_where_they_were_is_offered() {
+    // Item 1: placed on a read with 1000 freedoms; the add's read solved, nothing flagged,
+    // its state the same: 1000 or more freedoms is a dependent dimension, offered; 999
+    // isn't. A refused solve's freedoms say nothing: not offered on them (state Invalid, no
+    // prompt either).
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
+    let placement = d.tool.placement().unwrap();
+    assert_eq!(placement.dofs, 1000);
+    let made = placement.revision;
+    let read = |dofs: i32, refused: bool| {
+        let mut read = read_of(
+            d.sketch.clone(),
+            "t0000101",
+            ConstraintState::Satisfied,
+            if refused {
+                SketchState::Invalid
+            } else {
+                SketchState::UnderDefined
+            },
+        );
+        read.states.dofs = dofs;
+        if refused {
+            read.states.solve_problem = Some(Error::new(ErrorCode::InvalidResult, "invalid"));
+        }
+        read
+    };
+    assert!(offer(&read(1000, false), made, &placement).is_some());
+    assert!(offer(&read(1001, false), made, &placement).is_some());
+    assert_eq!(offer(&read(999, false), made, &placement), None);
+    assert_eq!(offer(&read(1000, true), made, &placement), None);
+}
+
+#[test]
+fn a_later_read_settles_a_placement_and_the_next_is_placed() {
+    // Item 2: the add made revision 2; the first read the tool sees is revision 3 (another
+    // edit came first). It can't offer, so it settles: the next dimension is placed.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    d.revision = d.revision.next().unwrap();
+    d.click(15.0, 15.0).click(30.0, 30.0);
+    assert_eq!(d.modify().as_deref(), Some("14.142136"));
+    assert!(d.messages.is_empty());
+}
+
+#[test]
+fn a_placement_not_yet_answered_holds_the_next() {
+    // Item 2: the add issued, the core's answer (`added`) not yet come: the next placing
+    // click waits.
+    let sketch = corner();
+    let sketch_id = sketch_id();
+    let context = Context {
+        sketch_id: &sketch_id,
+        revision: Revision::OPENED,
+        sketch: &sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+    };
+    let mut tool = SmartDimension::new();
+    let mut ids = Counter(0);
+    let click = |tool: &mut SmartDimension, ids: &mut Counter, at: [f64; 2]| {
+        tool.handle(&context, &under(), ids, DimensionEvent::Press(at));
+        tool.handle(&context, &under(), ids, DimensionEvent::Release(at))
+    };
+    click(&mut tool, &mut ids, [20.0, 10.0]);
+    click(&mut tool, &mut ids, [20.0, 30.0]);
+    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+    assert!(out.add.is_some());
+    click(&mut tool, &mut ids, [15.0, 15.0]);
+    let out = click(&mut tool, &mut ids, [30.0, 30.0]);
+    assert_eq!(out.message, Some(Message::Solving));
+    assert_eq!(tool.preview().modify, None);
+}
+
+#[test]
+fn an_offer_holds_the_tool_until_its_dismissed() {
+    // Item 3: the add's read flags the dimension: offered, so no other dimension is placed
+    // (busy, and a placing click says why) until the app dismisses the offer.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    let k = d.tool.placement().unwrap().constraint;
+    d.states.state = SketchState::OverDefined;
+    d.states
+        .constraints
+        .insert(k.clone(), ConstraintState::Conflicting);
+    d.click(15.0, 15.0).click(30.0, 30.0);
+    assert_eq!(d.messages, vec![Message::OfferOpen]);
+    assert_eq!(d.modify(), None);
+    assert!(d.tool.busy());
+    // A later read changes nothing: the offer holds until it's answered.
+    d.revision = d.revision.next().unwrap();
+    d.click(30.0, 30.0);
+    assert_eq!(d.messages, vec![Message::OfferOpen, Message::OfferOpen]);
+    d.tool.dismiss_offer();
+    d.click(30.0, 30.0);
+    assert_eq!(d.modify().as_deref(), Some("14.142136"));
+}
+
 // --- SD7: the offer ------------------------------------------------------------------
 
 /// A read of the sketch `members` with the constraint `k` in `state`, the sketch in `of`.
@@ -2277,6 +2387,7 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
             revision: made,
             before: SketchState::UnderDefined,
             flagged: BTreeSet::new(),
+            dofs: 0,
         })
     );
     tool.refused(token);

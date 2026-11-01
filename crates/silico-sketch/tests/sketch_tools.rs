@@ -800,6 +800,31 @@ fn a_dimension_that_leaves_no_solution_is_offered_and_driven_solves_it() {
     );
 }
 
+#[test]
+fn each_equal_horizontal_distance_after_the_first_is_offered() {
+    // Round 3, item 1. Two points, (10, 10) and (40, 30): four freedoms. The first
+    // `distance_x` from one to the other, 30, takes one: three. Each later one, 30 again,
+    // adds an equation PlaneGCS finds dependent, so the freedoms stay three, and each is
+    // offered: the fourth too, though PlaneGCS's greedy contest, a constraint flagged
+    // already covering its group, may flag nothing new for it. Each answered Leave.
+    let mut f = opened(ToolKind::Point);
+    f.click(10.0, 10.0).click(40.0, 30.0);
+    assert_eq!(f.read().states.dofs, 4);
+    let mut tool = SmartDimension::new();
+    for n in 0..4 {
+        f.pick(&mut tool, 10.0, 10.0)
+            .pick(&mut tool, 40.0, 30.0)
+            .pick(&mut tool, 25.0, 45.0);
+        assert_eq!(tool.preview().modify.as_deref(), Some("30"), "{n}");
+        f.dimension(&mut tool, DimensionEvent::Escape);
+        let read = f.read();
+        assert_eq!(read.states.dofs, 3, "{n}");
+        let offered = f.offer(&tool);
+        assert_eq!(offered.is_some(), n > 0, "{n}: {:?}", read.states);
+        tool.dismiss_offer();
+    }
+}
+
 /// The read's point at (0, 20), and at (50, 0).
 fn top_left(read: &SketchRead) -> ElementId {
     point_at(read, at(0.0, 20.0))

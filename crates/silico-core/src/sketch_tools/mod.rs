@@ -241,6 +241,9 @@ pub enum Message {
     /// Smart Dimension: the last dimension's solve hasn't been read, so its offer may yet
     /// come; no other is placed until it has (SD7's offer is modal).
     Solving,
+    /// Smart Dimension: the last dimension's offer (SD7) is open: no other is placed until
+    /// it's answered.
+    OfferOpen,
 }
 
 impl Message {
@@ -279,6 +282,7 @@ impl Message {
             Message::Solving => {
                 "the last dimension is still solving: place this one once it has".to_owned()
             }
+            Message::OfferOpen => "the last dimension over-defines the sketch: make it driven, leave it, or cancel it before placing another".to_owned(),
         }
     }
 }
