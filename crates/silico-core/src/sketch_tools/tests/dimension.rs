@@ -924,7 +924,8 @@ fn a_line_and_an_axis_make_an_angle_and_a_skipped_box_rounds_it_to_the_nanodegre
 
 #[test]
 fn a_right_click_locks_the_angle_the_preview_shows() {
-    // Locked at (25, 13) (45, A to B), then placed at (5, 20), which unlocked gives 315.
+    // Locked at (25, 13) (45, A to B), then placed at (5, 20), which unlocked gives
+    // `{B, A, reversed, 135}`.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0)
         .click(15.0, 15.0)
@@ -1989,8 +1990,8 @@ fn crossing_lines_take_their_ends_by_freecads_tie() {
     // each end as near, so FreeCAD's rule (its start only where strictly nearer) takes each
     // `to`, and both along-rays run back: A's 180°, B's 225°, θ = 45, both against (no
     // `reversed`). The pointer at (12, 18), 194°: between, `{A, B, 45}`. At (28, 22), 14°:
-    // opposite, the reflex from B's ray round to A's, `{B, A, 315}`. At (12, 25), 148°,
-    // and (28, 15), 328°: beside, `{B, A, reversed, 135}`.
+    // opposite, which crossing lines draw as θ too (Fable's §4), `{A, B, 45}`. At (12, 25),
+    // 148°, and (28, 15), 328°: beside, `{B, A, reversed, 135}`.
     let s = with_line(
         with_line(empty(), "n000000a", [10.0, 20.0], [30.0, 20.0]),
         "n000000b",
@@ -1999,7 +2000,7 @@ fn crossing_lines_take_their_ends_by_freecads_tie() {
     );
     for (at, want) in [
         ([12.0, 18.0], angle("n000000a", "n000000b", false, "45")),
-        ([28.0, 22.0], angle("n000000b", "n000000a", false, "315")),
+        ([28.0, 22.0], angle("n000000a", "n000000b", false, "45")),
         ([12.0, 25.0], angle("n000000b", "n000000a", true, "135")),
         ([28.0, 15.0], angle("n000000b", "n000000a", true, "135")),
     ] {
@@ -2010,6 +2011,74 @@ fn crossing_lines_take_their_ends_by_freecads_tie() {
             .escape();
         assert_eq!(d.placed(), want, "{at:?}");
     }
+}
+
+#[test]
+fn crossing_lines_read_their_angle_or_its_supplement_in_every_sector() {
+    // Fable's §4, with no tie: A (10, 20)-(31, 20) and B (10, 10)-(31, 31) cross at
+    // (20, 20), each `from` the nearer end (10 against 11, √200 against √242), so both
+    // along-rays run along: A's 0°, B's 45°, θ = 45. Every sector reads θ or 180 − θ, never
+    // a reflex: (28, 22) at 14°, between, `{A, B, 45}`; (12, 25) at 148°, beside,
+    // `{B, A, reversed, 135}`; (12, 18) at 194°, opposite, θ again, `{A, B, 45}` (the
+    // quadrant rule alone would give the reflex `{B, A, 315}`); (28, 15) at 328°, beside,
+    // `{B, A, reversed, 135}`.
+    let s = with_line(
+        with_line(empty(), "n000000a", [10.0, 20.0], [31.0, 20.0]),
+        "n000000b",
+        [10.0, 10.0],
+        [31.0, 31.0],
+    );
+    for (at, want) in [
+        ([28.0, 22.0], angle("n000000a", "n000000b", false, "45")),
+        ([12.0, 25.0], angle("n000000b", "n000000a", true, "135")),
+        ([12.0, 18.0], angle("n000000a", "n000000b", false, "45")),
+        ([28.0, 15.0], angle("n000000b", "n000000a", true, "135")),
+    ] {
+        let mut d = Dim::new(s.clone());
+        d.click(14.0, 20.0)
+            .click(26.0, 26.0)
+            .click(at[0], at[1])
+            .escape();
+        assert_eq!(d.placed(), want, "{at:?}");
+    }
+}
+
+#[test]
+fn a_crossing_a_nanometre_inside_an_end_counts_and_one_outside_doesnt() {
+    // Main's exact test. A (10, 20)-(30, 20), and B upright at x = 30 ∓ 1 nm, from y 10 to
+    // 31, meeting A at (x, 20). A's `to` is the nearer end, so A's along-ray runs back,
+    // 180°; B's `from`, 90°. B's ray first, θ = 90, A's against. The pointer at (35, 15), 315°
+    // round, is opposite. 1 nm inside A's end, the lines cross: θ, `{B, A, reversed, 90}`.
+    // 1 nm outside it, they don't: the reflex from A's ray round to B's,
+    // `{A, B, reversed, 270}`.
+    for (x, want) in [
+        (29.999999, angle("n000000b", "n000000a", true, "90")),
+        (30.000001, angle("n000000a", "n000000b", true, "270")),
+    ] {
+        let s = with_line(
+            with_line(empty(), "n000000a", [10.0, 20.0], [30.0, 20.0]),
+            "n000000b",
+            [x, 10.0],
+            [x, 31.0],
+        );
+        let mut d = Dim::new(s);
+        d.click(20.0, 20.0)
+            .click(x, 25.0)
+            .click(35.0, 15.0)
+            .escape();
+        assert_eq!(d.placed(), want, "{x}");
+    }
+}
+
+#[test]
+fn a_right_click_locks_a_quadrant_beside_the_along_rays() {
+    // The corner: at (5, 20), beside, `{B, A, reversed, 135}`, locked; placed at (25, 13),
+    // where unlocked it's `{A, B, 45}`: the reversed 135 is kept.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(15.0, 15.0).right(5.0, 20.0);
+    assert!(d.tool.preview().locked);
+    d.click(25.0, 13.0).escape();
+    assert_eq!(d.placed(), angle("n000000b", "n000000a", true, "135"));
 }
 
 #[test]

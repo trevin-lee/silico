@@ -28,7 +28,10 @@
 //!     where they meet, among each line's along-ray (leaving the end nearer, FreeCAD's rule)
 //!     and its opposite: between the along-rays, the angle θ; opposite, the reflex
 //!     360 − θ; beside, 180 − θ, with `reversed` where one ray runs against its line
-//!     (Fable's chain-angle decision, §3, superseding SD5);
+//!     (Fable's chain-angle decision, §3, superseding SD5). Lines that cross, each
+//!     strictly inside the other (exactly, no tolerance), take θ in both vertical
+//!     sectors (§4): opposite is θ too, as drawn; a T-junction, or a line and an axis,
+//!     keep the quadrant rule;
 //!   - two parallel lines ([`PARALLEL`], FreeCAD's test): `point_line_distance` from the
 //!     second line's `from` to the first line (SD4); with an axis picked second, the first
 //!     line's `from` to the axis, Silico's own choice (an axis has no `from`);
@@ -1010,6 +1013,17 @@ fn point_line(point: &Item, line: &Item, at: Option<Xy>) -> Result<Offered, NotO
     })
 }
 
+/// Whether the place `over / under` along `line`, from its start (0) to its end (1), is
+/// strictly inside it: compared exactly, as the two crosses stand, with no division and no
+/// tolerance (Main's decision: 1 nm inside an end crosses, 1 nm outside doesn't). Never
+/// for an axis, which runs through every vertex.
+fn inside(line: &Item, over: f64, under: f64) -> bool {
+    let Item::Line { from, .. } = line else {
+        return false;
+    };
+    from.is_some() && over != 0.0 && (over > 0.0) == (under > 0.0) && over.abs() < under.abs()
+}
+
 /// Two lines: parallel ([`PARALLEL`], FreeCAD's test), the second's `from` to the first
 /// (SD4), or the first's `from` to an axis picked second, Silico's own choice (an axis has
 /// no `from`); refused, as a point is, with the pointer `side_at` across a centreline from
@@ -1019,7 +1033,9 @@ fn point_line(point: &Item, line: &Item, at: Option<Xy>) -> Result<Offered, NotO
 /// - each line's along-ray leaves the end nearer the vertex (FreeCAD's `calculateAngle`:
 ///   its start where that's strictly nearer, else its end), an axis's along it;
 /// - the along-rays in counter-clockwise order, `r1` then `r2`, θ the sweep between them:
-///   between them, θ; opposite, the reflex 360 − θ; either quadrant beside, 180 − θ;
+///   between them, θ; opposite, the reflex 360 − θ, or θ where the lines cross (each
+///   strictly inside the other: both vertical sectors are drawn, Fable's §4); either
+///   quadrant beside, 180 − θ;
 /// - written so the value is the sweep counter-clockwise from the first ray to the second,
 ///   `a` the first ray's line and `b` the second's, `reversed` where exactly one of the two
 ///   rays runs against its line (`b` taken the other way gives the same angle as `a`).
@@ -1078,10 +1094,15 @@ fn lines(
     let shared = [*pa, *ea]
         .into_iter()
         .find(|p| fa.is_some() && fb.is_some() && (*p == *pb || *p == *eb));
-    let vertex = shared.unwrap_or_else(|| {
-        let t = cross(sub(*pb, *pa), *db) / crossed;
-        [pa[0] + t * da[0], pa[1] + t * da[1]]
-    });
+    // Where the lines meet along each, pa + t·da and pb + s·db: t and s as the exact ratios
+    // of their crosses to `crossed`.
+    let between = sub(*pb, *pa);
+    let (t_over, s_over) = (cross(between, *db), cross(between, *da));
+    let t = t_over / crossed;
+    let vertex = shared.unwrap_or([pa[0] + t * da[0], pa[1] + t * da[1]]);
+    // Crossing: the vertex strictly inside both segments (an axis, or a shared end, isn't).
+    let crossing =
+        shared.is_none() && inside(first, t_over, crossed) && inside(second, s_over, crossed);
     // Each along-ray's sign: +1 leaving `from` (strictly nearer the vertex), −1 leaving `to`;
     // an axis's runs along it.
     let sign = |from: &Option<ElementId>, start: Xy, end: Xy| {
@@ -1124,6 +1145,8 @@ fn lines(
     let odd = r1.1 != r2.1;
     let (a, b, reversed, value) = match quadrant {
         Quadrant::Between => (r1.0, r2.0, odd, theta),
+        // Crossing lines draw both vertical sectors: the one opposite is θ too (§4).
+        Quadrant::Opposite if crossing => (r1.0, r2.0, odd, theta),
         Quadrant::Opposite => (r2.0, r1.0, odd, 360.0 - theta),
         Quadrant::After | Quadrant::Before => (r2.0, r1.0, !odd, 180.0 - theta),
     };
