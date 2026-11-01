@@ -193,7 +193,12 @@ fn each_commands_schemas_are_the_committed_snapshot() {
 
 /// Every object of `schema` with properties that isn't closed to them or doesn't require
 /// them all, by its path.
-fn open_shapes(schema: &serde_json::Value, at: &str, found: &mut Vec<String>) {
+fn open_shapes(
+    schema: &serde_json::Value,
+    at: &str,
+    document_object: bool,
+    found: &mut Vec<String>,
+) {
     match schema {
         serde_json::Value::Object(map) => {
             if let Some(serde_json::Value::Object(properties)) = map.get("properties") {
@@ -206,43 +211,126 @@ fn open_shapes(schema: &serde_json::Value, at: &str, found: &mut Vec<String>) {
                     .unwrap_or_default();
                 required.sort_unstable();
                 let closed = map.get("additionalProperties") == Some(&serde_json::json!(false));
-                if !closed || required != keys {
+                if !closed || (!document_object && required != keys) {
                     found.push(at.to_owned());
                 }
             }
             for (key, value) in map {
-                open_shapes(value, &format!("{at}/{key}"), found);
+                open_shapes(value, &format!("{at}/{key}"), document_object, found);
             }
         }
         serde_json::Value::Array(items) => {
             for (i, item) in items.iter().enumerate() {
-                open_shapes(item, &format!("{at}/{i}"), found);
+                open_shapes(item, &format!("{at}/{i}"), document_object, found);
             }
         }
         _ => {}
     }
 }
 
-/// The fields the document's schema leaves optional in the constraint form `form` (a sketch
-/// read's constraint, found in the document's by its `type`).
-fn optional_in_the_document(document: &serde_json::Value, form: &serde_json::Value) -> Vec<String> {
-    let of_type = |f: &serde_json::Value| f.pointer("/properties/type/const").cloned();
-    let Some(own) = document["$defs"]["SketchConstraint"]["oneOf"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| of_type(f) == of_type(form))
-    else {
-        panic!("no document form like {form}")
+/// Where a command's snapshot `value` has an object that isn't closed, or, the command's
+/// own, doesn't require every field. A document object a result carries follows the
+/// document's schema, its optional fields included (docs/design/m4.1-command-api.md,
+/// section 2): a definition named as the document's (`SketchConstraint`), or as the
+/// document's read with its state (`SketchConstraintRead`), is held to being closed only.
+fn unrequired_or_open(value: &serde_json::Value, document: &serde_json::Value) -> Vec<String> {
+    let document_defs = document["$defs"].as_object().unwrap();
+    let is_document_object = |name: &str| {
+        document_defs.contains_key(name)
+            || name
+                .strip_suffix("Read")
+                .is_some_and(|own| document_defs.contains_key(own))
     };
-    let required = own["required"].as_array().unwrap();
-    own["properties"]
-        .as_object()
-        .unwrap()
-        .keys()
-        .filter(|key| !required.contains(&(*key).clone().into()))
-        .cloned()
-        .collect()
+    let mut found = Vec::new();
+    for part in ["request", "result"] {
+        let root = &value[part];
+        let Some(map) = root.as_object() else {
+            continue;
+        };
+        for (key, child) in map {
+            // (`$defs` may be null where a test's indexing put one.)
+            if let (true, Some(defs)) = (key == "$defs", child.as_object()) {
+                for (name, def) in defs {
+                    open_shapes(
+                        def,
+                        &format!("/{part}/$defs/{name}"),
+                        is_document_object(name),
+                        &mut found,
+                    );
+                }
+            }
+        }
+        // The command's own object, less its definitions, each checked by its own rule.
+        let mut own = root.clone();
+        if let Some(own) = own.as_object_mut() {
+            own.remove("$defs");
+        }
+        open_shapes(&own, &format!("/{part}"), false, &mut found);
+    }
+    found
+}
+
+#[test]
+fn a_commands_own_object_requires_every_field_and_a_document_objects_optional_field_stays_optional()
+{
+    let document: serde_json::Value =
+        serde_json::from_str(&committed("document-schema.json")).unwrap();
+    let object = |required: serde_json::Value| {
+        serde_json::json!({
+            "type": "object",
+            "properties": {"a": {"type": "string"}, "reversed": {"const": true}},
+            "required": required,
+            "additionalProperties": false,
+        })
+    };
+    let snapshot = |name: &str, def: serde_json::Value| {
+        serde_json::json!({
+            "request": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+            "result": {
+                "type": "object",
+                "properties": {"x": {"$ref": format!("#/$defs/{name}")}},
+                "required": ["x"],
+                "additionalProperties": false,
+                "$defs": {name: def},
+            },
+        })
+    };
+    // The command's own object, a field left optional: found.
+    assert_eq!(
+        unrequired_or_open(
+            &snapshot("SketchRegion", object(serde_json::json!(["a"]))),
+            &document
+        ),
+        ["/result/$defs/SketchRegion"]
+    );
+    // And its every field required: none.
+    assert!(
+        unrequired_or_open(
+            &snapshot("SketchRegion", object(serde_json::json!(["a", "reversed"]))),
+            &document
+        )
+        .is_empty()
+    );
+    // A document object, as the document or as the sketch read gives it, its optional field
+    // left optional: none.
+    for name in ["SketchConstraint", "SketchConstraintRead"] {
+        assert!(
+            unrequired_or_open(&snapshot(name, object(serde_json::json!(["a"]))), &document)
+                .is_empty(),
+            "{name}"
+        );
+    }
+    // But a document object left open is still found.
+    let mut open = object(serde_json::json!(["a"]));
+    open["additionalProperties"] = serde_json::json!(true);
+    assert_eq!(
+        unrequired_or_open(&snapshot("SketchConstraintRead", open), &document),
+        ["/result/$defs/SketchConstraintRead"]
+    );
+    // A command's own field left optional at the top: found.
+    let mut top = snapshot("SketchRegion", object(serde_json::json!(["a", "reversed"])));
+    top["result"]["required"] = serde_json::json!([]);
+    assert_eq!(unrequired_or_open(&top, &document), ["/result"]);
 }
 
 #[test]
@@ -262,24 +350,7 @@ fn every_object_of_the_commands_snapshots_is_closed_and_requires_its_fields() {
                 });
             }
         }
-        // A constraint the sketch read gives is as the document writes it: a field the
-        // document's form leaves optional (an angle's `reversed`, written only as true) is
-        // the document's, not the wire's to require. Each such field is taken out before
-        // the check, so every other field of the form must still be required.
-        if let Some(serde_json::Value::Array(forms)) =
-            value.pointer_mut("/result/$defs/SketchConstraintRead/oneOf")
-        {
-            for form in forms {
-                for key in optional_in_the_document(&document, form) {
-                    let properties = form["properties"].as_object_mut().unwrap();
-                    assert!(properties.remove(&key).is_some(), "{of}: {key}");
-                    let required = form["required"].as_array().unwrap();
-                    assert!(!required.contains(&key.clone().into()), "{of}: {key}");
-                }
-            }
-        }
-        let mut found = Vec::new();
-        open_shapes(&value, "", &mut found);
+        let found = unrequired_or_open(&value, &document);
         assert!(found.is_empty(), "{of}: {found:?}");
     }
     // Their parts by the names an agent reads.
