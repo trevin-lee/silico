@@ -14,6 +14,7 @@ use silico_core::command::SessionId;
 use silico_core::command::export::{DEFAULT_TOLERANCE, Export, ExportFormat};
 use silico_core::document::{FeatureId, Length};
 
+use crate::browse;
 use crate::tab::Row;
 
 /// What the dialog holds while it's open: the format, the 3MF's tolerance as typed, the
@@ -210,7 +211,7 @@ impl ExportForm {
                 ui.add(egui::TextEdit::singleline(&mut self.path).id_salt("export-path"))
                     .labelled_by(label.id);
                 if let Some(on) = shown.browse
-                    && ui.add_enabled(on, egui::Button::new("Browse…")).clicked()
+                    && browse::button(ui, on)
                 {
                     action = Action::Browse;
                 }

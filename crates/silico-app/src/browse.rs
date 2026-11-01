@@ -6,8 +6,10 @@
 //! answers through a waker that asks egui for a frame ([`Repaint`]), and the frame after
 //! takes its answer. On macOS, rfd's future begins the panel as a sheet on the app's window
 //! when it's made, on the UI thread (where the frame runs), and the sheet's completion
-//! answers it; on Linux, rfd asks the XDG desktop portal on a thread of its own, which
-//! answers it. Behind [`Browse`], so tests drive a fake that answers when they say.
+//! answers it; on Linux, rfd asks the XDG desktop portal on a thread of its own, which it
+//! starts only when the future is first polled, so [`Browsing::new`] polls it at once,
+//! and the portal's answer wakes it. Behind [`Browse`], so tests drive a fake that answers
+//! when they say.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -95,21 +97,39 @@ impl Wake for Repaint {
 pub struct Browsing<T> {
     pub what: T,
     answer: Answer,
+    /// The answer its first poll gave, if it came then, kept for the frame that takes it.
+    answered: Option<Option<PathBuf>>,
     waker: Waker,
 }
 
 impl<T> Browsing<T> {
-    /// `answer`, for `what`, woken through `ctx`.
+    /// `answer`, for `what`, woken through `ctx`: polled once now, which starts rfd's portal
+    /// thread on Linux, so its dialog shows this frame, not the next.
     pub fn new(what: T, answer: Answer, ctx: &egui::Context) -> Self {
-        Browsing {
+        let mut browsing = Browsing {
             what,
             answer,
+            answered: None,
             waker: Waker::from(Arc::new(Repaint(ctx.clone()))),
+        };
+        browsing.answered = browsing.poll_answer();
+        if browsing.answered.is_some() {
+            // Answered at once, so no waker will ask for the frame that takes it.
+            ctx.request_repaint();
         }
+        browsing
     }
 
     /// The answer, if it has come (`Some(None)`: cancelled); never waits for it.
     pub fn poll(&mut self) -> Option<Option<PathBuf>> {
+        if let Some(answer) = self.answered.take() {
+            return Some(answer);
+        }
+        self.poll_answer()
+    }
+
+    /// The future polled.
+    fn poll_answer(&mut self) -> Option<Option<PathBuf>> {
         match self
             .answer
             .as_mut()
@@ -119,6 +139,19 @@ impl<T> Browsing<T> {
             Poll::Pending => None,
         }
     }
+}
+
+/// What a Browse… button that's off says when hovered.
+pub const ALREADY_OPEN: &str = "A file dialog is already open";
+
+/// The Browse… button, drawn into `ui`: off unless `on` (off while a dialog is open), and
+/// then saying why when hovered. Whether it was clicked.
+pub fn button(ui: &mut egui::Ui, on: bool) -> bool {
+    let mut response = ui.add_enabled(on, egui::Button::new("Browse…"));
+    if !on {
+        response = response.on_disabled_hover_text(ALREADY_OPEN);
+    }
+    response.clicked()
 }
 
 /// A Silico document's filter.
@@ -144,12 +177,14 @@ pub fn export_filters(step: bool) -> Vec<Filter> {
     }
 }
 
-/// The folder of the document at `document`, if its path names one (a bare name doesn't).
+/// The folder of the document at `document`, if its path names one (a bare name doesn't),
+/// made absolute against the working directory: the XDG portal, another process, can't read
+/// a relative one. As given if it can't be (the working directory unknown).
 pub fn folder_of(document: &str) -> Option<PathBuf> {
-    Path::new(document)
+    let folder = Path::new(document)
         .parent()
-        .filter(|folder| !folder.as_os_str().is_empty())
-        .map(Path::to_path_buf)
+        .filter(|folder| !folder.as_os_str().is_empty())?;
+    Some(std::path::absolute(folder).unwrap_or_else(|_| folder.to_path_buf()))
 }
 
 /// The file name of `path`, if it has one.
@@ -169,9 +204,19 @@ mod tests {
             folder_of("/work/bracket.silico"),
             Some(PathBuf::from("/work"))
         );
-        assert_eq!(folder_of("sub/bracket.silico"), Some(PathBuf::from("sub")));
         assert_eq!(folder_of("bracket.silico"), None);
         assert_eq!(folder_of(""), None);
+    }
+
+    #[test]
+    fn a_relative_documents_folder_is_made_absolute_against_the_working_directory() {
+        let here = std::env::current_dir().unwrap();
+        assert_eq!(folder_of("sub/bracket.silico"), Some(here.join("sub")));
+        assert_eq!(
+            folder_of("sub/deeper/bracket.silico"),
+            Some(here.join("sub").join("deeper"))
+        );
+        assert!(folder_of("sub/bracket.silico").unwrap().is_absolute());
     }
 
     #[test]

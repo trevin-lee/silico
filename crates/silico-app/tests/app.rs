@@ -9062,7 +9062,14 @@ fn opens_browse_asks_for_a_silico_file_frames_climb_while_it_is_open_and_its_pic
     let browser = FakeBrowser::default();
     let mut h = f.app_browsing(&browser);
     file_menu(&mut h, "Open…", "Open document");
+    // A path typed first, which the pick's open takes as a typed one's would.
+    h.get_by_role(Role::TextInput).focus();
+    step(&mut h);
+    h.get_by_role(Role::TextInput).type_text("typed.silico");
+    step(&mut h);
     browse(&mut h, &browser);
+    // Polled in the frame it opened (rfd's portal starts its dialog on the first poll).
+    assert_eq!(browser.polls(), 1);
     // Nothing open, no folder picked before: the platform's own start.
     assert_eq!(
         browser.asked(),
@@ -9100,8 +9107,9 @@ fn opens_browse_asks_for_a_silico_file_frames_climb_while_it_is_open_and_its_pic
     step_until(&mut h, "its tab", |h| anywhere(h, "picked.silico"));
     assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
     assert!(!anywhere(&h, "Open document"));
-    // Open again: the shown document's folder is where it starts.
+    // Open again: its field emptied, and the shown document's folder is where it starts.
     file_menu(&mut h, "Open…", "Open document");
+    assert_eq!(path_value(&h), "");
     browse(&mut h, &browser);
     assert_eq!(browser.asked()[1].folder.as_deref(), Some(f.dir.path()));
     assert_eq!(never_waits::waits(), 0);
@@ -9157,8 +9165,8 @@ fn a_cancelled_browse_changes_nothing() {
     }
     assert_eq!(path_value(&h), before);
     assert!(h.state().tabs()[0].exports.is_empty());
-    // A cancel picks no folder: none was picked, so the next untitled start is the
-    // platform's (New's, with the document shown, is its folder).
+    // Each started in the document's folder, the cancels before picking none
+    // (`a_cancel_picks_no_folder` shows that with no document open).
     assert!(
         browser
             .asked()
@@ -9297,6 +9305,8 @@ fn exports_browse_asks_its_formats_fills_the_path_and_the_format_follows_it() {
     open_export(&mut h);
     press(&mut h, "STEP");
     browse(&mut h, &browser);
+    // The document's folder, not the folder last picked in (`sub`).
+    assert_eq!(browser.asked()[1].folder.as_deref(), Some(f.dir.path()));
     assert_eq!(browser.asked()[1].filters[0].name, "STEP");
     assert_eq!(
         browser.asked()[1].file_name.as_deref(),
@@ -9376,6 +9386,179 @@ fn a_pick_answering_after_its_dialog_closed_changes_nothing() {
     file_menu(&mut h, "Open…", "Open document");
     assert_eq!(path_value(&h), "");
     assert!(!browse_button(&h).accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_opens_pick_answering_while_save_as_is_asked_neither_opens_nor_fills_it() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let (mut h, path) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
+    // Open, a path typed, browsing; then cancelled, its native dialog still open.
+    file_menu(&mut h, "Open…", "Open document");
+    h.get_by_role(Role::TextInput).focus();
+    step(&mut h);
+    h.get_by_role(Role::TextInput).type_text("typed.silico");
+    step(&mut h);
+    browse(&mut h, &browser);
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, "Open document"));
+    // Save As asked, and only then Open's pick answers.
+    file_menu(&mut h, "Save As…", "Save example.silico as");
+    let late = f.file("late.silico", EXAMPLE);
+    browser.answer(Some(&late));
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    assert!(anywhere(&h, "Save example.silico as"));
+    assert_eq!(path_value(&h), "");
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert!(!browse_button(&h).accesskit_node().is_disabled());
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| {
+        !anywhere(h, "Save example.silico as")
+    });
+    // Open's field holds what was typed in it, and nothing more was opened.
+    file_menu(&mut h, "Open…", "Open document");
+    assert_eq!(path_value(&h), "typed.silico");
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_exports_pick_answering_while_new_is_asked_neither_fills_it_nor_exports() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let (mut h, _) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    open_export(&mut h);
+    let before = path_value(&h);
+    browse(&mut h, &browser);
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    // New asked, and only then Export's pick answers, a STEP name.
+    file_menu(&mut h, "New…", "New document");
+    let late = f.dir.path().join("late.step");
+    browser.answer(Some(&late));
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, "New document"));
+    assert_eq!(path_value(&h), "");
+    assert!(!browse_button(&h).accesskit_node().is_disabled());
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(h.state().tabs()[0].exports.is_empty());
+    assert!(!late.exists());
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, "New document"));
+    // Export again: its path and format as they began, 3MF's tolerance asked.
+    open_export(&mut h);
+    assert_eq!(path_value(&h), before);
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, "Tolerance")
+            .is_some()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_exports_pick_answering_while_its_export_runs_changes_neither_path_nor_format() {
+    use silico_core::command::export::{Export, ExportFormat};
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let (mut h, path) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let hold = f.kernel.hold(is_step);
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    let before = path_value(&h);
+    // Browsing, and Export pressed meanwhile: the export runs, held.
+    browse(&mut h, &browser);
+    press(&mut h, "Export");
+    assert!(f.kernel.wait_running(1, WAIT));
+    step_until(&mut h, "running", |h| anywhere(h, "Exporting…"));
+    // A 3MF name picked now: neither the path nor the format follows it.
+    let picked = f.dir.path().join("picked.3mf");
+    browser.answer(Some(&picked));
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, "Exporting…"));
+    assert_eq!(path_value(&h), before);
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, "Tolerance")
+            .is_none()
+    );
+    hold.release();
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert_eq!(
+        h.state().tabs()[0].exports,
+        [Export {
+            format: ExportFormat::Step,
+            path: path.with_extension("step"),
+            replace: false,
+            features: None,
+        }]
+    );
+    assert!(!picked.exists());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_cancel_picks_no_folder() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    file_menu(&mut h, "Open…", "Open document");
+    browse(&mut h, &browser);
+    browser.answer(None);
+    step_until(&mut h, "Browse… on again", |h| {
+        !browse_button(h).accesskit_node().is_disabled()
+    });
+    // No document open and nothing picked: the platform's own start again.
+    browse(&mut h, &browser);
+    assert_eq!(browser.asked().len(), 2);
+    assert_eq!(browser.asked()[1].folder, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn browse_while_a_dialog_is_open_is_off_and_says_why_when_hovered() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    file_menu(&mut h, "Open…", "Open document");
+    let why = "A file dialog is already open";
+    // On: hovered, it says nothing.
+    browse_button(&h).hover();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!anywhere(&h, why));
+    browse(&mut h, &browser);
+    // Drawn off from the frame after the one it opened in.
+    step(&mut h);
+    assert!(browse_button(&h).accesskit_node().is_disabled());
+    browse_button(&h).hover();
+    step_until(&mut h, "why it's off", |h| anywhere(h, why));
+    // Answered: on again, and saying nothing.
+    browser.answer(None);
+    step_until(&mut h, "Browse… on again", |h| {
+        !browse_button(h).accesskit_node().is_disabled()
+    });
+    browse_button(&h).hover();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!anywhere(&h, why));
     assert_eq!(never_waits::waits(), 0);
 }
 

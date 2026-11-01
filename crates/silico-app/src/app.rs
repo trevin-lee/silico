@@ -633,8 +633,9 @@ impl<P: Clients + 'static> App<P> {
 
     /// The native dialog's answer, if it has come, never waited for: a path picked fills the
     /// path field of the question it was asked from (Open's opens it), if that question is
-    /// still asked; a cancel, or a question no longer asked, changes nothing. Whether a
-    /// command was started.
+    /// still asked; a cancel, or a question no longer asked, changes nothing, nor does
+    /// Export's while its export runs or asks whether to replace. Whether a command was
+    /// started.
     fn take_browsed(&mut self) -> bool {
         let Some(answer) = self.browsing.as_mut().and_then(Browsing::poll) else {
             return false;
@@ -668,13 +669,24 @@ impl<P: Clients + 'static> App<P> {
         match what {
             Asking::Path { create: false } => {
                 self.open(&path, false);
+                // As a typed path's open takes it.
+                self.open_path.clear();
                 self.asking = None;
                 return true;
             }
             Asking::Path { create: true } => self.open_path = path,
             Asking::SaveAs(_) => self.save_as_path = path,
             Asking::Export(id) => {
-                if let Some(form) = self.export.as_mut().filter(|form| form.session == id) {
+                // Its path field is off while the export runs or asks whether to replace.
+                let idle = self
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.id == id && !tab.exporting() && tab.export_replacing.is_none());
+                if let Some(form) = self
+                    .export
+                    .as_mut()
+                    .filter(|form| idle && form.session == id)
+                {
                     form.browsed(path);
                 }
             }
@@ -686,10 +698,7 @@ impl<P: Clients + 'static> App<P> {
     /// The Browse… button beside a path field, if the app has native dialogs: off while one
     /// is open. Whether it was clicked.
     fn browse_button(&self, ui: &mut Ui) -> bool {
-        self.browser.is_some()
-            && ui
-                .add_enabled(self.browsing.is_none(), egui::Button::new("Browse…"))
-                .clicked()
+        self.browser.is_some() && browse::button(ui, self.browsing.is_none())
     }
 
     /// The native dialog of `asking`'s path field, opened, its answer polled each frame.
