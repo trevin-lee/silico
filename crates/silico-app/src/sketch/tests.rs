@@ -599,10 +599,13 @@ fn a_tangency_draws_at_its_point_and_an_angle_its_value_in_degrees_on_its_arc() 
 }
 
 #[test]
-fn a_quarter_arcs_polyline_is_eight_chords_each_within_the_tolerance_of_the_arc() {
+fn a_quarter_arcs_polyline_is_ten_chords_each_within_the_tolerance_of_the_arc() {
     // Radius 10 mm, 100 points on the screen; tolerance 0.5: each chord's angle at most
     // 2·acos(1 − 0.005) = 0.20008 rad, so π/2 needs ⌈7.85⌉ = 8. Eight chords of π/16 stray
-    // 100·(1 − cos π/32) = 0.4815 points; seven, 100·(1 − cos π/28) = 0.6288, too far.
+    // 100·(1 − cos π/32) = 0.4815 points; seven, 100·(1 − cos π/28) = 0.6288, too far. But
+    // the outline takes the profile fill's count, worked out at the power of two below the
+    // view's scale, 1/16 mm a point: 160 points, 2·acos(1 − 0.5/160) = 0.15815 rad a chord,
+    // ⌈9.93⌉ = 10, each straying 100·(1 − cos π/40) = 0.3084.
     assert_eq!(segments(100.0, FRAC_PI_2, 0.5), 8);
     assert!(100.0 * (1.0 - libm::cos(PI / 32.0)) <= 0.5);
     assert!(100.0 * (1.0 - libm::cos(PI / 28.0)) > 0.5);
@@ -633,17 +636,18 @@ fn a_quarter_arcs_polyline_is_eight_chords_each_within_the_tolerance_of_the_arc(
     let [Drawn::Stroke { points, .. }] = of(&drawn, "aa000001").as_slice() else {
         panic!("{drawn:?}");
     };
-    assert_eq!(points.len(), 9);
+    assert_eq!(segments(160.0, FRAC_PI_2, 0.5), 10);
+    assert_eq!(points.len(), 11);
     let centre = pos2(100.0, 500.0);
     assert!(near(points[0], pos2(200.0, 500.0)));
-    assert!(near(points[8], pos2(100.0, 400.0)));
+    assert!(near(points[10], pos2(100.0, 400.0)));
     for p in points {
         assert!(((*p - centre).length() - 100.0).abs() < 1e-3, "{p:?}");
     }
     for pair in points.windows(2) {
         let chord_middle = pair[0] + (pair[1] - pair[0]) / 2.0;
         let strays = 100.0 - (chord_middle - centre).length();
-        assert!(strays <= 0.5 && strays > 0.45, "{strays}");
+        assert!((strays - 0.3084).abs() < 1e-3, "{strays}");
     }
 }
 
@@ -652,7 +656,7 @@ fn a_circle_is_closed_its_segments_set_by_the_projections_largest_stretch() {
     // A projection three times as tall as wide: the circle of radius 10 stretches to 300
     // points up and down, 100 across; its chords are counted for 300.
     let tall = |at: [f64; 2]| Some(pos2((10.0 * at[0]) as f32, (-30.0 * at[1]) as f32));
-    let points = round_points([0.0, 0.0], 10.0, 0.0, TAU, &tall, 0.5);
+    let points = round_points([0.0, 0.0], 10.0, 0.0, TAU, &tall, 0.5, 0);
     // 2·acos(1 − 0.5/300) = 0.11549 rad a chord: 2π takes ⌈54.4⌉ = 55.
     assert_eq!(segments(300.0, TAU, 0.5), 55);
     assert_eq!(points.len(), 56);
@@ -1424,7 +1428,22 @@ fn a_frames_presses_select_ctrl_adds_and_a_press_on_nothing_clears() {
         &[event(PointerAction::Release, pos2(500.0, 400.0), false)],
         None,
     );
-    assert!(mode.selection.is_empty());
+    assert!(mode.selection.is_empty()); // One taken between that still holds it: selected.
+    frame(
+        &mut mode,
+        &[event(PointerAction::Press, pos2(300.0, 300.0), false)],
+        None,
+    );
+    mode.took(Read {
+        model: None,
+        result: Ok(under(rectangle(Vec::new()))),
+    });
+    frame(
+        &mut mode,
+        &[event(PointerAction::Release, pos2(300.0, 300.0), false)],
+        None,
+    );
+    assert_eq!(selected(&mode), ["na000003"]);
 }
 
 #[test]
@@ -1900,10 +1919,8 @@ fn a_circles_and_an_arcs_fill_stay_within_the_chord_bound_of_their_area() {
     });
     circle.regions = vec![region(&["ca000001"], &[])];
     let disc = fill_area(&region_fills(&circle, HAND));
-    // r/tolerance = 400 would ask 45 chords; a fill's curve has at most 32: the inscribed
-    // 32-gon, 16·100·sin(π/16) = 312.1445, within 2.02 of π·100.
-    assert!((disc - 312.144_515_225_805_2).abs() < 1e-6, "{disc}");
-    assert!(PI * 100.0 - disc < 2.02);
+    let full = PI * 100.0;
+    assert!(disc <= full && disc >= full - TAU * 10.0 * stray, "{disc}");
     // A 20 × 10 rectangle whose top is an arc about (10, 10), bulging up through a half turn:
     // the arc in the middle of the loop. 200 + 50π.
     let mut arched = under(sketch_of(
@@ -2216,10 +2233,11 @@ fn the_plates_cache_is_keyed_on_the_read_the_scale_the_view_and_whats_shown() {
     let before = drawn_fill(&mode, 10.0).unwrap();
     assert_eq!((mode.drawings, mode.fill_builds), (5, 2));
     // A new read, one hole's circle gone: both worked out again; the fill grows by the
-    // hole as its chords drew it. At 1/16 a hole would take 28 chords, and 60 × 28 + 4
-    // vertices don't fit (1,684² + 60 · 1,684 is past 2.5 million), so it's worked out at
-    // 1/8: 2·acos(1 − 1/80) = 0.3164 rad a chord, 20 to a turn, a 20-gon of
-    // 10 · 6.25 · sin(π/10) = 19.3136 (to the screen triangles' f32 rounding).
+    // hole as the fill drew it. At 1/16 a hole would take 29 chords, and 60 × 29 + 4 =
+    // 1,744 vertices don't fit (1,744² + 60 · 1,744 is past 2.5 million), so it's worked out
+    // at 1/8: 2·acos(1 − 1/80) = 0.3164 rad a chord, 20 to a turn; coarsened, each hole is
+    // circumscribed, a 20-gon of 20 · 6.25 · tan(π/20) = 19.7981 (to the screen
+    // triangles' f32 rounding).
     let mut fewer = read.clone();
     fewer
         .members
@@ -2235,7 +2253,7 @@ fn the_plates_cache_is_keyed_on_the_read_the_scale_the_view_and_whats_shown() {
     frames_at(&mut mode, 10.0, 0.0, 2);
     assert_eq!((mode.drawings, mode.fill_builds), (6, 3));
     let grown = drawn_fill(&mode, 10.0).unwrap() - before;
-    assert!((grown - 19.313_562).abs() < 2e-3, "{grown}");
+    assert!((grown - 19.798_055).abs() < 2e-3, "{grown}");
     // Show Profile off: drawn again, the fill kept but not drawn.
     mode.settings.show_profile = false;
     frames_at(&mut mode, 10.0, 0.0, 2);
@@ -2252,8 +2270,8 @@ fn the_plates_cache_is_keyed_on_the_read_the_scale_the_view_and_whats_shown() {
 #[test]
 fn the_plate_zoomed_far_in_keeps_a_fill_worked_out_coarser_within_the_work_bound() {
     // 80 points a millimetre: 0.0125 mm a point, the fill asked at 1/128. Its holes at
-    // their 32 segments would be 60 × 32 + 4 vertices, past the bound; it's worked out
-    // coarser till it fits, and is never left out.
+    // 80 chords (then 57, 40, and 29 at each coarser power) are past the bound; at 1/8,
+    // 20, it fits, and it's never left out.
     let mut mode = mode_on(plate());
     frames_at(&mut mode, 80.0, 0.0, 2);
     let fills = mode.fill_at(-7).unwrap();
@@ -2264,10 +2282,13 @@ fn the_plate_zoomed_far_in_keeps_a_fill_worked_out_coarser_within_the_work_bound
         vertices * vertices + 60 * vertices <= draw::MAX_FILL_WORK,
         "{vertices}"
     );
-    assert!(vertices < 60 * draw::MAX_FILL_SEGMENTS, "{vertices}");
+    assert_eq!(vertices, 60 * 20 + 4);
+    // Each hole circumscribed: 20 · 6.25 · tan(π/20) = 19.7981, 0.1630 over π · 6.25. The
+    // fill falls short of the plate by that, never over it.
     let got = fill_area(fills);
     let want = 6000.0 - 60.0 * PI * 6.25;
-    assert!(got > want && got < want + 60.0 * 2.0, "{got}");
+    let short = 60.0 * (125.0 * libm::tan(PI / 20.0) - PI * 6.25);
+    assert!((got - (want - short)).abs() < 1e-6, "{got}");
     assert!(drawn_fill(&mode, 80.0).is_some());
 }
 
@@ -2296,4 +2317,158 @@ fn each_holes_bridge_goes_where_it_crosses_no_other_hole() {
     // 800 less C's 1, A's 18, and B's 1.
     let total: f64 = triangles.iter().map(|t| signed_area(&t[..]).abs()).sum();
     assert!((total - 780.0).abs() < 1e-9, "{total}");
+}
+
+/// A `size` × `size` grid of holes of 5 mm across, 10 mm apart, in a plate `10 · size`
+/// square, its profile one region; and, if `round`, the outer boundary a circle about the
+/// plate's middle instead, of radius `round`.
+fn holed(size: usize, round: Option<f64>) -> SketchRead {
+    let side = 10.0 * size as f64;
+    let mut points = vec![
+        point("pa000001", 0.0, 0.0),
+        point("pa000002", side, 0.0),
+        point("pa000003", side, side),
+        point("pa000004", 0.0, side),
+        point("pm000000", side / 2.0, side / 2.0),
+    ];
+    let mut circles = Vec::new();
+    for n in 0..size * size {
+        let (row, column) = (n / size, n % size);
+        points.push(point(
+            &format!("pc{n:06}"),
+            5.0 + 10.0 * column as f64,
+            5.0 + 10.0 * row as f64,
+        ));
+        circles.push(SketchCircle {
+            id: id(&format!("cc{n:06}")),
+            center: id(&format!("pc{n:06}")),
+            radius: Coordinate::new(2.5).unwrap(),
+            construction: false,
+        });
+    }
+    let outer: Vec<ElementId> = match round {
+        Some(radius) => {
+            circles.push(SketchCircle {
+                id: id("cr000000"),
+                center: id("pm000000"),
+                radius: Coordinate::new(radius).unwrap(),
+                construction: false,
+            });
+            vec![id("cr000000")]
+        }
+        None => ["na000001", "na000002", "na000003", "na000004"]
+            .iter()
+            .map(|n| id(n))
+            .collect(),
+    };
+    let mut sketch = rectangle(Vec::new());
+    sketch.lines = vec![
+        line("na000001", "pa000001", "pa000002"),
+        line("na000002", "pa000002", "pa000003"),
+        line("na000003", "pa000003", "pa000004"),
+        line("na000004", "pa000004", "pa000001"),
+    ];
+    sketch.points = points;
+    sketch.circles = circles;
+    let mut read = under(sketch);
+    read.regions = vec![Region {
+        outer,
+        holes: (0..size * size)
+            .map(|n| vec![id(&format!("cc{n:06}"))])
+            .collect(),
+    }];
+    read
+}
+
+#[test]
+fn a_plate_of_225_holes_still_gets_a_fill() {
+    // 225 circles at their fewest, 4 each, are 904 vertices: 904² + 225 · 904, within the
+    // bound; with 8 each, past it.
+    let read = holed(15, None);
+    let fills = region_fills(&read, draw::fill_scale(Scale(0.1)).1);
+    assert_eq!(fills.len(), 1);
+    // Coarsened, each hole circumscribed: the fill falls short of 150² − 225 · π · 6.25,
+    // by at most each hole being its circumscribed square, side 5, at its fewest chords.
+    let want = 150.0 * 150.0 - 225.0 * PI * 6.25;
+    let got = fill_area(&fills);
+    assert!(got <= want && got >= 150.0 * 150.0 - 225.0 * 25.0, "{got}");
+}
+
+#[test]
+fn a_coarsened_fill_keeps_outside_each_hole_and_inside_a_round_outer_boundary() {
+    // The 60-hole grid inside a circle of radius 70 about (50, 50), at 1/128 (coarsened):
+    // each fill vertex near a hole at its radius or past it, and every one within the outer
+    // circle.
+    let mut read = holed(10, Some(70.0));
+    // Six rows: drop the last four of the ten.
+    read.members.circles.retain(|c| {
+        c.id.as_str() == "cr000000" || c.id.as_str()[2..].parse::<usize>().is_ok_and(|n| n < 60)
+    });
+    read.regions[0].holes.truncate(60);
+    let middle = [50.0, 50.0];
+    let fine = region_fills(&read, Scale(1.0 / 128.0));
+    let vertices: Vec<[f64; 2]> = fine[0].triangles.iter().flatten().copied().collect();
+    // Coarsened: fewer vertices than the outline's at 1/128 (80 to a hole).
+    let distinct: std::collections::BTreeSet<[u64; 2]> = vertices
+        .iter()
+        .map(|v| [v[0].to_bits(), v[1].to_bits()])
+        .collect();
+    assert!(distinct.len() < 60 * 80, "{}", distinct.len());
+    for v in &vertices {
+        let off_middle = libm::hypot(v[0] - middle[0], v[1] - middle[1]);
+        assert!(off_middle <= 70.0 + 1e-9, "{v:?} outside the outer circle");
+        for n in 0..60 {
+            let centre = [5.0 + 10.0 * (n % 10) as f64, 5.0 + 10.0 * (n / 10) as f64];
+            let off = libm::hypot(v[0] - centre[0], v[1] - centre[1]);
+            assert!(off >= 2.5 - 1e-9, "{v:?} inside hole {n}");
+        }
+    }
+}
+
+#[test]
+fn an_uncoarsened_fill_meets_its_outline_vertex_for_vertex() {
+    let mut read = under(sketch_of(
+        vec![point("pa000001", 0.0, 0.0)],
+        Vec::new(),
+        Vec::new(),
+    ));
+    read.members.circles.push(SketchCircle {
+        id: id("ca000001"),
+        center: id("pa000001"),
+        radius: Coordinate::new(10.0).unwrap(),
+        construction: false,
+    });
+    read.regions = vec![region(&["ca000001"], &[])];
+    let fills = region_fills(&read, draw::fill_scale(HAND).1);
+    let drawn = drawing(
+        &read,
+        &view(),
+        Shown::default(),
+        &Default::default(),
+        &fills,
+    );
+    let key = |p: Pos2| ((p.x * 16.0).round() as i64, (p.y * 16.0).round() as i64);
+    let outline: std::collections::BTreeSet<(i64, i64)> = drawn
+        .iter()
+        .find_map(|d| match d {
+            Drawn::Stroke {
+                of: Some(of),
+                points,
+                ..
+            } if of.as_str() == "ca000001" => Some(points.iter().map(|&p| key(p)).collect()),
+            _ => None,
+        })
+        .unwrap();
+    let filled: std::collections::BTreeSet<(i64, i64)> = drawn
+        .iter()
+        .find_map(|d| match d {
+            Drawn::Fill { triangles, .. } => {
+                Some(triangles.iter().flatten().map(|&p| key(p)).collect())
+            }
+            _ => None,
+        })
+        .unwrap();
+    // 160 points of radius at 1/16, tolerance 0.25: 57 chords, its 57 vertices both's.
+    assert_eq!(outline.len(), 57);
+    assert_eq!(outline, filled);
 }

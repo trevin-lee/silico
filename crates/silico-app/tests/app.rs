@@ -7381,6 +7381,8 @@ fn a_second_undo_queued_inside_sketch_mode_is_dropped_at_where_it_opened() {
     settled(&mut h);
     assert_eq!(text_of(&f, &h), before);
     assert_eq!(undos(&h), 1);
+    // The one undo that ran is the one counted: one for Redo to give back.
+    assert_eq!(sketch_mode(&h).unwrap().undone, 1);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -7443,6 +7445,49 @@ fn redo_inside_sketch_mode_never_gives_back_what_was_undone_before_it_opened() {
     chord(&mut h, eframe::egui::Key::Y);
     assert_eq!(h.state().tabs()[0].sent.len(), sent);
     assert_eq!(text_of(&f, &h), SKETCHED);
+    // Finished, having changed nothing: the rename's redo is the person's again.
+    leave_sketch(&mut h, true);
+    assert!(h.state().tabs()[0].redoable());
+    chord(&mut h, eframe::egui::Key::Y);
+    assert!(text_of(&f, &h).contains(r#""name": "KPlate""#));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_edit_after_a_finish_that_fenced_redo_lets_its_own_undo_be_redone() {
+    let f = fixture();
+    let (mut h, _) = triangle_open(&f, true);
+    delete_line(&mut h, "na000000");
+    delete_line(&mut h, "nb000000");
+    chord(&mut h, eframe::egui::Key::Z);
+    leave_sketch(&mut h, true);
+    assert!(!h.state().tabs()[0].redoable());
+    // An edit, then its Undo: the redo is the edit's, at Finish's end state once more, and
+    // the fence went with the edit.
+    select(&mut h, "KPlate");
+    type_name(&mut h, "Q");
+    settled(&mut h);
+    chord(&mut h, eframe::egui::Key::Z);
+    assert!(h.state().tabs()[0].redoable());
+    chord(&mut h, eframe::egui::Key::Y);
+    assert!(text_of(&f, &h).contains(r#""name": "QKPlate""#));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn what_cancel_discarded_isnt_redoable_after_it() {
+    let f = fixture();
+    let (mut h, before) = triangle_open(&f, true);
+    delete_line(&mut h, "na000000");
+    leave_sketch(&mut h, false);
+    assert_eq!(text_of(&f, &h), before);
+    // Cancel undid the delete; Redo would give it back, so it's off, and Ctrl+Y sends
+    // nothing.
+    assert!(!h.state().tabs()[0].redoable());
+    let sent = h.state().tabs()[0].sent.len();
+    chord(&mut h, eframe::egui::Key::Y);
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert_eq!(text_of(&f, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
 

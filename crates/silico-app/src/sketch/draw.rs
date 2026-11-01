@@ -37,10 +37,9 @@ const GRID_LEAST_SPACING: f32 = 8.0;
 /// at most (the 60-hole plate's 1,500 vertices take 6.6 ms in a release build).
 pub const MAX_FILL_WORK: usize = 2_500_000;
 
-/// The fewest and the most segments one curve of a fill has: a circle stays a ring, and a
-/// curve far larger than the screen takes no more of the fill's work.
-pub const MIN_FILL_SEGMENTS: usize = 8;
-pub const MAX_FILL_SEGMENTS: usize = 32;
+/// The fewest segments a lone circle has, in a fill and its outline: a ring still. An arc
+/// has its share of them by its sweep, at least one.
+pub const MIN_FILL_SEGMENTS: usize = 4;
 
 /// How many times a fill is worked out coarser, each at twice the last scale, before it's
 /// left out: by then every curve is at its fewest segments (2^40 times the tolerance), so a
@@ -803,13 +802,19 @@ pub fn fill_scale(scale: Scale) -> (i32, Scale) {
     (bucket, Scale(libm::ldexp(1.0, bucket)))
 }
 
-/// Each region of `read`'s profile filled, worked out in the sketch's millimetres at `scale`
-/// (its arcs within the chord tolerance at that scale, each of [`MIN_FILL_SEGMENTS`] to
-/// [`MAX_FILL_SEGMENTS`] segments), so a frame only projects it: the plane-to-screen map
-/// takes triangles to triangles. A region whose fill would take more than
-/// [`MAX_FILL_WORK`] is worked out coarser, at twice the scale each time, till it fits: a
-/// fill that strays more from the curves, never none. A region whose loops can't be walked,
-/// or that doesn't fit with every curve at its fewest segments, has none.
+/// Each region of `read`'s profile filled, worked out in the sketch's millimetres at
+/// `scale` (a frame's [`fill_scale`]), so a frame only projects it: the plane-to-screen map
+/// takes triangles to triangles. Its curves take the segments their outlines take at that
+/// scale ([`curve_segments`]), so the fill meets the drawn outline vertex for vertex.
+///
+/// A region whose fill would take more than [`MAX_FILL_WORK`] is worked out coarser, at
+/// twice the scale each time, till it fits: never none for being too fine. A coarser fill
+/// never crosses its curves: each circle or arc is placed on the side away from the
+/// region (inscribed where the region lies inside its circle, as an outer boundary's
+/// bulge; circumscribed, its vertices at r / cos(θ/2), where it lies outside, as a hole),
+/// so the fill only falls short of the profile, by at most a coarser chord's sagitta. A
+/// region whose loops can't be walked, or that doesn't fit with every curve at its fewest
+/// segments, has none.
 pub fn region_fills(read: &SketchRead, scale: Scale) -> Vec<RegionFill> {
     let geometry = Geometry::of(read);
     read.regions
@@ -820,14 +825,20 @@ pub fn region_fills(read: &SketchRead, scale: Scale) -> Vec<RegionFill> {
 
 /// `region` filled at `scale`, or coarser till it fits.
 fn region_fill(region: &Region, geometry: &Geometry, scale: Scale) -> Option<RegionFill> {
-    let mut at = scale.0;
-    for _ in 0..FILL_COARSENINGS {
-        let tolerance = at * f64::from(SKETCH_CHORD_TOLERANCE);
-        let outer = walk(&region.outer, geometry, tolerance)?;
+    let mut at = scale;
+    for coarsened in 0..FILL_COARSENINGS {
+        let placing = |outer| {
+            if coarsened == 0 {
+                Placing::OnCurve
+            } else {
+                Placing::Clear { outer }
+            }
+        };
+        let outer = walk(&region.outer, geometry, at, placing(true))?;
         let holes: Vec<Vec<[f64; 2]>> = region
             .holes
             .iter()
-            .map(|hole| walk(hole, geometry, tolerance))
+            .map(|hole| walk(hole, geometry, at, placing(false)))
             .collect::<Option<_>>()?;
         let count = outer.len() + holes.iter().map(Vec::len).sum::<usize>();
         let work = count
@@ -839,9 +850,25 @@ fn region_fill(region: &Region, geometry: &Geometry, scale: Scale) -> Option<Reg
                 triangles: triangulate(outer, holes),
             });
         }
-        at *= 2.0;
+        at = Scale(at.0 * 2.0);
     }
     None
+}
+
+/// How many segments a circle or an arc of `radius` through `sweep` takes at `scale`, its
+/// chords within `tolerance` points: a fill's and its outline's alike. A lone circle at
+/// least [`MIN_FILL_SEGMENTS`], an arc its share of them by its sweep, at least one.
+pub(crate) fn curve_segments(radius: f64, sweep: f64, scale: Scale, tolerance: f32) -> usize {
+    let least = (MIN_FILL_SEGMENTS as f64 * sweep / TAU).ceil().max(1.0) as usize;
+    segments(radius / scale.0.max(f64::MIN_POSITIVE), sweep, tolerance).max(least)
+}
+
+/// Where a fill's curve's vertices go: on the curve, as its outline's; or, coarsened, on the
+/// side away from the region (`outer` says whether the loop bounds it or is a hole in it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placing {
+    OnCurve,
+    Clear { outer: bool },
 }
 
 /// What's drawn of `read`, seen through `view`, the members in `selected` drawn selected:
@@ -908,6 +935,12 @@ pub fn drawing(
                 sweep,
                 view.project,
                 view.chord_tolerance,
+                curve_segments(
+                    radius,
+                    sweep,
+                    fill_scale(view.scale).1,
+                    view.chord_tolerance,
+                ),
             ),
         };
         let kind = StrokeKind::Curve {
@@ -1087,67 +1120,123 @@ fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
     drawn
 }
 
-/// The polygon a loop of `curves` walks, in order, in the sketch's millimetres, its arcs
-/// within `tolerance` of themselves: each curve run from the end the last one ended at
-/// (the first, toward the one after it). None for a curve the read hasn't, or a loop whose
-/// curves don't meet end to end.
-fn walk(curves: &[ElementId], geometry: &Geometry, tolerance: f64) -> Option<Vec<[f64; 2]>> {
-    let polyline = |id: &ElementId| -> Option<Vec<[f64; 2]>> {
-        Some(match geometry.curves.get(id)?.0 {
-            Curve::Line { from, to } => vec![from, to],
-            Curve::Round {
-                centre,
-                radius,
-                start,
-                sweep,
-            } => {
-                let n = segments(radius / tolerance.max(f64::MIN_POSITIVE), sweep, 1.0)
-                    .clamp(MIN_FILL_SEGMENTS, MAX_FILL_SEGMENTS);
-                (0..=n)
-                    .map(|k| {
-                        add(
-                            centre,
-                            mul(direction(start + sweep * k as f64 / n as f64), radius),
-                        )
-                    })
-                    .collect()
-            }
-        })
-    };
+/// The polygon a loop of `curves` walks, in order, in the sketch's millimetres, its arcs and
+/// circles at `scale`'s segments ([`curve_segments`]), placed as `placing` says: each curve
+/// run from the end the last one ended at (the first, toward the one after it). None for a
+/// curve the read hasn't, or a loop whose curves don't meet end to end.
+fn walk(
+    curves: &[ElementId],
+    geometry: &Geometry,
+    scale: Scale,
+    placing: Placing,
+) -> Option<Vec<[f64; 2]>> {
+    // Each curve, and whether it's run against its own way (an arc's is counter-clockwise).
+    let mut run: Vec<(&ElementId, bool)> = Vec::new();
     let [first, rest @ ..] = curves else {
         return None;
     };
-    // A lone curve: a circle's whole turn.
     if rest.is_empty() {
-        let mut ring = polyline(first)?;
-        ring.pop();
-        return Some(ring);
-    }
-    let ends = |id: &ElementId| geometry.ends.get(id).copied();
-    let (start, end) = ends(first)?;
-    let (next_start, next_end) = ends(&rest[0])?;
-    let forward = end == next_start || end == next_end;
-    let mut at = if forward { end } else { start };
-    let mut polygon = polyline(first)?;
-    if !forward {
-        polygon.reverse();
-    }
-    polygon.pop();
-    for id in rest {
-        let (start, end) = ends(id)?;
-        let mut piece = polyline(id)?;
-        if start == at {
-            at = end;
-        } else if end == at {
-            at = start;
-            piece.reverse();
-        } else {
-            return None;
+        run.push((first, false));
+    } else {
+        let ends = |id: &ElementId| geometry.ends.get(id).copied();
+        let (start, end) = ends(first)?;
+        let (next_start, next_end) = ends(&rest[0])?;
+        let forward = end == next_start || end == next_end;
+        let mut at = if forward { end } else { start };
+        run.push((first, !forward));
+        for id in rest {
+            let (start, end) = ends(id)?;
+            if start == at {
+                at = end;
+                run.push((id, false));
+            } else if end == at {
+                at = start;
+                run.push((id, true));
+            } else {
+                return None;
+            }
         }
-        piece.pop();
-        polygon.extend(piece);
     }
-    Some(polygon)
+    let lone = rest.is_empty();
+    let polygon = |circumscribed: &dyn Fn(bool) -> bool| -> Option<Vec<[f64; 2]>> {
+        let mut polygon = Vec::new();
+        for &(id, reversed) in &run {
+            let mut piece = match geometry.curves.get(id)?.0 {
+                Curve::Line { from, to } => vec![from, to],
+                Curve::Round {
+                    centre,
+                    radius,
+                    start,
+                    sweep,
+                } => {
+                    let n = curve_segments(radius, sweep, scale, SKETCH_CHORD_TOLERANCE);
+                    round_polyline(
+                        centre,
+                        radius,
+                        start,
+                        sweep,
+                        n,
+                        circumscribed(reversed),
+                        lone,
+                    )
+                }
+            };
+            if reversed {
+                piece.reverse();
+            }
+            // Each piece ends where the next begins; a lone circle's ring is closed.
+            piece.pop();
+            polygon.extend(piece);
+        }
+        Some(polygon)
+    };
+    let on_curve = polygon(&|_| false)?;
+    let Placing::Clear { outer } = placing else {
+        return Some(on_curve);
+    };
+    // The region is on the loop's left where it bounds it counter-clockwise, or is a hole
+    // walked clockwise; a curve run its own way (counter-clockwise) has its centre on its
+    // left. Where the region and the centre are on one side, the region is inside the
+    // circle: inscribed; otherwise circumscribed.
+    let counter_clockwise = signed_area(&on_curve) > 0.0;
+    let region_left = counter_clockwise == outer;
+    polygon(&|reversed| region_left == reversed)
+}
+
+/// A circle's or an arc's polyline, counter-clockwise from `start` through `sweep`, in `n`
+/// segments: its vertices on it; or, `circumscribed`, outside it, each segment on a tangent,
+/// its corners at r / cos(θ/2), an arc's ends still its own (a lone circle has none: its
+/// ring is the tangents' corners). A whole turn's ring ends where it starts.
+fn round_polyline(
+    centre: [f64; 2],
+    radius: f64,
+    start: f64,
+    sweep: f64,
+    n: usize,
+    circumscribed: bool,
+    lone: bool,
+) -> Vec<[f64; 2]> {
+    let step = sweep / n as f64;
+    let on = |at: f64, r: f64| add(centre, mul(direction(at), r));
+    if !circumscribed {
+        return (0..=n)
+            .map(|k| on(start + step * k as f64, radius))
+            .collect();
+    }
+    let corner = radius / libm::cos(step / 2.0);
+    if lone {
+        let mut ring: Vec<[f64; 2]> = (0..n)
+            .map(|k| on(start + step * k as f64, corner))
+            .collect();
+        if let Some(&first) = ring.first() {
+            ring.push(first);
+        }
+        return ring;
+    }
+    std::iter::once(on(start, radius))
+        .chain((0..n).map(|k| on(start + step * (k as f64 + 0.5), corner)))
+        .chain(std::iter::once(on(start + sweep, radius)))
+        .collect()
 }
 
 /// `outer` less `holes`, in triangles: `outer` turned counter-clockwise and each hole
@@ -1185,13 +1274,19 @@ pub(crate) fn triangulate(
         };
         // The nearest vertex first, the first clear one taken: most bridges are to the
         // nearest, so few are tried.
-        let mut nearest: Vec<usize> = (0..polygon.len()).collect();
-        nearest.sort_by(|&i, &j| {
-            length(sub(polygon[i], m))
-                .total_cmp(&length(sub(polygon[j], m)))
-                .then(i.cmp(&j))
-        });
-        let Some(bridge) = nearest.into_iter().find(|&i| clear(polygon[i])) else {
+        // Each distance worked out once (squared: the order's the same), ties to the lower
+        // place.
+        let mut nearest: Vec<(f64, usize)> = polygon
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| (dot(sub(p, m), sub(p, m)), i))
+            .collect();
+        nearest.sort_unstable_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let Some(bridge) = nearest
+            .into_iter()
+            .map(|(_, i)| i)
+            .find(|&i| clear(polygon[i]))
+        else {
             continue;
         };
         let p = polygon[bridge];
@@ -1306,7 +1401,15 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
         );
     }
     for &(centre, radius) in &preview.circles {
-        let points = round_points(centre, radius, 0.0, TAU, view.project, view.chord_tolerance);
+        let points = round_points(
+            centre,
+            radius,
+            0.0,
+            TAU,
+            view.project,
+            view.chord_tolerance,
+            0,
+        );
         stroke(
             points,
             StrokeKind::Preview,
@@ -1325,6 +1428,7 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
             sweep,
             view.project,
             view.chord_tolerance,
+            0,
         );
         stroke(
             points,
@@ -1401,7 +1505,8 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
 /// The polyline of a circle or an arc about `centre`, of `radius`, from the angle `start`
 /// through `sweep`, its vertices on the curve and its chords within `tolerance` screen
 /// points of it: as many segments as that needs at the projection's largest stretch about
-/// the centre, at most [`MAX_CURVE_SEGMENTS`]; a whole turn ending where it starts.
+/// the centre, and at least `at_least` (the profile fill's own count, so the two share
+/// their vertices), at most [`MAX_CURVE_SEGMENTS`]; a whole turn ending where it starts.
 pub(crate) fn round_points(
     centre: [f64; 2],
     radius: f64,
@@ -1409,9 +1514,12 @@ pub(crate) fn round_points(
     sweep: f64,
     project: &dyn Fn([f64; 2]) -> Option<Pos2>,
     tolerance: f32,
+    at_least: usize,
 ) -> Vec<Option<Pos2>> {
     let project = |at: [f64; 2]| project(at).filter(|p| p.x.is_finite() && p.y.is_finite());
-    let segments = segments(stretch(centre, radius, &project) * radius, sweep, tolerance);
+    let segments = segments(stretch(centre, radius, &project) * radius, sweep, tolerance)
+        .max(at_least)
+        .min(MAX_CURVE_SEGMENTS);
     let mut points: Vec<Option<Pos2>> = (0..=segments)
         .map(|k| {
             let at = start + sweep * k as f64 / segments as f64;

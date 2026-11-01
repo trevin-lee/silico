@@ -394,6 +394,9 @@ pub struct Tab {
     /// The state sketch mode's Finish ended at: Redo is off there till the next edit, so
     /// what it undid isn't redone past its Finish.
     redo_fence: Option<Revision>,
+    /// Whether an edit of the tab's was applied since the last dialog or sketch mode
+    /// opened: whether a sketch mode's Finish or Cancel has anything of its own to fence.
+    sketch_edited: bool,
     /// Each revision an undo or a redo came to, and the first revision of the state it
     /// restored: what names a state, whichever revision the session is at it by.
     restored: BTreeMap<Revision, Revision>,
@@ -481,6 +484,7 @@ impl Tab {
             prefixes: Prefixes::default(),
             groups: Vec::new(),
             redo_fence: None,
+            sketch_edited: false,
             restored: BTreeMap::new(),
             refused: std::collections::BTreeSet::new(),
             sent: Vec::new(),
@@ -1216,6 +1220,7 @@ impl Tab {
                 }
                 Queued::Opened { serial } => {
                     self.dialog_base = Some(self.revision);
+                    self.sketch_edited = false;
                     self.dialog_began = !self.transaction && !self.beginning;
                     // Sketch mode's own opening, never another's: what its undo stops at.
                     if let Some(mode) = self.sketch.as_mut().filter(|mode| mode.serial == serial) {
@@ -1274,11 +1279,16 @@ impl Tab {
                         continue;
                     }
                     let unchanged = self.state_of(base) == self.state_of(self.revision);
-                    if ok && sketch && !(unchanged && self.dialog_began) {
-                        // What sketch mode undid stays undone: Redo is off here till an edit.
-                        self.redo_fence = Some(self.state_of(self.revision));
+                    let rolls_back = (!ok || unchanged) && self.dialog_began;
+                    if sketch && self.sketch_edited && !rolls_back {
+                        // What sketch mode undid, or its Cancel discards, stays so: Redo is
+                        // off at the state it leaves (Finish's end, or the state Cancel
+                        // undoes back to) till the next edit. Not after a sketch mode that
+                        // changed nothing: a redo from before it is the person's still.
+                        let at = if ok { self.revision } else { base };
+                        self.redo_fence = Some(self.state_of(at));
                     }
-                    if (!ok || unchanged) && self.dialog_began {
+                    if rolls_back {
                         // Its own edits began the transaction: nothing before it to keep, and
                         // no transaction left open with nothing in it (an outside change is
                         // then reloaded, section 4).
@@ -1832,6 +1842,7 @@ impl Tab {
         if response.result.is_ok() && moved {
             self.groups.retain(|group| group.end <= sending.state);
             self.redo_fence = None;
+            self.sketch_edited = true;
         }
     }
 
