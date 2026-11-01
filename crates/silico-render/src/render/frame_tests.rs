@@ -1290,12 +1290,13 @@ fn an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allow
         "render::frame_tests::an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allows",
         |r| {
             r.upload(1, &the_box()).unwrap();
-            // The box's reach from the target, by its box's farthest corner: from (21, 10,
-            // 7), the corner (0, 0, 0) on x, y, and z alike (21, 10, 7 away), √590; from
-            // (5, 4, 3), the corner (40, 20, 10) (35, 16, 7 away), √1530. The least height is
-            // that times MIN_VIEW_HEIGHT_OF_REACH: drawn at it, refused just under it.
+            // The box's reach from the target, its farthest corner: from (21, 10, 7), the
+            // corner (0, 0, 0) on x, y, and z alike (21, 10, 7 away), √590; from (5, 4, 3),
+            // the corner (40, 20, 10) (35, 16, 7 away), √1530. The least height at 48 rows is
+            // 48 times that over 2^19, as a scene's check takes it (0.00222 and 0.00358 mm):
+            // drawn at it, refused just under it.
             for (target, squared) in [([21.0, 10.0, 7.0], 590.0f64), ([5.0, 4.0, 3.0], 1530.0)] {
-                let least = squared.sqrt() * silico_protocol::MIN_VIEW_HEIGHT_OF_REACH;
+                let least = 48.0 * squared.sqrt() / 524_288.0;
                 let at = |view_height: f64| Camera {
                     projection: Projection::Orthographic { view_height },
                     eye: [target[0], target[1] - 60.0, target[2]],
@@ -1311,6 +1312,50 @@ fn an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allow
                     "{target:?}"
                 );
             }
+        },
+    );
+}
+
+#[test]
+fn a_perspective_frame_takes_the_angles_and_eyes_a_scenes_check_does_at_its_size() {
+    on_lavapipe(
+        "render::frame_tests::a_perspective_frame_takes_the_angles_and_eyes_a_scenes_check_does_at_its_size",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            // From in front of the front face's point (21, 0, 7), looking +y, at 1° over 48
+            // rows: a point may be 2^20 tan(0.5°) / 48 = 190.6 times as far across the view
+            // as along it (by hand). The face's farthest corner from the axis, (0, 0, 0), is
+            // √(21² + 7²) = 22.14 across at the eye's distance d: 0.2 mm off, 110.7 times,
+            // drawn; 0.1 mm off, 221.4, refused, naming the eye; the box's back corners nearer
+            // the axis for their depth either way.
+            let at = |distance: f64, field_of_view: f64| Camera {
+                projection: Projection::Perspective { field_of_view },
+                eye: [21.0, -distance, 7.0],
+                target: [21.0, 10.0, 7.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            let camera = at(0.2, 1.0);
+            r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
+            let camera = at(0.1, 1.0);
+            assert_eq!(refused(r, &frame(&camera, &[1], &[], None)), "camera.eye");
+            // An eye in the front face's plane, or behind it, reaches the eye's plane.
+            for distance in [0.0, -1.0] {
+                let camera = at(distance, 60.0);
+                assert_eq!(
+                    refused(r, &frame(&camera, &[1], &[], None)),
+                    "camera.eye",
+                    "{distance}"
+                );
+            }
+            // The angle at the frame's size: at 64 by 48, from 0.005246° (by hand, the
+            // quadratic's root): 0.001° is refused, 0.006° drawn.
+            let camera = at(1e5, 0.001);
+            assert_eq!(
+                refused(r, &frame(&camera, &[1], &[], None)),
+                "camera.field_of_view"
+            );
+            let camera = at(1e5, 0.006);
+            r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
         },
     );
 }

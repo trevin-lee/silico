@@ -2,9 +2,9 @@
 //! scene the worker can draw passes; each way one can't is refused, naming its field.
 
 use silico_protocol::{
-    Camera, EDGE_BIT, InvalidParameter, MAX_FIELD_OF_VIEW, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES,
-    MAX_RENDER_FACES, MAX_RENDER_SIDE, MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, MIN_FIELD_OF_VIEW,
-    Mesh, Projection, RenderBody, RenderScene,
+    Camera, EDGE_BIT, InvalidParameter, MAX_RENDER_COORDINATE, MAX_RENDER_EDGES, MAX_RENDER_FACES,
+    MAX_RENDER_SIDE, MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, Mesh, Projection, RenderBody,
+    RenderScene, field_of_view_range,
 };
 
 /// A way to break a camera or a mesh, and what its refusal names.
@@ -81,14 +81,12 @@ fn a_scene_the_worker_can_draw_passes_at_its_limits() {
     // The least up across the view still passes.
     s.camera.up = [0.0, 1e-9, -1.0];
     s.check().unwrap();
-    s.camera.projection = Projection::Perspective {
-        field_of_view: MAX_FIELD_OF_VIEW,
-    };
-    s.check().unwrap();
-    s.camera.projection = Projection::Perspective {
-        field_of_view: MIN_FIELD_OF_VIEW,
-    };
-    s.check().unwrap();
+    // A perspective view at either end of its angles at this size (4096 by 1).
+    let (narrowest, widest) = field_of_view_range(s.width, s.height);
+    for field_of_view in [narrowest, widest] {
+        s.camera.projection = Projection::Perspective { field_of_view };
+        s.check().unwrap();
+    }
     // An eye as far out as a scene's point may be.
     s.camera.eye = [-MAX_RENDER_COORDINATE, 0.5, MAX_RENDER_COORDINATE];
     s.check().unwrap();
@@ -217,7 +215,11 @@ fn a_camera_that_cant_make_a_view_is_refused_naming_its_field() {
         let mut s = scene();
         break_it(&mut s.camera);
         assert_eq!(refused(&s).0, field, "case {i}");
-        assert_eq!(s.camera.check().unwrap_err().parameter, field, "case {i}");
+        assert_eq!(
+            s.camera.check(s.width, s.height).unwrap_err().parameter,
+            field,
+            "case {i}"
+        );
     }
 }
 
@@ -325,18 +327,25 @@ fn a_scene_past_the_most_triangles_a_render_draws_is_refused() {
 #[test]
 fn an_orthographic_views_least_height_counts_edge_points_too() {
     // The bodies reach from the target to their farthest point, an edge's as well as a
-    // mesh's: an edge point 1e5 from the target needs a view at least 1 high.
+    // mesh's: an edge point 1e5 from the target needs a view at 4096 rows at least 4096 ×
+    // 1e5 / 2^19 = 781.25 high (by hand, exact); the squares alone reach 0.71, 0.0055 high.
     let mut s = scene();
-    s.camera.projection = Projection::Orthographic { view_height: 0.999 };
+    s.camera.projection = Projection::Orthographic {
+        view_height: 781.25f64.next_down(),
+    };
     s.check().unwrap();
     s.bodies[1].mesh.edge_points[0] = [0.5, 0.5 + 1e5, 0.0];
     let (parameter, message) = refused(&s);
     assert_eq!(parameter, "camera.view_height");
     assert!(
-        message.contains("is too small to draw the bodies in view, which reach 100000.0 mm"),
+        message.contains(
+            "is too small for an image 4096 pixels high of bodies that reach 100000.0 mm from camera.target: at least 781.25 mm"
+        ),
         "{message}"
     );
-    s.camera.projection = Projection::Orthographic { view_height: 1.0 };
+    s.camera.projection = Projection::Orthographic {
+        view_height: 781.25,
+    };
     s.check().unwrap();
 }
 
@@ -507,4 +516,161 @@ fn a_cameras_frame_makes_a_long_tilted_up_perpendicular_and_of_unit_length() {
         assert!((got - want).abs() < 1e-15, "up {:?}", frame.up);
     }
     assert!((frame.distance - 5.0).abs() < 1e-15);
+}
+
+/// One body, numbered `body`: a triangle of `points`, one face, no edges.
+fn triangle(body: u32, points: [[f64; 3]; 3]) -> RenderBody {
+    RenderBody {
+        body,
+        mesh: Mesh {
+            positions: points.to_vec(),
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            triangles: vec![[0, 1, 2]],
+            face_triangles: vec![1],
+            edge_points: vec![],
+            edge_point_counts: vec![],
+            valid: None,
+        },
+        highlight_faces: vec![],
+        highlight_edges: vec![],
+    }
+}
+
+#[test]
+fn an_orthographic_views_least_height_is_its_rows_times_the_reach_over_2_to_the_19() {
+    // By hand, exact (a power of two's scaling): at 1 row, bodies reaching 2^19 mm from the
+    // target need a view 1 mm high; at 2048 rows, the 679401.3681066748 mm slab from its
+    // corner needs 679401.3681066748 / 256 = 2653.911_594_166_698_3 mm. Each passes there
+    // and is refused a double under it, the refusal giving the least to the nanometre
+    // above, which passes.
+    for (width, height, reach, least, shown) in [
+        (1, 1, 524_288.0, 1.0, "1"),
+        (
+            40,
+            2048,
+            679_401.368_106_674_8,
+            2_653.911_594_166_698_4,
+            "2653.911595",
+        ),
+    ] {
+        let mut s = RenderScene {
+            bodies: vec![triangle(
+                2,
+                [[reach, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            )],
+            camera: Camera {
+                projection: Projection::Orthographic { view_height: least },
+                eye: [0.0, -10.0, 0.0],
+                target: [0.0; 3],
+                up: [0.0, 0.0, 1.0],
+            },
+            width,
+            height,
+            ids: false,
+        };
+        s.check().unwrap();
+        s.camera.projection = Projection::Orthographic {
+            view_height: least.next_down(),
+        };
+        let (parameter, message) = refused(&s);
+        assert_eq!(parameter, "camera.view_height");
+        assert!(
+            message.contains(&format!(
+                "for an image {height} pixels high of bodies that reach {reach:?} mm from camera.target: at least {shown} mm"
+            )),
+            "{message}"
+        );
+        s.camera.projection = Projection::Orthographic {
+            view_height: shown.parse().unwrap(),
+        };
+        s.check().unwrap();
+    }
+}
+
+/// A perspective camera at the origin looking down −z, up +y, 0.5° across, 40 by 2048: its
+/// right is +x, so a point (x, 0, −z) is x across the view at depth z, exactly.
+fn looking_down_z(bodies: Vec<RenderBody>) -> RenderScene {
+    RenderScene {
+        bodies,
+        camera: Camera {
+            projection: Projection::Perspective { field_of_view: 0.5 },
+            eye: [0.0; 3],
+            target: [0.0, 0.0, -10.0],
+            up: [0.0, 1.0, 0.0],
+        },
+        width: 40,
+        height: 2048,
+        ids: false,
+    }
+}
+
+#[test]
+fn a_perspective_views_points_may_be_at_most_2_to_the_20_t_over_its_rows_across_for_their_depth() {
+    // By hand: at 0.5° over 2048 rows, 2^20 tan(0.25°) / 2048 = 512 tan(0.25°) =
+    // 2.234_035_620_199_202 (mpmath, 40 digits). A point that far across at depth 1 passes,
+    // and the next double past it is refused, naming the eye, the body, and both numbers.
+    let allowed = 512.0 * libm::tan(0.5f64.to_radians() / 2.0);
+    assert!(
+        (allowed - 2.234_035_620_199_202).abs() <= 4e-16,
+        "{allowed}"
+    );
+    let at = |x: f64| {
+        looking_down_z(vec![triangle(
+            3,
+            [[x, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.1, -1.0]],
+        )])
+    };
+    at(allowed).check().unwrap();
+    at(-allowed).check().unwrap();
+    let past = allowed.next_up();
+    let (parameter, message) = refused(&at(past));
+    assert_eq!(parameter, "camera.eye");
+    assert_eq!(
+        message,
+        format!(
+            "body 3 is {past:?} times farther across the view than along it from camera.eye [0.0, 0.0, 0.0], more than the {allowed:?} f32 draws to an eighth of a pixel at camera.field_of_view 0.5 over 2048 pixels: move camera.eye back from the bodies, widen camera.field_of_view, or take an orthographic view"
+        )
+    );
+    // The slab's bottom from 48 mm below its middle: 318205 mm across at depth 48.37, 6,578
+    // times, refused; an edge point counts as a position does.
+    let mut s = at(0.5);
+    s.bodies[0].mesh.edge_points = vec![[318_205.0, 0.0, -48.37]];
+    s.bodies[0].mesh.edge_point_counts = vec![1];
+    let (parameter, message) = refused(&s);
+    assert_eq!(parameter, "camera.eye");
+    assert!(message.starts_with("body 3 is 6578.56"), "{message}");
+}
+
+#[test]
+fn a_perspective_views_points_must_be_a_nanometre_before_its_eye() {
+    // A triangle 1e-6 mm before the eye along the view passes (its near plane is then
+    // 5e-7 mm); at 9.99e-7, at the eye's plane, or behind it, it's refused, naming the body
+    // and how far along the view its nearest point is.
+    let at = |z: f64| {
+        let mut s = looking_down_z(vec![triangle(
+            5,
+            [[0.0, 0.0, -z], [1e-7, 0.0, -z], [0.0, 1e-7, -z]],
+        )]);
+        s.camera.projection = Projection::Perspective {
+            field_of_view: 60.0,
+        };
+        s
+    };
+    at(1e-6).check().unwrap();
+    for z in [9.99e-7, 0.0, -1.0] {
+        let (parameter, message) = refused(&at(z));
+        assert_eq!(parameter, "camera.eye", "{z}");
+        assert_eq!(
+            message,
+            format!(
+                "body 5 reaches camera.eye's plane: a point of it is {:?} mm along the view from camera.eye [0.0, 0.0, 0.0], and a perspective view draws only what's at least 0.000001 mm before its eye: move camera.eye back from the bodies, or take an orthographic view",
+                z + 0.0
+            ),
+            "{z}"
+        );
+    }
+    // An orthographic view has no such rule: the camera sits behind every point.
+    let mut s = at(-1.0);
+    s.camera.projection = Projection::Orthographic { view_height: 1.0 };
+    s.check().unwrap();
 }

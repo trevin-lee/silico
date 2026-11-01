@@ -45,8 +45,8 @@ use re_renderer::{
 };
 use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{
-    Camera, EDGE_BIT, Frame as CameraFrame, InvalidParameter, MIN_VIEW_HEIGHT_OF_REACH, Mesh,
-    PixelId, Projection, RenderBody, RenderScene, check_render_mesh,
+    Camera, EDGE_BIT, F32_ROUNDING, Frame as CameraFrame, InView, InvalidParameter, Mesh,
+    PRECISION_OF_PIXEL, PixelId, RenderBody, RenderScene, check_bodies_in_view, check_render_mesh,
 };
 
 /// The background: a flat light grey, sRGB.
@@ -82,15 +82,6 @@ const MAX_PENDING_PICKS: usize = 8;
 /// How far past the scene an orthographic camera sits, of the scene's reach, and at least
 /// 1 mm: so nothing is cut off behind the eye.
 const CLEARANCE: f64 = 0.01;
-/// A perspective view's near plane, of the scene's reach from the eye: reverse-z keeps the
-/// depth precise from there out.
-const NEAR_PLANE_OF_REACH: f64 = 1e-6;
-/// How much a position stored in f32 about its face's centre may be off, of its distance
-/// from it: f32's step (at most 2^-23 of it), twice, for the transform's own rounding.
-const F32_ROUNDING: f64 = 1.0 / 4_194_304.0;
-/// The most of a pixel that rounding may move a face by before it's drawn about the camera's
-/// point instead of its own centre.
-const PRECISION_OF_PIXEL: f64 = 0.125;
 /// How far edges are drawn toward the eye, so an edge on a face isn't hidden by it.
 const EDGE_DEPTH_OFFSET: re_renderer::DepthOffset = 1;
 /// Frames to wait for the readbacks: re_renderer delivers them in a later frame, and each
@@ -583,32 +574,16 @@ impl Renderer {
                 });
             }
         }
-        // The bodies' reach, from their boxes' farthest corners: at most √3 past the
-        // farthest point, which only sets the clipping, past everything drawn either way.
-        let boxes: Vec<Bounds> = frame
+        // The camera at this size, and the bodies in its view, by the rules a scene's check
+        // takes (`RenderScene::check`).
+        let [_, height] = frame.size_px;
+        let camera_frame = frame.camera.check(frame.size_px[0], height)?;
+        let drawn = frame
             .bodies
             .iter()
-            .filter_map(|b| self.bodies.get(b).and_then(|u| u.bounds))
-            .collect();
-        let reach = |from: [f64; 3]| {
-            boxes
-                .iter()
-                .map(|&bounds| farthest(bounds, from))
-                .fold(0.0, f64::max)
-        };
-        let view = View::new(frame.camera, frame.size_px, &reach)?;
-        if let Projection::Orthographic { view_height } = frame.camera.projection {
-            let reach = reach(frame.camera.target);
-            let least = reach * MIN_VIEW_HEIGHT_OF_REACH;
-            if view_height < least {
-                return Err(InvalidParameter {
-                    parameter: "camera.view_height",
-                    message: format!(
-                        "camera.view_height {view_height:?} is too small to draw the bodies in view, which reach {reach:?} mm from camera.target: at least {least:?}, or a camera.target nearer them"
-                    ),
-                });
-            }
-        }
+            .filter_map(|b| self.bodies.get(b).map(|u| (*b, &*u.mesh)));
+        let in_view = check_bodies_in_view(frame.camera, &camera_frame, height, drawn)?;
+        let view = View::new(frame.camera, camera_frame, frame.size_px, in_view);
         Ok((view, lit))
     }
 
@@ -842,13 +817,6 @@ fn rect_int(rect: PixelRect) -> RectInt {
     }
 }
 
-/// How far a box's farthest corner is from `from`.
-fn farthest((low, high): Bounds, from: [f64; 3]) -> f64 {
-    let d: [f64; 3] =
-        std::array::from_fn(|k| (from[k] - low[k]).abs().max((high[k] - from[k]).abs()));
-    dot(d, d).sqrt()
-}
-
 /// How highlights are drawn. The worker's renders tint a highlighted face (its mesh
 /// uploaded in the tint) and outline it, and draw a highlighted edge wider and blue: the
 /// agents' PNG look (docs/design/m4.6-render.md). The app's frames outline each highlighted
@@ -1003,25 +971,35 @@ struct View {
 }
 
 impl View {
-    /// `scene`'s view, from its camera and its bodies' reach.
+    /// `scene`'s view, from its camera and its bodies, as its check takes them.
     fn of(camera: &Camera, scene: &RenderScene) -> Result<View, String> {
-        View::new(camera, [scene.width, scene.height], &|p| scene.reach(p)).map_err(|e| e.message)
+        let frame = camera
+            .check(scene.width, scene.height)
+            .map_err(|e| e.message)?;
+        let bodies = scene.bodies.iter().map(|b| (b.body, &b.mesh));
+        let in_view =
+            check_bodies_in_view(camera, &frame, scene.height, bodies).map_err(|e| e.message)?;
+        Ok(View::new(
+            camera,
+            frame,
+            [scene.width, scene.height],
+            in_view,
+        ))
     }
 
-    /// The view from `camera` of an image `width` by `height`, of bodies that reach `reach`
-    /// from a point.
+    /// The view from `camera`, its `frame`, of an image `width` by `height`, of bodies as
+    /// their check found them in it ([`check_bodies_in_view`]).
     fn new(
         camera: &Camera,
+        frame: CameraFrame,
         [width, height]: [u32; 2],
-        reach: &dyn Fn([f64; 3]) -> f64,
-    ) -> Result<View, InvalidParameter> {
-        let frame = camera.frame()?;
-        let view = match camera.projection {
-            Projection::Orthographic { view_height } => {
+        in_view: InView,
+    ) -> View {
+        match in_view {
+            InView::Orthographic { view_height, reach } => {
                 // Only the eye's direction counts: the camera is set past every point of the
                 // scene, so nothing is cut off behind the eye (FreeCAD fits its clipping
                 // planes to the scene, too), and the far plane past the scene's other side.
-                let reach = reach(camera.target);
                 let margin = (reach * CLEARANCE).max(1.0);
                 View {
                     frame,
@@ -1039,11 +1017,20 @@ impl View {
                     },
                 }
             }
-            Projection::Perspective { field_of_view } => {
-                // The near plane from what's in view, not from where the target is along
-                // the ray: a millionth of the farthest point's distance (reverse-z keeps the
-                // depth precise from there out).
-                let reach = reach(camera.eye).max(frame.distance);
+            InView::Perspective {
+                field_of_view,
+                nearest,
+            } => {
+                // The near plane half the nearest point's depth, so no triangle crosses it
+                // and the clipper never cuts at the eye: reverse-z f32 depth resolves a depth
+                // to 2^-24 of it wherever the near plane is (re_renderer's infinite reverse
+                // projection into a Depth32Float), so a nearer plane buys nothing. Of no
+                // bodies, half the target's distance.
+                let nearest = if nearest.is_finite() {
+                    nearest
+                } else {
+                    frame.distance
+                };
                 let tan = libm::tan(field_of_view.to_radians() / 2.0);
                 let aspect = f64::from(width) / f64::from(height);
                 View {
@@ -1057,14 +1044,14 @@ impl View {
                     corner: 1.0 + tan * tan * (1.0 + aspect * aspect),
                     projection: ViewProjection::Perspective {
                         vertical_fov: field_of_view.to_radians() as f32,
-                        near_plane_distance: (reach * NEAR_PLANE_OF_REACH) as f32,
+                        near_plane_distance: (nearest / 2.0) as f32,
                         aspect_ratio: width as f32 / height as f32,
                     },
                 }
             }
-        };
-        Ok(view)
+        }
     }
+
     fn world_from_mesh(&self, anchor: [f64; 3]) -> glam::Affine3A {
         world_from_mesh(&self.frame, self.origin, self.depth, anchor)
     }
@@ -1185,14 +1172,13 @@ fn unit(n: [f32; 3]) -> glam::Vec3 {
     vec3(n.map(|c| c / length))
 }
 
-/// A body as uploaded: what it was made from, to know it again and draw its edges from, its
-/// box (its positions' and edge points', none for a mesh of neither), and its faces.
+/// A body as uploaded: what it was made from, to know it again, draw its edges from, and
+/// check a frame's view of it by, and its faces.
 struct Uploaded {
     mesh: Arc<Mesh>,
     /// Which of the renderer's meshes it is ([`Renderer::next_generation`]); 0 until the
     /// renderer gives it one.
     generation: u64,
-    bounds: Option<Bounds>,
     faces: Vec<UploadedFace>,
 }
 
@@ -1273,7 +1259,6 @@ impl Uploaded {
         }
         Ok(Uploaded {
             generation: 0,
-            bounds: bounds_of(mesh.positions.iter().chain(&mesh.edge_points)),
             mesh,
             faces,
         })
@@ -1608,7 +1593,7 @@ mod tests {
     use std::sync::Arc;
 
     use silico_protocol::{
-        Camera, Frame, Mesh, Projection, RenderAdapter, RenderBody, RenderScene,
+        Camera, Frame, InView, Mesh, Projection, RenderAdapter, RenderBody, RenderScene,
     };
 
     use super::{
@@ -1782,6 +1767,24 @@ mod tests {
         assert!((view.corner - 34.0 / 9.0).abs() < 1e-12, "{}", view.corner);
     }
 
+    /// `scene`'s view as it's drawn, without the scene's limits: the anchor's own rule under
+    /// test, at heights and eyes the check would refuse (an orthographic view under the
+    /// least its reach allows, an eye in a body's box).
+    fn unchecked(scene: &RenderScene) -> View {
+        let frame = scene.camera.frame().unwrap();
+        let in_view = match scene.camera.projection {
+            Projection::Orthographic { view_height } => InView::Orthographic {
+                view_height,
+                reach: scene.reach(scene.camera.target),
+            },
+            Projection::Perspective { field_of_view } => InView::Perspective {
+                field_of_view,
+                nearest: scene.nearest_and_widest(&frame).nearest,
+            },
+        };
+        View::new(&scene.camera, frame, [scene.width, scene.height], in_view)
+    }
+
     /// The bench's box from the front, in perspective at `field_of_view`, `size` square, the
     /// eye at `eye` looking along +y.
     fn looking_along_y(eye: [f64; 3], field_of_view: f64, size: u32) -> RenderScene {
@@ -1799,7 +1802,9 @@ mod tests {
     #[test]
     fn a_face_is_drawn_about_its_centre_unless_f32_about_it_would_miss_an_eighth_of_a_pixel() {
         // A face's rounding about its centre is its half diagonal h over 2^22; it's kept
-        // while h 2^-22 × sec² ≤ an eighth of a pixel there.
+        // while h 2^-22 × sec² ≤ an eighth of a pixel there. (The views, built without the
+        // scene's limits: under the least height the box's reach allows, √590 × 48 / 2^19,
+        // the check refuses the first, and an eye on the box's corner the last.)
         //
         // Orthographic, 48 pixels high: the bench's front face (x 0 to 40, z 0 to 10 at y =
         // 0, h = √425) is about its centre from vh = h × 48 / 2^19 = 1.8874e-3 mm up. Below,
@@ -1817,7 +1822,7 @@ mod tests {
             scene.camera.projection = Projection::Orthographic {
                 view_height: height,
             };
-            let view = View::of(&scene.camera, &scene).unwrap();
+            let view = unchecked(&scene);
             assert_eq!(view.anchor(front_face), front_at, "{height}");
             assert_eq!(view.anchor(side_face), side_at, "{height}");
         }
@@ -1830,14 +1835,15 @@ mod tests {
         let least = 500.0 * 3.0 * 256.0 / 4_194_304.0;
         for (d, about_eye) in [(least * 1.001, false), (least * 0.999, true), (0.06, true)] {
             let scene = looking_along_y([0.0, -d, 0.0], 90.0, 64);
-            let view = View::of(&scene.camera, &scene).unwrap();
+            let view = unchecked(&scene);
             let want = if about_eye { [0.0, -d, 0.0] } else { [0.0; 3] };
             assert_eq!(view.anchor(segment), want, "{d}");
         }
         // An eye in the face's box is about the eye, at any size; a 2 µm face a millimetre
         // beside it is about its centre.
         let scene = looking_along_y([0.0, 0.0, 0.0], 90.0, 64);
-        let view = View::of(&scene.camera, &scene).unwrap();
+        assert_eq!(scene.check().unwrap_err().parameter, "camera.eye");
+        let view = unchecked(&scene);
         let tiny: Bounds = ([-1e-3, -1e-3, -1e-3], [1e-3, 1e-3, 1e-3]);
         assert_eq!(view.anchor(tiny), [0.0; 3]);
         let tiny_off: Bounds = ([1.0, -1e-3, -1e-3], [1.002, 1e-3, 1e-3]);
@@ -2089,19 +2095,26 @@ mod tests {
 
     #[test]
     fn a_point_a_kilometre_off_a_box_on_an_edge_of_its_own_moves_none_of_its_faces() {
-        // (a) A 1 mm box with an edge of one point at x = 1e6 (never drawn: an edge needs
-        // two): no face's box holds it and edges have none, so a view change, close up in
-        // perspective, uploads nothing, and the box's front face is at the centre.
+        // (a) A 1 mm box with an edge of one point 1e6 mm ahead along the view (never
+        // drawn: an edge needs two; aside, 1e6 / 5 = 2e5 times as far across the view as
+        // along it, the check refuses it): no face's box holds it and edges have none, so a
+        // view change, close up in perspective, uploads nothing, and the box's front face is
+        // at the centre.
         on_lavapipe(
             "a_point_a_kilometre_off_a_box_on_an_edge_of_its_own_moves_none_of_its_faces",
             |r| {
                 let mut mesh = box_mesh([0.0; 3], [1.0; 3]);
-                mesh.edge_points.push([1e6, 0.0, 0.0]);
+                mesh.edge_points.push([0.5, 1e6, 0.5]);
                 mesh.edge_point_counts.push(1);
                 let view = |x: f64| RenderScene {
                     bodies: vec![body(1, mesh.clone())],
                     ..looking_along_y([x, -5.0, 0.5], 0.5, 64)
                 };
+                let mut aside = view(0.5);
+                if let Some(point) = aside.bodies[0].mesh.edge_points.last_mut() {
+                    *point = [1e6, 0.0, 0.0];
+                }
+                assert_eq!(aside.check().unwrap_err().parameter, "camera.eye");
                 assert_eq!(uploads_and_centre(r, &view(0.5)), (6, [1, 3]));
                 assert_eq!(uploads_and_centre(r, &view(0.51)), (0, [1, 3]));
                 assert_eq!(uploads_and_centre(r, &view(0.49)), (0, [1, 3]));
@@ -2111,33 +2124,36 @@ mod tests {
 
     #[test]
     fn a_kilometre_rod_seen_at_its_end_moves_its_four_long_faces_alone_and_draws_its_end() {
-        // (b) A rod 1e6 × 20 × 10 from the origin, the eye 5 in front of its end and x mm
-        // right of it, 0.5° across, 64 square. Its long faces (h ≈ 5e5, rounding 0.12 mm)
-        // fail at the 8.5e-5 mm an eighth of a pixel is there (5 × 2 tan 0.25° / 64 / 8):
-        // about the eye, uploaded again each view the eye moves. Its end caps (h = √125,
-        // rounding 2.7e-6 mm) stay about their centres. By hand the end, 0.01 mm left of
-        // the centre, is 0.01 / 6.817e-4 = 14.7 pixels left of it, at column 17.3: column
-        // 14 is the background and columns 21 on are the front face (Face3).
+        // (b) A rod 1e6 × 20 × 10 from the origin, the eye 40 in front of it and x mm right
+        // of its end, 120° across, 64 square (its far end 1e6 / 40 = 25000 times as far
+        // across the view as along it, under the 2^20 tan 60° / 64 = 28378 the check takes).
+        // Its long faces (h ≈ 5e5, about 40 from the eye: 12500 times, past the 2^20 tan
+        // 60° / (64 × 7) = 4054 an eighth of a pixel holds at the corner, sec² 1 + 3 × 2)
+        // are about the eye, uploaded again each view the eye moves. Its end caps (h = √125,
+        // some 51 from the eye) stay about their centres. By hand the end, 31.8 mm left of
+        // the centre, is 31.8 / 2.1651 = 14.69 pixels left of it (a pixel 2 × 40 tan 60° /
+        // 64), at column 17.31: column 14 is the background and columns 21 on are the front
+        // face (Face3).
         on_lavapipe(
             "a_kilometre_rod_seen_at_its_end_moves_its_four_long_faces_alone_and_draws_its_end",
             |r| {
                 let rod = box_mesh([0.0; 3], [1e6, 20.0, 10.0]);
                 let view = |x: f64| RenderScene {
                     bodies: vec![body(1, rod.clone())],
-                    ..looking_along_y([x, -5.0, 5.0], 0.5, 64)
+                    ..looking_along_y([x, -40.0, 5.0], 120.0, 64)
                 };
-                assert_eq!(uploads_and_centre(r, &view(0.01)).0, 6);
+                assert_eq!(uploads_and_centre(r, &view(31.8)).0, 6);
                 let row = |ids: &[[u32; 2]]| ids[32 * 64..33 * 64].to_vec();
-                let drawn = row(&ids(r, &view(0.01)));
+                let drawn = row(&ids(r, &view(31.8)));
                 assert_eq!(drawn[14], [0, 0], "{drawn:?}");
                 assert!(drawn[21..].iter().all(|id| *id == [1, 3]), "{drawn:?}");
-                for x in [0.011, 0.012] {
+                for x in [31.801, 31.802] {
                     assert_eq!(uploads_and_centre(r, &view(x)).0, 4, "{x}");
                 }
                 let moved: Vec<u32> = r.bodies[&1]
                     .faces
                     .iter()
-                    .filter(|f| f.anchor == [0.012, -5.0, 5.0])
+                    .filter(|f| f.anchor == [31.802, -40.0, 5.0])
                     .map(|f| f.span.number)
                     .collect();
                 assert_eq!(moved, [3, 4, 5, 6]);
@@ -2145,16 +2161,17 @@ mod tests {
         );
     }
 
-    /// A plate: Face1 a kilometre long (x 0 to 1000, z 0 to 1, at y = 0), and Face2 a
+    /// A plate: Face1 a square a kilometre across its diagonals, turned to stand on a corner
+    /// (its corners 500 from (0.5, 0, 0.5) along ±x and ±z, at y = 0), and Face2 a
     /// millimetre square in front of it (x and z 0 to 1, at y = −0.5).
     fn plate() -> Mesh {
         let quad = |corners: [[f64; 3]; 4]| corners;
         let faces = [
             quad([
-                [0.0, 0.0, 0.0],
-                [1000.0, 0.0, 0.0],
-                [1000.0, 0.0, 1.0],
-                [0.0, 0.0, 1.0],
+                [-499.5, 0.0, 0.5],
+                [0.5, 0.0, -499.5],
+                [500.5, 0.0, 0.5],
+                [0.5, 0.0, 500.5],
             ]),
             quad([
                 [0.0, -0.5, 0.0],
@@ -2185,15 +2202,16 @@ mod tests {
     #[test]
     fn an_orthographic_long_face_moves_with_the_target_only_past_an_eighth_of_a_pixel() {
         // (c) The plate from the front (−y), about (0.5, 0, 0.5), 64 pixels high: Face1's
-        // half diagonal is √(500² + 0.5²), so it stays about its centre from the view height
-        // h × 64 / 2^19 = 0.061035 mm up. A pan at 1.001 times that uploads nothing; at
-        // 0.999 times it, Face1 alone is uploaded again about the new target. Face2 is at the
-        // centre throughout.
+        // box's half diagonal is 500√2, so it stays about its centre from the view height
+        // h × 64 / 2^19 = 0.086316 mm up, while the plate reaches only 500 from the target,
+        // so the check takes views from 500 × 64 / 2^19 = 0.061035 mm up. A pan at 1.001
+        // times the first uploads nothing; at 0.999 times it, Face1 alone is uploaded again
+        // about the new target. Face2 is at the centre throughout.
         on_lavapipe(
             "an_orthographic_long_face_moves_with_the_target_only_past_an_eighth_of_a_pixel",
             |r| {
-                let least = (500f64 * 500.0 + 0.25).sqrt() * 64.0 / 524_288.0;
-                assert!((least - 0.061_035).abs() < 1e-6, "{least}");
+                let least = 500.0 * 2f64.sqrt() * 64.0 / 524_288.0;
+                assert!((least - 0.086_316).abs() < 1e-6, "{least}");
                 let view = |height: f64, x: f64| RenderScene {
                     bodies: vec![body(1, plate())],
                     camera: Camera {
@@ -2271,24 +2289,29 @@ mod tests {
     }
 
     #[test]
-    fn an_eye_inside_a_tube_moves_its_two_walls_alone_and_never_its_ends() {
-        // (d) A tube of radii 5 and 10, 100 long, the eye in its bore at z = 50 looking along
-        // +z, 60°, 64 square. Both walls' boxes hold the eye: about the eye, uploaded again
-        // each view the eye moves. The ends (h = 10√2, rounding 3.4e-6 mm, sec² 1 + tan² 30°
-        // × 2 = 5/3) are 50 away, where an eighth of a pixel is 50 × 2 tan 30° / 64 / 8 =
-        // 0.113 mm: about their centres, never uploaded again. The centre looks out through
-        // the far end; the inside wall is seen, the outside never.
+    fn an_eye_at_a_tubes_mouth_moves_its_two_walls_alone_and_never_its_ends() {
+        // (d) A tube of radii 5 and 10, 100 long, the eye 0.005 before its mouth (z = 0)
+        // looking along +z, 60°, 64 square: every point before the eye, its near end 10 /
+        // 0.005 = 2000 times as far across the view as along it, under the 2^20 tan 30° / 64
+        // = 9459 the check takes. (In its bore, the walls reach behind the eye: refused,
+        // naming it.) Both walls' boxes (h = √(10² + 10² + 50²) = 51.96) are 0.005 from the
+        // eye, 10392 times, past the 2^20 tan 30° / (64 × 5/3) = 5676 an eighth of a pixel
+        // holds at the corner, sec² 1 + tan² 30° × 2: about the eye, uploaded again each
+        // view the eye moves. The ends (h = 10√2) hold at 0.005 (2828 times) and at 100:
+        // about their centres, never uploaded again. The view is all the bore (its edge,
+        // radius 5 at 0.005, is 89.94° off the axis); the centre looks out through the far
+        // end; the inside wall is seen, the outside never.
         on_lavapipe(
-            "an_eye_inside_a_tube_moves_its_two_walls_alone_and_never_its_ends",
+            "an_eye_at_a_tubes_mouth_moves_its_two_walls_alone_and_never_its_ends",
             |r| {
                 let mesh = tube(5.0, 10.0, 100.0, 48);
-                let view = |x: f64, y: f64| RenderScene {
+                let at = |x: f64, y: f64, z: f64| RenderScene {
                     bodies: vec![body(1, mesh.clone())],
                     camera: Camera {
                         projection: Projection::Perspective {
                             field_of_view: 60.0,
                         },
-                        eye: [x, y, 50.0],
+                        eye: [x, y, z],
                         target: [x, y, 100.0],
                         up: [0.0, 1.0, 0.0],
                     },
@@ -2296,6 +2319,11 @@ mod tests {
                     height: 64,
                     ids: true,
                 };
+                assert_eq!(
+                    at(0.0, 0.0, 50.0).check().unwrap_err().parameter,
+                    "camera.eye"
+                );
+                let view = |x: f64, y: f64| at(x, y, -0.005);
                 assert_eq!(uploads_and_centre(r, &view(0.0, 0.0)), (4, [0, 0]));
                 for (x, y) in [(0.5, 0.0), (0.0, 0.5), (-0.5, -0.5)] {
                     assert_eq!(uploads_and_centre(r, &view(x, y)), (2, [0, 0]), "{x} {y}");

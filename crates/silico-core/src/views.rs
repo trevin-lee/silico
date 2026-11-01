@@ -164,9 +164,10 @@ impl NamedView {
             let d = sub(high, low);
             dot(d, d).sqrt() / 2.0
         };
-        // Never under what the render draws of the box's reach from its centre (its half
-        // diagonal: a rod seen end on), with a hundredth to spare.
-        let least = half_diagonal * silico_protocol::MIN_VIEW_HEIGHT_OF_REACH * 1.01;
+        // Never under what the render draws at this height of the box's reach from its
+        // centre (at most its half diagonal: a rod seen end on), `height × reach / 2^19`,
+        // with a hundredth to spare.
+        let least = silico_protocol::least_view_height(height, half_diagonal) * 1.01;
         let view_height = (1.1 * extent_up.max(extent_right)).max(least);
         let side = if extent_up >= extent_right {
             "height"
@@ -517,7 +518,7 @@ mod tests {
         for (width, height) in [(800, 600), (300, 900), (1, 1), (4096, 1)] {
             for view in NAMED_VIEWS {
                 let camera = view.camera(BLOCK, width, height);
-                camera.check().unwrap();
+                camera.check(width, height).unwrap();
                 let Projection::Orthographic { view_height } = camera.projection else {
                     panic!();
                 };
