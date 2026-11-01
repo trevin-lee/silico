@@ -2463,10 +2463,7 @@ impl Translation {
                     let (la, lb) = (self.line(a)?, self.line(b)?);
                     let measured = angle_between(
                         direction(self.xy(values, la.from), self.xy(values, la.to)),
-                        against(
-                            direction(self.xy(values, lb.from), self.xy(values, lb.to)),
-                            *reversed,
-                        ),
+                        along(self.xy(values, lb.from), self.xy(values, lb.to), *reversed),
                     );
                     // On the stored value's turn, as 1.1.3's solve leaves it, then reduced
                     // as it writes it back: the measure plus the whole turns that takes.
@@ -2679,6 +2676,11 @@ impl Translation {
             let (a, b) = self.ends(values, g);
             direction(a, b)
         };
+        // A line's direction, or, `reversed`, from its end to its start.
+        let turned = |g: Geometry, reversed: bool| {
+            let (a, b) = self.ends(values, g);
+            along(a, b, reversed)
+        };
         // An angle carried by the smaller lever of `a` and `b`; not a number if neither
         // can move.
         let carried = |angle: f64, a: Geometry, b: Geometry| {
@@ -2727,7 +2729,7 @@ impl Translation {
                 value,
                 ..
             } => carried(
-                wrap(angle_between(dir(a), against(dir(b), reversed)) - v(value)).abs(),
+                wrap(angle_between(dir(a), turned(b, reversed)) - v(value)).abs(),
                 a,
                 b,
             ),
@@ -2862,11 +2864,16 @@ fn direction(from: [f64; 2], to: [f64; 2]) -> [f64; 2] {
     [to[0] - from[0], to[1] - from[1]]
 }
 
-/// Direction `d`, or, `reversed`, the other way: an angle's `b` taken from its `to` to its
-/// `from`. Negating is exact, so the angle to it is the solver's, bit for bit (PlaneGCS
-/// reads the same two differences with their signs swapped).
-fn against(d: [f64; 2], reversed: bool) -> [f64; 2] {
-    if reversed { [-d[0], -d[1]] } else { d }
+/// The direction of a line from `from` to `to`, or, `reversed`, from `to` to `from`: an
+/// angle's `b` taken the other way. Each difference taken as PlaneGCS takes it from the
+/// points it's given, the end first, not negated after, so a zero is +0 as the solver's is
+/// (−(a − a) is −0, and `atan2` reads the sign of a zero).
+fn along(from: [f64; 2], to: [f64; 2], reversed: bool) -> [f64; 2] {
+    if reversed {
+        direction(to, from)
+    } else {
+        direction(from, to)
+    }
 }
 
 /// The angle from direction `a` to `b`, counter-clockwise, in (−π, π].

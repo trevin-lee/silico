@@ -158,6 +158,9 @@ impl Gen {
                 let (a, b) = (self.pick(&[1]), self.pick(&[1]));
                 let angle = self.rng.range(-3.5, 3.5);
                 let value = self.b.fixed(angle);
+                // An angle's b reversed half the time (drawn only for an angle, so the other
+                // forms' draws are as they were; this generator feeds no committed reference).
+                let reversed = k == 10 && self.rng.below(2) == 0;
                 a.zip(b).map(|(a, b)| match k {
                     7 => SolverConstraint::Parallel { tag, a, b },
                     8 => SolverConstraint::Perpendicular { tag, a, b },
@@ -166,7 +169,7 @@ impl Gen {
                         tag,
                         a,
                         b,
-                        reversed: false,
+                        reversed,
                         value,
                     },
                 })
@@ -329,9 +332,14 @@ pub fn residuals(s: &SketchSystem, v: &[f64], c: &SolverConstraint) -> Vec<f64> 
             ..
         } => {
             // Reversed, b's direction runs from its end to its start (PlaneGCS's l2p1 and
-            // l2p2 swapped).
-            let (d1, d2) = (dir(s, v, a), dir(s, v, b));
-            let d2 = if reversed { (-d2.0, -d2.1) } else { d2 };
+            // l2p2 swapped): the difference taken that way, so a zero is +0 as PlaneGCS's is.
+            let d1 = dir(s, v, a);
+            let d2 = if reversed {
+                let (p, q) = (xy(s, v, PointOf::Start(b)), xy(s, v, PointOf::End(b)));
+                (p.0 - q.0, p.1 - q.1)
+            } else {
+                dir(s, v, b)
+            };
             let t = libm::atan2(d1.1, d1.0) + v[value.0 as usize];
             let (x2, y2) = (
                 d2.0 * libm::cos(t) + d2.1 * libm::sin(t),
