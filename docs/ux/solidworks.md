@@ -221,7 +221,7 @@ What this note looked for and couldn't source from the help:
 - What a feature downstream of a failed one is built on.
 - What is undoable, and whether undo crosses a save, a rebuild, leaving a sketch, or a feature's OK.
 - What happens when a document open for writing changes on disk, beyond SolidWorks' own one-writer locking.
-- Dimensioning: Smart Dimension's type chosen from the pick, the Modify box, Enter and Esc, a value driving the geometry. Not read for this note; M5.11 needs it from the help.
+- Dimensioning: Smart Dimension's type chosen from the pick, the Modify box, Enter and Esc, a value driving the geometry. Not read for this note; read from the help for M5.11 in docs/study/smart-dimension.md, which the decisions SD1 to SD9 (M5.0, section 9) take.
 - Starting a sketch beyond the view: which planes and faces may be picked. (*Auto-rotate view normal to sketch plane on sketch creation and sketch edit* is an option, and the view reverts if the changes are discarded: [Sketch Options](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_OPTIONS_SKETCH.htm).)
 - The export dialog (M5.12), what happens to a selection when a rebuild removes its entity (M5.7), and the pick tolerance.
 
