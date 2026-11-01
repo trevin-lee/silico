@@ -2377,12 +2377,18 @@ fn an_offer_whose_dimension_a_later_read_no_longer_holds_is_released() {
 
 #[test]
 fn a_placement_knows_the_read_it_was_placed_on() {
-    // Placed on a read of revision 1, its add made revision 2.
+    // Placed on a read of revision 1, its add made revision 2; the next placed on revision
+    // 2's read, its add revision 3.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).escape();
     let placement = d.tool.placement().unwrap();
+    let two = Revision::OPENED.next().unwrap();
     assert_eq!(placement.read, Revision::OPENED);
-    assert_eq!(placement.revision, Revision::OPENED.next().unwrap());
+    assert_eq!(placement.revision, two);
+    d.click(15.0, 15.0).click(30.0, 30.0).escape();
+    let placement = d.tool.placement().unwrap();
+    assert_eq!(placement.read, two);
+    assert_eq!(placement.revision, two.next().unwrap());
 }
 
 #[test]
