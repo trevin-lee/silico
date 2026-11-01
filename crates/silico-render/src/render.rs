@@ -254,9 +254,10 @@ impl Renderer {
         let config = TargetConfiguration {
             name: "render".into(),
             resolution_in_pixel: [scene.width, scene.height],
-            // The camera at the world's origin, looking along −z with +y up: the bodies are
-            // moved into its view.
-            view_from_world: macaw::IsoTransform::IDENTITY,
+            // The view is the default, the identity: the camera at the world's origin, looking
+            // along −z with +y up. The camera reaches the GPU through each face's
+            // `world_from_mesh` and the edges' placement, never through the view
+            // (`a_render_takes_its_view_from_its_camera`).
             projection_from_view: view.projection,
             outline_config: highlighted.then(|| OutlineConfig {
                 outline_radius_pixel: OUTLINE_WIDTH,
