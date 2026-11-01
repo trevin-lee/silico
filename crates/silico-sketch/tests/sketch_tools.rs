@@ -558,7 +558,7 @@ impl Fixture {
         } else {
             &mut self.ids
         };
-        let outcome = tool.handle(&context, read.states.state, ids, event.clone());
+        let outcome = tool.handle(&context, &read.states, ids, event.clone());
         assert_eq!(outcome.message, None, "{event:?}");
         if let (Some(members), Some(token)) = (outcome.add, outcome.token) {
             let made = self.sketch_add(&members);

@@ -235,6 +235,12 @@ pub enum Message {
     /// The Modify box's value, or the measured one, refused by the reader or the gate, in
     /// their words.
     ValueRefused(Error),
+    /// Smart Dimension: a newer read changed what the open Modify box measures (a pick gone,
+    /// lines made parallel), so it closed rather than carry its value onto another kind.
+    DimensionChanged,
+    /// Smart Dimension: the last dimension's solve hasn't been read, so its offer may yet
+    /// come; no other is placed until it has (SD7's offer is modal).
+    Solving,
 }
 
 impl Message {
@@ -267,6 +273,12 @@ impl Message {
             }
             Message::NotANumber => "type a plain number, as a document writes one: no units, arithmetic, or expressions".to_owned(),
             Message::ValueRefused(error) => error.message().to_owned(),
+            Message::DimensionChanged => {
+                "the sketch changed what the dimension measures: place it again".to_owned()
+            }
+            Message::Solving => {
+                "the last dimension is still solving: place this one once it has".to_owned()
+            }
         }
     }
 }

@@ -46,9 +46,12 @@
 //!   for closes, saying why.
 //! - **Over-defining** (SD7). The add is made whatever the solve will find. Once the app has
 //!   the `sketch` read of the revision the add made, [`offer`] gives SolidWorks' three
-//!   choices if the add took the sketch to over defined or to no solution: driven
-//!   (`set_field` of its `driving` to false), leave it, or Cancel (`undo`). The tool stays
-//!   [`busy`](SmartDimension::busy) until that read has come or the offer is dismissed.
+//!   choices if the add flagged a constraint the read before it didn't, or took the sketch
+//!   to over defined or to no solution: driven (`set_field` of its `driving` to false), leave
+//!   it, or Cancel (`undo`). SolidWorks prompts for each dimension, so the offer is modal:
+//!   until that read has come (or the offer is dismissed), no other dimension is placed, and
+//!   the tool is [`busy`](SmartDimension::busy). The app gives the tool each read
+//!   ([`settle`](SmartDimension::settle)), so it settles without a pointer event.
 //!
 //! Adds are tracked as the sketch tools' are ([`super::SketchTool`]): each with a token the
 //! viewport answers with the revision it made, or its refusal.
@@ -65,8 +68,9 @@ use crate::document::sketch_edit::{self, Geo};
 use crate::document::{
     Angle, ElementId, FeatureId, Form, Length, LineSide, Reference, SketchConstraint,
 };
-use crate::sketch_states::{ConstraintState, SketchState};
+use crate::sketch_states::{ConstraintState, SketchState, SketchStates};
 use crate::{Error, ErrorCode};
+use std::collections::BTreeSet;
 
 /// How nearly two lines' directions as drawn (each its `to` less its `from`, an axis's a
 /// unit vector) must cross to nothing for the lines to be parallel, in square millimetres:
@@ -121,14 +125,16 @@ pub struct DimensionPreview {
 }
 
 /// A dimension Smart Dimension placed, once the core answered its add: the sketch, the
-/// constraint's ID, the revision the add made, and the sketch's state in the read it was
-/// placed on.
+/// constraint's ID, the revision the add made, and, of the read it was placed on, the
+/// sketch's state and the constraints it flagged (conflicting, redundant, or partially
+/// redundant).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
     pub sketch: FeatureId,
     pub constraint: ElementId,
     pub revision: Revision,
     pub before: SketchState,
+    pub flagged: BTreeSet<ElementId>,
 }
 
 /// Smart Dimension, between events. Not `Clone`, as a sketch tool isn't.
@@ -153,21 +159,40 @@ struct Modify {
     locked: bool,
     /// Where it was placed.
     at: Xy,
+    /// How many picks it measures.
+    picks: usize,
     /// The dimension, measured on the newest read.
     form: Form,
     text: String,
+    /// Whether the person has typed in it: then a newer read's value doesn't replace its
+    /// text.
+    touched: bool,
 }
 
 /// The last dimension placed: its add's token, its constraint, the revision the add made
-/// once answered, the sketch's state where it was placed, and whether its offer is settled
-/// (a read of its revision has come).
+/// once answered, the sketch's state and its flagged constraints where it was placed, and
+/// whether its offer is settled (a read of its revision has come).
 #[derive(Debug, Clone)]
 struct Placed {
     token: AddToken,
     constraint: ElementId,
     revision: Option<Revision>,
     before: SketchState,
+    flagged: BTreeSet<ElementId>,
     settled: bool,
+}
+
+/// An ID source for a step that places nothing ([`SmartDimension::settle`]).
+struct NoIds;
+
+impl NewIds for NoIds {
+    fn next(&mut self, _: &dyn Fn(&ElementId) -> bool) -> Result<ElementId, Error> {
+        Err(Error::new(
+            ErrorCode::Internal,
+            "Smart Dimension asked for an ID while settling a read",
+        )
+        .with_suggestion(crate::worker::SILICO_BUG))
+    }
 }
 
 /// Which dimension of those a pick offers.
@@ -326,7 +351,9 @@ impl SmartDimension {
 
     /// Whether something is under way: a pick held, a press down, the Modify box open, or a
     /// dimension placed whose offer isn't settled (no read of its add's revision yet, and
-    /// not dismissed), so a second placement doesn't lose the first's offer.
+    /// not dismissed). While that lasts no other dimension is placed: the offer is modal, as
+    /// SolidWorks' prompt is, so each dimension's offer is judged against the read it was
+    /// placed on.
     pub fn busy(&self) -> bool {
         !self.picks.is_empty()
             || self.pressed
@@ -374,6 +401,7 @@ impl SmartDimension {
             constraint: placed.constraint.clone(),
             revision: placed.revision?,
             before: placed.before,
+            flagged: placed.flagged.clone(),
         })
     }
 
@@ -385,20 +413,40 @@ impl SmartDimension {
         self.modify = None;
     }
 
-    /// `event` against `context`, whose read gives the sketch the state `state`: what it
+    /// `event` against `context`, whose read gives the sketch the states `states`: what it
     /// added, said, or ended; the preview updated.
     pub fn handle(
         &mut self,
         context: &Context<'_>,
-        state: SketchState,
+        states: &SketchStates,
         ids: &mut dyn NewIds,
         event: DimensionEvent,
     ) -> Outcome {
+        self.step(context, states, ids, Some(event))
+    }
+
+    /// A newer read, given with no event: what [`handle`](Self::handle) does with each
+    /// read, so the app calls it as each read comes and the tool settles the last
+    /// placement's offer (and [`busy`](Self::busy)) and measures its open box again without
+    /// waiting for the pointer. What it says is the box's closing, if the read closes it.
+    pub fn settle(&mut self, context: &Context<'_>, states: &SketchStates) -> Outcome {
+        self.step(context, states, &mut NoIds, None)
+    }
+
+    fn step(
+        &mut self,
+        context: &Context<'_>,
+        states: &SketchStates,
+        ids: &mut dyn NewIds,
+        event: Option<DimensionEvent>,
+    ) -> Outcome {
         let _span = tracing::debug_span!("smart_dimension").entered();
-        if let DimensionEvent::Press(at)
-        | DimensionEvent::Move(at)
-        | DimensionEvent::Release(at)
-        | DimensionEvent::RightClick(at) = event
+        if let Some(
+            DimensionEvent::Press(at)
+            | DimensionEvent::Move(at)
+            | DimensionEvent::Release(at)
+            | DimensionEvent::RightClick(at),
+        ) = event
             && !geometry::finite(at)
         {
             return Outcome::said(Message::NotFinite);
@@ -426,24 +474,34 @@ impl SmartDimension {
             infer: true,
             woken: &[],
         };
-        if let DimensionEvent::Press(at)
-        | DimensionEvent::Move(at)
-        | DimensionEvent::Release(at)
-        | DimensionEvent::RightClick(at) = event
+        if let Some(
+            DimensionEvent::Press(at)
+            | DimensionEvent::Move(at)
+            | DimensionEvent::Release(at)
+            | DimensionEvent::RightClick(at),
+        ) = event
         {
             self.pointer = Some(at);
         }
+        let Some(event) = event else {
+            self.preview = self.drawn(&view, &pointer);
+            return Outcome {
+                message: closed,
+                ..Outcome::default()
+            };
+        };
         let mut outcome = match event {
             DimensionEvent::Typed(text) => {
                 if let Some(modify) = &mut self.modify {
                     modify.text = text;
+                    modify.touched = true;
                 }
                 Outcome::nothing()
             }
             DimensionEvent::Enter => match self.modify.take() {
                 Some(modify) => {
                     let placed = typed(&modify.form, &modify.text)
-                        .and_then(|form| self.place(&view, ids, form, state));
+                        .and_then(|form| self.place(&view, ids, form, states));
                     placed.unwrap_or_else(|message| {
                         self.modify = Some(modify);
                         Outcome::said(message)
@@ -453,7 +511,7 @@ impl SmartDimension {
             },
             DimensionEvent::Escape => match self.modify.take() {
                 Some(modify) => self
-                    .place(&view, ids, modify.form, state)
+                    .place(&view, ids, modify.form, states)
                     .unwrap_or_else(Outcome::said),
                 None if self.picks.pop().is_some() => {
                     self.lock = None;
@@ -492,8 +550,9 @@ impl SmartDimension {
 
     /// The picks and the box against `view`, a newer read: a pick it no longer has dropped
     /// (and the lock with it); the box's dimension measured again, its kind held, an
-    /// untouched box's text with it, a typed one's kept; or the box closed if the read leaves
-    /// it none, with why, if there's something to say.
+    /// untouched box's text with it, a typed one's kept. The box closes, saying why, if the
+    /// read leaves it no dimension, or one of another kind (a pick dropped, lines made
+    /// parallel), which a value typed for the first mustn't be carried onto.
     fn revalidate(&mut self, view: &View<'_>) -> Option<Message> {
         let before = self.picks.len();
         self.picks.retain(|r| Item::of(view, r).is_some());
@@ -501,6 +560,10 @@ impl SmartDimension {
             self.lock = None;
         }
         let modify = self.modify.as_mut()?;
+        if self.picks.len() != modify.picks {
+            self.modify = None;
+            return Some(Message::DimensionChanged);
+        }
         match offered(
             view,
             &self.picks,
@@ -508,11 +571,17 @@ impl SmartDimension {
             Some(modify.measure),
             modify.locked,
         ) {
+            Ok(offered)
+                if std::mem::discriminant(&offered.measure)
+                    != std::mem::discriminant(&modify.measure) =>
+            {
+                self.modify = None;
+                Some(Message::DimensionChanged)
+            }
             Ok(offered) => {
-                let untouched = Some(&modify.text) == value_text(&modify.form).as_ref();
                 modify.measure = offered.measure;
                 modify.form = offered.form;
-                if untouched {
+                if !modify.touched {
                     modify.text = value_text(&modify.form).unwrap_or_default();
                 }
                 None
@@ -525,7 +594,8 @@ impl SmartDimension {
     }
 
     /// A click at `at`: a pick, while fewer than two are picked and it's on something not
-    /// picked; else the dimension placed, its Modify box opened.
+    /// picked; else the dimension placed, its Modify box opened, unless the last placement's
+    /// offer isn't settled (the offer is modal).
     fn click(&mut self, view: &View<'_>, pointer: &Pointer<'_, '_>, at: Xy) -> Outcome {
         if self.picks.len() < 2
             && let Some(hit) = pointer.pick(at)
@@ -537,13 +607,18 @@ impl SmartDimension {
         }
         let locked = self.lock == Some(Measure::PointLine);
         match offered(view, &self.picks, at, self.lock, locked) {
+            Ok(_) if self.placed.as_ref().is_some_and(|p| !p.settled) => {
+                Outcome::said(Message::Solving)
+            }
             Ok(offered) => {
                 self.modify = Some(Modify {
                     measure: offered.measure,
                     locked,
                     at,
+                    picks: self.picks.len(),
                     text: value_text(&offered.form).unwrap_or_default(),
                     form: offered.form,
+                    touched: false,
                 });
                 Outcome::nothing()
             }
@@ -557,13 +632,13 @@ impl SmartDimension {
     /// its token, and the tool afresh for the next dimension, a centreline it measured from
     /// kept picked; else the gate's words. A problem the gate finds elsewhere (a limit,
     /// another member) is the core's to answer, so the add is made and its refusal comes
-    /// back ([`refused`](Self::refused)). `state` is the sketch's in the read it's placed on.
+    /// back ([`refused`](Self::refused)). `states` are the read's it's placed on.
     fn place(
         &mut self,
         view: &View<'_>,
         ids: &mut dyn NewIds,
         form: Form,
-        state: SketchState,
+        states: &SketchStates,
     ) -> Result<Outcome, Message> {
         let mut builder = Builder::new(ids, view);
         builder.constraint(form).map_err(Message::NoId)?;
@@ -603,7 +678,8 @@ impl SmartDimension {
             token,
             constraint: id,
             revision: None,
-            before: state,
+            before: states.state,
+            flagged: flagged(states),
             settled: false,
         });
         self.restart();
@@ -1085,12 +1161,28 @@ fn prompted(state: SketchState) -> bool {
     matches!(state, SketchState::OverDefined | SketchState::NoSolution)
 }
 
+/// The constraints `states` flag: conflicting, redundant, or partially redundant.
+fn flagged(states: &SketchStates) -> BTreeSet<ElementId> {
+    states
+        .constraints
+        .iter()
+        .filter(|(_, s)| s.flagged())
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
 /// The offer for `placement`, given `read`, the `sketch` read of the model at `revision`:
 /// only for a read of the model the add made (an older one doesn't hold it, and a newer one
 /// is past the moment), of its sketch, where the dimension is there and still driving, and
-/// the add took the sketch to over defined or no solution from a state that was neither
-/// (SD7). Decided by the sketch's state, not by which constraint the solve flags, which is
-/// PlaneGCS's choice among a group, by the IDs' order.
+/// the add flagged a constraint the read it was placed on didn't (any, not only itself:
+/// which of a group PlaneGCS flags follows the IDs' order), or took the sketch to over
+/// defined or no solution from a state that was neither (SD7). So a sketch already over
+/// defined, left so, offers each dimension that adds to it, as SolidWorks prompts for each.
+///
+/// What's judged is the change between the read the dimension was placed on and the add's.
+/// The tool places nothing while the last offer is unsettled, so its own adds never fall
+/// between; another client's edit can (an agent's, landing after that read and before the
+/// add), and its flags or its state's change are then taken for the dimension's.
 pub fn offer(read: &SketchRead, revision: Revision, placement: &Placement) -> Option<Offer> {
     if revision != placement.revision || read.sketch != placement.sketch {
         return None;
@@ -1103,7 +1195,11 @@ pub fn offer(read: &SketchRead, revision: Revision, placement: &Placement) -> Op
         .and_then(|c| c.form.driving())?;
     let state = *read.states.constraints.get(&placement.constraint)?;
     let sketch_state = read.states.state;
-    (driving && prompted(sketch_state) && !prompted(placement.before)).then(|| Offer {
+    let newly_flagged = flagged(&read.states)
+        .iter()
+        .any(|id| !placement.flagged.contains(id));
+    let newly_prompted = prompted(sketch_state) && !prompted(placement.before);
+    (driving && (newly_flagged || newly_prompted)).then(|| Offer {
         constraint: placement.constraint.clone(),
         state,
         sketch_state,

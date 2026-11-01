@@ -9,7 +9,7 @@ use super::*;
 use crate::command::sketch::{Region, SketchRead};
 use crate::document::{Angle, Length, LineSide, SketchArc, SketchCircle};
 use crate::sketch_states::{ConstraintState, SketchState, SketchStates};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Smart Dimension driven against a sketch, which takes each `sketch_add` it makes.
 struct Dim {
@@ -17,8 +17,8 @@ struct Dim {
     sketch: Sketch,
     revision: Revision,
     tolerance: f64,
-    /// The sketch's state in the read each event comes with.
-    state: SketchState,
+    /// The sketch's states in the read each event comes with.
+    states: SketchStates,
     ids: Counter,
     /// Each add's members, as made.
     made: Vec<Members>,
@@ -33,7 +33,7 @@ impl Dim {
             sketch,
             revision: Revision::OPENED,
             tolerance: TOLERANCE,
-            state: SketchState::UnderDefined,
+            states: under(),
             ids: Counter(100),
             made: Vec::new(),
             messages: Vec::new(),
@@ -50,7 +50,9 @@ impl Dim {
             tolerance: self.tolerance,
             automatic_relations: true,
         };
-        let outcome = self.tool.handle(&context, self.state, &mut self.ids, event);
+        let outcome = self
+            .tool
+            .handle(&context, &self.states, &mut self.ids, event);
         if let Some(members) = &outcome.add {
             self.revision = self.revision.next().unwrap();
             self.tool.added(outcome.token.unwrap(), self.revision);
@@ -109,6 +111,24 @@ impl Dim {
     fn shown(&self) -> Option<Form> {
         self.tool.preview().dimension.clone()
     }
+}
+
+/// A read's states with the sketch in `state`, nothing flagged.
+fn states(state: SketchState) -> SketchStates {
+    SketchStates {
+        state,
+        dofs: 0,
+        points: BTreeMap::new(),
+        lines: BTreeMap::new(),
+        circles: BTreeMap::new(),
+        arcs: BTreeMap::new(),
+        constraints: BTreeMap::new(),
+        solve_problem: None,
+    }
+}
+
+fn under() -> SketchStates {
+    states(SketchState::UnderDefined)
 }
 
 fn r(text: &str) -> Reference {
@@ -1157,6 +1177,14 @@ fn smart_dimensions_messages_say_what_to_do() {
             Message::ValueRefused(Error::new(ErrorCode::InvalidInput, "1e400 is too large")),
             "1e400 is too large",
         ),
+        (
+            Message::DimensionChanged,
+            "the sketch changed what the dimension measures: place it again",
+        ),
+        (
+            Message::Solving,
+            "the last dimension is still solving: place this one once it has",
+        ),
     ] {
         assert_eq!(message.text(), text);
     }
@@ -1454,26 +1482,13 @@ fn a_dimension_placed_before_a_read_shows_it_keeps_its_id_taken() {
     let mut made = Vec::new();
     for (pick, place) in [([20.0, 10.0], [20.0, 20.0]), ([20.0, 40.0], [20.0, 50.0])] {
         for at in [pick, place] {
-            tool.handle(
-                &context,
-                SketchState::UnderDefined,
-                &mut ids,
-                DimensionEvent::Press(at),
-            );
-            tool.handle(
-                &context,
-                SketchState::UnderDefined,
-                &mut ids,
-                DimensionEvent::Release(at),
-            );
+            tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
+            tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
         }
-        let out = tool.handle(
-            &context,
-            SketchState::UnderDefined,
-            &mut ids,
-            DimensionEvent::Escape,
-        );
+        let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
         made.push(out.add.unwrap().constraints[0].id.clone());
+        // No read of its revision comes: its offer dismissed, so the next is placed.
+        tool.dismiss_offer();
     }
     assert_eq!(made, vec![id("t0000001"), id("t0000002")]);
 }
@@ -1492,7 +1507,7 @@ fn another_sketch_starts_the_tool_afresh() {
     };
     d.tool.handle(
         &context,
-        SketchState::UnderDefined,
+        &under(),
         &mut d.ids,
         DimensionEvent::Move([50.0, 50.0]),
     );
@@ -1553,25 +1568,10 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(
-            &context,
-            SketchState::UnderDefined,
-            &mut ids,
-            DimensionEvent::Press(at),
-        );
-        tool.handle(
-            &context,
-            SketchState::UnderDefined,
-            &mut ids,
-            DimensionEvent::Release(at),
-        );
+        tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
+        tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
     }
-    let out = tool.handle(
-        &context,
-        SketchState::UnderDefined,
-        &mut ids,
-        DimensionEvent::Escape,
-    );
+    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
     assert_eq!(out.message, None);
     assert_eq!(
         out.add.unwrap().constraints[0].form,
@@ -1581,33 +1581,20 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
             driving: true
         }
     );
-    // Its own value refused is the tool's to say: the box stays open.
+    // Its own value refused is the tool's to say: the box stays open. (The first's offer
+    // dismissed, as no read of its revision comes.)
+    tool.dismiss_offer();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(
-            &context,
-            SketchState::UnderDefined,
-            &mut ids,
-            DimensionEvent::Press(at),
-        );
-        tool.handle(
-            &context,
-            SketchState::UnderDefined,
-            &mut ids,
-            DimensionEvent::Release(at),
-        );
+        tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
+        tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
     }
     tool.handle(
         &context,
-        SketchState::UnderDefined,
+        &under(),
         &mut ids,
         DimensionEvent::Typed("0".to_owned()),
     );
-    let out = tool.handle(
-        &context,
-        SketchState::UnderDefined,
-        &mut ids,
-        DimensionEvent::Enter,
-    );
+    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Enter);
     assert_eq!(out.add, None);
     let Some(Message::ValueRefused(error)) = out.message else {
         panic!("{out:?}");
@@ -2078,33 +2065,182 @@ fn another_sketch_forgets_the_placement() {
     };
     d.tool.handle(
         &context,
-        SketchState::UnderDefined,
+        &under(),
         &mut d.ids,
         DimensionEvent::Move([50.0, 50.0]),
     );
     assert_eq!(d.tool.placement(), None);
 }
 
+// --- Review #345, round 2 --------------------------------------------------------------
+
+#[test]
+fn a_box_whose_pick_the_read_drops_closes() {
+    // Item 2: p and q measured horizontally, 20 typed; q gone from the newer read. With one
+    // pick there's no distance; the 20 mustn't be carried onto anything else.
+    let mut d = Dim::new(two_points());
+    d.click(10.0, 10.0)
+        .click(40.0, 30.0)
+        .click(25.0, 45.0)
+        .typed("20");
+    d.sketch.points.pop();
+    d.to(25.0, 45.0);
+    assert_eq!(d.modify(), None);
+    assert_eq!(d.messages, vec![Message::DimensionChanged]);
+    d.enter();
+    assert!(d.made.is_empty());
+}
+
+#[test]
+fn a_box_whose_lines_the_read_makes_parallel_closes() {
+    // Item 2: the corner's 45° angle in the box, 30 typed; B's start moved to (10, 20), so B
+    // runs (10, 20)-(20, 20), parallel to A: SD4's distance, another kind than the angle.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0)
+        .click(15.0, 15.0)
+        .click(25.0, 13.0)
+        .typed("30");
+    assert_eq!(d.shown().unwrap().type_name(), "angle");
+    d.sketch.points[2].y = Coordinate::new(20.0).unwrap();
+    d.to(25.0, 13.0);
+    assert_eq!(d.modify(), None);
+    assert_eq!(d.messages, vec![Message::DimensionChanged]);
+    d.enter();
+    assert!(d.made.is_empty());
+}
+
+#[test]
+fn a_box_kept_through_a_newer_read_keeps_its_angles_order_as_one_kind() {
+    // Item 2: Angle's order is one kind. The corner's box placed at (25, 13), {A, B} 45; B's
+    // end moved to (20, 30), so A to B sweeps atan2(20, 10) = 63.43494882°: still an
+    // angle, the box open on the new value.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(15.0, 15.0).click(25.0, 13.0);
+    d.sketch.points[3].y = Coordinate::new(30.0).unwrap();
+    d.to(25.0, 13.0);
+    assert_eq!(d.modify().as_deref(), Some("63.434948823"));
+    assert!(d.messages.is_empty());
+}
+
+#[test]
+fn a_second_placement_waits_for_the_firsts_read() {
+    // Item 3: the first placed, made revision 2; the reads still of revision 1, a second
+    // placing click is refused, saying so, its picks kept. Once a read of revision 2 comes,
+    // it's placed.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    let made = d.revision;
+    d.revision = Revision::OPENED;
+    d.click(15.0, 15.0).click(30.0, 30.0);
+    assert_eq!(d.messages, vec![Message::Solving]);
+    assert_eq!(d.modify(), None);
+    assert_eq!(d.tool.preview().picks, vec![r("n000000b")]);
+    assert_eq!(d.made.len(), 1);
+    d.revision = made;
+    d.click(30.0, 30.0);
+    assert_eq!(d.modify().as_deref(), Some("14.142136"));
+    d.escape();
+    assert_eq!(d.made.len(), 2);
+}
+
+#[test]
+fn settle_takes_a_read_with_no_event() {
+    // Item 5: placed, then the read of its revision given with no pointer event: settled,
+    // so not busy. And a box the newer read changes the kind of closes there, saying why.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    assert!(d.tool.busy());
+    let sketch_id = sketch_id();
+    let context = Context {
+        sketch_id: &sketch_id,
+        revision: d.revision,
+        sketch: &d.sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+    };
+    let out = d.tool.settle(&context, &under());
+    assert_eq!(out, Outcome::default());
+    assert!(!d.tool.busy());
+    d.click(20.0, 10.0).click(15.0, 15.0).click(25.0, 13.0);
+    let mut newer = d.sketch.clone();
+    newer.points[2].y = Coordinate::new(20.0).unwrap();
+    let context = Context {
+        sketch_id: &sketch_id,
+        revision: d.revision,
+        sketch: &newer,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+    };
+    let out = d.tool.settle(&context, &under());
+    assert_eq!(out.message, Some(Message::DimensionChanged));
+    assert_eq!(out.add, None);
+    assert_eq!(d.tool.preview().modify, None);
+}
+
+#[test]
+fn a_box_typed_with_its_own_value_is_touched() {
+    // Item 4: "50" typed over the measured 50; the line then 100 long: the box keeps "50",
+    // as typed, and Enter places 50.
+    let mut d = boxed();
+    d.typed("50");
+    d.sketch.points[1].x = Coordinate::new(70.0).unwrap();
+    d.sketch.points[1].y = Coordinate::new(90.0).unwrap();
+    d.to(60.0, 5.0);
+    assert_eq!(d.modify().as_deref(), Some("50"));
+    d.enter();
+    assert_eq!(
+        d.placed(),
+        Form::Length {
+            line: r("n0000001"),
+            value: mm("50"),
+            driving: true
+        }
+    );
+}
+
+#[test]
+fn level_is_within_a_tenth_of_a_micrometre_not_at_it() {
+    // Item 6: p (10, 0) and q (40, dy), the pointer off the box's corner (60, 50).
+    // dy = 0.99e-7 < 1e-7: level, `distance_x` 30. dy = 1e-7 exactly: not, `distance`,
+    // √(30² + 1e-14) = 30 to the nanometre.
+    for (dy, kind) in [(0.99e-7, "distance_x"), (1e-7, "distance")] {
+        let s = with_point(
+            with_point(empty(), "p0000001", [10.0, 0.0]),
+            "p0000002",
+            [40.0, dy],
+        );
+        let mut d = Dim::new(s);
+        d.click(10.0, 0.0)
+            .click(40.0, 0.0)
+            .click(60.0, 50.0)
+            .escape();
+        assert_eq!(d.placed().type_name(), kind, "{dy}");
+    }
+}
+
 // --- SD7: the offer ------------------------------------------------------------------
 
 /// A read of the sketch `members` with the constraint `k` in `state`, the sketch in `of`.
 fn read_of(members: Sketch, k: &str, state: ConstraintState, of: SketchState) -> SketchRead {
-    let mut constraints = BTreeMap::new();
-    constraints.insert(id(k), state);
+    read_with(members, &[(k, state)], of)
+}
+
+/// A read of the sketch `members` with each constraint named in its state, the sketch in
+/// `of`.
+fn read_with(
+    members: Sketch,
+    constraints: &[(&str, ConstraintState)],
+    of: SketchState,
+) -> SketchRead {
+    let mut states = states(of);
+    for (k, state) in constraints {
+        states.constraints.insert(id(k), *state);
+    }
     SketchRead {
         sketch: sketch_id(),
         plane: members.plane,
         members,
-        states: SketchStates {
-            state: of,
-            dofs: 0,
-            points: BTreeMap::new(),
-            lines: BTreeMap::new(),
-            circles: BTreeMap::new(),
-            arcs: BTreeMap::new(),
-            constraints,
-            solve_problem: None,
-        },
+        states,
         regions: Vec::<Region>::new(),
         profile_problems: Vec::new(),
         profile_problems_total: 0,
@@ -2124,25 +2260,10 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
     };
     let mut tool = SmartDimension::new();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(
-            &context,
-            SketchState::UnderDefined,
-            &mut d.ids,
-            DimensionEvent::Press(at),
-        );
-        tool.handle(
-            &context,
-            SketchState::UnderDefined,
-            &mut d.ids,
-            DimensionEvent::Release(at),
-        );
+        tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Press(at));
+        tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Release(at));
     }
-    let out = tool.handle(
-        &context,
-        SketchState::UnderDefined,
-        &mut d.ids,
-        DimensionEvent::Escape,
-    );
+    let out = tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Escape);
     let token = out.token.unwrap();
     let k = out.add.unwrap().constraints[0].id.clone();
     assert_eq!(tool.placement(), None);
@@ -2155,6 +2276,7 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
             constraint: k,
             revision: made,
             before: SketchState::UnderDefined,
+            flagged: BTreeSet::new(),
         })
     );
     tool.refused(token);
@@ -2217,20 +2339,50 @@ fn an_add_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_ca
 }
 
 #[test]
-fn no_offer_where_the_add_changed_no_state_to_one_the_prompt_is_for() {
+fn an_add_that_flags_something_new_is_offered_whatever_the_state_before() {
+    // Round 2, item 1: SolidWorks prompts for each dimension. The sketch over defined or
+    // unsolvable before it (left so, or by an agent's edit), the add's read flags the
+    // dimension, which the read before couldn't: offered. So is a flag that leaves the
+    // sketch fully defined (PlaneGCS may flag a relation of the group, item 32's mixed
+    // group), and one of another constraint than the dimension.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
     let made = placement.revision;
-    let read = |of| {
-        read_of(
-            d.sketch.clone(),
-            "t0000101",
-            ConstraintState::Conflicting,
-            of,
-        )
-    };
-    // The sketch after it: still solved, or invalid geometry (no prompt in SolidWorks).
+    let flags_it = read_of(
+        d.sketch.clone(),
+        "t0000101",
+        ConstraintState::Conflicting,
+        SketchState::OverDefined,
+    );
+    for before in [SketchState::OverDefined, SketchState::NoSolution] {
+        let earlier = Placement {
+            before,
+            ..placement.clone()
+        };
+        let offer = offer(&flags_it, made, &earlier).unwrap();
+        assert_eq!(offer.state, ConstraintState::Conflicting, "{before:?}");
+    }
+    let redundant_relation = read_with(
+        d.sketch.clone(),
+        &[
+            ("t0000101", ConstraintState::Satisfied),
+            ("k0000009", ConstraintState::Redundant),
+        ],
+        SketchState::FullyDefined,
+    );
+    assert!(offer(&redundant_relation, made, &placement).is_some());
+}
+
+#[test]
+fn no_offer_where_the_add_flagged_nothing_new_nor_changed_the_state_to_one_prompted() {
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
+    let placement = d.tool.placement().unwrap();
+    let made = placement.revision;
+    let read = |of| read_of(d.sketch.clone(), "t0000101", ConstraintState::Satisfied, of);
+    // Nothing flagged, the sketch still solved, or invalid geometry (no prompt in
+    // SolidWorks).
     for of in [
         SketchState::UnderDefined,
         SketchState::FullyDefined,
@@ -2238,15 +2390,28 @@ fn no_offer_where_the_add_changed_no_state_to_one_the_prompt_is_for() {
     ] {
         assert_eq!(offer(&read(of), made, &placement), None, "{of:?}");
     }
-    let over = read(SketchState::OverDefined);
-    // Over defined or unsolvable before it: not this one's doing.
-    for before in [SketchState::OverDefined, SketchState::NoSolution] {
-        let earlier = Placement {
-            before,
-            ..placement.clone()
-        };
-        assert_eq!(offer(&over, made, &earlier), None, "{before:?}");
-    }
+    // Over defined before it, by k0000009, which the add's read flags still, and nothing
+    // more: not this one's doing.
+    let same = read_with(
+        d.sketch.clone(),
+        &[
+            ("t0000101", ConstraintState::Unsolved),
+            ("k0000009", ConstraintState::Conflicting),
+        ],
+        SketchState::OverDefined,
+    );
+    let earlier = Placement {
+        before: SketchState::OverDefined,
+        flagged: [id("k0000009")].into_iter().collect(),
+        ..placement.clone()
+    };
+    assert_eq!(offer(&same, made, &earlier), None);
+    let over = read_of(
+        d.sketch.clone(),
+        "t0000101",
+        ConstraintState::Conflicting,
+        SketchState::OverDefined,
+    );
     // A read of an older model, or a newer one: not the add's.
     assert_eq!(offer(&over, Revision::OPENED, &placement), None);
     assert_eq!(offer(&over, made.next().unwrap(), &placement), None);
@@ -2268,9 +2433,23 @@ fn no_offer_where_the_add_changed_no_state_to_one_the_prompt_is_for() {
 #[test]
 fn the_state_a_dimension_is_placed_on_is_the_reads() {
     let mut d = Dim::new(corner());
-    d.state = SketchState::NoSolution;
+    d.states.state = SketchState::NoSolution;
+    d.states
+        .constraints
+        .insert(id("k0000009"), ConstraintState::Conflicting);
+    d.states
+        .constraints
+        .insert(id("k0000008"), ConstraintState::Satisfied);
+    d.states
+        .constraints
+        .insert(id("k0000007"), ConstraintState::PartiallyRedundant);
     d.click(20.0, 10.0).click(20.0, 30.0).escape();
-    assert_eq!(d.tool.placement().unwrap().before, SketchState::NoSolution);
+    let placement = d.tool.placement().unwrap();
+    assert_eq!(placement.before, SketchState::NoSolution);
+    assert_eq!(
+        placement.flagged,
+        [id("k0000007"), id("k0000009")].into_iter().collect()
+    );
 }
 
 #[test]
