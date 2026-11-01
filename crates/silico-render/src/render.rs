@@ -173,6 +173,11 @@ pub struct PixelRect {
 /// One frame of the app's viewport: how it's seen, how large it is, and what's drawn.
 #[derive(Debug, Clone, Copy)]
 pub struct Frame<'a> {
+    /// The caller's number for the frame, which its picking's answer echoes
+    /// ([`Picking::frame`]), so a click is matched to the frame it was made on. Any value:
+    /// the renderer doesn't check repeats or order. A refused frame asks nothing, so no
+    /// answer carries its serial.
+    pub serial: u64,
     /// The camera, as `render` takes it ([`Camera::check`]'s rules).
     pub camera: &'a Camera,
     /// The frame's size in physical pixels, each side from 1 to the device's largest
@@ -208,8 +213,7 @@ pub struct Pick {
     pub point: Option<[f64; 3]>,
 }
 
-/// A frame's picking, answered: the frame that asked ([`Renderer::frame`] after its
-/// [`Renderer::prepare`]), the rectangle it asked for, and what in it, of the frame's own
+/// A frame's picking, answered: the frame that asked (its [`Frame::serial`]), the rectangle it asked for, and what in it, of the frame's own
 /// pixels, lies nearest the rectangle's centre (the first in rows, top to bottom, of those
 /// as near), or none if only the background does.
 ///
@@ -221,6 +225,7 @@ pub struct Pick {
 /// didn't draw.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Picking {
+    /// The serial of the frame that asked ([`Frame::serial`]).
     pub frame: u64,
     pub rect: PixelRect,
     pub hit: Option<Pick>,
@@ -254,8 +259,6 @@ pub struct Renderer {
     /// The last generation a body's mesh was given: each new mesh takes the next, so a
     /// picking answer knows a body changed since its frame.
     generations: u64,
-    /// The serial of the last frame prepared that passed its checks, from 1.
-    frames: u64,
 }
 
 impl Renderer {
@@ -285,7 +288,6 @@ impl Renderer {
             pending: BTreeMap::new(),
             picked: None,
             generations: 0,
-            frames: 0,
         })
     }
 
@@ -339,13 +341,6 @@ impl Renderer {
         self.bodies.remove(&body);
     }
 
-    /// The serial of the last frame [`Renderer::prepare`] took (from 1, one for each frame
-    /// that passed its checks; 0 before any): its picking's answer carries it
-    /// ([`Picking::frame`]), so a click can be matched to the frame it was made on.
-    pub fn frame(&self) -> u64 {
-        self.frames
-    }
-
     fn next_generation(&mut self) -> u64 {
         self.generations += 1;
         self.generations
@@ -366,9 +361,10 @@ impl Renderer {
     /// pane must keep repainting while one is due.
     ///
     /// A frame that fails its checks is refused ([`RenderFailure::Invalid`]) before anything
-    /// is done, and takes no serial ([`Renderer::frame`]). One the GPU fails (out of memory, or anything wgpu finds invalid) keeps the
-    /// bodies but none of their GPU meshes, which the next frame uploads again. Either way
-    /// nothing is composited until a frame succeeds.
+    /// is done: it asks for no picking. A frame the GPU fails (out of memory, or anything
+    /// wgpu finds invalid) keeps the bodies but none of their GPU meshes, which the next
+    /// frame uploads again, and its picking request is dropped. Either way nothing is
+    /// composited until a frame succeeds.
     pub fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, RenderFailure> {
         let _span = tracing::debug_span!(
             "prepare",
@@ -380,8 +376,6 @@ impl Renderer {
         .entered();
         self.view = None;
         let (view, lit) = self.check_frame(frame).map_err(RenderFailure::Invalid)?;
-        self.frames += 1;
-        let serial = self.frames;
         let device = self.ctx.device.clone();
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validity = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -393,7 +387,7 @@ impl Renderer {
             self.pending.insert(
                 id,
                 PendingPick {
-                    serial,
+                    serial: frame.serial,
                     bodies: frame
                         .bodies
                         .iter()
@@ -877,7 +871,7 @@ struct Answer {
 /// A frame's picking request, waiting for its answer: its rectangle, the frame's size, and
 /// the view it was drawn in, to take its depth back to the document.
 struct PendingPick {
-    /// The frame's serial.
+    /// The frame's serial, the caller's.
     serial: u64,
     /// The bodies it drew, ascending, and their meshes' generations.
     bodies: Vec<(u32, u64)>,

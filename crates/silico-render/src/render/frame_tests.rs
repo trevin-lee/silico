@@ -22,6 +22,9 @@ use super::{
 use crate::bench::{box_mesh, front_of_a_box};
 
 const WIDTH: u32 = 64;
+/// The serial [`frame`] gives a frame, and [`pick`] the frames after it one more: the
+/// caller's numbers, any it likes.
+const ASKING: u64 = 41;
 const HEIGHT: u32 = 48;
 
 fn the_box() -> Arc<Mesh> {
@@ -39,6 +42,7 @@ fn frame<'a>(
     picking: Option<PixelRect>,
 ) -> Frame<'a> {
     Frame {
+        serial: ASKING,
         camera,
         size_px: [WIDTH, HEIGHT],
         pixels_per_point: 1.0,
@@ -78,6 +82,7 @@ fn pick(r: &mut Renderer, frame: &Frame<'_>) -> Picking {
     draw(
         r,
         &Frame {
+            serial: frame.serial.wrapping_add(1),
             picking: None,
             ..*frame
         },
@@ -85,18 +90,17 @@ fn pick(r: &mut Renderer, frame: &Frame<'_>) -> Picking {
     r.take_picking();
     let asked = frame.picking.unwrap();
     draw(r, frame);
-    let serial = r.frame();
     assert_eq!(r.take_picking(), None, "answered in its own frame");
     draw(
         r,
         &Frame {
+            serial: frame.serial.wrapping_add(1),
             picking: None,
             ..*frame
         },
     );
     let picking = r.take_picking().expect("not answered a frame later");
-    assert_eq!((picking.frame, picking.rect), (serial, asked));
-    assert_eq!(r.frame(), serial + 1);
+    assert_eq!((picking.frame, picking.rect), (frame.serial, asked));
     assert_eq!(r.take_picking(), None, "answered twice");
     picking
 }
@@ -778,14 +782,19 @@ fn a_late_answer_never_names_a_body_forgotten_or_replaced_since_its_frame() {
             let camera = front();
             let one = frame(&camera, &[1], &[], Some(ON_THE_FACE));
             let after = |r: &mut Renderer, bodies: &[u32]| -> Picking {
-                draw(r, &frame(&camera, bodies, &[], None));
+                let next = Frame {
+                    serial: 1,
+                    ..frame(&camera, bodies, &[], None)
+                };
+                draw(r, &next);
                 r.take_picking().expect("no answer")
             };
             r.upload(1, &the_box()).unwrap();
             // Asked of the box, then its mesh replaced (moved 1 mm: still under the
-            // rectangle, so only the generation tells): the answer comes, naming nothing.
+            // rectangle, so only the generation tells): the answer comes, naming nothing,
+            // with the asking frame's serial.
             draw(r, &one);
-            let asked = r.frame();
+            let asked = one.serial;
             r.upload(1, &Arc::new(box_mesh([1.0, 0.0, 0.0], [40.0, 20.0, 10.0])))
                 .unwrap();
             let answer = after(r, &[1]);
@@ -1061,16 +1070,16 @@ fn an_answer_already_read_back_is_judged_against_the_bodies_when_its_taken() {
             // then the body changes, and only then is the answer taken.
             let read_back = |r: &mut Renderer, asking: &Frame<'_>| -> u64 {
                 draw(r, asking);
-                let asked = r.frame();
                 draw(
                     r,
                     &Frame {
+                        serial: 1,
                         picking: None,
                         ..*asking
                     },
                 );
                 assert!(r.picked.is_some(), "not read back yet");
-                asked
+                asking.serial
             };
             r.upload(1, &the_box()).unwrap();
             // Replaced (moved 1 mm, still under the rectangle): no hit, the answer given.
@@ -1105,6 +1114,52 @@ fn an_answer_already_read_back_is_judged_against_the_bodies_when_its_taken() {
             let found = r.take_picking().unwrap().hit.unwrap();
             assert_eq!(found.body, 2, "{found:?}");
             assert!(found.pixel[0] <= 6, "{found:?}");
+        },
+    );
+}
+
+#[test]
+fn an_answer_carries_the_serial_its_caller_gave_the_frame_that_asked() {
+    on_lavapipe(
+        "render::frame_tests::an_answer_carries_the_serial_its_caller_gave_the_frame_that_asked",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let asking = |serial: u64, picking: PixelRect| Frame {
+                serial,
+                ..frame(&camera, &[1], &[], Some(picking))
+            };
+            // Out of order, and repeated: the caller's numbers, echoed as given.
+            for (serial, picking) in [
+                (7, ON_THE_FACE),
+                (3, ON_THE_TOP_EDGE),
+                (3, ON_THE_FACE),
+                (u64::MAX, ON_THE_FACE),
+                (0, ON_THE_TOP_EDGE),
+            ] {
+                let answer = pick(r, &asking(serial, picking));
+                assert_eq!((answer.frame, answer.rect), (serial, picking));
+            }
+            // Two frames asking, neither answer taken till after both: the newer's answer,
+            // with its own serial (3), not the older's (7).
+            draw(r, &asking(7, ON_THE_FACE));
+            draw(r, &asking(3, ON_THE_TOP_EDGE));
+            draw(r, &frame(&camera, &[1], &[], None));
+            let answer = r.take_picking().unwrap();
+            assert_eq!((answer.frame, answer.rect), (3, ON_THE_TOP_EDGE));
+            assert_eq!(answer.hit.map(|h| h.hit), Some(Element::Edge(3)));
+            // A refused frame asks nothing: no answer carries its serial.
+            let mut broken = camera.clone();
+            broken.eye = broken.target;
+            let refused = Frame {
+                serial: 99,
+                ..frame(&broken, &[1], &[], Some(ON_THE_FACE))
+            };
+            assert!(r.prepare(&refused).is_err());
+            for _ in 0..3 {
+                draw(r, &frame(&camera, &[1], &[], None));
+                assert_eq!(r.take_picking(), None);
+            }
         },
     );
 }
