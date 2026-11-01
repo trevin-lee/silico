@@ -232,28 +232,31 @@ fn a_megabyte_face_name_is_refused_by_the_gate_promptly_with_a_message_cut_short
 // ---- the gate ----
 
 #[test]
-fn a_face_named_of_an_earlier_sketch_is_refused_by_the_gate_or_broken_with_candidates() {
-    // A sketch's faces (s0000001.sketch.Face1) aren't a solid's: a sketch on one is either
-    // the gate's refusal or the rebuild's reference_broken, never a frame or a bug.
+fn a_face_named_of_an_earlier_sketch_is_refused_by_the_gate_naming_what_to_name_instead() {
+    // A sketch's faces (s0000001.sketch.Face1) are in no solid: the gate refuses the name
+    // on plane.face, saying to name what a feature made of it, so no rebuild meets it.
     let features = [
         rectangle("s0000001", "xy", [0.0, 0.0], 4.0, 2.0),
         pad("p0000001", None, "s0000001", &one_side("3")),
         on_face("s0000002", &face("s0000001.sketch.Face1", "+x", false)),
     ];
-    match checked(&strs(&features)) {
-        Err(invalid) => {
-            assert_eq!(invalid.errors()[0].parameter(), Some("plane.face"));
-        }
-        Ok(()) => {
-            let model = publish(&engine(), checked_document(&strs(&features)));
-            let outcome = model.outcome(&id("s0000002"));
-            let Some(FeatureOutcome::Broken { errors, .. }) = outcome else {
-                panic!("{outcome:?}");
-            };
-            assert_eq!(errors[0].code(), ErrorCode::ReferenceBroken, "{errors:?}");
-            assert_eq!(errors[0].parameter(), Some("plane.face"));
-        }
-    }
+    let invalid = checked(&strs(&features)).unwrap_err();
+    assert_eq!(invalid.errors().len(), 1, "{:?}", invalid.errors());
+    let e = &invalid.errors()[0];
+    assert_eq!(e.code(), ErrorCode::InvalidInput);
+    assert_eq!(e.feature(), Some("s0000002"));
+    assert_eq!(e.parameter(), Some("plane.face"));
+    assert_eq!(
+        e.message(),
+        "plane.face, \"s0000001.sketch.Face1\", isn't a face's name: s0000001 is a sketch: its elements are in no solid; name what a feature made of it, at column 1"
+    );
+    assert_eq!(
+        e.suggestion(),
+        Some(
+            "write the face's name as Silico names it (feature.type.Face...), of a feature before this sketch"
+        )
+    );
+    assert!(e.candidates().is_empty());
 }
 
 #[test]
@@ -799,27 +802,34 @@ fn call(sessions: &Sessions<Arc<FakeKernel>>, name: &str, arguments: &str) -> Va
 }
 
 #[test]
-fn the_sketch_read_of_a_face_sketch_blocked_upstream_is_refused_naming_the_root_not_a_bug() {
+fn the_sketch_read_of_a_face_sketch_blocked_upstream_answers_naming_the_root_not_a_bug() {
     // s2's face could only be in p1, which is blocked on s1 (not planar on the fake): the
-    // read of s2 is refused as check reports s2, blocked on s1, never `internal`.
+    // read of s2 answers, its plane null and its plane problem s2 blocked on s1, as check
+    // reports it, never `internal`; s1's, its own face refused.
     let dir = tempfile::tempdir().unwrap();
     let sessions = sessions_on(&dir, &chain(2));
-    for (sketch, code) in [("s0000001", "reference_broken"), ("s0000002", "blocked")] {
+    for (sketch, code) in [
+        ("s0000001", "reference_broken"),
+        ("s0000002", "invalid_input"),
+    ] {
         let read = call(
             &sessions,
             "sketch",
             &json!({"session": "s1", "model": "current", "sketch": sketch}).to_string(),
         );
-        assert_eq!(read["ok"], false, "{read}");
-        let error = &read["errors"][0];
-        assert_ne!(error["code"], "internal", "{sketch}: {read}");
+        assert_eq!(read["ok"], true, "{read}");
+        assert_eq!(read["result"]["plane"], Value::Null, "{read}");
+        let error = &read["result"]["plane_problem"];
+        assert_eq!(error["code"], code, "{sketch}: {read}");
+        assert_eq!(error["feature"], sketch, "{read}");
         if sketch == "s0000001" {
-            assert_eq!(error["code"], code, "{read}");
             assert_eq!(error["parameter"], "plane.face", "{read}");
         } else {
             assert!(
-                read.to_string().contains("s0000001"),
-                "{sketch}'s refusal names its root: {read}"
+                error["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("uses s0000001, which failed")),
+                "{sketch}'s plane problem names its root: {read}"
             );
         }
     }
@@ -871,7 +881,11 @@ fn a_broken_faces_candidates_are_the_same_bytes_however_long_another_branch_is_h
     // planar faces of the other live solids by name: the pad p2's, a branch of its own
     // (b2, sketched on its top in a round of its own, padded). So s1's refusal waits for
     // p2, which a first round hasn't built. Each of several fresh sessions holds p2's
-    // sweep a different time; check's envelope is the same bytes in each.
+    // sweep a different time; check's envelope is the same bytes in each. A determinism
+    // check, not a race: rounds are barriers (a round's plan is made once the round before
+    // has settled every step), so the holds don't change the order steps settle in across
+    // rounds, and the refusal's wait for p2 is what makes its candidates whole
+    // (face_plane.rs's tests of `place` pin the wait itself).
     let features = vec![
         cube(),
         box_at("b0000002", [20.0, 0.0, 0.0], 1.0, 1.0, 1.0),
@@ -1022,6 +1036,82 @@ fn a_face_is_looked_for_in_its_box_when_what_consumes_the_box_comes_after_the_sk
         (frame.origin, frame.x, frame.y),
         ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
     );
+}
+
+#[test]
+fn a_step_never_run_in_two_rounds_is_counted_once_so_done_stays_under_steps_while_one_is_held() {
+    // From #344's review. A pocket that removes nothing (its box above the sketch's plane)
+    // is refused, and kept so by a first rebuild. A second, on the same engine, adds a cut
+    // of that pocket (made from a refused feature, so never run: settled without a result)
+    // and a sketch on the 10 mm box's top, padded onto it: a second round. That round plans
+    // the cut unsettled again (it has no result) and settles it again. Its pad's last
+    // step, the fuse onto the box, is held: while it is, one step is still to settle, so
+    // `done` is under `steps`. Counted twice, the cut made them equal.
+    let engine = engine_with_a_planar_box();
+    let refused_pocket = [
+        cube(),
+        box_at("b0000002", [-1.0, -1.0, 1.0], 9.0, 9.0, 9.0),
+        rectangle("s0000009", "xy", [0.0, 0.0], 4.0, 2.0),
+        super::sweeps::pocket("q0000001", "b0000002", "s0000009", super::sweeps::TEN),
+    ];
+    let first = publish(&engine, checked_document(&strs(&refused_pocket)));
+    assert!(
+        matches!(
+            first.outcome(&id("q0000001")),
+            Some(FeatureOutcome::Failed(_))
+        ),
+        "{:?}",
+        first.outcome(&id("q0000001"))
+    );
+    let mut features = refused_pocket.to_vec();
+    features.extend([
+        box_at("b0000003", [30.0, 0.0, 0.0], 1.0, 1.0, 1.0),
+        r#"{"id": "c0000001", "type": "cut", "v": 1, "name": "Cut", "base": "q0000001", "tool": "b0000003"}"#
+            .to_owned(),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        pad("p0000001", Some("b0000001"), "s0000001", &one_side("3")),
+    ]);
+    let fuse = |op: &Op| {
+        matches!(
+            op,
+            Op::Boolean {
+                op: silico_protocol::BooleanOp::Fuse,
+                ..
+            }
+        )
+    };
+    let hold = engine.kernel().hold(fuse);
+    let run = engine.start(checked_document(&strs(&features)));
+    let progress = run.progress();
+    let deadline = Instant::now() + WAIT;
+    while !engine.kernel().asked().iter().any(|call| fuse(&call.op)) {
+        assert!(Instant::now() < deadline, "the pad's fuse was never asked");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let held = progress.now();
+    assert_eq!(progress.rounds(), 2, "{held:?}");
+    assert!(held.done < held.steps, "{held:?}");
+    assert_eq!(
+        held.done + 1,
+        held.steps,
+        "only the held fuse is left: {held:?}"
+    );
+    hold.release();
+    let model = match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        Ok(other) => panic!("not published: {other:?}"),
+        Err(_) => panic!("the rebuild didn't finish in {WAIT:?}"),
+    };
+    assert!(matches!(
+        model.outcome(&id("p0000001")),
+        Some(FeatureOutcome::Built { .. })
+    ));
+    assert_eq!(
+        model.outcome(&id("c0000001")),
+        Some(&FeatureOutcome::Blocked { on: id("q0000001") })
+    );
+    let done = progress.now();
+    assert_eq!((done.done, done.ended), (done.steps, true), "{done:?}");
 }
 
 // ---- any face plane, read, written, gated, and rebuilt ----

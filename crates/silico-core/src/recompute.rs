@@ -1013,7 +1013,8 @@ pub struct StepCounter(Arc<(Mutex<Counted>, Condvar)>);
 pub struct StepCount {
     /// The steps settled: built, failed, kept from before, or never to run (an input
     /// failed, or only refused features need it). All of them once the recompute finishes.
-    /// It never goes back, round to round.
+    /// Each counted once, by its key, however many rounds settle it: it never counts a step
+    /// twice, and never goes back, round to round.
     pub done: usize,
     /// The steps of its plan: none until its plan is made (after the sketches it sweeps are
     /// solved). A rebuild with sketches on faces plans in rounds, each adding the steps of
@@ -1034,6 +1035,10 @@ struct Counted {
     rounds: usize,
     /// What each step is called, by key: its first feature and that feature's type.
     labels: BTreeMap<Key, String>,
+    /// The steps settled, by key, in any round: `done` counts them. A step a round settled
+    /// without a result (never to run) is planned unsettled by the next, and settled there
+    /// again; counted twice, `done` would reach `steps` with a step still running.
+    settled: BTreeSet<Key>,
     /// The steps running, in the order they started.
     running: Vec<Key>,
 }
@@ -1063,18 +1068,31 @@ impl StepCounter {
         self.0.1.notify_all();
     }
 
-    /// A round's plan made: `steps` steps, `done` of them settled already, each called as
-    /// `labels` says. Neither count goes back: a later round's plan holds the steps of the
-    /// rounds before it (some settled there without a result kept, never to run, which it
-    /// counts unsettled), so the count stays at least what it was.
-    fn planned(&self, steps: usize, done: usize, labels: BTreeMap<Key, String>) {
+    /// A round's plan made: `steps` steps, `settled` those of them settled already, each
+    /// called as `labels` says. Neither count goes back: a later round's plan holds the steps
+    /// of the rounds before it (some settled there without a result kept, never to run,
+    /// which it counts unsettled), and a step is counted once, by its key, whichever rounds
+    /// settle it.
+    fn planned(
+        &self,
+        steps: usize,
+        settled: impl IntoIterator<Item = Key>,
+        labels: BTreeMap<Key, String>,
+    ) {
         {
             let mut counted = lock(&self.0.0);
-            let count = &mut counted.count;
+            counted.settled.extend(settled);
+            let Counted {
+                count,
+                settled,
+                labels: named,
+                rounds,
+                ..
+            } = &mut *counted;
             count.steps = count.steps.max(steps);
-            count.done = count.done.max(done).min(count.steps);
-            counted.labels = labels;
-            counted.rounds += 1;
+            count.done = settled.len().min(count.steps);
+            *named = labels;
+            *rounds += 1;
         }
         self.changed();
     }
@@ -1105,9 +1123,12 @@ impl StepCounter {
             count,
             labels,
             running,
+            settled,
             ..
         } = &mut *counted;
-        count.done = (count.done + 1).min(count.steps);
+        if settled.insert(key) {
+            count.done = settled.len().min(count.steps);
+        }
         if ran {
             running.retain(|other| *other != key);
             count.running = running.last().and_then(|last| labels.get(last)).cloned();
@@ -3534,7 +3555,7 @@ impl<K: Kernel + 'static> Engine<K> {
             .order
             .iter()
             .filter(|key| schedule.done.contains_key(key) || doomed.contains(key))
-            .count();
+            .copied();
         progress.planned(plan.order.len(), settled, plan.labels(document));
         let schedule = Mutex::new(schedule);
         let changed = Condvar::new();
@@ -5208,7 +5229,7 @@ mod tests {
             answer.recv_timeout(quiet).is_err(),
             "returned with nothing changed"
         );
-        counter.planned(2, 0, BTreeMap::new());
+        counter.planned(2, [], BTreeMap::new());
         let planned = answer.recv_timeout(wait).unwrap();
         assert_eq!((planned.done, planned.steps, planned.ended), (0, 2, false));
         assert!(
@@ -5237,13 +5258,40 @@ mod tests {
         // (never to run): `done` went back. The steps of a later round's plan hold the
         // earlier's, so `steps` only grows; `done` stays at least what it was.
         let counter = StepCounter::default();
-        counter.planned(5, 5, BTreeMap::new());
+        let keys = |n: u8| (0..n).map(|k| Key([k; 32]));
+        counter.planned(5, keys(5), BTreeMap::new());
         assert_eq!((counter.now().done, counter.now().steps), (5, 5));
-        counter.planned(8, 3, BTreeMap::new());
+        counter.planned(8, keys(3), BTreeMap::new());
         assert_eq!((counter.now().done, counter.now().steps), (5, 8));
-        counter.planned(7, 6, BTreeMap::new());
+        counter.planned(7, keys(6), BTreeMap::new());
         assert_eq!((counter.now().done, counter.now().steps), (6, 8));
         assert_eq!(counter.rounds(), 3);
+    }
+
+    #[test]
+    fn a_step_settled_in_two_rounds_is_counted_once_so_done_stays_under_steps_while_one_runs() {
+        // From #344's review: a step settled without a result in one round (never to run)
+        // is planned unsettled by the next, and settled there again. Counted each time,
+        // `done` reached `steps` while another step still ran. Round 1: the step a alone,
+        // settled unrun (1 of 1). Round 2: a and b, neither kept (so none settled by the
+        // plan); a settled unrun again, b started and running: 1 of 2, by hand.
+        let counter = StepCounter::default();
+        let (a, b) = (Key([1; 32]), Key([2; 32]));
+        counter.planned(1, [], BTreeMap::new());
+        counter.settled(a, false);
+        assert_eq!((counter.now().done, counter.now().steps), (1, 1));
+        counter.planned(2, [], BTreeMap::new());
+        assert_eq!((counter.now().done, counter.now().steps), (1, 2));
+        counter.started(b);
+        counter.settled(a, false);
+        assert_eq!((counter.now().done, counter.now().steps), (1, 2));
+        // b settles: 2 of 2; and a step a plan counts settled that a later settle names
+        // again is counted once too.
+        counter.settled(b, true);
+        assert_eq!((counter.now().done, counter.now().steps), (2, 2));
+        counter.planned(3, [a, b], BTreeMap::new());
+        counter.settled(b, false);
+        assert_eq!((counter.now().done, counter.now().steps), (2, 3));
     }
 
     /// A rectangle sketch `id` on the face `face` (token `+x`), as a document writes it, its
@@ -5352,6 +5400,14 @@ mod tests {
             "{walks} steps in {rounds} rounds, past 4 F = {} a round",
             4 * f
         );
+        // And at least F for each round but the last: each round with a sketch waiting
+        // passes each feature once to keep what's live, and the last finds none waiting and
+        // walks nothing. A count that missed the walk (or a walk that skipped features)
+        // reads under it.
+        assert!(
+            walks >= f * (rounds as u64 - 1),
+            "{walks} steps in {rounds} rounds, under F = {f} for each but the last"
+        );
     }
 
     #[test]
@@ -5376,6 +5432,12 @@ mod tests {
         let (walks, rounds, model) = walked_rebuilding(checked_of(&features));
         assert_eq!(rounds, 2);
         assert!(walks <= 4 * f, "{walks} steps, past 4 F = {}", 4 * f);
+        // And at least F: the first round passes each feature once; the second finds none
+        // waiting and walks nothing.
+        assert!(
+            walks >= f * (rounds as u64 - 1),
+            "{walks} steps in {rounds} rounds, under F = {f} for each but the last"
+        );
         for n in 1..=400usize {
             let id = FeatureId::new(&format!("s{n:07}")).unwrap();
             let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id) else {

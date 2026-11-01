@@ -539,6 +539,19 @@ fn the_sketch_read_gives_a_face_sketchs_frame_as_resolved_and_the_timeline_its_f
         read["result"]["plane"],
         json!({"origin": [0, 0, 10], "x": [1, 0, 0], "y": [0, 1, 0], "normal": [0, 0, 1]})
     );
+    // Resolved, so no plane problem; and likewise a sketch on an origin plane, its frame
+    // xy's (D6).
+    assert_eq!(read["result"]["plane_problem"], Value::Null, "{read}");
+    let mut flat = padded(10.0);
+    flat[1] = rectangle("s0000001", "xy", [1.0, 1.0], 4.0, 2.0);
+    let on_xy = f.open("xy.silico", &flat);
+    let xy = f.read_sketch(&on_xy, "s0000001");
+    assert_eq!(xy["ok"], true, "{xy}");
+    assert_eq!(
+        xy["result"]["plane"],
+        json!({"origin": [0, 0, 0], "x": [1, 0, 0], "y": [0, 1, 0], "normal": [0, 0, 1]})
+    );
+    assert_eq!(xy["result"]["plane_problem"], Value::Null, "{xy}");
     let timeline = f.call(
         "timeline",
         &json!({"session": session, "model": "current"}).to_string(),
@@ -560,17 +573,127 @@ fn the_sketch_read_gives_a_face_sketchs_frame_as_resolved_and_the_timeline_its_f
     );
 }
 
+/// The read's result but its plane and its plane problem: the 2D, which a plane doesn't change.
+fn two_d(read: &Value) -> Value {
+    let mut result = read["result"].clone();
+    let object = result.as_object_mut().unwrap();
+    assert!(object.remove("plane").is_some(), "{read}");
+    assert!(object.remove("plane_problem").is_some(), "{read}");
+    result
+}
+
 #[test]
-fn the_sketch_read_of_a_face_sketch_whose_face_broke_is_refused_with_its_own_failure() {
+fn the_sketch_read_of_a_face_sketch_whose_face_broke_answers_its_2d_and_mends_by_replace_text() {
+    // Face7 names nothing of a box: the read answers, plane null, the broken reference in
+    // plane_problem with Face6, its nearest by number, as the candidate, and the 2D whole.
     let f = fixture();
     let mut features = padded(10.0);
     features[1] = features[1].replace("b0000001.box.Face6", "b0000001.box.Face7");
     let session = f.open("broken.silico", &features);
     let read = f.read_sketch(&session, "s0000001");
-    assert_eq!(read["ok"], false, "{read}");
-    let error = &read["errors"][0];
+    assert_eq!(read["ok"], true, "{read}");
+    assert_eq!(read["result"]["plane"], Value::Null, "{read}");
+    let error = &read["result"]["plane_problem"];
     assert_eq!(error["code"], "reference_broken", "{read}");
     assert_eq!(error["feature"], "s0000001");
     assert_eq!(error["parameter"], "plane.face");
     assert_eq!(error["candidates"], json!(["b0000001.box.Face6"]));
+    assert_eq!(read["result"]["solve_problem"], Value::Null, "{read}");
+    // Its pad is blocked on it, as before.
+    let measured = f.call(
+        "mass_properties",
+        &json!({"session": session, "model": "current", "feature": "p0000001"}).to_string(),
+    );
+    assert_eq!(measured["ok"], false, "{measured}");
+    assert_eq!(
+        measured["errors"][0]["message"],
+        "p0000001 didn't build, since it uses s0000001, which failed"
+    );
+    // The repair: the plane's face set to the candidate, by replace_text (set_field of
+    // plane is M5.9's part 3). The read's plane is the box's top's frame (F1: origin the
+    // face's centroid's projection, (0, 0, 10) for +x on a top through it), no plane
+    // problem, the 2D unchanged; and the pad builds, 1000 + 4 × 2 × 3 = 1024, to z = 13.
+    let mended = document(&features.iter().map(String::as_str).collect::<Vec<_>>())
+        .replace(
+            r#""resolution": "1nm"}, "#,
+            r#""resolution": "1nm"}, "naming": 5, "#,
+        )
+        .replace("b0000001.box.Face7", "b0000001.box.Face6");
+    assert!(mended.contains(r#""naming": 5"#), "{mended}");
+    let replaced = f.call(
+        "replace_text",
+        &json!({"session": session, "revision": 1, "text": mended}).to_string(),
+    );
+    assert_eq!(replaced["ok"], true, "{replaced}");
+    let again = f.read_sketch(&session, "s0000001");
+    assert_eq!(again["ok"], true, "{again}");
+    assert_eq!(
+        again["result"]["plane"],
+        json!({"origin": [0, 0, 10], "x": [1, 0, 0], "y": [0, 1, 0], "normal": [0, 0, 1]})
+    );
+    assert_eq!(again["result"]["plane_problem"], Value::Null, "{again}");
+    assert_eq!(two_d(&again), two_d(&read));
+    let measured = f.call(
+        "mass_properties",
+        &json!({"session": session, "model": "current", "feature": "p0000001"}).to_string(),
+    );
+    assert_eq!(measured["ok"], true, "{measured}");
+    let volume = measured["result"]["bodies"][0]["volume"].as_f64().unwrap();
+    assert_near(volume, 1024.0, 1e-9 * 1024.0, "the mended pad's volume");
+}
+
+#[test]
+fn the_sketch_read_of_a_sketch_on_a_cylinders_side_answers_with_the_planar_faces_as_candidates() {
+    // OCCT's cylinder: Face1 its side, Face2 its top, Face3 its bottom. The side isn't
+    // planar: the read answers, plane null, the refusal with the planar faces.
+    let f = fixture();
+    let features = vec![
+        r#"{"id": "c0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [0, 0, 0], "radius": 5, "height": 10}"#
+            .to_owned(),
+        on_face(
+            "s0000001",
+            &face("c0000001.cylinder.Face1", "+x", false),
+            [1.0, 1.0],
+            1.0,
+            1.0,
+        ),
+        pad("p0000001", Some("c0000001"), "s0000001", &one_side("1")),
+    ];
+    let session = f.open("pin.silico", &features);
+    let read = f.read_sketch(&session, "s0000001");
+    assert_eq!(read["ok"], true, "{read}");
+    assert_eq!(read["result"]["plane"], Value::Null, "{read}");
+    let error = &read["result"]["plane_problem"];
+    assert_eq!(error["code"], "reference_broken", "{read}");
+    assert_eq!(error["feature"], "s0000001");
+    assert_eq!(error["parameter"], "plane.face");
+    assert_eq!(
+        error["message"],
+        "plane.face, \"c0000001.cylinder.Face1\", names a face that isn't planar: OCCT types its surface a cylinder, and a sketch sits only on a face typed a plane"
+    );
+    assert_eq!(
+        error["candidates"],
+        json!(["c0000001.cylinder.Face2", "c0000001.cylinder.Face3"])
+    );
+    assert_eq!(read["result"]["solve_problem"], Value::Null, "{read}");
+    // The 2D whole: a 1 × 1 square from (1, 1), as stored; one region of its four sides.
+    assert_eq!(read["result"]["state"], "fully_defined", "{read}");
+    assert_eq!(
+        read["result"]["regions"],
+        json!([{"outer": ["na000001", "na000002", "na000003", "na000004"], "holes": []}])
+    );
+    // The same object check reports for the sketch.
+    let checked = f.call(
+        "check",
+        &json!({"session": session, "model": "current", "fresh": false}).to_string(),
+    );
+    assert_eq!(checked["result"]["problems"], json!([error]), "{checked}");
+    // The whole 2D is the same sketch's read on xy, padded onto the cylinder alike.
+    let mut flat = features.clone();
+    flat[1] = rectangle("s0000001", "xy", [1.0, 1.0], 1.0, 1.0);
+    let on_xy = f.open("pin-xy.silico", &flat);
+    let xy = f.read_sketch(&on_xy, "s0000001");
+    assert_eq!(xy["ok"], true, "{xy}");
+    assert_eq!(xy["result"]["plane_problem"], Value::Null, "{xy}");
+    assert_eq!(two_d(&read), two_d(&xy));
 }
