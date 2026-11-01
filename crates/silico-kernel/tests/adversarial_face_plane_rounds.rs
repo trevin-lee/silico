@@ -887,3 +887,246 @@ fn fifty_sketches_on_a_boxs_top_each_padded_onto_the_last_build_in_fifty_rounds(
         near(high[k], [10.0, 10.0, 11.0][k], 1e-7, "the high corner");
     }
 }
+
+/// Sketch `id` on `plane` (its text): the unit square from `at`, its corners pa000001 to
+/// pa000004 and sides na000001 to na000004, and the construction line nb000001 from `from`
+/// to `to`, an axis to turn about.
+fn square_and_axis(id: &str, plane: &str, at: [f64; 2], from: [f64; 2], to: [f64; 2]) -> String {
+    let [u, v] = at;
+    let corners = [[u, v], [u + 1.0, v], [u + 1.0, v + 1.0], [u, v + 1.0]];
+    let mut points: Vec<String> = corners
+        .iter()
+        .enumerate()
+        .map(|(i, [x, y])| {
+            format!(
+                r#"{{"id": "pa00000{}", "x": {x}, "y": {y}, "construction": false}}"#,
+                i + 1
+            )
+        })
+        .collect();
+    for (i, [x, y]) in [from, to].iter().enumerate() {
+        points.push(format!(
+            r#"{{"id": "pb00000{}", "x": {x}, "y": {y}, "construction": true}}"#,
+            i + 1
+        ));
+    }
+    let mut lines: Vec<String> = (0..4)
+        .map(|i| {
+            format!(
+                r#"{{"id": "na00000{}", "from": "pa00000{}", "to": "pa00000{}", "construction": false}}"#,
+                i + 1,
+                i + 1,
+                (i + 1) % 4 + 1
+            )
+        })
+        .collect();
+    lines.push(
+        r#"{"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": true}"#
+            .to_owned(),
+    );
+    format!(
+        r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "S", "plane": {plane}, "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
+        points.join(", "),
+        lines.join(", ")
+    )
+}
+
+#[test]
+fn a_revolve_of_a_face_sketch_about_an_axis_within_reach_builds_by_pappus() {
+    // The cube's top, +x: the note's frame, o (0, 0, 10), x +X, y +Y. The unit square from
+    // (1, 1), turned 90° about nb000001, the sketch's line from (0, 0) to (1, 0): placed, the
+    // line through (0, 0, 10) along +X, well within reach. By Pappus, the square's area 1
+    // times the path of its centroid, 1.5 from the axis, through π/2: 0.75π.
+    let features = vec![
+        box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0),
+        square_and_axis(
+            "s0000001",
+            &face("b0000001.box.Face6", "+x", false),
+            [1.0, 1.0],
+            [0.0, 0.0],
+            [1.0, 0.0],
+        ),
+        turned(
+            "r0000001",
+            "revolve",
+            None,
+            "s0000001",
+            "nb000001",
+            &angle("90"),
+        ),
+    ];
+    let model = publish(&engine(), &features);
+    let f = frame_of(&model, "s0000001");
+    assert_eq!(
+        (f.origin, f.x, f.y),
+        ([0.0, 0.0, 10.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    );
+    let s = built_summary(&model, "r0000001");
+    near(
+        s.volume,
+        0.75 * std::f64::consts::PI,
+        1e-9,
+        "the revolve, by Pappus",
+    );
+    assert!(s.valid);
+}
+
+/// The cube from z = 999990 to the kilometre, its top front edge chamfered 1, and the
+/// chamfer's bevel's name (o = (0, −499999.5, 499999.5), x = +X, y = (0, 1, 1)/√2): as the
+/// past-a-kilometre revolve test builds them.
+fn far_bevel() -> (String, String, String) {
+    let cube = box_at("b0000001", [0.0, 0.0, 999990.0], 10.0, 10.0, 10.0);
+    let first = publish(&engine(), std::slice::from_ref(&cube));
+    let edge = edge_between(&first, "b0000001", [0.0, 0.0, 1e6], [10.0, 0.0, 1e6]);
+    let chamfer = format!(
+        r#"{{"id": "c0000001", "type": "chamfer", "v": 1, "name": "Bevel", "base": "b0000001", "edges": [{edge:?}], "size": {{"distance": 1}}}}"#
+    );
+    let second = publish(&engine(), &[cube.clone(), chamfer.clone()]);
+    let bevel = planar_face(&second, "c0000001", unit([0.0, -1.0, 1.0]), None);
+    (cube, chamfer, bevel)
+}
+
+/// The sketch s0000001 on the far bevel: the unit square from (2, 707106), within reach
+/// placed (its highest z 499999.5 + 707107/√2 ≈ 999999.65), and nb000001 at v = 1e6, which placed on the bevel passes through (0,
+/// 207106.78, 1207106.78), past a kilometre in z.
+fn far_square(bevel: &str) -> String {
+    square_and_axis(
+        "s0000001",
+        &face(bevel, "+x", false),
+        [2.0, 707106.0],
+        [0.0, 1e6],
+        [1.0, 1e6],
+    )
+}
+
+/// A pad 1 long into the face it's sketched on, so a pad of a sketch on the far bevel,
+/// whose square reaches z = 999999.65, stays within the kilometre.
+const INTO: &str = r#"{"type": "one_side", "length": 1, "reversed": true}"#;
+
+#[test]
+fn a_suppressed_revolve_about_an_axis_past_a_kilometre_refuses_nothing_and_the_sketch_pads() {
+    // The revolve whose axis would be past the reach is suppressed: it builds nothing, so
+    // its axis is never placed, and the sketch is placed and padded, 1 × 1 × 1.
+    let (cube, chamfer, bevel) = far_bevel();
+    let revolve = turned(
+        "r0000001",
+        "revolve",
+        None,
+        "s0000001",
+        "nb000001",
+        &angle("1"),
+    )
+    .replace(
+        r#""name": "Turned","#,
+        r#""name": "Turned", "suppressed": true,"#,
+    );
+    assert!(revolve.contains(r#""suppressed": true"#), "{revolve}");
+    let features = vec![
+        cube,
+        chamfer,
+        far_square(&bevel),
+        revolve,
+        pad("p0000001", None, "s0000001", INTO),
+    ];
+    let model = publish(&engine(), &features);
+    let f = frame_of(&model, "s0000001");
+    assert_eq!(f.x, [1.0, 0.0, 0.0]);
+    assert_eq!(
+        model.outcome(&id("r0000001")),
+        Some(&FeatureOutcome::Suppressed)
+    );
+    let s = built_summary(&model, "p0000001");
+    near(s.volume, 1.0, 1e-6, "the pad");
+    assert!(s.valid);
+}
+
+#[test]
+fn a_revolve_of_another_sketch_never_refuses_this_one_though_its_axis_would_be_past_reach_here() {
+    // s2, on xy, is turned about its own nb000001, from (0, 0) to (1, 0). s1 on the far bevel
+    // has a line of the same ID, whose placing there passes a kilometre: but s1 is no
+    // revolve's sketch, so it's placed and padded, and the revolve of s2 builds, by Pappus
+    // 1 × 1.5 × π/2.
+    let (cube, chamfer, bevel) = far_bevel();
+    let features = vec![
+        cube,
+        chamfer,
+        far_square(&bevel),
+        pad("p0000001", None, "s0000001", INTO),
+        square_and_axis("s0000002", r#""xy""#, [1.0, 1.0], [0.0, 0.0], [1.0, 0.0]),
+        turned(
+            "r0000002",
+            "revolve",
+            None,
+            "s0000002",
+            "nb000001",
+            &angle("90"),
+        ),
+    ];
+    let model = publish(&engine(), &features);
+    assert_eq!(frame_of(&model, "s0000001").x, [1.0, 0.0, 0.0]);
+    near(
+        built_summary(&model, "p0000001").volume,
+        1.0,
+        1e-6,
+        "the pad",
+    );
+    let s = built_summary(&model, "r0000002");
+    near(s.volume, 0.75 * std::f64::consts::PI, 1e-9, "the revolve");
+    assert!(s.valid);
+}
+
+#[test]
+fn a_sketch_on_a_boxs_plus_x_face_follows_minus_z_and_plus_z_each_its_own_way() {
+    // The cube's Face2, n = +X, through x = 10: o (10, 0, 0). `-z`: x = (0, 0, −1), y = n ×
+    // x = (0, 1, 0); `+z`: x = (0, 0, 1), y = (0, −1, 0). The unit square from (1, 1) lands
+    // at (10, v, −u) and (10, −v, u), u and v in 1..2; padded 1 along +X: the boxes (10..11,
+    // 1..2, −2..−1) and (10..11, −2..−1, 1..2).
+    let features = vec![
+        box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0),
+        on_face(
+            "s0000001",
+            &face("b0000001.box.Face2", "-z", false),
+            [1.0, 1.0],
+            1.0,
+            1.0,
+        ),
+        pad("p0000001", None, "s0000001", &one_side("1")),
+        on_face(
+            "s0000002",
+            &face("b0000001.box.Face2", "+z", false),
+            [1.0, 1.0],
+            1.0,
+            1.0,
+        ),
+        pad("p0000002", None, "s0000002", &one_side("1")),
+    ];
+    let model = publish(&engine(), &features);
+    for (sketch, pad, x, y, low, high) in [
+        (
+            "s0000001",
+            "p0000001",
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+            [10.0, 1.0, -2.0],
+            [11.0, 2.0, -1.0],
+        ),
+        (
+            "s0000002",
+            "p0000002",
+            [0.0, 0.0, 1.0],
+            [0.0, -1.0, 0.0],
+            [10.0, -2.0, 1.0],
+            [11.0, -1.0, 2.0],
+        ),
+    ] {
+        let f = frame_of(&model, sketch);
+        assert_eq!((f.origin, f.x, f.y), ([10.0, 0.0, 0.0], x, y), "{sketch}");
+        let s = built_summary(&model, pad);
+        near(s.volume, 1.0, 1e-9, pad);
+        let [l, h] = s.bounds.unwrap();
+        for k in 0..3 {
+            near(l[k], low[k], 1e-7, &format!("{pad}'s low {k}"));
+            near(h[k], high[k], 1e-7, &format!("{pad}'s high {k}"));
+        }
+    }
+}
