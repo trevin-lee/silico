@@ -2078,8 +2078,10 @@ mod tests {
             Projection::Perspective { .. } => panic!("orthographic"),
         };
         let (far, id) = hidden_far();
-        let mut view = View::default();
-        view.hidden = [id.clone()].into_iter().collect();
+        let mut view = View {
+            hidden: [id.clone()].into_iter().collect(),
+            ..View::default()
+        };
         view.set_camera(front(1e-6));
         let mesh = Arc::clone(&body(0.03125, [0.03125, 0.0625], CUT).mesh);
         view.take_bodies(vec![
