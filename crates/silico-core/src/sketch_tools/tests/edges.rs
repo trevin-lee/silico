@@ -2161,3 +2161,25 @@ fn a_rectangle_with_no_width_or_one_of_exactly_the_floor_is_too_small() {
         assert_eq!(d.messages, [Message::TooSmall], "{from:?}");
     }
 }
+
+#[test]
+fn a_centrepoint_arcs_end_clicked_straight_across_runs_clockwise() {
+    // The end clicked exactly opposite the start, with no move between: a half turn, which
+    // the sweep takes as clockwise (−π), whatever the frame. Centre (10, 10), start (20, 10),
+    // end (0, 10): written from the end back to the start. And centre (10, 15), start
+    // (10, 10) straight below it, end (10, 20) straight above: the same.
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.click(10.0, 10.0).click(20.0, 10.0).click(0.0, 10.0);
+    assert!(
+        d.adds()[0].contains(&"arc (10, 10) (0, 10)->(20, 10)".to_owned()),
+        "{:?}",
+        d.adds()
+    );
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.click(10.0, 15.0).click(10.0, 10.0).click(10.0, 20.0);
+    assert!(
+        d.adds()[0].contains(&"arc (10, 15) (10, 20)->(10, 10)".to_owned()),
+        "{:?}",
+        d.adds()
+    );
+}

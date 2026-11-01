@@ -143,10 +143,11 @@ enum CenterState {
     },
 }
 
-/// The sweep from `last` to the pointer's angle, the short way round: in (−π, π].
+/// The sweep from `last` to the pointer's angle, the short way round: in [−π, π), so an end
+/// exactly opposite the start is swept clockwise, whatever frame it's in.
 fn turn(last: f64, now: f64) -> f64 {
-    let d = now - last;
-    libm::atan2(libm::sin(d), libm::cos(d))
+    use std::f64::consts::{PI, TAU};
+    (now - last + PI).rem_euclid(TAU) - PI
 }
 
 impl Centerpoint {
