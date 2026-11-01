@@ -925,7 +925,7 @@ impl NewMembers {
     pub fn of(members: &Members) -> Result<NewMembers, Error> {
         let sketch = Sketch {
             // Not written: only the lists are.
-            plane: Plane::Xy,
+            plane: Plane::Origin(crate::document::OriginPlane::Xy),
             points: members.points.clone(),
             lines: members.lines.clone(),
             circles: members.circles.clone(),
