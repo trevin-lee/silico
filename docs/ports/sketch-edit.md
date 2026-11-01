@@ -217,6 +217,7 @@ M5's sketch mode needs them, and the draft M5 plan (#196) puts them in a step of
    - A `tangent_on` onto the trimmed curve goes to the piece holding `at`, and is dropped when `at` is on the removed part.
    - An `on` whose point lies on the removed part is dropped (`333ca836c0`).
    - Two arc pieces get coincident centres but **no `equal`** (`f0d30cb570`: it made constraints redundant), so the second arc's radius is free.
+   - An `angle` with `reversed` is FreeCAD's start-point form, `SecondPos = end` (docs/ports/sketcher.md, *An angle with start points*), which FreeCAD's GUI writes for most angles between two lines. 1.1.3's trim (`f0d30cb570`) keeps an angle with positions on one piece; Silico copies `angle` to every line piece, reversed or not, as above. The oracle sends an unreversed angle in FreeCAD's form without positions, as before `reversed` existed, so its cases ask what they asked; only a reversed one is sent with positions.
 10. **Expressions follow** the constraints they're on (`bb5afb911a`, #27505; *1.1.3 keeps them*).
 11. **One solve** at the end, never in between (`350a416708`, `fa2e5cd5fe`, `1dcde4e4cc`).
 
