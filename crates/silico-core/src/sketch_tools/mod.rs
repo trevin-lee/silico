@@ -5,8 +5,10 @@
 //! gesture makes, with the relations the pointer shows. No viewport, no thread, no session:
 //! the viewport feeds a tool points in sketch millimetres, its pick tolerance, and the newest
 //! `sketch` read; it draws the tool's [`Preview`], says its [`Message`], and sends its
-//! [`Outcome::add`] as a `sketch_add` (`NewMembers::of`). Behaviour is SolidWorks', as the
-//! design takes it (docs/ux/solidworks.md, §4):
+//! [`Outcome::add`] as a `sketch_add` (`NewMembers::of`). Smart Dimension
+//! ([`SmartDimension`]) sits beside them, from picks, a right-click, and the Modify box to the
+//! `sketch_add` of one dimension, and the offer SD7 makes when it over-defines ([`offer`]).
+//! Behaviour is SolidWorks', as the design takes it (docs/ux/solidworks.md, §4):
 //!
 //! - **Modes.** The first press decides: a press, a drag, and a release draws one entity;
 //!   a press and release goes on clicking. A line's clicks make a chain, its segments
@@ -63,9 +65,11 @@
 //! event does is bounded: each curve's shape is found once, and crossings are tried among
 //! the [`CROSSING_CURVES`] curves nearest the pointer only.
 
+mod adds;
 mod arc;
 mod build;
 mod circle;
+mod dimension;
 mod geometry;
 mod infer;
 mod line;
@@ -78,7 +82,12 @@ use crate::command::{FeatureIds, Revision};
 use crate::document::sketch_edit::Members;
 use crate::document::{ElementId, FeatureId, Reference, Sketch};
 use crate::{Error, ErrorCode};
+use adds::Adds;
 
+pub use dimension::{
+    DimensionEvent, DimensionPreview, LEVEL, Offer, OfferChoice, OfferRequest, PARALLEL, Placement,
+    SmartDimension, offer,
+};
 pub use infer::{ANGLE_TOLERANCE_DEGREES, CROSSING_CURVES, WAKE};
 
 /// A point or a vector in the sketch's plane, `[x, y]`, in millimetres.
@@ -166,11 +175,6 @@ pub struct AddToken {
     add: u64,
 }
 
-/// Each tool's serial, from one count for the process. Tokens never reach a request, a
-/// result, a name, or the document, so the count's order (which thread made a tool first)
-/// changes nothing that's written.
-static TOOL_SERIALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 impl Outcome {
     fn added(members: Members) -> Self {
         Outcome {
@@ -214,6 +218,28 @@ pub enum Message {
     NotFinite,
     /// No new ID could be made.
     NoId(Error),
+    /// Smart Dimension: what's picked is at one place, or a point on the line picked, or two
+    /// lines in line: no distance to hold, nor a side or a direction to hold it in.
+    NoDistance,
+    /// Smart Dimension: the pointer across a centreline from the point, where SolidWorks
+    /// places a diameter (a doubled distance), which isn't offered (SD3).
+    AcrossCentreline,
+    /// Smart Dimension: only the origin and the axes are picked, which are fixed.
+    FixedOnly,
+    /// The Modify box's text isn't a plain number (SD9).
+    NotANumber,
+    /// The Modify box's value, or the measured one, refused by the reader or the gate, in
+    /// their words.
+    ValueRefused(Error),
+    /// Smart Dimension: a newer read changed what the open Modify box measures (a pick gone,
+    /// lines made parallel), so it closed rather than carry its value onto another kind.
+    DimensionChanged,
+    /// Smart Dimension: the last dimension's solve hasn't been read, so its offer may yet
+    /// come; no other is placed until it has (SD7's offer is modal).
+    Solving,
+    /// Smart Dimension: the last dimension's offer (SD7) is open: no other is placed until
+    /// it's answered.
+    OfferOpen,
 }
 
 impl Message {
@@ -236,6 +262,23 @@ impl Message {
             Message::TooFar => "a sketch is drawn within a kilometre of its origin".to_owned(),
             Message::NotFinite => "the pointer's position isn't a number".to_owned(),
             Message::NoId(error) => format!("no new ID could be made: {}", error.message()),
+            Message::NoDistance => {
+                "they're at no distance from each other: there's no distance to dimension"
+                    .to_owned()
+            }
+            Message::AcrossCentreline => "a diameter across a centreline isn't offered: place the dimension on the point's side for its distance".to_owned(),
+            Message::FixedOnly => {
+                "the origin and the axes are fixed: dimension a member of the sketch".to_owned()
+            }
+            Message::NotANumber => "type a plain number, as a document writes one: no units, arithmetic, or expressions".to_owned(),
+            Message::ValueRefused(error) => error.message().to_owned(),
+            Message::DimensionChanged => {
+                "the sketch changed what the dimension measures: place it again".to_owned()
+            }
+            Message::Solving => {
+                "the last dimension is still solving: place this one once it has".to_owned()
+            }
+            Message::OfferOpen => "the last dimension over-defines the sketch: make it driven, leave it, or cancel it before placing another".to_owned(),
         }
     }
 }
@@ -324,27 +367,12 @@ impl NewIds for SystemIds {
 pub struct SketchTool {
     state: State,
     preview: Preview,
-    /// The sketch it works in: a context of another starts it afresh.
-    sketch: Option<FeatureId>,
     /// What the tool has added that the newest read may not hold yet, for the next click to
     /// share or find (a chain's last point, a point clicked twice), each add in turn with
     /// the revision it made once the core has answered ([`SketchTool::added`]).
-    pending: Vec<Pending>,
-    /// This tool's serial, which its tokens carry.
-    serial: u64,
-    /// The number the next add's token is given.
-    next_token: u64,
+    adds: Adds,
     /// The points the pointer has woken, the newest first, at most [`WAKE`] (#278's E).
     woken: Vec<ElementId>,
-}
-
-/// One add the tool made: its members, until a read holds them or a read of the revision
-/// it made (or later) doesn't (undone, rolled back, or removed by another client).
-#[derive(Debug, Clone)]
-struct Pending {
-    token: AddToken,
-    members: Members,
-    revision: Option<Revision>,
 }
 
 #[derive(Debug, Clone)]
@@ -382,10 +410,7 @@ impl SketchTool {
         SketchTool {
             state,
             preview: Preview::default(),
-            sketch: None,
-            pending: Vec::new(),
-            serial: TOOL_SERIALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            next_token: 0,
+            adds: Adds::new(),
             woken: Vec::new(),
         }
     }
@@ -430,65 +455,31 @@ impl SketchTool {
     /// Forgets everything it added that no read has shown, and the gesture under way, which
     /// may name it: a full reset, so no click finds a member the sketch hasn't.
     pub fn forget_pending(&mut self) {
-        self.pending.clear();
+        self.adds.clear();
         self.restart();
     }
 
     /// The core took the add `token` names, at `revision`: once a read of that revision or
     /// later is given, the read says whether the sketch holds it.
     pub fn added(&mut self, token: AddToken, revision: Revision) {
-        if let Some(pending) = self.pending.iter_mut().find(|p| p.token == token) {
-            pending.revision = Some(revision);
-        }
+        self.adds.added(token, revision);
     }
 
     /// The core refused the add `token` names: it's forgotten, so no click finds its
     /// members. A gesture that names them finds them gone at the next event (a chain ends
     /// there; a point it shared is placed anew).
     pub fn refused(&mut self, token: AddToken) {
-        self.pending.retain(|p| p.token != token);
+        self.adds.refused(token);
     }
 
     /// The tool brought up to `context`: started afresh in another sketch; its adds a read
     /// at or past their revision has settled forgotten, and what the read holds of the rest
     /// left to the read; and the gesture's points and curves found in the sketch again.
     fn settle(&mut self, context: &Context<'_>) {
-        if self.sketch.as_ref() != Some(context.sketch_id) {
-            if self.sketch.is_some() {
-                self.pending.clear();
-                self.woken.clear();
-                self.restart();
-            }
-            self.sketch = Some(context.sketch_id.clone());
+        if self.adds.settle(context) {
+            self.woken.clear();
+            self.restart();
         }
-        self.pending
-            .retain(|p| p.revision.is_none_or(|made| made > context.revision));
-        if !self.pending.is_empty() {
-            let held: std::collections::BTreeSet<&ElementId> =
-                context.sketch.elements().map(|(id, _)| id).collect();
-            for p in &mut self.pending {
-                let m = &mut p.members;
-                m.points.retain(|x| !held.contains(&x.id));
-                m.lines.retain(|x| !held.contains(&x.id));
-                m.circles.retain(|x| !held.contains(&x.id));
-                m.arcs.retain(|x| !held.contains(&x.id));
-                m.constraints.retain(|x| !held.contains(&x.id));
-            }
-        }
-    }
-
-    /// The members of every add the read may not hold yet.
-    fn pending_members(&self) -> Members {
-        let mut all = Members::default();
-        for p in &self.pending {
-            let m = &p.members;
-            all.points.extend(m.points.iter().cloned());
-            all.lines.extend(m.lines.iter().cloned());
-            all.circles.extend(m.circles.iter().cloned());
-            all.arcs.extend(m.arcs.iter().cloned());
-            all.constraints.extend(m.constraints.iter().cloned());
-        }
-        all
     }
 
     /// `ids` woken, the first the newest, the oldest past [`WAKE`] forgotten.
@@ -518,7 +509,7 @@ impl SketchTool {
             return Outcome::said(Message::NotFinite);
         }
         self.settle(context);
-        let pending = self.pending_members();
+        let pending = self.adds.members();
         let view = infer::View::of(context.sketch, &pending);
         let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
             context.tolerance
@@ -564,17 +555,7 @@ impl SketchTool {
         if let Some(added) = &outcome.add {
             // The pointer was at each point the tool placed: they're woken too.
             self.wake(added.points.iter().rev().map(|p| p.id.clone()));
-            let token = AddToken {
-                tool: self.serial,
-                add: self.next_token,
-            };
-            self.next_token += 1;
-            self.pending.push(Pending {
-                token,
-                members: added.clone(),
-                revision: None,
-            });
-            outcome.token = Some(token);
+            outcome.token = Some(self.adds.issue(added));
         }
         if outcome.left {
             self.woken.clear();

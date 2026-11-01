@@ -6682,6 +6682,7 @@ dependencies = [
  "serde",
  "serde_json",
  "silico-core",
+ "silico-protocol",
  "tempfile",
  "tracing",
 ]

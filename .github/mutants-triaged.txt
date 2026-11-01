@@ -394,6 +394,17 @@ crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with
 crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with > | #320
 crates/silico-core/src/document/sketch_edit/join.rs | one_arc | replace > with >= | #320
 crates/silico-app/src/app.rs | App<P>::take_open | replace > with >= | #337
+crates/silico-protocol/src/faces.rs | FaceFrame::from_normal | replace / with * | #339
+crates/silico-core/src/face_plane.rs | frame | replace * with / | #344
+crates/silico-core/src/face_plane.rs | frame | replace * with / | #344
+crates/silico-core/src/fake.rs | frame_box | replace + with - | #339
+crates/silico-core/src/recompute.rs | faces_at | replace < with <= | #344
+crates/silico-core/src/recompute.rs | Engine<K>::run | replace > with >= | #344
+crates/silico-core/src/document/suppression.rs | lost | replace < with <= | #344
+crates/silico-core/src/document/sketch.rs | AxisToken::default_x | replace > with >= | #344
+crates/silico-core/src/recompute.rs | faces_at | replace < with <= | #344
+crates/silico-protocol/src/faces.rs | FaceFrame::from_normal | replace > with >= | #344
+crates/silico-protocol/src/faces.rs | FaceFrame::from_normal | replace < with <= | #339
 # The sketch tools (#335). `to_segment`'s `span > 0.0`: a span of 0 is a line of no length,
 # which lies within the pick tolerance only where its point does, and the pointer shares a
 # point before it looks at curves, so the foot is never read. `tangent_arc`'s `s > 0.0`: `s` is
@@ -409,6 +420,19 @@ crates/silico-core/src/sketch_tools/geometry.rs | to_segment | replace > with >=
 crates/silico-core/src/sketch_tools/infer.rs | tangent_arc | replace > with >= | #335
 crates/silico-core/src/sketch_tools/infer.rs | counter_clockwise | replace < with <= | #335
 crates/silico-core/src/sketch_tools/mod.rs | SketchTool::handle | replace > with >= | #335
+# Smart Dimension (#345). `point_line`'s side, `off > 0.0`: an `off` of 0 (or −0) rounds to
+# 0 nm, which is refused as no distance before the side is read. `inside`'s `over > 0.0`: `over`
+# is checked `!= 0.0` first, so it's never 0 there. `inside`'s `under > 0.0`: `under` is the two
+# lines' cross, at least `PARALLEL` (1e-9) either way wherever `inside` is asked (parallel lines
+# take SD4's path first), so never 0. `lines`' `cross(ray_a, ray_b) > 0.0`: each ray is its
+# line's direction or its negation, so that cross is ± the lines' cross, exactly, never 0 for
+# lines that aren't parallel. `step`'s tolerance, `context.tolerance > 0.0`: at 0 either side
+# gives 0 (or −0, which every comparison takes as 0), as #335's `SketchTool::handle`.
+crates/silico-core/src/sketch_tools/dimension.rs | point_line | replace > with >= | #345
+crates/silico-core/src/sketch_tools/dimension.rs | inside | replace > with >= | #345
+crates/silico-core/src/sketch_tools/dimension.rs | inside | replace > with >= | #345
+crates/silico-core/src/sketch_tools/dimension.rs | lines | replace > with >= | #345
+crates/silico-core/src/sketch_tools/dimension.rs | SmartDimension::step | replace > with >= | #345
 # The viewport's zoom stop (#341). `View::zoom` caps an orthographic zoom in at `most`, the
 # octaves down to `least`, the least view height the drawn bodies' reach allows: `reach` is
 # a max over finite boxes from a finite target, so `least` is finite and never below 0, and
