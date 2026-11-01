@@ -884,8 +884,8 @@ def edit_trim(s, e, applied):
     # and is compared (#se-trim-a-positioned-angle).
     if kind == "line":
         now = [s.getPoint(index_of(s, p), pos) for p in pieces for pos in (1, 2)]
-        for cap, named in angles:
-            if not all(any((q - end).Length <= EDIT_TOLERANCE for q in now) for end in named):
+        for cap, ends_named in angles:
+            if not all(any((q - end).Length <= EDIT_TOLERANCE for q in now) for end in ends_named):
                 continue
             drop(s, [i for i, c in enumerate(s.Constraints) if cap["name"] and c.Name == cap["name"]])
             put_angle_back(s, cap, keep, sorted(pieces))
