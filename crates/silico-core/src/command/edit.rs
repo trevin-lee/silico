@@ -1669,6 +1669,37 @@ mod tests {
     }
 
     #[test]
+    fn set_field_keeps_a_pads_and_a_revolves_extent_reversed_false_written() {
+        // An extent's `reversed` is required, written false or true: only a sketch angle's
+        // is left out when false.
+        let sketch = r#"{"id": "k7f2qx3m", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
+        for (feature, want) in [
+            (
+                r#"{"id": "f0000001", "type": "pad", "v": 1, "name": "P", "sketch": "k7f2qx3m", "extent": {"type": "one_side", "length": 5, "reversed": true}}"#,
+                r#""extent": {"type": "one_side", "length": 5, "reversed": false}"#,
+            ),
+            (
+                r#"{"id": "f0000001", "type": "revolve", "v": 1, "name": "R", "sketch": "k7f2qx3m", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": true}}"#,
+                r#""extent": {"type": "one_side", "angle": 90, "reversed": false}"#,
+            ),
+        ] {
+            let text = format!(
+                r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{sketch}, {feature}]}}"#
+            );
+            let document = document::read(text.as_bytes()).unwrap();
+            let id = FeatureId::new("f0000001").unwrap();
+            let value = json::read(b"false").unwrap();
+            let (values, candidate) = set_field(&document, &id, "extent.reversed", value).unwrap();
+            assert_eq!(
+                (values.before, values.after),
+                (Plain::Bool(true), Plain::Bool(false))
+            );
+            let written = String::from_utf8(candidate.unwrap().parts().0.to_vec()).unwrap();
+            assert!(written.contains(want), "{written}");
+        }
+    }
+
+    #[test]
     fn set_field_refuses_reversed_on_a_member_that_isnt_an_angle_and_a_wrong_kind() {
         let id = FeatureId::new("k7f2qx3m").unwrap();
         let refused = |document: &Document, field: &str, value: &str| {
