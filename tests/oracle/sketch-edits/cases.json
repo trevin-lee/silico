@@ -1840,14 +1840,28 @@
     }
   },
   {
-    "name": "trim_line_with_reversed_angle_end_kept",
-    "note": "The horizontal line trimmed at the upright, its start's side picked, its end kept: the reversed angle (FreeCAD's start-point form, b from its end) stays on the piece; 1.1.3 keeps an angle with positions on one piece, where Silico copies an angle to every line piece, so the harness takes it off before FreeCAD's trim and puts it back as Silico does (#se-trim-a-positioned-angle).",
-    "sketch": "line_with_reversed_angle_and_upright",
+    "name": "trim_line_with_reversed_angle_middle",
+    "note": "The line trimmed between two uprights, at x 4 and 7: two pieces. 1.1.3 keeps the reversed angle (FreeCAD's start-point form, b from its end) on the piece holding the end it names, the back piece, only; Silico copies an angle to every line piece, so the harness takes it off before FreeCAD's trim and puts it back on both (#se-trim-a-positioned-angle). The sketch has no horizontal, which on both pieces would make one of the two angles redundant.",
+    "sketch": "line_with_reversed_angle_and_two_uprights",
     "edit": {
       "trim": {
         "curve": "n0000003",
         "pick": [
-          2,
+          5.5,
+          0
+        ]
+      }
+    }
+  },
+  {
+    "name": "trim_line_with_reversed_angle_end_removed",
+    "note": "The line trimmed at the upright at x 7, its end's side picked, so the end the reversed angle names is removed: 1.1.3 keeps the angle on every piece (78e5729520's every-piece branch), here the one left, as Silico has it (#se-trim-a-positioned-angle).",
+    "sketch": "line_with_reversed_angle_and_two_uprights",
+    "edit": {
+      "trim": {
+        "curve": "n0000003",
+        "pick": [
+          8.5,
           0
         ]
       }
