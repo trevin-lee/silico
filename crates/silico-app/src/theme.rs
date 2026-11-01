@@ -136,8 +136,10 @@ pub const MODIFY_FIELD_BG: Color32 = GRAY_150;
 /// A hovered row's background (`list_item_hovered_bg`, Gray.250).
 pub const HOVER_BG: Color32 = GRAY_250;
 /// The 1 px border between panels, and separators (`widget_noninteractive_bg_stroke`,
-/// Gray.250).
+/// Gray.250), [`BORDER_WIDTH`] wide.
 pub const PANEL_BORDER: Color32 = GRAY_250;
+/// A border's and a separator's width (`border: 1px`).
+pub const BORDER_WIDTH: f32 = 1.0;
 /// A button's background at rest, and a toolbar button's hovered
 /// (`widget_inactive_bg_fill`, Gray.300).
 pub const WIDGET_BG: Color32 = GRAY_300;
@@ -184,6 +186,21 @@ pub const FOCUS_WIDTH: f32 = 1.0;
 pub const FOCUS_HALO: Color32 = with_alpha(FOCUS, 64);
 /// The halo's width.
 pub const FOCUS_HALO_WIDTH: f32 = 2.0;
+
+/// The focus ring round `rect`, with `corner_radius`, on its outline's `kind` side, if
+/// `response` has the keyboard's focus.
+pub fn focus_ring(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    rect: egui::Rect,
+    corner_radius: u8,
+    kind: egui::StrokeKind,
+) {
+    if response.has_focus() {
+        ui.painter()
+            .rect_stroke(rect, corner_radius, Stroke::new(FOCUS_WIDTH, FOCUS), kind);
+    }
+}
 
 // ---- States ----
 
@@ -1174,6 +1191,8 @@ mod tests {
         assert_eq!(APP_BAR_BUTTON_SIZE, 22.0);
         assert_eq!(APP_BAR_BUTTON_PADDING, 5.0);
         assert_eq!(APP_BAR_BUTTON_GAP, 4.0);
+        // `#appbar`'s `border-bottom`, `.ab-sep`'s `width`, and `.doc-tab`'s borders: 1px.
+        assert_eq!(BORDER_WIDTH, 1.0);
         // `.ab-sep`: `height: 16px; margin: 0 6px`.
         assert_eq!(APP_BAR_SEPARATOR_HEIGHT, 16.0);
         assert_eq!(APP_BAR_SEPARATOR_MARGIN, 6.0);

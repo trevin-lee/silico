@@ -372,17 +372,25 @@ fn action(ui: &mut Ui, icon: Icon, label: &str, key: Key, primary: bool) -> Resp
 }
 
 /// The caps of Command (Ctrl off macOS) and `key`, as the platform names them.
-pub(crate) fn shortcut_caps(ctx: &egui::Context, key: Key) -> [String; 2] {
+pub(crate) fn shortcut_caps(ctx: &egui::Context, key: Key) -> Vec<String> {
+    caps(ctx, Modifiers::COMMAND, key)
+}
+
+/// A cap for each of `modifiers`, Command (Ctrl off macOS) first, then Shift, then `key`'s,
+/// as the platform names them (the prototype's `kbd`, in its `Mod Shift` order).
+pub(crate) fn caps(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> Vec<String> {
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     let names = if mac {
         egui::ModifierNames::SYMBOLS
     } else {
         egui::ModifierNames::NAMES
     };
-    [
-        names.format(&Modifiers::COMMAND, mac),
-        key.symbol_or_name().to_owned(),
-    ]
+    [Modifiers::COMMAND, Modifiers::SHIFT]
+        .into_iter()
+        .filter(|modifier| modifiers.contains(*modifier))
+        .map(|modifier| names.format(&modifier, mac))
+        .chain(std::iter::once(key.symbol_or_name().to_owned()))
+        .collect()
 }
 
 /// The width `caps` take as [`key_caps`] paints them.
@@ -446,16 +454,15 @@ pub(crate) fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
     }
 }
 
-/// The focus ring round `rect`, if `response` has the keyboard's focus.
+/// The focus ring round `rect`, outside it, if `response` has the keyboard's focus.
 fn focus_ring(ui: &Ui, response: &Response, rect: Rect) {
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            theme::NORMAL_CORNER_RADIUS,
-            Stroke::new(theme::FOCUS_WIDTH, theme::FOCUS),
-            StrokeKind::Outside,
-        );
-    }
+    theme::focus_ring(
+        ui,
+        response,
+        rect,
+        theme::NORMAL_CORNER_RADIUS,
+        StrokeKind::Outside,
+    );
 }
 
 /// Copy MCP config, a ghost button whose icon lines up with the note's text above it.

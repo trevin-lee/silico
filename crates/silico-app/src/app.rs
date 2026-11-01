@@ -35,6 +35,10 @@ use crate::theme;
 /// (#267's idle cadence). This much covers a comparison's own read on any likely file.
 pub const IDLE_MARGIN: Duration = Duration::from_millis(100);
 
+/// Redo's shortcut beside Ctrl+Y: Shift+Ctrl+Z (Shift+Command+Z on macOS).
+const REDO_SHIFTED: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Z);
+
 /// The delay of the frame the app asks for when nothing it waits on has answered: one each
 /// [`DISK_CHECK_INTERVAL`], whose `status` starts the next comparison (section 3, *Idle*).
 pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN);
@@ -651,7 +655,8 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// Ctrl+S saves and Ctrl+Shift+S asks where to save as (neither while a dialog is
-    /// open), Ctrl+W closes, Ctrl+Z and Ctrl+Y undo and redo (docs/ux/solidworks.md, §6),
+    /// open), Ctrl+W closes, Ctrl+Z undoes and Ctrl+Y or Ctrl+Shift+Z redoes
+    /// (docs/ux/solidworks.md, §6; DESIGN.md, *Keyboard*),
     /// Esc stops what's running and Ctrl+B rebuilds what was stopped (§5, *Rebuild*). With a dialog open, Enter and Esc are
     /// the dialog's, taken here and given to it once its inputs have taken this frame's
     /// typing ([`dialog_panel`](Self::dialog_panel)). Whether a command was started, and
@@ -717,11 +722,14 @@ impl<P: Clients + 'static> App<P> {
                 input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))
             })
         };
+        // Shift+Ctrl+Z before Ctrl+Z, which egui would match with the Shift aside: Redo, as
+        // Ctrl+Y is (DESIGN.md, *Keyboard*), never an Undo.
+        let shift_redo = ui.input_mut(|input| input.consume_shortcut(&REDO_SHIFTED));
         let (save, close, undo, redo, rebuild) = (
             pressed(Key::S),
             pressed(Key::W),
             pressed(Key::Z),
-            pressed(Key::Y),
+            pressed(Key::Y) || shift_redo,
             pressed(Key::B),
         );
         let stop = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
@@ -1018,7 +1026,12 @@ impl<P: Clients + 'static> App<P> {
                     .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
             )
             .show(|ui| self.file_menu(ui, started));
-        let tab = self.active_place().and_then(|at| self.tabs.get_mut(at));
+        // Off on Home, as the shortcuts are (the prototype's `S.view === 'doc'`): the
+        // document is hidden.
+        let tab = self
+            .active_place()
+            .filter(|_| !start_shown)
+            .and_then(|at| self.tabs.get_mut(at));
         // Off while a dialog is open: its OK or Cancel ends its edits first.
         let unsaved = tab
             .as_ref()
@@ -1028,7 +1041,8 @@ impl<P: Clients + 'static> App<P> {
             .filter(|_| unsaved)
             .map(|tab| format!("Writes your edits to {}", tab.name()));
         let save = bar::button(ui, Icon::Save, None, "Save", unsaved, None);
-        if bar::tooltip(save, "Save", Some(Key::S), said.as_deref()).clicked()
+        let shortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
+        if bar::tooltip(save, "Save", Some(shortcut), said.as_deref()).clicked()
             && let Some(tab) = tab
         {
             tab.save(&self.sessions, false);
@@ -1036,14 +1050,28 @@ impl<P: Clients + 'static> App<P> {
         }
         let (undoable, redoable) = self
             .active_place()
+            .filter(|_| !start_shown)
             .and_then(|at| self.tabs.get(at))
             .map_or((false, false), |tab| (tab.undoable(), tab.redoable()));
-        for (undo, icon, word, key, enabled) in [
-            (true, Icon::Undo, "Undo", Key::Z, undoable),
-            (false, Icon::Redo, "Redo", Key::Y, redoable),
+        // Redo's shortcut as the prototype names it: Shift+Command+Z on macOS, Ctrl+Y
+        // elsewhere (each works on both).
+        let redo = if ui.ctx().os() == egui::os::OperatingSystem::Mac {
+            REDO_SHIFTED
+        } else {
+            KeyboardShortcut::new(Modifiers::COMMAND, Key::Y)
+        };
+        for (undo, icon, word, shortcut, enabled) in [
+            (
+                true,
+                Icon::Undo,
+                "Undo",
+                KeyboardShortcut::new(Modifiers::COMMAND, Key::Z),
+                undoable,
+            ),
+            (false, Icon::Redo, "Redo", redo, redoable),
         ] {
             let button = bar::button(ui, icon, None, word, enabled, None);
-            if bar::tooltip(button, word, Some(key), None).clicked()
+            if bar::tooltip(button, word, Some(shortcut), None).clicked()
                 && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at))
             {
                 tab.step(&self.sessions, undo);

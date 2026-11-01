@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, FontId, Key, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
-    ViewportCommand, WidgetInfo, WidgetType, text::LayoutJob, text::TextWrapping,
+    self, FontId, KeyboardShortcut, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui,
+    Vec2, ViewportCommand, WidgetInfo, WidgetType, text::LayoutJob, text::TextWrapping,
 };
 
 use crate::icons::{ICON_SIZE, Icon, IconSize};
@@ -36,12 +36,14 @@ pub(crate) fn inset(ui: &mut Ui) {
 
 /// The bar's empty space at `rect`, where the title bar is the app bar: dragged, it moves
 /// the window, and double-clicked, it zooms it, as a title bar does. Called before the
-/// bar's items, so they take the pointer first.
+/// bar's items, so they take the pointer first. Never focused: the keyboard's first stop is
+/// Home.
 pub(crate) fn move_window(ui: &Ui, rect: Rect) {
     if !TITLE_BAR_IS_APP_BAR {
         return;
     }
-    let background = ui.interact(rect, ui.id().with("move_window"), Sense::click());
+    // `Sense::CLICK`, not `Sense::click()`, which is focusable too.
+    let background = ui.interact(rect, ui.id().with("move_window"), Sense::CLICK);
     if background.double_clicked() {
         let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
         ui.ctx()
@@ -56,8 +58,8 @@ pub(crate) fn move_window(ui: &Ui, rect: Rect) {
 pub(crate) fn border(ui: &Ui, rect: Rect) {
     ui.painter().hline(
         rect.x_range(),
-        rect.bottom() - 0.5,
-        Stroke::new(1.0, theme::APP_BAR_BORDER),
+        rect.bottom() - theme::BORDER_WIDTH / 2.0,
+        Stroke::new(theme::BORDER_WIDTH, theme::APP_BAR_BORDER),
     );
 }
 
@@ -96,7 +98,8 @@ pub(crate) fn button(
         if !ui.is_rect_visible(rect) {
             return response;
         }
-        // `.ab-btn:hover` comes after `.ab-btn.on`, so a hovered button is hovered's fill.
+        // `.ab-btn:hover:not(:disabled)` outweighs `.ab-btn.on` (a class and two
+        // pseudo-classes to two classes), so a hovered button takes hovered's fill.
         let (fill, color) = if !enabled {
             (None, theme::TEXT_DISABLED)
         } else if response.hovered() {
@@ -110,7 +113,13 @@ pub(crate) fn button(
             ui.painter()
                 .rect_filled(rect, theme::SMALL_CORNER_RADIUS, fill);
         }
-        focus_ring(ui, &response, rect, theme::SMALL_CORNER_RADIUS);
+        theme::focus_ring(
+            ui,
+            &response,
+            rect,
+            theme::SMALL_CORNER_RADIUS,
+            StrokeKind::Outside,
+        );
         let left = rect.center().x - content / 2.0;
         let icon_rect = Rect::from_min_size(
             Pos2::new(left, rect.center().y - ICON_SIZE / 2.0),
@@ -134,36 +143,41 @@ pub(crate) fn button(
 /// The separator between the bar's buttons and the documents' tabs (`.ab-sep`).
 pub(crate) fn separator(ui: &mut Ui) {
     let size = Vec2::new(
-        1.0 + 2.0 * theme::APP_BAR_SEPARATOR_MARGIN,
+        theme::BORDER_WIDTH + 2.0 * theme::APP_BAR_SEPARATOR_MARGIN,
         theme::APP_BAR_SEPARATOR_HEIGHT,
     );
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     ui.painter().vline(
         rect.center().x,
         rect.y_range(),
-        Stroke::new(1.0, theme::APP_BAR_SEPARATOR),
+        Stroke::new(theme::BORDER_WIDTH, theme::APP_BAR_SEPARATOR),
     );
 }
 
-/// `response` with a tooltip (`.tooltip`), on or off: `title`, the caps of Command and
-/// `key` after it if given, and `description` under it if given.
+/// `response` with a tooltip (`.tooltip`), on or off: `title`, the caps of `shortcut` after
+/// it if given, and `description` under it if given.
 pub(crate) fn tooltip(
     response: Response,
     title: &str,
-    key: Option<Key>,
+    shortcut: Option<KeyboardShortcut>,
     description: Option<&str>,
 ) -> Response {
-    let show = |ui: &mut Ui| tooltip_ui(ui, title, key, description);
+    let show = |ui: &mut Ui| tooltip_ui(ui, title, shortcut, description);
     response.on_hover_ui(show).on_disabled_hover_ui(show)
 }
 
-fn tooltip_ui(ui: &mut Ui, title: &str, key: Option<Key>, description: Option<&str>) {
+fn tooltip_ui(
+    ui: &mut Ui,
+    title: &str,
+    shortcut: Option<KeyboardShortcut>,
+    description: Option<&str>,
+) {
     ui.spacing_mut().item_spacing.y = theme::TOOLTIP_DESCRIPTION_GAP;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = theme::TOOLTIP_TITLE_GAP;
         ui.label(RichText::new(title).color(theme::TEXT_STRONG));
-        if let Some(key) = key {
-            let caps = crate::start::shortcut_caps(ui.ctx(), key);
+        if let Some(shortcut) = shortcut {
+            let caps = crate::start::caps(ui.ctx(), shortcut.modifiers, shortcut.logical_key);
             let width = crate::start::key_caps_width(ui, &caps);
             let (rect, _) =
                 ui.allocate_exact_size(Vec2::new(width, theme::KEY_CAP_HEIGHT), Sense::hover());
@@ -219,8 +233,9 @@ impl DocTabResponse {
 /// A document's tab (`.doc-tab`), the bar's height less its border, which the shown one's
 /// fill covers: its name, ending in an ellipsis past [`theme::DOC_TAB_MAX_WIDTH`]; an
 /// asterisk if it holds edits; and its close button, at its right, drawn while the tab is
-/// hovered or shown (`.x`'s `opacity`), though there, and clickable, always, as the
-/// prototype's is. A click on the tab up to its close button shows the document. Labelled
+/// hovered or shown (`.x`'s `opacity`), or either has the keyboard's focus, though there,
+/// and clickable, always, as the prototype's is. A click anywhere else on the tab shows
+/// the document. Labelled
 /// with its name, and the asterisk, and selected while shown; its close button labelled
 /// "Close" and its name.
 pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
@@ -229,7 +244,7 @@ pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
         ui.painter()
             .layout_no_wrap(" *".to_owned(), font.clone(), theme::DOC_TAB_DIRTY)
     });
-    let borders = if tab.first { 2.0 } else { 1.0 };
+    let borders = theme::BORDER_WIDTH * if tab.first { 2.0 } else { 1.0 };
     let fixed = borders
         + theme::DOC_TAB_PADDING_LEFT
         + dirty.as_ref().map_or(0.0, |dirty| dirty.size().x)
@@ -242,18 +257,21 @@ pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
     let name = ui.painter().layout_job(job);
     // A name cut short takes all its room, so the tab is its widest.
     let width = if name.elided { room } else { name.size().x };
-    let size = Vec2::new(fixed + width, theme::TOP_BAR_HEIGHT - 1.0);
+    let size = Vec2::new(fixed + width, theme::TOP_BAR_HEIGHT - theme::BORDER_WIDTH);
     let (rect, area) = ui.allocate_exact_size(size, Sense::hover());
     let close_rect = Rect::from_center_size(
         Pos2::new(
-            rect.right() - 1.0 - theme::DOC_TAB_PADDING_RIGHT - theme::DOC_TAB_CLOSE_SIZE / 2.0,
+            rect.right()
+                - theme::BORDER_WIDTH
+                - theme::DOC_TAB_PADDING_RIGHT
+                - theme::DOC_TAB_CLOSE_SIZE / 2.0,
             rect.center().y,
         ),
         Vec2::splat(theme::DOC_TAB_CLOSE_SIZE),
     );
-    // The tab's click is its name's side, up to the close button, which takes its own.
-    let body = Rect::from_min_max(rect.min, Pos2::new(close_rect.left(), rect.bottom()));
-    let response = ui.interact(body, area.id.with("show"), Sense::click());
+    // The whole tab shows its document but for its close button, which, added after it,
+    // takes its own clicks.
+    let response = ui.interact(rect, area.id.with("show"), Sense::click());
     let close = ui.interact(close_rect, area.id.with("close"), Sense::click());
     let label = if tab.unsaved {
         format!("{} *", tab.name)
@@ -261,6 +279,18 @@ pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
         tab.name.to_owned()
     };
     response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, tab.active, &label));
+    // Told to a screen reader (and a test) as its name's side, up to the close button, so
+    // the tab and its close button don't overlap and a click at the tab's centre is never
+    // the close button's.
+    let named = Rect::from_min_max(rect.min, Pos2::new(close_rect.left(), rect.bottom()));
+    ui.ctx().accesskit_node_builder(response.id, |node| {
+        node.set_bounds(egui::accesskit::Rect {
+            x0: named.min.x.into(),
+            y0: named.min.y.into(),
+            x1: named.max.x.into(),
+            y1: named.max.y.into(),
+        });
+    });
     let closing = format!("Close {}", tab.name);
     close.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &closing));
     if ui.is_rect_visible(rect) {
@@ -297,7 +327,10 @@ fn paint_tab(
     // `.doc-tab.active` comes after `:hover`, so the shown tab keeps its look hovered.
     let text = if tab.active {
         // Down over the bar's border (`.doc-tab.active::after`).
-        let fill = Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.bottom() + 1.0));
+        let fill = Rect::from_min_max(
+            rect.min,
+            Pos2::new(rect.right(), rect.bottom() + theme::BORDER_WIDTH),
+        );
         painter.rect_filled(fill, 0.0, theme::DOC_TAB_ACTIVE_BG);
         theme::DOC_TAB_ACTIVE_TEXT
     } else if hovered {
@@ -306,14 +339,22 @@ fn paint_tab(
     } else {
         theme::DOC_TAB_TEXT
     };
-    let border = Stroke::new(1.0, theme::DOC_TAB_BORDER);
-    painter.vline(rect.right() - 0.5, rect.y_range(), border);
+    let half = theme::BORDER_WIDTH / 2.0;
+    let border = Stroke::new(theme::BORDER_WIDTH, theme::DOC_TAB_BORDER);
+    painter.vline(rect.right() - half, rect.y_range(), border);
     let mut left = rect.left();
     if tab.first {
-        painter.vline(left + 0.5, rect.y_range(), border);
-        left += 1.0;
+        painter.vline(left + half, rect.y_range(), border);
+        left += theme::BORDER_WIDTH;
     }
-    focus_ring(ui, response, rect.shrink(1.0), 0);
+    // Inside its borders, where the strip's clip leaves it whole.
+    theme::focus_ring(
+        ui,
+        response,
+        rect.shrink(theme::BORDER_WIDTH),
+        0,
+        StrokeKind::Inside,
+    );
     let at = Pos2::new(
         left + theme::DOC_TAB_PADDING_LEFT,
         rect.center().y - name.size().y / 2.0,
@@ -324,7 +365,7 @@ fn paint_tab(
         let y = rect.center().y - dirty.size().y / 2.0;
         painter.galley(Pos2::new(after, y), dirty, theme::DOC_TAB_DIRTY);
     }
-    if !(hovered || tab.active) {
+    if !(hovered || tab.active || response.has_focus() || close.has_focus()) {
         return;
     }
     let icon = if close.hovered() {
@@ -337,7 +378,13 @@ fn paint_tab(
     } else {
         theme::DOC_TAB_CLOSE
     };
-    focus_ring(ui, close, close.rect, theme::DOC_TAB_CLOSE_CORNER_RADIUS);
+    theme::focus_ring(
+        ui,
+        close,
+        close.rect,
+        theme::DOC_TAB_CLOSE_CORNER_RADIUS,
+        StrokeKind::Inside,
+    );
     Icon::Close.image(IconSize::Small).tint(icon).paint_at(
         ui,
         Rect::from_center_size(close.rect.center(), Vec2::splat(ICON_SIZE)),
@@ -362,7 +409,7 @@ pub(crate) fn tab_strip<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
                 let clip = ui.clip_rect();
-                ui.set_clip_rect(clip.with_max_y(clip.max.y + 1.0));
+                ui.set_clip_rect(clip.with_max_y(clip.max.y + theme::BORDER_WIDTH));
                 add(ui)
             })
             .inner
@@ -370,27 +417,23 @@ pub(crate) fn tab_strip<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     .inner
 }
 
-/// The focus ring round `rect`, inside it, if `response` has the keyboard's focus.
-fn focus_ring(ui: &Ui, response: &Response, rect: Rect, corner_radius: u8) {
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            corner_radius,
-            Stroke::new(theme::FOCUS_WIDTH, theme::FOCUS),
-            StrokeKind::Inside,
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_inset_is_the_window_buttons_room_or_the_bars_padding() {
+    /// The room [`inset`] leaves, in a window full screen or not.
+    fn inset_in(full_screen: bool) -> f32 {
         let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input.viewports.insert(
+            egui::ViewportId::ROOT,
+            egui::ViewportInfo {
+                fullscreen: Some(full_screen),
+                ..Default::default()
+            },
+        );
         let mut room = 0.0;
-        let mut drawn = ctx.run_ui(Default::default(), |ui| {
+        let mut drawn = ctx.run_ui(input, |ui| {
             ui.horizontal(|ui| {
                 let before = ui.cursor().left();
                 inset(ui);
@@ -399,6 +442,11 @@ mod tests {
         });
         // Nothing here draws: the font atlas's upload is let go.
         drawn.textures_delta.clear();
+        room
+    }
+
+    #[test]
+    fn the_inset_is_the_window_buttons_room_or_the_bars_padding() {
         // `.traffic` (12 of padding, three 12 point lights 8 apart, and 14 of padding) and
         // the bar's 2 point gap after it, on macOS; elsewhere the bar's 8 of padding.
         let expected = if cfg!(target_os = "macos") {
@@ -406,6 +454,8 @@ mod tests {
         } else {
             8.0 + 2.0
         };
-        assert_eq!(room, expected);
+        assert_eq!(inset_in(false), expected);
+        // Full screen, macOS hides its window buttons: the bar's own padding everywhere.
+        assert_eq!(inset_in(true), 8.0 + 2.0);
     }
 }

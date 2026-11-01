@@ -11660,43 +11660,142 @@ fn the_app_bar_holds_home_file_save_undo_and_redo_then_the_tabs_as_the_prototype
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The texts the tooltip titled `title` draws in its title's row, after the title, left to
+/// right: its key caps.
+fn tooltip_caps(h: &AppHarness, title: &str) -> Vec<String> {
+    let row = h.get_by_role_and_label(Role::Label, title).rect();
+    let mut caps: Vec<(f32, String)> = painted(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) => {
+                let at = eframe::egui::Shape::Text(text.clone()).visual_bounding_rect();
+                (at.left() >= row.right() && row.y_range().contains(at.center().y))
+                    .then(|| (at.left(), text.galley.text().to_owned()))
+            }
+            _ => None,
+        })
+        .collect();
+    caps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    caps.into_iter().map(|(_, cap)| cap).collect()
+}
+
 #[test]
 fn save_undo_and_redo_name_their_shortcuts_in_their_tooltips() {
+    use eframe::egui::os::OperatingSystem;
     let f = fixture();
     let mut h = f.themed_with(&["example.silico"]);
-    // styles.css's `.tooltip`: the title, then the shortcut's key caps (`data-tipk`, `Mod`
-    // and the key, Mod as the platform egui reports writes it). Redo's is the app's Ctrl+Y (docs/ux/solidworks.md, §6), where the
-    // prototype's is Shift+Command+Z on macOS.
-    let command = if h.ctx.os() == eframe::egui::os::OperatingSystem::Mac {
-        "⌘"
-    } else {
-        "Ctrl"
-    };
-    let texts = |h: &AppHarness| -> Vec<String> {
-        painted(h)
-            .into_iter()
-            .filter_map(|shape| match shape {
-                eframe::egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
-                _ => None,
-            })
-            .collect()
-    };
-    for (button, key) in [("Save", "S"), ("Undo", "Z"), ("Redo", "Y")] {
-        pointer_away(&mut h);
-        assert!(!texts(&h).iter().any(|text| text == command), "{button}");
-        bar_button(&h, button).hover();
-        step_until(&mut h, "its tooltip", |h| {
-            h.query_by_role_and_label(Role::Label, button).is_some()
-        });
-        // Drawn from the frame after it's laid out (egui sizes a new popup unseen).
-        step(&mut h);
-        let shown = texts(&h);
-        assert!(
-            shown.iter().any(|text| text == command),
-            "{button}: {shown:?}"
-        );
-        assert!(shown.iter().any(|text| text == key), "{button}: {shown:?}");
+    // styles.css's `.tooltip`: the title, then the shortcut's key caps, app.js's `CMD`
+    // keys as its `KEYNAME` writes them: Mod is ⌘ on macOS and Ctrl elsewhere, Shift ⇧
+    // on macOS; Redo is Mod Shift Z on macOS and Mod Y elsewhere.
+    for (os, expected) in [
+        (
+            OperatingSystem::Windows,
+            [
+                ("Save", vec!["Ctrl", "S"]),
+                ("Undo", vec!["Ctrl", "Z"]),
+                ("Redo", vec!["Ctrl", "Y"]),
+            ],
+        ),
+        (
+            OperatingSystem::Mac,
+            [
+                ("Save", vec!["⌘", "S"]),
+                ("Undo", vec!["⌘", "Z"]),
+                ("Redo", vec!["⌘", "⇧", "Z"]),
+            ],
+        ),
+    ] {
+        h.ctx.set_os(os);
+        for (button, caps) in expected {
+            pointer_away(&mut h);
+            assert!(h.query_by_role_and_label(Role::Label, button).is_none());
+            bar_button(&h, button).hover();
+            step_until(&mut h, "its tooltip", |h| {
+                h.query_by_role_and_label(Role::Label, button).is_some()
+            });
+            // Drawn from the frame after it's laid out (egui sizes a new popup unseen).
+            step(&mut h);
+            assert_eq!(tooltip_caps(&h, button), caps, "{os:?} {button}");
+        }
     }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn tab_first_focuses_home() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    pointer_away(&mut h);
+    h.key_press(eframe::egui::Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    assert!(home_button(&h).accesskit_node().is_focused());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_home_save_undo_and_redo_are_off_and_on_again_back_on_the_document() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    // Two edits, the second undone: something to save, to undo, and to redo. (Drawn in
+    // the theme's fonts, the field's cursor starts at the name's end.)
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the first edit", |h| {
+        h.state().tabs()[0].edits.idle() && offered(h, "Undo")
+    });
+    select(&mut h, "Hole");
+    type_name(&mut h, "y");
+    step_until(&mut h, "the second edit", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "Holey")
+    });
+    step_until(&mut h, "Undo offered", |h| offered(h, "Undo"));
+    bar_button(&h, "Undo").click();
+    step_until(&mut h, "the second undone", |h| {
+        shows(h, "Timeline", "Hole") && offered(h, "Redo")
+    });
+    step_until(&mut h, "all three offered", |h| {
+        ["Save", "Undo", "Redo"].iter().all(|word| offered(h, word))
+    });
+    // Home: the document hidden, none of them acts on it.
+    home_button(&h).click();
+    step(&mut h);
+    step(&mut h);
+    assert!(start_shown(&h));
+    for word in ["Save", "Undo", "Redo"] {
+        assert!(!offered(&h, word), "{word}");
+    }
+    // Its tab: each offered again.
+    bar_button(&h, "example.silico *").click();
+    step(&mut h);
+    step(&mut h);
+    for word in ["Save", "Undo", "Redo"] {
+        assert!(offered(&h, word), "{word}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn shift_command_z_redoes_and_command_z_undoes() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the edit", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].undoable()
+    });
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step_until(&mut h, "undone", |h| {
+        shows(h, "Timeline", "Pin") && h.state().tabs()[0].redoable()
+    });
+    // DESIGN.md, *Keyboard*: ⇧⌘Z is Redo, beside Ctrl+Y.
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    step_until(&mut h, "redone", |h| {
+        shows(h, "Timeline", "xPin") && !h.state().tabs()[0].redoable()
+    });
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -11734,8 +11833,56 @@ fn a_tabs_close_button_is_drawn_while_the_tab_is_hovered_or_shown() {
     assert!(start_shown(&h));
     assert!(!close_drawn(&h, "Close other.silico"));
     assert!(!close_drawn(&h, "Close example.silico"));
+    // The tab focused by the keyboard: its close button drawn, as hovered.
+    bar_button(&h, "example.silico").focus();
+    step(&mut h);
+    step(&mut h);
+    assert!(close_drawn(&h, "Close example.silico"));
+    assert!(!close_drawn(&h, "Close other.silico"));
     // Undrawn, it's still there and closes its tab, as `.x` at `opacity: 0` does.
     bar_button(&h, "Close example.silico").click_accesskit();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().len() == 1);
+    assert_eq!(h.state().tabs()[0].name(), "other.silico");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A left click at `at`.
+fn click_at(h: &mut AppHarness, at: eframe::egui::Pos2) {
+    h.hover_at(at);
+    for pressed in [true, false] {
+        h.event(eframe::egui::Event::PointerButton {
+            pos: at,
+            button: eframe::egui::PointerButton::Primary,
+            pressed,
+            modifiers: eframe::egui::Modifiers::NONE,
+        });
+    }
+    step(h);
+    step(h);
+}
+
+#[test]
+fn a_click_beside_a_tabs_close_button_shows_its_document_and_on_it_closes_nothing_else() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico", "other.silico"]);
+    let shown = |h: &AppHarness, name: &str| toggled(&bar_button(h, name)) == Some(true);
+    // `.doc-tab` is the whole tab: right of its close button, in its 6 of padding, and
+    // above and below the button, each shows the document.
+    let x = bar_button(&h, "Close example.silico").rect();
+    let tab = bar_button(&h, "example.silico").rect();
+    for at in [
+        eframe::egui::pos2(x.right() + 3.0, x.center().y),
+        eframe::egui::pos2(x.center().x, (tab.top() + x.top()) / 2.0),
+        eframe::egui::pos2(x.center().x, (x.bottom() + tab.bottom()) / 2.0),
+    ] {
+        bar_button(&h, "other.silico").click();
+        step_until(&mut h, "other shown", |h| shown(h, "other.silico"));
+        click_at(&mut h, at);
+        assert!(shown(&h, "example.silico"), "{at:?}");
+        assert_eq!(h.state().tabs().len(), 2, "{at:?}");
+    }
+    // The close button itself closes it.
+    click_at(&mut h, x.center());
     step_until(&mut h, "the tab closed", |h| h.state().tabs().len() == 1);
     assert_eq!(h.state().tabs()[0].name(), "other.silico");
     assert_eq!(never_waits::waits(), 0);
