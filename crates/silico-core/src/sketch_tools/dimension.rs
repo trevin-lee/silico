@@ -972,9 +972,12 @@ fn points(
 }
 
 /// Whether the pointer `at` is across `line` from `off`, a signed distance from it (to its
-/// left, facing along it, positive).
+/// left, facing along it, positive): their signs compared, never their product, which
+/// underflows to 0 for a pointer a subnormal distance from the line and a point a
+/// nanometre from it.
 fn across(line_at: Xy, along: Xy, off: f64, at: Xy) -> bool {
-    cross(along, sub(at, line_at)) * off < 0.0
+    let side = cross(along, sub(at, line_at));
+    (side < 0.0 && off > 0.0) || (side > 0.0 && off < 0.0)
 }
 
 /// A point and a line: `point_line_distance`, the side the point is on as drawn; refused

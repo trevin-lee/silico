@@ -409,3 +409,16 @@ crates/silico-core/src/sketch_tools/geometry.rs | to_segment | replace > with >=
 crates/silico-core/src/sketch_tools/infer.rs | tangent_arc | replace > with >= | #335
 crates/silico-core/src/sketch_tools/infer.rs | counter_clockwise | replace < with <= | #335
 crates/silico-core/src/sketch_tools/mod.rs | SketchTool::handle | replace > with >= | #335
+# Smart Dimension (#345). `point_line`'s side, `off > 0.0`: an `off` of 0 (or −0) rounds to
+# 0 nm, which is refused as no distance before the side is read. `inside`'s `over > 0.0`: `over`
+# is checked `!= 0.0` first, so it's never 0 there. `inside`'s `under > 0.0`: `under` is the two
+# lines' cross, at least `PARALLEL` (1e-9) either way wherever `inside` is asked (parallel lines
+# take SD4's path first), so never 0. `lines`' `cross(ray_a, ray_b) > 0.0`: each ray is its
+# line's direction or its negation, so that cross is ± the lines' cross, exactly, never 0 for
+# lines that aren't parallel. `step`'s tolerance, `context.tolerance > 0.0`: at 0 either side
+# gives 0 (or −0, which every comparison takes as 0), as #335's `SketchTool::handle`.
+crates/silico-core/src/sketch_tools/dimension.rs | point_line | replace > with >= | #345
+crates/silico-core/src/sketch_tools/dimension.rs | inside | replace > with >= | #345
+crates/silico-core/src/sketch_tools/dimension.rs | inside | replace > with >= | #345
+crates/silico-core/src/sketch_tools/dimension.rs | lines | replace > with >= | #345
+crates/silico-core/src/sketch_tools/dimension.rs | SmartDimension::step | replace > with >= | #345

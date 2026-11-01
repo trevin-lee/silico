@@ -2529,6 +2529,10 @@ fn a_point_on_a_centrelines_left_is_measured_from_its_left() {
     let mut d = Dim::new(centreline(-12.0));
     d.click(-12.0, 5.0).click(0.0, 20.0).click(20.0, 5.0);
     assert_eq!(d.messages, vec![Message::AcrossCentreline]);
+    // On the centreline itself, (0, 5): p's side, not across.
+    d.to(0.0, 5.0);
+    assert_eq!(d.tool.preview().unavailable, None);
+    assert_eq!(d.shown().unwrap().type_name(), "point_line_distance");
     d.click(-20.0, 5.0).escape();
     assert_eq!(
         d.placed(),
@@ -2591,6 +2595,54 @@ fn a_parallel_line_across_a_centreline_is_refused_as_a_point_is() {
             driving: true
         }
     );
+    // The centreline picked first, L second: SD4, L's `from` (12, 0) to the centreline
+    // (facing +y), 12 to its right; across from L, (-20, 5), refused alike.
+    let s = with_line(centreline(50.0), "n0000002", [12.0, 0.0], [12.0, 30.0]);
+    let mut d = Dim::new(s);
+    d.click(0.0, 20.0).click(12.0, 15.0).click(-20.0, 5.0);
+    assert_eq!(d.messages, vec![Message::AcrossCentreline]);
+    d.click(20.0, 5.0).escape();
+    assert_eq!(
+        d.placed(),
+        Form::PointLineDistance {
+            point: r("f0000002"),
+            line: r("n0000001"),
+            value: mm("12"),
+            side: LineSide::Right,
+            driving: true
+        }
+    );
+}
+
+#[test]
+fn a_pointer_a_subnormal_distance_across_a_centreline_is_across() {
+    // p a nanometre left of the y axis, (-1e-6, 5): 0.000001 to its left. The pointer at
+    // (1e-320, 5), a subnormal distance to its right, is across: refused. (The product of the
+    // two sides, -1e-326, underflows to -0, which isn't below 0: the sides are compared by
+    // sign.) At (-1e-320, 5), on p's side, it's placed.
+    let mut d = Dim::new(with_point(empty(), "p0000001", [-1e-6, 5.0]));
+    d.click(-1e-6, 5.0).click(0.2, 30.0).click(1e-320, 5.0);
+    assert_eq!(d.messages, vec![Message::AcrossCentreline]);
+    assert_eq!(d.modify(), None);
+    d.click(-1e-320, 5.0).escape();
+    assert_eq!(
+        d.placed(),
+        Form::PointLineDistance {
+            point: r("p0000001"),
+            line: Reference::YAxis,
+            value: mm("0.000001"),
+            side: LineSide::Left,
+            driving: true
+        }
+    );
+    // A point a kilometre left of the y axis, (-1000000, 5), and the pointer at (1e-320, 5):
+    // across. (Their quotient, -1e-326, underflows to -0 too.)
+    let mut d = Dim::new(with_point(empty(), "p0000001", [-1_000_000.0, 5.0]));
+    d.click(-1_000_000.0, 5.0)
+        .click(0.2, 30.0)
+        .click(1e-320, 5.0);
+    assert_eq!(d.messages, vec![Message::AcrossCentreline]);
+    assert_eq!(d.modify(), None);
 }
 
 #[test]
@@ -2779,6 +2831,21 @@ fn level_is_within_a_tenth_of_a_micrometre_not_at_it() {
             .click(60.0, 50.0)
             .escape();
         assert_eq!(d.placed().type_name(), kind, "{dy}");
+    }
+    // And plumb: p (0, 10) and q (dx, 40), off the corner (60, 50). dx = 1e-7 exactly: not
+    // plumb, `distance`; 0.99e-7: plumb, `distance_y`.
+    for (dx, kind) in [(0.99e-7, "distance_y"), (1e-7, "distance")] {
+        let s = with_point(
+            with_point(empty(), "p0000001", [0.0, 10.0]),
+            "p0000002",
+            [dx, 40.0],
+        );
+        let mut d = Dim::new(s);
+        d.click(0.0, 10.0)
+            .click(0.0, 40.0)
+            .click(60.0, 50.0)
+            .escape();
+        assert_eq!(d.placed().type_name(), kind, "{dx}");
     }
 }
 
@@ -3042,6 +3109,69 @@ fn with_an_edit_between_its_read_and_its_add_a_dimension_is_judged_by_its_own_st
     );
     assert!(offer(&theirs, adjacent.revision, &adjacent).is_some());
     assert_eq!(offer(&theirs, three, &between), None);
+}
+
+// --- #345's mutants -----------------------------------------------------------------------
+
+#[test]
+fn lines_crossing_by_exactly_freecads_bound_are_not_parallel() {
+    // A (0, 5)-(D, 5), D = 1e-9 · 2^30, direction (D, 0); B (20, 1)-(30, 1 + 2^-30), direction
+    // (10, 2^-30): each exact (2^30 a power of two, 1 + 2^-30 a double). A × B = D · 2^-30, the
+    // double 1e-9 exactly, FreeCAD's `Precision::Intersection()` itself: parallel only below
+    // it, so an angle, not SD4's distance. (B is a unit off the x axis, so a pick finds it.)
+    let turn = 1_073_741_824.0;
+    let s = with_line(
+        with_line(empty(), "n000000a", [0.0, 5.0], [1e-9 * turn, 5.0]),
+        "n000000b",
+        [20.0, 1.0],
+        [30.0, 1.0 + 1.0 / turn],
+    );
+    // A picked 0.3 off its middle, more than the tolerance from both its ends and the y axis.
+    let mut d = Dim::new(s);
+    d.click(0.537, 5.3)
+        .click(25.0, 1.0)
+        .click(25.0, 3.0)
+        .escape();
+    assert_eq!(d.placed().type_name(), "angle");
+}
+
+#[test]
+fn a_pointer_on_the_first_along_ray_is_between() {
+    // The corner: A's ray +x, B's 45°. The pointer at (25, 10), on A's ray, 0° round from
+    // it: between, `{A, B, 45}`, not 360° round, beside.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0)
+        .click(15.0, 15.0)
+        .click(25.0, 10.0)
+        .escape();
+    assert_eq!(d.placed(), angle("n000000a", "n000000b", false, "45"));
+}
+
+#[test]
+fn a_refused_number_of_twenty_characters_is_said_whole() {
+    // 0.000000000000000001, "0." and 18 digits: 20 characters, said whole, with no "…".
+    let mut d = boxed();
+    d.typed("0.000000000000000001").enter();
+    let Message::ValueRefused(error) = &d.messages[0] else {
+        panic!("{:?}", d.messages);
+    };
+    assert_eq!(
+        error.message(),
+        "0.000000000000000001 has more than 6 decimals"
+    );
+}
+
+#[test]
+fn the_preview_has_the_pointer_and_hovers_nothing_once_two_are_picked() {
+    // p and q picked; the pointer over a third point r (25, 45): the preview is there, and
+    // shows no hover, since a click there places rather than picks.
+    let mut d = Dim::new(with_point(two_points(), "p0000003", [25.0, 45.0]));
+    d.to(10.0, 10.0);
+    assert_eq!(d.tool.preview().pointer, Some([10.0, 10.0]));
+    assert_eq!(d.tool.preview().hover, Some(r("p0000001")));
+    d.click(10.0, 10.0).click(40.0, 30.0).to(25.0, 45.0);
+    assert_eq!(d.tool.preview().pointer, Some([25.0, 45.0]));
+    assert_eq!(d.tool.preview().hover, None);
 }
 
 // --- SD7: the offer ------------------------------------------------------------------
