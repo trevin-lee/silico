@@ -156,11 +156,12 @@ impl Gen {
             }
             k @ 7..=10 => {
                 let (a, b) = (self.pick(&[1]), self.pick(&[1]));
-                let angle = self.rng.range(-3.5, 3.5);
+                // An angle's b reversed half the time, read from the bit of the value's draw
+                // the value doesn't use, so every draw is as it was before `reversed` and a
+                // saved seed builds the sketch it built.
+                let (angle, odd) = self.rng.range_and_bit(-3.5, 3.5);
                 let value = self.b.fixed(angle);
-                // An angle's b reversed half the time (drawn only for an angle, so the other
-                // forms' draws are as they were; this generator feeds no committed reference).
-                let reversed = k == 10 && self.rng.below(2) == 0;
+                let reversed = k == 10 && odd;
                 a.zip(b).map(|(a, b)| match k {
                     7 => SolverConstraint::Parallel { tag, a, b },
                     8 => SolverConstraint::Perpendicular { tag, a, b },
