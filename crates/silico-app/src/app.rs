@@ -1191,7 +1191,8 @@ impl<P: Clients + 'static> App<P> {
             toolbar::show(
                 ui,
                 &toolbar::Shown {
-                    // Sketch mode (#351) wires these: `tab.in_sketch()`, and `Some(tab.can_sketch())`.
+                    // Sketch mode (#351) wires these: `tab.in_sketch() -> bool`, and
+                    // `Some(tab.can_sketch())` (`tab.can_sketch() -> bool`).
                     in_sketch: false,
                     create_sketch: None,
                     can_open: &can_open,
@@ -1208,7 +1209,9 @@ impl<P: Clients + 'static> App<P> {
                 *started = true;
             }
             Some(toolbar::Act::ClearSelection) => tab.selected = None,
-            // Sketch mode (#351) wires these: `tab.create_sketch(plane)`, and its finish.
+            // Sketch mode (#351) wires these: `CreateSketch(plane)` to
+            // `tab.create_sketch(&self.sessions, plane)` and `*started = true`, and
+            // `FinishSketch` to `tab.finish_sketch(&self.sessions, true)` (false is Cancel).
             Some(toolbar::Act::CreateSketch(_) | toolbar::Act::FinishSketch) | None => {}
         }
     }

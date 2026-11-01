@@ -125,7 +125,9 @@ const NOT_BUILT: &str = "Not built yet";
 const CREATE_SKETCH: Command = command(
     "Create Sketch",
     Icon::Sketch,
-    Some("Pick an origin plane or a flat face, then sketch on it"),
+    // The prototype's "Pick an origin plane or a flat face, then sketch on it", once faces
+    // are picked (M5.7).
+    Some("Sketches on an origin plane"),
     Does::CreateSketch,
 );
 const PAD: Command = command(
@@ -250,31 +252,20 @@ enum Entry {
     ClearSelection,
 }
 
-/// A panel: its label, its row of buttons, and its drop-down.
+/// A panel: its label, its row of buttons, and its drop-down: its own entries, or, with
+/// none, its row's commands.
 struct Panel {
     label: &'static str,
     row: &'static [Command],
-    menu: &'static [Entry],
+    menu: Option<&'static [Entry]>,
 }
 
-/// SOLID's panels (app.js:394, interact.js:170). CREATE's row is the prototype's, then the
-/// primitives, which the prototype keeps in its drop-down alone.
+/// SOLID's panels (app.js:394, interact.js:170): the primitives in CREATE's drop-down alone.
 const SOLID: &[Panel] = &[
     Panel {
         label: "CREATE",
-        row: &[
-            CREATE_SKETCH,
-            PAD,
-            POCKET,
-            REVOLVE,
-            GROOVE,
-            BOX,
-            CYLINDER,
-            SPHERE,
-            CONE,
-            TORUS,
-        ],
-        menu: &[
+        row: &[CREATE_SKETCH, PAD, POCKET, REVOLVE, GROOVE],
+        menu: Some(&[
             Entry::Command(CREATE_SKETCH),
             Entry::Separator,
             Entry::Command(PAD),
@@ -288,12 +279,12 @@ const SOLID: &[Panel] = &[
             Entry::Command(SPHERE),
             Entry::Command(CONE),
             Entry::Command(TORUS),
-        ],
+        ]),
     },
     Panel {
         label: "MODIFY",
         row: &[FILLET, CHAMFER, UNION, SUBTRACT, INTERSECT],
-        menu: &[
+        menu: Some(&[
             Entry::Command(FILLET),
             Entry::Command(CHAMFER),
             Entry::Separator,
@@ -301,17 +292,17 @@ const SOLID: &[Panel] = &[
             Entry::Command(UNION),
             Entry::Command(SUBTRACT),
             Entry::Command(INTERSECT),
-        ],
+        ]),
     },
     Panel {
         label: "INSPECT",
         row: &[MEASURE],
-        menu: &[Entry::Command(MEASURE)],
+        menu: None,
     },
     Panel {
         label: "SELECT",
         row: &[FACES, EDGES, VERTICES],
-        menu: &[
+        menu: Some(&[
             Entry::Heading("SELECTION FILTERS"),
             Entry::Command(FACES),
             Entry::Command(EDGES),
@@ -319,7 +310,7 @@ const SOLID: &[Panel] = &[
             Entry::Separator,
             Entry::AllFilters,
             Entry::ClearSelection,
-        ],
+        ]),
     },
 ];
 
@@ -328,45 +319,22 @@ const SKETCH: &[Panel] = &[
     Panel {
         label: "CREATE",
         row: &[LINE, RECTANGLE, CIRCLE, ARC, POINT, CONSTRUCTION],
-        menu: &[
-            Entry::Command(LINE),
-            Entry::Command(RECTANGLE),
-            Entry::Command(CIRCLE),
-            Entry::Command(ARC),
-            Entry::Command(POINT),
-            Entry::Command(CONSTRUCTION),
-        ],
+        menu: None,
     },
     Panel {
         label: "MODIFY",
         row: &[TRIM, EXTEND, SPLIT],
-        menu: &[
-            Entry::Command(TRIM),
-            Entry::Command(EXTEND),
-            Entry::Command(SPLIT),
-        ],
+        menu: None,
     },
     Panel {
         label: "CONSTRAINTS",
         row: &CONSTRAINTS,
-        menu: &[
-            Entry::Command(CONSTRAINTS[0]),
-            Entry::Command(CONSTRAINTS[1]),
-            Entry::Command(CONSTRAINTS[2]),
-            Entry::Command(CONSTRAINTS[3]),
-            Entry::Command(CONSTRAINTS[4]),
-            Entry::Command(CONSTRAINTS[5]),
-            Entry::Command(CONSTRAINTS[6]),
-            Entry::Command(CONSTRAINTS[7]),
-            Entry::Command(CONSTRAINTS[8]),
-            Entry::Command(CONSTRAINTS[9]),
-            Entry::Command(CONSTRAINTS[10]),
-        ],
+        menu: None,
     },
     Panel {
         label: "INSPECT",
         row: &[MEASURE],
-        menu: &[Entry::Command(MEASURE)],
+        menu: None,
     },
 ];
 
@@ -458,7 +426,7 @@ fn capitals(ui: &Ui, text: &str, size: f32, line: Option<f32>) -> Arc<Galley> {
         text.to_owned(),
         egui::TextFormat {
             font_id: FontId::proportional(size),
-            extra_letter_spacing: theme::TOOLBAR_LETTER_SPACING,
+            extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
             line_height: line,
             color: theme::TEXT_DEFAULT,
             ..Default::default()
@@ -581,21 +549,24 @@ fn panel(ui: &mut Ui, panel: &Panel, last: bool, shown: &Shown<'_>, act: &mut Op
             + theme::TOOLBAR_LABEL_ARROW_SIZE,
         padding.sum().y + theme::TOOLBAR_LABEL_LINE_HEIGHT,
     );
-    let width = row_width.max(label_size.x) + 2.0 * theme::TOOLBAR_PANEL_PADDING_SIDE;
+    let inside = row_width.max(label_size.x) + 2.0 * theme::TOOLBAR_PANEL_PADDING_SIDE;
+    // `border-right: 1px` (`box-sizing: border-box`): a column of its own after the padding.
+    let border = if last { 0.0 } else { 1.0 };
     let rect = Rect::from_min_size(
         ui.cursor().min,
-        Vec2::new(width, theme::TOOLBAR_PANELS_HEIGHT),
+        Vec2::new(inside + border, theme::TOOLBAR_PANELS_HEIGHT),
     );
+    let centre = rect.left() + inside / 2.0;
     let row = Rect::from_center_size(
         Pos2::new(
-            rect.center().x,
+            centre,
             rect.top() + theme::TOOLBAR_PANEL_PADDING_TOP + theme::TOOLBAR_BUTTON_SIZE / 2.0,
         ),
         Vec2::new(row_width, theme::TOOLBAR_BUTTON_SIZE),
     );
     let label_rect = Rect::from_center_size(
         Pos2::new(
-            rect.center().x,
+            centre,
             row.bottom() + theme::TOOLBAR_LABEL_MARGIN_TOP + label_size.y / 2.0,
         ),
         label_size,
@@ -619,14 +590,21 @@ fn panel(ui: &mut Ui, panel: &Panel, last: bool, shown: &Shown<'_>, act: &mut Op
             drop_down_label(ui, panel.label, label)
         });
         bar::menu(&opener, |ui| {
-            menu_node(ui, panel.label, |ui| {
-                for entry in panel.menu {
-                    menu_entry(ui, entry, shown, act);
+            menu_node(ui, panel.label, |ui| match panel.menu {
+                Some(entries) => {
+                    for entry in entries {
+                        menu_entry(ui, entry, shown, act);
+                    }
+                }
+                None => {
+                    for command in panel.row {
+                        menu_entry(ui, &Entry::Command(*command), shown, act);
+                    }
                 }
             });
         });
     });
-    if !last {
+    if border > 0.0 {
         ui.painter().vline(
             rect.right() - 0.5,
             rect.y_range(),
@@ -750,7 +728,7 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                 RichText::new(*text)
                     .size(theme::TOOLBAR_LABEL_SIZE)
                     .color(theme::TOOLBAR_LABEL_TEXT)
-                    .extra_letter_spacing(theme::TOOLBAR_LETTER_SPACING),
+                    .extra_letter_spacing(theme::CAPITALS_LETTER_SPACING),
             );
         }
         Entry::AllFilters => {
@@ -775,8 +753,8 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                                 .ui(ui, |ui| menu_node(ui, command.label, |ui| planes(ui, act)))
                         })
                         .inner;
-                    if !command.built(shown) {
-                        button.on_disabled_hover_text(NOT_BUILT);
+                    if let (false, Some(said)) = (command.built(shown), command.said(shown)) {
+                        button.on_disabled_hover_text(said);
                     }
                 }
                 Does::Dialog(kind) => {
@@ -786,8 +764,10 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                     }
                 }
                 Does::NotBuilt => {
-                    ui.add_enabled(false, item)
-                        .on_disabled_hover_text(NOT_BUILT);
+                    let item = ui.add_enabled(false, item);
+                    if let Some(said) = command.said(shown) {
+                        item.on_disabled_hover_text(said);
+                    }
                 }
             }
         }
@@ -872,21 +852,28 @@ mod tests {
     use super::*;
 
     /// A dialog's command is labelled with its kind's title, which the dialog's heading
-    /// and the tests find it by; every kind is in CREATE's row once, and in its drop-down.
+    /// and the tests find it by; every kind is in CREATE's drop-down once, and the sweeps
+    /// in its row too (app.js:394), the primitives not.
     #[test]
-    fn every_dialog_is_in_creates_row_and_drop_down_under_its_title() {
+    fn every_dialog_is_in_creates_drop_down_under_its_title_and_the_sweeps_in_its_row() {
         let create = &SOLID[0];
+        let menu = create.menu.unwrap_or_default();
         for kind in Kind::ALL {
-            let in_row: Vec<_> = create
+            let in_menu: Vec<_> = menu
+                .iter()
+                .filter_map(|entry| match entry {
+                    Entry::Command(command) if command.does == Does::Dialog(kind) => Some(command),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(in_menu.len(), 1, "{kind:?}");
+            assert_eq!(in_menu[0].label, kind.title());
+            let in_row = create
                 .row
                 .iter()
                 .filter(|command| command.does == Does::Dialog(kind))
-                .collect();
-            assert_eq!(in_row.len(), 1, "{kind:?}");
-            assert_eq!(in_row[0].label, kind.title());
-            assert!(create.menu.iter().any(
-                |entry| matches!(entry, Entry::Command(command) if command.does == Does::Dialog(kind))
-            ));
+                .count();
+            assert_eq!(in_row, usize::from(kind.sweeps()), "{kind:?}");
         }
     }
 }

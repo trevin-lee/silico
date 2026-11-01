@@ -613,9 +613,6 @@ pub const TOOLBAR_BORDER: Color32 = PANEL_BORDER;
 /// Gray.200).
 pub const TOOLBAR_DIVIDER: Color32 = GRAY_200;
 
-/// The letter spacing of the toolbar's capitals: its workspace, tabs, and panels' labels.
-pub const TOOLBAR_LETTER_SPACING: f32 = 0.5;
-
 /// The tabs' row (`.tb-tabs`): its padding at its left, and the gap between its items.
 pub const TOOLBAR_TABS_PADDING: f32 = 8.0;
 pub const TOOLBAR_TABS_GAP: f32 = 2.0;
@@ -759,8 +756,7 @@ pub const START_NOTE_PADDING: f32 = 16.0;
 pub const START_NOTE_LINE_HEIGHT: f32 = 17.0;
 pub const START_COPY_GAP: f32 = 10.0;
 
-/// A section header's (RECENT) extra space between letters, and the space below it.
-pub const START_HEADER_LETTER_SPACING: f32 = 0.5;
+/// The space below a section header (RECENT).
 pub const START_HEADER_GAP: f32 = 8.0;
 
 /// A recent document's row: its height, its padding left and right, the gap between its
@@ -786,6 +782,10 @@ pub const BODY_SIZE: f32 = 12.0;
 pub const BODY_LINE_HEIGHT: f32 = 16.0;
 /// Section headers, uppercase, and small text.
 pub const HEADER_SIZE: f32 = 11.0;
+/// The extra space between letters set in capitals (`text-transform: uppercase;
+/// letter-spacing: .5px`): the start page's section headers, and the toolbar's workspace,
+/// tabs, and panels' labels and drop-downs' headings.
+pub const CAPITALS_LETTER_SPACING: f32 = 0.5;
 /// Titles.
 pub const TITLE_SIZE: f32 = 13.0;
 /// IDs and element names, in [`MONOSPACE_FONT`].
@@ -1331,11 +1331,11 @@ mod tests {
         assert_eq!(TOOLBAR_WORKSPACE_PADDING_BOTTOM, 5.0);
         assert_eq!(TOOLBAR_WORKSPACE_MARGIN, 6.0);
         // `.tb-tab`: `padding: 0 10px; height: 22px`, `--r-sm` at its top; `letter-spacing:
-        // .5px` there, on `.tb-ws`, and on `.tb-label`.
+        // .5px` there, on `.tb-ws`, `.tb-label`, `.menu .mh`, and `.st-h`.
         assert_eq!(TOOLBAR_TAB_HEIGHT, 22.0);
         assert_eq!(TOOLBAR_TAB_PADDING, 10.0);
         assert_eq!(TOOLBAR_TAB_CORNER_RADIUS, 4);
-        assert_eq!(TOOLBAR_LETTER_SPACING, 0.5);
+        assert_eq!(CAPITALS_LETTER_SPACING, 0.5);
         // `.tb-panels`: `padding: 0 6px`; `.tb-panel`: `padding: 4px 6px 0`; `.tb-row`:
         // `gap: 1px`.
         assert_eq!(TOOLBAR_PANELS_PADDING, 6.0);
