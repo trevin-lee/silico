@@ -7,6 +7,7 @@
 
 use super::close;
 use super::imports;
+use super::planes;
 use crate::wait::WAIT;
 
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -230,9 +231,15 @@ fn bullseye_cases() -> Vec<Case> {
     ]
 }
 
-/// The box around the sketch's points `low` to `high`, placed on `plane`.
+/// The box around the sketch's points `low` to `high`, placed on `plane`, whose axes are
+/// model space's (one either way along each): its two corners placed, each coordinate's
+/// least and greatest.
 fn placed_box(plane: SketchPlane, low: [f64; 2], high: [f64; 2]) -> [[f64; 3]; 2] {
-    [plane.place(low), plane.place(high)]
+    let (a, b) = (plane.place(low), plane.place(high));
+    [
+        std::array::from_fn(|k| a[k].min(b[k])),
+        std::array::from_fn(|k| a[k].max(b[k])),
+    ]
 }
 
 /// Every normal of a fine mesh of `built`'s faces is `plane`'s.
@@ -254,7 +261,7 @@ fn assert_faces_face(what: &str, built: &Built, plane: SketchPlane) {
 #[test]
 fn freecads_bullseye_cases_have_their_areas_on_every_plane_facing_its_normal() {
     for (what, regions, area, (faces, edges, vertices)) in bullseye_cases() {
-        for plane in SketchPlane::ALL {
+        for plane in planes::every() {
             let built = make_faces(&on(plane, regions.clone())).unwrap();
             let s = summarize(&built.shape).unwrap();
             assert_close(&format!("{what} on {plane:?}"), s.area, area, 1e-9);
@@ -263,7 +270,18 @@ fn freecads_bullseye_cases_have_their_areas_on_every_plane_facing_its_normal() {
                 (faces, edges, vertices),
                 "{what} on {plane:?}"
             );
-            assert_eq!(s.volume, 0.0, "{what}");
+            // Faces enclose nothing: OCCT's volume of them is 0 exactly on a plane whose axes
+            // are model space's, and 0 to rounding on the tilted frame, whose points are
+            // placed to rounding (−4.5e-16 for the 4 × 3 rectangle's 12 mm²).
+            if planes::square().contains(&plane) {
+                assert_eq!(s.volume, 0.0, "{what} on {plane:?}");
+            } else {
+                assert!(
+                    s.volume.abs() <= 1e-12 * area,
+                    "{what} on {plane:?}: {}",
+                    s.volume
+                );
+            }
             assert!(s.valid, "{what} on {plane:?}");
             assert_faces_face(what, &built, plane);
         }
@@ -273,7 +291,8 @@ fn freecads_bullseye_cases_have_their_areas_on_every_plane_facing_its_normal() {
 #[test]
 fn the_faces_lie_on_the_plane_where_the_sketch_puts_them() {
     // The rectangle with a hole, and the slot (its arcs reach x = -1 and x = 5), boxed
-    // where each plane puts the sketch's x and y.
+    // where each plane puts the sketch's x and y: each origin plane, and the reversed top,
+    // whose x runs along −X from z = 7.
     let cases = [
         (
             region(
@@ -286,7 +305,7 @@ fn the_faces_lie_on_the_plane_where_the_sketch_puts_them() {
         (region(slot(), vec![]), [-1.0, -1.0], [5.0, 1.0]),
     ];
     for (r, low, high) in cases {
-        for plane in SketchPlane::ALL {
+        for plane in planes::square() {
             let built = make_faces(&on(plane, vec![r.clone()])).unwrap();
             let bounds = summarize(&built.shape).unwrap().bounds.unwrap();
             let want = placed_box(plane, low, high);
@@ -331,7 +350,7 @@ fn each_curve_is_kept_as_the_edge_where_it_is_and_each_point_as_its_vertex() {
         region(vec![circle([20.0, 0.0], 2.0)], vec![]),
         region(moved(&slot(), 30.0), vec![]),
     ];
-    for plane in SketchPlane::ALL {
+    for plane in planes::every() {
         let sent = on(plane, regions.clone());
         let built = make_faces(&sent).unwrap();
         let h = &built.history;

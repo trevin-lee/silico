@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::primitive::{InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, format_number};
 use crate::sketch::MAX_SKETCH_GEOMETRY;
+use crate::sweep::{UNIT_SLACK, check_unit};
+use crate::vec3;
 
 /// The most curves a request may have, over all its loops: a sketch's most pieces of
 /// geometry.
@@ -22,10 +24,12 @@ pub const MAX_FACE_CURVES: usize = MAX_SKETCH_GEOMETRY;
 /// start's direction, from -π to π, and the end's, at most a turn from it.
 pub const MAX_ARC_ANGLE: f64 = 2.0 * TAU;
 
-/// The plane a sketch lies on (D6, docs/design/m3.2-sketch-format.md): FreeCAD's origin
-/// planes with their orientation. Each axis is a unit axis of model space, so a sketch's
-/// point is placed exactly, by moving its coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// The plane a sketch lies on: one of FreeCAD's origin planes with its orientation (D6,
+/// docs/design/m3.2-sketch-format.md), or a face's frame (docs/ports/attacher.md, M5.9). An
+/// origin plane's axes are unit axes of model space, so its points are placed exactly, by
+/// moving their coordinates; a face frame's generally aren't, so its points are placed to
+/// rounding.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SketchPlane {
     /// The sketch's x along +X, its y along +Y, its normal +Z.
     Xy,
@@ -33,45 +37,249 @@ pub enum SketchPlane {
     Xz,
     /// The sketch's x along +Y, its y along +Z, its normal +X.
     Yz,
+    /// A planar face's frame, as the core resolved it from the face ([`FaceFrame`]).
+    Face(FaceFrame),
+}
+
+/// A sketch's frame on a planar face, as the core resolved it from the face's normal n and
+/// plane, its stored axis, and `reversed` (docs/ports/attacher.md, F1 and F2,
+/// [`FaceFrame::from_normal`]): its origin, the model's origin projected onto the face's
+/// plane; its x, the stored axis projected onto the plane; and its y, n × x. It has no
+/// normal of its own: its normal is x × y, normalized ([`SketchPlane::normal`]), the one
+/// normal the kernel's plane, the fake kernel, and every sweep read. Its axes are unit and
+/// square to rounding ([`FaceFrame::check`]), not unit axes of model space, so a point on it
+/// is placed to rounding, not exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FaceFrame {
+    pub origin: [f64; 3],
+    pub x: [f64; 3],
+    pub y: [f64; 3],
+}
+
+/// How far from perpendicular a frame's x and y may be: |x · y| at most 16ε (4 ·
+/// `UNIT_SLACK`, about 3.6e-15), a few roundings, as the core makes them (y = n × x,
+/// normalized, is square to x to about 1.7e-16). OCCT builds the faces' plane from the
+/// normal and x alone, normalizing x and making its own y as n × x, while a point is placed
+/// along the frame's own y. The two y's are apart by about |x · y|, so at the largest
+/// reach, 1e6 mm ([`MAX_LENGTH`]), a point placed on the frame is within 1e6 · 3.6e-15 ≈
+/// 3.6e-9 mm of where OCCT puts an arc's end: the frame's share beside the 1e-7
+/// ([`LENGTH_TOLERANCE`]) an arc's end may be off its circle (`Curve::off_circle`), which
+/// the origin planes have to themselves.
+pub const FACE_FRAME_SQUARENESS: f64 = 4.0 * UNIT_SLACK;
+
+/// How far a frame's origin may be from the model's: √3 times the reach, and the rounding
+/// of working it out (4 · 4ε, as a sweep's longest vector has). The origin is n(n·p), the
+/// model's origin projected onto the face's plane: as far out as the plane's offset n·p,
+/// which for a face within a kilometre on each axis is at most the box's corner, √3 · 1e6,
+/// and which can lie further out on an axis than the face itself does (docs/ports/attacher.md,
+/// the frame).
+pub const MAX_FRAME_ORIGIN: f64 = 1.732_050_807_568_877_2 * MAX_LENGTH * (1.0 + 4.0 * UNIT_SLACK);
+
+/// The least a stored axis may stand off a face's normal for a frame to be made from them:
+/// |a − n(n·a)|, the length of its projection onto the face's plane, at least 1e-12. Below,
+/// the axis lies along the normal, and x, the projection made a unit, would be mostly
+/// rounding (docs/ports/attacher.md, open point 5).
+pub const MIN_AXIS_OFF_NORMAL: f64 = 1e-12;
+
+/// Why [`FaceFrame::from_normal`] made no frame.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FaceFrameError {
+    /// The stored axis lies along the face's normal: its projection onto the plane is this
+    /// long, under [`MIN_AXIS_OFF_NORMAL`].
+    AxisAlongNormal(f64),
+    /// A value given or made isn't one a frame can hold (an input not finite, or the frame
+    /// made refused by [`FaceFrame::check`]): what's wrong, naming the plane.
+    Invalid(InvalidParameter),
+}
+
+impl FaceFrame {
+    /// The frame of a sketch on a plane through `on_plane` with the normal `n`, its x
+    /// following the stored `axis` (one of model space's six signed unit axes), exactly as
+    /// docs/ports/attacher.md's frame says, n first made a unit (`describe`'s normals are
+    /// unit only to `NORMAL_LENGTH_TOLERANCE`, 1e-6: o = n(n·p) of one 1e-6 long, on a face
+    /// √3 · 1e6 out, is about 3 mm off its plane): o = n(n·p); x = (a − n(n·a)) / |a − n(n·a)|,
+    /// projected once more (x ← (x − n(n·x)) / |…|), since the first division leaves x·n
+    /// off by about 1e-16 / |a − n(n·a)|; y = n × x, normalized; every component + 0, so a
+    /// zero is +0 whatever the sign `describe` gave it. A `reversed` sketch is the frame of
+    /// −n and −a: o is the same, and x negated, y the same, exactly.
+    ///
+    /// Refused as invalid if any input isn't finite or the normal has no length to make a
+    /// unit of (zero, or too long or short to square); as `AxisAlongNormal` if the axis
+    /// lies along the normal (|a − n(n·a)|
+    /// under [`MIN_AXIS_OFF_NORMAL`]), or if the frame made isn't one [`FaceFrame::check`]
+    /// takes (its origin past [`MAX_FRAME_ORIGIN`]).
+    pub fn from_normal(
+        on_plane: [f64; 3],
+        n: [f64; 3],
+        axis: [f64; 3],
+    ) -> Result<FaceFrame, FaceFrameError> {
+        for (what, v) in [
+            ("point on the plane", on_plane),
+            ("normal", n),
+            ("axis", axis),
+        ] {
+            if !v.iter().all(|c| c.is_finite()) {
+                return Err(FaceFrameError::Invalid(frame_invalid(format!(
+                    "the face's {what} must be finite, got {v:?}"
+                ))));
+            }
+        }
+        let length = vec3::norm(n);
+        if !(length > 0.0 && length.is_finite()) {
+            return Err(FaceFrameError::Invalid(frame_invalid(format!(
+                "the face's normal must have a length to make a unit of, got {n:?}, {} long",
+                format_number(length)
+            ))));
+        }
+        let n = n.map(|c| c / length);
+        let project = |v: [f64; 3]| {
+            let along = vec3::dot(n, v);
+            [0, 1, 2].map(|k| v[k] - n[k] * along)
+        };
+        let off = project(axis);
+        let off_length = vec3::norm(off);
+        if off_length.is_nan() || off_length < MIN_AXIS_OFF_NORMAL {
+            return Err(FaceFrameError::AxisAlongNormal(off_length));
+        }
+        let x = vec3::normalize(project(off.map(|c| c / off_length)));
+        let y = vec3::normalize(vec3::cross(n, x));
+        let offset = vec3::dot(n, on_plane);
+        let plus = |v: [f64; 3]| v.map(|c| c + 0.0);
+        let frame = FaceFrame {
+            origin: plus(n.map(|c| c * offset)),
+            x: plus(x),
+            y: plus(y),
+        };
+        frame.check().map_err(FaceFrameError::Invalid)?;
+        Ok(frame)
+    }
+
+    /// Whether a sketch can be placed on it: every component finite; the origin at most
+    /// [`MAX_FRAME_ORIGIN`] from the model's origin; x and y each a unit vector, to the
+    /// rounding a sweep's direction may have (`UNIT_SLACK`, 4ε); and x and y perpendicular,
+    /// to [`FACE_FRAME_SQUARENESS`]. Right-handedness needs no rule: the normal is x × y.
+    /// Says which rule failed, with the values, if not.
+    pub fn check(&self) -> Result<(), InvalidParameter> {
+        let axes = [("x axis", self.x), ("y axis", self.y)];
+        for (what, v) in std::iter::once(("origin", self.origin)).chain(axes) {
+            if !v.iter().all(|c| c.is_finite()) {
+                return Err(frame_invalid(format!(
+                    "the face frame's {what} must be finite, got {v:?}"
+                )));
+            }
+        }
+        let reach = vec3::norm(self.origin);
+        if reach > MAX_FRAME_ORIGIN {
+            return Err(frame_invalid(format!(
+                "the face frame's origin must be within √3 · 1e6 mm (a kilometre on each axis) of the model's origin, got {:?}, {} mm out",
+                self.origin,
+                format_number(reach)
+            )));
+        }
+        for (what, v) in axes {
+            check_unit("plane", &format!("face frame's {what}"), v)?;
+        }
+        let d = vec3::dot(self.x, self.y);
+        if d.abs() > FACE_FRAME_SQUARENESS {
+            return Err(frame_invalid(format!(
+                "the face frame's x axis {:?} and y axis {:?} must be perpendicular, to 16ε (3.6e-15): their dot product is {}",
+                self.x,
+                self.y,
+                format_number(d)
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn frame_invalid(message: String) -> InvalidParameter {
+    InvalidParameter {
+        parameter: "plane",
+        message,
+    }
 }
 
 impl SketchPlane {
-    /// Every plane.
-    pub const ALL: [SketchPlane; 3] = [SketchPlane::Xy, SketchPlane::Xz, SketchPlane::Yz];
+    /// The origin planes, every plane a sketch's file can name by a word (D6). A face's
+    /// frame is the other kind.
+    pub const ORIGIN_PLANES: [SketchPlane; 3] = [SketchPlane::Xy, SketchPlane::Xz, SketchPlane::Yz];
 
-    /// The direction of the sketch's x in model space.
+    /// Its word, as a step's line and the fake's shapes spell it: an origin plane's the
+    /// document's (`xy`, `xz`, `yz`, D6), and `frame` for a face's frame, whose numbers
+    /// follow it there.
+    pub fn word(self) -> &'static str {
+        match self {
+            SketchPlane::Xy => "xy",
+            SketchPlane::Xz => "xz",
+            SketchPlane::Yz => "yz",
+            SketchPlane::Face(_) => "frame",
+        }
+    }
+
+    /// Where the sketch's (0, 0) is in model space: the model's origin for an origin plane,
+    /// a face frame's origin for a face's, each component + 0, as the faces step's key takes
+    /// it, so a −0 the key reads as +0 never reaches the kernel as −0.
+    pub fn origin(self) -> [f64; 3] {
+        match self {
+            SketchPlane::Xy | SketchPlane::Xz | SketchPlane::Yz => [0.0; 3],
+            SketchPlane::Face(frame) => frame.origin.map(|c| c + 0.0),
+        }
+    }
+
+    /// The direction of the sketch's x in model space (a face frame's + 0, as its origin).
     pub fn x_axis(self) -> [f64; 3] {
         match self {
             SketchPlane::Xy | SketchPlane::Xz => [1.0, 0.0, 0.0],
             SketchPlane::Yz => [0.0, 1.0, 0.0],
+            SketchPlane::Face(frame) => frame.x.map(|c| c + 0.0),
         }
     }
 
-    /// The direction of the sketch's y in model space.
+    /// The direction of the sketch's y in model space (a face frame's + 0, as its origin).
     pub fn y_axis(self) -> [f64; 3] {
         match self {
             SketchPlane::Xy => [0.0, 1.0, 0.0],
             SketchPlane::Xz | SketchPlane::Yz => [0.0, 0.0, 1.0],
+            SketchPlane::Face(frame) => frame.y.map(|c| c + 0.0),
         }
     }
 
-    /// The sketch's normal in model space: x × y, the direction counter-clockwise is
-    /// measured about.
+    /// The sketch's unit normal in model space: x × y, the direction counter-clockwise is
+    /// measured about. An origin plane's is its axis exactly; a face frame's is x × y
+    /// normalized, each component + 0, the one normal the kernel builds the faces' plane
+    /// from and every sweep of them reads.
     pub fn normal(self) -> [f64; 3] {
         match self {
             SketchPlane::Xy => [0.0, 0.0, 1.0],
             SketchPlane::Xz => [0.0, -1.0, 0.0],
             SketchPlane::Yz => [1.0, 0.0, 0.0],
+            SketchPlane::Face(frame) => {
+                vec3::normalize(vec3::cross(frame.x, frame.y)).map(|c| c + 0.0)
+            }
         }
     }
 
-    /// The sketch's point `[x, y]` in model space, exactly (a zero of either sign as 0).
+    /// The sketch's point `[x, y]` in model space: on an origin plane exactly (a zero of
+    /// either sign as 0); on a face frame, its origin + x times its x axis + y times its y
+    /// axis, component by component, to rounding (a zero of either sign as 0 there too).
     pub fn place(self, [x, y]: [f64; 2]) -> [f64; 3] {
         let (x, y) = (unsigned(x), unsigned(y));
         match self {
             SketchPlane::Xy => [x, y, 0.0],
             SketchPlane::Xz => [x, 0.0, y],
             SketchPlane::Yz => [0.0, x, y],
+            SketchPlane::Face(FaceFrame { origin, x: u, y: v }) => {
+                std::array::from_fn(|k| origin[k] + x * u[k] + y * v[k] + 0.0)
+            }
+        }
+    }
+
+    /// Whether its frame can be used: an origin plane always can; a face frame by
+    /// [`FaceFrame::check`].
+    pub fn check(&self) -> Result<(), InvalidParameter> {
+        match self {
+            SketchPlane::Xy | SketchPlane::Xz | SketchPlane::Yz => Ok(()),
+            SketchPlane::Face(frame) => frame.check(),
         }
     }
 }
@@ -290,7 +498,8 @@ impl FaceRegions {
             .filter_map(|c| c.ends().map(|(start, _)| start))
     }
 
-    /// Whether the regions can be made into faces: at least one region, at most
+    /// Whether the regions can be made into faces: the plane's frame sound
+    /// ([`SketchPlane::check`]), at least one region, at most
     /// [`MAX_FACE_CURVES`] curves, every loop closed (each curve's end exactly the next
     /// one's start, as the sketch's points are shared) or one circle, each point the meeting
     /// of two curves only, every value finite and within a kilometre, each line and arc
@@ -300,6 +509,7 @@ impl FaceRegions {
     /// times its perimeter. Crossing and nesting are the core's to decide, and OCCT checks
     /// the faces it makes.
     pub fn check(&self) -> Result<(), InvalidParameter> {
+        self.plane.check()?;
         if self.regions.is_empty() {
             return Err(invalid("no regions to make faces of".to_owned()));
         }
@@ -622,9 +832,22 @@ mod tests {
         assert!(err.message.contains(says), "{}", err.message);
     }
 
+    /// A box's top face at z = 0, reversed: x −X, y +Y, so its normal is −Z. Its axes are
+    /// model space's, so it places as exactly as an origin plane.
+    fn reversed_top(origin: [f64; 3]) -> FaceFrame {
+        FaceFrame {
+            origin,
+            x: [-1.0, 0.0, 0.0],
+            y: [0.0, 1.0, 0.0],
+        }
+    }
+
     #[test]
     fn each_plane_is_right_handed_and_places_a_point_by_moving_its_coordinates() {
-        for plane in SketchPlane::ALL {
+        let every = SketchPlane::ORIGIN_PLANES
+            .into_iter()
+            .chain([SketchPlane::Face(reversed_top([0.0; 3]))]);
+        for plane in every {
             let (x, y) = (plane.x_axis(), plane.y_axis());
             let x_cross_y = [
                 x[1] * y[2] - x[2] * y[1],
@@ -640,10 +863,179 @@ mod tests {
         // D6: XZ's y is +Z and its normal -Y; YZ's x is +Y.
         assert_eq!(SketchPlane::Xz.place([1.0, 2.0]), [1.0, 0.0, 2.0]);
         assert_eq!(SketchPlane::Yz.place([1.0, 2.0]), [0.0, 1.0, 2.0]);
+        // The reversed top's normal, by hand: (−X) × (+Y) = −Z.
+        assert_eq!(
+            SketchPlane::Face(reversed_top([0.0; 3])).normal(),
+            [0.0, 0.0, -1.0]
+        );
         // A zero of either sign is the same point.
         assert_eq!(
             SketchPlane::Xy.place([-0.0, -0.0]).map(f64::to_bits),
             [0.0f64; 3].map(f64::to_bits)
+        );
+    }
+
+    #[test]
+    fn each_plane_has_its_word() {
+        let words: Vec<&str> = SketchPlane::ORIGIN_PLANES
+            .into_iter()
+            .chain([SketchPlane::Face(reversed_top([0.0; 3]))])
+            .map(SketchPlane::word)
+            .collect();
+        assert_eq!(words, ["xy", "xz", "yz", "frame"]);
+    }
+
+    /// The frame tilted 30° about X: x +X, y (0, cos 30°, sin 30°), so n (0, −sin 30°,
+    /// cos 30°), its origin at (1, 2, 3).
+    fn tilted() -> FaceFrame {
+        let (c, s) = (libm::cos(PI / 6.0), libm::sin(PI / 6.0));
+        FaceFrame {
+            origin: [1.0, 2.0, 3.0],
+            x: [1.0, 0.0, 0.0],
+            y: [0.0, c, s],
+        }
+    }
+
+    fn frame_refused(frame: FaceFrame, says: &str) {
+        let err = frame.check().unwrap_err();
+        assert_eq!(err.parameter, "plane", "{}", err.message);
+        assert!(err.message.contains(says), "{}", err.message);
+        // And every request on it, before its regions are looked at.
+        let regions = FaceRegions {
+            plane: SketchPlane::Face(frame),
+            regions: vec![],
+        };
+        assert_eq!(regions.check(), Err(err));
+    }
+
+    #[test]
+    fn a_sound_frame_passes_to_rounding_and_places_a_point_along_its_axes() {
+        assert_eq!(tilted().check(), Ok(()));
+        let reversed = reversed_top([0.0, 0.0, 10.0]);
+        assert_eq!(reversed.check(), Ok(()));
+        // An axis 4ε long or short of 1 (UNIT_SLACK), and x and y 16ε off square: within
+        // the rules.
+        for off in [
+            FaceFrame {
+                x: [-(1.0 + 4.0 * f64::EPSILON), 0.0, 0.0],
+                ..reversed
+            },
+            FaceFrame {
+                y: [0.0, 1.0 - 4.0 * f64::EPSILON, 0.0],
+                ..reversed
+            },
+            FaceFrame {
+                y: [FACE_FRAME_SQUARENESS, 1.0, 0.0],
+                ..reversed
+            },
+        ] {
+            assert_eq!(off.check(), Ok(()), "{off:?}");
+        }
+        // At a kilometre's reach on every axis, the origin passes.
+        let far = reversed_top([-1e6, 1e6, -1e6]);
+        assert_eq!(far.check(), Ok(()));
+        // (3, −2) on the reversed top: (−3, −2, 10), by hand.
+        assert_eq!(
+            SketchPlane::Face(reversed).place([3.0, -2.0]),
+            [-3.0, -2.0, 10.0]
+        );
+        // On the tilted frame: origin + u·x + v·y, component by component.
+        let f = tilted();
+        let (c, s) = (libm::cos(PI / 6.0), libm::sin(PI / 6.0));
+        assert_eq!(
+            SketchPlane::Face(f).place([4.0, 2.0]),
+            [1.0 + 4.0, 2.0 + 2.0 * c, 3.0 + 2.0 * s]
+        );
+        // Its axes are the frame's, and its normal x × y: (0, −s, c), to rounding.
+        let plane = SketchPlane::Face(f);
+        assert_eq!((plane.x_axis(), plane.y_axis()), (f.x, f.y));
+        let n = plane.normal();
+        assert!(
+            (n[0] - 0.0).abs() + (n[1] + s).abs() + (n[2] - c).abs() <= 4.0 * f64::EPSILON,
+            "{n:?}"
+        );
+        // A zero of either sign comes out +0: the origin's and the products' −0s, and the
+        // normal's.
+        let negative = FaceFrame {
+            origin: [-0.0, -0.0, -0.0],
+            x: [1.0, -0.0, 0.0],
+            y: [-0.0, 1.0, 0.0],
+        };
+        // x × y's first component is (−0)(0) − (0)(1) = −0, so the normal's + 0 shows.
+        assert_eq!(
+            vec3::cross(negative.x, negative.y)[0].to_bits(),
+            (-0.0f64).to_bits()
+        );
+        assert_eq!(
+            SketchPlane::Face(negative)
+                .place([-0.0, -0.0])
+                .map(f64::to_bits),
+            [0.0f64; 3].map(f64::to_bits)
+        );
+        assert_eq!(
+            SketchPlane::Face(negative).normal().map(f64::to_bits),
+            [0.0, 0.0, 1.0f64].map(f64::to_bits)
+        );
+    }
+
+    #[test]
+    fn a_frame_that_isnt_orthonormal_is_refused_naming_the_rule() {
+        let f = tilted();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            frame_refused(
+                FaceFrame {
+                    origin: [1.0, bad, 3.0],
+                    ..f
+                },
+                "the face frame's origin must be finite",
+            );
+            frame_refused(
+                FaceFrame {
+                    x: [bad, 0.0, 0.0],
+                    ..f
+                },
+                "the face frame's x axis must be finite",
+            );
+            frame_refused(
+                FaceFrame {
+                    y: [0.0, bad, 0.5],
+                    ..f
+                },
+                "the face frame's y axis must be finite",
+            );
+        }
+        // √3e6 out along the diagonal passes (a box's far corner); a metre past it on one
+        // axis, out of reach.
+        assert_eq!(reversed_top([1e6, 1e6, 1e6]).check(), Ok(()));
+        assert_eq!(reversed_top([0.0, 0.0, -1.7e6]).check(), Ok(()));
+        frame_refused(
+            reversed_top([0.0, 0.0, 1.733e6]),
+            "the face frame's origin must be within √3 · 1e6 mm",
+        );
+        // An axis 8ε long or short of 1, past UNIT_SLACK's 4ε.
+        frame_refused(
+            FaceFrame {
+                x: [1.0 + 8.0 * f64::EPSILON, 0.0, 0.0],
+                ..f
+            },
+            "the face frame's x axis must be a unit vector, got [1.0000000000000018, 0.0, 0.0]",
+        );
+        frame_refused(
+            FaceFrame {
+                y: f.y.map(|c| c * (1.0 - 8.0 * f64::EPSILON)),
+                ..f
+            },
+            "the face frame's y axis must be a unit vector",
+        );
+        // Unit, but not perpendicular: x leaning 2e-14 towards y.
+        let lean = libm::sqrt(1.0 - 4e-28);
+        frame_refused(
+            FaceFrame {
+                origin: [0.0; 3],
+                x: [lean, 2e-14, 0.0],
+                y: [0.0, 1.0, 0.0],
+            },
+            "the face frame's x axis [1.0, 2e-14, 0.0] and y axis [0.0, 1.0, 0.0] must be perpendicular, to 16ε (3.6e-15): their dot product is 2e-14",
         );
     }
 

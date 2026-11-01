@@ -1870,6 +1870,7 @@ mod tests {
         let face = FaceDescription {
             surface: Surface::Plane {
                 normal: [0.0, 0.0, 1.0],
+                location: [0.0; 3],
             },
             area: 1.0,
             centroid: [0.5, 0.5, 0.0],

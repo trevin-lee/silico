@@ -19,7 +19,7 @@ use silico_protocol::{
     StepUnwritten,
 };
 use silico_protocol::{CopiesOp, Placement};
-use silico_protocol::{Curve, Distance, FaceRegions, Region, SketchPlane};
+use silico_protocol::{Curve, Distance, FaceFrame, FaceRegions, Region, SketchPlane};
 use silico_protocol::{Description, EdgeCurve, EdgeDescription, FaceDescription, Surface};
 
 /// One request per operation. The match gives each variant its own index and every
@@ -251,6 +251,21 @@ fn every_op() -> Vec<Op> {
                     holes: vec![],
                 },
             ],
+        }),
+        // On a face's frame, its numbers at extremes a frame must carry exactly.
+        Op::MakeFaces(FaceRegions {
+            plane: SketchPlane::Face(FaceFrame {
+                origin: [-0.0, 1e6, 5e-324],
+                x: [0.6, 0.8, -0.0],
+                y: [-0.8, 0.6, 1e-300],
+            }),
+            regions: vec![Region {
+                outer: vec![Curve::Circle {
+                    center: [0.0, 0.0],
+                    radius: 1.0,
+                }],
+                holes: vec![],
+            }],
         }),
         Op::Prism {
             faces: ShapeData::checked(Blob::inline(vec![1, 2, 3]), true),
@@ -639,6 +654,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                 faces: [
                     Surface::Plane {
                         normal: [0.0, 0.0, -1.0],
+                        location: [-0.0, 1e300, 5e-324],
                     },
                     Surface::Cylinder {
                         axis: AXIS,
@@ -1262,6 +1278,7 @@ fn every_op_has_its_own_name() {
             "DragMove",
             "DragEnd",
             "MoveOnce",
+            "MakeFaces",
             "MakeFaces",
             "Prism",
             "PrismThroughAll",

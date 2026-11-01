@@ -1,8 +1,8 @@
 //! The arithmetic of 3-vectors in `f64` that the core, the render worker, and the protocol's
 //! own checks share: each written once, so each gives the same bits wherever it's used (no
-//! fused multiply-add: Rust contracts none). Lengths aren't here: a profile's check scales
-//! before it squares (`profile.rs`), so a huge vector's length doesn't overflow, where the
-//! rest take the plain root of a vector's dot with itself.
+//! fused multiply-add: Rust contracts none). A length ([`norm`]) is the plain root of a
+//! vector's dot with itself, which overflows past about 1e154: a profile's check, which
+//! must measure such vectors, scales before it squares instead (`profile.rs`).
 
 /// `a - b`.
 pub fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -23,9 +23,21 @@ pub fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+/// `|a|`: the root of `a · a` (correctly rounded, so the same on every platform).
+pub fn norm(a: [f64; 3]) -> f64 {
+    dot(a, a).sqrt()
+}
+
+/// `a / |a|`, each component divided by [`norm`]'s length: a unit vector to rounding, for
+/// any `a` neither zero nor too long or short to square.
+pub fn normalize(a: [f64; 3]) -> [f64; 3] {
+    let length = norm(a);
+    a.map(|c| c / length)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{cross, dot, sub};
+    use super::{cross, dot, norm, normalize, sub};
 
     #[test]
     fn each_is_the_textbook_formula() {
@@ -36,6 +48,14 @@ mod tests {
         assert_eq!(cross([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), [0.0, 0.0, 1.0]);
         assert_eq!(cross([0.0, 1.0, 0.0], [1.0, 0.0, 0.0]), [0.0, 0.0, -1.0]);
         assert_eq!(cross([1.0, 2.0, 3.0], [4.0, 5.0, 6.0]), [-3.0, 6.0, -3.0]);
+        // |(2, 3, 6)| = √49 = 7, and (2, 3, 6) / 7; a 3-4-5 triangle's hypotenuse.
+        assert_eq!(norm([2.0, 3.0, 6.0]), 7.0);
+        assert_eq!(norm([0.0, -3.0, 4.0]), 5.0);
+        assert_eq!(
+            normalize([2.0, 3.0, 6.0]),
+            [2.0 / 7.0, 3.0 / 7.0, 6.0 / 7.0]
+        );
+        assert_eq!(normalize([0.0, 0.0, -5.0]), [0.0, 0.0, -1.0]);
     }
 
     #[test]

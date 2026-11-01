@@ -30,6 +30,8 @@ mod adversarial_distance_request;
 mod adversarial_export;
 #[path = "adversarial_export_unraised.rs"]
 mod adversarial_export_unraised;
+#[path = "adversarial_fake_face_frame.rs"]
+mod adversarial_fake_face_frame;
 #[path = "adversarial_fake_kernel.rs"]
 mod adversarial_fake_kernel;
 #[path = "adversarial_meshes.rs"]

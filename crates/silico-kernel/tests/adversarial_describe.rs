@@ -81,7 +81,7 @@ fn a_mirrored_boxs_planes_face_out_of_it() {
     ];
     assert_eq!(d.faces.len(), 6);
     for (i, (face, want)) in d.faces.iter().zip(freecad).enumerate() {
-        let Surface::Plane { normal } = face.surface else {
+        let Surface::Plane { normal, .. } = face.surface else {
             panic!("Face{} isn't a plane", i + 1)
         };
         let at = |t: f64| [0, 1, 2].map(|k| face.centroid[k] + t * normal[k]);
@@ -135,10 +135,10 @@ fn every_chamfer_face_of_a_box_faces_out_of_it() {
         let slanted: Vec<_> = d
             .faces
             .iter()
-            .filter(|f| matches!(f.surface, Surface::Plane { normal } if normal.iter().filter(|c| c.abs() > 0.5).count() != 1))
+            .filter(|f| matches!(f.surface, Surface::Plane { normal, .. } if normal.iter().filter(|c| c.abs() > 0.5).count() != 1))
             .collect();
         assert_eq!(slanted.len(), 1, "Edge{edge}: {:?}", d.faces);
-        let Surface::Plane { normal } = slanted[0].surface else {
+        let Surface::Plane { normal, .. } = slanted[0].surface else {
             unreachable!()
         };
         let away = [0, 1, 2].map(|k| slanted[0].centroid[k] - middle[k]);
@@ -261,9 +261,9 @@ fn a_cylinder_cut_on_a_slant_has_an_ellipse_of_its_measures_and_a_top_facing_up_
     let top = d
         .faces
         .iter()
-        .find(|f| matches!(f.surface, Surface::Plane { normal } if normal[0] != 0.0))
+        .find(|f| matches!(f.surface, Surface::Plane { normal, .. } if normal[0] != 0.0))
         .unwrap();
-    let Surface::Plane { normal } = top.surface else {
+    let Surface::Plane { normal, .. } = top.surface else {
         unreachable!()
     };
     assert_point(
@@ -341,7 +341,7 @@ fn a_turned_rectangles_arcs_measure_their_turn_and_its_flat_faces_face_out() {
         // annular top and bottom are each bounded by two whole circles).
         assert_eq!(arcs, 4, "{degrees}°");
         for (i, f) in d.faces.iter().enumerate() {
-            let Surface::Plane { normal } = f.surface else {
+            let Surface::Plane { normal, .. } = f.surface else {
                 continue;
             };
             let c = f.centroid;
@@ -690,7 +690,7 @@ fn a_worker_claiming_endless_elements_is_refused_at_its_first_batch_against_the_
 fn flat_sums(d: &Description) -> (f64, f64, f64) {
     let (mut sum, mut total, mut volume, mut scale) = ([0.0; 3], 0.0, 0.0, 0.0);
     for f in &d.faces {
-        let Surface::Plane { normal } = f.surface else {
+        let Surface::Plane { normal, .. } = f.surface else {
             panic!("a face that isn't flat: {f:?}")
         };
         for k in 0..3 {

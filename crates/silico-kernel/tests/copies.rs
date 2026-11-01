@@ -92,7 +92,7 @@ fn top_of(described: &Description, history: &History, input: usize, z: f64) -> [
         .into_iter()
         .map(|(_, face)| &described.faces[face as usize - 1])
         .filter(|f| {
-            matches!(f.surface, Surface::Plane { normal } if (normal[2] - 1.0).abs() < 1e-12)
+            matches!(f.surface, Surface::Plane { normal, .. } if (normal[2] - 1.0).abs() < 1e-12)
                 && (f.centroid[2] - z).abs() < NEAR
         })
         .map(|f| f.centroid)
@@ -566,7 +566,7 @@ fn a_turned_and_moved_copy_is_turned_first_then_moved() {
     let copy_face1 = &described.faces[face1 as usize - 1];
     assert_near("the copy's Face1", copy_face1.centroid, [48.0, 10.0, 0.5]);
     match copy_face1.surface {
-        Surface::Plane { normal } => assert_near("its normal", normal, [0.0, -1.0, 0.0]),
+        Surface::Plane { normal, .. } => assert_near("its normal", normal, [0.0, -1.0, 0.0]),
         ref other => panic!("{other:?}"),
     }
     let s = k.summarize(&made.shape).unwrap();
@@ -606,7 +606,7 @@ fn a_mirrored_copys_faces_are_the_tools_reflected_numbered_as_the_tools() {
         let [x, y, z] = from.centroid;
         assert_near(&format!("Face{n}'s centroid"), to.centroid, [-x, y, z]);
         match (&from.surface, &to.surface) {
-            (Surface::Plane { normal: a }, Surface::Plane { normal: b }) => {
+            (Surface::Plane { normal: a, .. }, Surface::Plane { normal: b, .. }) => {
                 assert_near(&format!("Face{n}'s normal"), *b, [-a[0], a[1], a[2]]);
             }
             other => panic!("Face{n}: {other:?}"),
