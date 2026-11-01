@@ -101,6 +101,9 @@ pub struct Panes<'a, P: Clients + 'static> {
     pub name: &'a mut Option<NameField>,
     /// Whether a command was started: the frame after polls it.
     pub started: &'a mut bool,
+    /// The canvas's place in the window, as it was drawn: where sketch mode's palette
+    /// floats.
+    pub canvas: &'a mut Option<egui::Rect>,
 }
 
 impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
@@ -114,7 +117,10 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
             .inner_margin(egui::Margin::same(theme::VIEW_PADDING / 2))
             .show(ui, |ui| match pane {
                 Pane::Browser => self.browser(ui),
-                Pane::Viewport => viewport(ui),
+                Pane::Viewport => {
+                    *self.canvas = Some(ui.max_rect());
+                    viewport(ui);
+                }
                 Pane::Properties => self.properties(ui),
                 Pane::Timeline => self.timeline(ui),
             });
@@ -224,7 +230,14 @@ impl<P: Clients + 'static> Panes<'_, P> {
         };
         group(ui, "Origin", |ui| {
             for name in ["Origin", "X", "Y", "Z", "XY", "XZ", "YZ"] {
-                row(ui, &mut tab.hidden, name, None, Health::Healthy, None);
+                let shown = RowView {
+                    name,
+                    prefix: None,
+                    selected: None,
+                    health: Health::Healthy,
+                    said: None,
+                };
+                row(ui, &mut tab.hidden, &shown);
             }
         });
         if tab.timeline.is_none() {
@@ -232,13 +245,17 @@ impl<P: Clients + 'static> Panes<'_, P> {
             return;
         }
         let mut selected = tab.selected.clone();
+        let mut edit = None;
+        let can_sketch = tab.can_sketch();
         let crate::tab::Tab {
             browser,
             hidden,
             said,
+            prefixes,
             ..
         } = &mut *tab;
         for (name, rows) in [("Bodies", &browser.bodies), ("Sketches", &browser.sketches)] {
+            let sketches = name == "Sketches";
             group(ui, name, |ui| {
                 for each in rows {
                     let text = each
@@ -246,15 +263,40 @@ impl<P: Clients + 'static> Panes<'_, P> {
                         .as_ref()
                         .and_then(|by| said.get(by.as_str()))
                         .map(|said| said.message.as_str());
-                    if row(
-                        ui,
-                        hidden,
-                        &each.name,
-                        Some(selected.as_ref() == Some(&each.id)),
-                        each.health,
-                        text,
-                    ) {
+                    // A sketch's state's prefix (docs/ux/solidworks.md, §2), before its name.
+                    let prefix = if sketches {
+                        prefixes.prefix(&each.id)
+                    } else {
+                        None
+                    };
+                    let shown = RowView {
+                        name: &each.name,
+                        prefix,
+                        selected: Some(selected.as_ref() == Some(&each.id)),
+                        health: each.health,
+                        said: text,
+                    };
+                    let Some(response) = row(ui, hidden, &shown) else {
+                        continue;
+                    };
+                    if response.clicked() {
                         selected = Some(each.id.clone());
+                    }
+                    // Edit Sketch, by a double-click or the row's context menu (fusion.md,
+                    // *Sketch mode*, [esk]).
+                    if sketches {
+                        if response.double_clicked() && can_sketch {
+                            edit = Some(each.id.clone());
+                        }
+                        response.context_menu(|ui| {
+                            if ui
+                                .add_enabled(can_sketch, egui::Button::new("Edit Sketch"))
+                                .clicked()
+                            {
+                                edit = Some(each.id.clone());
+                                ui.close();
+                            }
+                        });
                     }
                 }
             });
@@ -266,6 +308,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
             tab.pick(id);
         }
         tab.selected = selected;
+        if let Some(id) = edit {
+            tab.edit_sketch(self.sessions, &id);
+            *self.started = true;
+        }
     }
 
     /// The timeline (section 8, *The timeline*): the features in order, left to right, each
@@ -298,15 +344,23 @@ impl<P: Clients + 'static> Panes<'_, P> {
                     if response.clicked() {
                         selected = Some(entry.id.clone());
                     }
-                    let editable = crate::dialog::Kind::of(entry.kind).is_some();
+                    // A sketch's is Edit Sketch (fusion.md, *Sketch mode*, [esk]).
+                    let is_sketch = entry.kind == "sketch";
+                    let editable = if is_sketch {
+                        tab.can_sketch()
+                    } else {
+                        crate::dialog::Kind::of(entry.kind).is_some()
+                    };
                     if response.double_clicked() {
                         edit = Some(entry.id.clone());
                     }
+                    let word = if is_sketch {
+                        "Edit Sketch"
+                    } else {
+                        "Edit Feature"
+                    };
                     response.context_menu(|ui| {
-                        if ui
-                            .add_enabled(editable, egui::Button::new("Edit Feature"))
-                            .clicked()
-                        {
+                        if ui.add_enabled(editable, egui::Button::new(word)).clicked() {
                             edit = Some(entry.id.clone());
                             ui.close();
                         }
@@ -319,7 +373,11 @@ impl<P: Clients + 'static> Panes<'_, P> {
         });
         tab.selected = selected;
         if let Some(id) = edit {
-            tab.edit_feature(self.sessions, &id);
+            if tab.browser.sketches.iter().any(|row| row.id == id) {
+                tab.edit_sketch(self.sessions, &id);
+            } else {
+                tab.edit_feature(self.sessions, &id);
+            }
             *self.started = true;
         }
     }
@@ -428,16 +486,30 @@ fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxErr
     silico_core::document::json::read(crate::dialog::quoted(name).as_bytes())
 }
 
-/// A browser row: its eye (the tab's visibility, never saved), its name (selectable if
-/// `selected` is given; whether it was clicked is returned), and its mark.
+/// What a browser row shows: its name, a sketch's state's prefix, whether it's selected (if
+/// it's selectable), its health, and its mark's text.
+struct RowView<'a> {
+    name: &'a str,
+    prefix: Option<&'static str>,
+    selected: Option<bool>,
+    health: Health,
+    said: Option<&'a str>,
+}
+
+/// A browser row: its eye (the tab's visibility, never saved), its prefix, if it has one,
+/// its name (selectable if `selected` is given, its response returned), and its mark.
 fn row(
     ui: &mut Ui,
     hidden: &mut std::collections::BTreeSet<String>,
-    name: &str,
-    selected: Option<bool>,
-    health: Health,
-    said: Option<&str>,
-) -> bool {
+    shown: &RowView<'_>,
+) -> Option<egui::Response> {
+    let RowView {
+        name,
+        prefix,
+        selected,
+        health,
+        said,
+    } = *shown;
     ui.horizontal(|ui| {
         let shown = !hidden.contains(name);
         let toggle = if shown { "Hide" } else { "Show" };
@@ -463,15 +535,18 @@ fn row(
                 hidden.remove(name);
             }
         }
-        let clicked = match selected {
-            Some(selected) => ui.selectable_label(selected, name).clicked(),
+        if let Some(prefix) = prefix {
+            ui.label(prefix);
+        }
+        let response = match selected {
+            Some(selected) => Some(ui.selectable_label(selected, name)),
             None => {
                 ui.label(name);
-                false
+                None
             }
         };
         mark(ui, health, said);
-        clicked
+        response
     })
     .inner
 }

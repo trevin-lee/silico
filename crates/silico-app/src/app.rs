@@ -15,11 +15,13 @@ use silico_core::command::{
     Opened, RebuildState, Response, Running, RunningCommand, SessionId, Sessions,
 };
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
+use silico_core::document::OriginPlane;
 use silico_core::kernel::Clients;
 
 use crate::dialog::{Action, Kind};
 use crate::export::{self, ExportForm, Shown};
 use crate::panes::{self, Pane, Panes};
+use crate::sketch::{self, bar::BarAction};
 use crate::tab::{DiskChoice, Tab, said};
 use crate::theme;
 
@@ -66,6 +68,17 @@ fn enter_is_ok(ui: &mut Ui) -> bool {
             !fresh
         });
         pressed
+    })
+}
+
+/// Whether a text field has the keyboard (one drawn last frame, in front of any modal), so
+/// a key there is its own (Delete, in sketch mode, is a character's).
+fn typing(ui: &Ui) -> bool {
+    ui.memory(|memory| memory.focused()).is_some_and(|id| {
+        egui::TextEdit::load_state(ui.ctx(), id).is_some()
+            && ui.ctx().read_response(id).is_some_and(|response| {
+                ui.memory(|memory| memory.allows_interaction(response.layer_id))
+            })
     })
 }
 
@@ -165,6 +178,9 @@ pub struct App<P: Clients + 'static> {
     /// Enter or Esc pressed this frame with a modal already open at its start: the modal's
     /// OK or Cancel, taken before anything else could read it.
     modal_key: Option<Key>,
+    /// The canvas's place in the window, as the panes last drew it: where sketch mode's
+    /// palette floats.
+    canvas: Option<egui::Rect>,
 }
 
 impl<P: Clients + 'static> App<P> {
@@ -190,6 +206,7 @@ impl<P: Clients + 'static> App<P> {
             wakes: Arc::new(AtomicU64::new(0)),
             waker_set: false,
             modal_key: None,
+            canvas: None,
         }
     }
 
@@ -262,6 +279,7 @@ impl<P: Clients + 'static> App<P> {
                 tabs,
                 sessions,
                 name,
+                canvas,
                 ..
             } = self;
             let mut panes = Panes {
@@ -269,9 +287,11 @@ impl<P: Clients + 'static> App<P> {
                 sessions,
                 name,
                 started: &mut started,
+                canvas,
             };
             tree.ui(&mut panes, ui);
         });
+        self.sketch_palette(ui);
         self.ask(ui, &mut started);
         if self.quitting && self.tabs.is_empty() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -397,7 +417,7 @@ impl<P: Clients + 'static> App<P> {
     fn save_as_offered(&self) -> bool {
         self.active_place()
             .and_then(|at| self.tabs.get(at))
-            .is_some_and(|tab| !tab.closing() && !tab.in_dialog())
+            .is_some_and(|tab| !tab.closing() && !tab.editing())
     }
 
     /// The place among the tabs of the one shown, if one is.
@@ -459,12 +479,26 @@ impl<P: Clients + 'static> App<P> {
             pressed(Key::B),
         );
         let stop = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+        // Delete (or Backspace) in sketch mode, unless a field is being typed in.
+        let in_sketch = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .is_some_and(Tab::in_sketch);
+        let delete = in_sketch
+            && !typing(ui)
+            && ui.input_mut(|input| {
+                input.consume_key(Modifiers::NONE, Key::Delete)
+                    | input.consume_key(Modifiers::NONE, Key::Backspace)
+            });
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return (false, None);
         };
         let sessions = &self.sessions;
-        if save && tab.unsaved() && !tab.in_dialog() {
+        if save && tab.unsaved() && !tab.editing() {
             tab.save(sessions, false);
+        }
+        if delete {
+            tab.sketch_delete(sessions);
         }
         if undo && tab.undoable() {
             tab.step(sessions, true);
@@ -489,7 +523,7 @@ impl<P: Clients + 'static> App<P> {
             self.close(id);
         }
         (
-            save || undo || redo || stop || close || enter || rebuild,
+            save || undo || redo || stop || close || enter || rebuild || delete,
             dialog_key,
         )
     }
@@ -642,7 +676,7 @@ impl<P: Clients + 'static> App<P> {
                     // Off while a dialog is open: its OK or Cancel ends its edits first.
                     let unsaved = tab
                         .as_ref()
-                        .is_some_and(|tab| tab.unsaved() && !tab.in_dialog());
+                        .is_some_and(|tab| tab.unsaved() && !tab.editing());
                     if ui.add_enabled(unsaved, egui::Button::new("Save")).clicked()
                         && let Some(tab) = tab
                     {
@@ -707,6 +741,22 @@ impl<P: Clients + 'static> App<P> {
             .exact_size(theme::TITLE_BAR_HEIGHT * 2.0)
             .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
+                    // While a sketch is open, the Sketch tab's row (fusion.md, *Sketch mode*).
+                    if let Some(tab) = tab.as_mut().filter(|tab| tab.in_sketch()) {
+                        let enabled = !tab.closing();
+                        match sketch::bar::sketch_bar(ui, enabled) {
+                            BarAction::None => {}
+                            BarAction::Finish => {
+                                tab.finish_sketch(sessions, true);
+                                *started = true;
+                            }
+                            BarAction::Cancel => {
+                                tab.finish_sketch(sessions, false);
+                                *started = true;
+                            }
+                        }
+                        return;
+                    }
                     ui.label(RichText::new("DESIGN").strong());
                     ui.separator();
                     ui.label(RichText::new("SOLID").strong());
@@ -718,6 +768,26 @@ impl<P: Clients + 'static> App<P> {
                             node.set_label("CREATE");
                         });
                         ui.horizontal(|ui| {
+                            // Create Sketch, then an origin plane (fusion.md, *Sketch mode*);
+                            // a planar face is M5.7's pick.
+                            let can_sketch = tab.as_ref().is_some_and(|tab| tab.can_sketch());
+                            ui.add_enabled_ui(can_sketch, |ui| {
+                                ui.menu_button("Create Sketch", |ui| {
+                                    for (plane, word) in [
+                                        (OriginPlane::Xy, "XY plane"),
+                                        (OriginPlane::Xz, "XZ plane"),
+                                        (OriginPlane::Yz, "YZ plane"),
+                                    ] {
+                                        if ui.button(word).clicked() {
+                                            if let Some(tab) = tab.as_mut() {
+                                                tab.create_sketch(sessions, plane);
+                                                *started = true;
+                                            }
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            });
                             for kind in Kind::ALL {
                                 let enabled = tab.as_ref().is_some_and(|tab| tab.can_open(kind));
                                 if ui
@@ -774,6 +844,29 @@ impl<P: Clients + 'static> App<P> {
                         (_, None) => String::new(),
                     };
                     ui.label(said);
+                    // In a sketch (docs/ux/solidworks.md, §2): the pointer's coordinates, the
+                    // state, and what's being edited.
+                    if let Some(mode) = &tab.sketch {
+                        ui.separator();
+                        if let Some([x, y]) = mode.pointer {
+                            ui.label(format!("{x:.3} mm, {y:.3} mm"));
+                        }
+                        if let Some(state) = mode.state() {
+                            ui.label(sketch::state_words(state));
+                        }
+                        let name = mode.sketch.as_ref().and_then(|id| {
+                            tab.browser
+                                .sketches
+                                .iter()
+                                .find(|row| &row.id == id)
+                                .map(|row| row.name.clone())
+                        });
+                        ui.label(match name {
+                            Some(name) => format!("Editing {name}"),
+                            None => "Editing Sketch".to_owned(),
+                        });
+                        ui.separator();
+                    }
                     let stoppable = tab.stoppable();
                     if ui
                         .add_enabled(stoppable, egui::Button::new("Stop"))
@@ -794,6 +887,32 @@ impl<P: Clients + 'static> App<P> {
                         ui.colored_label(ui.visuals().error_fg_color, message);
                     }
                 });
+            });
+    }
+
+    /// The Sketch Palette (fusion.md, *Sketch mode*), floating in the canvas's top right
+    /// while a sketch is open in the tab shown.
+    fn sketch_palette(&mut self, ui: &mut Ui) {
+        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
+            return;
+        };
+        let revision = tab.revision;
+        let Some(mode) = tab.sketch.as_mut() else {
+            return;
+        };
+        let canvas = self.canvas.unwrap_or_else(|| ui.ctx().content_rect());
+        let view = mode.palette_view(revision);
+        egui::Window::new("SKETCH PALETTE")
+            .id(egui::Id::new(("sketch_palette", tab.id.to_string())))
+            .default_pos(canvas.right_top() + theme::SKETCH_PALETTE_FROM_CORNER)
+            .constrain_to(canvas)
+            .resizable(false)
+            .show(ui.ctx(), |ui| {
+                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                    node.set_role(egui::accesskit::Role::Group);
+                    node.set_label("Sketch Palette");
+                });
+                sketch::bar::palette(ui, &view, &mut mode.settings);
             });
     }
 

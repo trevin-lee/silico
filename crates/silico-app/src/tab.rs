@@ -10,16 +10,17 @@ use silico_core::ErrorCode;
 use silico_core::command::export::{Export, Exported};
 use silico_core::command::{
     Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, FieldSet, ModelChoice,
-    Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId, Sessions, Status,
-    Stepped, TextAnswer, TimelineAnswer,
+    Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId, Sessions,
+    SketchEdited, SketchJoined, Status, Stepped, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
-use silico_core::document::FeatureId;
 use silico_core::document::json::Node;
+use silico_core::document::{ElementId, FeatureId, Reference};
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 
-use crate::dialog::{Dialog, Kind, feature_node};
+use crate::dialog::{Dialog, Kind, feature_node, quoted};
+use crate::sketch::{Deletion, Prefixes, SketchMode};
 
 /// What a feature's mark says: its first problem's (or warning's) message, and its
 /// suggestion, from a `check` of the model the timeline's marks came from.
@@ -69,9 +70,28 @@ enum Queued {
         members: Vec<String>,
         body: Body,
     },
-    /// A dialog opened: the revision it opens at is the one everything asked before it
-    /// comes to, which its Cancel undoes back to and its OK groups from.
-    Opened,
+    /// A dialog (or sketch mode) opened, numbered `serial`: the revision it opens at is the
+    /// one everything asked before it comes to, which its Cancel undoes back to and its OK
+    /// groups from.
+    Opened {
+        serial: u64,
+    },
+    /// Create Sketch's new sketch (`add_feature`), for sketch mode numbered `serial`.
+    AddSketch {
+        serial: u64,
+        feature: Node,
+    },
+    /// Delete in sketch mode: `members` of the sketch `sketch` removed (`sketch_remove`).
+    SketchRemove {
+        sketch: FeatureId,
+        members: Vec<Reference>,
+    },
+    /// Delete of a split point in sketch mode: the pieces of the sketch `sketch` that share
+    /// `point` joined (`sketch_join`).
+    SketchJoin {
+        sketch: FeatureId,
+        point: ElementId,
+    },
     /// Edit Feature's read of the feature `feature`, of `kind`, for the dialog numbered
     /// `serial`: sent once everything asked before it has answered, so the values it loads
     /// are those the edits before it left.
@@ -122,6 +142,8 @@ pub enum Sent {
     Redo(Option<Revision>),
     Commit,
     Rollback,
+    /// A sketch edit, by its command's name (`sketch_remove`, `sketch_join`).
+    SketchEdit(&'static str),
 }
 
 /// A dialog's edits, OK'd: one step for undo and redo (section 9), from the state it opened
@@ -172,7 +194,10 @@ impl Edits {
                 | Queued::Revert { .. }
                 | Queued::Step { .. }
                 | Queued::Add { .. }
-                | Queued::Opened
+                | Queued::Opened { .. }
+                | Queued::AddSketch { .. }
+                | Queued::SketchRemove { .. }
+                | Queued::SketchJoin { .. }
                 | Queued::Load { .. }
                 | Queued::Closed { .. } => break,
             }
@@ -217,6 +242,22 @@ enum Under {
         kind: Kind,
         members: Vec<String>,
         running: Running<TimelineAnswer>,
+    },
+    /// Create Sketch's add, for sketch mode numbered `serial`, as it was sent.
+    AddSketch {
+        serial: u64,
+        sending: Sending,
+        running: Running<Added>,
+    },
+    /// Sketch mode's Delete, a removal, as it was sent.
+    SketchEdit {
+        sending: Sending,
+        running: Running<SketchEdited>,
+    },
+    /// Sketch mode's Delete of a split point, a join, as it was sent.
+    SketchJoin {
+        sending: Sending,
+        running: Running<SketchJoined>,
     },
     /// An existing feature's text, read for its dialog (Edit Feature), of `kind`, numbered
     /// `serial`.
@@ -332,6 +373,10 @@ pub struct Tab {
     /// and whether no transaction was open then (its own edits begin it).
     dialog_base: Option<Revision>,
     dialog_began: bool,
+    /// Sketch mode (section 9, *Sketching*), while a sketch is open; and each sketch's
+    /// state, for the browser's prefixes.
+    pub sketch: Option<SketchMode>,
+    pub prefixes: Prefixes,
     /// The dialogs' edits OK'd in this transaction, each one step for undo and redo.
     groups: Vec<Group>,
     /// Each revision an undo or a redo came to, and the first revision of the state it
@@ -417,6 +462,8 @@ impl Tab {
             loading: None,
             dialog_base: None,
             dialog_began: false,
+            sketch: None,
+            prefixes: Prefixes::default(),
             groups: Vec::new(),
             restored: BTreeMap::new(),
             refused: std::collections::BTreeSet::new(),
@@ -482,7 +529,7 @@ impl Tab {
     /// whose Cancel undoes its edits.
     pub fn undoable(&self) -> bool {
         self.transaction
-            && !self.in_dialog()
+            && !self.editing()
             && !self.stepping()
             && (!self.edits.idle()
                 || (self.synced()
@@ -496,7 +543,7 @@ impl Tab {
     /// dialog is open.
     pub fn redoable(&self) -> bool {
         self.transaction
-            && !self.in_dialog()
+            && !self.editing()
             && self.edits.idle()
             && !self.stepping()
             && self.synced()
@@ -577,6 +624,18 @@ impl Tab {
         self.offer_disk_choice();
         self.read_timeline(sessions);
         self.read_check(sessions);
+        self.read_sketches(sessions);
+    }
+
+    /// The sketch reads polled and started, without waiting: sketch mode's, of its sketch,
+    /// and the browser's prefixes', one sketch at a time; each of the newest published
+    /// model, read again once that moves.
+    fn read_sketches<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if let Some(mode) = self.sketch.as_mut() {
+            mode.poll(sessions, &self.id, self.published);
+        }
+        self.prefixes
+            .poll(sessions, &self.id, &self.browser.sketches, self.published);
     }
 
     /// The session as `response` left it, if that's no older than what the tab knows.
@@ -821,6 +880,65 @@ impl Tab {
                     running,
                 }),
             },
+            Under::AddSketch {
+                serial,
+                sending,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    let ours = self
+                        .sketch
+                        .as_ref()
+                        .is_some_and(|mode| mode.serial == serial);
+                    match response.result {
+                        Ok(added) => {
+                            if let Some(mode) = self.sketch.as_mut().filter(|_| ours) {
+                                mode.sketch = Some(added.feature.id.clone());
+                                self.selected = Some(added.feature.id);
+                            }
+                        }
+                        Err(problems) => {
+                            self.message = Some(said(&problems));
+                            // Nothing to edit: sketch mode leaves, as Cancel does, the
+                            // transaction its add began, if it did, rolled back.
+                            if ours {
+                                self.sketch = None;
+                                self.edits.queue.push_front(Queued::Closed { ok: false });
+                            }
+                        }
+                    }
+                    None
+                }
+                Err(running) => Some(Under::AddSketch {
+                    serial,
+                    sending,
+                    running,
+                }),
+            },
+            Under::SketchEdit { sending, running } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    if let Err(problems) = response.result {
+                        self.message = Some(said(&problems));
+                    }
+                    None
+                }
+                Err(running) => Some(Under::SketchEdit { sending, running }),
+            },
+            Under::SketchJoin { sending, running } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    if let Err(problems) = response.result {
+                        self.message = Some(said(&problems));
+                    }
+                    None
+                }
+                Err(running) => Some(Under::SketchJoin { sending, running }),
+            },
             Under::Load {
                 serial,
                 kind,
@@ -1014,9 +1132,39 @@ impl Tab {
                         running: sessions.add_feature(&self.id, self.revision, None, feature),
                     });
                 }
-                Queued::Opened => {
+                Queued::Opened { serial } => {
                     self.dialog_base = Some(self.revision);
                     self.dialog_began = !self.transaction && !self.beginning;
+                    if let Some(mode) = self.sketch.as_mut().filter(|mode| mode.serial == serial) {
+                        mode.opened_at = Some(self.revision);
+                    }
+                }
+                Queued::AddSketch { serial, feature } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::Add);
+                    let sending = self.sending();
+                    self.under.push(Under::AddSketch {
+                        serial,
+                        sending,
+                        running: sessions.add_feature(&self.id, self.revision, None, feature),
+                    });
+                }
+                Queued::SketchRemove { sketch, members } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::SketchEdit("sketch_remove"));
+                    let sending = self.sending();
+                    let running = sessions.sketch_remove(&self.id, self.revision, sketch, members);
+                    self.under.push(Under::SketchEdit { sending, running });
+                }
+                Queued::SketchJoin { sketch, point } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::SketchEdit("sketch_join"));
+                    let sending = self.sending();
+                    let running = sessions.sketch_join(&self.id, self.revision, sketch, point);
+                    self.under.push(Under::SketchJoin { sending, running });
                 }
                 Queued::Load {
                     serial,
@@ -1147,6 +1295,9 @@ impl Tab {
                         | Under::Step(_)
                         | Under::Add { .. }
                         | Under::Base { .. }
+                        | Under::AddSketch { .. }
+                        | Under::SketchEdit { .. }
+                        | Under::SketchJoin { .. }
                 )
             })
     }
@@ -1230,9 +1381,11 @@ impl Tab {
     /// (section 4).
     pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
         self.message = None;
-        // The document goes back to the file's: a dialog open on it has nothing to edit.
+        // The document goes back to the file's: a dialog or a sketch open on it has nothing
+        // to edit.
         self.dialog = None;
         self.loading = None;
+        self.sketch = None;
         let kept = self
             .edits
             .queue
@@ -1405,11 +1558,18 @@ impl Tab {
         self.rebuild_stopped() && !self.rebuild_out
     }
 
-    /// Esc with no dialog open (section 3's order): the selection cleared, or, with none, a
+    /// Esc with no dialog open (section 3's order): the selection cleared (sketch mode's
+    /// first, then the feature's), or, with none, a
     /// rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)); with
     /// neither, nothing.
     pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if self.selected.is_some() {
+        if let Some(mode) = self
+            .sketch
+            .as_mut()
+            .filter(|mode| !mode.selection.is_empty())
+        {
+            mode.selection.clear();
+        } else if self.selected.is_some() {
             self.selected = None;
         } else if self.stoppable() {
             self.stop_quietly(sessions);
@@ -1572,11 +1732,13 @@ impl Tab {
         self.browser.sketches.iter().any(|row| &row.id == id)
     }
 
-    /// Whether a dialog of `kind` can open: none open or loading, the tab not closing, the
+    /// Whether a dialog of `kind` can open: none open or loading, no sketch open, the tab not
+    /// closing, the
     /// gate taking the document, and, for one that cuts, a body to cut from.
     pub fn can_open(&self, kind: Kind) -> bool {
         self.dialog.is_none()
             && self.loading.is_none()
+            && self.sketch.is_none()
             && !self.closing()
             && self
                 .timeline
@@ -1605,7 +1767,9 @@ impl Tab {
         self.message = None;
         self.refused.clear();
         self.dialogs += 1;
-        self.edits.queue.push_back(Queued::Opened);
+        self.edits.queue.push_back(Queued::Opened {
+            serial: self.dialogs,
+        });
         self.dialogs
     }
 
@@ -1650,6 +1814,14 @@ impl Tab {
     /// added can't have been reloaded under (its add opened a transaction, and a session
     /// never reloads inside one), but if it was, it's closed, said.
     fn reloaded_under_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        // Sketch mode on a sketch with nothing of its own sent (a session reloads only with
+        // no transaction open, and Create Sketch's add opens one): it opens at the reloaded
+        // revision, its next read the reloaded sketch's.
+        if let Some(mode) = self.sketch.as_mut() {
+            self.dialog_base = Some(self.revision);
+            self.dialog_began = true;
+            mode.opened_at = Some(self.revision);
+        }
         let Some(dialog) = self.dialog.take() else {
             return;
         };
@@ -1737,6 +1909,131 @@ impl Tab {
     /// Whether a dialog is open, or its feature is being read for one.
     pub fn in_dialog(&self) -> bool {
         self.dialog.is_some() || self.loading.is_some()
+    }
+
+    /// Whether sketch mode is open.
+    pub fn in_sketch(&self) -> bool {
+        self.sketch.is_some()
+    }
+
+    /// Whether a dialog or a sketch is open: its own OK or Finish, or its Cancel, ends its
+    /// edits, so Save, Save As, Undo, and Redo wait for that (section 9).
+    pub fn editing(&self) -> bool {
+        self.in_dialog() || self.in_sketch()
+    }
+
+    /// Whether sketch mode can open: as a dialog can, none open (nor a sketch).
+    pub fn can_sketch(&self) -> bool {
+        self.dialog.is_none()
+            && self.loading.is_none()
+            && self.sketch.is_none()
+            && !self.closing()
+            && self
+                .timeline
+                .as_ref()
+                .is_some_and(|timeline| timeline.problems == 0)
+    }
+
+    /// Create Sketch on an origin plane, `plane` as the document writes it (`xy`, `xz`, or
+    /// `yz`): sketch mode opened, and an empty sketch on it added (`add_feature`), as a
+    /// dialog's feature is (section 9; fusion.md, *Sketch mode*).
+    pub fn create_sketch<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        plane: silico_core::document::OriginPlane,
+    ) {
+        self.create_sketch_with(sessions, quoted(plane.as_str()));
+    }
+
+    /// Create Sketch on a planar face, by its element name `face` (M5.7's pick): its plane
+    /// `{"face": face, "reversed": false}`, with no `x`, which `add_feature` fills in from
+    /// the face (#348). Whether the name is a face, and planar, is the core's to say: a
+    /// refusal is said, and sketch mode leaves.
+    pub fn create_sketch_on_face<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        face: &str,
+    ) {
+        let plane = format!(r#"{{"face": {}, "reversed": false}}"#, quoted(face));
+        self.create_sketch_with(sessions, plane);
+    }
+
+    /// Create Sketch on `plane`, as JSON writes it.
+    fn create_sketch_with<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        plane: String,
+    ) {
+        if !self.can_sketch() {
+            return;
+        }
+        // SolidWorks' and Fusion's names: Sketch1, Sketch2, and on.
+        let name = format!("Sketch{}", self.browser.sketches.len() + 1);
+        let text = format!(
+            r#"{{"type": "sketch", "name": {}, "plane": {plane}, "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}}"#,
+            quoted(&name)
+        );
+        let Ok(feature) = silico_core::document::json::read(text.as_bytes()) else {
+            // Never: the plane is JSON this module wrote.
+            self.message = Some("The sketch couldn't be written".to_owned());
+            return;
+        };
+        let serial = self.opening();
+        self.sketch = Some(SketchMode::new(serial, None));
+        self.edits
+            .queue
+            .push_back(Queued::AddSketch { serial, feature });
+        self.advance(sessions);
+    }
+
+    /// Edit Sketch (section 9; docs/ux/solidworks.md, §5, *Editing upstream*): sketch mode
+    /// opened on the sketch `id`, at the revision everything asked before it comes to.
+    pub fn edit_sketch<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        id: &FeatureId,
+    ) {
+        if !self.can_sketch() || !self.is_sketch(id) {
+            return;
+        }
+        let serial = self.opening();
+        self.sketch = Some(SketchMode::new(serial, Some(id.clone())));
+        self.selected = Some(id.clone());
+        self.advance(sessions);
+    }
+
+    /// Finish Sketch (`ok`), its edits kept, one step for undo; or Cancel, undone back to
+    /// the revision sketch mode opened at, or rolled back if its own edits began the
+    /// transaction: as a dialog's OK and Cancel are ([`close_dialog`](Self::close_dialog)).
+    /// Neither while the tab closes.
+    pub fn finish_sketch<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, ok: bool) {
+        if self.closing() || self.sketch.take().is_none() {
+            return;
+        }
+        self.edits.queue.push_back(Queued::Closed { ok });
+        self.advance(sessions);
+    }
+
+    /// Delete in sketch mode: the selection removed (`sketch_remove`), or a lone split point
+    /// joined (`sketch_join`), once what's asked before has answered; the selection let
+    /// go. A refusal is said. Nothing with nothing selected, or before the sketch is known.
+    pub fn sketch_delete<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if self.closing() {
+            return;
+        }
+        let Some(mode) = self.sketch.as_mut() else {
+            return;
+        };
+        let (Some(sketch), Some(deletion)) = (mode.sketch.clone(), mode.deletion()) else {
+            return;
+        };
+        mode.selection.clear();
+        self.message = None;
+        self.edits.queue.push_back(match deletion {
+            Deletion::Remove(members) => Queued::SketchRemove { sketch, members },
+            Deletion::Join(point) => Queued::SketchJoin { sketch, point },
+        });
+        self.advance(sessions);
     }
 
     /// The sketch `id` chosen in the browser: the dialog's selection box takes it, if the

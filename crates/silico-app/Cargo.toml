@@ -16,6 +16,8 @@ silico-core.workspace = true
 silico-font.workspace = true
 eframe.workspace = true
 egui_tiles.workspace = true
+# Sketch mode's drawing math, the same bits on every platform as the rest of Silico's.
+libm.workspace = true
 # The backends eframe's renderer draws with (Metal, Vulkan), as the workspace chooses them.
 wgpu.workspace = true
 tracing.workspace = true
@@ -23,6 +25,8 @@ tracing.workspace = true
 [dev-dependencies]
 egui_kittest.workspace = true
 silico-core = { workspace = true, features = ["fake"] }
+# The fake's answers in a test's own terms: a box's faces as planes, a sketch's diagnosis.
+silico-protocol.workspace = true
 tempfile.workspace = true
 
 [lints]

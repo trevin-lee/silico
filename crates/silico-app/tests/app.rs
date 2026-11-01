@@ -6507,3 +6507,590 @@ fn the_format_chosen_is_the_one_marked_chosen() {
     assert!(chosen(&h, "3MF") && !chosen(&h, "STEP"));
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- Sketch mode (M5.11a; section 9, *Sketching*) ----
+
+/// Sketch mode's state, in the first tab.
+fn sketch_mode(h: &AppHarness) -> Option<&silico_app::sketch::SketchMode> {
+    h.state().tabs()[0].sketch.as_ref()
+}
+
+/// Create Sketch from CREATE's menu, on the plane labelled `plane` ("XY plane"): sketch
+/// mode open, and its sketch's add answered.
+fn create_sketch(h: &mut AppHarness, plane: &str) {
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step(h);
+    step(h);
+    h.get_by_role_and_label(Role::Button, plane).click();
+    step_until(h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+}
+
+/// The sketch bar's Finish Sketch (`true`) or Cancel clicked, and sketch mode closed.
+fn leave_sketch(h: &mut AppHarness, finish: bool) {
+    let word = if finish { "Finish Sketch" } else { "Cancel" };
+    h.get_by_role_and_label(Role::Toolbar, "SKETCH")
+        .get_by_label(word)
+        .click();
+    step_until(h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(h);
+}
+
+/// Stepped until sketch mode's newest read holds a sketch.
+fn sketch_read(h: &mut AppHarness) {
+    step_until(h, "the sketch read", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.drawable().is_some())
+    });
+}
+
+/// `member`, of `kind`, clicked in the canvas, as the viewport's press on it would.
+fn select_member(h: &mut AppHarness, member: &str, kind: silico_core::document::ElementKind) {
+    let hit = silico_app::sketch::hit::Hit {
+        id: silico_core::document::ElementId::new(member).unwrap(),
+        kind,
+    };
+    h.state_mut().tabs_mut()[0]
+        .sketch
+        .as_mut()
+        .unwrap()
+        .click(Some(hit), false);
+}
+
+fn sketch_id(text: &str) -> silico_core::document::FeatureId {
+    silico_core::document::FeatureId::new(text).unwrap()
+}
+
+/// An empty sketch named `name` on `plane` (JSON), as the document writes it.
+fn empty_sketch(name: &str, plane: &str) -> Vec<(String, Plain)> {
+    expected(&format!(
+        r#"{{"type": "sketch", "name": "{name}", "plane": {plane}, "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}}"#
+    ))
+}
+
+#[test]
+fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_it_one_undo() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Sketch1"),
+        Some(empty_sketch("Sketch1", r#""xy""#))
+    );
+    // The Sketch tab's row in the toolbar's place, the palette's status the empty
+    // sketch's, the status bar's too; Undo off while it's open, as in a dialog.
+    assert!(h.query_by_role_and_label(Role::Toolbar, "CREATE").is_none());
+    step_until(&mut h, "its status", |h| {
+        anywhere(h, "Status: Fully Defined") && anywhere(h, "Editing Sketch1")
+    });
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Undo")
+            .accesskit_node()
+            .is_disabled()
+    );
+    leave_sketch(&mut h, true);
+    assert!(fields_of(&text_of(&f, &h), "Sketch1").is_some());
+    assert!(h.query_by_role_and_label(Role::Toolbar, "CREATE").is_some());
+    // One undo takes the whole sketch back.
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    let undos = h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Undo(_)))
+        .count();
+    assert_eq!(undos, 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_of_a_sketch_that_began_the_transaction_rolls_it_back_byte_for_byte() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XZ plane");
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Sketch1"),
+        Some(empty_sketch("Sketch1", r#""xz""#))
+    );
+    leave_sketch(&mut h, false);
+    assert_eq!(text_of(&f, &h), EXAMPLE);
+    let tab = &h.state().tabs()[0];
+    assert!(!tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_of_a_sketch_after_earlier_edits_undoes_to_where_it_opened_byte_for_byte() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let before = text_of(&f, &h);
+    assert!(before.contains(r#""name": "KPin""#));
+    let opened_at = h.state().tabs()[0].revision;
+    create_sketch(&mut h, "YZ plane");
+    settled(&mut h);
+    assert_eq!(sketch_mode(&h).unwrap().opened_at, Some(opened_at));
+    assert!(fields_of(&text_of(&f, &h), "Sketch1").is_some());
+    leave_sketch(&mut h, false);
+    assert_eq!(text_of(&f, &h), before);
+    let tab = &h.state().tabs()[0];
+    assert!(tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_sketch_from_the_browser_opens_it_at_the_revision_its_asked_at_and_reads_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    // An edit first, so the revision it opens at isn't the file's.
+    select(&mut h, "Plate");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let at = h.state().tabs()[0].revision;
+    double_click(&mut h, "Browser", "Triangle");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    let mode = sketch_mode(&h).unwrap();
+    assert_eq!(mode.sketch, Some(sketch_id("s0000001")));
+    sketch_read(&mut h);
+    settled(&mut h);
+    assert_eq!(sketch_mode(&h).unwrap().opened_at, Some(at));
+    let read = sketch_mode(&h).unwrap().drawable().unwrap();
+    let lines: Vec<&str> = read.members.lines.iter().map(|l| l.id.as_str()).collect();
+    assert_eq!(lines, ["na000000", "nb000000", "nc000000"]);
+    // One read, however many frames pass with nothing moving.
+    let reads = sketch_mode(&h).unwrap().reads;
+    assert_eq!(reads, 1);
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(sketch_mode(&h).unwrap().reads, reads);
+    // Its own Cancel, nothing of its own sent, undoes nothing.
+    let before = text_of(&f, &h);
+    let sent = h.state().tabs()[0].sent.len();
+    leave_sketch(&mut h, false);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    // And from its context menu.
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label("Triangle")
+        .click_secondary();
+    step(&mut h);
+    step(&mut h);
+    h.get_by_label("Edit Sketch").click();
+    step_until(&mut h, "sketch mode again", |h| sketch_mode(h).is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn delete_removes_the_selection_and_the_sketch_loses_those_members() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    // A selection with nothing in it deletes nothing.
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    assert!(h.state().tabs()[0].sent.is_empty());
+    select_member(&mut h, "na000000", silico_core::document::ElementKind::Line);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    let text = text_of(&f, &h);
+    // The line goes; both its ends stay, each the end of another side.
+    assert!(!text.contains("na000000"), "{text}");
+    for kept in ["nb000000", "nc000000", "pa000000", "pb000000", "pc000000"] {
+        assert!(text.contains(kept), "{kept}");
+    }
+    let tab = &h.state().tabs()[0];
+    assert!(tab.sent.contains(&Sent::SketchEdit("sketch_remove")));
+    assert!(tab.sketch.as_ref().unwrap().selection.is_empty());
+    // The next read, of the model the edit published, has two sides.
+    step_until(&mut h, "the read after it", |h| {
+        sketch_mode(h)
+            .and_then(|mode| mode.drawable())
+            .is_some_and(|read| read.members.lines.len() == 2)
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A line split at pa000003 into na000001 and na000002, held on one line there by a
+/// `tangent_at` (`same`), as `sketch_split` leaves it.
+const SPLIT: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Split", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 60, "y": 0, "construction": false}, {"id": "pa000003", "x": 30, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000003", "construction": false}, {"id": "na000002", "from": "pa000003", "to": "pa000002", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "tangent_at", "a": "na000001", "b": "na000002", "at": "pa000003", "direction": "same"}]}
+  ]
+}
+"#;
+
+#[test]
+fn delete_of_a_split_point_joins_its_pieces() {
+    let f = fixture();
+    let (mut h, _) = f.opened("split.silico", SPLIT);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Split"));
+    double_click(&mut h, "Browser", "Split");
+    sketch_read(&mut h);
+    select_member(
+        &mut h,
+        "pa000003",
+        silico_core::document::ElementKind::Point,
+    );
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    // One line from pa000001 to pa000002 again; the point, the other piece, and the
+    // tangency joining them gone (the design's `sketch_join`).
+    let joined = r#"{"type": "sketch", "name": "Split", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 60, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
+    assert_eq!(fields_of(&text_of(&f, &h), "Split"), Some(expected(joined)));
+    assert!(
+        h.state().tabs()[0]
+            .sent
+            .contains(&Sent::SketchEdit("sketch_join"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn delete_of_a_corner_no_tangency_holds_says_why_the_join_is_refused() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    // pa000000: na000000 starts there, nc000000 ends there.
+    select_member(
+        &mut h,
+        "pa000000",
+        silico_core::document::ElementKind::Point,
+    );
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    let tab = &h.state().tabs()[0];
+    assert!(tab.sent.contains(&Sent::SketchEdit("sketch_join")));
+    let said = tab.message.clone().unwrap_or_default();
+    assert!(said.contains("no tangent_at (same)"), "{said}");
+    assert!(anywhere(&h, &said));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_in_sketch_mode_clears_the_selection_and_leaves_the_sketch_open() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    select_member(&mut h, "nb000000", silico_core::document::ElementKind::Line);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    let mode = sketch_mode(&h).unwrap();
+    assert!(mode.selection.is_empty());
+    // The sketch's own selection first; the browser's stays until the next Esc.
+    assert_eq!(h.state().tabs()[0].selected, Some(sketch_id("s0000001")));
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_some());
+    assert_eq!(h.state().tabs()[0].selected, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Four sketches the fake solves as each is made to read (by how many values each sends):
+/// one point, under defined; two points and a distance between them, its constraint in
+/// conflict, over defined; three points, no solution; four points, solved as sent, fully
+/// defined.
+const FOUR_SKETCHES: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []},
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Tight", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 5, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "distance", "a": "pa000001", "b": "pa000002", "value": 5, "driving": true}]},
+    {"id": "s0000003", "type": "sketch", "v": 1, "name": "Stuck", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 5, "y": 0, "construction": false}, {"id": "pa000003", "x": 0, "y": 5, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []},
+    {"id": "s0000004", "type": "sketch", "v": 1, "name": "Fixed", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 5, "y": 0, "construction": false}, {"id": "pa000003", "x": 0, "y": 5, "construction": false}, {"id": "pa000004", "x": 5, "y": 5, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+/// The texts of the browser's Sketches group, in order: each row's eye, prefix, and name.
+fn sketches_group(h: &AppHarness) -> Vec<String> {
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_role_and_label(Role::Group, "Sketches")
+        .query_all(egui_kittest::kittest::by().recursive(true))
+        .filter_map(|node| {
+            let node = node.accesskit_node();
+            node.label().or_else(|| node.value())
+        })
+        .filter(|text| !text.is_empty())
+        .collect()
+}
+
+#[test]
+fn the_browser_prefixes_each_sketch_by_its_state_as_solidworks_does() {
+    use silico_protocol::{SolveStatus, Solved};
+    let f = fixture();
+    // The values each sends: the origin and the axes' ends (6), each point's two, and the
+    // distance's value.
+    f.sketches.answer(|system| {
+        let sent = FakeSketches::as_sent(system);
+        Ok(match system.values.len() {
+            8 => Solved {
+                dofs: 2,
+                free: system.unknowns.clone(),
+                ..sent
+            },
+            11 => Solved {
+                conflicting: system.constraints.iter().filter_map(|c| c.tag()).collect(),
+                ..sent
+            },
+            12 => Solved {
+                status: SolveStatus::Failed,
+                algorithm: None,
+                ..sent
+            },
+            _ => sent,
+        })
+    });
+    let (mut h, _) = f.opened("four.silico", FOUR_SKETCHES);
+    step_until(&mut h, "the prefixes", |h| {
+        let texts = sketches_group(h);
+        let before = |name: &str| {
+            texts
+                .iter()
+                .position(|text| text == name)
+                .and_then(|at| at.checked_sub(1))
+                .map(|at| texts[at].clone())
+        };
+        before("Loose").as_deref() == Some("(–)")
+            && before("Tight").as_deref() == Some("(+)")
+            && before("Stuck").as_deref() == Some("(?)")
+            && before("Fixed").as_deref() == Some("Hide Fixed")
+    });
+    // Each sketch read once for the model, however many frames pass.
+    let reads = h.state().tabs()[0].prefixes.reads;
+    assert_eq!(reads, 4);
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].prefixes.reads, reads);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A box, and a sketch on its top face: a face the fake doesn't describe as a plane, so the
+/// sketch's plane is broken.
+const ON_A_FACE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Top", "plane": {"face": "b0000001.box.Face6", "x": "+x", "reversed": false}, "points": [{"id": "pa000001", "x": 1, "y": 1, "construction": false}, {"id": "pa000002", "x": 5, "y": 1, "construction": false}, {"id": "pa000003", "x": 5, "y": 3, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn a_face_sketch_whose_face_broke_opens_says_its_plane_problem_and_draws_flat() {
+    let f = fixture();
+    let (mut h, path) = f.opened("face.silico", ON_A_FACE);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Top"));
+    // What the core's own read says of the plane, as an agent reads it.
+    let id = h.state().tabs()[0].id;
+    let core = f
+        .sessions
+        .sketch(&id, ModelChoice::Current, sketch_id("s0000001"))
+        .wait()
+        .result
+        .unwrap();
+    let problem = core.plane.clone().unwrap_err();
+    double_click(&mut h, "Browser", "Top");
+    sketch_read(&mut h);
+    let want = format!("The sketch's plane: {}", problem.message());
+    step_until(&mut h, "its plane's problem", |h| anywhere(h, &want));
+    // Its suggestion too (said in Properties as well, as the sketch's mark's).
+    if let Some(suggestion) = problem.suggestion() {
+        assert!(h.query_all_by_label(suggestion).next().is_some());
+    }
+    let read = sketch_mode(&h).unwrap().drawable().unwrap().clone();
+    assert_eq!(read.plane, core.plane);
+    // Drawn flat in a canvas's place, every member within it.
+    let rect = eframe::egui::Rect::from_min_size(
+        eframe::egui::pos2(300.0, 100.0),
+        eframe::egui::vec2(600.0, 400.0),
+    );
+    let flat = silico_app::sketch::draw::Flat::fit(rect, &read);
+    let project = |at| flat.project(at);
+    let drawn = silico_app::sketch::draw::drawing(
+        &read,
+        &project,
+        silico_app::sketch::draw::Scale(0.1),
+        &silico_app::theme::SKETCH_LIGHT,
+        silico_app::sketch::draw::Shown {
+            dimensions: true,
+            constraints: true,
+        },
+        &Default::default(),
+    );
+    assert_eq!(drawn.len(), 6);
+    for item in &drawn {
+        assert!(
+            item.positions().iter().all(|p| rect.contains(*p)),
+            "{item:?}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), ON_A_FACE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The fake, each box's faces described as OCCT's planes (docs/ports/attacher.md, *Worked
+/// frames*: Face1 −X, Face2 +X, Face3 −Y, Face4 +Y, Face5 −Z, Face6 +Z), through the origin.
+fn planar_boxes(kernel: &FakeKernel) {
+    use silico_protocol::{Reply, Surface};
+    const NORMALS: [[f64; 3]; 6] = [
+        [-1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 0.0, 1.0],
+    ];
+    kernel.answer_instead(|op| {
+        let Op::DescribeAll { shape } = op else {
+            return None;
+        };
+        if !FakeKernel::describe(shape)?.starts_with("box") {
+            return None;
+        }
+        let mut description = FakeKernel::described(shape)?;
+        for (face, normal) in description.faces.iter_mut().zip(NORMALS) {
+            face.surface = Surface::Plane {
+                normal,
+                location: [0.0; 3],
+            };
+        }
+        Some(Reply::DescribedAll(description))
+    });
+}
+
+/// A box alone.
+const BLOCK: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}
+  ]
+}
+"#;
+
+#[test]
+fn create_sketch_on_a_face_writes_the_face_and_the_core_fills_in_its_x() {
+    let f = fixture();
+    planar_boxes(&f.kernel);
+    let (mut h, _) = f.opened("block.silico", BLOCK);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let sessions = Arc::clone(h.state().sessions());
+    h.state_mut().tabs_mut()[0].create_sketch_on_face(&sessions, "b0000001.box.Face6");
+    step_until(&mut h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    settled(&mut h);
+    // Face6 faces +Z: its x is +x, the attacher's default for a normal along z.
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Sketch1"),
+        Some(empty_sketch(
+            "Sketch1",
+            r#"{"face": "b0000001.box.Face6", "x": "+x", "reversed": false}"#
+        ))
+    );
+    sketch_read(&mut h);
+    assert!(sketch_mode(&h).unwrap().plane_problem().is_none());
+    leave_sketch(&mut h, false);
+    assert_eq!(text_of(&f, &h), BLOCK);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn create_sketch_on_a_face_the_core_refuses_says_why_and_leaves_sketch_mode_and_no_transaction() {
+    // The fake's own faces aren't planes: the add is refused.
+    let f = fixture();
+    let (mut h, _) = f.opened("block.silico", BLOCK);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let sessions = Arc::clone(h.state().sessions());
+    h.state_mut().tabs_mut()[0].create_sketch_on_face(&sessions, "b0000001.box.Face6");
+    assert!(sketch_mode(&h).is_some());
+    step_until(&mut h, "sketch mode left", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    assert!(tab.message.is_some());
+    assert!(!tab.transaction);
+    assert_eq!(text_of(&f, &h), BLOCK);
+    // Hostile names: quotes and backslashes reach the core as the string they are.
+    let sessions = Arc::clone(h.state().sessions());
+    h.state_mut().tabs_mut()[0].create_sketch_on_face(&sessions, "a\"b\\c");
+    step_until(&mut h, "sketch mode left again", |h| {
+        sketch_mode(h).is_none()
+    });
+    settled(&mut h);
+    assert!(h.state().tabs()[0].message.is_some());
+    assert_eq!(text_of(&f, &h), BLOCK);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_refused_read_is_kept_and_said_and_delete_still_goes_to_the_core() {
+    // The sketch suppressed by another client after sketch mode opened on it: its read is
+    // refused, kept, and said. A suppressed sketch can still be edited (section 7), so
+    // Delete still sends its removal, for the core to judge.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    let id = h.state().tabs()[0].id;
+    let revision = h.state().tabs()[0].revision;
+    f.sessions
+        .suppress_feature(&id, revision, sketch_id("s0000001"), true)
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the refusal", |h| {
+        sketch_mode(h)
+            .and_then(|mode| mode.read.as_ref())
+            .is_some_and(|read| read.result.is_err())
+    });
+    let said = {
+        let mode = sketch_mode(&h).unwrap();
+        mode.palette_view(h.state().tabs()[0].revision).said
+    };
+    let said = said.unwrap();
+    step_until(&mut h, "it said", |h| anywhere(h, &said));
+    select_member(&mut h, "na000000", silico_core::document::ElementKind::Line);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::SketchEdit("sketch_remove"))
+    );
+    assert!(!text_of(&f, &h).contains("na000000"));
+    assert_eq!(never_waits::waits(), 0);
+}

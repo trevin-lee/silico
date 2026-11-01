@@ -8,6 +8,7 @@ pub mod dialog;
 pub mod export;
 pub mod missing;
 mod panes;
+pub mod sketch;
 pub mod tab;
 pub mod theme;
 

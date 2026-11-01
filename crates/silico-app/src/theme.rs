@@ -137,6 +137,143 @@ pub const SMALL_CORNER_RADIUS: u8 = 4;
 /// The one font's name, as the fonts list it.
 pub const FONT: &str = "Inter";
 
+// ---- Sketch mode (docs/design/m5.0-app.md, section 9, *Colours by state*) ----
+//
+// Plain values for now: the look is to be designed as a prototype and ported (the M5.11
+// plan, *Look and layout*), which changes these values, not the code that reads them.
+
+/// An under-defined member: SolidWorks' blue (docs/ux/solidworks.md, §2).
+pub const SKETCH_UNDER_DEFINED: Color32 = Color32::from_rgb(0x00, 0x00, 0xff);
+/// A fully defined member: SolidWorks' black.
+pub const SKETCH_FULLY_DEFINED: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
+/// A fully defined member on the dark theme's black canvas, where black can't be seen: its
+/// opposite. A stand-in until the prototype settles the dark look.
+pub const SKETCH_FULLY_DEFINED_ON_DARK: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
+/// A dimension or relation to geometry that no longer exists: SolidWorks' olive. No member
+/// reads so yet (the gate refuses a reference to a member that isn't there); it's here for
+/// the model references sketches will take.
+pub const SKETCH_DANGLING: Color32 = Color32::from_rgb(0x80, 0x80, 0x00);
+/// A driven (reference) dimension: SolidWorks' gray.
+pub const SKETCH_DRIVEN: Color32 = Color32::from_rgb(0x80, 0x80, 0x80);
+/// An over-defined member, or an over-defining constraint: SolidWorks' red.
+pub const SKETCH_OVER_DEFINED: Color32 = Color32::from_rgb(0xff, 0x00, 0x00);
+/// A sketch solved only to geometry that can't be built: SolidWorks' yellow.
+pub const SKETCH_INVALID: Color32 = Color32::from_rgb(0xff, 0xff, 0x00);
+/// A sketch no algorithm solved: SolidWorks' red.
+pub const SKETCH_NO_SOLUTION: Color32 = Color32::from_rgb(0xff, 0x00, 0x00);
+/// A selected member: SolidWorks' green for selected endpoints (§2).
+pub const SKETCH_SELECTED: Color32 = Color32::from_rgb(0x00, 0xc0, 0x00);
+/// A redundant relation's own glyph (open item 28): the warning colour, as `check` warns
+/// of it (`constraints_redundant`), never the over-defined red, which it isn't.
+pub const SKETCH_REDUNDANT: Color32 = Color32::from_rgb(0xff, 0x7a, 0x0c);
+/// A relation's glyph that says nothing of a state, on each theme.
+pub const SKETCH_GLYPH_LIGHT: Color32 = Color32::from_rgb(0x82, 0x7f, 0x7f); // Gray.500
+pub const SKETCH_GLYPH_DARK: Color32 = Color32::from_rgb(0x93, 0x90, 0x90); // Gray.550
+
+/// A curve's stroke, in points.
+pub const SKETCH_LINE_WIDTH: f32 = 1.5;
+/// A dimension's leader and extension lines, in points.
+pub const SKETCH_DIMENSION_LINE_WIDTH: f32 = 1.0;
+/// Construction geometry's dashes and the gaps between them, in points.
+pub const SKETCH_DASH: f32 = 6.0;
+pub const SKETCH_GAP: f32 = 4.0;
+/// A point's dot's radius, in points.
+pub const SKETCH_POINT_RADIUS: f32 = 2.5;
+/// A relation glyph's text size, and how far apart glyphs on one member stand, in points.
+pub const SKETCH_GLYPH_SIZE: f32 = 11.0;
+pub const SKETCH_GLYPH_STEP: f32 = 16.0;
+/// How far a glyph stands from its member, in points.
+pub const SKETCH_GLYPH_OFFSET: f32 = 12.0;
+/// How far a dimension stands from what it measures, and its text beyond its line, in
+/// points.
+pub const SKETCH_DIMENSION_OFFSET: f32 = 24.0;
+pub const SKETCH_DIMENSION_TEXT_GAP: f32 = 8.0;
+/// A dimension's text size, in points.
+pub const SKETCH_DIMENSION_TEXT_SIZE: f32 = 12.0;
+/// How far a curve's polyline may stray from the curve, in points.
+pub const SKETCH_CHORD_TOLERANCE: f32 = 0.25;
+/// How near the pointer must be to pick a sketch member, in points.
+pub const SKETCH_PICK_TOLERANCE: f32 = 6.0;
+
+/// How a sketch is drawn: each colour and size, for one theme.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SketchStyle {
+    pub under_defined: Color32,
+    pub fully_defined: Color32,
+    pub dangling: Color32,
+    pub driven: Color32,
+    pub over_defined: Color32,
+    pub invalid: Color32,
+    pub no_solution: Color32,
+    pub selected: Color32,
+    pub redundant: Color32,
+    pub glyph: Color32,
+    pub line_width: f32,
+    pub dimension_line_width: f32,
+    pub dash: f32,
+    pub gap: f32,
+    pub point_radius: f32,
+    pub glyph_size: f32,
+    pub glyph_step: f32,
+    pub glyph_offset: f32,
+    pub dimension_offset: f32,
+    pub dimension_text_gap: f32,
+    pub dimension_text_size: f32,
+    pub chord_tolerance: f32,
+    pub pick_tolerance: f32,
+}
+
+/// The sketch's style on the light theme: SolidWorks' colours exactly.
+pub const SKETCH_LIGHT: SketchStyle = SketchStyle {
+    under_defined: SKETCH_UNDER_DEFINED,
+    fully_defined: SKETCH_FULLY_DEFINED,
+    dangling: SKETCH_DANGLING,
+    driven: SKETCH_DRIVEN,
+    over_defined: SKETCH_OVER_DEFINED,
+    invalid: SKETCH_INVALID,
+    no_solution: SKETCH_NO_SOLUTION,
+    selected: SKETCH_SELECTED,
+    redundant: SKETCH_REDUNDANT,
+    glyph: SKETCH_GLYPH_LIGHT,
+    line_width: SKETCH_LINE_WIDTH,
+    dimension_line_width: SKETCH_DIMENSION_LINE_WIDTH,
+    dash: SKETCH_DASH,
+    gap: SKETCH_GAP,
+    point_radius: SKETCH_POINT_RADIUS,
+    glyph_size: SKETCH_GLYPH_SIZE,
+    glyph_step: SKETCH_GLYPH_STEP,
+    glyph_offset: SKETCH_GLYPH_OFFSET,
+    dimension_offset: SKETCH_DIMENSION_OFFSET,
+    dimension_text_gap: SKETCH_DIMENSION_TEXT_GAP,
+    dimension_text_size: SKETCH_DIMENSION_TEXT_SIZE,
+    chord_tolerance: SKETCH_CHORD_TOLERANCE,
+    pick_tolerance: SKETCH_PICK_TOLERANCE,
+};
+
+/// The sketch's style on the dark theme: the light theme's, fully defined in white and the
+/// glyphs in the dark theme's gray.
+pub const SKETCH_DARK: SketchStyle = SketchStyle {
+    fully_defined: SKETCH_FULLY_DEFINED_ON_DARK,
+    glyph: SKETCH_GLYPH_DARK,
+    ..SKETCH_LIGHT
+};
+
+/// The sketch's style for the theme `visuals` are of.
+pub fn sketch_style(visuals: &egui::Visuals) -> &'static SketchStyle {
+    if visuals.dark_mode {
+        &SKETCH_DARK
+    } else {
+        &SKETCH_LIGHT
+    }
+}
+
+/// Where the Sketch Palette first stands, from the canvas's top right corner.
+pub const SKETCH_PALETTE_FROM_CORNER: egui::Vec2 = egui::Vec2::new(-220.0, 8.0);
+
+/// Finish Sketch's fill, highlighted as Fusion's is while a sketch is open (fusion.md,
+/// *Sketch mode*): the selection's blue (Blue.500).
+pub const SKETCH_FINISH_FILL: Color32 = Color32::from_rgb(0x18, 0x6a, 0xdd);
+
 /// The fonts the app draws with: Inter alone, for proportional text and (until something
 /// needs a monospace) monospace too; egui's default fonts aren't built in.
 pub fn fonts() -> FontDefinitions {
