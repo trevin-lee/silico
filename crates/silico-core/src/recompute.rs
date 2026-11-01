@@ -5400,11 +5400,13 @@ mod tests {
             "{walks} steps in {rounds} rounds, past 4 F = {} a round",
             4 * f
         );
-        // And at least F a round: each round passes each feature once to keep what's live,
-        // so a count that missed the walk (or a walk that skipped features) reads under it.
+        // And at least F for each round but the last: each round with a sketch waiting
+        // passes each feature once to keep what's live, and the last finds none waiting and
+        // walks nothing. A count that missed the walk (or a walk that skipped features)
+        // reads under it.
         assert!(
-            walks >= f * rounds as u64,
-            "{walks} steps in {rounds} rounds, under F = {f} a round"
+            walks >= f * (rounds as u64 - 1),
+            "{walks} steps in {rounds} rounds, under F = {f} for each but the last"
         );
     }
 
@@ -5430,10 +5432,11 @@ mod tests {
         let (walks, rounds, model) = walked_rebuilding(checked_of(&features));
         assert_eq!(rounds, 2);
         assert!(walks <= 4 * f, "{walks} steps, past 4 F = {}", 4 * f);
-        // And at least F a round: each round passes each feature once.
+        // And at least F: the first round passes each feature once; the second finds none
+        // waiting and walks nothing.
         assert!(
-            walks >= f * rounds as u64,
-            "{walks} steps in {rounds} rounds, under F = {f} a round"
+            walks >= f * (rounds as u64 - 1),
+            "{walks} steps in {rounds} rounds, under F = {f} for each but the last"
         );
         for n in 1..=400usize {
             let id = FeatureId::new(&format!("s{n:07}")).unwrap();

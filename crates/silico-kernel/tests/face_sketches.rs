@@ -688,4 +688,12 @@ fn the_sketch_read_of_a_sketch_on_a_cylinders_side_answers_with_the_planar_faces
         &json!({"session": session, "model": "current", "fresh": false}).to_string(),
     );
     assert_eq!(checked["result"]["problems"], json!([error]), "{checked}");
+    // The whole 2D is the same sketch's read on xy, padded onto the cylinder alike.
+    let mut flat = features.clone();
+    flat[1] = rectangle("s0000001", "xy", [1.0, 1.0], 1.0, 1.0);
+    let on_xy = f.open("pin-xy.silico", &flat);
+    let xy = f.read_sketch(&on_xy, "s0000001");
+    assert_eq!(xy["ok"], true, "{xy}");
+    assert_eq!(xy["result"]["plane_problem"], Value::Null, "{xy}");
+    assert_eq!(two_d(&read), two_d(&xy));
 }
