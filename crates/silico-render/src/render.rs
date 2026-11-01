@@ -93,6 +93,9 @@ const READBACK_FRAMES: u32 = 100;
 /// How long one wait for the GPU may take: past the 30 s the core gives a render (step 3 of
 /// docs/design/m4.6-render.md), which ends a stuck worker first.
 const GPU_WAIT: Duration = Duration::from_secs(60);
+/// The most frames [`Renderer::prepare`] refuses in a row after the GPU fails one, before it
+/// tries again: about a second at 60 frames a second. The backoff doubles from 1 to this.
+pub const MAX_BACKOFF_FRAMES: u32 = 64;
 
 /// A render: the PNG, and the ID buffer if the scene asked for it.
 pub struct Rendered {
@@ -111,6 +114,10 @@ pub enum RenderFailure {
     Invalid(InvalidParameter),
     /// Anything else: the renderer's own fault.
     Failed(String),
+    /// The GPU failed a recent frame, so this one wasn't tried: [`Renderer::prepare`] backs
+    /// off, refusing `frames` more frames (this one among them) before it uploads and draws
+    /// again. Nothing was drawn or changed.
+    BackingOff { frames: u32 },
 }
 
 impl std::fmt::Display for RenderFailure {
@@ -119,6 +126,10 @@ impl std::fmt::Display for RenderFailure {
             RenderFailure::OutOfMemory(what) => write!(f, "out of GPU memory: {what}"),
             RenderFailure::Invalid(invalid) => f.write_str(&invalid.message),
             RenderFailure::Failed(what) => f.write_str(what),
+            RenderFailure::BackingOff { frames } => write!(
+                f,
+                "the GPU failed a recent frame: backing off, {frames} frame(s) refused before the next try"
+            ),
         }
     }
 }
@@ -252,6 +263,45 @@ pub struct Renderer {
     /// The last generation a body's mesh was given: each new mesh takes the next, so a
     /// picking answer knows a body changed since its frame.
     generations: u64,
+    /// How [`Renderer::prepare`] backs off after the GPU fails a frame.
+    backoff: Backoff,
+    /// How many of the next frames fail as the GPU fails one, once built: a stand-in for
+    /// out of memory or a lost device, which lavapipe can't be made to give.
+    #[cfg(test)]
+    fail_frames: u32,
+}
+
+/// [`Renderer::prepare`]'s backoff after the GPU fails a frame: so a failure that would
+/// come again (out of memory, a lost device) isn't met by every later frame uploading every
+/// face again and failing again. After a failure the next `refuse` frames are refused at
+/// once, then one is tried; each failure in a row doubles the frames refused after it, from
+/// 1 to [`MAX_BACKOFF_FRAMES`]. A frame that succeeds, or a new mesh uploaded, ends it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Backoff {
+    /// How many more frames are refused.
+    refuse: u32,
+    /// How many the next failure refuses.
+    next: u32,
+}
+
+impl Backoff {
+    const NONE: Backoff = Backoff { refuse: 0, next: 1 };
+
+    /// Another failure: its frames to refuse, and the next failure's doubled.
+    fn failed(&mut self) {
+        self.refuse = self.next;
+        self.next = self.next.saturating_mul(2).min(MAX_BACKOFF_FRAMES);
+    }
+
+    /// Whether this frame is refused, and if it is, how many are refused from it on (it
+    /// among them), counted down by it.
+    fn refuses(&mut self) -> Option<u32> {
+        (self.refuse > 0).then(|| {
+            let left = self.refuse;
+            self.refuse -= 1;
+            left
+        })
+    }
 }
 
 impl Renderer {
@@ -281,6 +331,9 @@ impl Renderer {
             pending: BTreeMap::new(),
             picked: None,
             generations: 0,
+            backoff: Backoff::NONE,
+            #[cfg(test)]
+            fail_frames: 0,
         })
     }
 
@@ -304,7 +357,8 @@ impl Renderer {
     /// [`View::anchor`]). The same mesh again (the same `Arc`, or an equal mesh) changes
     /// nothing; another replaces the body's, so its faces are uploaded again. A mesh that
     /// fails [`check_render_mesh`], or a body numbered 0 (the background's), is refused,
-    /// and the body is as it was.
+    /// and the body is as it was. A new mesh taken ends a backoff ([`Renderer::prepare`]):
+    /// the next frame is tried.
     pub fn upload(&mut self, body: u32, mesh: &Arc<Mesh>) -> Result<(), RenderFailure> {
         let _span =
             tracing::debug_span!("upload_body", body, faces = mesh.face_triangles.len()).entered();
@@ -325,6 +379,7 @@ impl Renderer {
         let mut uploaded = Uploaded::new(Arc::clone(mesh)).map_err(RenderFailure::Failed)?;
         uploaded.generation = self.next_generation();
         self.bodies.insert(body, uploaded);
+        self.backoff = Backoff::NONE;
         Ok(())
     }
 
@@ -358,6 +413,12 @@ impl Renderer {
     /// wgpu finds invalid) keeps the bodies but none of their GPU meshes, which the next
     /// frame uploads again, and its picking request is dropped. Either way nothing is
     /// composited until a frame succeeds.
+    ///
+    /// After a frame the GPU failed it backs off, so a failure that would come again isn't
+    /// met by every frame uploading every face again: the next frame is refused at once
+    /// ([`RenderFailure::BackingOff`], before its checks, asking for no picking), then one is
+    /// tried; each failure in a row doubles the frames refused after it, 1, 2, 4, … up to
+    /// [`MAX_BACKOFF_FRAMES`]. A frame that succeeds, or a new mesh uploaded, ends it.
     pub fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, RenderFailure> {
         let _span = tracing::debug_span!(
             "prepare",
@@ -368,6 +429,9 @@ impl Renderer {
         )
         .entered();
         self.view = None;
+        if let Some(frames) = self.backoff.refuses() {
+            return Err(RenderFailure::BackingOff { frames });
+        }
         let (view, lit) = self.check_frame(frame).map_err(RenderFailure::Invalid)?;
         let device = self.ctx.device.clone();
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
@@ -403,6 +467,14 @@ impl Renderer {
             .map(|&b| (b, lit.get(&b).unwrap_or(&plain)))
             .collect();
         let built = self.build(&view, frame.pixels_per_point, &drawn, picking, None);
+        #[cfg(test)]
+        let built = match self.fail_frames {
+            0 => built,
+            _ => {
+                self.fail_frames -= 1;
+                Err("a stand-in for the GPU's failure".to_owned())
+            }
+        };
         self.ctx.before_submit();
         // On wgpu's native backends these are answered at once: no wait.
         let invalid = pollster::block_on(validity.pop());
@@ -410,6 +482,7 @@ impl Renderer {
         match scoped(short, invalid, built) {
             Ok((commands, builder)) => {
                 self.view = Some(builder);
+                self.backoff = Backoff::NONE;
                 Ok(commands)
             }
             Err(failure) => {
@@ -421,11 +494,13 @@ impl Renderer {
 
     /// What a frame the GPU failed leaves: its picking request (`request`, its readback's
     /// identifier) dropped, and every body's GPU meshes, which nothing vouches for, to be
-    /// uploaded again when they're next drawn; the bodies themselves kept.
+    /// uploaded again when they're next drawn; the bodies themselves kept; and the next
+    /// frames refused for a while ([`Backoff`]).
     fn failed(&mut self, request: Option<u64>) {
         if let Some(id) = request {
             self.pending.remove(&id);
         }
+        self.backoff.failed();
         for body in self.bodies.values_mut() {
             body.drop_gpu_meshes();
         }

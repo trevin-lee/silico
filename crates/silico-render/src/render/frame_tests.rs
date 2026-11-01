@@ -1272,7 +1272,13 @@ fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bod
             assert!(r.pending.contains_key(&id));
             r.failed(Some(id));
             assert!(r.pending.is_empty());
-            // The next frame uploads all six faces again, and no answer comes.
+            // The next frame is refused, backing off ([`Backoff`]); the one after it uploads
+            // all six faces again, and no answer comes.
+            assert!(matches!(
+                r.prepare(&frame(&camera, &[1], &[], None)),
+                Err(RenderFailure::BackingOff { frames: 1 })
+            ));
+            assert_eq!(r.uploads(), 6);
             draw(r, &frame(&camera, &[1], &[], None));
             assert_eq!(r.uploads(), 12);
             assert_eq!(r.take_picking(), None);
@@ -1281,6 +1287,132 @@ fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bod
                 hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE))),
                 Some((1, Element::Face(3), [32, 26]))
             );
+        },
+    );
+}
+
+/// What one frame did: drawn, failed as the GPU fails one, or refused backing off, with the
+/// frames refused from it on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Drawn,
+    Failed,
+    Refused(u32),
+}
+
+/// `frame` prepared, and submitted if it was built, and what it did.
+fn outcome(r: &mut Renderer, frame: &Frame<'_>) -> Outcome {
+    match r.prepare(frame) {
+        Ok(commands) => {
+            r.ctx.queue.submit([commands]);
+            wait(r);
+            Outcome::Drawn
+        }
+        Err(RenderFailure::Failed(_)) => Outcome::Failed,
+        Err(RenderFailure::BackingOff { frames }) => Outcome::Refused(frames),
+        Err(other) => panic!("{other}"),
+    }
+}
+
+#[test]
+fn after_the_gpu_fails_a_frame_the_next_back_off_doubling_until_one_succeeds() {
+    on_lavapipe(
+        "render::frame_tests::after_the_gpu_fails_a_frame_the_next_back_off_doubling_until_one_succeeds",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            assert_eq!(outcome(r, &plain), Drawn);
+            assert_eq!(r.uploads(), 6);
+            // Four tries in a row fail: after each, 1, 2, 4, then 8 frames refused at once,
+            // each uploading nothing; each try after the first uploads the six faces again
+            // (a failure drops them); the fifth try draws.
+            r.fail_frames = 4;
+            let mut want = vec![];
+            for refused in [1, 2, 4, 8] {
+                want.push((Failed, if want.is_empty() { 0 } else { 6 }));
+                want.extend((1..=refused).rev().map(|left| (Refused(left), 0)));
+            }
+            want.push((Drawn, 6));
+            let got: Vec<(Outcome, u64)> = want
+                .iter()
+                .map(|_| {
+                    let before = r.uploads();
+                    let done = outcome(r, &plain);
+                    (done, r.uploads() - before)
+                })
+                .collect();
+            assert_eq!(got, want);
+            // A success ended it: the next failure refuses one frame again, not 16.
+            r.fail_frames = 1;
+            let got: Vec<Outcome> = (0..3).map(|_| outcome(r, &plain)).collect();
+            assert_eq!(got, [Failed, Refused(1), Drawn]);
+        },
+    );
+}
+
+#[test]
+fn a_frame_refused_backing_off_asks_nothing_is_checked_for_nothing_and_caps_at_64() {
+    on_lavapipe(
+        "render::frame_tests::a_frame_refused_backing_off_asks_nothing_is_checked_for_nothing_and_caps_at_64",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            r.fail_frames = 1;
+            assert_eq!(outcome(r, &plain), Failed);
+            // Refused before its checks (body 2 isn't uploaded) and asking for no picking.
+            let readback = r.readback;
+            assert_eq!(
+                outcome(r, &frame(&camera, &[2], &[], Some(ON_THE_FACE))),
+                Refused(1)
+            );
+            assert_eq!((r.readback, r.pending.len()), (readback, 0));
+            assert_eq!(outcome(r, &plain), Drawn);
+            assert_eq!(
+                RenderFailure::BackingOff { frames: 3 }.to_string(),
+                "the GPU failed a recent frame: backing off, 3 frame(s) refused before the next try"
+            );
+            // Nine failures in a row: the runs refused after them, 1, 2, 4, … doubling to 64,
+            // and no further.
+            r.fail_frames = 9;
+            let mut runs: Vec<u32> = vec![];
+            loop {
+                match outcome(r, &plain) {
+                    Failed => runs.push(0),
+                    Refused(_) => *runs.last_mut().unwrap() += 1,
+                    Drawn => break,
+                }
+            }
+            assert_eq!(runs, [1, 2, 4, 8, 16, 32, 64, 64, 64]);
+        },
+    );
+}
+
+#[test]
+fn a_new_mesh_ends_a_backoff_and_the_same_one_again_doesnt() {
+    on_lavapipe(
+        "render::frame_tests::a_new_mesh_ends_a_backoff_and_the_same_one_again_doesnt",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            let held = the_box();
+            r.upload(1, &held).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            r.fail_frames = 2;
+            assert_eq!(outcome(r, &plain), Failed);
+            assert_eq!(outcome(r, &plain), Refused(1));
+            assert_eq!(outcome(r, &plain), Failed);
+            // Refusing two now. The same mesh again changes nothing, so the backoff stays.
+            r.upload(1, &held).unwrap();
+            r.upload(1, &the_box()).unwrap();
+            assert_eq!(outcome(r, &plain), Refused(2));
+            // Another mesh ends it: the next frame is tried, and draws.
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [40.0, 20.0, 11.0])))
+                .unwrap();
+            assert_eq!(outcome(r, &plain), Drawn);
         },
     );
 }
