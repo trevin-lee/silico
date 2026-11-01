@@ -995,6 +995,45 @@ fn escape_undoes_the_last_pick_then_leaves_the_tool() {
 }
 
 #[test]
+fn a_new_pick_unlocks_the_kind() {
+    // A's length locked with A alone; B picked then: the pair's kind is the pointer's again,
+    // and the preview says so.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).right(20.0, 40.0);
+    assert!(d.tool.preview().locked);
+    d.click(15.0, 15.0);
+    assert!(!d.tool.preview().locked);
+}
+
+#[test]
+fn smart_dimensions_messages_say_what_to_do() {
+    for (message, text) in [
+        (
+            Message::NoDistance,
+            "they're at no distance from each other: there's no distance to dimension",
+        ),
+        (
+            Message::AcrossCentreline,
+            "a diameter across a centreline isn't offered: place the dimension on the point's side for its distance",
+        ),
+        (
+            Message::FixedOnly,
+            "the origin and the axes are fixed: dimension a member of the sketch",
+        ),
+        (
+            Message::NotANumber,
+            "type a plain number, as a document writes one: no units, arithmetic, or expressions",
+        ),
+        (
+            Message::ValueRefused(Error::new(ErrorCode::InvalidInput, "1e400 is too large")),
+            "1e400 is too large",
+        ),
+    ] {
+        assert_eq!(message.text(), text);
+    }
+}
+
+#[test]
 fn escape_mid_click_drops_the_press_with_the_pick() {
     // A and B picked; pressed on nothing at (20, 40), Esc, released there: the release is no
     // click, so A's length isn't placed.
