@@ -204,7 +204,7 @@ pub struct SketchMode {
     /// The profile's fill, worked out once for each read and each power-of-two scale (the
     /// last two such kept, so a zoom back and forth across one doesn't work it out each
     /// time), and how many times it has been: what a test counts.
-    fills: Vec<((u64, i32), Vec<RegionFill>)>,
+    fills: Vec<((u64, i32, u32), Vec<RegionFill>)>,
     pub fill_builds: u64,
     /// The last frame's drawing, and how many drawings it has worked out.
     drawn: Option<(DrawnOf, Vec<Drawn>)>,
@@ -450,11 +450,14 @@ impl SketchMode {
             return drawn.clone();
         }
         let (bucket, at) = fill_scale(view.scale);
-        let key = (self.taken, bucket);
+        // Keyed on the outline's chord tolerance too: the fill is worked out at the one the
+        // outline is drawn at, so the two share their vertices whatever it is.
+        let key = (self.taken, bucket, view.chord_tolerance.to_bits());
         self.fills.retain(|(had, _)| had.0 == self.taken);
         if !self.fills.iter().any(|(had, _)| *had == key) {
             self.fill_builds += 1;
-            self.fills.push((key, region_fills(read, at)));
+            self.fills
+                .push((key, region_fills(read, at, view.chord_tolerance)));
             if self.fills.len() > 2 {
                 self.fills.remove(0);
             }
@@ -482,7 +485,7 @@ impl SketchMode {
     pub fn fill_at(&self, bucket: i32) -> Option<&[RegionFill]> {
         self.fills
             .iter()
-            .find(|(had, _)| *had == (self.taken, bucket))
+            .find(|(had, _)| had.0 == self.taken && had.1 == bucket)
             .map(|(_, fills)| fills.as_slice())
     }
 

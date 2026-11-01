@@ -799,26 +799,47 @@ pub fn fill_scale(scale: Scale) -> (i32, Scale) {
 /// Each region of `read`'s profile filled, worked out in the sketch's millimetres at
 /// `scale` (a frame's [`fill_scale`]), so a frame only projects it: the plane-to-screen map
 /// takes triangles to triangles. Its loops are its outline's own polylines, each curve at
-/// the segments its outline takes at that scale ([`curve_segments`]), tessellated even-odd
+/// the segments its outline takes at that scale and chord `tolerance` (the view's, the
+/// outline's: [`curve_segments`]), tessellated even-odd
 /// (the outer loop less its holes) by `lyon_tessellation`: the fill meets the drawn outline
 /// vertex for vertex, at every zoom. A region whose loops can't be walked, that holds more
-/// than [`MAX_FILL_VERTICES`], or that lyon refuses, has none.
-pub fn region_fills(read: &SketchRead, scale: Scale) -> Vec<RegionFill> {
+/// than [`MAX_FILL_VERTICES`], or that lyon refuses (or panics on), has none, and a warning
+/// says so.
+pub fn region_fills(read: &SketchRead, scale: Scale, tolerance: f32) -> Vec<RegionFill> {
     let geometry = Geometry::of(read);
     read.regions
         .iter()
         .filter_map(|region| {
-            let mut loops = vec![walk(&region.outer, &geometry, scale)?];
+            let mut loops = vec![walk(&region.outer, &geometry, scale, tolerance)?];
             for hole in &region.holes {
-                loops.push(walk(hole, &geometry, scale)?);
+                loops.push(walk(hole, &geometry, scale, tolerance)?);
             }
-            if loops.iter().map(Vec::len).sum::<usize>() > MAX_FILL_VERTICES {
+            let of = region.outer.first().cloned();
+            let count = loops.iter().map(Vec::len).sum::<usize>();
+            if count > MAX_FILL_VERTICES {
+                tracing::warn!(
+                    sketch = read.sketch.as_str(),
+                    region = of.as_ref().map_or("", ElementId::as_str),
+                    vertices = count,
+                    "a profile region past {MAX_FILL_VERTICES} vertices is left unfilled"
+                );
                 return None;
             }
-            Some(RegionFill {
-                of: region.outer.first().cloned(),
-                triangles: tessellate(&loops)?,
-            })
+            // A panic in the tessellator is no fill, as its refusal is: the outline is
+            // drawn all the same.
+            let tessellated =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tessellate(&loops)));
+            match tessellated {
+                Ok(Some(triangles)) => Some(RegionFill { of, triangles }),
+                Ok(None) | Err(_) => {
+                    tracing::warn!(
+                        sketch = read.sketch.as_str(),
+                        region = of.as_ref().map_or("", ElementId::as_str),
+                        "the tessellator refused a profile region: it's left unfilled"
+                    );
+                    None
+                }
+            }
         })
         .collect()
 }
@@ -1126,11 +1147,17 @@ fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
 }
 
 /// The polygon a loop of `curves` walks, in order, in the sketch's millimetres, its arcs and
-/// circles at `scale`'s segments ([`curve_segments`]), its vertices on them as its
+/// circles at `scale`'s and `tolerance`'s segments ([`curve_segments`]), its vertices on them
+/// as its
 /// outline's: each curve run from the end the last one ended at (the first, toward the one
 /// after it). None for a curve the read hasn't, or a loop whose curves don't meet end to
 /// end.
-fn walk(curves: &[ElementId], geometry: &Geometry, scale: Scale) -> Option<Vec<[f64; 2]>> {
+fn walk(
+    curves: &[ElementId],
+    geometry: &Geometry,
+    scale: Scale,
+    tolerance: f32,
+) -> Option<Vec<[f64; 2]>> {
     let polyline = |id: &ElementId| -> Option<Vec<[f64; 2]>> {
         Some(match geometry.curves.get(id)?.0 {
             Curve::Line { from, to } => vec![from, to],
@@ -1140,7 +1167,7 @@ fn walk(curves: &[ElementId], geometry: &Geometry, scale: Scale) -> Option<Vec<[
                 start,
                 sweep,
             } => {
-                let n = curve_segments(radius, sweep, scale, SKETCH_CHORD_TOLERANCE);
+                let n = curve_segments(radius, sweep, scale, tolerance);
                 (0..=n)
                     .map(|k| {
                         add(

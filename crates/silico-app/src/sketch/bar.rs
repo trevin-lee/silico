@@ -46,6 +46,7 @@ pub struct BarView {
 /// state, Cancel, and Finish Sketch with its key.
 pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
     let mut action = BarAction::None;
+    dark(ui);
     let (fill, accent, strong, weak) = (FLOATING_BG, SELECTION_BG, TEXT_STRONG, TEXT_SUBDUED);
     // One row, whatever room the canvas leaves: its words are never wrapped away.
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
@@ -107,6 +108,30 @@ pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
     action
 }
 
+/// The dark look the bar and the palette are drawn in, whatever theme the window shows:
+/// egui's dark visuals, their widgets' text in the dark tokens, so text stands out from the
+/// dark panels the prototype draws them as (a light theme's dark text would vanish there).
+pub fn panel_visuals() -> egui::Visuals {
+    let mut visuals = egui::Visuals::dark();
+    visuals.window_fill = FLOATING_BG;
+    visuals.panel_fill = FLOATING_BG;
+    visuals.window_stroke = Stroke::new(1.0, PANEL_BORDER);
+    visuals.selection.bg_fill = SELECTION_BG;
+    visuals.selection.stroke = Stroke::new(1.0, ON_SELECTION);
+    visuals.error_fg_color = ERROR_TEXT;
+    visuals.widgets.noninteractive.fg_stroke.color = TEXT_DEFAULT;
+    visuals.widgets.inactive.fg_stroke.color = TEXT_DEFAULT;
+    visuals.widgets.hovered.fg_stroke.color = TEXT_STRONG;
+    visuals.widgets.active.fg_stroke.color = TEXT_STRONG;
+    visuals.widgets.open.fg_stroke.color = TEXT_DEFAULT;
+    visuals
+}
+
+/// `ui` and what's laid out in it drawn in [`panel_visuals`].
+fn dark(ui: &mut Ui) {
+    *ui.visuals_mut() = panel_visuals();
+}
+
 /// The palette's settings: what's shown, Construction, and *Automatic relations* (the last
 /// two kept for M5.11b's tools).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +188,7 @@ pub fn tool_name(tool: ToolKind) -> &'static str {
 /// The Sketch Palette (the prototype's `.palette`): its title, then Status, Tool, Show,
 /// and the colours' legend, each a section; Look At off until the viewport's camera.
 pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
+    dark(ui);
     egui::Frame::new()
         .fill(FLOATING_BG)
         .stroke(Stroke::new(1.0, PANEL_BORDER))

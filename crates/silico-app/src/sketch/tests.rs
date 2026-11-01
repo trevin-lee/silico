@@ -178,7 +178,7 @@ fn drawn(read: &SketchRead) -> Vec<Drawn> {
         &view(),
         Shown::default(),
         &Default::default(),
-        &region_fills(read, HAND),
+        &region_fills(read, HAND, SKETCH_CHORD_TOLERANCE),
     )
 }
 
@@ -731,7 +731,7 @@ fn the_profile_is_filled_less_its_holes_and_not_when_over_defined() {
             ..Shown::default()
         },
         &Default::default(),
-        &region_fills(&read, HAND),
+        &region_fills(&read, HAND, SKETCH_CHORD_TOLERANCE),
     );
     assert!(off.iter().all(|d| !matches!(d, Drawn::Fill { .. })));
 }
@@ -1883,7 +1883,7 @@ fn a_profile_with_a_side_written_backwards_fills_the_same() {
         &["na000001", "na000002", "na000003", "na000004"],
         &[],
     )];
-    let fills = region_fills(&read, HAND);
+    let fills = region_fills(&read, HAND, SKETCH_CHORD_TOLERANCE);
     assert!((fill_area(&fills) - 800.0).abs() < 1e-3);
     let drawn = drawing(
         &read,
@@ -1919,7 +1919,7 @@ fn a_circles_and_an_arcs_fill_stay_within_the_chord_bound_of_their_area() {
         construction: false,
     });
     circle.regions = vec![region(&["ca000001"], &[])];
-    let disc = fill_area(&region_fills(&circle, HAND));
+    let disc = fill_area(&region_fills(&circle, HAND, SKETCH_CHORD_TOLERANCE));
     let full = PI * 100.0;
     assert!(disc <= full && disc >= full - TAU * 10.0 * stray, "{disc}");
     // A 20 × 10 rectangle whose top is an arc about (10, 10), bulging up through a half turn:
@@ -1943,7 +1943,7 @@ fn a_circles_and_an_arcs_fill_stay_within_the_chord_bound_of_their_area() {
         &["na000001", "na000002", "aa000001", "na000003"],
         &[],
     )];
-    let got = fill_area(&region_fills(&arched, HAND));
+    let got = fill_area(&region_fills(&arched, HAND, SKETCH_CHORD_TOLERANCE));
     let want = 200.0 + 50.0 * PI;
     assert!(
         got <= want + 1e-9 && got >= want - PI * 10.0 * stray,
@@ -2029,7 +2029,7 @@ fn a_plate_with_sixty_holes_fills_less_its_holes_and_steady_frames_reuse_the_dra
     // inward from its circle, so the fill covers a little more than that, by at most the
     // holes' perimeters times the chord bound.
     let read = plate();
-    let fills = region_fills(&read, Scale(0.125));
+    let fills = region_fills(&read, Scale(0.125), SKETCH_CHORD_TOLERANCE);
     assert_eq!(fills.len(), 1);
     let want = 6000.0 - 60.0 * PI * 6.25;
     let stray = 0.25 * 0.125;
@@ -2199,7 +2199,10 @@ fn the_plates_cache_is_keyed_on_the_read_the_scale_the_view_and_whats_shown() {
     assert_eq!((mode.drawings, mode.fill_builds), (1, 1));
     let cached = mode.fill_at(-4).unwrap().to_vec();
     let read = mode.drawable().unwrap().clone();
-    assert_eq!(cached, region_fills(&read, Scale(0.0625)));
+    assert_eq!(
+        cached,
+        region_fills(&read, Scale(0.0625), SKETCH_CHORD_TOLERANCE)
+    );
     // To 20 (another power of two) and back, and again: the two kept, neither worked out
     // again.
     frames_at(&mut mode, 20.0, 0.0, 2);
@@ -2352,7 +2355,7 @@ fn a_plate_of_225_holes_fills_within_the_chord_bound() {
     // at most the holes' perimeters times the chords' sagitta, 0.25 / 16 mm.
     let read = holed(15, None);
     let at = draw::fill_scale(Scale(0.1)).1;
-    let fills = region_fills(&read, at);
+    let fills = region_fills(&read, at, SKETCH_CHORD_TOLERANCE);
     assert_eq!(fills.len(), 1);
     let want = 150.0 * 150.0 - 225.0 * PI * 6.25;
     let got = fill_area(&fills);
@@ -2369,7 +2372,7 @@ fn a_close_fill_keeps_outside_each_hole_and_inside_a_round_outer_boundary() {
         c.id.as_str() == "cr000000" || c.id.as_str()[2..].parse::<usize>().is_ok_and(|n| n < 60)
     });
     read.regions[0].holes.truncate(60);
-    let fills = region_fills(&read, Scale(1.0 / 128.0));
+    let fills = region_fills(&read, Scale(1.0 / 128.0), SKETCH_CHORD_TOLERANCE);
     let vertices: Vec<[f64; 2]> = fills[0].triangles.iter().flatten().copied().collect();
     for v in &vertices {
         assert!(
@@ -2410,7 +2413,11 @@ fn a_fill_meets_its_outline_vertex_for_vertex_at_every_zoom() {
             visible: None,
             chord_tolerance: SKETCH_CHORD_TOLERANCE,
         };
-        let fills = region_fills(&read, draw::fill_scale(view.scale).1);
+        let fills = region_fills(
+            &read,
+            draw::fill_scale(view.scale).1,
+            SKETCH_CHORD_TOLERANCE,
+        );
         let drawn = drawing(&read, &view, Shown::default(), &Default::default(), &fills);
         let key = |p: Pos2| ((p.x * 16.0).round() as i64, (p.y * 16.0).round() as i64);
         let outline: std::collections::BTreeSet<(i64, i64)> = drawn
@@ -2490,7 +2497,7 @@ fn a_perforated_plate_at_a_close_pitch_covers_no_hole_and_fills_within_the_chord
     // 300 holes of r 2.5 on a 7 mm pitch, 2 mm of web between them, in a 140 × 105 plate.
     let read = pitched(20, 15, 7.0);
     let at = draw::fill_scale(Scale(0.1)).1;
-    let fills = region_fills(&read, at);
+    let fills = region_fills(&read, at, SKETCH_CHORD_TOLERANCE);
     assert_eq!(fills.len(), 1);
     let triangles = &fills[0].triangles;
     // Each hole inscribed (29 chords at 1/16): the fill exceeds the true area by at most the
@@ -2588,7 +2595,7 @@ fn a_slot_hole_and_a_concave_notch_fill_exactly_within_the_chord_bound() {
         &[&["nm000001", "ab000001", "nm000002", "ab000002"]],
     )];
     let at = draw::fill_scale(HAND).1;
-    let fills = region_fills(&read, at);
+    let fills = region_fills(&read, at, SKETCH_CHORD_TOLERANCE);
     assert_eq!(fills.len(), 1);
     // 1,800 less the notch's half disc, 50π, and the slot, 60 + 9π. Both inscribed, so the
     // fill exceeds it, by at most their arcs' lengths (10π and 6π) times the sagitta.
@@ -2618,8 +2625,189 @@ fn a_slot_hole_and_a_concave_notch_fill_exactly_within_the_chord_bound() {
 #[test]
 fn the_same_read_fills_with_the_same_triangles_every_time() {
     let read = plate();
-    let first = region_fills(&read, Scale(0.0625));
+    let first = region_fills(&read, Scale(0.0625), SKETCH_CHORD_TOLERANCE);
     for _ in 0..3 {
-        assert_eq!(region_fills(&read, Scale(0.0625)), first);
+        assert_eq!(
+            region_fills(&read, Scale(0.0625), SKETCH_CHORD_TOLERANCE),
+            first
+        );
     }
+}
+
+/// Every text `draw` lays out in a context showing egui's light theme, after two passes so
+/// its layout has settled: each text and its colour.
+fn texts_on_light(mut draw: impl FnMut(&mut egui::Ui)) -> Vec<(String, egui::Color32)> {
+    let ctx = egui::Context::default();
+    ctx.set_fonts(crate::theme::fonts());
+    ctx.set_theme(egui::Theme::Light);
+    let mut texts = Vec::new();
+    for pass in 0..2 {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| draw(ui));
+        output.textures_delta.clear();
+        if pass == 1 {
+            let mut shapes: Vec<egui::Shape> = output.shapes.into_iter().map(|c| c.shape).collect();
+            while let Some(shape) = shapes.pop() {
+                match shape {
+                    egui::Shape::Vec(inner) => shapes.extend(inner),
+                    egui::Shape::Text(text) => {
+                        for section in &text.galley.job.sections {
+                            let colour = match (text.override_text_color, section.format.color) {
+                                (Some(colour), _) => colour,
+                                (None, c) if c == egui::Color32::PLACEHOLDER => text.fallback_color,
+                                (None, c) => c,
+                            };
+                            let range = section.byte_range.start.0..section.byte_range.end.0;
+                            let words = text.galley.job.text[range].to_owned();
+                            texts.push((words, colour));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    texts
+}
+
+#[test]
+fn the_bar_and_the_palette_are_drawn_dark_on_a_window_showing_the_light_theme() {
+    let mut read = under(rectangle(Vec::new()));
+    read.states.dofs = 4;
+    let mode = mode_on(read);
+    let bar = mode.bar_view("Sketch1", true);
+    let view = mode.palette_view(silico_core::command::Revision::OPENED);
+    let mut settings = bar::Settings::default();
+    let mut texts = texts_on_light(|ui| {
+        bar::sketch_bar(ui, &bar);
+    });
+    texts.extend(texts_on_light(|ui| bar::palette(ui, &view, &mut settings)));
+    assert!(texts.iter().any(|(words, _)| words == "Cancel"));
+    assert!(texts.iter().any(|(words, _)| words == "Profile"));
+    // Every text but Look At, which is off (faded on purpose till the viewport's camera),
+    // stands out from the panels' dark fill.
+    for (words, colour) in texts.iter().filter(|(words, _)| words != "Look At") {
+        let ratio = contrast(*colour, FLOATING_BG);
+        assert!(ratio >= 3.0, "{words:?} in {colour:?}: {ratio}");
+    }
+}
+
+#[test]
+fn a_profile_far_from_the_origin_fills_at_its_own_precision() {
+    // A 10 mm square about (999 990, 999 990), a kilometre out, less a 29-gon of radius 2.5
+    // about its middle. In f32 there, a coordinate is a sixteenth of a millimetre apart; the
+    // tessellation, taken about the loops' middle, keeps each vertex where it was.
+    let (cx, cy) = (999_990.0, 999_990.0);
+    let square = vec![
+        [cx - 5.0, cy - 5.0],
+        [cx + 5.0, cy - 5.0],
+        [cx + 5.0, cy + 5.0],
+        [cx - 5.0, cy + 5.0],
+    ];
+    let hole: Vec<[f64; 2]> = (0..29)
+        .map(|k| add([cx, cy], mul(direction(TAU * k as f64 / 29.0), 2.5)))
+        .collect();
+    let loops = [square, hole];
+    let triangles = tessellate(&loops).unwrap();
+    for v in triangles.iter().flatten() {
+        let off = loops
+            .iter()
+            .flatten()
+            .map(|p| libm::hypot(v[0] - p[0], v[1] - p[1]))
+            .fold(f64::INFINITY, f64::min);
+        assert!(off <= 1e-5, "{v:?} is {off} from the loops' points");
+    }
+    let area: f64 = triangles.iter().map(|t| signed_area(&t[..]).abs()).sum();
+    let want = 100.0 - 14.5 * 6.25 * libm::sin(TAU / 29.0);
+    assert!((area - want).abs() < 1e-3, "{area} for {want}");
+}
+
+#[test]
+fn a_loop_whose_first_curve_runs_against_it_fills_whole() {
+    // The rectangle with its first side, na000001, written from pa000002 to pa000001.
+    let mut sketch = rectangle(Vec::new());
+    sketch.lines[0] = line("na000001", "pa000002", "pa000001");
+    let mut read = under(sketch);
+    read.regions = vec![region(
+        &["na000001", "na000002", "na000003", "na000004"],
+        &[],
+    )];
+    let fills = region_fills(&read, HAND, SKETCH_CHORD_TOLERANCE);
+    assert!(
+        (fill_area(&fills) - 800.0).abs() < 1e-3,
+        "{}",
+        fill_area(&fills)
+    );
+    // A loop that starts with an arc walked against its own way: the upper half circle of
+    // radius 10 about the origin, counter-clockwise from (10, 0) to (−10, 0), walked back from
+    // (−10, 0) to (10, 0), then down, across, and up a 20 × 10 rectangle below it. 200 +
+    // 50π, less at most its 10π of arc times the chords' sagitta.
+    let arched = sketch_of(
+        vec![
+            point("pc000000", 0.0, 0.0),
+            point("pa000001", 10.0, 0.0),
+            point("pa000002", -10.0, 0.0),
+            point("pa000003", 10.0, -10.0),
+            point("pa000004", -10.0, -10.0),
+        ],
+        vec![
+            line("na000001", "pa000001", "pa000003"),
+            line("na000002", "pa000003", "pa000004"),
+            line("na000003", "pa000004", "pa000002"),
+        ],
+        vec![arc("aa000001", "pc000000", "pa000001", "pa000002")],
+    );
+    let mut read = under(arched);
+    read.regions = vec![region(
+        &["aa000001", "na000001", "na000002", "na000003"],
+        &[],
+    )];
+    let at = draw::fill_scale(HAND).1;
+    let got = fill_area(&region_fills(&read, at, SKETCH_CHORD_TOLERANCE));
+    let want = 200.0 + 50.0 * PI;
+    assert!(
+        got <= want + 1e-3 && got >= want - 10.0 * PI * 0.25 * at.0,
+        "{got} for {want}"
+    );
+}
+
+/// Counts the warnings logged while it's the subscriber.
+struct Warnings(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl tracing::Subscriber for Warnings {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if *event.metadata().level() == tracing::Level::WARN {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+#[test]
+fn a_region_past_the_vertex_bound_is_left_unfilled_and_said() {
+    // 200 holes at a millionth of a millimetre a point: each circle at the most segments a
+    // curve takes, 1,024, so 200 · 1,024 + 4 = 204,804 vertices, past 200,000.
+    let read = pitched(20, 10, 7.0);
+    let warnings = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fills = tracing::subscriber::with_default(Warnings(warnings.clone()), || {
+        region_fills(&read, Scale(1e-6), SKETCH_CHORD_TOLERANCE)
+    });
+    assert!(fills.is_empty());
+    assert_eq!(warnings.load(std::sync::atomic::Ordering::SeqCst), 1);
+    // 195 holes, 195 · 1,024 + 4 = 199,684 vertices, within it: filled, said nothing of.
+    let fewer = pitched(15, 13, 7.0);
+    let warnings = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let filled = tracing::subscriber::with_default(Warnings(warnings.clone()), || {
+        region_fills(&fewer, Scale(1e-6), SKETCH_CHORD_TOLERANCE)
+    });
+    assert_eq!(filled.len(), 1);
+    assert_eq!(warnings.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

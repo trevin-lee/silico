@@ -6690,6 +6690,11 @@ fn edit_sketch_from_the_browser_opens_it_at_the_revision_its_asked_at_and_reads_
     type_name(&mut h, "K");
     settled(&mut h);
     let at = h.state().tabs()[0].revision;
+    // Its model published first, so sketch mode opens on a model that won't move.
+    step_until(&mut h, "the rename's model published", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.published == Some(tab.revision)
+    });
     double_click(&mut h, "Browser", "Triangle");
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     let mode = sketch_mode(&h).unwrap();
@@ -6700,18 +6705,9 @@ fn edit_sketch_from_the_browser_opens_it_at_the_revision_its_asked_at_and_reads_
     let read = sketch_mode(&h).unwrap().drawable().unwrap();
     let lines: Vec<&str> = read.members.lines.iter().map(|l| l.id.as_str()).collect();
     assert_eq!(lines, ["na000000", "nb000000", "nc000000"]);
-    // Once the model the edit made is published (its rebuild may land after sketch mode
-    // opens, which reads it again), one read for it, however many frames pass with
-    // nothing moving.
-    step_until(&mut h, "the edit's model published", |h| {
-        let tab = &h.state().tabs()[0];
-        tab.published == Some(tab.revision)
-            && sketch_mode(h)
-                .and_then(|mode| mode.read.as_ref())
-                .is_some_and(|read| read.model == Some(tab.revision))
-    });
+    // One read, however many frames pass with nothing moving.
     let reads = sketch_mode(&h).unwrap().reads;
-    assert!(reads <= 2, "{reads}");
+    assert_eq!(reads, 1);
     for _ in 0..20 {
         step(&mut h);
     }
@@ -6972,7 +6968,11 @@ fn a_face_sketch_whose_face_broke_opens_says_its_plane_problem_and_draws_flat() 
         &view,
         silico_app::sketch::draw::Shown::default(),
         &Default::default(),
-        &silico_app::sketch::draw::region_fills(&read, flat.scale()),
+        &silico_app::sketch::draw::region_fills(
+            &read,
+            flat.scale(),
+            silico_app::sketch::style::SKETCH_CHORD_TOLERANCE,
+        ),
     );
     // The origin (within the fit too), the triangle's fill (its one region), three sides,
     // and three corners.
