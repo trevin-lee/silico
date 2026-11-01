@@ -7,12 +7,14 @@
 //! live solid that failed, or was blocked, blocks the sketch where the face isn't found in
 //! another; one not built yet leaves it to the next round of the rebuild.
 
-use silico_protocol::{FaceFrame, FaceFrameError, MIN_AXIS_OFF_NORMAL, Surface};
+use silico_protocol::{
+    FaceFrame, FaceFrameError, MIN_AXIS_OFF_NORMAL, NORMAL_LENGTH_TOLERANCE, Surface,
+};
 
 use crate::document::{AxisToken, FacePlane, FeatureId};
 use crate::kernel::{Description, ElementKind};
 use crate::naming::{ElementMap, Maker, Name};
-use crate::references::{CANDIDATES, Candidates, cut_short, refused, retyped, unstable};
+use crate::references::{CANDIDATES, Candidates, Lookup, cut_short, look_up, refused};
 use crate::{Error, ErrorCode};
 
 /// The frame of a sketch on the plane of unit normal `normal` through `location` (a point
@@ -125,128 +127,138 @@ fn placed<'a>(
                 .with_feature(sketch.as_str()),
         )
     };
-    let name = match Name::parse(text, makers) {
-        Ok(name) => name,
-        // The gate refuses a face that isn't a name: not reached from a checked document.
-        Err(error) => return Ok(broken(&format!("isn't a name: {error}"), Vec::new())),
+    let solids = built(related);
+    let maps: Vec<&ElementMap> = solids.iter().map(|(map, _)| *map).collect();
+    // A broken name's candidates are read from every live solid, so its refusal waits until
+    // each has settled: the same candidates whichever round it comes in (docs/ports/
+    // attacher.md, *In rounds*).
+    let refusal = |why: &str, name: &Name| -> Result<Placed, FeatureId> {
+        let others = others();
+        if let Some(on) = waiting(&others) {
+            return Err(on);
+        }
+        let every: Vec<&ElementMap> = maps
+            .iter()
+            .copied()
+            .chain(built(&others).into_iter().map(|(map, _)| map))
+            .collect();
+        Ok(broken(
+            why,
+            Candidates::of(&every, ElementKind::Face).of_name(name),
+        ))
     };
-    for (map, description) in built(related) {
-        let Some(element) = map.element(&name) else {
-            continue;
-        };
-        if map.is_unstable(&name) {
-            return Ok(broken(&unstable(element.kind), Vec::new()));
-        }
-        if element.kind != ElementKind::Face {
-            return Ok(broken(
-                &format!("names {}, not a face", element.kind.a_word()),
-                Vec::new(),
-            ));
-        }
-        let description = match description {
-            Ok(description) => *description,
-            Err(error) => return Ok(Placed::Failed(error.clone().with_feature(sketch.as_str()))),
-        };
-        let face = element
-            .index
-            .checked_sub(1)
-            .and_then(|i| description.faces.get(i as usize));
-        let Some(face) = face else {
-            return Ok(Placed::Failed(
-                Error::new(
-                    ErrorCode::Internal,
-                    "a face's name found it in a solid whose description hasn't it",
-                )
-                .with_feature(sketch.as_str())
-                .with_elements([cut_short(text)])
-                .with_suggestion(crate::worker::SILICO_BUG),
-            ));
-        };
-        let Surface::Plane { normal, location } = face.surface else {
-            // Its candidates are read from every live solid, so the refusal waits until
-            // each has settled: the same candidates, whichever round it comes in.
-            let others = others();
-            if let Some(on) = waiting(&others) {
+    // Read as a fillet's edge is (`references::look_up`): only the related solids built can
+    // hold it.
+    let (description, element, name) = match look_up(text, ElementKind::Face, &maps, makers) {
+        Lookup::Found { map, element, name } => match solids.get(map) {
+            Some((_, description)) => (*description, element, name),
+            None => {
+                return Ok(Placed::Failed(
+                    silico_bug("a face was found in a solid that isn't among those searched")
+                        .with_feature(sketch.as_str()),
+                ));
+            }
+        },
+        // The gate refuses a face that isn't a name: not reached from a checked document.
+        Lookup::Refused { why, name: None } => return Ok(broken(&why, Vec::new())),
+        // Found, by an unstable name or as another kind of element.
+        Lookup::Refused {
+            why,
+            name: Some(name),
+        } => return refusal(&why, &name),
+        Lookup::Missing { name, retyped } => {
+            // Not in any related solid built: one not built yet may hold it, or one that
+            // failed.
+            if let Some(on) = waiting(related) {
                 return Err(on);
             }
-            let what = crate::elements::surface_type(&face.surface).word();
-            return Ok(broken(
-                &format!(
-                    "names a face that isn't planar: OCCT types its surface a {what}, and a sketch sits only on a face typed a plane"
-                ),
-                planar_faces(&name, related, &others),
-            ));
-        };
-        // A normal no plane has (not finite, or of no length): the kernel's describe gave it
-        // badly, a fault in Silico, not the document's.
-        if !normal.iter().all(|c| c.is_finite()) || silico_protocol::vec3::norm(normal) == 0.0 {
-            return Ok(Placed::Failed(
-                Error::new(
-                    ErrorCode::Internal,
-                    format!("the kernel described the sketch's face's normal as {normal:?}, which no plane has"),
-                )
-                .with_feature(sketch.as_str())
-                .with_elements([cut_short(text)])
-                .with_suggestion(crate::worker::SILICO_BUG),
-            ));
-        }
-        return Ok(match frame(normal, location, plane.x, plane.reversed) {
-            Ok(frame) => Placed::Frame(frame),
-            Err(FaceFrameError::AxisAlongNormal(off)) => {
-                Placed::Broken(parallel(sketch, plane, normal, off))
+            if let Some(root) = related.iter().find_map(|solid| match solid {
+                Live::Failed(root) => Some(root.clone()),
+                Live::Built { .. } | Live::Waits(_) => None,
+            }) {
+                return Ok(Placed::Blocked(root));
             }
-            // A frame no sketch can be placed on (its origin past the reach, as a slanted
-            // face far out can give): the sketch's, in the document's terms.
-            Err(FaceFrameError::Invalid(invalid)) => Placed::Failed(
-                Error::new(
-                    ErrorCode::InvalidInput,
-                    format!(
-                        "the sketch's face's frame can't place a sketch: {}",
-                        invalid.message
-                    ),
-                )
-                .with_feature(sketch.as_str())
-                .with_parameter("plane")
-                .with_suggestion(
-                    "put the sketch on a face nearer the model's origin: a face's frame is placed from the origin projected onto its plane",
-                ),
-            ),
-        });
-    }
-    // Not in any related solid built: one not built yet may hold it, or one that failed.
-    if let Some(on) = waiting(related) {
-        return Err(on);
-    }
-    if let Some(root) = related.iter().find_map(|solid| match solid {
-        Live::Failed(root) => Some(root.clone()),
-        Live::Built { .. } | Live::Waits(_) => None,
-    }) {
-        return Ok(Placed::Blocked(root));
-    }
-    // Refused once every live solid has settled, so the candidates, read from them all,
-    // are the same whichever round the refusal comes in (docs/ports/attacher.md, *In
-    // rounds*).
-    let others = others();
-    if let Some(on) = waiting(&others) {
-        return Err(on);
-    }
-    let maps: Vec<&ElementMap> = built(related)
-        .into_iter()
-        .chain(built(&others))
-        .map(|(map, _)| map)
-        .collect();
-    let why = match retyped(&name, makers) {
-        Some((feature, said, made)) => format!(
-            "names an element a {said} made, but {feature} is a {made} now: its elements are another's"
-        ),
-        None => "names no face of the solids live at the sketch's place: it isn't one of the \
+            let why = retyped.unwrap_or_else(|| {
+                "names no face of the solids live at the sketch's place: it isn't one of the \
                  faces they're made from, or an edit before this sketch removed or remade it"
-            .to_owned(),
+                    .to_owned()
+            });
+            return refusal(&why, &name);
+        }
     };
-    Ok(broken(
-        &why,
-        Candidates::of(&maps, ElementKind::Face).of_name(&name),
-    ))
+    let description = match description {
+        Ok(description) => *description,
+        Err(error) => return Ok(Placed::Failed(error.clone().with_feature(sketch.as_str()))),
+    };
+    let face = element
+        .index
+        .checked_sub(1)
+        .and_then(|i| description.faces.get(i as usize));
+    let Some(face) = face else {
+        return Ok(Placed::Failed(
+            silico_bug("a face's name found it in a solid whose description hasn't it")
+                .with_feature(sketch.as_str())
+                .with_elements([cut_short(text)]),
+        ));
+    };
+    let Surface::Plane { normal, location } = face.surface else {
+        // Its candidates are read from every live solid, so the refusal waits until each
+        // has settled: the same candidates, whichever round it comes in.
+        let others = others();
+        if let Some(on) = waiting(&others) {
+            return Err(on);
+        }
+        let what = crate::elements::surface_type(&face.surface).word();
+        return Ok(broken(
+            &format!(
+                "names a face that isn't planar: OCCT types its surface a {what}, and a sketch sits only on a face typed a plane"
+            ),
+            planar_faces(&name, related, &others),
+        ));
+    };
+    Ok(match frame(normal, location, plane.x, plane.reversed) {
+        Ok(frame) => Placed::Frame(frame),
+        Err(FaceFrameError::AxisAlongNormal(off)) => {
+            Placed::Broken(parallel(sketch, plane, normal, off))
+        }
+        // A normal that isn't a unit to `describe`'s tolerance (or not finite): the kernel
+        // described the face badly, a fault in Silico, not the document's.
+        Err(FaceFrameError::Invalid(invalid)) if !is_unit(normal) => Placed::Failed(
+            silico_bug(&format!(
+                "the kernel described the sketch's face's plane so no frame can be made of it: {}",
+                invalid.message
+            ))
+            .with_feature(sketch.as_str())
+            .with_elements([cut_short(text)]),
+        ),
+        // A frame no sketch can be placed on (its origin past the reach, as a slanted face
+        // far out can give): the sketch's, in the document's terms.
+        Err(FaceFrameError::Invalid(invalid)) => Placed::Failed(
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "the sketch's face's frame can't place a sketch: {}",
+                    invalid.message
+                ),
+            )
+            .with_feature(sketch.as_str())
+            .with_parameter("plane")
+            .with_suggestion(
+                "put the sketch on a face nearer the model's origin: a face's frame is placed from the origin projected onto its plane",
+            ),
+        ),
+    })
+}
+
+/// Whether `normal` is a unit vector to [`NORMAL_LENGTH_TOLERANCE`], as `describe` gives a
+/// plane's.
+fn is_unit(normal: [f64; 3]) -> bool {
+    (silico_protocol::vec3::norm(normal) - 1.0).abs() <= NORMAL_LENGTH_TOLERANCE
+}
+
+/// An error that's a bug in Silico's.
+fn silico_bug(message: &str) -> Error {
+    Error::new(ErrorCode::Internal, message).with_suggestion(crate::worker::SILICO_BUG)
 }
 
 /// The feature of the first of `solids` not built yet, if one isn't.
@@ -671,15 +683,27 @@ mod tests {
             r.check()
                 .unwrap_or_else(|why| panic!("10^-{k} reversed: {why:?}"));
         }
-        // 1e-13 is under the threshold.
+        // 1e-13 is under the threshold: refused as along the normal, and how far it stands
+        // off said (an_axis_along_the_normal_is_refused_saying_how_far_it_stands_off…).
         let e: f64 = 1e-13;
         let n = [e, (1.0_f64 - e * e).sqrt(), 0.0];
-        assert!(frame(n, [0.0; 3], PlusY, false).is_err());
+        assert!(matches!(
+            frame(n, [0.0; 3], PlusY, false),
+            Err(FaceFrameError::AxisAlongNormal(_))
+        ));
     }
 
     #[test]
     fn a_nan_normal_is_refused() {
-        assert!(frame([f64::NAN, 0.0, 1.0], [0.0; 3], PlusX, false).is_err());
+        let Err(FaceFrameError::Invalid(e)) = frame([f64::NAN, 0.0, 1.0], [0.0; 3], PlusX, false)
+        else {
+            panic!();
+        };
+        assert_eq!(e.parameter, "plane");
+        assert_eq!(
+            e.message,
+            "the face's normal must be finite, got [NaN, 0.0, 1.0]"
+        );
     }
 
     fn cube(feature: &str) -> ElementMap {
@@ -697,6 +721,7 @@ mod tests {
         match feature.as_str() {
             "b0000001" | "b0000002" => Some(Maker::Itself(PrimitiveKind::Box)),
             "c0000001" => Some(Maker::Itself(PrimitiveKind::Cylinder)),
+            "f0000001" => Some(Maker::By(crate::naming::OpCode::Fuse)),
             _ => None,
         }
     }
@@ -705,6 +730,13 @@ mod tests {
     /// = 0, Face2 x = 10, Face3 y = 0, Face4 y = 10, Face5 z = 0, Face6 z = 10; `bent` a
     /// face made a cylinder's.
     fn cube_described(bent: Option<usize>) -> Description {
+        cube_bent(&bent.into_iter().collect::<Vec<_>>())
+    }
+
+    /// [`cube_described`] with each face of `bent` made a cylinder's. Each face's centroid
+    /// is off its plane (a fake's, never a solid's): the frame is placed from the plane's
+    /// location, so a resolver that read the centroid would place it elsewhere.
+    fn cube_bent(bent: &[usize]) -> Description {
         let planes = [
             ([-1.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
             ([1.0, 0.0, 0.0], [10.0, 0.0, 0.0]),
@@ -718,7 +750,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, &(normal, origin))| FaceDescription {
-                    surface: if bent == Some(i + 1) {
+                    surface: if bent.contains(&(i + 1)) {
                         Surface::Cylinder {
                             axis: silico_protocol::Axis {
                                 origin: [0.0; 3],
@@ -733,7 +765,7 @@ mod tests {
                         }
                     },
                     area: 100.0,
-                    centroid: origin,
+                    centroid: [origin[0] + 5.0, origin[1] + 6.0, origin[2] + 7.0],
                 })
                 .collect(),
             edges: Vec::new(),
@@ -992,5 +1024,328 @@ mod tests {
             "{}",
             e.message()
         );
+    }
+
+    #[test]
+    fn a_stored_token_that_isnt_the_faces_default_is_the_frames_x() {
+        // Face6 (n = +Z), whose default is `+x`, stored `+y`: x = +Y, y = n × x = (0, 0, 1)
+        // × (0, 1, 0) = (−1, 0, 0), by hand. A resolver that re-derived the default would
+        // give x = +X.
+        let map = cube("b0000001");
+        let described = cube_described(None);
+        let live = [Live::Built {
+            map: &map,
+            description: Ok(&described),
+        }];
+        let placed = place(
+            &id("s0000001"),
+            &face_plane("b0000001.box.Face6", PlusY, false),
+            &live,
+            &Vec::new,
+            &makers,
+        );
+        let Resolved::Placed(Placed::Frame(f)) = placed else {
+            panic!("{placed:?}");
+        };
+        assert_eq!(
+            (f.origin, f.x, f.y, normal(&f)),
+            (
+                [0.0, 0.0, 10.0],
+                [0.0, 1.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0]
+            )
+        );
+    }
+
+    /// A fuse, `f0000001`, of the cube `b0000001`, whose result has three faces: the first
+    /// two generated alike from the cube's Face1 and Face6 (so their name is unstable, N3),
+    /// the third from its Face1 and Face3; and that solid's description, three planes.
+    fn fused_alike() -> (ElementMap, Description) {
+        use crate::kernel::{
+            ElementCounts, ElementFate, ElementRef, History, InputHistory, Reported, Topology,
+        };
+        let face = |index| Reported {
+            element: ElementRef {
+                kind: ElementKind::Face,
+                index,
+            },
+            position: 1,
+        };
+        let mut faces = vec![ElementFate::default(); 6];
+        faces[0].generated = vec![face(1), face(2), face(3)];
+        faces[2].generated = vec![face(3)];
+        faces[5].generated = vec![face(1), face(2)];
+        let history = History {
+            inputs: vec![InputHistory {
+                faces,
+                edges: vec![ElementFate::default(); 12],
+                vertices: vec![ElementFate::default(); 8],
+            }],
+            result: ElementCounts {
+                faces: 3,
+                edges: 0,
+                vertices: 0,
+                solids: 1,
+            },
+            ends: Default::default(),
+            topology: Topology {
+                face_edges: vec![vec![]; 3],
+                outer_edges: vec![vec![]; 3],
+                edge_vertices: vec![],
+                solid_faces: vec![vec![1, 2, 3]],
+            },
+        };
+        history.validate(1).unwrap();
+        let map = ElementMap::operation(
+            id("f0000001"),
+            crate::naming::OpCode::Fuse,
+            &[&cube("b0000001")],
+            &history,
+        );
+        let plane = |z: f64| FaceDescription {
+            surface: Surface::Plane {
+                normal: [0.0, 0.0, 1.0],
+                location: [0.0, 0.0, z],
+            },
+            area: 1.0,
+            centroid: [0.0, 0.0, z],
+        };
+        let described = Description {
+            faces: vec![plane(1.0), plane(2.0), plane(3.0)],
+            edges: Vec::new(),
+            vertices: Vec::new(),
+        };
+        (map, described)
+    }
+
+    #[test]
+    fn a_face_by_an_unstable_name_is_broken_with_the_stable_faces_sharing_its_sources() {
+        // Found by the tests review: the face's resolve said an unstable name, but offered
+        // no candidates, where a fillet's offers them for its edges (one `look_up` both take
+        // now). The two faces from Face1 and Face6 share a name, unstable; the face from
+        // Face1 and Face3 shares Face1 with it, so it's the candidate, as the fillet's would
+        // be for an edge.
+        let (map, described) = fused_alike();
+        let alike = "f0000001.fuse.Face(G1/2 b0000001.box.Face1, G1/2 b0000001.box.Face6)";
+        let stable = "f0000001.fuse.Face(G b0000001.box.Face1, G b0000001.box.Face3)";
+        let unstable: Vec<String> = map.unstable().map(ToString::to_string).collect();
+        assert!(unstable.contains(&alike.to_owned()), "{unstable:?}");
+        assert!(!unstable.contains(&stable.to_owned()), "{unstable:?}");
+        for name in [alike.to_owned(), format!("{alike}~1")] {
+            let live = [Live::Built {
+                map: &map,
+                description: Ok(&described),
+            }];
+            let placed = place(
+                &id("s0000001"),
+                &face_plane(&name, PlusX, false),
+                &live,
+                &Vec::new,
+                &makers,
+            );
+            let Resolved::Placed(Placed::Broken(e)) = placed else {
+                panic!("{name}: {placed:?}");
+            };
+            assert_eq!(e.code(), ErrorCode::ReferenceBroken, "{name}");
+            assert_eq!(e.parameter(), Some("plane.face"), "{name}");
+            // The name cut short in the message (it's in `elements` whole).
+            assert!(
+                e.message().starts_with("plane.face, \"f0000001.fuse.Face(G1/2 ")
+                    && e.message().ends_with(
+                        ", names a face, whose name is unstable (it came about as another element did, or is its number): an edit could make it another element"
+                    ),
+                "{}",
+                e.message()
+            );
+            assert_eq!(e.elements(), [name.as_str()]);
+            assert_eq!(e.candidates(), [stable], "{name}");
+            assert_eq!(
+                e.suggestion(),
+                Some(
+                    "name the face as its feature now names it: the candidates are the likeliest, none taken for it"
+                )
+            );
+            // And it waits, as a name found nowhere does, while a live solid it could read
+            // candidates from isn't built: the same candidates whichever round refuses it.
+            let waits = place(
+                &id("s0000001"),
+                &face_plane(&name, PlusX, false),
+                &live,
+                &|| vec![Live::Waits(id("p0000009"))],
+                &makers,
+            );
+            assert_eq!(waits, Resolved::Waits(id("p0000009")), "{name}");
+        }
+    }
+
+    #[test]
+    fn an_edge_by_its_name_waits_for_every_live_solid_before_its_refusal() {
+        // Refused as no face only once every live solid has settled, as a name found
+        // nowhere is: its candidates are read from them all.
+        let map = cube("b0000001");
+        let described = cube_described(None);
+        let live = [Live::Built {
+            map: &map,
+            description: Ok(&described),
+        }];
+        let plane = face_plane("b0000001.box.Edge3", PlusX, false);
+        assert_eq!(
+            place(
+                &id("s0000001"),
+                &plane,
+                &live,
+                &|| vec![Live::Waits(id("p0000009"))],
+                &makers
+            ),
+            Resolved::Waits(id("p0000009"))
+        );
+        let Resolved::Placed(Placed::Broken(e)) =
+            place(&id("s0000001"), &plane, &live, &Vec::new, &makers)
+        else {
+            panic!();
+        };
+        assert_eq!(
+            e.message(),
+            "plane.face, \"b0000001.box.Edge3\", names an edge, not a face"
+        );
+        // An edge's name shares no element with a face's, and isn't a face's by number:
+        // none.
+        assert!(e.candidates().is_empty(), "{:?}", e.candidates());
+    }
+
+    #[test]
+    fn a_face_that_isnt_planar_offers_its_own_features_planar_faces_first_though_they_sort_after() {
+        // The face's feature, b0000002, sorts after the other live solid's, b0000001: its
+        // one planar face (Face1, the rest bent) comes first all the same, then b0000001's
+        // by name, five in all. By name alone, b0000001's five would be the candidates.
+        let own = cube("b0000002");
+        let own_described = cube_bent(&[2, 3, 4, 5, 6]);
+        let other = cube("b0000001");
+        let other_described = cube_described(None);
+        let live = [Live::Built {
+            map: &own,
+            description: Ok(&own_described),
+        }];
+        let placed = place(
+            &id("s0000001"),
+            &face_plane("b0000002.box.Face6", PlusX, false),
+            &live,
+            &|| {
+                vec![Live::Built {
+                    map: &other,
+                    description: Ok(&other_described),
+                }]
+            },
+            &makers,
+        );
+        let Resolved::Placed(Placed::Broken(e)) = placed else {
+            panic!("{placed:?}");
+        };
+        assert_eq!(
+            e.candidates(),
+            [
+                "b0000002.box.Face1",
+                "b0000001.box.Face1",
+                "b0000001.box.Face2",
+                "b0000001.box.Face3",
+                "b0000001.box.Face4",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_axis_along_the_normal_is_refused_saying_how_far_it_stands_off_and_what_to_do() {
+        // 1e-13 off the normal: under 1e-12, refused saying 1e-13 (to its rounding).
+        let e: f64 = 1e-13;
+        let n = [e, (1.0_f64 - e * e).sqrt(), 0.0];
+        let Err(FaceFrameError::AxisAlongNormal(off)) = frame(n, [0.0; 3], PlusY, false) else {
+            panic!();
+        };
+        assert!((off - e).abs() <= 1e-28, "{off}");
+        // Through the resolve, on Face4 (n = +Y) with `+y`: its words, its candidates.
+        let map = cube("b0000001");
+        let described = cube_described(None);
+        let live = [Live::Built {
+            map: &map,
+            description: Ok(&described),
+        }];
+        let Resolved::Placed(Placed::Broken(e)) = place(
+            &id("s0000001"),
+            &face_plane("b0000001.box.Face4", PlusY, false),
+            &live,
+            &Vec::new,
+            &makers,
+        ) else {
+            panic!();
+        };
+        assert_eq!(
+            e.message(),
+            "plane.x, \"+y\", is parallel to the face's normal [0.0, 1.0, 0.0]: projected onto the face it leaves 0, under the 1e-12 a sketch's x needs"
+        );
+        assert_eq!(e.elements(), ["+y"]);
+        assert_eq!(e.candidates(), ["+x", "-x", "+z", "-z"]);
+        assert_eq!(
+            e.suggestion(),
+            Some(
+                "give plane.x one of the candidates, an axis that isn't the face's normal: none is taken for it"
+            )
+        );
+    }
+
+    #[test]
+    fn a_normal_the_kernel_gave_badly_is_a_bug_naming_the_face_not_the_documents_fault() {
+        // NaN, 1e200 long, 1e-160 long, and 1 + 2e-6 long: none a unit to describe's 1e-6,
+        // so no frame, and the fault is the kernel's description: `internal`, naming the
+        // sketch and the face, saying why, never `invalid_input` on the document's plane.
+        let map = cube("b0000001");
+        for (n, said) in [
+            (
+                [f64::NAN, 0.0, 1.0],
+                "the face's normal must be finite, got [NaN, 0.0, 1.0]",
+            ),
+            (
+                [0.0, 0.0, 1e200],
+                "the face's normal must be a unit vector to 1e-6, got [0.0, 0.0, 1e200], 1e200 long",
+            ),
+            (
+                [0.0, 0.0, 1e-160],
+                "the face's normal must be a unit vector to 1e-6, got [0.0, 0.0, 1e-160], 1e-160 long",
+            ),
+            (
+                [0.0, 0.0, 1.000002],
+                "the face's normal must be a unit vector to 1e-6, got [0.0, 0.0, 1.000002], 1.000002 long",
+            ),
+        ] {
+            let mut described = cube_described(None);
+            described.faces[5].surface = Surface::Plane {
+                normal: n,
+                location: [0.0, 0.0, 10.0],
+            };
+            let live = [Live::Built {
+                map: &map,
+                description: Ok(&described),
+            }];
+            let placed = place(
+                &id("s0000001"),
+                &face_plane("b0000001.box.Face6", PlusX, false),
+                &live,
+                &Vec::new,
+                &makers,
+            );
+            let Resolved::Placed(Placed::Failed(e)) = placed else {
+                panic!("{n:?}: {placed:?}");
+            };
+            assert_eq!(e.code(), ErrorCode::Internal, "{n:?}");
+            assert_eq!(e.feature(), Some("s0000001"));
+            assert_eq!(e.elements(), ["b0000001.box.Face6"]);
+            assert_eq!(
+                e.message(),
+                format!(
+                    "the kernel described the sketch's face's plane so no frame can be made of it: {said}"
+                )
+            );
+            assert_eq!(e.suggestion(), Some(crate::worker::SILICO_BUG));
+        }
     }
 }
