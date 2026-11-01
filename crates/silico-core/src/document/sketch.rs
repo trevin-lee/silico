@@ -825,6 +825,12 @@ pub enum Form {
     Angle {
         a: Reference,
         b: Reference,
+        /// `b`'s direction taken from its `to` to its `from`, so the angle is to the ray
+        /// that leaves a corner `b` ends at (written only as true; an angle measured to `b`
+        /// as drawn leaves it out).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[schemars(schema_with = "reversed_schema")]
+        reversed: bool,
         value: Angle,
         driving: bool,
     },
@@ -904,6 +910,13 @@ pub(crate) enum Takes {
     Equal,
     /// A line of the sketch, an axis, or a point (a symmetry's `about`).
     LineOrPoint,
+}
+
+/// An angle's `reversed` in the schema: `true` only, since an angle measured to `b` as
+/// drawn leaves it out (one spelling, as a feature's `suppressed`; the reader refuses
+/// `false`).
+fn reversed_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({ "const": true })
 }
 
 impl Form {

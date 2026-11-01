@@ -71,6 +71,43 @@ fn solved_once(system: &SketchSystem) -> Solved {
 }
 
 #[test]
+fn an_angle_reversed_is_to_bs_direction_taken_from_its_end_to_its_start() {
+    // A fixed line along +x, (0, 0) to (10, 0), and a line from its end, 10 long, its far
+    // end free. 60° from the free line to the fixed one taken back (−x, 180°) puts the free
+    // line at 120°: its end at (10, 0) + 10 (cos 120°, sin 120°) = (5, 5√3). Unreversed,
+    // 60° to +x puts it at −60°: (15, −5√3). Each drawn near where it lands.
+    let s3 = 3f64.sqrt();
+    for (reversed, drawn, want) in [
+        (true, (4.0, 7.0), [5.0, 5.0 * s3]),
+        (false, (16.0, -7.0), [15.0, -5.0 * s3]),
+    ] {
+        let mut b = Builder::default();
+        let fixed = fixed_line(&mut b, (0.0, 0.0), (10.0, 0.0));
+        let start = fixed_point_values(&mut b, 10.0, 0.0);
+        let end = b.point_values(drawn.0, drawn.1);
+        let free = b.add(SketchGeometry::Line { start, end });
+        let (sixty, ten) = (b.fixed(PI / 3.0), b.fixed(10.0));
+        b.constrain(|tag| SolverConstraint::Angle {
+            tag,
+            a: free,
+            b: fixed,
+            reversed,
+            value: sixty,
+        });
+        b.constrain(|tag| SolverConstraint::Distance {
+            tag,
+            a: PointOf::Start(free),
+            b: PointOf::End(free),
+            value: ten,
+        });
+        let s = b.system(Algorithm::DogLeg);
+        let solved = solved_once(&s);
+        assert_eq!(solved.dofs, 0, "{reversed}");
+        assert_at(at(&s, &solved.values, end), want, CLOSE, "the free end");
+    }
+}
+
+#[test]
 fn two_points_made_level_and_one_above_the_other() {
     for level in [true, false] {
         let mut b = Builder::default();

@@ -286,6 +286,47 @@ fn a_reference_dimension_stored_otherwise_than_measured_is_drift_and_a_save_writ
 }
 
 #[test]
+fn a_reference_angle_reversed_is_measured_to_b_taken_back_and_a_save_keeps_it() {
+    // na runs along x, nb along y. Reversed, the angle is to nb taken from its end to its
+    // start (−y): −90°, stored 0. Unreversed it would be 90 (above).
+    let constraints = format!(
+        r#"{HORIZONTAL}, {{"id": "r0000002", "type": "angle", "a": "na000000", "b": "nb000000", "reversed": true, "value": 0, "driving": false}}"#
+    );
+    let lines = format!(
+        r#"{}, {{"id": "nb000000", "from": "pa000000", "to": "pc000000", "construction": false}}"#,
+        fixture::LINE
+    );
+    let text = fixture::document(&fixture::fields(
+        fixture::POINTS,
+        &lines,
+        fixture::CIRCLE,
+        fixture::ARC,
+        &constraints,
+    ));
+    let sketches = FakeSketches::new();
+    let engine = engine(&sketches);
+    let model = model(&engine, &text);
+    let errors = model.drift();
+    let [e] = &errors[..] else {
+        panic!("{errors:?}")
+    };
+    assert_eq!(e.elements(), ["r0000002"]);
+    assert!(e.message().contains("r0000002 value 0 → -90"), "{e}");
+    let formatted = command::format(&model).unwrap();
+    assert!(
+        formatted.text.contains(
+            r#""a": "na000000", "b": "nb000000", "reversed": true, "value": -90, "driving": false"#
+        ),
+        "{}",
+        formatted.text
+    );
+    // Saved, it's what its solve gives: no drift, and the same bytes again.
+    let again = self::model(&engine, &formatted.text);
+    assert!(again.drift().is_empty(), "{:?}", again.drift());
+    assert_eq!(command::format(&again).unwrap().text, formatted.text);
+}
+
+#[test]
 fn a_reference_measure_is_compared_as_the_file_writes_it_to_the_nanometre() {
     // pb at 10 + 0.4 nm: the length measures 10.0000004, written 10 (to the nanometre):
     // a reference stored 10 holds. At 10 + 1 nm it measures 10.000001: drift.
