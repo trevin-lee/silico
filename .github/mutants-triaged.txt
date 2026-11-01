@@ -394,3 +394,6 @@ crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with
 crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with > | #320
 crates/silico-core/src/document/sketch_edit/join.rs | one_arc | replace > with >= | #320
 crates/silico-app/src/app.rs | App<P>::take_open | replace > with >= | #337
+crates/silico-protocol/src/faces.rs | FaceFrame::from_normal | replace / with * | #339
+crates/silico-core/src/face_plane.rs | frame | replace * with / | #344
+crates/silico-core/src/face_plane.rs | frame | replace * with / | #344

@@ -1018,3 +1018,51 @@ fn a_face_sketch_whose_face_broke_is_mended_by_set_field_of_its_plane_and_its_pa
         "the pad mended by plane.face",
     );
 }
+
+#[test]
+fn a_padded_sketchs_plane_set_on_a_warm_session_moves_the_pad_to_each_plane_in_turn() {
+    // A 4 × 2 rectangle from (1, 1), padded 3 as a body of its own beside a 10 mm cube, its
+    // plane set by set_field on one session, each rebuild warm from the one before (its
+    // cache and kept steps): on xy the pad spans (1..5, 1..3, 0..3), its centre of mass
+    // (3, 2, 1.5); on xz (x +X, y +Z, normal −Y, D6) it spans (1..5, −3..0, 1..3), its
+    // centre (3, −1.5, 2); on the cube's top, +x (the note's table: o (0, 0, 10), x +X,
+    // y +Y), (1..5, 1..3, 10..13), its centre (3, 2, 11.5). 24 mm³ each time.
+    let f = fixture();
+    let session = f.open(
+        "planes.silico",
+        &[
+            box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0),
+            rectangle("s0000001", "xy", [1.0, 1.0], 4.0, 2.0),
+            pad("p0000001", None, "s0000001", &one_side("3")),
+        ],
+    );
+    let pad_at = |what: &str, centre: [f64; 3]| {
+        let measured = f.call(
+            "mass_properties",
+            &json!({"session": session, "model": "current", "feature": "p0000001"}).to_string(),
+        );
+        assert_eq!(measured["ok"], true, "{what}: {measured}");
+        let body = &measured["result"]["bodies"][0];
+        assert_near(body["volume"].as_f64().unwrap(), 24.0, 1e-9 * 24.0, what);
+        for (k, want) in centre.into_iter().enumerate() {
+            let got = body["center_of_mass"][k].as_f64().unwrap();
+            assert_near(got, want, 1e-9, &format!("{what}: centre {k}"));
+        }
+    };
+    pad_at("on xy", [3.0, 2.0, 1.5]);
+    let set = f.set(&session, "s0000001", "plane", json!("xz"));
+    assert_eq!(set["ok"], true, "{set}");
+    pad_at("on xz", [3.0, -1.5, 2.0]);
+    let set = f.set(
+        &session,
+        "s0000001",
+        "plane",
+        json!({"face": "b0000001.box.Face6", "x": "+x", "reversed": false}),
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    pad_at("on the cube's top", [3.0, 2.0, 11.5]);
+    // And back to xy: where it began.
+    let set = f.set(&session, "s0000001", "plane", json!("xy"));
+    assert_eq!(set["ok"], true, "{set}");
+    pad_at("on xy again", [3.0, 2.0, 1.5]);
+}

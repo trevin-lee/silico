@@ -100,6 +100,22 @@ fn a_frame_of_negative_zeros_and_subnormals_is_sound_and_places_its_origin_as_pl
 }
 
 #[test]
+fn a_point_whose_every_term_is_minus_zero_is_placed_at_plus_zero() {
+    // Origin −0, x (−0.6, −0.8, 0), y (0.8, −0.6, 0): exact, a unit and square. Placing
+    // (0, 0), y's component is −0 + 0·(−0.8) + 0·(−0.6), every term −0, so their sum is
+    // −0, and the closing + 0 makes it +0 (a − 0 would keep −0). x's is −0 + −0 + 0·0.8 = +0
+    // already, and z's +0.
+    let frame = FaceFrame {
+        origin: [-0.0; 3],
+        x: [-0.6, -0.8, 0.0],
+        y: [0.8, -0.6, 0.0],
+    };
+    assert_eq!(frame.check(), Ok(()));
+    let placed = SketchPlane::Face(frame).place([0.0, 0.0]);
+    assert_eq!(placed.map(f64::to_bits), [0.0_f64; 3].map(f64::to_bits));
+}
+
+#[test]
 fn an_axis_so_long_its_length_overflows_is_refused_as_not_a_unit_vector() {
     // 1e155² overflows to inf: refused as a length, not passed as NaN comparisons would.
     refused(
@@ -412,6 +428,12 @@ fn a_normal_off_a_unit_by_more_than_describes_tolerance_is_refused_saying_its_tr
         (
             [0.0, 0.0, 0.0],
             "the face's normal must be a unit vector to 1e-6, got [0.0, 0.0, 0.0], 0 long",
+        ),
+        // Measured scaled by its largest component, 4: 4 × |(0.75, 1, 0)| = 4 × 1.25 = 5,
+        // each step exact.
+        (
+            [3.0, 4.0, 0.0],
+            "the face's normal must be a unit vector to 1e-6, got [3.0, 4.0, 0.0], 5 long",
         ),
     ] {
         match FaceFrame::from_normal([0.0; 3], n, [1.0, 0.0, 0.0]) {
