@@ -31,9 +31,10 @@
 //!     (Fable's chain-angle decision, §3, superseding SD5). Lines that cross take θ in
 //!     both vertical sectors (§4): opposite is θ too, as drawn. Structure decides first
 //!     (Main's ruling): lines the sketch ties where they meet, an end of one a point of
-//!     the other or held on it (`on`, `midpoint`), never cross, so a T-junction keeps the
-//!     quadrant rule however its end rounds; lines it doesn't tie cross where each is
-//!     strictly inside the other, compared without tolerance; a line and an axis never;
+//!     the other or held on it (`on`, `midpoint`, `symmetric` about it), never cross, so
+//!     a T-junction keeps the quadrant rule however its end rounds; lines it doesn't tie
+//!     cross where each is strictly inside the other, compared without tolerance; a line
+//!     and an axis never;
 //!   - two parallel lines ([`PARALLEL`], FreeCAD's test): `point_line_distance` from the
 //!     second line's `from` to the first line (SD4); with an axis picked second, the first
 //!     line's `from` to the axis, Silico's own choice (an axis has no `from`);
@@ -1035,7 +1036,10 @@ fn inside(line: &Item, over: f64, under: f64) -> bool {
 
 /// Whether the sketch ties two lines where they meet (Main's ruling, structure before
 /// geometry): an end of one is held on the other by `on` or `midpoint`, as a snap or the
-/// line tool leaves it. Such lines never cross, whatever their coordinates' last bits say.
+/// line tool leaves it, or by a `symmetric` of the other's two ends about it (its middle,
+/// as `midpoint` holds it). Such lines never cross, whatever their coordinates' last bits
+/// say. A hold counts as the document writes it, met by the coordinates or not: structure
+/// first.
 /// An end that's a point of the other line is tied too, but needs no look at the document:
 /// a point has one pair of coordinates, so the lines meet exactly there, at a shared end,
 /// which [`lines`] finds without arithmetic and never counts as crossing.
@@ -1054,15 +1058,18 @@ fn tied(view: &View<'_>, first: &Item, second: &Item) -> bool {
     };
     let ends = |e: &[Option<ElementId>; 2]| e.iter().flatten().cloned().collect::<Vec<_>>();
     let (a_ends, b_ends) = (ends(&a_ends), ends(&b_ends));
-    let held = |end: &ElementId, on: &Reference| {
+    // The end `end` held on the line `on`, whose ends are `on_ends`.
+    let held = |end: &ElementId, on: &Reference, on_ends: &[ElementId]| {
         let end = Reference::Element(end.clone());
+        let an_end = |r: &Reference| r.element().is_some_and(|id| on_ends.contains(id));
         view.sketch.constraints.iter().any(|c| match &c.form {
             Form::On { point, curve } => *point == end && curve == on,
             Form::Midpoint { point, line } => *point == end && line == on,
+            Form::Symmetric { a, b, about } => *about == end && a != b && an_end(a) && an_end(b),
             _ => false,
         })
     };
-    a_ends.iter().any(|p| held(p, &b)) || b_ends.iter().any(|p| held(p, &a))
+    a_ends.iter().any(|p| held(p, &b, &b_ends)) || b_ends.iter().any(|p| held(p, &a, &a_ends))
 }
 
 /// Two lines: parallel ([`PARALLEL`], FreeCAD's test), the second's `from` to the first

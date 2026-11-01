@@ -2213,7 +2213,7 @@ fn a_slanted_t_held_on_its_line_never_crosses() {
     // left (φ + 90) or the right (φ − 90). B's along-ray runs along it; A's from its
     // nearer end: `from` for k ≤ 4, `to` (φ + 180) for k ≥ 5. θ = 90 throughout. The
     // pointer 3 from B's start in the sector opposite the along-rays reads the reflex,
-    // 270, never θ, though the bare cross test calls six of these crossing, as B's start
+    // 270, never θ, though the bare cross test calls five of these crossing, as B's start
     // rounds a hair to one side of A or the other (k = 1, 2, 4, 8 left, k = 5 right):
     // - left, k ≤ 4: rays A φ, B φ + 90; opposite at φ + 225: `{B, A, 270}`;
     // - left, k ≥ 5: B φ + 90, A φ + 180, A's against; opposite at φ + 315:
@@ -2221,6 +2221,8 @@ fn a_slanted_t_held_on_its_line_never_crosses() {
     // - right, k ≤ 4: B φ − 90, A φ; opposite at φ + 135: `{A, B, 270}`;
     // - right, k ≥ 5: A φ + 180, B φ + 270, A's against; opposite at φ + 45:
     //   `{B, A, reversed, 270}`.
+    // Picked either way round: an end of the line picked first held on the second, or of the
+    // second on the first.
     let phi = libm::atan2(3.0, 7.0).to_degrees();
     for k in 1..=8 {
         let start = [7.0 * f64::from(k) / 9.0, 3.0 * f64::from(k) / 9.0];
@@ -2241,12 +2243,14 @@ fn a_slanted_t_held_on_its_line_never_crosses() {
             } else {
                 [start[0] + 0.75, start[1] - 1.75]
             };
-            let mut d = Dim::new(slanted_t(start, left, true));
-            d.click(pick_a[0], pick_a[1])
-                .click(pick_b[0], pick_b[1])
-                .click(at[0], at[1])
-                .escape();
-            assert_eq!(d.placed(), want, "k {k}, left {left}");
+            for picks in [[pick_a, pick_b], [pick_b, pick_a]] {
+                let mut d = Dim::new(slanted_t(start, left, true));
+                d.click(picks[0][0], picks[0][1])
+                    .click(picks[1][0], picks[1][1])
+                    .click(at[0], at[1])
+                    .escape();
+                assert_eq!(d.placed(), want, "k {k}, left {left}, {picks:?}");
+            }
         }
     }
 }
@@ -2254,8 +2258,9 @@ fn a_slanted_t_held_on_its_line_never_crosses() {
 #[test]
 fn a_t_held_at_a_lines_middle_never_crosses() {
     // A (0.1, 0.1)-(2.3, 5.9), at φ; B from A's middle M, held there by `midpoint` (the line
-    // tool's middle snap), leaving to the left, perpendicular, to M + (-2.9, 1.1) as half of
-    // A's direction turned. M's coordinates round so that the bare cross test calls them
+    // tool's middle snap), or by a `symmetric` of A's two ends about B's start, which holds
+    // it at the middle as well; B leaves to the left, perpendicular, to M + (-2.9, 1.1), half
+    // of A's direction turned. M's coordinates round so that the bare cross test calls them
     // crossing. Held, they never cross. A's own ends are equally near M, so which way A's
     // along-ray runs is the distances' rounding; either way B's runs along it (φ + 90), and
     // of the two sectors φ + 225 and φ + 315 either side of B's opposite, one is opposite
@@ -2264,55 +2269,142 @@ fn a_t_held_at_a_lines_middle_never_crosses() {
     let (p, q) = ([0.1, 0.1], [2.3, 5.9]);
     let d = [q[0] - p[0], q[1] - p[1]];
     let m = [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0];
-    let mut s = with_line(
-        with_line(empty(), "n000000a", p, q),
-        "n000000b",
-        m,
-        [m[0] - d[1] * 0.5, m[1] + d[0] * 0.5],
-    );
-    s.constraints.push(SketchConstraint {
-        id: id("k0000001"),
-        form: Form::Midpoint {
+    let holds = [
+        Form::Midpoint {
             point: r("f000000b"),
             line: r("n000000a"),
         },
-    });
-    let phi = libm::atan2(d[1], d[0]).to_degrees();
-    let mut values: Vec<String> = [225.0, 315.0]
-        .into_iter()
-        .map(|turn| {
-            let at = toward(m, phi + turn, 2.0);
-            let mut dim = Dim::new(s.clone());
-            dim.click(p[0] + d[0] * 0.15, p[1] + d[1] * 0.15)
-                .click(m[0] - d[1] * 0.25, m[1] + d[0] * 0.25)
-                .click(at[0], at[1])
-                .escape();
-            match dim.placed() {
-                Form::Angle { value, .. } => value.to_string(),
-                other => panic!("{other:?}"),
-            }
-        })
-        .collect();
-    values.sort();
-    assert_eq!(values, ["270", "90"]);
+        Form::Symmetric {
+            a: r("f000000a"),
+            b: r("t000000a"),
+            about: r("f000000b"),
+        },
+    ];
+    for hold in holds {
+        let mut s = with_line(
+            with_line(empty(), "n000000a", p, q),
+            "n000000b",
+            m,
+            [m[0] - d[1] * 0.5, m[1] + d[0] * 0.5],
+        );
+        s.constraints.push(SketchConstraint {
+            id: id("k0000001"),
+            form: hold.clone(),
+        });
+        let phi = libm::atan2(d[1], d[0]).to_degrees();
+        let mut values: Vec<String> = [225.0, 315.0]
+            .into_iter()
+            .map(|turn| {
+                let at = toward(m, phi + turn, 2.0);
+                let mut dim = Dim::new(s.clone());
+                dim.click(p[0] + d[0] * 0.15, p[1] + d[1] * 0.15)
+                    .click(m[0] - d[1] * 0.25, m[1] + d[0] * 0.25)
+                    .click(at[0], at[1])
+                    .escape();
+                match dim.placed() {
+                    Form::Angle { value, .. } => value.to_string(),
+                    other => panic!("{other:?}"),
+                }
+            })
+            .collect();
+        values.sort();
+        assert_eq!(values, ["270", "90"], "{hold:?}");
+    }
 }
 
 #[test]
-fn a_t_at_a_shared_corner_is_structure_and_one_merely_near_is_geometry() {
-    // B from A's own `to` point (7, 3), to the left: a corner, a point they share, so never
-    // crossing; A's `to` nearer, its ray back (φ + 180), B's φ + 90, A's against: opposite
-    // at φ + 315, `{A, B, reversed, 270}`.
+fn only_a_hold_of_one_lines_end_on_the_other_ties_them() {
+    // A (10, 10)-(20, 10) and B (15, 5)-(15, 15) truly cross at (15, 10), each at its
+    // middle, so each `to` (FreeCAD's tie): A's ray 180°, B's 270°, θ = 90, both against.
+    // The pointer at (18, 13), 45°, is opposite: crossing, θ, `{A, B, 90}`. Holds that tie
+    // nothing between them leave it so:
+    // - a point P (12, 10) of its own held `on` A (not an end of B);
+    // - B's `to` held `on` a circle about (15, 20), radius 5 (not on A);
+    // - a point P (15, 10) of its own held at A's middle by `symmetric` of A's ends (not an
+    //   end of B);
+    // - B's `to` (15, 15) the middle of A's `from` (10, 10) and a point Z (20, 20) by
+    //   `symmetric` (not of A's two ends).
+    let crossing = || {
+        with_line(
+            with_line(empty(), "n000000a", [10.0, 10.0], [20.0, 10.0]),
+            "n000000b",
+            [15.0, 5.0],
+            [15.0, 15.0],
+        )
+    };
+    let mut on_a = with_point(crossing(), "p0000001", [12.0, 10.0]);
+    on_a.constraints.push(SketchConstraint {
+        id: id("k0000001"),
+        form: Form::On {
+            point: r("p0000001"),
+            curve: r("n000000a"),
+        },
+    });
+    let mut on_circle = with_circle(crossing(), "k0000002", [15.0, 20.0], 5.0);
+    on_circle.constraints.push(SketchConstraint {
+        id: id("k0000001"),
+        form: Form::On {
+            point: r("t000000b"),
+            curve: r("k0000002"),
+        },
+    });
+    let mut about_p = with_point(crossing(), "p0000001", [15.0, 10.0]);
+    about_p.constraints.push(SketchConstraint {
+        id: id("k0000001"),
+        form: Form::Symmetric {
+            a: r("f000000a"),
+            b: r("t000000a"),
+            about: r("p0000001"),
+        },
+    });
+    let mut half_on_a = with_point(crossing(), "z0000001", [20.0, 20.0]);
+    half_on_a.constraints.push(SketchConstraint {
+        id: id("k0000001"),
+        form: Form::Symmetric {
+            a: r("f000000a"),
+            b: r("z0000001"),
+            about: r("t000000b"),
+        },
+    });
+    for s in [on_a, on_circle, about_p, half_on_a] {
+        let mut d = Dim::new(s.clone());
+        d.click(17.0, 10.0)
+            .click(15.0, 7.0)
+            .click(18.0, 13.0)
+            .escape();
+        assert_eq!(
+            d.placed(),
+            angle("n000000a", "n000000b", false, "90"),
+            "{:?}",
+            s.constraints
+        );
+    }
+}
+
+#[test]
+fn a_corner_rounding_inside_is_its_vertex_and_a_t_merely_near_is_geometry() {
+    // A corner: A (8.425, 40.42) and B (35.64, 49.099) both ending at one point Q
+    // (18.198, 42.895). Their crosses round strictly inside both (each -17.462741999999906
+    // against -17.462741999999913), so the bare cross test calls them crossing; the vertex is
+    // Q itself, an end they share, so they don't. Opposite, at (19.066, 37.971), the reflex
+    // as in lines_ending_at_one_place_with_points_of_their_own_dont_cross:
+    // `{A, B, 185.368825354}`.
     let phi = libm::atan2(3.0, 7.0).to_degrees();
-    let mut corner = with_line(empty(), "n000000a", [0.0, 0.0], [7.0, 3.0]);
-    corner.points.push(point("t000000b", 5.5, 6.5));
-    corner.lines.push(line("n000000b", "t000000a", "t000000b"));
-    let at = toward([7.0, 3.0], phi + 315.0, 3.0);
+    let mut corner = empty();
+    corner.points.push(point("f000000a", 8.425, 40.42));
+    corner.points.push(point("q0000001", 18.198, 42.895));
+    corner.points.push(point("f000000b", 35.64, 49.099));
+    corner.lines.push(line("n000000a", "f000000a", "q0000001"));
+    corner.lines.push(line("n000000b", "f000000b", "q0000001"));
     let mut d = Dim::new(corner);
-    d.click(3.5, 1.5)
-        .click(6.25, 4.75)
-        .click(at[0], at[1])
+    d.click(13.3115, 41.6575)
+        .click(26.919, 45.997)
+        .click(19.066, 37.971)
         .escape();
-    assert_eq!(d.placed(), angle("n000000a", "n000000b", true, "270"));
+    assert_eq!(
+        d.placed(),
+        angle("n000000a", "n000000b", false, "185.368825354")
+    );
     // B from A's fourth ninth, (28/9, 12/9), to the left, with no `on`: the sketch doesn't
     // tie them, so the cross test decides, on the bits. B's start rounds 1.8e-15 to A's
     // left, inside B, so they cross: the sector opposite (φ + 225) reads θ, `{A, B, 90}`.
