@@ -4115,6 +4115,18 @@ fn name_place(
     }
 }
 
+/// A reference as what it names: an angle's are its lines, whatever end FreeCAD's
+/// start-point form takes each from ([`angle_reversed`] says which way).
+fn named_ref(kind: &str, [g, p]: [i32; 2]) -> [i32; 2] {
+    if kind == "Angle" { [g, 0] } else { [g, p] }
+}
+
+/// Whether an angle's references take one line from its end (its start-point form with an
+/// odd number of ends: `reversed`, the same equation whichever line it is).
+fn angle_reversed(kind: &str, refs: &[[i32; 2]]) -> bool {
+    kind == "Angle" && refs.iter().filter(|[_, p]| *p == 2).count() % 2 == 1
+}
+
 fn key(
     kind: &str,
     refs: &[[i32; 2]],
@@ -4122,7 +4134,16 @@ fn key(
     name: &dyn Fn(i32, i32, bool) -> String,
 ) -> Key {
     let ends = matches!(kind, "Tangent" | "Perpendicular");
-    let mut named: Vec<String> = refs.iter().map(|[g, p]| name(*g, *p, ends)).collect();
+    let mut named: Vec<String> = refs
+        .iter()
+        .map(|&r| {
+            let [g, p] = named_ref(kind, r);
+            name(g, p, ends)
+        })
+        .collect();
+    if angle_reversed(kind, refs) {
+        named.push("reversed".to_owned());
+    }
     if unordered(kind) {
         named.sort();
     } else if kind == "Symmetric" && named.len() == 3 {
@@ -4145,6 +4166,8 @@ fn pairs(kind: &str, ints: &[i32]) -> Vec<[i32; 2]> {
         ("Horizontal" | "Vertical" | "Distance", 4) => &[true, true],
         ("Distance" | "PointOnObject", 3) => &[true, false],
         ("Parallel" | "Perpendicular" | "Equal" | "Angle" | "Tangent", 2) => &[false, false],
+        // An angle with start points (`reversed`): each line and the end it's taken from.
+        ("Angle", 4) => &[true, true],
         ("Tangent", 3) => &[true, false],
         ("Tangent", 4) => &[true, true],
         ("Symmetric", 5) => &[true, true, false],
@@ -4608,7 +4631,10 @@ fn compare_edited(
             continue;
         };
         let refs = pairs(c.kind, &c.ints);
-        if refs.iter().any(|r| ours_touches(r, ends(c.kind))) {
+        if refs
+            .iter()
+            .any(|&r| ours_touches(&named_ref(c.kind, r), ends(c.kind)))
+        {
             ours_touched.insert(id.clone());
             continue;
         }
@@ -4620,7 +4646,10 @@ fn compare_edited(
         if c.kind == "Coincident" {
             continue;
         }
-        if c.refs.iter().any(|r| fc_touches(r, ends(&c.kind))) {
+        if c.refs
+            .iter()
+            .any(|&r| fc_touches(&named_ref(&c.kind, r), ends(&c.kind)))
+        {
             theirs_touched.insert(i);
             continue;
         }

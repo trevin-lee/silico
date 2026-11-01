@@ -1963,23 +1963,25 @@ impl Step {
     }
 }
 
-/// A faces step's line (design S3): `faces` and its plane, then, region by region and loop
-/// by loop (each region's outer loop, then its holes), each curve as sent, every number by
-/// its bits: `line x0 y0 x1 y1`, `arc cx cy sx sy ex ey r a0 a1`, `circle cx cy r`. Each
-/// region starts `region` and each loop `loop`, so regions and holes of the same curves
-/// are other lines. No ID: two sketches of one profile share the step, and a construction
-/// line toggled, added, or moved leaves it alone. The bits are as sent, a zero of either
-/// sign its own: −0 and +0 can be different requests (an arc's angle of ±π).
+/// A faces step's line (design S3): `faces` and its plane (its word, `SketchPlane::word`:
+/// an origin plane's, or `frame` and a face frame's nine numbers by their bits, its origin,
+/// x, and y, so a face that moves moves the key: docs/ports/attacher.md, M5.9), then,
+/// region by region and loop by loop (each region's outer loop, then its holes), each curve
+/// as sent, every number by its bits: `line x0 y0 x1 y1`, `arc cx cy sx sy ex ey r a0 a1`,
+/// `circle cx cy r`. Each region starts `region` and each loop `loop`, so regions and holes
+/// of the same curves are other lines. No ID: two sketches of one profile share the step,
+/// and a construction line toggled, added, or moved leaves it alone. A curve's bits are as
+/// sent, a zero of either sign its own: −0 and +0 can be different requests (an arc's angle
+/// of ±π). A frame's numbers are taken + 0, a zero of either sign as +0: a frame of −0s
+/// places every point where the one of +0s does, so the two are one step.
 fn faces_line(regions: &FaceRegions) -> String {
     use std::fmt::Write as _;
-    let mut line = format!(
-        "faces {}",
-        match regions.plane {
-            silico_protocol::SketchPlane::Xy => "xy",
-            silico_protocol::SketchPlane::Xz => "xz",
-            silico_protocol::SketchPlane::Yz => "yz",
+    let mut line = format!("faces {}", regions.plane.word());
+    if let silico_protocol::SketchPlane::Face(frame) = regions.plane {
+        for v in [frame.origin, frame.x, frame.y].into_iter().flatten() {
+            let _ = write!(line, " {:016x}", (v + 0.0).to_bits());
         }
-    );
+    }
     for region in &regions.regions {
         line.push_str(" region");
         for curves in region.loops() {
@@ -2211,8 +2213,8 @@ fn sweep_step(
                 TurnExtent::OneSide { angle, reversed } => (angle, reversed, false),
                 TurnExtent::Symmetric { angle } => (angle, false, true),
             };
-            // The sketch's axes are unit axes of model space, so the line's direction in
-            // it is its direction in the sketch, exactly.
+            // An origin plane's axes are unit axes of model space, so the line's direction
+            // in it is its direction in the sketch, exactly.
             let (x, y) = (plane.x_axis(), plane.y_axis());
             let sign = if reversed { -1.0 } else { 1.0 };
             let direction = [0, 1, 2].map(|k| plus_zero(sign * (x[k] * line[0] + y[k] * line[1])));
@@ -5526,6 +5528,89 @@ mod tests {
             holes: vec![circle.clone()],
         };
         assert_ne!(key(vec![holed]), key(vec![one(square(0.0)), one(circle)]));
+    }
+
+    /// An origin plane's faces line is its word, as before face frames, so no step's key
+    /// moves (the cache's format bump re-keys every cache entry once); a face frame's is
+    /// `frame` and its nine numbers' bits, origin, x, y, so two frames a bit apart are two
+    /// steps, and a frame's −0 is its +0. Spelled out by hand from the doc.
+    #[test]
+    fn a_faces_line_holds_its_plane_s_word_or_its_frame_s_bits() {
+        use silico_protocol::{Curve, FaceFrame, Region, SketchPlane};
+        let on = |plane| FaceRegions {
+            plane,
+            regions: vec![Region {
+                outer: vec![Curve::Circle {
+                    center: [0.0, -2.0],
+                    radius: 1.0,
+                }],
+                holes: Vec::new(),
+            }],
+        };
+        assert_eq!(
+            faces_line(&on(SketchPlane::Xz)),
+            "faces xz region loop circle 0000000000000000 c000000000000000 3ff0000000000000"
+        );
+        let top = FaceFrame {
+            origin: [0.0, 0.0, 10.0],
+            x: [1.0, 0.0, 0.0],
+            y: [0.0, 1.0, 0.0],
+        };
+        let line = "faces frame \
+             0000000000000000 0000000000000000 4024000000000000 \
+             3ff0000000000000 0000000000000000 0000000000000000 \
+             0000000000000000 3ff0000000000000 0000000000000000 \
+             region loop circle 0000000000000000 c000000000000000 3ff0000000000000";
+        assert_eq!(faces_line(&on(SketchPlane::Face(top))), line);
+        // Each of the nine a bit off: another line, another key.
+        let key = |frame| Step::Faces(Arc::new(on(SketchPlane::Face(frame)))).key();
+        for k in 0..9 {
+            let mut off = top;
+            let v = match k / 3 {
+                0 => &mut off.origin,
+                1 => &mut off.x,
+                _ => &mut off.y,
+            };
+            v[k % 3] = f64::from_bits(v[k % 3].to_bits() + 1);
+            assert_ne!(faces_line(&on(SketchPlane::Face(off))), line, "{k}");
+            assert_ne!(key(off), key(top), "{k}");
+        }
+        // Each zero of the frame written −0 (8000000000000000 as sent): the same line, the
+        // same key.
+        for k in 0..9 {
+            let mut negative = top;
+            let v = match k / 3 {
+                0 => &mut negative.origin,
+                1 => &mut negative.x,
+                _ => &mut negative.y,
+            };
+            if v[k % 3] != 0.0 {
+                continue;
+            }
+            v[k % 3] = -0.0;
+            assert_eq!(faces_line(&on(SketchPlane::Face(negative))), line, "{k}");
+            assert_eq!(key(negative), key(top), "{k}");
+        }
+        let all = FaceFrame {
+            origin: [-0.0, -0.0, 10.0],
+            x: [1.0, -0.0, -0.0],
+            y: [-0.0, 1.0, -0.0],
+        };
+        assert_eq!(faces_line(&on(SketchPlane::Face(all))), line);
+        // A reversed top's x, −X: its sign in the bits (bff0…), another key than +X's.
+        let reversed = FaceFrame {
+            x: [-1.0, 0.0, 0.0],
+            ..top
+        };
+        assert_eq!(
+            faces_line(&on(SketchPlane::Face(reversed))),
+            "faces frame \
+             0000000000000000 0000000000000000 4024000000000000 \
+             bff0000000000000 0000000000000000 0000000000000000 \
+             0000000000000000 3ff0000000000000 0000000000000000 \
+             region loop circle 0000000000000000 c000000000000000 3ff0000000000000"
+        );
+        assert_ne!(key(reversed), key(top));
     }
 
     /// Keys outlive a run, so their spelling is pinned: computed by hand with Python's

@@ -252,11 +252,14 @@ pub enum SolverConstraint {
         a: Geometry,
         b: Geometry,
     },
-    /// The angle from line `a`'s direction to line `b`'s, counter-clockwise (radians).
+    /// The angle from line `a`'s direction to line `b`'s, counter-clockwise (radians); or,
+    /// `reversed`, to `b`'s taken from its end to its start (FreeCAD's `Angle` with `b`'s
+    /// end as its start, `Sketch::addAngleConstraint`'s `PointPos::end`).
     Angle {
         tag: Tag,
         a: Geometry,
         b: Geometry,
+        reversed: bool,
         value: Value,
     },
     /// Two lines of the same length.
@@ -2723,6 +2726,19 @@ mod tests {
                     tag: t,
                     a: l0,
                     b: l1,
+                    reversed: false,
+                    value: v,
+                }),
+                end,
+                8,
+            ),
+            // Reversed, it reads the same ends, the other way round.
+            (
+                Some(SolverConstraint::Angle {
+                    tag: t,
+                    a: l0,
+                    b: l1,
+                    reversed: true,
                     value: v,
                 }),
                 end,

@@ -156,13 +156,23 @@ impl Gen {
             }
             k @ 7..=10 => {
                 let (a, b) = (self.pick(&[1]), self.pick(&[1]));
-                let angle = self.rng.range(-3.5, 3.5);
+                // An angle's b reversed half the time, read from the bit of the value's draw
+                // the value doesn't use, so every draw is as it was before `reversed` and a
+                // saved seed builds the sketch it built.
+                let (angle, odd) = self.rng.range_and_bit(-3.5, 3.5);
                 let value = self.b.fixed(angle);
+                let reversed = k == 10 && odd;
                 a.zip(b).map(|(a, b)| match k {
                     7 => SolverConstraint::Parallel { tag, a, b },
                     8 => SolverConstraint::Perpendicular { tag, a, b },
                     9 => SolverConstraint::EqualLength { tag, a, b },
-                    _ => SolverConstraint::Angle { tag, a, b, value },
+                    _ => SolverConstraint::Angle {
+                        tag,
+                        a,
+                        b,
+                        reversed,
+                        value,
+                    },
                 })
             }
             _ => {
@@ -315,8 +325,22 @@ pub fn residuals(s: &SketchSystem, v: &[f64], c: &SolverConstraint) -> Vec<f64> 
             };
             vec![e / scale]
         }
-        SolverConstraint::Angle { a, b, value, .. } => {
-            let (d1, d2) = (dir(s, v, a), dir(s, v, b));
+        SolverConstraint::Angle {
+            a,
+            b,
+            reversed,
+            value,
+            ..
+        } => {
+            // Reversed, b's direction runs from its end to its start (PlaneGCS's l2p1 and
+            // l2p2 swapped): the difference taken that way, so a zero is +0 as PlaneGCS's is.
+            let d1 = dir(s, v, a);
+            let d2 = if reversed {
+                let (p, q) = (xy(s, v, PointOf::Start(b)), xy(s, v, PointOf::End(b)));
+                (p.0 - q.0, p.1 - q.1)
+            } else {
+                dir(s, v, b)
+            };
             let t = libm::atan2(d1.1, d1.0) + v[value.0 as usize];
             let (x2, y2) = (
                 d2.0 * libm::cos(t) + d2.1 * libm::sin(t),

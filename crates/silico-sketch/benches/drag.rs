@@ -152,6 +152,7 @@ fn chain(links: usize) -> (SketchSystem, PointOf) {
                 tag,
                 a: before,
                 b: line,
+                reversed: false,
                 value: angle,
             });
         }

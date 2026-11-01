@@ -21,6 +21,7 @@ bench = []
 re_renderer.workspace = true
 wgpu.workspace = true
 glam.workspace = true
+libm.workspace = true
 macaw.workspace = true
 pollster.workspace = true
 smallvec.workspace = true
@@ -36,6 +37,8 @@ silico-core = { workspace = true, features = ["fake"] }
 cpu-time.workspace = true
 libm.workspace = true
 proptest.workspace = true
+# The render's tracing spans, read back by its tests.
+tracing-subscriber.workspace = true
 silico-render = { path = ".", features = ["test_ops", "bench"] }
 
 [[bin]]
@@ -51,6 +54,10 @@ required-features = ["bench"]
 name = "silico-render-test-worker"
 path = "src/bin/silico-render-test-worker.rs"
 required-features = ["test_ops"]
+
+[[bench]]
+name = "views"
+harness = false
 
 [[test]]
 name = "all_render"

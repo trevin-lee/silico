@@ -12,7 +12,7 @@ use std::f64::consts::TAU;
 
 use crate::history::{ElementKind, History, InputHistory};
 use crate::primitive::{InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, format_number};
-use crate::vec3::{dot, sub};
+use crate::vec3::{dot, norm, sub};
 
 /// OCCT's angular tolerance (`Precision::Angular()`), in radians: a revolution of no more
 /// than this is no revolution, and one within it of a whole turn is a whole turn
@@ -32,10 +32,6 @@ pub const MEASURE_PRECISION: f64 = 1e-9;
 
 fn invalid(parameter: &'static str, message: String) -> InvalidParameter {
     InvalidParameter { parameter, message }
-}
-
-fn length(v: [f64; 3]) -> f64 {
-    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
 }
 
 /// That `point` is a place: each coordinate finite and at most [`MAX_LENGTH`] from 0.
@@ -63,7 +59,7 @@ pub(crate) fn check_unit(
     what: &str,
     direction: [f64; 3],
 ) -> Result<(), InvalidParameter> {
-    let size = length(direction);
+    let size = norm(direction);
     if direction.iter().all(|c| c.is_finite()) && (size - 1.0).abs() <= UNIT_SLACK {
         Ok(())
     } else {
@@ -75,7 +71,7 @@ pub(crate) fn check_unit(
 }
 
 /// How far a unit direction's length may be from 1: rounding, as the core normalizes one.
-const UNIT_SLACK: f64 = 4.0 * f64::EPSILON;
+pub(crate) const UNIT_SLACK: f64 = 4.0 * f64::EPSILON;
 
 /// The longest a sweep's vector may measure: a kilometre, and the rounding a unit direction
 /// (to [`UNIT_SLACK`]) times a length of at most a kilometre, measured, can add to it. So a
@@ -90,7 +86,7 @@ const MAX_SWEEP: f64 = MAX_LENGTH * (1.0 + 4.0 * UNIT_SLACK);
 /// tolerance, and at most a kilometre (to the rounding of a unit direction, [`MAX_SWEEP`]).
 pub fn check_prism(start: [f64; 3], vector: [f64; 3]) -> Result<(), InvalidParameter> {
     check_point("start", "prism's start", start)?;
-    let size = length(vector);
+    let size = norm(vector);
     if vector.iter().all(|c| c.is_finite()) && size > LENGTH_TOLERANCE && size <= MAX_SWEEP {
         Ok(())
     } else {
@@ -114,7 +110,7 @@ pub fn check_leaves_plane(
     normal: [f64; 3],
     vector: [f64; 3],
 ) -> Result<(), InvalidParameter> {
-    let size = length(vector);
+    let size = norm(vector);
     let along = dot(vector, normal).abs();
     if size > 0.0 && along >= crate::profile::MIN_DIRECTION_FACTOR * size {
         Ok(())
@@ -157,7 +153,7 @@ pub fn check_through_all(direction: [f64; 3]) -> Result<(), InvalidParameter> {
 /// (design S3). Refused past a kilometre (a base about 500 m across), as any sweep is, and
 /// for a box with no extent, which no base and profile have.
 pub fn through_all_length([low, high]: [[f64; 3]; 2]) -> Result<f64, InvalidParameter> {
-    let diagonal = length(sub(high, low));
+    let diagonal = norm(sub(high, low));
     let sweep = THROUGH_ALL_FACTOR * diagonal;
     if sweep > LENGTH_TOLERANCE && sweep <= MAX_LENGTH {
         Ok(sweep)

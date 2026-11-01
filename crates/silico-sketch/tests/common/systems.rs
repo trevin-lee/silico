@@ -172,8 +172,16 @@ impl Rng {
 
     /// In [lo, hi), from the top 53 bits: exact arithmetic, no platform math.
     pub fn range(&mut self, lo: f64, hi: f64) -> f64 {
-        let unit = (self.next() >> 11) as f64 / (1u64 << 53) as f64;
-        lo + (hi - lo) * unit
+        self.range_and_bit(lo, hi).0
+    }
+
+    /// [`range`](Self::range)'s value from one draw, and the draw's lowest bit, which the
+    /// value doesn't use: a choice that takes no draw of its own, so every later draw is
+    /// as it would be without it.
+    pub fn range_and_bit(&mut self, lo: f64, hi: f64) -> (f64, bool) {
+        let bits = self.next();
+        let unit = (bits >> 11) as f64 / (1u64 << 53) as f64;
+        (lo + (hi - lo) * unit, bits & 1 == 1)
     }
 
     pub fn below(&mut self, n: u64) -> u64 {

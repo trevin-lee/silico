@@ -75,7 +75,7 @@ impl ToWire for SketchRead {
             (
                 "plane",
                 Json::object([
-                    ("origin", Json::direction([0.0; 3])),
+                    ("origin", Json::direction(frame.origin())),
                     ("x", Json::direction(frame.x_axis())),
                     ("y", Json::direction(frame.y_axis())),
                     ("normal", Json::direction(frame.normal())),
@@ -264,7 +264,9 @@ impl JsonSchema for SketchConstraintReadSchema {
         let id = generator.subschema_for::<ElementId>();
         let state = generator.subschema_for::<ConstraintStateSchema>();
         // Each of the document's forms, its own object, with the constraint's ID and its
-        // state beside its fields, and closed to them.
+        // state beside its fields, and closed to them. A field the document writes only
+        // when it holds something (an angle's `reversed`, written only as true) stays
+        // optional, as the document's own schema has it; every other is required.
         let mut schema = <Form as JsonSchema>::json_schema(generator);
         if let Some(object) = schema.as_object_mut() {
             object.insert(
@@ -279,6 +281,7 @@ impl JsonSchema for SketchConstraintReadSchema {
             if let Some(serde_json::Value::Array(forms)) = object.get_mut("oneOf") {
                 for form in forms {
                     if let Some(form) = form.as_object_mut() {
+                        let optional = optional_properties(form);
                         if let Some(serde_json::Value::Object(properties)) =
                             form.get_mut("properties")
                         {
@@ -286,12 +289,30 @@ impl JsonSchema for SketchConstraintReadSchema {
                             properties.insert("state".to_owned(), state.clone().into());
                         }
                         close(form);
+                        if let Some(serde_json::Value::Array(required)) = form.get_mut("required") {
+                            required.retain(|key| !optional.contains(key));
+                        }
                     }
                 }
             }
         }
         schema
     }
+}
+
+/// The properties of `object`, an object's schema, that its `required` leaves out.
+fn optional_properties(
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let required = object.get("required").and_then(serde_json::Value::as_array);
+    object
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .into_iter()
+        .flat_map(|properties| properties.keys())
+        .map(|key| serde_json::Value::String(key.clone()))
+        .filter(|key| !required.is_some_and(|required| required.contains(key)))
+        .collect()
 }
 
 /// A sketch's state.

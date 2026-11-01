@@ -607,7 +607,7 @@ fn carrier(geometry: &Seen<'_>) -> Option<Carrier> {
             middle: edge.middle,
         }),
         Seen::Face(face) => match &face.surface {
-            Surface::Plane { normal } => Some(Carrier::Plane {
+            Surface::Plane { normal, .. } => Some(Carrier::Plane {
                 centroid: face.centroid,
                 normal: *normal,
             }),

@@ -258,10 +258,17 @@ void Sketch::add(const ConstraintIn &c, int tag) {
       system.addConstraintPerpendicular(geo(c.a, GeometryKind::Line).line,
                                         geo(c.b, GeometryKind::Line).line, tag);
       break;
-    case ConstraintKind::Angle:
-      system.addConstraintL2LAngle(geo(c.a, GeometryKind::Line).line,
-                                   geo(c.b, GeometryKind::Line).line, value(c.value), tag);
+    case ConstraintKind::Angle: {
+      // FreeCAD's angle with explicit start points (Sketch::addAngleConstraint with
+      // PointPos): `b` reversed (`flag`) runs from its end to its start. Unreversed, its
+      // rows read the same parameters in the same order as the Line overload's
+      // (Constraints.cpp, the two ConstraintL2LAngle constructors), so nothing moves.
+      GCS::Line &l1 = geo(c.a, GeometryKind::Line).line;
+      GCS::Line &l2 = geo(c.b, GeometryKind::Line).line;
+      system.addConstraintL2LAngle(l1.p1, l1.p2, c.flag ? l2.p2 : l2.p1, c.flag ? l2.p1 : l2.p2,
+                                   value(c.value), tag);
       break;
+    }
     case ConstraintKind::EqualLength:
       system.addConstraintEqualLength(geo(c.a, GeometryKind::Line).line,
                                       geo(c.b, GeometryKind::Line).line, tag);

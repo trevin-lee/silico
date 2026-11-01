@@ -588,6 +588,155 @@ fn a_thirty_sixty_ninety_triangle_from_two_hundred_starts_keeps_its_implied_angl
     }
 }
 
+/// A polyline's corner: n1 from p1 at the origin to p2, horizontal and 10 long, then n2
+/// from p2 to p3 (drawn at `p3`, near where it lands), 10 long, and `angle`.
+fn chain_corner(angle: &str, p3: [f64; 2]) -> Checked {
+    document(
+        &[
+            point("p0000001", 0.0, 0.0),
+            point("p0000002", 10.4, 0.3),
+            point("p0000003", p3[0], p3[1]),
+        ],
+        &[
+            line("n0000001", "p0000001", "p0000002"),
+            line("n0000002", "p0000002", "p0000003"),
+        ],
+        &[],
+        &[],
+        &[
+            r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+            r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
+            r#"{"id": "k0000004", "type": "length", "line": "n0000001", "value": 10, "driving": true}"#,
+            r#"{"id": "k0000005", "type": "length", "line": "n0000002", "value": 10, "driving": true}"#,
+            angle,
+        ],
+    )
+}
+
+#[test]
+fn a_sixty_degree_chain_corner_typed_as_sixty_solves_to_its_corner() {
+    // The chain-corner decision (2026-10-31). At p2 the corner is between the ray back
+    // along n1 (to p1, 180°) and the ray along n2 (to p3); 60° from n2 to n1 taken back
+    // puts n2 at 180° − 60° = 120°, so p3 = p2 + 10 (cos 120°, sin 120°) = (5, 5√3). Before,
+    // the file had to say 120, from n1 to n2 as drawn, which solves to the same point;
+    // 60 without reversed is another corner, n2 at −60°: p3 (15, −5√3) (drawn near it, so
+    // the solve doesn't start half a turn away).
+    let mut w = worker();
+    let s3 = 3f64.sqrt();
+    for (angle, drawn, p3) in [
+        (
+            r#"{"id": "k0000006", "type": "angle", "a": "n0000002", "b": "n0000001", "reversed": true, "value": 60, "driving": true}"#,
+            [5.5, 8.0],
+            [5.0, 5.0 * s3],
+        ),
+        (
+            r#"{"id": "k0000006", "type": "angle", "a": "n0000001", "b": "n0000002", "value": 120, "driving": true}"#,
+            [5.5, 8.0],
+            [5.0, 5.0 * s3],
+        ),
+        (
+            r#"{"id": "k0000006", "type": "angle", "a": "n0000002", "b": "n0000001", "value": 60, "driving": true}"#,
+            [14.5, -8.0],
+            [15.0, -5.0 * s3],
+        ),
+    ] {
+        let s =
+            solved(&chain_corner(angle, drawn), &mut w).unwrap_or_else(|e| panic!("{angle}: {e}"));
+        assert_eq!(s.dofs, 0, "{angle}");
+        assert!(s.redundant.is_empty(), "{angle}: {s:?}");
+        assert_at(&s, "p0000002", [10.0, 0.0]);
+        assert_at(&s, "p0000003", p3);
+    }
+}
+
+#[test]
+fn a_line_thirty_degrees_from_the_x_axis_taken_back_lies_at_one_fifty() {
+    // SolidWorks' "30° from horizontal" for a line at 150°: from the line's direction to the
+    // x axis taken back (−x, 180°) is 30°, so the line runs at 150°: from the origin, 10
+    // long, it ends at (−5√3, 5). Unreversed, 30° to +x puts it at −30°: (5√3, −5) (drawn
+    // near it).
+    let mut w = worker();
+    let s3 = 3f64.sqrt();
+    for (reversed, drawn, end) in [
+        (r#""reversed": true, "#, [-8.0, 5.5], [-5.0 * s3, 5.0]),
+        ("", [8.0, -5.5], [5.0 * s3, -5.0]),
+    ] {
+        let doc = document(
+            &[
+                point("p0000001", 0.0, 0.0),
+                point("p0000002", drawn[0], drawn[1]),
+            ],
+            &[line("n0000001", "p0000001", "p0000002")],
+            &[],
+            &[],
+            &[
+                r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+                r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+                r#"{"id": "k0000003", "type": "length", "line": "n0000001", "value": 10, "driving": true}"#,
+                &format!(
+                    r#"{{"id": "k0000004", "type": "angle", "a": "n0000001", "b": "x_axis", {reversed}"value": 30, "driving": true}}"#
+                ),
+            ],
+        );
+        let s = solved(&doc, &mut w).unwrap_or_else(|e| panic!("{reversed}: {e}"));
+        assert_eq!(s.dofs, 0, "{reversed}");
+        assert_at(&s, "p0000002", end);
+    }
+}
+
+#[test]
+fn a_thirty_sixty_ninety_triangle_as_its_corners_are_seen_keeps_its_implied_corner() {
+    // triangle_30_60_90 above, each corner written as it's seen, from one ray leaving it to
+    // the next counter-clockwise (b reversed): at A from AB to AC, 30; at B from BC to BA,
+    // 60; at C from CA to CB, 90 (n3 then n2 taken back: −150° to −60°). The third is
+    // implied, so redundant, and kept: its gap is measured to n2 taken back, so it's met
+    // (unreversed it would be 180° off). From 50 starts about the solution.
+    let mut rng = Rng(0x60_30_90);
+    let mut w = worker();
+    let c = [7.5, 2.5 * 3f64.sqrt()];
+    for start in 0..50 {
+        let j = |rng: &mut Rng| rng.range(-1.5, 1.5);
+        let (bx, by, cx, cy) = (
+            10.0 + j(&mut rng),
+            j(&mut rng),
+            c[0] + j(&mut rng),
+            c[1] + j(&mut rng),
+        );
+        let doc = document(
+            &[
+                point("p0000001", 0.0, 0.0),
+                point("p0000002", bx, by),
+                point("p0000003", cx, cy),
+            ],
+            &[
+                line("n0000001", "p0000001", "p0000002"),
+                line("n0000002", "p0000002", "p0000003"),
+                line("n0000003", "p0000003", "p0000001"),
+            ],
+            &[],
+            &[],
+            &[
+                r#"{"id": "k0000001", "type": "distance_x", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+                r#"{"id": "k0000002", "type": "distance_y", "a": "origin", "b": "p0000001", "value": 0, "driving": true}"#,
+                r#"{"id": "k0000003", "type": "horizontal", "line": "n0000001"}"#,
+                r#"{"id": "k0000004", "type": "length", "line": "n0000001", "value": 10, "driving": true}"#,
+                r#"{"id": "k0000005", "type": "angle", "a": "n0000001", "b": "n0000003", "reversed": true, "value": 30, "driving": true}"#,
+                r#"{"id": "k0000006", "type": "angle", "a": "n0000002", "b": "n0000001", "reversed": true, "value": 60, "driving": true}"#,
+                r#"{"id": "k0000007", "type": "angle", "a": "n0000003", "b": "n0000002", "reversed": true, "value": 90, "driving": true}"#,
+            ],
+        );
+        let s = solved(&doc, &mut w).unwrap_or_else(|e| panic!("start {start}: {e}"));
+        assert_eq!(s.redundant.len(), 1, "start {start}: {s:?}");
+        assert!(
+            s.redundant.values().all(|&gap| gap <= 1e-9),
+            "start {start}: {s:?}"
+        );
+        assert_at(&s, "p0000002", [10.0, 0.0]);
+        assert_at(&s, "p0000003", c);
+    }
+}
+
 #[test]
 fn a_point_held_at_a_lines_middle_and_on_it_lands_at_the_middle() {
     // The oracle's on_repeats_a_midpoint, whose FreeCAD solve the oracle can't compare

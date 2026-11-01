@@ -778,6 +778,32 @@ fn reference_dimensions_are_measured_on_the_solution() {
 }
 
 #[test]
+fn a_reference_angle_reversed_measures_to_bs_direction_taken_back() {
+    // Reversed, b runs from its end to its start: angle(d_a, −d_b). n1 runs along +x, the
+    // y axis along +y. From n1 to the y axis taken back (−y): −90°, where unreversed it's
+    // 90° (above). From the y axis to n1 taken back (−x): 90°, unreversed −90°. On the
+    // stored value's turn as before: stored 270, the measure a turn above, 270.
+    let t = translate(&ten(&[
+        r#"{"id": "r0000004", "type": "angle", "a": "n0000001", "b": "y_axis", "reversed": true, "value": 0, "driving": false}"#,
+        r#"{"id": "r0000005", "type": "angle", "a": "y_axis", "b": "n0000001", "reversed": true, "value": 0, "driving": false}"#,
+        r#"{"id": "r0000006", "type": "angle", "a": "n0000001", "b": "y_axis", "reversed": true, "value": 270, "driving": false}"#,
+    ]));
+    let solution = read_back(
+        &t,
+        &answer(&t, t.system.values.clone(), SolveStatus::Success),
+    )
+    .unwrap();
+    let angle =
+        |s: &str| match solution.references[&silico_core::document::ElementId::new(s).unwrap()] {
+            Measured::Angle(a) => a,
+            other => panic!("{other:?}"),
+        };
+    for (id, want) in [("r0000004", -90.0), ("r0000005", 90.0), ("r0000006", 270.0)] {
+        assert!((angle(id) - want).abs() < 1e-12, "{id}: {}", angle(id));
+    }
+}
+
+#[test]
 fn conflicting_constraints_are_over_constrained_naming_them() {
     let t = translate(&ten(&[
         r#"{"id": "k0000003", "type": "length", "line": "n0000001", "value": 11, "driving": true}"#,
@@ -2211,7 +2237,7 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
     // exactly its gap: 1% within it is kept, 1% past it is over-constrained, naming it. A
     // measure off by more than 1% either way fails one or the other (round 2's and 3's tests
     // lens; doubles at 10 mm are 1.8e-15 apart, far inside the margin).
-    let cases: [(&str, usize); 28] = [
+    let cases: [(&str, usize); 29] = [
         (r#""type": "horizontal", "line": "n0000001""#, 9),
         (r#""type": "vertical", "line": "n0000002""#, 10),
         (
@@ -2260,6 +2286,11 @@ fn every_form_redundant_and_met_is_kept_and_a_nanometre_off_is_over_constrained(
         ),
         (
             r#""type": "angle", "a": "n0000001", "b": "n0000002", "value": 90, "driving": true"#,
+            10,
+        ),
+        // Reversed: from n1 (+x) to n2 taken back (−y), −90°, met as drawn.
+        (
+            r#""type": "angle", "a": "n0000001", "b": "n0000002", "reversed": true, "value": -90, "driving": true"#,
             10,
         ),
         (
@@ -2360,6 +2391,19 @@ fn a_tangency_inside_is_sent_internal_and_outside_not() {
             [SolverConstraint::TangentCircles { internal: got, .. }] => {
                 assert_eq!(got, internal, "{side}")
             }
+            ref other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[test]
+fn an_angle_reversed_is_sent_reversed_and_one_without_it_not() {
+    for (reversed, field) in [(true, r#""reversed": true, "#), (false, "")] {
+        let t = translate(&shapes2(&format!(
+            r#"{{"id": "k0000001", "type": "angle", "a": "n0000001", "b": "n0000002", {field}"value": 90, "driving": true}}"#
+        )));
+        match sent(&t)[..] {
+            [SolverConstraint::Angle { reversed: got, .. }] => assert_eq!(got, reversed),
             ref other => panic!("{other:?}"),
         }
     }

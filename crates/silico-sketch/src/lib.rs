@@ -81,7 +81,8 @@ mod ffi {
     /// A constraint: its kind, its tag (0 for an arc's rules), what it names (`b_position`
     /// `None` for a constraint of one operand, and `c_position` for one of two, whose
     /// operands are then never read), its value (if it has one; otherwise 0, never read), and
-    /// a choice of two (a tangency of circles' `internal`; otherwise false, never read).
+    /// a choice of two (a tangency of circles' `internal`, an angle's `reversed`; otherwise
+    /// false, never read).
     struct ConstraintIn {
         kind: ConstraintKind,
         tag: u32,
@@ -587,9 +588,13 @@ fn encode_constraint(c: &SolverConstraint) -> ffi::ConstraintIn {
         SolverConstraint::Perpendicular { a, b, .. } => {
             (K::Perpendicular, whole(a), whole(b), none, 0, false)
         }
-        SolverConstraint::Angle { a, b, value, .. } => {
-            (K::Angle, whole(a), whole(b), none, value.0, false)
-        }
+        SolverConstraint::Angle {
+            a,
+            b,
+            reversed,
+            value,
+            ..
+        } => (K::Angle, whole(a), whole(b), none, value.0, reversed),
         SolverConstraint::EqualLength { a, b, .. } => {
             (K::EqualLength, whole(a), whole(b), none, 0, false)
         }

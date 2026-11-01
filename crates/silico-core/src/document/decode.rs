@@ -1166,6 +1166,7 @@ fn constraint(fields: &mut Fields) -> Result<SketchConstraint, Error> {
         "angle" => Form::Angle {
             a: r(fields, "a")?,
             b: r(fields, "b")?,
+            reversed: reversed(fields)?,
             value: angle(fields, "value")?,
             driving: boolean(fields, "driving")?,
         },
@@ -1228,6 +1229,27 @@ fn constraint(fields: &mut Fields) -> Result<SketchConstraint, Error> {
         }
     };
     Ok(SketchConstraint { id, form })
+}
+
+/// Whether an angle takes `b`'s direction from its `to` to its `from`: `true` if it says
+/// so, and false if it leaves `reversed` out. `false` is refused, naming the field, so an
+/// angle has one spelling, as a feature's `suppressed` ([`suppressed`]).
+fn reversed(fields: &mut Fields) -> Result<bool, Error> {
+    let Some(node) = fields.optional("reversed") else {
+        return Ok(false);
+    };
+    let name = fields.name("reversed");
+    match node.value {
+        Value::Bool(true) => Ok(true),
+        Value::Bool(false) => Err(refuse(
+            fields.feature(),
+            &name,
+            node.at,
+            format!("{name} is false: an angle measured to b as drawn leaves reversed out"),
+            "remove reversed; write it only as true",
+        )),
+        _ => Err(wrong_kind(fields.feature(), &name, &node, "true")),
+    }
 }
 
 fn element_id(fields: &mut Fields, key: &str) -> Result<ElementId, Error> {

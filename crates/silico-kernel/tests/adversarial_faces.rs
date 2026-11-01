@@ -6,6 +6,7 @@
 
 use super::close;
 use super::imports;
+use super::planes;
 
 use std::f64::consts::{PI, TAU};
 
@@ -60,7 +61,7 @@ fn an_arc_turning_less_than_occts_parametric_tolerance_stays_that_short() {
     // valid at 3.1e10 mm². Built with the range as sent, it's the sliver it says.
     let radius = 1e5;
     for turn in [5e-10, 1e-9, 2e-9, 1e-6] {
-        for plane in SketchPlane::ALL {
+        for plane in planes::every() {
             let regions = one(plane, sector(radius, turn), vec![]);
             assert_close(
                 &format!("a turn of {turn} on {plane:?}"),
@@ -102,7 +103,7 @@ fn an_arc_a_hair_short_of_a_turn_closes_by_its_chord() {
 fn ends_off_their_circle_within_the_tolerance_still_share_their_vertex() {
     // A half disc of r 2, its arc's end 9e-8 off where its angle puts it (the solve's
     // convergence is about 1e-10; this is the tolerance's edge), and its chord from there.
-    for plane in SketchPlane::ALL {
+    for plane in planes::every() {
         let end = [-2.0, 9e-8];
         let outer = vec![
             Curve::Arc {
