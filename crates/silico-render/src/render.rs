@@ -46,9 +46,9 @@ use re_renderer::{
 use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{
     Camera, Class, EDGE_BIT, F32_ROUNDING, Frame as CameraFrame, InView, InViewBody,
-    InvalidParameter, MIN_EYE_DISTANCE, Mesh, PRECISION_OF_PIXEL, PixelId, RenderBody, RenderScene,
-    ViewRegion, box_of, check_bodies_in_view, check_render_mesh, corner_sec2, pyramid_slope,
-    reach_of_points,
+    InvalidParameter, MIN_EYE_DISTANCE, Mesh, PRECISION_OF_PIXEL, PixelId, Projection, RenderBody,
+    RenderScene, ViewRegion, box_of, check_bodies_in_view, check_render_mesh, corner_sec2,
+    pyramid_slope, reach_of_points,
 };
 
 /// The background: a flat light grey, sRGB.
@@ -1026,22 +1026,9 @@ impl PendingPick {
     /// inverse of [`View::place`], d = right x + up y + back (z + depth)); none if it isn't
     /// finite.
     fn point_at(&self, pixel: [u32; 2], depth: f32) -> Option<[f64; 3]> {
-        let [width, height] = self.size.map(f64::from);
-        let ndc = glam::DVec3::new(
-            (f64::from(pixel[0]) + 0.5) / width * 2.0 - 1.0,
-            1.0 - (f64::from(pixel[1]) + 0.5) / height * 2.0,
-            f64::from(depth),
-        );
-        let view_from_projection = self
-            .projection
-            .projection_from_view(self.size)
-            .as_dmat4()
-            .inverse();
-        let p = view_from_projection.project_point3(ndc);
-        if !p.is_finite() {
-            return None;
-        }
-        let v = [p.x, p.y, p.z + self.depth];
+        let centre = pixel.map(|c| f64::from(c) + 0.5);
+        let p = unproject(self.projection, self.size, centre, f64::from(depth))?;
+        let v = [p[0], p[1], p[2] + self.depth];
         let f = &self.frame;
         Some(std::array::from_fn(|k| {
             self.origin[k] + f.right[k] * v[0] + f.up[k] * v[1] + f.back[k] * v[2]
@@ -1131,11 +1118,11 @@ impl View {
                     frustum,
                     inside: None,
                     camera: camera.clone(),
-                    projection: ViewProjection::Orthographic {
-                        camera_mode: OrthographicCameraMode::NearPlaneCenter,
-                        vertical_world_size: view_height as f32,
-                        far_plane_distance: (2.0 * (reach + margin)) as f32,
-                    },
+                    projection: view_projection(
+                        Projection::Orthographic { view_height },
+                        [width, height],
+                        (2.0 * (reach + margin)) as f32,
+                    ),
                 }
             }
             InView::Perspective { field_of_view } => {
@@ -1162,11 +1149,11 @@ impl View {
                         &frame,
                         pyramid_slope(tan, height),
                     )),
-                    projection: ViewProjection::Perspective {
-                        vertical_fov: field_of_view.to_radians() as f32,
-                        near_plane_distance: (MIN_EYE_DISTANCE / 2.0) as f32,
-                        aspect_ratio: width as f32 / height as f32,
-                    },
+                    projection: view_projection(
+                        Projection::Perspective { field_of_view },
+                        [width, height],
+                        0.0,
+                    ),
                 }
             }
         }
@@ -1361,6 +1348,90 @@ impl View {
             dot(self.frame.up, d),
             dot(self.frame.back, d) - self.depth,
         ])
+    }
+}
+
+/// The projection a view of `projection` at `size_px` is drawn with, about the fixed camera
+/// (at the origin, looking along −z with +y up): orthographic about its near plane's centre,
+/// `far` behind it (the scene's depth, which a view's x and y don't depend on); or in
+/// perspective from the eye, its near plane half [`MIN_EYE_DISTANCE`] away and nothing far.
+/// One for drawing ([`View::new`]), picking's points ([`PendingPick::point_at`]), and
+/// [`ray`], so they can't disagree.
+fn view_projection(projection: Projection, [width, height]: [u32; 2], far: f32) -> ViewProjection {
+    match projection {
+        Projection::Orthographic { view_height } => ViewProjection::Orthographic {
+            camera_mode: OrthographicCameraMode::NearPlaneCenter,
+            vertical_world_size: view_height as f32,
+            far_plane_distance: far,
+        },
+        Projection::Perspective { field_of_view } => ViewProjection::Perspective {
+            vertical_fov: field_of_view.to_radians() as f32,
+            near_plane_distance: (MIN_EYE_DISTANCE / 2.0) as f32,
+            aspect_ratio: width as f32 / height as f32,
+        },
+    }
+}
+
+/// The point at `pixel` (from the image's top-left, x right and y down, in pixels: a pixel's
+/// centre is half a pixel in) and the normalized device depth `depth`, `size` in pixels,
+/// through `projection`'s matrix as the GPU takes it (its f32 entries), inverted in f64: in
+/// the fixed camera's frame; none if it isn't finite.
+fn unproject(
+    projection: ViewProjection,
+    size: [u32; 2],
+    pixel: [f64; 2],
+    depth: f64,
+) -> Option<[f64; 3]> {
+    let [width, height] = size.map(f64::from);
+    let ndc = glam::DVec3::new(
+        pixel[0] / width * 2.0 - 1.0,
+        1.0 - pixel[1] / height * 2.0,
+        depth,
+    );
+    let view_from_projection = projection.projection_from_view(size).as_dmat4().inverse();
+    let p = view_from_projection.project_point3(ndc);
+    p.is_finite().then_some([p.x, p.y, p.z])
+}
+
+/// The ray through `pixel` of a view from `camera` `size_px` in pixels, in the document's
+/// coordinates, in f64: its origin, and its direction of unit length, into the view. `pixel`
+/// is from the image's top-left, x right and y down, in pixels (a pixel's centre is half a
+/// pixel in, so the image's centre is `size_px / 2`); one outside the image is a ray all the
+/// same. By the projection the renderer draws with ([`view_projection`]), so it passes through
+/// the point a frame's picking finds at that pixel ([`Pick::point`]):
+/// - in perspective, from the eye;
+/// - orthographic, parallel to the view, from the view's plane (through the target, square to
+///   the view). An orthographic view draws everything along its line, in front of that plane
+///   too (its camera is set past the scene), so a pick meets the whole line, not only what's
+///   ahead of its origin.
+///
+/// None for a camera [`Camera::check`] refuses at this size, a size of 0 on a side, or a pixel
+/// that isn't finite.
+pub fn ray(camera: &Camera, size_px: [u32; 2], pixel: [f64; 2]) -> Option<([f64; 3], [f64; 3])> {
+    let [width, height] = size_px;
+    if width == 0 || height == 0 || !pixel.iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    let frame = camera.check(width, height).ok()?;
+    let into_document = |[x, y, z]: [f64; 3]| -> [f64; 3] {
+        std::array::from_fn(|k| frame.right[k] * x + frame.up[k] * y + frame.back[k] * z)
+    };
+    match camera.projection {
+        Projection::Perspective { .. } => {
+            // The point on the near plane, in the eye's frame: the ray's way from the eye.
+            let projection = view_projection(camera.projection, size_px, 0.0);
+            let along = into_document(unproject(projection, size_px, pixel, 1.0)?);
+            let length = dot(along, along).sqrt();
+            (length.is_finite() && length > 0.0).then(|| (camera.eye, along.map(|c| c / length)))
+        }
+        Projection::Orthographic { .. } => {
+            // Across the view only: x and y don't depend on the depth, or on the far plane.
+            let projection = view_projection(camera.projection, size_px, 1.0);
+            let [x, y, _] = unproject(projection, size_px, pixel, 0.5)?;
+            let across = into_document([x, y, 0.0]);
+            let origin = std::array::from_fn(|k| camera.target[k] + across[k]);
+            Some((origin, frame.back.map(|c| -c)))
+        }
     }
 }
 

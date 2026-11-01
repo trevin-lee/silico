@@ -17,7 +17,7 @@ use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjec
 
 use super::{
     BACKGROUND, Element, Frame, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, PendingPick,
-    Pick, Picking, PixelRect, RenderFailure, Renderer,
+    Pick, Picking, PixelRect, RenderFailure, Renderer, ray,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -870,6 +870,201 @@ fn a_perspective_picks_point_is_the_pixels_centre_on_the_face() {
             ];
             assert!((want[0] - 21.3791).abs() < 1e-4 && (want[2] - 5.1043).abs() < 1e-4);
             assert_point(&found, want, [1e-3, 1e-3, 1e-3]);
+        },
+    );
+}
+
+/// `a`'s length.
+fn norm(a: [f64; 3]) -> f64 {
+    a.iter().map(|c| c * c).sum::<f64>().sqrt()
+}
+
+/// Where the ray `(origin, direction)` meets the plane where coordinate `k` is `at`.
+fn meets((origin, direction): ([f64; 3], [f64; 3]), k: usize, at: f64) -> [f64; 3] {
+    let t = (at - origin[k]) / direction[k];
+    std::array::from_fn(|i| origin[i] + direction[i] * t)
+}
+
+/// `p`'s distance from the line of the ray `(origin, direction)`, its direction of unit
+/// length.
+fn off_the_ray(p: [f64; 3], (origin, direction): ([f64; 3], [f64; 3])) -> f64 {
+    let d: [f64; 3] = std::array::from_fn(|k| p[k] - origin[k]);
+    let t: f64 = (0..3).map(|k| d[k] * direction[k]).sum();
+    norm(std::array::from_fn(|k| d[k] - direction[k] * t))
+}
+
+fn assert_near(got: [f64; 3], want: [f64; 3], relative: f64) {
+    let off = norm(std::array::from_fn(|k| got[k] - want[k]));
+    assert!(
+        off <= relative * norm(want),
+        "{got:?} against {want:?}: {off:e} off"
+    );
+}
+
+/// The front camera in perspective, 40° high.
+fn front_in_perspective() -> Camera {
+    Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        ..front()
+    }
+}
+
+/// From above, in front, and to the right of the box, looking at (20, 10, 5).
+fn from_the_corner(projection: Projection) -> Camera {
+    Camera {
+        projection,
+        eye: [70.0, -45.0, 55.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    }
+}
+
+#[test]
+fn the_ray_through_the_images_centre_is_the_view_axis() {
+    // The image's centre is half its size, (32, 24): the ray from the eye toward the target
+    // in perspective; orthographic, from the target along the view. The way, by hand, from
+    // the eye to the target.
+    let size = [WIDTH, HEIGHT];
+    let centre = [32.0, 24.0];
+    let ortho = Projection::Orthographic { view_height: 60.0 };
+    let wide = Projection::Perspective {
+        field_of_view: 60.0,
+    };
+    for camera in [
+        front(),
+        front_in_perspective(),
+        from_the_corner(ortho),
+        from_the_corner(wide),
+    ] {
+        let (origin, direction) = ray(&camera, size, centre).unwrap();
+        let way: [f64; 3] = std::array::from_fn(|k| camera.target[k] - camera.eye[k]);
+        let way = way.map(|c| c / norm(way));
+        assert_near(direction, way, 1e-15);
+        assert!((norm(direction) - 1.0).abs() <= 1e-15);
+        let want = match camera.projection {
+            Projection::Perspective { .. } => camera.eye,
+            Projection::Orthographic { .. } => camera.target,
+        };
+        assert_near(origin, want, 1e-15);
+    }
+    // The front view's, exactly: along +y.
+    let (_, direction) = ray(&front(), size, centre).unwrap();
+    assert_eq!(direction.map(|c| c + 0.0), [0.0, 1.0, 0.0]);
+}
+
+#[test]
+fn a_ray_through_a_pixel_meets_the_face_where_its_worked_by_hand() {
+    // The ray is the GPU's projection, whose matrix is f32 (each entry to 6e-8 of it), so it
+    // meets the hand's worked points to 6e-8 of their offsets across the view (a few mm
+    // here): to 1e-8 of the points, which are 20 mm and more from the origin.
+    let size = [WIDTH, HEIGHT];
+    // Orthographic, from the front: through pixel (32, 26)'s centre, (32.5, 26.5), parallel
+    // to the view (+y), from the target's plane (y = 10), so meeting the front face (y = 0)
+    // at (21 + 0.5 × 11/12, 0, 7 − 2.5 × 11/12).
+    let (origin, direction) = ray(&front(), size, [32.5, 26.5]).unwrap();
+    assert_eq!(direction.map(|c| c + 0.0), [0.0, 1.0, 0.0]);
+    assert_near(origin, [21.0 + 5.5 / 12.0, 10.0, 7.0 - 27.5 / 12.0], 1e-8);
+    assert_near(meets((origin, direction), 1, 0.0), CENTRE_OF_32_26, 1e-8);
+    // In perspective, 40° high from (21, −50, 7): from the eye, meeting the face 50 mm
+    // along the view at x = 21 + 50 × (1/64) × tan 20° × 4/3, z = 7 − 50 × (5/48) × tan 20°.
+    let camera = front_in_perspective();
+    let (origin, direction) = ray(&camera, size, [32.5, 26.5]).unwrap();
+    assert_eq!(origin, camera.eye);
+    let tan = libm::tan(20f64.to_radians());
+    let want = [
+        21.0 + 50.0 / 64.0 * tan * 4.0 / 3.0,
+        0.0,
+        7.0 - 50.0 * 5.0 / 48.0 * tan,
+    ];
+    assert_near(meets((origin, direction), 1, 0.0), want, 1e-8);
+    // The image's corner (0, 0), by hand: up tan 20° and left tan 20° × 4/3 for each mm;
+    // its offsets across the view are about half its length, so to 5e-8.
+    let (_, corner) = ray(&camera, size, [0.0, 0.0]).unwrap();
+    let way = [-tan * 4.0 / 3.0, 1.0, tan];
+    assert_near(corner, way.map(|c| c / norm(way)), 5e-8);
+}
+
+#[test]
+fn a_ray_is_none_for_a_camera_or_size_the_checks_refuse() {
+    let pixel = [1.0, 1.0];
+    assert_eq!(ray(&front(), [0, HEIGHT], pixel), None);
+    assert_eq!(ray(&front(), [WIDTH, 0], pixel), None);
+    for bad in [f64::NAN, f64::INFINITY] {
+        assert_eq!(ray(&front(), [WIDTH, HEIGHT], [bad, 1.0]), None);
+        assert_eq!(ray(&front(), [WIDTH, HEIGHT], [1.0, bad]), None);
+    }
+    let at_the_target = Camera {
+        eye: front().target,
+        ..front()
+    };
+    let no_up = Camera {
+        up: [0.0, 1.0, 0.0],
+        ..front()
+    };
+    let flat = Camera {
+        projection: Projection::Orthographic { view_height: 0.0 },
+        ..front()
+    };
+    let no_angle = Camera {
+        projection: Projection::Perspective { field_of_view: 0.0 },
+        ..front()
+    };
+    let nan_eye = Camera {
+        eye: [f64::NAN, -50.0, 7.0],
+        ..front()
+    };
+    for camera in [at_the_target, no_up, flat, no_angle, nan_eye] {
+        assert!(camera.check(WIDTH, HEIGHT).is_err());
+        assert_eq!(ray(&camera, [WIDTH, HEIGHT], pixel), None, "{camera:?}");
+    }
+    // A pixel outside the image is a ray all the same.
+    assert!(ray(&front(), [WIDTH, HEIGHT], [-10.0, 1e6]).is_some());
+}
+
+#[test]
+fn a_ray_passes_through_the_point_a_frames_picking_finds_at_its_pixel() {
+    on_lavapipe(
+        "render::frame_tests::a_ray_passes_through_the_point_a_frames_picking_finds_at_its_pixel",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let centre = Some(rect([32, 24], [1, 1]));
+            let ortho = Projection::Orthographic { view_height: 60.0 };
+            let wide = Projection::Perspective {
+                field_of_view: 60.0,
+            };
+            // The front face's pixel (32, 26) from the front, both ways, and the image's
+            // centre from the corner, both ways: the ID buffer's face, and its point on the
+            // pixel's ray, off it by at most 1e-9 of its distance from the origin (along the
+            // ray, the point is the GPU's f32 depth).
+            for (camera, picking, face) in [
+                (front(), Some(ON_THE_FACE), 3),
+                (front_in_perspective(), Some(ON_THE_FACE), 3),
+                (from_the_corner(ortho), centre, 6),
+                (from_the_corner(wide), centre, 6),
+            ] {
+                let found = pick(r, &frame(&camera, &[1], &[], picking)).hit.unwrap();
+                assert_eq!(
+                    (found.body, found.hit),
+                    (1, Element::Face(face)),
+                    "{camera:?}"
+                );
+                let pixel = found.pixel.map(|c| f64::from(c) + 0.5);
+                let line = ray(&camera, [WIDTH, HEIGHT], pixel).unwrap();
+                let point = found.point.unwrap();
+                let off = off_the_ray(point, line);
+                assert!(
+                    off <= 1e-9 * norm(point),
+                    "{camera:?}: {point:?} {off:e} off"
+                );
+                // And where the ray meets the face's plane is that point, to the depth's f32.
+                let on_the_face = match face {
+                    3 => meets(line, 1, 0.0),
+                    _ => meets(line, 2, 10.0),
+                };
+                assert_near(on_the_face, point, 1e-5);
+            }
         },
     );
 }
