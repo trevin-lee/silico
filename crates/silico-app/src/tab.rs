@@ -360,11 +360,14 @@ pub struct Tab {
     /// The viewport's camera, meshes, and `meshes` read (M5.6).
     pub view: crate::viewport::View,
     /// A test's watch on what [`overlay`](Self::overlay) is given: called after it each
-    /// frame with the same painter and frame. None but in tests.
+    /// frame with the same painter and frame. For the crate's tests only; None otherwise.
+    #[doc(hidden)]
     pub watch: Option<Watch>,
 }
 
-/// What a test sees of each frame a tab's overlay is given, and draws with its painter.
+/// What a test sees of each frame a tab's overlay is given, and draws with its painter:
+/// for the crate's tests only.
+#[doc(hidden)]
 pub type Watch = Box<dyn FnMut(&eframe::egui::Painter, &crate::viewport::ViewFrame)>;
 
 /// What a refusal says to the person: its first error's message and suggestion.
@@ -445,10 +448,13 @@ impl Tab {
     /// tab is shown (sketch mode, M5.7's selection): it acts on `frame.left`, the left
     /// button's events on the canvas, and draws with `painter`, the pane's own layer,
     /// clipped to the viewport, over the bodies and under the ViewCube and the navigation
-    /// bar. A Cancel of a tab no longer shown comes here too, its painter drawing nothing.
-    /// No mode draws or acts yet.
-    pub fn overlay(
+    /// bar. The end of a drag in a tab no longer shown comes here too, its painter drawing
+    /// nothing. A mode sends its commands from here through `sessions`, on the tab's own
+    /// queue and its `Running` handles, polled with `try_take`, never waiting: a drag's move
+    /// goes out in the frame it happened. No mode draws or acts yet.
+    pub fn overlay<P: Clients + 'static>(
         &mut self,
+        _sessions: &Arc<Sessions<P>>,
         _painter: &eframe::egui::Painter,
         _frame: &crate::viewport::ViewFrame,
     ) {

@@ -104,7 +104,7 @@ pub struct ViewFrame {
     /// Who acts on them (sketch mode, the selection) is the tab's mode, not the pane's.
     ///
     /// Every Press is followed by exactly one Release or Cancel, in this frame or a later
-    /// one, given to the same tab (a Cancel to a tab no longer shown is given to it there,
+    /// one, given to the same tab (a tab no longer shown is given its end there,
     /// [`end_unshown`]), with only Moves between; and nothing is handed on between that
     /// end and the next Press but a DoubleClick, straight after the Release that made it.
     pub left: Vec<LeftEvent>,
@@ -120,11 +120,12 @@ pub enum LeftKind {
     Move,
     /// Let go, after a press on the canvas.
     Release,
-    /// Held no longer, with no release: the pointer left the window, the window lost the
-    /// focus, a navigation tool or the ViewCube took the drag, another press came with no
-    /// release before it, egui's pointer was let go with no release event, or the tab
-    /// stopped being shown. What the stream did is undone, not done; it's at where the
-    /// stream was last (its press, or its last move).
+    /// Held no longer, with no release: the window lost the focus, a navigation tool took
+    /// the drag, another press came with no release before it (the window lost one), or
+    /// the tab stopped being shown. What the stream did is undone, not done; it's at where
+    /// the stream was last (its press, or its last move). The pointer leaving the window
+    /// cancels nothing: the drag goes on past its edge, and its release, wherever it
+    /// comes, ends it.
     Cancel,
     /// egui's double-click on the canvas (a second press within its delay and distance),
     /// straight after the Release that made it.
@@ -386,7 +387,8 @@ impl View {
         self.perspective
     }
 
-    /// What the viewport was last frame (M5.7).
+    /// What the viewport was last frame (M5.7), its `left` empty: the left button's events
+    /// are handed on once, to the tab's overlay ([`Tab::overlay`]), never read again here.
     pub fn frame(&self) -> Option<&ViewFrame> {
         self.frame.as_ref()
     }
@@ -765,8 +767,10 @@ impl View {
     ) -> Vec<LeftEvent> {
         let ppp = ui.ctx().pixels_per_point();
         let px = |at: Pos2| [(at.x - rect.left()) * ppp, (at.y - rect.top()) * ppp];
-        // A navigation tool's drag, or the cube's: the pane's, which ends what was held.
-        let taken = self.tool.is_some() || self.drag == Some(Drag::Cube);
+        // A navigation tool's drag: the pane's, which ends what was held. (The cube's can't
+        // begin while the button is held from the canvas: egui gives a drag to the widget
+        // pressed, and takes no other press until its release.)
+        let taken = self.tool.is_some();
         let pressable = response.hovered() && self.drag.is_none();
         let mut left = Vec::new();
         // Read where the events are, not cloned out each frame.
@@ -821,19 +825,15 @@ impl View {
                             left.push(event(LeftKind::Move, held.at_px, input.modifiers));
                         }
                     }
-                    egui::Event::PointerGone | egui::Event::WindowFocused(false) => {
+                    // The pointer leaving the window keeps the drag (egui's drags, and
+                    // SolidWorks's past the window's edge): its release ends it there.
+                    egui::Event::WindowFocused(false) => {
                         if let Some(was) = held.take() {
                             left.push(event(LeftKind::Cancel, was.at_px, input.modifiers));
                         }
                     }
                     _ => {}
                 }
-            }
-            // Let go with no release event this frame (egui's pointer says so): ended too.
-            if !input.pointer.primary_down()
-                && let Some(was) = held.take()
-            {
-                left.push(event(LeftKind::Cancel, was.at_px, input.modifiers));
             }
             (released, time, input.modifiers)
         });
@@ -1268,8 +1268,10 @@ pub fn show<P: Clients + 'static>(
     // Over the bodies, under the ViewCube and the bar, in the pane's own layer: what the
     // tab's mode draws (a sketch, a selection's marks). It takes no input; the cube's and
     // the bar's, registered after, come first. A camera they change is drawn next frame.
-    if let Some(frame) = view.frame.take() {
-        overlaid(tab, &ui.painter_at(rect), &frame);
+    if let Some(mut frame) = view.frame.take() {
+        overlaid(tab, sessions, &ui.painter_at(rect), &frame);
+        // Handed on once: what reads the frame after reads no event again.
+        frame.left.clear();
         tab.view.frame = Some(frame);
     }
     view_cube(ui, rect, &mut tab.view, size_px);
@@ -1277,8 +1279,13 @@ pub fn show<P: Clients + 'static>(
 }
 
 /// The tab's overlay given `frame`, and a test's watch after it, if one is set.
-fn overlaid(tab: &mut Tab, painter: &egui::Painter, frame: &ViewFrame) {
-    tab.overlay(painter, frame);
+fn overlaid<P: Clients + 'static>(
+    tab: &mut Tab,
+    sessions: &Arc<Sessions<P>>,
+    painter: &egui::Painter,
+    frame: &ViewFrame,
+) {
+    tab.overlay(sessions, painter, frame);
     if let Some(watch) = &mut tab.watch {
         watch(painter, frame);
     }
@@ -1286,12 +1293,15 @@ fn overlaid(tab: &mut Tab, painter: &egui::Painter, frame: &ViewFrame) {
 
 /// Ends the left button's stream of a tab that isn't the one about to be shown (`shown`):
 /// an open shown over it, Ctrl+W, or another tab chosen, mid-drag. Called each frame
-/// before the pane draws. The stream's Cancel, where it was last, is given to that tab's
-/// overlay with the frame it was last shown in and a painter that draws nothing (it isn't
-/// shown); to none if the tab has gone. The tab shown is given nothing of it: the moves
-/// and the release to come aren't of a press of its own.
-pub fn end_unshown(
+/// before the pane draws. The stream's end is given to that tab's overlay with the frame it
+/// was last shown in and a painter that draws nothing (it isn't shown): the button's
+/// release, if one came this frame (a stalled frame that both let go and changed the tab),
+/// at where it came, else a Cancel, where the stream was last; to none if the tab has gone.
+/// The moves of this frame before it aren't given. The tab shown is given nothing of it:
+/// the moves and the release to come aren't of a press of its own.
+pub fn end_unshown<P: Clients + 'static>(
     ctx: &egui::Context,
+    sessions: &Arc<Sessions<P>>,
     drawing: &mut Drawing,
     shown: Option<SessionId>,
     tabs: &mut [Tab],
@@ -1307,19 +1317,41 @@ pub fn end_unshown(
     let Some(mut frame) = tab.view.frame.clone() else {
         return;
     };
-    let (time, modifiers) = ctx.input(|input| (input.time, input.modifiers));
+    let (time, modifiers, released) = ctx.input(|input| {
+        let released = input.events.iter().find_map(|event| match *event {
+            egui::Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers,
+            } => Some((pos, modifiers)),
+            _ => None,
+        });
+        (input.time, input.modifiers, released)
+    });
+    let (kind, at_px, keys) = match released {
+        Some((at, keys)) => {
+            let ppp = frame.pixels_per_point;
+            let at_px = [
+                (at.x - frame.rect.left()) * ppp,
+                (at.y - frame.rect.top()) * ppp,
+            ];
+            (LeftKind::Release, at_px, keys)
+        }
+        None => (LeftKind::Cancel, held.at_px, modifiers),
+    };
     frame.pointer_px = None;
     frame.left = vec![LeftEvent {
-        kind: LeftKind::Cancel,
-        at_px: held.at_px,
-        shift: modifiers.shift,
-        ctrl: modifiers.command,
+        kind,
+        at_px,
+        shift: keys.shift,
+        ctrl: keys.command,
         frame: drawing.frames,
         time,
     }];
     let mut painter = egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::NOTHING);
     painter.set_invisible();
-    overlaid(tab, &painter, &frame);
+    overlaid(tab, sessions, &painter, &frame);
 }
 
 /// The ViewCube's faces: each named view's face, its outward normal.

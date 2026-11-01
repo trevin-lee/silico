@@ -8434,6 +8434,8 @@ fn the_left_buttons_events_on_the_canvas_are_handed_on_with_their_frame_and_time
     let places: Vec<[f32; 2]> = events.iter().map(|seen| seen.event.at_px).collect();
     let expected = [a, b, c, c].map(|p| at_px(rect, p));
     assert_eq!(places, expected);
+    // Handed on once: the frame the view keeps holds none of them.
+    assert!(view(&h).frame().unwrap().left.is_empty());
     for seen in &events {
         assert_eq!(Some(seen.event.frame), seen.serial, "{seen:?}");
         assert_eq!(seen.event.time, seen.time, "{seen:?}");
@@ -8473,47 +8475,252 @@ fn a_press_with_no_release_before_the_next_is_cancelled_first() {
 }
 
 #[test]
-fn a_left_drag_cut_short_by_the_pointer_leaving_or_the_focus_going_ends_in_a_cancel() {
+fn a_left_drag_cut_short_by_the_focus_going_ends_in_a_cancel() {
     use eframe::egui::{Event, Modifiers, PointerButton, vec2};
     use silico_app::viewport::LeftKind::{Cancel, Move, Press, Release};
-    for lost in [Event::PointerGone, Event::WindowFocused(false)] {
-        let f = fixture();
-        let (mut h, seen) = f.overlaid(EXAMPLE);
-        let rect = the_viewport(&h);
-        let at = rect.center() - vec2(100.0, 0.0);
-        let to = at + vec2(10.0, 5.0);
-        let left = PointerButton::Primary;
-        let none = Modifiers::NONE;
-        left_taken(&seen);
-        h.hover_at(at);
-        button_event(&h, at, left, true, none);
-        h.hover_at(to);
-        h.event(lost.clone());
-        for _ in 0..3 {
-            step(&mut h);
-        }
-        let events = left_taken(&seen);
-        assert_eq!(kinds(&events), [Press, Move, Cancel], "{lost:?}");
-        // Where the stream was last.
-        assert_eq!(events[2].event.at_px, at_px(rect, to), "{lost:?}");
-        // A move and a release after it, with no press: nothing.
-        h.hover_at(at);
-        h.hover_at(to);
-        button_event(&h, to, left, false, none);
-        h.hover_at(at);
-        for _ in 0..3 {
-            step(&mut h);
-        }
-        assert!(left_taken(&seen).is_empty(), "{lost:?}");
-        // The next press begins again: what the above wasn't missing for want of events.
-        left_drag(&mut h, at, to, none);
-        assert_eq!(
-            kinds(&left_taken(&seen)),
-            [Press, Move, Release],
-            "{lost:?}"
-        );
-        assert_eq!(never_waits::waits(), 0);
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let to = at + vec2(10.0, 5.0);
+    let left = PointerButton::Primary;
+    let none = Modifiers::NONE;
+    left_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, left, true, none);
+    h.hover_at(to);
+    h.event(Event::WindowFocused(false));
+    for _ in 0..3 {
+        step(&mut h);
     }
+    let events = left_taken(&seen);
+    assert_eq!(kinds(&events), [Press, Move, Cancel]);
+    // Where the stream was last.
+    assert_eq!(events[2].event.at_px, at_px(rect, to));
+    // A move and a release after it, with no press: nothing.
+    h.hover_at(at);
+    h.hover_at(to);
+    button_event(&h, to, left, false, none);
+    h.hover_at(at);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let taken = left_taken(&seen);
+    assert!(taken.is_empty(), "{taken:?}");
+    // The next press begins again: what the above wasn't missing for want of events.
+    left_drag(&mut h, at, to, none);
+    assert_eq!(kinds(&left_taken(&seen)), [Press, Move, Release]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_left_drag_goes_on_when_the_pointer_leaves_the_window_until_its_release() {
+    use eframe::egui::{Event, Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{Move, Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let to = at + vec2(10.0, 5.0);
+    let left = PointerButton::Primary;
+    left_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, left, true, Modifiers::NONE);
+    h.hover_at(to);
+    h.event(Event::PointerGone);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(kinds(&left_taken(&seen)), [Press, Move]);
+    // The button comes up where the pointer comes back: the drag's release.
+    button_event(&h, to, left, false, Modifiers::NONE);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let events = left_taken(&seen);
+    assert_eq!(kinds(&events), [Release]);
+    assert_eq!(events[0].event.at_px, at_px(rect, to));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_left_drag_a_navigation_tool_takes_ends_in_a_cancel() {
+    use eframe::egui::{Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{Cancel, Press, Release};
+    use silico_app::viewport::Navigation;
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let left = PointerButton::Primary;
+    let none = Modifiers::NONE;
+    left_taken(&seen);
+    // A tool chosen mid-drag (as a client might): the drag is the tool's from then on.
+    h.hover_at(at);
+    button_event(&h, at, left, true, none);
+    step(&mut h);
+    view_mut(&mut h).tool = Some(Navigation::Orbit);
+    step(&mut h);
+    button_event(&h, at, left, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let events = left_taken(&seen);
+    assert_eq!(kinds(&events), [Press, Cancel], "{events:?}");
+    assert_eq!(events[1].event.at_px, at_px(rect, at));
+    view_mut(&mut h).tool = None;
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    // And with no tool, a press and release on the canvas are handed on.
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    h.hover_at(at);
+    button_event(&h, at, left, true, none);
+    button_event(&h, at, left, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(kinds(&left_taken(&seen)), [Press, Release]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// `h` with a second document open beside the first, the first shown again, both tabs
+/// watched: the first's session and the second's.
+fn two_tabs_first_shown(
+    f: &Fixture,
+    h: &mut AppHarness,
+    seen: &Overlays,
+) -> (
+    silico_core::command::SessionId,
+    silico_core::command::SessionId,
+) {
+    let other = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(other.to_str().unwrap(), false);
+    step_until(h, "two tabs", |h| h.state().tabs().len() == 2);
+    h.get_by_role_and_label(Role::Button, "example.silico")
+        .click();
+    let first = h.state().tabs()[0].id;
+    step_until(h, "the first shown", |h| left_shown(h) == Some(first));
+    h.state_mut().tabs_mut()[1].watch = Some(watching(seen));
+    for _ in 0..3 {
+        step(h);
+    }
+    left_taken(seen);
+    (first, h.state().tabs()[1].id)
+}
+
+/// The session of the tab shown, as the tab bar marks it.
+fn left_shown(h: &AppHarness) -> Option<silico_core::command::SessionId> {
+    h.state()
+        .tabs()
+        .iter()
+        .find(|tab| {
+            h.get_by_role_and_label(Role::Button, tab.name())
+                .accesskit_node()
+                .toggled()
+                == Some(eframe::egui::accesskit::Toggled::True)
+        })
+        .map(|tab| tab.id)
+}
+
+#[test]
+fn a_left_drag_in_a_tab_that_closes_ends_with_it_and_the_next_press_begins_afresh() {
+    use eframe::egui::{Key, Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{Move, Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let (first, second) = two_tabs_first_shown(&f, &mut h, &seen);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let to = at + vec2(10.0, 5.0);
+    let left = PointerButton::Primary;
+    let none = Modifiers::NONE;
+    h.hover_at(at);
+    button_event(&h, at, left, true, none);
+    h.hover_at(to);
+    step(&mut h);
+    // Ctrl+W mid-drag: the first tab closes, its drag with it.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::W);
+    step_until(&mut h, "one tab", |h| h.state().tabs().len() == 1);
+    assert_eq!(h.state().tabs()[0].id, second);
+    // A press in the tab shown, the first's release never having come: a stream of its
+    // own, with no cancel of the first's before it.
+    h.hover_at(at);
+    button_event(&h, at, left, true, none);
+    button_event(&h, at, left, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let events = left_taken(&seen);
+    let firsts: Vec<_> = events
+        .iter()
+        .filter(|e| e.session == first)
+        .copied()
+        .collect();
+    let seconds: Vec<_> = events
+        .iter()
+        .filter(|e| e.session == second)
+        .copied()
+        .collect();
+    // The first's closed with it: the press and move it was given, and nothing after.
+    assert_eq!(kinds(&firsts), [Press, Move], "{events:?}");
+    assert_eq!(kinds(&seconds), [Press, Release], "{events:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_release_in_the_frame_the_tab_changes_releases_the_drag_in_the_tab_it_was_pressed_in() {
+    use eframe::egui::{Event, Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{Move, Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let first = h.state().tabs()[0].id;
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let to = at + vec2(10.0, 5.0);
+    let left = PointerButton::Primary;
+    let none = Modifiers::NONE;
+    left_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, left, true, none);
+    h.hover_at(to);
+    step(&mut h);
+    // A second document's open, answered with no frame drawn (the core's waker says so):
+    // the next frame both takes it, showing its tab, and has the drag's release.
+    let woken = h.state().wakes();
+    let other = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(other.to_str().unwrap(), false);
+    let deadline = Instant::now() + WAIT;
+    while h.state().wakes() == woken {
+        assert!(Instant::now() < deadline, "the open never answered");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    h.input_mut().events.push(Event::PointerButton {
+        pos: to,
+        button: left,
+        pressed: false,
+        modifiers: none,
+    });
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs().len(),
+        2,
+        "the open wasn't taken in that frame"
+    );
+    let second = h.state().tabs()[1].id;
+    assert_eq!(left_shown(&h), Some(second));
+    h.state_mut().tabs_mut()[1].watch = Some(watching(&seen));
+    h.hover_at(at);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let events = left_taken(&seen);
+    assert_eq!(kinds(&events), [Press, Move, Release], "{events:?}");
+    assert!(events.iter().all(|e| e.session == first), "{events:?}");
+    assert_eq!(events[2].event.at_px, at_px(rect, to));
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
