@@ -837,6 +837,80 @@ fn each_equal_horizontal_distance_after_the_first_is_offered() {
     }
 }
 
+#[test]
+fn a_chain_corner_typed_60_solves_to_60() {
+    // Fable's chain-angle decision, §3, on PlaneGCS. A chain clicked with Ctrl held (no
+    // relations): A (10, 10), B (30, 10), C (21, 24), ended with Enter; a from A to B, b from
+    // B to C. Dimensioned with the boxes skipped but two: A's x and y from the origin, 10
+    // and 10; B's y, 10; a's length, 20; b's length typed 20; and the corner at B, the
+    // pointer inside it (150° round from B), typed 60. Six unknowns, six equations.
+    // The corner's along-rays leave B: a's back along a, 180°; b's along b. Counter-clockwise
+    // b's then a's, a's against its line: `{b, a, reversed}`, 60, so b leaves B at
+    // 180 − 60 = 120°, and C = B + 20 (cos 120°, sin 120°) = (20, 10 + 10√3), 27.320508 to
+    // the nanometre. (Without `reversed`, as SD5 wrote it, 60 would hold b's direction 60°
+    // short of a's, 300°, putting C below a.)
+    let mut f = opened(ToolKind::Line);
+    f.keys.ctrl = true;
+    f.click(10.0, 10.0).click(30.0, 10.0).click(21.0, 24.0);
+    f.send(Event::Enter);
+    assert_eq!(f.read().states.dofs, 6);
+    let mut tool = SmartDimension::new();
+    let skipped = |f: &mut Fixture, tool: &mut SmartDimension, picks: &[[f64; 2]], at: [f64; 2]| {
+        for p in picks {
+            f.pick(tool, p[0], p[1]);
+        }
+        f.pick(tool, at[0], at[1]);
+        f.dimension(tool, DimensionEvent::Escape);
+    };
+    let typed = |f: &mut Fixture,
+                 tool: &mut SmartDimension,
+                 picks: &[[f64; 2]],
+                 at: [f64; 2],
+                 value: &str| {
+        for p in picks {
+            f.pick(tool, p[0], p[1]);
+        }
+        f.pick(tool, at[0], at[1]);
+        f.dimension(tool, DimensionEvent::Typed(value.to_owned()));
+        f.dimension(tool, DimensionEvent::Enter);
+    };
+    skipped(&mut f, &mut tool, &[[0.1, 0.1], [10.0, 10.0]], [5.0, 20.0]);
+    skipped(&mut f, &mut tool, &[[0.1, 0.1], [10.0, 10.0]], [20.0, 5.0]);
+    skipped(&mut f, &mut tool, &[[0.1, 0.1], [30.0, 10.0]], [35.0, 5.0]);
+    skipped(&mut f, &mut tool, &[[20.0, 10.0]], [20.0, 5.0]);
+    assert_eq!(f.read().states.dofs, 2);
+    typed(&mut f, &mut tool, &[[27.3, 14.2]], [35.0, 20.0], "20");
+    // b, 20 long now, leaves B (30, 10) as drawn, about 122.7°: picked 5 along it.
+    typed(
+        &mut f,
+        &mut tool,
+        &[[20.0, 10.0], [27.3, 14.2]],
+        [25.67, 12.5],
+        "60",
+    );
+    let read = f.read();
+    assert_eq!(read.states.dofs, 0);
+    assert_eq!(read.states.state, SketchState::FullyDefined);
+    assert_eq!(
+        points(&read),
+        sorted(vec![
+            at(10.0, 10.0),
+            at(30.0, 10.0),
+            at(20.0, 10.0 + 10.0 * 3f64.sqrt())
+        ])
+    );
+    let k = tool.placement().unwrap().constraint;
+    let placed = read.members.constraints.iter().find(|c| c.id == k).unwrap();
+    assert!(
+        matches!(
+            &placed.form,
+            Form::Angle { reversed: true, value, driving: true, .. }
+                if *value == silico_core::document::Angle::parse("60").unwrap()
+        ),
+        "{placed:?}"
+    );
+}
+
 /// The read's point at (0, 20), and at (50, 0).
 fn top_left(read: &SketchRead) -> ElementId {
     point_at(read, at(0.0, 20.0))

@@ -24,10 +24,11 @@
 //!   - a point and a line: `point_line_distance`, its `side` the side of the line the point
 //!     is on as drawn (facing from `from` to `to`; an axis faces +x or +y);
 //!   - a circle or an arc with anything else: as its centre (to a centre by default);
-//!   - two lines that aren't parallel: `angle`, `{first, second}` with the pointer in the
-//!     sweep counter-clockwise from the first's direction to the second's about where they
-//!     meet (or, where the two cross, in the sweep opposite it), `{second, first}` (the
-//!     reflex) elsewhere; only those two (SD5);
+//!   - two lines that aren't parallel: `angle`, by the quadrant the pointer is in about
+//!     where they meet, among each line's along-ray (leaving the end nearer, FreeCAD's rule)
+//!     and its opposite: between the along-rays, the angle θ; opposite, the reflex
+//!     360 − θ; beside, 180 − θ, with `reversed` where one ray runs against its line
+//!     (Fable's chain-angle decision, §3, superseding SD5);
 //!   - two parallel lines ([`PARALLEL`], FreeCAD's test): `point_line_distance` from the
 //!     second line's `from` to the first line (SD4); with an axis picked second, the first
 //!     line's `from` to the axis, Silico's own choice (an axis has no `from`);
@@ -61,7 +62,7 @@
 
 use super::adds::Adds;
 use super::build::Builder;
-use super::geometry::{cross, distance, dot, length, sub, unit};
+use super::geometry::{cross, distance, dot, length, scale, sub, unit};
 use super::infer::{Pointer, View};
 use super::{AddToken, Context, Message, NewIds, Outcome, Xy, geometry};
 use crate::command::Revision;
@@ -233,10 +234,23 @@ enum Measure {
     DistanceX,
     DistanceY,
     PointLine,
-    /// `forward`: from the first pick's direction to the second's.
-    Angle {
-        forward: bool,
-    },
+    /// The quadrant about the lines' meeting the pointer is in ([`Quadrant`]).
+    Angle(Quadrant),
+}
+
+/// Of the four rays from where two lines meet, each line's along-ray (leaving the end
+/// nearer the meeting) and its opposite, the quadrant a dimension's arc is in, taking the
+/// along-rays in counter-clockwise order, `r1` then `r2` (Fable's chain-angle decision, §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Quadrant {
+    /// Between the along-rays, `r1` to `r2`: the angle θ between them.
+    Between,
+    /// From `r2` to −`r1`: 180 − θ.
+    After,
+    /// From −`r1` to −`r2`, opposite: the reflex, 360 − θ, from `r2` round to `r1`.
+    Opposite,
+    /// From −`r2` to `r1`: 180 − θ.
+    Before,
 }
 
 /// A picked thing, as the read has it.
@@ -244,12 +258,13 @@ enum Measure {
 enum Item {
     /// A point, or the origin.
     Point(Reference, Xy),
-    /// A line, or an axis: where it starts, its direction (to less from; an axis's unit),
-    /// its `from` point (none for an axis, which is infinite), and whether it's a centreline
-    /// (construction, or an axis).
+    /// A line, or an axis: where it starts and ends (an axis's a unit from the origin), its
+    /// direction (to less from; an axis's unit), its `from` point (none for an axis, which is
+    /// infinite), and whether it's a centreline (construction, or an axis).
     Line {
         reference: Reference,
         at: Xy,
+        end: Xy,
         direction: Xy,
         from: Option<ElementId>,
         centreline: bool,
@@ -277,6 +292,7 @@ impl Item {
                 return Some(Item::Line {
                     reference: reference.clone(),
                     at: [0.0, 0.0],
+                    end: direction,
                     direction,
                     from: None,
                     centreline: true,
@@ -294,6 +310,7 @@ impl Item {
                 Some(Item::Line {
                     reference: reference.clone(),
                     at: from,
+                    end: to,
                     direction: sub(to, from),
                     from: Some(line.from.clone()),
                     centreline: line.construction,
@@ -993,29 +1010,19 @@ fn point_line(point: &Item, line: &Item, at: Option<Xy>) -> Result<Offered, NotO
     })
 }
 
-/// Whether `t`, a place along a line from `at` along `direction` (0 its start, 1 its end), is
-/// strictly inside it, more than the kernel's tolerance from either end: always for an axis.
-fn inside(line: &Item, t: f64) -> bool {
-    let Item::Line {
-        direction, from, ..
-    } = line
-    else {
-        return false;
-    };
-    if from.is_none() {
-        return true;
-    }
-    let margin = silico_protocol::LENGTH_TOLERANCE / length(*direction);
-    margin < t && t < 1.0 - margin
-}
-
 /// Two lines: parallel ([`PARALLEL`], FreeCAD's test), the second's `from` to the first
 /// (SD4), or the first's `from` to an axis picked second, Silico's own choice (an axis has
 /// no `from`); refused, as a point is, with the pointer `side_at` across a centreline from
-/// the other line. Otherwise the angle: `{first, second}` with the pointer in the sweep
-/// counter-clockwise from the first's direction to the second's, about where they meet, or,
-/// where the two cross (each strictly inside the other), in the sweep opposite it; else
-/// `{second, first}` (the reflex); or as locked (SD5).
+/// the other line. Otherwise the angle, by the quadrant the pointer is in, or the one
+/// locked (Fable's chain-angle decision, §3, superseding SD5):
+/// - the vertex is where the lines meet: a point they share exactly, else their crossing;
+/// - each line's along-ray leaves the end nearer the vertex (FreeCAD's `calculateAngle`:
+///   its start where that's strictly nearer, else its end), an axis's along it;
+/// - the along-rays in counter-clockwise order, `r1` then `r2`, θ the sweep between them:
+///   between them, θ; opposite, the reflex 360 − θ; either quadrant beside, 180 − θ;
+/// - written so the value is the sweep counter-clockwise from the first ray to the second,
+///   `a` the first ray's line and `b` the second's, `reversed` where exactly one of the two
+///   rays runs against its line (`b` taken the other way gives the same angle as `a`).
 fn lines(
     first: &Item,
     second: &Item,
@@ -1027,6 +1034,7 @@ fn lines(
         Item::Line {
             reference: ra,
             at: pa,
+            end: ea,
             direction: da,
             from: fa,
             ..
@@ -1034,6 +1042,7 @@ fn lines(
         Item::Line {
             reference: rb,
             at: pb,
+            end: eb,
             direction: db,
             from: fb,
             ..
@@ -1065,41 +1074,66 @@ fn lines(
         let point = Item::Point(Reference::Element(from.clone()), at_from);
         return point_line(&point, line, None);
     }
-    let degrees = |v: Xy| {
-        let d = libm::atan2(cross(*da, v), dot(*da, v)).to_degrees();
+    // The vertex: an end the two share exactly, else where the lines cross, pa + t·da.
+    let shared = [*pa, *ea]
+        .into_iter()
+        .find(|p| fa.is_some() && fb.is_some() && (*p == *pb || *p == *eb));
+    let vertex = shared.unwrap_or_else(|| {
+        let t = cross(sub(*pb, *pa), *db) / crossed;
+        [pa[0] + t * da[0], pa[1] + t * da[1]]
+    });
+    // Each along-ray's sign: +1 leaving `from` (strictly nearer the vertex), −1 leaving `to`;
+    // an axis's runs along it.
+    let sign = |from: &Option<ElementId>, start: Xy, end: Xy| {
+        if from.is_none() || distance(vertex, start) < distance(vertex, end) {
+            1.0
+        } else {
+            -1.0
+        }
+    };
+    let (sa, sb) = (sign(fa, *pa, *ea), sign(fb, *pb, *eb));
+    let (ray_a, ray_b) = (scale(*da, sa), scale(*db, sb));
+    // The along-rays in counter-clockwise order: (line, ray's sign, ray).
+    let (r1, r2) = if cross(ray_a, ray_b) > 0.0 {
+        ((ra, sa, ray_a), (rb, sb, ray_b))
+    } else {
+        ((rb, sb, ray_b), (ra, sa, ray_a))
+    };
+    let from_r1 = |v: Xy| {
+        let d = libm::atan2(cross(r1.2, v), dot(r1.2, v)).to_degrees();
         if d < 0.0 { d + 360.0 } else { d }
     };
-    let sweep = degrees(*db);
-    let forward = match lock {
-        Some(Measure::Angle { forward }) => forward,
+    let theta = from_r1(r2.2);
+    let quadrant = match lock {
+        Some(Measure::Angle(quadrant)) => quadrant,
         _ => {
-            // Where the lines meet: pa + t·da, pb + s·db.
-            let between = sub(*pb, *pa);
-            let (t, s) = (cross(between, *db) / crossed, cross(between, *da) / crossed);
-            let meet = [pa[0] + t * da[0], pa[1] + t * da[1]];
-            let toward = sub(at, meet);
-            let turned = degrees(toward);
-            if length(toward) == 0.0 {
-                true
-            } else if inside(first, t) && inside(second, s) {
-                // Crossing: each sweep and the one opposite it, half a turn round.
-                turned % 180.0 <= sweep % 180.0
+            let toward = sub(at, vertex);
+            let turned = from_r1(toward);
+            if length(toward) == 0.0 || turned <= theta {
+                Quadrant::Between
+            } else if turned <= 180.0 {
+                Quadrant::After
+            } else if turned <= 180.0 + theta {
+                Quadrant::Opposite
             } else {
-                turned <= sweep
+                Quadrant::Before
             }
         }
     };
-    let (a, b, value) = if forward {
-        (ra, rb, sweep)
-    } else {
-        (rb, ra, 360.0 - sweep)
+    // Exactly one ray against its line: `reversed`.
+    let odd = r1.1 != r2.1;
+    let (a, b, reversed, value) = match quadrant {
+        Quadrant::Between => (r1.0, r2.0, odd, theta),
+        Quadrant::Opposite => (r2.0, r1.0, odd, 360.0 - theta),
+        Quadrant::After | Quadrant::Before => (r2.0, r1.0, !odd, 180.0 - theta),
     };
     let value = Angle::rounded(value).ok_or(Some(Message::TooFar))?;
     Ok(Offered {
-        measure: Measure::Angle { forward },
+        measure: Measure::Angle(quadrant),
         form: Form::Angle {
             a: a.clone(),
             b: b.clone(),
+            reversed,
             value,
             driving: true,
         },

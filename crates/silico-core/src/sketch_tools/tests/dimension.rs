@@ -847,79 +847,58 @@ fn corner() -> Sketch {
 }
 
 #[test]
-fn two_lines_angle_is_the_sweep_the_pointer_is_in_either_way_round() {
-    // Counter-clockwise from A's +x to B's 45° is 45; from B's to A's, 315 (the reflex),
-    // the same geometry (SD5: no 135). The pointer at (25, 13), 11.3° from (10, 10), is in
-    // A-to-B's sweep: `angle {A, B}` 45. At (5, 20), 116.6°, it isn't: `{B, A}` 315.
-    // Picked B first, the same pointer gives the same forms: it's the sweep it's in.
+fn a_corner_from_one_points_angle_is_the_quadrant_either_pick_order() {
+    // A from (10, 10) to (30, 10), B from (10, 10) to (20, 20): both leave the vertex, so
+    // their along-rays run along them, A's 0°, B's 45°, θ = 45. The pointer at (25, 13),
+    // 11.3°: between, `{A, B, 45}`. At (5, 20), 116.6°: after B, before −A (180°),
+    // 180 − 45 = 135 from B's ray to −A: `{B, A, reversed, 135}`. At (5, 6), 218.7°:
+    // opposite, the reflex 315 from B round to A: `{B, A, 315}`. At (20, 5), 333.4°: between
+    // −B (225°) and A, 135, written as its vertical twin: `{B, A, reversed, 135}`. Picked B
+    // first, the same pointer gives the same forms: the rays' order is the geometry's.
     for picks in [[[20.0, 10.0], [15.0, 15.0]], [[15.0, 15.0], [20.0, 10.0]]] {
-        let mut d = Dim::new(corner());
-        d.click(picks[0][0], picks[0][1])
-            .click(picks[1][0], picks[1][1]);
-        d.click(25.0, 13.0).escape();
-        assert_eq!(
-            d.placed(),
-            Form::Angle {
-                a: r("n000000a"),
-                b: r("n000000b"),
-                value: deg("45"),
-                driving: true
-            },
-            "{picks:?}"
-        );
-        d.click(picks[0][0], picks[0][1])
-            .click(picks[1][0], picks[1][1]);
-        d.click(5.0, 20.0).escape();
-        assert_eq!(
-            d.placed(),
-            Form::Angle {
-                a: r("n000000b"),
-                b: r("n000000a"),
-                value: deg("315"),
-                driving: true
-            },
-            "{picks:?}"
-        );
+        for (at, want) in [
+            ([25.0, 13.0], angle("n000000a", "n000000b", false, "45")),
+            ([5.0, 20.0], angle("n000000b", "n000000a", true, "135")),
+            ([5.0, 6.0], angle("n000000b", "n000000a", false, "315")),
+            ([20.0, 5.0], angle("n000000b", "n000000a", true, "135")),
+        ] {
+            let mut d = Dim::new(corner());
+            d.click(picks[0][0], picks[0][1])
+                .click(picks[1][0], picks[1][1])
+                .click(at[0], at[1])
+                .escape();
+            assert_eq!(d.placed(), want, "{picks:?} {at:?}");
+        }
     }
 }
 
 #[test]
-fn an_angle_is_about_where_the_lines_meet_off_their_ends() {
-    // A (10, 10)-(30, 10) and B (40, 20)-(50, 30), on y = x − 20, meet at (30, 10). The
-    // pointer at (45, 12), 7.6° from there: A to B, 45. At (20, 20), 135°: B to A, 315.
+fn lines_that_dont_share_a_point_take_the_ends_nearer_where_they_meet() {
+    // FreeCAD's nearest-end rule. A (10, 10)-(30, 10) and B (40, 20)-(50, 30), on
+    // y = x − 20, meet at (30, 10): A's `to` is there, so A's along-ray runs back, 180°; B's
+    // `from` (40, 20) is nearer than its `to`, so B's runs along it, 45°. Counter-clockwise
+    // B's then A's, θ = 135, A's against its line. The pointer at (20, 20), 135° round from
+    // (30, 10): between, `{B, A, reversed, 135}`. At (45, 12), 7.6°: before B's ray, beside,
+    // `{A, B, 45}`. At (28, 2), 256°: opposite, the reflex from A's ray round to B's,
+    // `{A, B, reversed, 225}`.
     let s = with_line(
         with_line(empty(), "n000000a", [10.0, 10.0], [30.0, 10.0]),
         "n000000b",
         [40.0, 20.0],
         [50.0, 30.0],
     );
-    let mut d = Dim::new(s);
-    d.click(20.0, 10.0)
-        .click(45.0, 25.0)
-        .click(45.0, 12.0)
-        .escape();
-    assert_eq!(
-        d.placed(),
-        Form::Angle {
-            a: r("n000000a"),
-            b: r("n000000b"),
-            value: deg("45"),
-            driving: true
-        }
-    );
-    d.click(20.0, 10.0)
-        .click(45.0, 25.0)
-        .click(20.0, 20.0)
-        .escape();
-    assert_eq!(
-        d.placed(),
-        Form::Angle {
-            a: r("n000000b"),
-            b: r("n000000a"),
-            value: deg("315"),
-            driving: true
-        }
-    );
+    for (at, want) in [
+        ([20.0, 20.0], angle("n000000b", "n000000a", true, "135")),
+        ([45.0, 12.0], angle("n000000a", "n000000b", false, "45")),
+        ([28.0, 2.0], angle("n000000a", "n000000b", true, "225")),
+    ] {
+        let mut d = Dim::new(s.clone());
+        d.click(20.0, 10.0)
+            .click(45.0, 25.0)
+            .click(at[0], at[1])
+            .escape();
+        assert_eq!(d.placed(), want, "{at:?}");
+    }
 }
 
 #[test]
@@ -936,6 +915,7 @@ fn a_line_and_an_axis_make_an_angle_and_a_skipped_box_rounds_it_to_the_nanodegre
         Form::Angle {
             a: Reference::XAxis,
             b: r("n0000001"),
+            reversed: false,
             value: deg("26.565051177"),
             driving: true
         }
@@ -956,6 +936,7 @@ fn a_right_click_locks_the_angle_the_preview_shows() {
         Some(Form::Angle {
             a: r("n000000a"),
             b: r("n000000b"),
+            reversed: false,
             value: deg("45"),
             driving: true
         })
@@ -966,6 +947,7 @@ fn a_right_click_locks_the_angle_the_preview_shows() {
         Form::Angle {
             a: r("n000000a"),
             b: r("n000000b"),
+            reversed: false,
             value: deg("45"),
             driving: true
         }
@@ -997,6 +979,129 @@ fn a_right_click_locks_a_horizontal_distance() {
         .click(25.0, 20.0)
         .escape();
     assert_eq!(d.placed().type_name(), "distance");
+}
+
+// --- Fable's chain-corner angles (§3): the quadrant among the four rays -----------------
+
+/// A chain's corner: a from (-10, 10) to (10, 10), facing +x; b from (10, 10) on to (20, 20),
+/// facing 45°, sharing the point (10, 10) (`t000000a`, a's `to`, b's `from`).
+fn chain() -> Sketch {
+    let mut s = empty();
+    s.points.push(point("f000000a", -10.0, 10.0));
+    s.points.push(point("t000000a", 10.0, 10.0));
+    s.points.push(point("t000000b", 20.0, 20.0));
+    s.lines.push(line("n000000a", "f000000a", "t000000a"));
+    s.lines.push(line("n000000b", "t000000a", "t000000b"));
+    s
+}
+
+fn angle(a: &str, b: &str, reversed: bool, value: &str) -> Form {
+    Form::Angle {
+        a: r(a),
+        b: r(b),
+        reversed,
+        value: deg(value),
+        driving: true,
+    }
+}
+
+#[test]
+fn a_chain_corners_angle_is_the_quadrant_the_pointer_is_in() {
+    // Fable's §3. The vertex V is the shared (10, 10). a's along-ray leaves the end nearer
+    // V, its `to`, so runs against a: 180°; b's leaves its `from`, along b: 45°. The four
+    // rays: b's 45°, a's 180°, and their opposites 225° and 0°.
+    // - Inside the corner, between the along-rays, (5, 12) at 158°: 135, counter-clockwise
+    //   from b's ray to a's, a's running against a: `{b, a, reversed, 135}`.
+    // - Adjacent, between a's direction 0° and b's 45°, (20, 12) at 11°: 180 − 135 = 45,
+    //   both rays along their lines: `{a, b, 45}`.
+    // - Opposite, between 225° and 360°, (12, 5) at 292°: the reflex, 360 − 135 = 225, from
+    //   a's ray (180°) round to b's (45°): `{a, b, reversed, 225}`.
+    for (at, want) in [
+        ([5.0, 12.0], angle("n000000b", "n000000a", true, "135")),
+        ([20.0, 12.0], angle("n000000a", "n000000b", false, "45")),
+        ([12.0, 5.0], angle("n000000a", "n000000b", true, "225")),
+    ] {
+        let mut d = Dim::new(chain());
+        d.click(0.0, 10.0)
+            .click(15.0, 15.0)
+            .click(at[0], at[1])
+            .escape();
+        assert_eq!(d.placed(), want, "{at:?}");
+    }
+}
+
+#[test]
+fn the_vertex_is_a_shared_point_exactly() {
+    // Two lines ending at one point Q (-46.25, -6.635): a from P (-44.2, 0.744), b from
+    // R (-43.014, -40.929). Their crossing, worked out, is (-46.25, -6.634999999999999), a
+    // hair off Q; the vertex is Q itself. Both along-rays leave Q back along their lines: a's
+    // toward P (74.5°), b's toward R (275.4°), so b's first, θ = 159.1°, both against (no
+    // `reversed`). The pointer exactly on Q is no direction, between: `{b, a}`, 159.1. From
+    // the worked-out crossing, it would be a hair straight down, 270°: beside, `{a, b,
+    // reversed}`.
+    let mut s = empty();
+    s.points.push(point("f000000a", -44.2, 0.744));
+    s.points.push(point("q0000001", -46.25, -6.635));
+    s.points.push(point("f000000b", -43.014, -40.929));
+    s.lines.push(line("n000000a", "f000000a", "q0000001"));
+    s.lines.push(line("n000000b", "f000000b", "q0000001"));
+    let mut d = Dim::new(s);
+    d.click(-45.225, -2.9455)
+        .click(-44.632, -23.782)
+        .click(-46.25, -6.635)
+        .escape();
+    let Form::Angle {
+        a,
+        b,
+        reversed,
+        value,
+        ..
+    } = d.placed()
+    else {
+        panic!("{:?}", d.placed());
+    };
+    assert_eq!((a, b, reversed), (r("n000000b"), r("n000000a"), false));
+    assert!(
+        (159.0..160.0).contains(&value.degrees()),
+        "{}",
+        value.degrees()
+    );
+}
+
+#[test]
+fn the_pointer_on_the_vertex_is_between_the_along_rays() {
+    // a (10, 10)-(2, 4) and b (10, 10)-(12, 2), each from its own point at (10, 10): both
+    // leave it, a's ray at 216.87° (down and left), b's at 284.04°, θ = acos(32 / (10√68))
+    // = 67.166°. The pointer exactly on the vertex is no direction: between, `{a, b}`. (The
+    // angle of a zero vector from a's ray reads atan2(+0, −0) = 180° here, which would be
+    // beside.)
+    let s = with_line(
+        with_line(empty(), "n000000a", [10.0, 10.0], [2.0, 4.0]),
+        "n000000b",
+        [10.0, 10.0],
+        [12.0, 2.0],
+    );
+    let mut d = Dim::new(s);
+    d.click(6.0, 7.0)
+        .click(11.0, 6.0)
+        .click(10.0, 10.0)
+        .escape();
+    let Form::Angle {
+        a,
+        b,
+        reversed,
+        value,
+        ..
+    } = d.placed()
+    else {
+        panic!("{:?}", d.placed());
+    };
+    assert_eq!((a, b, reversed), (r("n000000a"), r("n000000b"), false));
+    assert!(
+        (67.16..67.17).contains(&value.degrees()),
+        "{}",
+        value.degrees()
+    );
 }
 
 // --- SD4: two parallel lines ----------------------------------------------------------
@@ -1064,9 +1169,10 @@ fn lines_are_parallel_by_freecads_test_to_its_edge() {
     // (40, e), and A × B = 40e. FreeCAD's test is 40e < 1e-9: e = 2e-11 gives 8e-10,
     // parallel, the distance SD4 writes, B's `from` 20 to A's left. e = 3e-11 gives 1.2e-9,
     // not parallel: an angle. A to B sweeps e/40 = 7.5e-13 rad; they meet where
-    // 30 + e(x − 20)/40 = 10, x = 20 − 800/e ≈ −2.67e13, so the pointer at (70, 31) is
-    // 21/2.67e13 ≈ 7.9e-13 rad round from A, past the sweep: `{B, A}`, 360 less 4.3e-11°,
-    // 360 to the nanodegree.
+    // 30 + e(x − 20)/40 = 10, x = 20 − 800/e ≈ −2.67e13, each line's `from` the nearer, so
+    // both along-rays run along. The pointer at (70, 31) is 21/2.67e13 ≈ 7.9e-13 rad round
+    // from A, past B's ray: beside, `{B, A, reversed}`, 180 less 4.3e-11°, 180 to the
+    // nanodegree.
     let s = |e: f64| {
         with_line(
             with_line(empty(), "n000000a", [10.0, 10.0], [50.0, 10.0]),
@@ -1100,7 +1206,8 @@ fn lines_are_parallel_by_freecads_test_to_its_edge() {
         Form::Angle {
             a: r("n000000b"),
             b: r("n000000a"),
-            value: deg("360"),
+            reversed: true,
+            value: deg("180"),
             driving: true
         }
     );
@@ -1349,6 +1456,7 @@ fn an_angles_box_reads_degrees_to_the_nanodegree_signed_within_a_turn() {
                 Form::Angle {
                     a: r("n000000a"),
                     b: r("n000000b"),
+                    reversed: false,
                     value: deg(text),
                     driving: true
                 },
@@ -1851,86 +1959,65 @@ fn busy_while_a_pick_a_press_or_the_box_is_held() {
 
 #[test]
 fn an_angle_is_about_where_the_lines_meet_in_x() {
-    // T4: A (0, 0)-(10, 0) and B (110, 10)-(120, 20), on y = x − 100, meet at (100, 0). The
-    // pointer at (99, 0.5), 153.4° round from A's +x there: `{B, A}` 315; at (101, 0.5),
-    // 26.6°, inside A-to-B's 45: `{A, B}` 45.
+    // T4, adjusted to §3: A (0, 0)-(10, 0) and B (110, 10)-(120, 20), on y = x − 100, meet
+    // at (100, 0). A's `to` (10, 0) is the nearer end, so A's along-ray runs back, 180°; B's
+    // `from`, along it, 45°: θ = 135, A's against. The pointer at (99, 0.5), 153.4° round
+    // from (100, 0): between, `{B, A, reversed, 135}` (SD5 had the reflex, `{B, A, 315}`); at
+    // (101, 0.5), 26.6°: beside, `{A, B, 45}`, as before.
     let s = with_line(
         with_line(empty(), "n000000a", [0.0, 0.0], [10.0, 0.0]),
         "n000000b",
         [110.0, 10.0],
         [120.0, 20.0],
     );
-    for (at, forward) in [([99.0, 0.5], false), ([101.0, 0.5], true)] {
+    for (at, want) in [
+        ([99.0, 0.5], angle("n000000b", "n000000a", true, "135")),
+        ([101.0, 0.5], angle("n000000a", "n000000b", false, "45")),
+    ] {
         let mut d = Dim::new(s.clone());
         d.click(5.0, 0.0)
             .click(115.0, 15.0)
             .click(at[0], at[1])
             .escape();
-        let (a, b, value) = if forward {
-            ("n000000a", "n000000b", "45")
-        } else {
-            ("n000000b", "n000000a", "315")
-        };
-        assert_eq!(
-            d.placed(),
-            Form::Angle {
-                a: r(a),
-                b: r(b),
-                value: deg(value),
-                driving: true
-            },
-            "{at:?}"
-        );
+        assert_eq!(d.placed(), want, "{at:?}");
     }
 }
 
 #[test]
-fn crossing_lines_give_their_sweep_in_the_sector_opposite_it_too() {
-    // A (10, 20)-(30, 20) and B (10, 10)-(30, 30) cross at (20, 20), each at its middle.
-    // A to B sweeps 45. The pointer at (28, 22), 14° round: `{A, B}` 45; opposite it, at
-    // (12, 18), 194°: also `{A, B}` 45; at (12, 25), 148°, between: `{B, A}` 315. Lines
-    // that only meet off their ends keep the sweep alone (an_angle_is_about_where_the_lines
-    // _meet_off_their_ends).
+fn crossing_lines_take_their_ends_by_freecads_tie() {
+    // A (10, 20)-(30, 20) and B (10, 10)-(30, 30) cross at (20, 20), each at its middle:
+    // each end as near, so FreeCAD's rule (its start only where strictly nearer) takes each
+    // `to`, and both along-rays run back: A's 180°, B's 225°, θ = 45, both against (no
+    // `reversed`). The pointer at (12, 18), 194°: between, `{A, B, 45}`. At (28, 22), 14°:
+    // opposite, the reflex from B's ray round to A's, `{B, A, 315}`. At (12, 25), 148°,
+    // and (28, 15), 328°: beside, `{B, A, reversed, 135}`.
     let s = with_line(
         with_line(empty(), "n000000a", [10.0, 20.0], [30.0, 20.0]),
         "n000000b",
         [10.0, 10.0],
         [30.0, 30.0],
     );
-    for (at, forward) in [
-        ([28.0, 22.0], true),
-        ([12.0, 18.0], true),
-        ([12.0, 25.0], false),
-        ([28.0, 15.0], false),
+    for (at, want) in [
+        ([12.0, 18.0], angle("n000000a", "n000000b", false, "45")),
+        ([28.0, 22.0], angle("n000000b", "n000000a", false, "315")),
+        ([12.0, 25.0], angle("n000000b", "n000000a", true, "135")),
+        ([28.0, 15.0], angle("n000000b", "n000000a", true, "135")),
     ] {
         let mut d = Dim::new(s.clone());
         d.click(14.0, 20.0)
             .click(26.0, 26.0)
             .click(at[0], at[1])
             .escape();
-        let (a, b, value) = if forward {
-            ("n000000a", "n000000b", "45")
-        } else {
-            ("n000000b", "n000000a", "315")
-        };
-        assert_eq!(
-            d.placed(),
-            Form::Angle {
-                a: r(a),
-                b: r(b),
-                value: deg(value),
-                driving: true
-            },
-            "{at:?}"
-        );
+        assert_eq!(d.placed(), want, "{at:?}");
     }
 }
 
 #[test]
-fn a_line_ending_on_another_doesnt_cross_it() {
-    // A T: A (10, 10)-(30, 10) and B from A's middle (20, 10) to (30, 20). B ends there, so
-    // they don't cross, and the sector opposite A to B's 45, at (15, 5), 225° round, is the
-    // reflex's: `{B, A}` 315. (Not a chain corner, head to tail: that's B5's, held.)
+fn a_line_ending_on_anothers_middle_takes_the_others_to_end() {
+    // A T: A (10, 10)-(30, 10) and B from A's middle (20, 10) to (30, 20). B's `from` is the
+    // vertex, along it, 45°; A's ends are as near, so its `to` (FreeCAD's tie), 180°.
+    // θ = 135, A's against. The pointer at (14, 5), 219.8°: after A's ray, beside,
+    // `{A, B, 45}`.
     let s = with_line(
         with_line(empty(), "n000000a", [10.0, 10.0], [30.0, 10.0]),
         "n000000b",
@@ -1940,17 +2027,45 @@ fn a_line_ending_on_another_doesnt_cross_it() {
     let mut d = Dim::new(s);
     d.click(14.0, 10.0)
         .click(25.0, 15.0)
-        .click(15.0, 5.0)
+        .click(14.0, 5.0)
         .escape();
-    assert_eq!(
-        d.placed(),
-        Form::Angle {
-            a: r("n000000b"),
-            b: r("n000000a"),
-            value: deg("315"),
-            driving: true
-        }
-    );
+    assert_eq!(d.placed(), angle("n000000a", "n000000b", false, "45"));
+}
+
+#[test]
+fn a_line_against_an_axis_is_measured_by_the_quadrant_too() {
+    // The line (10, 10)-(0, 20), on y = 20 − x, meets the x axis at (20, 0); its `from` is
+    // nearer, so its along-ray runs along it, 135°; the axis's, +x. θ = 135. The pointer at
+    // (20, 5), 90°: between, `{x_axis, line, 135}`. At (5, 5), 161.6°: beside, SolidWorks'
+    // "45 from horizontal", from the line's ray to −x: `{line, x_axis, reversed, 45}`, the
+    // axis taken the other way. At (17, -9), 251.6°, opposite (between −x, 180°, and the
+    // line's opposite, 315°): the reflex from the line's ray round to +x,
+    // `{line, x_axis, 225}`. (The axis's ray is its own direction, whichever way the vertex
+    // lies along it.)
+    let s = with_line(empty(), "n0000001", [10.0, 10.0], [0.0, 20.0]);
+    for (at, a, b, reversed, value) in [
+        ([20.0, 5.0], "x_axis", "n0000001", false, "135"),
+        ([5.0, 5.0], "n0000001", "x_axis", true, "45"),
+        ([17.0, -9.0], "n0000001", "x_axis", false, "225"),
+    ] {
+        let mut d = Dim::new(s.clone());
+        d.click(5.0, 15.0)
+            .click(40.0, 0.2)
+            .click(at[0], at[1])
+            .escape();
+        let reference = |text: &str| Reference::new(text).unwrap();
+        assert_eq!(
+            d.placed(),
+            Form::Angle {
+                a: reference(a),
+                b: reference(b),
+                reversed,
+                value: deg(value),
+                driving: true
+            },
+            "{at:?}"
+        );
+    }
 }
 
 #[test]
