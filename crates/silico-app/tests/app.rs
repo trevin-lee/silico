@@ -3561,6 +3561,259 @@ fn esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_dialog_second() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// On this thread, outside any frame, until `done` holds, within [`WAIT`]: a session's or
+/// the kernel's state, which no frame moves.
+#[track_caller]
+fn until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + WAIT;
+    while !done() {
+        assert!(Instant::now() < deadline, "never {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The box a dialog's defaults make, 10 mm wide: narrower than the example's block.
+fn is_new_box(op: &Op) -> bool {
+    matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx < 20.0)
+}
+
+#[test]
+fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queue() {
+    // The preview's `timeline` read queued behind another command that waits on the same
+    // rebuild (a check of the current model), so it isn't the rebuild's waiter yet when Esc
+    // stops it. The next command that needs the model starts a stopped rebuild again
+    // (decision 34): run after the stop, the read would, undoing it. The stop holds: the
+    // read answers `cancelled`, the tab reads the published model, and the new box is asked
+    // of the kernel once.
+    use silico_core::command::{RebuildState, RunningCommand, SessionCommand};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    let id = h.state().tabs()[0].id;
+    let box_hold = f.kernel.hold(is_new_box);
+    // The queue held behind a fresh check whose pin the fake holds: the dialog's begin and
+    // add are queued behind it.
+    let pin_hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })));
+    let fresh = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    create(&mut h, "Box");
+    step_until(&mut h, "its add sent", |h| {
+        h.state().tabs()[0].sent.contains(&Sent::Add)
+    });
+    // No frame from here until the check below is queued: the app takes no answer, so the
+    // preview's read can only be sent after it.
+    pin_hold.release();
+    assert!(fresh.wait_timeout(WAIT).ok().unwrap().result.is_ok());
+    // Queued behind the add: it needs the new revision's model, whose rebuild it starts and
+    // the fake holds at the new box.
+    let waiting = f.sessions.check(&id, CheckModel::Current { fresh: false });
+    assert!(f.kernel.wait_running(1, WAIT));
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    // Sent with the add's answer taken, its read waits in the queue behind the check.
+    let added = h.state().tabs()[0].revision;
+    assert_eq!(
+        f.sessions.status(&id).result.unwrap().running,
+        Some(RunningCommand::Command(SessionCommand::Check))
+    );
+    h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    // The check, the rebuild's waiter, answers `cancelled` with it.
+    let answered = waiting.wait_timeout(WAIT).ok().unwrap();
+    assert_eq!(
+        answered.result.unwrap_err().errors()[0].code(),
+        ErrorCode::Cancelled
+    );
+    let new_boxes = || {
+        f.kernel
+            .asked()
+            .iter()
+            .filter(|call| is_new_box(&call.op))
+            .count()
+    };
+    // Then the read, run (it starts the rebuild again, asking for the new box) or answered
+    // `cancelled` (the tab then reads the published model, of the add's revision).
+    step_until(&mut h, "the preview's read run or answered", |h| {
+        new_boxes() > 1
+            || h.state().tabs()[0]
+                .timeline
+                .as_ref()
+                .is_some_and(|timeline| timeline.revision == added)
+    });
+    assert_eq!(new_boxes(), 1, "the stopped rebuild started again");
+    let tab = &h.state().tabs()[0];
+    assert!(tab.status.as_ref().is_some_and(|status| {
+        status.rebuild.revision == added && status.rebuild.state == RebuildState::Stopped
+    }));
+    assert!(!tab.preview_rebuilding());
+    assert!(dialog_open(&h));
+    assert_eq!(tab.message, None);
+    // The next Esc is the dialog's Cancel.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(new_boxes(), 1);
+    box_hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_waits_in_the_queue() {
+    // A check of the current model (the tab's while its timeline names no model, a marked
+    // feature selected) queued behind the preview's read, the rebuild's waiter. Run after
+    // the stop, it would start the rebuild again (decision 34). The stop holds: the check
+    // answers `cancelled`, none of the current model is asked again while the rebuild is
+    // stopped, and the new box is asked of the kernel once.
+    use silico_core::command::{RebuildState, RunningCommand, SessionCommand};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    let id = h.state().tabs()[0].id;
+    let hold = f.kernel.hold(is_new_box);
+    create(&mut h, "Box");
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    let added = h.state().tabs()[0].revision;
+    until("the preview's read waiting", || {
+        f.sessions.status(&id).result.is_ok_and(|status| {
+            status.running == Some(RunningCommand::Command(SessionCommand::Timeline))
+        })
+    });
+    // Its timeline as one naming no model gives it, a marked feature selected: the next
+    // frame sends a check of the current model, queued behind the read.
+    {
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        assert!(!tab.checking());
+        let timeline = tab.timeline.as_mut().unwrap();
+        timeline.model = None;
+        let marked = timeline
+            .features
+            .iter()
+            .flatten()
+            .find(|entry| entry.problems > 0 || entry.warnings > 0)
+            .map(|entry| entry.id.clone());
+        assert!(marked.is_some(), "no feature of the example is marked");
+        tab.selected = marked;
+    }
+    step_until(&mut h, "the check sent", |h| h.state().tabs()[0].checking());
+    h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    let new_boxes = || {
+        f.kernel
+            .asked()
+            .iter()
+            .filter(|call| is_new_box(&call.op))
+            .count()
+    };
+    // Then the check, run (it starts the rebuild again, asking for the new box) or answered
+    // `cancelled`, and the tab's timeline read again, of the published model.
+    step_until(&mut h, "the check run or answered", |h| {
+        let tab = &h.state().tabs()[0];
+        new_boxes() > 1
+            || (!tab.checking()
+                && tab
+                    .timeline
+                    .as_ref()
+                    .is_some_and(|timeline| timeline.revision == added))
+    });
+    assert_eq!(new_boxes(), 1, "the stopped rebuild started again");
+    let tab = &h.state().tabs()[0];
+    assert!(tab.status.as_ref().is_some_and(|status| {
+        status.rebuild.revision == added && status.rebuild.state == RebuildState::Stopped
+    }));
+    assert!(!tab.preview_rebuilding());
+    assert!(dialog_open(&h));
+    assert_eq!(tab.message, None);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(new_boxes(), 1);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_in_a_dialog_whose_preview_was_built_since_status_said_it_rebuilt_is_its_cancel() {
+    // `status`, read at the frame's start, says the preview rebuilds; its rebuild publishes
+    // before Esc's stop reaches it. The stop finds nothing to stop: the Esc is the dialog's
+    // Cancel, never eaten, and nothing is said.
+    use silico_core::command::RebuildState;
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let id = h.state().tabs()[0].id;
+    let hold = f.kernel.hold(is_new_box);
+    create(&mut h, "Box");
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    // Built, with no frame since: the tab's `status` still says it rebuilds.
+    hold.release();
+    until("the preview built", || {
+        f.sessions
+            .status(&id)
+            .result
+            .is_ok_and(|status| status.rebuild.state == RebuildState::Done)
+    });
+    let tab = &mut h.state_mut().tabs_mut()[0];
+    assert!(tab.preview_rebuilding());
+    tab.message = Some("an earlier refusal".to_owned());
+    assert!(tab.dialog_escape(&f.sessions));
+    assert_eq!(tab.message.as_deref(), Some("an earlier refusal"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_whose_previews_read_stopped_the_rebuild_first_stops_it_leaving_the_dialog_open() {
+    // The preview's read, cancelled by Esc's stop, wakes and stops the rebuild it waits on
+    // before the cancel naming the rebuild reaches it, which is then refused: the rebuild
+    // stopped all the same, so Esc stopped it, the dialog left open, the earlier refusal
+    // let go.
+    use silico_core::command::{Cancellable, RebuildState, RunningCommand, SessionCommand};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let id = h.state().tabs()[0].id;
+    let hold = f.kernel.hold(is_new_box);
+    create(&mut h, "Box");
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    until("the preview's read waiting", || {
+        f.sessions.status(&id).result.is_ok_and(|status| {
+            status.running == Some(RunningCommand::Command(SessionCommand::Timeline))
+        })
+    });
+    // Its read cancelled (the ticket its handle shares), which stops the rebuild, with no
+    // frame since: the tab's `status` still says it rebuilds.
+    f.sessions
+        .cancel(&id, Cancellable::Command(SessionCommand::Timeline))
+        .result
+        .unwrap();
+    until("the rebuild stopped by its read", || {
+        f.sessions
+            .status(&id)
+            .result
+            .is_ok_and(|status| status.rebuild.state == RebuildState::Stopped)
+    });
+    let tab = &mut h.state_mut().tabs_mut()[0];
+    assert!(tab.preview_rebuilding());
+    tab.message = Some("an earlier refusal".to_owned());
+    assert!(!tab.dialog_escape(&f.sessions));
+    assert_eq!(tab.message, None);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() {
     let f = fixture();
@@ -3617,6 +3870,16 @@ fn enter_is_ok_and_esc_is_cancel() {
     step(&mut h);
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].sent, sent);
+    // Its preview built, as `status` says: with it still rebuilding, Esc would stop it,
+    // leaving the dialog open (esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_
+    // dialog_second).
+    step_until(&mut h, "the preview built", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.status.as_ref().is_some_and(|status| {
+            status.rebuild.revision == tab.revision
+                && status.rebuild.state == silico_core::command::RebuildState::Done
+        })
+    });
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);

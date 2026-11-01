@@ -1377,13 +1377,54 @@ impl Tab {
     }
 
     /// The stop: `cancel` naming the rebuild, which stops it and the command waiting on it,
-    /// if one is (that one answers `cancelled`). One that comes after the rebuild ended is
-    /// refused, and the refusal is said.
+    /// if one is (that one answers `cancelled`), the tab's own read of the model stopped
+    /// with it ([`halt`](Self::halt)). One that comes after the rebuild ended is refused,
+    /// and the refusal is said.
     pub fn stop<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        match sessions.cancel(&self.id, Cancellable::Rebuild).result {
-            Ok(_) => self.message = None,
+        match self.halt(sessions) {
+            Ok(()) => self.message = None,
             Err(problems) => self.message = Some(said(&problems)),
         }
+    }
+
+    /// The rebuild stopped, as `cancel` naming `rebuild` stops it, and the tab's own reads
+    /// of the model with it, each cancelled through its handle first: its `timeline` read
+    /// (a preview's, or Rebuild's) and its `check` read, of the current model while nothing
+    /// is published. One still queued behind another command when the rebuild stops isn't
+    /// its waiter yet: run after the stop, it would need the model and start the rebuild
+    /// again, as the next command that needs it does (decision 34), undoing the stop the
+    /// person asked for. Cancelled first, it answers `cancelled` whenever it runs, starting
+    /// nothing, so once this returns nothing of the tab's starts the stopped rebuild again
+    /// (the tab then reads the published model, section 3, and asks no check of the current
+    /// model while the rebuild is stopped: [`read_check`](Self::read_check)). A check
+    /// cancelled is asked again once it may be. A read already waiting, cancelled, stops the
+    /// rebuild itself, and may do so before the cancel naming the rebuild reaches it: that
+    /// cancel's refusal is then the stop's success, as `status` says the rebuild stopped.
+    /// Refused with the cancel's refusal only if the rebuild wasn't stopped: it ended
+    /// (published, failed, or superseded) before the stop reached it.
+    fn halt<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> Result<(), Problems> {
+        let timeline_stopped = self
+            .timeline_read
+            .as_ref()
+            .is_some_and(|read| read.cancel());
+        let check_stopped = self
+            .check_read
+            .as_ref()
+            .is_some_and(|(_, read)| read.cancel());
+        if check_stopped {
+            self.checked = None;
+        }
+        let read_stopped = timeline_stopped || check_stopped;
+        let refused = match sessions.cancel(&self.id, Cancellable::Rebuild).result {
+            Ok(_) => return Ok(()),
+            Err(problems) => problems,
+        };
+        let stopped = read_stopped
+            && sessions.status(&self.id).result.is_ok_and(|status| {
+                status.rebuild.revision == self.revision
+                    && status.rebuild.state == RebuildState::Stopped
+            });
+        if stopped { Ok(()) } else { Err(refused) }
     }
 
     /// Rebuild (Ctrl+B, docs/ux/solidworks.md, §5, *Rebuild*): the tab's revision's rebuild,
@@ -1421,15 +1462,23 @@ impl Tab {
 
     /// The stop, from Esc or a dialog preview: as the button's ([`stop`](Self::stop)), but
     /// a refusal (the rebuild finished since `status` said it ran, leaving nothing to stop)
-    /// says nothing. Only the Stop button says its refusal.
-    pub fn stop_quietly<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if sessions
-            .cancel(&self.id, Cancellable::Rebuild)
-            .result
-            .is_ok()
-        {
+    /// says nothing. Only the Stop button says its refusal. Whether it stopped the rebuild.
+    pub fn stop_quietly<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
+        let stopped = self.halt(sessions).is_ok();
+        if stopped {
             self.message = None;
         }
+        stopped
+    }
+
+    /// Esc with a dialog open (section 3's order):
+    /// the preview's rebuild, if it's rebuilding, stopped, the dialog left open, as
+    /// SolidWorks stops a slow preview (docs/ux/solidworks.md, §5); or else the dialog's
+    /// Cancel, as Esc is in SolidWorks' PropertyManager. `status`, read at the frame's start,
+    /// may say the preview rebuilds when its rebuild has ended since: the stop then finds
+    /// nothing to stop, and the Esc is the Cancel, never eaten. Whether it's the Cancel.
+    pub fn dialog_escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
+        !(self.preview_rebuilding() && self.stop_quietly(sessions))
     }
 
     /// The choice section 4 offers once the file changed on disk while unsaved edits are
@@ -1752,6 +1801,11 @@ impl Tab {
         }
     }
 
+    /// Whether a `check` read is out, unanswered: what a test waits on.
+    pub fn checking(&self) -> bool {
+        self.check_read.is_some()
+    }
+
     /// Whether a new sweep's body is being read (the document's features at the session's
     /// revision, for its add): what a test waits on.
     pub fn reading_body(&self) -> bool {
@@ -1812,6 +1866,12 @@ impl Tab {
         let Some((gate, model)) = check_wanted(timeline, self.selected.as_ref()) else {
             return;
         };
+        // Never the current model of a revision whose rebuild was stopped: its check would
+        // start the rebuild again, undoing the stop. Asked once the rebuild runs again or
+        // the timeline moves.
+        if matches!(model, CheckModel::Current { .. }) && self.rebuild_stopped() {
+            return;
+        }
         self.checked = Some(asked);
         self.check_read = Some((gate, sessions.check(&self.id, model)));
     }
@@ -2504,5 +2564,38 @@ mod tests {
         });
         tab.read_check(&sessions);
         assert!(tab.check_read.is_some());
+    }
+
+    #[test]
+    fn no_check_of_the_current_model_is_asked_while_its_rebuild_is_stopped() {
+        // A timeline naming no model, a marked feature selected: a check of the current
+        // model, which would start a stopped rebuild again. Not asked while `status` says
+        // the tab's revision's rebuild stopped; asked in every other state, and a check of
+        // the published model asked even then.
+        let sessions = Arc::new(Sessions::with_cache_opener(
+            Arc::new(silico_core::fake::FakeKernel::new(1).unwrap()),
+            |dir| silico_core::cache::Cache::unsealed(dir),
+        ));
+        let at = |state, model| {
+            let mut tab = tab();
+            tab.revision = Revision::OPENED;
+            let mut status = status(Revision::OPENED, true);
+            status.rebuild.state = state;
+            tab.status = Some(status);
+            tab.timeline = Some(timeline(0, model, vec![entry("a0000001", 0, 1)]));
+            tab.selected = Some(FeatureId::new("a0000001").unwrap());
+            tab.read_check(&sessions);
+            tab.check_read.is_some()
+        };
+        assert!(!at(RebuildState::Stopped, None));
+        for state in [
+            RebuildState::Idle,
+            RebuildState::Running,
+            RebuildState::Done,
+            RebuildState::Faulted,
+        ] {
+            assert!(at(state, None), "{state:?}");
+        }
+        assert!(at(RebuildState::Stopped, Some(Revision::OPENED)));
     }
 }

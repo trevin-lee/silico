@@ -529,7 +529,8 @@ impl<P: Clients + 'static> App<P> {
     /// The open dialog, docked at the right (open item 27): drawn, what's changed in it sent,
     /// and its OK or Cancel taken, or `key`: Enter is OK, if OK is on; Esc goes to the first
     /// of these there is (section 3), a dialog's preview rebuilding, which it stops, the
-    /// dialog left open, or the dialog, which it cancels (one still being read too).
+    /// dialog left open, or the dialog, which it cancels (one still being read too;
+    /// [`Tab::dialog_escape`]).
     fn dialog_panel(&mut self, ui: &mut Ui, started: &mut bool, key: Option<Key>) {
         let sessions = &self.sessions;
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
@@ -575,8 +576,7 @@ impl<P: Clients + 'static> App<P> {
         *started |= tab.dialog_changed(sessions);
         match key {
             Some(Key::Enter) if tab.can_ok() => action = Action::Ok,
-            Some(Key::Escape) if tab.preview_rebuilding() => tab.stop_quietly(sessions),
-            Some(Key::Escape) => action = Action::Cancel,
+            Some(Key::Escape) if tab.dialog_escape(sessions) => action = Action::Cancel,
             _ => {}
         }
         match action {
