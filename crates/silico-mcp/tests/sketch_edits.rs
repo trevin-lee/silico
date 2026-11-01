@@ -350,6 +350,117 @@ fn each_geometry_edit_is_a_tool_whose_answer_is_the_cores_envelope_byte_for_byte
     assert_eq!(c.read_file("part.silico"), ELL);
 }
 
+/// The join's calls: the open's rebuild waited for; a split of the first line at (5, 0);
+/// its join at the split point, back as it was; and refusals: the corner, which no
+/// tangent_at holds on one line, a point that isn't the sketch's, and a malformed point.
+const JOIN_CALLS: [(&str, &str); 8] = [
+    ("open", r#"{"path": "part.silico", "create": false}"#),
+    (
+        "check",
+        r#"{"session": "s1", "model": "current", "fresh": false}"#,
+    ),
+    ("begin", r#"{"session": "s1"}"#),
+    (
+        "sketch_split",
+        r#"{"session": "s1", "revision": 1, "sketch": "k7f2qx3m", "curve": "n0000001", "at": [[5, 0]], "ids": ["p0000004", "n0000003", "c0000002"]}"#,
+    ),
+    (
+        "sketch_join",
+        r#"{"session": "s1", "revision": 2, "sketch": "k7f2qx3m", "point": "p0000004"}"#,
+    ),
+    (
+        "sketch_join",
+        r#"{"session": "s1", "revision": 3, "sketch": "k7f2qx3m", "point": "p0000002"}"#,
+    ),
+    (
+        "sketch_join",
+        r#"{"session": "s1", "revision": 3, "sketch": "k7f2qx3m", "point": "p0000009"}"#,
+    ),
+    (
+        "sketch_join",
+        r#"{"session": "s1", "revision": 3, "sketch": "k7f2qx3m", "point": 5}"#,
+    ),
+];
+
+#[test]
+fn the_join_is_a_tool_whose_answer_is_the_cores_envelope_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = std::fs::canonicalize(dir.path()).unwrap().join("work");
+    std::fs::create_dir(&work).unwrap();
+    std::fs::write(work.join("part.silico"), ELL).unwrap();
+    let secret = dir.path().join("secret");
+    let solver = FakeSketches::new();
+    let solving = solver.clone();
+    let sessions = Sessions::with_stand_ins(
+        Arc::new(FakeKernel::new(2).unwrap()),
+        move |c: &std::path::Path| Cache::with_secret(c, &secret),
+        move || Ok(Box::new(solving.clone()) as Box<dyn SketchSolver>),
+    )
+    .rendering(FakeRenderer::new())
+    .in_workspace(&work)
+    .unwrap();
+    let core: Vec<(String, bool)> = JOIN_CALLS
+        .iter()
+        .map(|(name, arguments)| match sessions.call(name, arguments) {
+            Call::Running(calling) => {
+                let answered = calling.wait_timeout(HANG).ok().unwrap();
+                (answered.text, !answered.ok)
+            }
+            Call::Unknown => panic!("{name}"),
+        })
+        .collect();
+    let mut c = Client::initialized_solving(FakeSketches::new());
+    c.file("part.silico", ELL);
+    for (at, ((name, arguments), core)) in JOIN_CALLS.iter().zip(&core).enumerate() {
+        let id = at as u64 + 1;
+        c.send_call(id, name, arguments);
+        let (line, _) = c.reply_line(&id.to_string());
+        let (text, is_error) = structured(&line);
+        assert_eq!((&text, is_error), (&core.0, core.1), "{name} {arguments}");
+    }
+    // What each said, by hand: the split's pieces joined, n0000003, p0000004, and the
+    // tangent_at c0000002 removed.
+    let envelope = |n: usize| serde_json::from_str::<Value>(&core[n].0).unwrap();
+    assert_eq!(
+        envelope(4)["result"],
+        json!({"sketch": "k7f2qx3m", "added": [], "modified": ["n0000001"], "removed": ["p0000004", "n0000003", "c0000002"], "references": [], "changed": true, "commit": null})
+    );
+    assert_eq!(envelope(4)["session"]["revision"], 3);
+    let first = |n: usize| {
+        let e = envelope(n);
+        assert_eq!(e["ok"], false, "{e}");
+        (
+            e["errors"][0]["parameter"].as_str().unwrap().to_owned(),
+            e["errors"][0]["message"].as_str().unwrap().to_owned(),
+        )
+    };
+    assert_eq!(
+        first(5),
+        (
+            "point".to_owned(),
+            "lines n0000001 and n0000002 meet at point p0000002, but no tangent_at (same) there holds them on one line".to_owned()
+        )
+    );
+    assert_eq!(
+        first(6),
+        (
+            "point".to_owned(),
+            "the sketch has no point p0000009".to_owned()
+        )
+    );
+    assert_eq!(
+        first(7),
+        (
+            "point".to_owned(),
+            "point must be a point's ID, as the sketch holds it, got 5".to_owned()
+        )
+    );
+    // The open's rebuild, the split's solve, and the join's, each clean.
+    assert_eq!(solver.requests().len(), 3);
+    // Nothing reached the file: the transaction holds the edits.
+    assert_eq!(c.read_file("part.silico"), ELL);
+}
+
 #[test]
 fn the_geometry_edit_tools_are_listed_as_edits() {
     let mut c = Client::initialized();
@@ -371,6 +482,10 @@ fn the_geometry_edit_tools_are_listed_as_edits() {
         (
             "sketch_merge",
             json!(["points", "revision", "session", "sketch"]),
+        ),
+        (
+            "sketch_join",
+            json!(["point", "revision", "session", "sketch"]),
         ),
     ] {
         let tool = tools.iter().find(|t| t["name"] == name).unwrap();

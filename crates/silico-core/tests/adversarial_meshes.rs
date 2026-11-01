@@ -231,6 +231,79 @@ proptest! {
     }
 }
 
+/// A step of a kernel with a floor of its own for each step's key: a put of a mesh asked
+/// at `asked`, made at the larger of it and the key's floor, as the kernel makes one; a
+/// forget of the mesh at a deflection; and what the cache says it knows of a level.
+#[derive(Debug, Clone)]
+enum Known {
+    Put {
+        key: u8,
+        asked: f64,
+        triangles: usize,
+    },
+    Forget {
+        key: u8,
+        deflection: f64,
+    },
+    Ask {
+        key: u8,
+        level: f64,
+    },
+}
+
+fn level() -> impl Strategy<Value = f64> {
+    prop_oneof![
+        Just(1e-9),
+        Just(0.001),
+        Just(0.0173),
+        Just(0.03125),
+        Just(0.0625),
+        Just(0.25),
+        Just(1.0),
+    ]
+}
+
+fn known_step() -> impl Strategy<Value = Known> {
+    prop_oneof![
+        3 => (0u8..4, level(), 0usize..6)
+            .prop_map(|(key, asked, triangles)| Known::Put { key, asked, triangles }),
+        1 => (0u8..4, level()).prop_map(|(key, deflection)| Known::Forget { key, deflection }),
+        3 => (0u8..4, level()).prop_map(|(key, level)| Known::Ask { key, level }),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 1_000, ..ProptestConfig::default() })]
+
+    // #331 round 2: whatever the cache has seen, kept, dropped past its bounds, or
+    // forgotten, what it says it knows of a level is the deflection the kernel would use:
+    // none, or the larger of the level and the step's floor.
+    #[test]
+    fn what_the_cache_knows_of_a_level_is_none_or_the_kernels_deflection(
+        floors in proptest::collection::vec(level(), 4),
+        bound in prop_oneof![Just(0u64), Just(size(2)), 0u64..2_000],
+        floors_kept in prop_oneof![Just(0usize), Just(1), Just(2), Just(1usize << 16)],
+        steps in proptest::collection::vec(known_step(), 1..150),
+    ) {
+        let cache = MeshCache::<u8>::with_floors(bound, floors_kept);
+        for (i, s) in steps.iter().enumerate() {
+            match *s {
+                Known::Put { key, asked, triangles } => {
+                    let used = asked.max(floors[usize::from(key)]);
+                    cache.put(&key, asked, at(used, mesh(triangles)));
+                }
+                Known::Forget { key, deflection } => cache.forget(&key, deflection),
+                Known::Ask { key, level } => {
+                    let want = level.max(floors[usize::from(key)]);
+                    if let Some(known) = cache.known(&key, level) {
+                        prop_assert_eq!(known.to_bits(), want.to_bits(), "step {}: {:?}", i, s);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn a_mesh_given_back_is_shared_not_copied() {
     // Two gets of one entry, and the put's own, are one mesh.

@@ -8,8 +8,9 @@
 //!   the edit, it's applied, and the rebuild's verdict, a conflict, a redundancy, or no
 //!   solution, is the sketch's state, which `check` reports and its features fail by.
 //! - **What writes geometry**, `sketch_split`, `sketch_trim`, `sketch_unjoin`,
-//!   `sketch_merge`, and `sketch_extend`, writes exactly what its request names into the
-//!   sketch as stored, and the sketch's ordinary solve from that written sketch (M3.4, FreeCAD's order) is the
+//!   `sketch_merge`, `sketch_extend`, and `sketch_join`, writes exactly what its request
+//!   names into the sketch as stored, and the sketch's ordinary solve from that written
+//!   sketch (M3.4, FreeCAD's order) is the
 //!   edit's solve (Fable, 2026-10-29): run here, on one of the sessions' sketch solvers,
 //!   before the edit is held or committed, stopped by the command's `cancel`. An edit whose
 //!   solve is worse than the sketch's before it refuses as data, the session as it was (SD7,
@@ -28,11 +29,11 @@ use std::sync::{Arc, Mutex, Weak};
 use super::cancel::{Interrupt, Ticket, Why};
 use super::{
     ExtendBy, NewMembers, Problems, Running, SessionCommand, SessionId, Sessions, SketchCut,
-    SketchEdited, not_open, reclaim,
+    SketchEdited, SketchJoined, not_open, reclaim,
 };
 use crate::command::Gated;
 use crate::command::Revision;
-use crate::command::edit::{self, Candidate, Cut, FeatureIds, SketchChanges};
+use crate::command::edit::{self, Candidate, Cut, FeatureIds, Join, SketchChanges};
 use crate::document::sketch_edit::NewIds;
 use crate::document::{Checked, ElementId, FeatureId, Operation, Reference};
 use crate::drag::DragStop;
@@ -41,7 +42,7 @@ use crate::kernel::Clients;
 use crate::recompute::SketchSolvers;
 use crate::sketch::Translation;
 use crate::sketch_judge::{
-    EXTEND, Judged, MERGE, SPLIT, TRIM, UNBUILDABLE, UNJOIN, WritingEdit, judge, severity,
+    EXTEND, JOIN, Judged, MERGE, SPLIT, TRIM, UNBUILDABLE, UNJOIN, WritingEdit, judge, severity,
 };
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
@@ -381,6 +382,51 @@ impl<P: Clients + 'static> Sessions<P> {
             },
         )
     }
+
+    /// Joins the two pieces sharing `point` of `session`'s sketch `sketch` into one curve
+    /// (the design's `sketch_join`; open item 12b, split's exact inverse), as an edit made
+    /// against `revision`: two lines held on one line by a `tangent_at` (`same`) there, or
+    /// two arcs about one centre, the piece ending at the point keeping its ID and taking
+    /// the other's far end; a split circle's two arcs, its circle again. It makes no member,
+    /// so it takes no `ids`. Judged by its solve as [`sketch_split`](Self::sketch_split) is;
+    /// refused for what the join itself refuses (a point that isn't two pieces', pieces not
+    /// held on one carrier, construction with not, a piece's length, midpoint, or equal).
+    /// Its result lists the features storing a name either piece reaches (`references`).
+    pub fn sketch_join(
+        &self,
+        session: &SessionId,
+        revision: Revision,
+        sketch: FeatureId,
+        point: ElementId,
+    ) -> Running<SketchJoined> {
+        let registry = Arc::downgrade(&self.registry);
+        let solvers = self.registry.sketches.clone();
+        self.queued(
+            session,
+            SessionCommand::SketchJoin,
+            move |session, stop, model| {
+                let _span = tracing::info_span!(
+                    "sketch_join",
+                    sketch = sketch.as_str(),
+                    point = point.as_str()
+                )
+                .entered();
+                let id = session.id;
+                let edited = session.edit(
+                    stop,
+                    revision,
+                    |base| {
+                        let checked = base.checked()?;
+                        let made = edit::sketch_join(checked.document(), &sketch, &point)?;
+                        judged(&solvers, stop, base.id, checked, &sketch, JOIN, made)
+                    },
+                    model,
+                    &|resolved| reclaim(&registry, id, resolved),
+                )?;
+                Ok(sketch_joined(sketch, edited))
+            },
+        )
+    }
 }
 
 /// A sketch edit's result: what it changed, as the edit found it (a commit's save changes no
@@ -417,6 +463,29 @@ fn sketch_cut(sketch: FeatureId, edited: super::edits::Edited<Cut>) -> SketchCut
     SketchCut {
         sketch,
         pieces,
+        added,
+        modified,
+        removed,
+        references,
+        changed: edited.changed,
+        commit: edited.commit,
+    }
+}
+
+/// A join's result, as [`sketch_edited`] gives an edit's, with the features storing a name
+/// either piece reaches.
+fn sketch_joined(sketch: FeatureId, edited: super::edits::Edited<Join>) -> SketchJoined {
+    let Join {
+        changes:
+            SketchChanges {
+                added,
+                modified,
+                removed,
+            },
+        references,
+    } = edited.made;
+    SketchJoined {
+        sketch,
         added,
         modified,
         removed,

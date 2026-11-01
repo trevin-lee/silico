@@ -487,6 +487,26 @@ def put_back(s, cap, refs=None):
     return i
 
 
+def angle_on(c, g, positioned=False):
+    """Whether `c` is an angle naming curve `g` (with a position, FreeCAD's start-point form
+    that Silico's `reversed` is, if `positioned`): one an edit takes off before 1.1.3's own
+    edit and puts back as the note has it (put_angle_back)."""
+    refs = refs_of(c)
+    return (c.Type == "Angle" and any(r[0] == g for r in refs)
+            and (not positioned or any(r[1] != 0 for r in refs)))
+
+
+def put_angle_back(s, cap, curve, pieces):
+    """The angle `cap` put back on each of `pieces` (geometry IDs) in place of `curve` (the
+    edited curve's ID), its positions as they were: split's on its first piece
+    (#se-split-angle-segfault), trim's on every line piece (#se-trim-a-positioned-angle).
+    Only the copy on `curve` itself keeps the angle's name (Silico's ID): FreeCAD refuses a
+    name twice, and Silico gives each other piece's copy a new ID."""
+    for piece in pieces:
+        own = cap if piece == curve else dict(cap, name="")
+        put_back(s, own, [[index_of(s, piece if r == curve else r), pos] for r, pos in cap["refs"]])
+
+
 def drop(s, indices):
     if indices:
         s.delConstraints(sorted(set(indices)))
@@ -660,7 +680,7 @@ def edit_split(s, e, applied):
         refs = refs_of(c)
         if [g, 0] not in refs and not any(r[0] == g for r in refs):
             continue
-        if c.Type == "Angle":
+        if angle_on(c, g):
             held.append((i, "angle"))
         elif c.Type == "PointOnObject" and refs[1] == [g, 0]:
             held.append((i, "on"))
@@ -781,7 +801,7 @@ def edit_split(s, e, applied):
     for cap, rule in caps:
         refs = [[index_of(s, r), pos] for r, pos in cap["refs"]]
         if rule == "angle":
-            put_back(s, cap, refs)
+            put_angle_back(s, cap, keep, [keep])
             applied.append("se-split-angle-segfault")
         elif rule == "on":
             point_ref = refs[0]
@@ -846,11 +866,30 @@ def edit_trim(s, e, applied):
               for (a, pa), (b, pb) in [refs_of(c)]}
     about = [captured(s, i) for i, c in enumerate(s.Constraints)
              if c.Type == "Symmetric" and len(refs_of(c)) == 3 and refs_of(c)[2] == [g, 0]]
+    # An angle with positions (Silico's `reversed`) on the line, and the ends of it it names,
+    # where they are before the trim (#se-trim-a-positioned-angle).
+    angles = [(captured(s, i), [s.getPoint(g, pos) for r, pos in refs_of(c) if r == g and pos])
+              for i, c in enumerate(s.Constraints) if angle_on(c, g, positioned=True)]
     edit_call(s.trim, g, V(e["pick"][0], e["pick"][1], 0))
     g = index_of(s, keep)
     if g is None:
         return
     pieces = {keep} | {gid(s, i) for i in range(len(s.Geometry)) if gid(s, i) not in ids_before}
+    # Where the end such an angle names survives the trim, 1.1.3 keeps the angle, unchanged,
+    # on the start-side piece only, which keeps the curve's ID (transferConstraints never
+    # moves an angle, e66849378b): its position is as it was, and is that piece's end at the
+    # cut only in a middle trim where the point it names is b's end. Silico has it on every
+    # piece, so FreeCAD's, found by its name (Silico's ID, which the original keeps), is taken
+    # off and the angle put on each. Where the end is removed, FreeCAD's own handling stands,
+    # and is compared (#se-trim-a-positioned-angle).
+    if kind == "line":
+        now = [s.getPoint(index_of(s, p), pos) for p in pieces for pos in (1, 2)]
+        for cap, ends_named in angles:
+            if not all(any((q - end).Length <= EDIT_TOLERANCE for q in now) for end in ends_named):
+                continue
+            drop(s, [i for i, c in enumerate(s.Constraints) if cap["name"] and c.Name == cap["name"]])
+            put_angle_back(s, cap, keep, sorted(pieces))
+            applied.append("se-trim-a-positioned-angle")
     # A new end at a cut joined to the cutter's end by 1.1.3's 5e-5 mm test, where no
     # constraint held that end on the curve: Silico gives the piece a new point on the
     # cutter instead (decision 5, #se-the-piece-s-end-is-the, #se-trim-s-the-cut-is-the).

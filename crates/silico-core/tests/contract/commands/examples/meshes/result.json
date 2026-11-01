@@ -1,0 +1,25 @@
+{
+  "camera": {"projection": "orthographic", "eye": [100, -50, 95], "target": [30, 20, 25], "up": [-0.40824829046386313, 0.40824829046386313, 0.8164965809277258], "view_height": 80, "field_of_view": null},
+  "bodies": [
+    {
+      "feature": "f0000001",
+      "body": 1,
+      "key": "3f9a0c5e1d7b2a4c6e8f0a1b3c5d7e9f1a2b4c6d8e0f1a3b5c7d9e1f2a4b6c8d",
+      "level": 0.03125,
+      "deflection": 0.03125,
+      "box": [[0, 0, 0], [60, 40, 50]],
+      "serves": [0.03125, 0.0625],
+      "held": false,
+      "positions": [[0, 0, 0], [60, 0, 0], [60, 40, 0]],
+      "normals": [[0, 0, -1], [0, 0, -1], [0, 0, -1]],
+      "triangles": [[0, 2, 1]],
+      "faces": [
+        {"name": "p0000001.pad.Face(G s0000001.sketch.Edge.na000001)", "stable": true, "triangles": 1}
+      ],
+      "edge_points": [[0, 0, 0], [60, 0, 0]],
+      "edges": [
+        {"name": "p0000001.pad.Edge(M s0000001.sketch.Edge.na000001)", "stable": true, "points": 2}
+      ]
+    }
+  ]
+}

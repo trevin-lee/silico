@@ -160,6 +160,7 @@ fn effect(command: Command) -> Effect {
         | Command::Distance
         | Command::Angle
         | Command::Timeline
+        | Command::Meshes
         | Command::Sketch => Effect::Reads,
         // An edit outside a transaction saves at once; commit and format save the file.
         Command::Commit
@@ -177,7 +178,8 @@ fn effect(command: Command) -> Effect {
         | Command::SketchTrim
         | Command::SketchUnjoin
         | Command::SketchMerge
-        | Command::SketchExtend => Effect::Changes { destructive: true },
+        | Command::SketchExtend
+        | Command::SketchJoin => Effect::Changes { destructive: true },
         // A drag is held by the server, and its moves change no file.
         Command::DragBegin | Command::DragMove => Effect::Changes { destructive: false },
         // `replace: true` writes over a file at `to`, or at `path`.
@@ -319,6 +321,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Merge sketch points",
             "Make two or more points of a sketch one: the first named survives at its own coordinates, and the others' curves and constraints move to it. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): name first the point the constraints hold. `silico fmt --merge-touching` merges every `ends_not_joined` cluster so. Give the revision the edit was made against.",
         ),
+        Command::SketchJoin => (
+            "Join a split's pieces",
+            "Join the two pieces a split left at a point into one curve again, split's inverse: two lines held on one line by a `tangent_at` (`same`) at the point, or two arcs about one centre (a split circle's two arcs make its circle again). Name the point they share. The piece that ends there keeps its ID and takes the other's far end (it's the one curve in `modified`, the other piece in `removed`); the other piece, the point, and the constraints naming the point go, and constraints on the other piece move to the kept one. Nothing is retyped: a split's distance of the outer ends stays a distance. `references` lists the features whose stored names either piece reached. Refused for a piece's length, midpoint, or equal with another line, which would then measure the whole line: remove it, or dimension the outer ends. Refused if the sketch's solve is then worse than before it (a new conflict or redundancy, or no solution): a conflict the sketch had already isn't the edit's. Give the revision the edit was made against.",
+        ),
         Command::Text => (
             "Document text",
             "The document's text as the session holds it, or one feature's.",
@@ -371,6 +377,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Read a sketch",
             "A sketch as the model solved it: its plane in 3D, its state (under, fully, or over defined, no solution, or invalid) and degrees of freedom, each point, curve, and constraint as the document writes it, at its solved values, with its own state, the regions its profile makes or why it makes none, and why it wasn't solved.",
         ),
+        Command::Meshes => (
+            "Display meshes",
+            "The display meshes of the model's bodies for a view (a named view or a camera, and its size in pixels), as the app's viewport draws them: each body, or each feature named in `features`, at the largest power of two no coarser than half a pixel, from the meshes `render` makes. Each body's positions, normals, and triangles, its edges' polylines, each face and edge by its name, its `key`, and the half pixels its level `serves`. Pass back in `held` the `key` and `deflection` of each mesh already read: a body held is named, but its geometry isn't given again. To look at the model, `render` is cheaper.",
+        ),
         Command::Render => (
             "Render",
             "A PNG of the model's bodies from a named view or a camera, with elements highlighted, returned as an image beside the result, and written to `to` in the workspace if given.",
@@ -392,11 +402,13 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::SketchTrim
         | Command::SketchUnjoin
         | Command::SketchMerge
-        | Command::SketchExtend => &[IN_A_TRANSACTION, READ_CURRENT],
+        | Command::SketchExtend
+        | Command::SketchJoin => &[IN_A_TRANSACTION, READ_CURRENT],
         Command::Check
         | Command::MassProperties
         | Command::Render
         | Command::Timeline
+        | Command::Meshes
         | Command::Sketch
         | Command::Undo
         | Command::Redo => &[READ_CURRENT],

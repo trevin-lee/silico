@@ -1086,6 +1086,22 @@ pub struct SketchCut {
     pub commit: Option<Committed>,
 }
 
+/// What a join did (`sketch_join`: docs/design/m5.0-app.md, section 7): as
+/// [`SketchEdited`] says it (the joined curve, the start-side piece's ID, in `modified`, the
+/// other piece in `removed`), with the features that store a name made from either piece's
+/// ID or its points' IDs, in timeline order: one made from the kept piece then finds the
+/// whole joined curve, one from the other piece or the shared point nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SketchJoined {
+    pub sketch: FeatureId,
+    pub added: Vec<ElementId>,
+    pub modified: Vec<ElementId>,
+    pub removed: Vec<ElementId>,
+    pub references: Vec<FeatureId>,
+    pub changed: bool,
+    pub commit: Option<Committed>,
+}
+
 /// What `status` says of a session, from what it holds: how many features its document has
 /// (none if its text doesn't read as one), whether the gate took it, the transaction open,
 /// if one is (the revision it began from, which `rollback` returns to, and its undo stack's

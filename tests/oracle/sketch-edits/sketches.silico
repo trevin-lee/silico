@@ -1976,6 +1976,35 @@
         {"id": "k0000008", "type": "length", "line": "n0000006", "value": 5, "driving": false}
       ],
       "note": "A horizontal line (0, 0) to (10, 0), and a second line from its start to (0, 5) with a reference length: joined at the shared start."
+    },
+    {
+      "id": "s0000086",
+      "type": "sketch",
+      "v": 1,
+      "name": "line_with_reversed_angle_and_two_uprights",
+      "plane": "xy",
+      "points": [
+        {"id": "p0000001", "x": 0, "y": 0, "construction": false},
+        {"id": "p0000002", "x": 10, "y": 0, "construction": false},
+        {"id": "p0000004", "x": 4, "y": -3, "construction": false},
+        {"id": "p0000005", "x": 4, "y": 3, "construction": false},
+        {"id": "p0000007", "x": 12, "y": 5, "construction": false},
+        {"id": "p0000008", "x": 17, "y": 10, "construction": false},
+        {"id": "p000000a", "x": 7, "y": -3, "construction": false},
+        {"id": "p000000b", "x": 7, "y": 3, "construction": false}
+      ],
+      "lines": [
+        {"id": "n0000003", "from": "p0000001", "to": "p0000002", "construction": false},
+        {"id": "n0000006", "from": "p0000004", "to": "p0000005", "construction": false},
+        {"id": "n0000009", "from": "p0000007", "to": "p0000008", "construction": false},
+        {"id": "n000000c", "from": "p000000a", "to": "p000000b", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": [
+        {"id": "k0000011", "type": "angle", "a": "n0000009", "b": "n0000003", "reversed": true, "value": 135, "driving": true}
+      ],
+      "note": "A line (0, 0) to (10, 0), uprights at x 4 and 7 crossing it, and a line (12, 5) to (17, 10) at 135 degrees to it taken from its end (b reversed, FreeCAD's start-point form with b from its end). No horizontal: a trim leaving two pieces copies the angle to both, and a horizontal on both would make one angle redundant."
     }
   ]
 }

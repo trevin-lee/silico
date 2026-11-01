@@ -389,6 +389,11 @@ crates/silico-core/src/command/session/drag.rs | Session<C>::begin_drag | replac
 # drag's revision, the edit's base, so `sketch_replaced` makes no candidate, no solve runs,
 # and the edit answers unchanged with no commit: the same result, nothing written.
 crates/silico-core/src/command/session/drag.rs | Session<C>::end_drag_with | replace || with && | #307
+crates/silico-core/src/recompute.rs | Key::parse | replace | with ^ | #331
+crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with <= | #320
+crates/silico-core/src/document/sketch_edit/join.rs | unordered | replace < with > | #320
+crates/silico-core/src/document/sketch_edit/join.rs | one_arc | replace > with >= | #320
+crates/silico-app/src/app.rs | App<P>::take_open | replace > with >= | #337
 # The sketch tools (#335). `to_segment`'s `span > 0.0`: a span of 0 is a line of no length,
 # which lies within the pick tolerance only where its point does, and the pointer shares a
 # point before it looks at curves, so the foot is never read. `tangent_arc`'s `across > 0.0`:

@@ -18,6 +18,7 @@ mod exact;
 mod handshake;
 mod hostile;
 mod lines;
+mod meshes_command;
 mod sketch_edits;
 mod suppress_commands;
 mod timeline_commands;
