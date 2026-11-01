@@ -9,6 +9,7 @@
 use super::*;
 use crate::command::Revision;
 
+mod dimension;
 mod edges;
 use crate::document::json::{self, Plain};
 use crate::document::sketch_edit::{self, Members};

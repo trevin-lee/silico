@@ -526,6 +526,27 @@ impl Pointer<'_, '_> {
         Placed::new(at, Target::Free)
     }
 
+    /// What a click at `at` picks to dimension (Smart Dimension): a point of the sketch
+    /// within the tolerance, or the origin where it's nearer, as [`snap`](Self::snap) finds
+    /// them; else the curve nearest, within the tolerance, as `snap` finds curves (a line or
+    /// an arc where it's drawn, a circle all round, an axis anywhere along it), ties by ID;
+    /// else nothing. Whether relations are inferred plays no part: a pick is no relation.
+    pub(super) fn pick(&self, at: Xy) -> Option<Reference> {
+        let point = self.point_near(at);
+        let origin = distance(at, [0.0, 0.0]);
+        match point {
+            Some((d, _)) if origin < d => return Some(Reference::Origin),
+            Some((_, id)) => return Some(Reference::Element(id)),
+            None if origin <= self.tolerance => return Some(Reference::Origin),
+            None => {}
+        }
+        nearest(
+            self.curves_near(at)
+                .into_iter()
+                .map(|n| (n.off, n.reference.as_str().to_owned(), n.reference)),
+        )
+    }
+
     /// Only a point of the sketch the click shares, else nothing: where a tool fixes the
     /// point's place itself (a square's corner, a tangent arc's start).
     pub(super) fn shared_only(&self, at: Xy) -> Placed {
