@@ -2276,6 +2276,21 @@ fn a_later_read_settles_a_placement_and_the_next_is_placed() {
 }
 
 #[test]
+fn a_later_read_that_flags_the_dimension_still_settles_it() {
+    // A read past the add's revision can't offer (the moment's past: it may hold another
+    // edit), so even one flagging the dimension settles the placement: the next is placed.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    let k = d.tool.placement().unwrap().constraint;
+    d.revision = d.revision.next().unwrap();
+    d.states.state = SketchState::OverDefined;
+    d.states.constraints.insert(k, ConstraintState::Conflicting);
+    d.click(15.0, 15.0).click(30.0, 30.0);
+    assert_eq!(d.modify().as_deref(), Some("14.142136"));
+    assert!(d.messages.is_empty());
+}
+
+#[test]
 fn a_placement_not_yet_answered_holds_the_next() {
     // Item 2: the add issued, the core's answer (`added`) not yet come: the next placing
     // click waits.
