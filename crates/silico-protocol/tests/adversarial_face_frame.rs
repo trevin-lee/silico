@@ -79,8 +79,15 @@ fn a_frames_origin_exactly_at_its_reach_passes_and_a_hair_past_is_refused() {
             refused(past, "the face frame's origin must be within √3 · 1e6 mm");
         }
     }
-    // √3 · 1e6 and its rounding: just over 1.732e6, under 1.7321e6.
-    const { assert!(MAX_FRAME_ORIGIN > 1.732_050_807e6 && MAX_FRAME_ORIGIN < 1.7321e6) };
+    // √3 · 1e6 times 1 + 16ε, worked by hand: 1732050.8075688833, past the bare √3 · 1e6
+    // (1732050.8075688772) by its rounding's slack, and by no more than a few of its ulps.
+    // Read at run time, not in a const block, so a mutant of the bound fails this test
+    // rather than the build (a mutant that doesn't build is unviable, not caught).
+    let bound = std::hint::black_box(MAX_FRAME_ORIGIN);
+    assert!(
+        bound > 1_732_050.807_568_877_2 && bound < 1_732_050.807_568_9,
+        "{bound}"
+    );
 }
 
 #[test]
@@ -97,6 +104,22 @@ fn a_frame_of_negative_zeros_and_subnormals_is_sound_and_places_its_origin_as_pl
         placed.map(f64::to_bits),
         [0.0, 5e-324, -5e-324].map(f64::to_bits)
     );
+}
+
+#[test]
+fn a_point_whose_every_term_is_minus_zero_is_placed_at_plus_zero() {
+    // Origin −0, x (−0.6, −0.8, 0), y (0.8, −0.6, 0): exact, a unit and square. Placing
+    // (0, 0), y's component is −0 + 0·(−0.8) + 0·(−0.6), every term −0, so their sum is
+    // −0, and the closing + 0 makes it +0 (a − 0 would keep −0). x's is −0 + −0 + 0·0.8 = +0
+    // already, and z's +0.
+    let frame = FaceFrame {
+        origin: [-0.0; 3],
+        x: [-0.6, -0.8, 0.0],
+        y: [0.8, -0.6, 0.0],
+    };
+    assert_eq!(frame.check(), Ok(()));
+    let placed = SketchPlane::Face(frame).place([0.0, 0.0]);
+    assert_eq!(placed.map(f64::to_bits), [0.0_f64; 3].map(f64::to_bits));
 }
 
 #[test]
@@ -412,6 +435,12 @@ fn a_normal_off_a_unit_by_more_than_describes_tolerance_is_refused_saying_its_tr
         (
             [0.0, 0.0, 0.0],
             "the face's normal must be a unit vector to 1e-6, got [0.0, 0.0, 0.0], 0 long",
+        ),
+        // Measured scaled by its largest component, 4: 4 × |(0.75, 1, 0)| = 4 × 1.25 = 5,
+        // each step exact.
+        (
+            [3.0, 4.0, 0.0],
+            "the face's normal must be a unit vector to 1e-6, got [3.0, 4.0, 0.0], 5 long",
         ),
     ] {
         match FaceFrame::from_normal([0.0; 3], n, [1.0, 0.0, 0.0]) {

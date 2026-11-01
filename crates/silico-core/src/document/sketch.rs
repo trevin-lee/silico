@@ -1068,6 +1068,37 @@ pub const CONSTRAINT_TYPES: [&str; 21] = [
 #[cfg(test)]
 mod tests {
     use super::super::json::{MAX_TREE_BYTES, Node};
+    use super::AxisToken;
+
+    #[test]
+    fn default_x_decides_the_45_degree_ties_as_the_notes_table_does() {
+        // docs/ports/attacher.md, *The 45° ties*: each normal with components bitwise equal
+        // in magnitude, so the tie is exact; ties go to x, then y.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let t = 1.0 / 3.0_f64.sqrt();
+        for (normal, want) in [
+            // X = Y: X wins, n along +x.
+            ([s, s, 0.0], AxisToken::PlusY),
+            ([s, -s, 0.0], AxisToken::PlusY),
+            // X = Z: X wins.
+            ([s, 0.0, s], AxisToken::PlusY),
+            // Y = Z: Y wins, along +y, then against it.
+            ([0.0, s, s], AxisToken::MinusX),
+            ([0.0, -s, s], AxisToken::PlusX),
+            // All three: X wins.
+            ([t, t, t], AxisToken::PlusY),
+        ] {
+            assert_eq!(AxisToken::default_x(normal), want, "{normal:?}");
+        }
+    }
+
+    #[test]
+    fn default_x_of_a_normal_with_no_length_is_x_nearest_and_not_along_plus_x() {
+        // No face's normal: but a zero, of either sign, is never "along +x", so the tie to x
+        // gives -y, as for any normal whose x isn't positive.
+        assert_eq!(AxisToken::default_x([0.0; 3]), AxisToken::MinusY);
+        assert_eq!(AxisToken::default_x([-0.0, 0.0, 0.0]), AxisToken::MinusY);
+    }
 
     #[test]
     fn a_list_the_reader_reads_has_fewer_members_than_a_place_of_eight_digits() {

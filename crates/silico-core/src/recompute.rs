@@ -61,6 +61,7 @@ use crate::document::{
     Operation, SweepFeature,
 };
 use crate::elements::Entry;
+use crate::face_plane::{Defaulted, Live, Placed};
 use crate::kernel::{
     BooleanOp, BuiltData, DESCRIBE_BATCH, DescribedBatch, ElementKind, FaceRegions, Generation,
     History, Kernel, KernelRequest, Primitive, ShapeData, ShapeSummary, SweepKind,
@@ -455,7 +456,10 @@ impl Model {
     /// broke (its first hundred: [`Model::error_count`] counts them all). A pad, pocket,
     /// revolve, or groove refused for its sketch (no profile, several regions, an axis
     /// across it) has one error, naming it, whose elements are the sketch's at fault; the
-    /// sketch, solved, has none (design S3, S5, S6).
+    /// sketch, solved, has none (design S3, S5, S6). But a kernel fault met describing the
+    /// solid a face sketch's face is on, which names no feature: kept as met, so it's
+    /// worded as the solid's read words it, and a read names the sketch it stopped
+    /// (`elements::worded_of`).
     pub fn errors(&self) -> impl Iterator<Item = &Error> {
         self.features
             .iter()
@@ -2195,7 +2199,7 @@ enum OnFace {
     /// On a face whose solid isn't built yet: resolved in a later round.
     Waits,
     /// On a face resolved: its frame, or why it has none.
-    Placed(crate::face_plane::Placed),
+    Placed(Placed),
 }
 
 /// What a sweep feature's plan came to.
@@ -2410,7 +2414,7 @@ impl Planned {
     fn plane(&self, plane: &crate::document::Plane) -> Option<silico_protocol::SketchPlane> {
         match (&self.on_face, plane.origin()) {
             (OnFace::No, Some(origin)) => Some(origin.into()),
-            (OnFace::Placed(crate::face_plane::Placed::Frame(frame)), None) => {
+            (OnFace::Placed(Placed::Frame(frame)), None) => {
                 Some(silico_protocol::SketchPlane::Face(*frame))
             }
             _ => None,
@@ -2478,7 +2482,7 @@ impl Plan {
     fn of(
         document: &Arc<Checked>,
         swept: &BTreeMap<FeatureId, Swept>,
-        frames: &BTreeMap<FeatureId, crate::face_plane::Placed>,
+        frames: &BTreeMap<FeatureId, Placed>,
     ) -> Plan {
         let features = &document.document().features;
         let place = |id: &FeatureId| document.place(id);
@@ -3312,7 +3316,7 @@ impl<K: Kernel + 'static> Engine<K> {
             known: &known,
         };
         let mut solutions: SketchResults = BTreeMap::new();
-        let mut frames: BTreeMap<FeatureId, crate::face_plane::Placed> = BTreeMap::new();
+        let mut frames: BTreeMap<FeatureId, Placed> = BTreeMap::new();
         let mut carried = Carried::default();
         let (model, keys) = loop {
             let round = carried.round;
@@ -3349,7 +3353,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 frames.extend(
                     waiting
                         .into_iter()
-                        .map(|(id, on)| (id, crate::face_plane::Placed::Blocked(on))),
+                        .map(|(id, on)| (id, Placed::Blocked(on))),
                 );
             } else {
                 break (model, keys);
@@ -4403,19 +4407,130 @@ fn map<T, U>(outcome: Outcome<T>, f: impl FnOnce(T) -> U) -> Outcome<U> {
 /// wait, each with the feature whose solid it waits for, by sketch.
 #[derive(Default)]
 struct Faces {
-    placed: BTreeMap<FeatureId, crate::face_plane::Placed>,
+    placed: BTreeMap<FeatureId, Placed>,
     waiting: BTreeMap<FeatureId, FeatureId>,
 }
 
 /// What the round's `model` finds of the face of each sketch on a face that `plan` has
-/// waiting (docs/ports/attacher.md, *Where the face is looked for*). Its face is looked for
-/// in the solids live at its place in the timeline, those made by features before it,
-/// unsuppressed, and consumed by none before it (a suppressed feature's base passed through,
-/// `document::suppression::consumed`): M4.1 section 5's rule for `add_feature`. Only those
-/// built from one of its name's makers can hold it, so only they're searched, waited for,
-/// or block it; the rest are read for a broken name's candidates. A sketch placed on a
-/// frame whose profile (in `swept`) would reach past a kilometre there is refused
-/// ([`beyond_reach`](crate::face_plane::beyond_reach)).
+/// waiting (docs/ports/attacher.md, *Where the face is looked for*), each looked for in the
+/// solids live at its place ([`faces_at`]) and placed there (`face_plane::place`). A sketch
+/// placed on a frame whose profile (in `swept`) would reach past a kilometre there is
+/// refused ([`beyond_reach`](crate::face_plane::beyond_reach)).
+fn placed_faces(
+    document: &Checked,
+    plan: &Plan,
+    model: &Model,
+    swept: &BTreeMap<FeatureId, Swept>,
+) -> Faces {
+    use crate::face_plane::Resolved;
+    let mut faces = Faces::default();
+    let waiting = plan
+        .features
+        .iter()
+        .enumerate()
+        .filter(|(_, planned)| matches!(planned.on_face, OnFace::Waits))
+        .map(|(at, _)| at);
+    let maker = |f: &FeatureId| plan.maker(f);
+    let found = faces_at(
+        document,
+        model,
+        &plan.waits,
+        waiting,
+        &maker,
+        |sketch, face, related, others| {
+            crate::face_plane::place(sketch, face, related, others, &maker)
+        },
+    );
+    for (sketch, found) in found {
+        match found {
+            AtPlace::Waits(on) | AtPlace::Found(Resolved::Waits(on)) => {
+                faces.waiting.insert(sketch, on);
+            }
+            AtPlace::Unnamed(solid) => {
+                faces.placed.insert(
+                    sketch.clone(),
+                    Placed::Failed(
+                        silico_bug(&format!(
+                            "{solid}'s solid built, but its elements couldn't be named"
+                        ))
+                        .with_feature(sketch.as_str()),
+                    ),
+                );
+            }
+            AtPlace::Found(Resolved::Placed(Placed::Frame(frame))) => {
+                let placed = match placeable(document, &sketch, frame, swept.get(&sketch)) {
+                    Some(error) => Placed::Failed(error),
+                    None => Placed::Frame(frame),
+                };
+                faces.placed.insert(sketch, placed);
+            }
+            AtPlace::Found(Resolved::Placed(placed)) => {
+                faces.placed.insert(sketch, placed);
+            }
+        }
+    }
+    faces
+}
+
+/// What [`faces_at`] finds at a sketch's place.
+enum AtPlace<R> {
+    /// What was made of the face, from the solids live there.
+    Found(R),
+    /// A link before the sketch of a chain one of its name's makers begins waits, not built
+    /// yet: that link's feature.
+    Waits(FeatureId),
+    /// A solid that could hold the face built, but its elements couldn't be named (a bug's):
+    /// its feature.
+    Unnamed(FeatureId),
+}
+
+/// The default `x` of a sketch on a face, `plane.face` of the sketch at `at` in `document`,
+/// as `add_feature` names it when the request leaves it out (M4.1 section 5; F1): its face
+/// looked for in `model`, as a rebuild looks for it ([`faces_at`]), and the face's
+/// `default_x` taken, or why it can't be (`face_plane::default_x`). `model` is the model of
+/// the document the sketch is added to: every feature before its place is that document's,
+/// unchanged, so the solids live there are as the model has them. None for a feature at
+/// `at` that isn't a sketch on a face.
+pub(crate) fn default_x(document: &Checked, model: &Model, at: usize) -> Option<Defaulted> {
+    let maker = |f: &FeatureId| {
+        document
+            .feature(f)
+            .ok()
+            .map(|feature| Maker::of(&feature.operation))
+    };
+    let found = faces_at(
+        document,
+        model,
+        &BTreeSet::new(),
+        [at],
+        &maker,
+        |sketch, face, related, others| {
+            crate::face_plane::default_x(sketch, &face.face, related, others, &maker)
+        },
+    );
+    let (sketch, found) = found.into_iter().next()?;
+    Some(match found {
+        AtPlace::Found(defaulted) => defaulted,
+        AtPlace::Waits(on) => Defaulted::Waits(on),
+        AtPlace::Unnamed(solid) => Defaulted::Refused(Placed::Failed(
+            silico_bug(&format!(
+                "{solid}'s solid built, but its elements couldn't be named"
+            ))
+            .with_feature(sketch.as_str()),
+        )),
+    })
+}
+
+/// What `resolve` makes of the face of each sketch on a face at the places `sketches` (in
+/// timeline order) of `document`, each looked for in the solids live at its place in the
+/// timeline (docs/ports/attacher.md, *Where the face is looked for*), as `model` has them:
+/// those made by features before it, unsuppressed, and consumed by none before it (a
+/// suppressed feature's base passed through, `document::suppression::consumed`): M4.1
+/// section 5's rule for `add_feature`. Only those built from one of its name's makers can
+/// hold it, so only they're `resolve`'s `related` solids, waited for, or block it; the
+/// rest, `others`, are read for a broken name's candidates. A feature in `waits` (by place)
+/// isn't built yet, so its solid waits. By sketch, in order; a place that isn't a sketch on
+/// a face is passed over.
 ///
 /// Linear in the timeline each round, however many sketches wait: each solid has at most
 /// one consumer (the gate's consumed-solid rule), so what's made from a maker is one chain
@@ -4424,21 +4539,24 @@ struct Faces {
 /// waits (every link after it waits too: each uses the one before), and each feature's
 /// inputs are read once a round; the solids live at each sketch's place are kept as the
 /// timeline is walked, for a broken name's candidates.
-fn placed_faces(
+fn faces_at<'m, R>(
     document: &Checked,
-    plan: &Plan,
-    model: &Model,
-    swept: &BTreeMap<FeatureId, Swept>,
-) -> Faces {
-    use crate::face_plane::{Live, Placed, Resolved};
+    model: &'m Model,
+    waits: &BTreeSet<usize>,
+    sketches: impl IntoIterator<Item = usize>,
+    maker: &dyn Fn(&FeatureId) -> Option<Maker>,
+    mut resolve: impl FnMut(
+        &FeatureId,
+        &crate::document::FacePlane,
+        &[Live<'m>],
+        &dyn Fn() -> Vec<Live<'m>>,
+    ) -> R,
+) -> Vec<(FeatureId, AtPlace<R>)> {
     let features = &document.document().features;
-    let mut faces = Faces::default();
-    if !plan
-        .features
-        .iter()
-        .any(|planned| matches!(planned.on_face, OnFace::Waits))
-    {
-        return faces;
+    let mut found = Vec::new();
+    let mut sketches = sketches.into_iter().peekable();
+    if sketches.peek().is_none() {
+        return found;
     }
     // Once a round: what stands for each feature's solid, and each solid's consumer (by
     // place, through what stands for each input), with the solids each feature consumes:
@@ -4467,8 +4585,8 @@ fn placed_faces(
         }
     }
     // The feature `j`'s solid as the round has it.
-    let live = |j: usize, feature: &crate::document::Feature| -> Option<Result<Live<'_>, ()>> {
-        if plan.waits.contains(&j) {
+    let live = |j: usize, feature: &crate::document::Feature| -> Option<Result<Live<'m>, ()>> {
+        if waits.contains(&j) {
             return Some(Ok(Live::Waits(feature.id.clone())));
         }
         match model.outcome(&feature.id)? {
@@ -4506,7 +4624,7 @@ fn placed_faces(
         let mut at = maker;
         loop {
             face_walked(1);
-            if plan.waits.contains(&at) {
+            if waits.contains(&at) {
                 return (links, true);
             }
             match consumer.get(at).copied().flatten() {
@@ -4522,12 +4640,12 @@ fn placed_faces(
     // suppressed, and consumed by none before it.
     let mut alive: BTreeSet<usize> = BTreeSet::new();
     let mut reached = 0;
-    for (at, planned) in plan.features.iter().enumerate() {
-        if !matches!(planned.on_face, OnFace::Waits) {
+    for at in sketches {
+        let Some(sketch) = features.get(at) else {
             continue;
-        }
-        let face = match features.get(at).map(|f| &f.operation) {
-            Some(Operation::Sketch(sketch)) => sketch.plane.face(),
+        };
+        let face = match &sketch.operation {
+            Operation::Sketch(drawn) => drawn.plane.face(),
             _ => None,
         };
         let Some(face) = face else {
@@ -4547,15 +4665,14 @@ fn placed_faces(
         // The features before it its name's makers, by place; and the solid of each one's
         // chain live here, its last link before the sketch: unless a link before the
         // sketch waits, when it waits for that link's.
-        let makers: BTreeSet<usize> =
-            crate::naming::Name::parse(face.face.as_str(), &|f| plan.maker(f))
-                .map(|name| {
-                    name.features()
-                        .into_iter()
-                        .filter_map(|id| document.place(id).filter(|&p| p < at))
-                        .collect()
-                })
-                .unwrap_or_default();
+        let makers: BTreeSet<usize> = crate::naming::Name::parse(face.face.as_str(), maker)
+            .map(|name| {
+                name.features()
+                    .into_iter()
+                    .filter_map(|id| document.place(id).filter(|&p| p < at))
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut tails: BTreeSet<usize> = BTreeSet::new();
         let mut waits_on = None;
         for maker in makers {
@@ -4574,7 +4691,7 @@ fn placed_faces(
             }
         }
         if let Some(on) = waits_on {
-            faces.waiting.insert(planned.id.clone(), on);
+            found.push((sketch.id.clone(), AtPlace::Waits(on)));
             continue;
         }
         let mut related = Vec::new();
@@ -4586,22 +4703,14 @@ fn placed_faces(
             match live(j, feature) {
                 Some(Ok(solid)) => related.push(solid),
                 Some(Err(())) => {
-                    unnamed = Some(&feature.id);
+                    unnamed = Some(feature.id.clone());
                     break;
                 }
                 None => {}
             }
         }
         if let Some(solid) = unnamed {
-            faces.placed.insert(
-                planned.id.clone(),
-                Placed::Failed(
-                    silico_bug(&format!(
-                        "{solid}'s solid built, but its elements couldn't be named"
-                    ))
-                    .with_feature(planned.id.as_str()),
-                ),
-            );
+            found.push((sketch.id.clone(), AtPlace::Unnamed(solid)));
             continue;
         }
         // The rest of the live solids, read only for a broken name's candidates (a solid
@@ -4613,23 +4722,10 @@ fn placed_faces(
                 .filter_map(|&j| live(j, features.get(j)?)?.ok())
                 .collect()
         };
-        match crate::face_plane::place(&planned.id, face, &related, &others, &|f| plan.maker(f)) {
-            Resolved::Placed(Placed::Frame(frame)) => {
-                let placed = match placeable(document, &planned.id, frame, swept.get(&planned.id)) {
-                    Some(error) => Placed::Failed(error),
-                    None => Placed::Frame(frame),
-                };
-                faces.placed.insert(planned.id.clone(), placed);
-            }
-            Resolved::Placed(placed) => {
-                faces.placed.insert(planned.id.clone(), placed);
-            }
-            Resolved::Waits(on) => {
-                faces.waiting.insert(planned.id.clone(), on);
-            }
-        }
+        let made = resolve(&sketch.id, face, &related, &others);
+        found.push((sketch.id.clone(), AtPlace::Found(made)));
     }
-    faces
+    found
 }
 
 #[cfg(test)]
@@ -4751,7 +4847,6 @@ fn model(
                 }
                 // A sketch on a face is placed before it's solved, as FreeCAD attaches it
                 // before its solve: a face that couldn't be resolved is its outcome.
-                use crate::face_plane::Placed;
                 match (&planned.on_face, solved) {
                     (OnFace::Placed(Placed::Broken(error)), _) => FeatureOutcome::Broken {
                         errors: vec![error.clone()],
@@ -4835,9 +4930,7 @@ fn model(
         .features
         .iter()
         .filter_map(|planned| match &planned.on_face {
-            OnFace::Placed(crate::face_plane::Placed::Frame(frame)) => {
-                Some((planned.id.clone(), *frame))
-            }
+            OnFace::Placed(Placed::Frame(frame)) => Some((planned.id.clone(), *frame)),
             OnFace::No | OnFace::Waits | OnFace::Placed(_) => None,
         })
         .collect();

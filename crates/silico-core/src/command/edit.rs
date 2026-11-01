@@ -22,20 +22,23 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use super::elements::{worded, worded_of};
 use super::{ExtendBy, Gated, NewMembers, Problems};
 use crate::document::chain::{self, Rewired};
 use crate::document::json::{self, Member, Node, Plain, Value};
 use crate::document::suppression;
 use crate::document::undo::Prepared;
 use crate::document::{
-    self, Checked, Document, ElementId, ElementKind, Feature, FeatureId, FeatureVersion,
+    self, AxisToken, Checked, Document, ElementId, ElementKind, Feature, FeatureId, FeatureVersion,
     ID_ALPHABET, ID_LENGTH, NamingScheme, Operation, PROBLEMS_LISTED, Reference, Sketch,
     sketch_edit,
 };
 use crate::drag::DragStop;
 use crate::extend;
+use crate::face_plane::{Defaulted, Placed};
 use crate::naming::{Maker, Name};
-use crate::references::CANDIDATES;
+use crate::recompute::Model;
+use crate::references::{CANDIDATES, cut_short};
 use crate::sketch::SketchSolver;
 use crate::{Error, ErrorCode};
 
@@ -326,6 +329,9 @@ fn resolve(feature: &Feature, tree: &Node, field: &str) -> Result<Target, Error>
         return Err(missing());
     }
     let segments: Vec<&str> = field.split('.').collect();
+    if let Some(refused) = origin_plane_member(feature, &segments) {
+        return Err(refused);
+    }
     let Value::Object(members) = &tree.value else {
         return Err(missing());
     };
@@ -390,6 +396,34 @@ fn resolve(feature: &Feature, tree: &Node, field: &str) -> Result<Target, Error>
         }
     }
     Ok(Target { steps, sketched })
+}
+
+/// The refusal of a path into a face plane's members (`plane.face`, `plane.x`,
+/// `plane.reversed`) of `feature`, a sketch on an origin plane, which has none of them:
+/// naming the field, and saying to set `plane` whole. None for any other path or feature.
+fn origin_plane_member(feature: &Feature, segments: &[&str]) -> Option<Error> {
+    let Operation::Sketch(sketch) = &feature.operation else {
+        return None;
+    };
+    let origin = sketch.plane.origin()?;
+    let ["plane", member @ ("face" | "x" | "reversed")] = segments else {
+        return None;
+    };
+    Some(
+        Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "plane.{member} is a face plane's, and sketch {} is on the origin plane {}, which has none",
+                feature.id,
+                origin.as_str()
+            ),
+        )
+        .with_feature(feature.id.as_str())
+        .with_parameter("field")
+        .with_suggestion(
+            r#"set plane whole: to a face plane, {"face": "<its name>", "x": "+x", "reversed": false}, or to xy, xz, or yz"#,
+        ),
+    )
 }
 
 /// The place in `items`, the tree's list of `kind`'s members of `sketch` (the sketch
@@ -888,6 +922,181 @@ fn new_feature(
             }
         })
         .map_err(Problems::from)
+}
+
+/// The path to a face plane's face, which a refusal of the face's default `x` names
+/// ([`with_default_x`]): the document's, as the gate's refusals of it and the rebuild's name
+/// it, with the new sketch's ID as the feature.
+const FACE_PATH: &str = "plane.face";
+
+/// Whether `feature`, an `add_feature` request's feature, is a sketch on a face whose plane
+/// leaves out its `x`, or gives it as `null`, which is the same (M4.1 section 5: the core
+/// names the face's `default_x`, F1; the document always holds `x`, so the reader never
+/// takes a plane without one). If so, its `x` is given meanwhile as `+x`, any token, so the
+/// rest of the feature is read and put through the gate as it will be, which no token
+/// changes: [`with_default_x`] then puts the face's own in its place. Only a sketch has a
+/// `plane`, so the reader refuses one of any other feature, `x` or none.
+pub(super) fn leaves_out_x(feature: &mut Node) -> bool {
+    let Value::Object(members) = &mut feature.value else {
+        return false;
+    };
+    let Some(Value::Object(plane)) = members
+        .iter_mut()
+        .find(|m| m.key == "plane")
+        .map(|m| &mut m.value.value)
+    else {
+        return false;
+    };
+    let meanwhile = || Node {
+        at: json::At::UNPLACED,
+        value: Value::String(AxisToken::PlusX.word().to_owned()),
+    };
+    match plane.iter_mut().find(|m| m.key == "x") {
+        Some(given) if given.value.value == Value::Null => {
+            given.value = meanwhile();
+            true
+        }
+        Some(_) => false,
+        // Read by key, so at its end: the document writes the plane in its own order.
+        None => {
+            plane.push(Member {
+                key: "x".to_owned(),
+                at: json::At::UNPLACED,
+                value: meanwhile(),
+            });
+            true
+        }
+    }
+}
+
+/// `inserted`, a sketch on a face added with its `x` left out ([`leaves_out_x`]), given the
+/// face's default (M4.1 section 5; F1): its face looked for in `model`, the model of the
+/// document it was added to, in the solids live at its place in the timeline, by the rule
+/// and the code a rebuild places it by (`recompute::default_x`), and its `x` written as the
+/// face's `default_x`, as `elements` reports it. Refused, the edit not made, in the words a
+/// rebuild would refuse the sketch's face in, naming the new sketch and `plane.face`, as the
+/// gate's refusals of the face do: a name that finds nothing, finds an element by an
+/// unstable name or one that isn't a face, or a face OCCT doesn't type as a plane, as
+/// `reference_broken` with candidates; a face whose solid didn't build, saying which feature
+/// it's blocked on (or with the kernel's fault itself, if one stopped it, as every read of a
+/// solid refuses one); and a solid that couldn't be described, with why.
+pub(super) fn with_default_x(inserted: Inserted, model: &Model) -> Result<Inserted, Problems> {
+    let Inserted {
+        index,
+        rewired,
+        candidate: trial,
+        ..
+    } = inserted;
+    let Gated::Checked(checked) = trial.gated() else {
+        return Err(bug("a feature added through the gate isn't in a checked document").into());
+    };
+    let face = match checked.document().features.get(index).map(|f| &f.operation) {
+        Some(Operation::Sketch(sketch)) => sketch.plane.face().map(|plane| plane.face.clone()),
+        _ => None,
+    };
+    let Some(face) = face else {
+        return Err(
+            bug("the sketch added for its face's default x isn't a sketch on a face").into(),
+        );
+    };
+    let token = match crate::recompute::default_x(checked, model, index) {
+        Some(Defaulted::X(token)) => token,
+        Some(Defaulted::Refused(placed)) => {
+            let sketch = sketch_id(checked, index)?;
+            return Err(no_default(placed, model, &sketch, face.as_str()));
+        }
+        // Worded as the solid's own read words it, then on the new sketch, as the
+        // rebuild puts it.
+        Some(Defaulted::Undescribed(error)) => {
+            let sketch = sketch_id(checked, index)?;
+            return Err(worded_of(&error, &sketch).into());
+        }
+        Some(Defaulted::Waits(on)) => {
+            return Err(bug(&format!(
+                "the face's default x waits for {on}'s solid in a model already published"
+            ))
+            .into());
+        }
+        None => {
+            return Err(bug("the sketch added for its face's default x wasn't looked at").into());
+        }
+    };
+    let mut document = checked.document().clone();
+    if let Some(Operation::Sketch(sketch)) = document
+        .features
+        .get_mut(index)
+        .map(|feature| &mut feature.operation)
+        && let document::Plane::Face(plane) = &mut sketch.plane
+    {
+        plane.x = token;
+    }
+    let candidate = candidate(&document, "feature")?;
+    let feature = candidate
+        .gated
+        .document()
+        .ok()
+        .and_then(|document| document.features.get(index))
+        .cloned()
+        .ok_or_else(|| Problems::from(bug("the feature added isn't in the document")))?;
+    Ok(Inserted {
+        feature,
+        index,
+        rewired,
+        candidate,
+    })
+}
+
+/// The ID of the feature at `index` of `checked`: the sketch added.
+fn sketch_id(checked: &Checked, index: usize) -> Result<FeatureId, Problems> {
+    checked
+        .document()
+        .features
+        .get(index)
+        .map(|f| f.id.clone())
+        .ok_or_else(|| Problems::from(bug("the sketch added isn't in the document")))
+}
+
+/// The refusal of the sketch `sketch`'s face's default `x` where a rebuild would place the
+/// sketch so (`placed`, never a frame), its face `face`, in `model`: as [`with_default_x`]
+/// says.
+fn no_default(placed: Placed, model: &Model, sketch: &FeatureId, face: &str) -> Problems {
+    match placed {
+        Placed::Broken(error) => error.into(),
+        Placed::Failed(error) => worded(&error).into(),
+        Placed::Blocked(root) => {
+            // Stopped by a kernel fault, which isn't the document's: refused with the fault
+            // itself, naming the root whose outcome holds it, as a read of the solid is
+            // (`elements`).
+            if let Some(fault) = model.outcome(&root).and_then(|outcome| {
+                outcome
+                    .errors()
+                    .iter()
+                    .find(|error| error.code().is_kernel_fault())
+            }) {
+                return worded_of(fault, &root).into();
+            }
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "plane.face, {}, is looked for in a solid that didn't build, blocked on {root}, so the face's default x isn't known",
+                    json::shown(face)
+                ),
+            )
+            .with_feature(sketch.as_str())
+            .with_parameter(FACE_PATH)
+            .with_element(cut_short(face))
+            .with_suggestion(format!(
+                "mend {root} first (`check` says why it failed), or give plane.x to add the sketch all the same"
+            ))
+            .into()
+        }
+        Placed::Frame(_) => bug("a face's default x was refused with a frame").into(),
+    }
+}
+
+/// An error that's a bug in Silico's.
+fn bug(message: &str) -> Error {
+    Error::new(ErrorCode::Internal, message).with_suggestion(crate::worker::SILICO_BUG)
 }
 
 /// `added`, carrying the fingerprint the document a transaction began from (`begun`) stored

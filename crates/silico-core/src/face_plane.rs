@@ -11,7 +11,7 @@ use silico_protocol::{
     FaceFrame, FaceFrameError, MIN_AXIS_OFF_NORMAL, NORMAL_LENGTH_TOLERANCE, Surface,
 };
 
-use crate::document::{AxisToken, FacePlane, FeatureId};
+use crate::document::{AxisToken, ElementName, FacePlane, FeatureId};
 use crate::kernel::{Description, ElementKind};
 use crate::naming::{ElementMap, Maker, Name};
 use crate::references::{CANDIDATES, Candidates, Lookup, cut_short, look_up, refused};
@@ -112,6 +112,53 @@ pub(crate) fn place<'a>(
     }
 }
 
+/// What the face of a sketch added without its `x` gives it (M4.1 section 5's
+/// `add_feature`; [`default_x`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Defaulted {
+    /// The face's default token (F1), as `elements` reports it as its `default_x`.
+    X(AxisToken),
+    /// Why there's none: the face's name is broken, or its solid failed or was blocked, as a
+    /// rebuild would place the sketch ([`Placed`], never a frame).
+    Refused(Placed),
+    /// The solid that holds it couldn't be described: why, as met, naming no sketch (a
+    /// kernel fault is worded as it was met, then put on the sketch).
+    Undescribed(Error),
+    /// A solid that could hold it isn't built yet, the feature named.
+    Waits(FeatureId),
+}
+
+/// The default `x` (F1) of the sketch `sketch` on the face `face`, found among the solids
+/// live at its place as [`place`] finds it, by the same rule and in the same words: the
+/// token `AxisToken::default_x` gives the face's normal, as `elements` reports it.
+pub(crate) fn default_x<'a>(
+    sketch: &FeatureId,
+    face: &ElementName,
+    related: &[Live<'a>],
+    others: &dyn Fn() -> Vec<Live<'a>>,
+    makers: &dyn Fn(&FeatureId) -> Option<Maker>,
+) -> Defaulted {
+    match found_face(sketch, face.as_str(), related, others, makers) {
+        Ok(Found::Plane { normal, .. }) => Defaulted::X(AxisToken::default_x(normal)),
+        Ok(Found::Not(placed)) => Defaulted::Refused(placed),
+        Ok(Found::Undescribed(error)) => Defaulted::Undescribed(error),
+        Err(on) => Defaulted::Waits(on),
+    }
+}
+
+/// What a sketch's face is found to be among the solids live at its place ([`found_face`]).
+enum Found {
+    /// A face OCCT types a plane: its unit normal, out of its solid, and a point on it.
+    Plane {
+        normal: [f64; 3],
+        location: [f64; 3],
+    },
+    /// Not found, or not a face a sketch can sit on: why, as the sketch's placing.
+    Not(Placed),
+    /// Found in a solid that couldn't be described: why, as the solid's own read has it.
+    Undescribed(Error),
+}
+
 /// [`place`]'s finding: placed, or the feature whose solid it waits for.
 fn placed<'a>(
     sketch: &FeatureId,
@@ -121,100 +168,12 @@ fn placed<'a>(
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
 ) -> Result<Placed, FeatureId> {
     let text = plane.face.as_str();
-    let broken = |why: &str, candidates: Vec<String>| {
-        Placed::Broken(
-            refused("plane.face", text, why, ElementKind::Face, candidates)
-                .with_feature(sketch.as_str()),
-        )
-    };
-    let solids = built(related);
-    let maps: Vec<&ElementMap> = solids.iter().map(|(map, _)| *map).collect();
-    // A broken name's candidates are read from every live solid, so its refusal waits until
-    // each has settled: the same candidates whichever round it comes in (docs/ports/
-    // attacher.md, *In rounds*).
-    let refusal = |why: &str, name: &Name| -> Result<Placed, FeatureId> {
-        let others = others();
-        if let Some(on) = waiting(&others) {
-            return Err(on);
-        }
-        let every: Vec<&ElementMap> = maps
-            .iter()
-            .copied()
-            .chain(built(&others).into_iter().map(|(map, _)| map))
-            .collect();
-        Ok(broken(
-            why,
-            Candidates::of(&every, ElementKind::Face).of_name(name),
-        ))
-    };
-    // Read as a fillet's edge is (`references::look_up`): only the related solids built can
-    // hold it.
-    let (description, element, name) = match look_up(text, ElementKind::Face, &maps, makers) {
-        Lookup::Found { map, element, name } => match solids.get(map) {
-            Some((_, description)) => (*description, element, name),
-            None => {
-                return Ok(Placed::Failed(
-                    silico_bug("a face was found in a solid that isn't among those searched")
-                        .with_feature(sketch.as_str()),
-                ));
-            }
-        },
-        // The gate refuses a face that isn't a name: not reached from a checked document.
-        Lookup::Refused { why, name: None } => return Ok(broken(&why, Vec::new())),
-        // Found, by an unstable name or as another kind of element.
-        Lookup::Refused {
-            why,
-            name: Some(name),
-        } => return refusal(&why, &name),
-        Lookup::Missing { name, retyped } => {
-            // Not in any related solid built: one not built yet may hold it, or one that
-            // failed.
-            if let Some(on) = waiting(related) {
-                return Err(on);
-            }
-            if let Some(root) = related.iter().find_map(|solid| match solid {
-                Live::Failed(root) => Some(root.clone()),
-                Live::Built { .. } | Live::Waits(_) => None,
-            }) {
-                return Ok(Placed::Blocked(root));
-            }
-            let why = retyped.unwrap_or_else(|| {
-                "names no face of the solids live at the sketch's place: it isn't one of the \
-                 faces they're made from, or an edit before this sketch removed or remade it"
-                    .to_owned()
-            });
-            return refusal(&why, &name);
-        }
-    };
-    let description = match description {
-        Ok(description) => *description,
-        Err(error) => return Ok(Placed::Failed(error.clone().with_feature(sketch.as_str()))),
-    };
-    let face = element
-        .index
-        .checked_sub(1)
-        .and_then(|i| description.faces.get(i as usize));
-    let Some(face) = face else {
-        return Ok(Placed::Failed(
-            silico_bug("a face's name found it in a solid whose description hasn't it")
-                .with_feature(sketch.as_str())
-                .with_elements([cut_short(text)]),
-        ));
-    };
-    let Surface::Plane { normal, location } = face.surface else {
-        // Its candidates are read from every live solid, so the refusal waits until each
-        // has settled: the same candidates, whichever round it comes in.
-        let others = others();
-        if let Some(on) = waiting(&others) {
-            return Err(on);
-        }
-        let what = crate::elements::surface_type(&face.surface).word();
-        return Ok(broken(
-            &format!(
-                "names a face that isn't planar: OCCT types its surface a {what}, and a sketch sits only on a face typed a plane"
-            ),
-            planar_faces(&name, related, &others),
-        ));
+    let (normal, location) = match found_face(sketch, text, related, others, makers)? {
+        Found::Plane { normal, location } => (normal, location),
+        Found::Not(placed) => return Ok(placed),
+        // As met: describing the solid, which names no feature of its own. A read of the
+        // sketch names it, the feature the fault stopped (`elements::worded_of`).
+        Found::Undescribed(error) => return Ok(Placed::Failed(error)),
     };
     Ok(match frame(normal, location, plane.x, plane.reversed) {
         Ok(frame) => Placed::Frame(frame),
@@ -248,6 +207,115 @@ fn placed<'a>(
             ),
         ),
     })
+}
+
+/// The face `text` names of the sketch `sketch`, among the solids live at its place
+/// (`related`, those that can hold it, and `others`, read for a broken name's candidates),
+/// as [`place`] says: a face OCCT types a plane, or why it's none a sketch can sit on; or
+/// the feature whose solid it waits for.
+fn found_face<'a>(
+    sketch: &FeatureId,
+    text: &str,
+    related: &[Live<'a>],
+    others: &dyn Fn() -> Vec<Live<'a>>,
+    makers: &dyn Fn(&FeatureId) -> Option<Maker>,
+) -> Result<Found, FeatureId> {
+    let broken = |why: &str, candidates: Vec<String>| {
+        Found::Not(Placed::Broken(
+            refused("plane.face", text, why, ElementKind::Face, candidates)
+                .with_feature(sketch.as_str()),
+        ))
+    };
+    let solids = built(related);
+    let maps: Vec<&ElementMap> = solids.iter().map(|(map, _)| *map).collect();
+    // A broken name's candidates are read from every live solid, so its refusal waits until
+    // each has settled: the same candidates whichever round it comes in (docs/ports/
+    // attacher.md, *In rounds*).
+    let refusal = |why: &str, name: &Name| -> Result<Found, FeatureId> {
+        let others = others();
+        if let Some(on) = waiting(&others) {
+            return Err(on);
+        }
+        let every: Vec<&ElementMap> = maps
+            .iter()
+            .copied()
+            .chain(built(&others).into_iter().map(|(map, _)| map))
+            .collect();
+        Ok(broken(
+            why,
+            Candidates::of(&every, ElementKind::Face).of_name(name),
+        ))
+    };
+    // Read as a fillet's edge is (`references::look_up`): only the related solids built can
+    // hold it.
+    let (description, element, name) = match look_up(text, ElementKind::Face, &maps, makers) {
+        Lookup::Found { map, element, name } => match solids.get(map) {
+            Some((_, description)) => (*description, element, name),
+            None => {
+                return Ok(Found::Not(Placed::Failed(
+                    silico_bug("a face was found in a solid that isn't among those searched")
+                        .with_feature(sketch.as_str()),
+                )));
+            }
+        },
+        // The gate refuses a face that isn't a name: not reached from a checked document.
+        Lookup::Refused { why, name: None } => return Ok(broken(&why, Vec::new())),
+        // Found, by an unstable name or as another kind of element.
+        Lookup::Refused {
+            why,
+            name: Some(name),
+        } => return refusal(&why, &name),
+        Lookup::Missing { name, retyped } => {
+            // Not in any related solid built: one not built yet may hold it, or one that
+            // failed.
+            if let Some(on) = waiting(related) {
+                return Err(on);
+            }
+            if let Some(root) = related.iter().find_map(|solid| match solid {
+                Live::Failed(root) => Some(root.clone()),
+                Live::Built { .. } | Live::Waits(_) => None,
+            }) {
+                return Ok(Found::Not(Placed::Blocked(root)));
+            }
+            let why = retyped.unwrap_or_else(|| {
+                "names no face of the solids live at the sketch's place: it isn't one of the \
+                 faces they're made from, or an edit before this sketch removed or remade it"
+                    .to_owned()
+            });
+            return refusal(&why, &name);
+        }
+    };
+    let description = match description {
+        Ok(description) => *description,
+        Err(error) => return Ok(Found::Undescribed(error.clone())),
+    };
+    let face = element
+        .index
+        .checked_sub(1)
+        .and_then(|i| description.faces.get(i as usize));
+    let Some(face) = face else {
+        return Ok(Found::Not(Placed::Failed(
+            silico_bug("a face's name found it in a solid whose description hasn't it")
+                .with_feature(sketch.as_str())
+                .with_elements([cut_short(text)]),
+        )));
+    };
+    let Surface::Plane { normal, location } = face.surface else {
+        // Its candidates are read from every live solid, so the refusal waits until each
+        // has settled: the same candidates, whichever round it comes in.
+        let others = others();
+        if let Some(on) = waiting(&others) {
+            return Err(on);
+        }
+        let what = crate::elements::surface_type(&face.surface).word();
+        return Ok(broken(
+            &format!(
+                "names a face that isn't planar: OCCT types its surface a {what}, and a sketch sits only on a face typed a plane"
+            ),
+            planar_faces(&name, related, &others),
+        ));
+    };
+    Ok(Found::Plane { normal, location })
 }
 
 /// Whether `normal` is a unit vector to [`NORMAL_LENGTH_TOLERANCE`], as `describe` gives a
@@ -996,8 +1064,13 @@ mod tests {
         let Resolved::Placed(Placed::Failed(e)) = placed else {
             panic!("{placed:?}");
         };
-        assert_eq!(e.code(), ErrorCode::WorkerCrashed);
-        assert_eq!(e.feature(), Some("s0000001"));
+        // As met, describing the box: it names no feature, so it's worded as the box's read
+        // words it, and a read of the sketch then names the sketch (`elements::worded_of`).
+        assert_eq!(
+            e,
+            Error::new(ErrorCode::WorkerCrashed, "the worker crashed")
+        );
+        assert_eq!(e.feature(), None);
     }
 
     #[test]
