@@ -2088,7 +2088,7 @@ fn lines_that_only_meet_keep_the_quadrant_rule_opposite() {
     //   (-4.2, -1.71), 200°, opposite: `{line, x_axis, 315}`.
     let a = || with_line(empty(), "n000000a", [10.0, 10.0], [30.0, 10.0]);
     let x_axis = Reference::XAxis;
-    let cases: Vec<(Sketch, [[f64; 2]; 2], [f64; 2], Form)> = vec![
+    let cases = vec![
         (
             with_line(a(), "n000000b", [30.0, 20.0], [20.0, 10.0]),
             [[14.0, 10.0], [25.0, 15.0]],
