@@ -2334,13 +2334,106 @@ fn an_offer_holds_the_tool_until_its_dismissed() {
     assert_eq!(d.messages, vec![Message::OfferOpen]);
     assert_eq!(d.modify(), None);
     assert!(d.tool.busy());
+    let open = d.tool.open_offer().unwrap();
+    assert_eq!(open.constraint, k);
+    assert_eq!(open.state, ConstraintState::Conflicting);
     // A later read changes nothing: the offer holds until it's answered.
     d.revision = d.revision.next().unwrap();
     d.click(30.0, 30.0);
     assert_eq!(d.messages, vec![Message::OfferOpen, Message::OfferOpen]);
     d.tool.dismiss_offer();
+    assert_eq!(d.tool.open_offer(), None);
     d.click(30.0, 30.0);
     assert_eq!(d.modify().as_deref(), Some("14.142136"));
+}
+
+#[test]
+fn an_offer_whose_dimension_a_later_read_no_longer_holds_is_released() {
+    // Round 4, item 2: offered, then undone (a later read without it): the offer is moot,
+    // so it's released, and the next dimension is placed.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    let k = d.tool.placement().unwrap().constraint;
+    d.states.state = SketchState::OverDefined;
+    d.states
+        .constraints
+        .insert(k.clone(), ConstraintState::Conflicting);
+    d.to(50.0, 50.0);
+    assert!(d.tool.open_offer().is_some());
+    // A later read still holding it keeps it open.
+    d.revision = d.revision.next().unwrap();
+    d.to(50.0, 50.0);
+    assert!(d.tool.open_offer().is_some());
+    d.revision = d.revision.next().unwrap();
+    d.sketch.constraints.retain(|c| c.id != k);
+    d.states.constraints.clear();
+    d.states.state = SketchState::UnderDefined;
+    d.to(50.0, 50.0);
+    assert_eq!(d.tool.open_offer(), None);
+    assert!(!d.tool.busy());
+    d.click(15.0, 15.0).click(30.0, 30.0);
+    assert_eq!(d.modify().as_deref(), Some("14.142136"));
+}
+
+#[test]
+fn a_placement_knows_the_read_it_was_placed_on() {
+    // Placed on a read of revision 1, its add made revision 2.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    let placement = d.tool.placement().unwrap();
+    assert_eq!(placement.read, Revision::OPENED);
+    assert_eq!(placement.revision, Revision::OPENED.next().unwrap());
+}
+
+#[test]
+fn with_an_edit_between_its_read_and_its_add_a_dimension_is_judged_by_its_own_state() {
+    // Round 4, item 1. Placed on revision 1's read (1000 freedoms, nothing flagged, under
+    // defined); an agent's edit made revision 2, the add revision 3.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
+    let adjacent = d.tool.placement().unwrap();
+    let three = adjacent.revision.next().unwrap();
+    let between = Placement {
+        revision: three,
+        ..adjacent.clone()
+    };
+    let read = |states: &[(&str, ConstraintState)], dofs: i32, of: SketchState| {
+        let mut read = read_with(d.sketch.clone(), states, of);
+        read.states.dofs = dofs;
+        read
+    };
+    // An agent's line came between: 4 freedoms more, the dimension took 1, so 1003, and
+    // nothing's flagged. Compared with the read before, the freedoms didn't drop, which
+    // with nothing between would offer it; with the line between, the dimension is
+    // satisfied: not offered.
+    let line = read(
+        &[("t0000101", ConstraintState::Satisfied)],
+        1003,
+        SketchState::UnderDefined,
+    );
+    assert!(offer(&line, adjacent.revision, &adjacent).is_some());
+    assert_eq!(offer(&line, three, &between), None);
+    // An agent's constraint came between, taking a freedom, and the dimension repeats it:
+    // 999, lower than before, which with nothing between wouldn't count it dependent. Its
+    // own state, redundant, offers it.
+    let constraint = read(
+        &[("t0000101", ConstraintState::Redundant)],
+        999,
+        SketchState::FullyDefined,
+    );
+    assert!(offer(&constraint, three, &between).is_some());
+    // And with the agent's constraint the one flagged, the sketch newly over defined, the
+    // dimension satisfied: not the dimension's doing, not offered.
+    let theirs = read(
+        &[
+            ("t0000101", ConstraintState::Satisfied),
+            ("k0000009", ConstraintState::Conflicting),
+        ],
+        999,
+        SketchState::OverDefined,
+    );
+    assert!(offer(&theirs, adjacent.revision, &adjacent).is_some());
+    assert_eq!(offer(&theirs, three, &between), None);
 }
 
 // --- SD7: the offer ------------------------------------------------------------------
@@ -2400,6 +2493,7 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
             sketch: sketch_id.clone(),
             constraint: k,
             revision: made,
+            read: Revision::OPENED,
             before: SketchState::UnderDefined,
             flagged: BTreeSet::new(),
             dofs: 0,

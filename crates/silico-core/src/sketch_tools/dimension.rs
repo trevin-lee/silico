@@ -48,13 +48,13 @@
 //!   the `sketch` read of the revision the add made, [`offer`] gives SolidWorks' three
 //!   choices if the add flagged a constraint the read before it didn't, left a solved
 //!   sketch's degrees of freedom where they were (a dependent dimension), or took the sketch
-//!   to over defined or to no solution: driven (`set_field` of its `driving` to false), leave
-//!   it, or Cancel (`undo`). SolidWorks prompts for each dimension, so the offer is modal:
-//!   no other dimension is placed, and the tool is [`busy`](SmartDimension::busy), until
-//!   that read has come with no offer, or, with one, until the app dismisses it
-//!   ([`dismiss_offer`](SmartDimension::dismiss_offer), once the person's choice is sent, or
-//!   on Leave). The app gives the tool each read ([`settle`](SmartDimension::settle)), so it
-//!   settles without a pointer event.
+//!   to over defined or to no solution (when nothing came between the two reads; else if the
+//!   dimension itself is flagged): driven (`set_field` of its `driving` to false), leave it,
+//!   or Cancel (`undo`). SolidWorks prompts for each dimension, so the offer is modal: no
+//!   other dimension is placed, and the tool is [`busy`](SmartDimension::busy), until that
+//!   read has come with no offer, or, with one ([`open_offer`](SmartDimension::open_offer)),
+//!   until it's released (see `open_offer`). The app gives the tool each read
+//!   ([`settle`](SmartDimension::settle)), so it settles without a pointer event.
 //!
 //! Adds are tracked as the sketch tools' are ([`super::SketchTool`]): each with a token the
 //! viewport answers with the revision it made, or its refusal.
@@ -128,14 +128,16 @@ pub struct DimensionPreview {
 }
 
 /// A dimension Smart Dimension placed, once the core answered its add: the sketch, the
-/// constraint's ID, the revision the add made, and, of the read it was placed on, the
-/// sketch's state and the constraints it flagged (conflicting, redundant, or partially
-/// redundant), and its degrees of freedom.
+/// constraint's ID, the revision the add made, and, of the read it was placed on, its
+/// revision, the sketch's state and the constraints it flagged (conflicting, redundant, or
+/// partially redundant), and its degrees of freedom.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
     pub sketch: FeatureId,
     pub constraint: ElementId,
     pub revision: Revision,
+    /// The revision of the read it was placed on.
+    pub read: Revision,
     pub before: SketchState,
     pub flagged: BTreeSet<ElementId>,
     /// The read's degrees of freedom.
@@ -175,20 +177,37 @@ struct Modify {
 }
 
 /// The last dimension placed: its add's token, its constraint, the revision the add made
-/// once answered, the sketch's state and its flagged constraints where it was placed, and
-/// whether its offer is settled (a read of its revision has come).
+/// once answered, the read it was placed on (its revision, the sketch's state, its flagged
+/// constraints, its degrees of freedom), and whether its offer is settled (a read of its
+/// revision has come with none) or open.
 #[derive(Debug, Clone)]
 struct Placed {
     token: AddToken,
     constraint: ElementId,
     revision: Option<Revision>,
+    read: Revision,
     before: SketchState,
     flagged: BTreeSet<ElementId>,
     dofs: i32,
     /// Its read has come with no offer: another dimension may be placed.
     settled: bool,
-    /// Its read has come with an offer, which holds the tool until it's dismissed.
-    offered: bool,
+    /// Its read has come with an offer, which holds the tool until it's released.
+    offer: Option<Offer>,
+}
+
+impl Placed {
+    /// As the app reads it, in `sketch`, once its add is answered.
+    fn placement(&self, sketch: &FeatureId) -> Option<Placement> {
+        Some(Placement {
+            sketch: sketch.clone(),
+            constraint: self.constraint.clone(),
+            revision: self.revision?,
+            read: self.read,
+            before: self.before,
+            flagged: self.flagged.clone(),
+            dofs: self.dofs,
+        })
+    }
 }
 
 /// An ID source for a step that places nothing ([`SmartDimension::settle`]).
@@ -359,11 +378,10 @@ impl SmartDimension {
     }
 
     /// Whether something is under way: a pick held, a press down, the Modify box open, or a
-    /// dimension placed that isn't settled: no read of its add's revision yet, or one that
-    /// gave an offer the app hasn't dismissed ([`dismiss_offer`](Self::dismiss_offer)).
-    /// While that lasts no other dimension is placed: the offer is modal, as SolidWorks'
-    /// prompt is, so each dimension's offer is judged against the read it was placed on, and
-    /// each is answered before the next.
+    /// dimension placed that isn't settled: no read of its add's revision yet, or an offer
+    /// open ([`open_offer`](Self::open_offer)). While that lasts no other dimension is
+    /// placed: the offer is modal, as SolidWorks' prompt is, so each dimension's offer is
+    /// judged against the read it was placed on, and each is answered before the next.
     pub fn busy(&self) -> bool {
         !self.picks.is_empty()
             || self.pressed
@@ -404,18 +422,20 @@ impl SmartDimension {
         self.placed = None;
     }
 
+    /// The offer open for the last dimension placed (SD7), which the app shows and which
+    /// holds the tool: one state for both. Made when the tool is given the read of the
+    /// revision the add made, if [`offer`] gives one there. Released by
+    /// [`dismiss_offer`](Self::dismiss_offer), by [`refused`](Self::refused) or
+    /// [`forget_pending`](Self::forget_pending), by a context of another sketch, and by a
+    /// later read that no longer holds the dimension (undone, or removed by another client:
+    /// the offer is moot). Not by a later read that still holds it (another edit, a reload).
+    pub fn open_offer(&self) -> Option<&Offer> {
+        self.placed.as_ref()?.offer.as_ref()
+    }
+
     /// The last dimension placed, once the core has answered its add: for [`offer`].
     pub fn placement(&self) -> Option<Placement> {
-        let sketch = self.adds.sketch()?.clone();
-        let placed = self.placed.as_ref()?;
-        Some(Placement {
-            sketch,
-            constraint: placed.constraint.clone(),
-            revision: placed.revision?,
-            before: placed.before,
-            flagged: placed.flagged.clone(),
-            dofs: placed.dofs,
-        })
+        self.placed.as_ref()?.placement(self.adds.sketch()?)
     }
 
     /// The tool afresh: nothing picked, no box, no lock.
@@ -468,26 +488,34 @@ impl SmartDimension {
             self.placed = None;
             self.restart();
         }
+        // An open offer whose dimension a later read no longer holds is moot.
+        if self.placed.as_ref().is_some_and(|p| {
+            p.offer.is_some()
+                && p.revision.is_some_and(|made| context.revision > made)
+                && !context
+                    .sketch
+                    .constraints
+                    .iter()
+                    .any(|c| c.id == p.constraint)
+        }) {
+            self.placed = None;
+        }
         if let Some(placed) = &mut self.placed
-            && !placed.offered
+            && placed.offer.is_none()
             && let Some(made) = placed.revision
             && context.revision >= made
         {
             // The add's own read decides whether an offer holds the tool; a later one, which
             // can't offer (the moment's past), settles it.
-            let held = context.revision == made && {
-                let placement = Placement {
-                    sketch: context.sketch_id.clone(),
-                    constraint: placed.constraint.clone(),
-                    revision: made,
-                    before: placed.before,
-                    flagged: placed.flagged.clone(),
-                    dofs: placed.dofs,
-                };
-                offer_of(context.sketch_id, context.sketch, states, made, &placement).is_some()
+            let offer = if context.revision == made {
+                placed.placement(context.sketch_id).and_then(|placement| {
+                    offer_of(context.sketch_id, context.sketch, states, made, &placement)
+                })
+            } else {
+                None
             };
-            placed.offered = held;
-            placed.settled = !held;
+            placed.settled = offer.is_none();
+            placed.offer = offer;
         }
         let pending = self.adds.members();
         let view = View::of(context.sketch, &pending);
@@ -530,7 +558,7 @@ impl SmartDimension {
             DimensionEvent::Enter => match self.modify.take() {
                 Some(modify) => {
                     let placed = typed(&modify.form, &modify.text)
-                        .and_then(|form| self.place(&view, ids, form, states));
+                        .and_then(|form| self.place(&view, ids, form, context.revision, states));
                     placed.unwrap_or_else(|message| {
                         self.modify = Some(modify);
                         Outcome::said(message)
@@ -540,7 +568,7 @@ impl SmartDimension {
             },
             DimensionEvent::Escape => match self.modify.take() {
                 Some(modify) => self
-                    .place(&view, ids, modify.form, states)
+                    .place(&view, ids, modify.form, context.revision, states)
                     .unwrap_or_else(Outcome::said),
                 None if self.picks.pop().is_some() => {
                     self.lock = None;
@@ -636,7 +664,7 @@ impl SmartDimension {
         }
         let locked = self.lock == Some(Measure::PointLine);
         match offered(view, &self.picks, at, self.lock, locked) {
-            Ok(_) if self.placed.as_ref().is_some_and(|p| p.offered) => {
+            Ok(_) if self.placed.as_ref().is_some_and(|p| p.offer.is_some()) => {
                 Outcome::said(Message::OfferOpen)
             }
             Ok(_) if self.placed.as_ref().is_some_and(|p| !p.settled) => {
@@ -664,12 +692,14 @@ impl SmartDimension {
     /// its token, and the tool afresh for the next dimension, a centreline it measured from
     /// kept picked; else the gate's words. A problem the gate finds elsewhere (a limit,
     /// another member) is the core's to answer, so the add is made and its refusal comes
-    /// back ([`refused`](Self::refused)). `states` are the read's it's placed on.
+    /// back ([`refused`](Self::refused)). `read` is the revision of the read it's placed on,
+    /// and `states` that read's.
     fn place(
         &mut self,
         view: &View<'_>,
         ids: &mut dyn NewIds,
         form: Form,
+        read: Revision,
         states: &SketchStates,
     ) -> Result<Outcome, Message> {
         let mut builder = Builder::new(ids, view);
@@ -710,11 +740,12 @@ impl SmartDimension {
             token,
             constraint: id,
             revision: None,
+            read,
             before: states.state,
             flagged: flagged(states),
             dofs: states.dofs,
             settled: false,
-            offered: false,
+            offer: None,
         });
         self.restart();
         self.picks.extend(kept);
@@ -1221,15 +1252,19 @@ fn flagged(states: &SketchStates) -> BTreeSet<ElementId> {
 /// So a sketch already over defined, left so, offers each dimension that adds to it, as
 /// SolidWorks prompts for each.
 ///
-/// What's judged is the change between the read the dimension was placed on and the add's,
-/// and two things can be taken for the dimension's doing that aren't:
-/// - another client's edit (an agent's) landing after that read and before the add: its
-///   flags, its state's change, or its degrees of freedom are then counted with the
-///   dimension's. The tool places nothing while its last offer is unsettled, so its own
-///   adds never fall between.
-/// - a value typed that makes the geometry degenerate (circles tangent through a point, for
-///   one) can newly flag a relation that doesn't depend on the dimension: the offer appears,
-///   though Driven doesn't repair the sketch.
+/// Those compare the read the dimension was placed on with the add's, so they hold only
+/// where the add is the one change between them: its revision the next after that read's.
+/// Where another came between (another client's edit, an agent's, landing first), its
+/// flags, freedoms, and state would be taken for the dimension's (an added line raising the
+/// freedoms, an added constraint lowering them), so the dimension is judged by its own state
+/// alone: offered if it's flagged (conflicting, redundant, or partially redundant). The
+/// tool places nothing while its last offer is unsettled, so its own adds never come
+/// between.
+///
+/// One case is taken for the dimension's doing that isn't: a value typed that makes the
+/// geometry degenerate (circles tangent through a point, for one) can newly flag a relation
+/// that doesn't depend on the dimension, and the offer appears, though Driven doesn't repair
+/// the sketch.
 pub fn offer(read: &SketchRead, revision: Revision, placement: &Placement) -> Option<Offer> {
     offer_of(
         &read.sketch,
@@ -1258,12 +1293,17 @@ fn offer_of(
         .and_then(|c| c.form.driving())?;
     let state = *states.constraints.get(&placement.constraint)?;
     let sketch_state = states.state;
-    let newly_flagged = flagged(states)
-        .iter()
-        .any(|id| !placement.flagged.contains(id));
-    let dependent = states.solve_problem.is_none() && states.dofs >= placement.dofs;
-    let newly_prompted = prompted(sketch_state) && !prompted(placement.before);
-    (driving && (newly_flagged || dependent || newly_prompted)).then(|| Offer {
+    let over_defines = if placement.read.next() == Some(placement.revision) {
+        let newly_flagged = flagged(states)
+            .iter()
+            .any(|id| !placement.flagged.contains(id));
+        let dependent = states.solve_problem.is_none() && states.dofs >= placement.dofs;
+        let newly_prompted = prompted(sketch_state) && !prompted(placement.before);
+        newly_flagged || dependent || newly_prompted
+    } else {
+        state.flagged()
+    };
+    (driving && over_defines).then(|| Offer {
         constraint: placement.constraint.clone(),
         state,
         sketch_state,

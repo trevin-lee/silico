@@ -817,10 +817,22 @@ fn each_equal_horizontal_distance_after_the_first_is_offered() {
             .pick(&mut tool, 25.0, 45.0);
         assert_eq!(tool.preview().modify.as_deref(), Some("30"), "{n}");
         f.dimension(&mut tool, DimensionEvent::Escape);
-        let read = f.read();
+        let (read, revision) = f.read_at();
         assert_eq!(read.states.dofs, 3, "{n}");
         let offered = f.offer(&tool);
         assert_eq!(offered.is_some(), n > 0, "{n}: {:?}", read.states);
+        // The tool given the same read holds for the same offer.
+        let sketch = sketch_id();
+        let context = Context {
+            sketch_id: &sketch,
+            revision,
+            sketch: &read.members,
+            tolerance: TOLERANCE,
+            automatic_relations: true,
+        };
+        tool.settle(&context, &read.states);
+        assert_eq!(tool.busy(), n > 0, "{n}");
+        assert_eq!(tool.open_offer().is_some(), n > 0, "{n}");
         tool.dismiss_offer();
     }
 }
