@@ -205,6 +205,9 @@ pub const IN_A_TRANSACTION: &str = "Edit inside a transaction: `begin`, the edit
 pub const READ_CURRENT: &str = "After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.";
 pub const NAMES_FROM_ELEMENTS: &str =
     "Name a face, edge, or vertex only as `elements` or `query` gives it; never make a name up.";
+/// That a part can be made with no file (an untitled one), said in `initialize`'s
+/// instructions and in `open`'s description.
+pub const UNTITLED: &str = "For a part with no file yet, open with `path: null` and `create: true`: an untitled part, nothing on disk, its edits made inside a transaction, and its first `commit` given a path to save it there.";
 
 /// `command`'s title and description, for an agent: every command matched.
 fn words(command: Command) -> (&'static str, String) {
@@ -215,7 +218,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::Open => (
             "Open a document",
-            "Open a document's file as a session, or make a new, empty one (`create: true`, refused if anything is at the path). The path is relative to the workspace and may not lead out of it. Give the session's ID (`s1`, ...) in every later request to it. A document the gate refuses still opens, its problems in the result, so it can be mended with `replace_text`.",
+            "Open a document's file as a session, or make a new, empty one (`create: true`, refused if anything is at the path). The path is relative to the workspace and may not lead out of it. With `path: null` and `create: true`, an untitled part: an empty document with no file, written nowhere until a `commit` inside a transaction gives it a path (Save As), after which the session holds that file; until then an edit outside a transaction, `commit` with `path: null`, `format` writing outside one, and `cache_clear` are refused. Give the session's ID (`s1`, ...) in every later request to it. A document the gate refuses still opens, its problems in the result, so it can be mended with `replace_text`.",
         ),
         Command::Close => (
             "Close a session",

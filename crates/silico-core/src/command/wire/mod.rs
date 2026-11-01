@@ -396,12 +396,13 @@ impl ToWire for ModelChoice {
 }
 
 impl ToWire for SessionInfo {
-    /// Its ID, its path as opened (UTF-8: `open` refuses any other), its revision, and
-    /// whether a transaction is open and its file was read again.
+    /// Its ID, its path as opened (UTF-8: `open` refuses any other; `null` while it's
+    /// untitled), its revision, and whether a transaction is open and its file was read
+    /// again.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
             ("id", self.id.to_wire()),
-            ("path", Json::str(&self.path)),
+            ("path", Json::or_null(self.path.as_deref(), Json::str)),
             ("revision", self.revision.to_wire()),
             ("transaction", Json::bool(self.transaction)),
             ("reloaded", Json::bool(self.reloaded)),
@@ -1686,8 +1687,10 @@ pub struct WarningSchema {
 pub struct SessionSchema {
     /// The session's ID, `s1`, `s2`, ...: give it in each request to the session.
     pub id: String,
-    /// The document's path, as `open` was given it.
-    pub path: String,
+    /// The document's path, as `open` was given it, or, after a Save As, as the `commit`
+    /// was. Null while the session is untitled (opened with `path` null), until a `commit`
+    /// with a path saves it.
+    pub path: Option<String>,
     /// The session's revision: 1 at `open`, and one more for each change to its document.
     #[schemars(range(min = 1))]
     pub revision: u64,

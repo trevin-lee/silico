@@ -35,12 +35,12 @@ use crate::{Error, ErrorCode};
 /// off it, and `status` never waits on a command's work. Changed only as `holding` allows:
 /// by a command once its stop is settled, or by the session's own reload.
 pub(super) struct Held {
-    /// The document's path as `open` was given it.
-    pub(super) path: String,
-    /// The path as its links resolve, where saves and reloads go.
-    pub(super) resolved: PathBuf,
+    /// The document's file: none while the session is untitled (opened with no path), until
+    /// its first save (a Save As) gives it one, which it holds from then on.
+    pub(super) file: Option<HeldFile>,
     /// The file's bytes as the session last read or wrote them: what a save checks the file
-    /// still holds, so one changed outside the session isn't written over.
+    /// still holds, so one changed outside the session isn't written over. An untitled
+    /// session's are the empty document's, as `open` with `create` would have written them.
     pub(super) bytes: Arc<Vec<u8>>,
     /// The document's text: the file's bytes, until an edit.
     pub(super) text: Arc<Vec<u8>>,
@@ -52,14 +52,22 @@ pub(super) struct Held {
     pub(super) carried: Arc<BTreeSet<FeatureId>>,
     /// The transaction open, if one is: what `begin` kept, and its undo stack.
     pub(super) transaction: Option<Open>,
+    /// The newest revision a reload of the file gave (decision 2): an edit made against a
+    /// revision before it is stale because the file changed, which its refusal says.
+    pub(super) last_reload: Option<Revision>,
+}
+
+/// A session's file ([`Held::file`]): its path and where it leads, both there or neither.
+pub(super) struct HeldFile {
+    /// The document's path as `open` was given it (or, after a Save As, the commit).
+    pub(super) path: String,
+    /// The path as its links resolve, where saves and reloads go.
+    pub(super) resolved: PathBuf,
     /// Where the file's old text is, if this session's own save left the file part
     /// written and couldn't put it back: the next save says so, rather than take the file
     /// for one changed outside the session; until the file holds what the session last read
     /// or wrote again, the old text put back ([`Session::reload`]).
     pub(super) part_written: Option<PathBuf>,
-    /// The newest revision a reload of the file gave (decision 2): an edit made against a
-    /// revision before it is stale because the file changed, which its refusal says.
-    pub(super) last_reload: Option<Revision>,
 }
 
 /// A transaction open in a session: what `begin` kept, and its undo stack (docs/design/
@@ -200,8 +208,9 @@ impl Snapshot {
     }
 }
 
-/// A state of the session's document a commit saves ([`Session::save_state`]): the path as
-/// `open` was given it, the text and the gate's finding of it, the revision whose model is
+/// A state of the session's document a commit saves ([`Session::save_state`]): the path its
+/// result names (as `open` was given it; for an untitled session's Save As, as the commit
+/// gives it), the text and the gate's finding of it, the revision whose model is
 /// its model, what was carried before, the state the edits were made from, and how the file
 /// was found before the command, if not as the session last read or wrote it (inside a
 /// transaction, [`Reload::Outside`]).
@@ -265,8 +274,9 @@ impl SaveTo<'_> {
 
     /// Where it writes, through any links, or why it's refused, writing nothing: as
     /// [`rules`](Self::rules) refuse it, if it's the session's own file, `own` (by any path
-    /// to it), which a commit with no path saves, or if another session holds it.
-    fn target(&self, workspace: Option<&Workspace>, own: &Path) -> Result<PathBuf, Error> {
+    /// to it), which a commit with no path saves (none for an untitled session, which has
+    /// none), or if another session holds it.
+    fn target(&self, workspace: Option<&Workspace>, own: Option<&Path>) -> Result<PathBuf, Error> {
         let given = Path::new(&self.given);
         // Whether it's the session's own file is said before whether it's there.
         let target = file::check_output(given, &self.rules(workspace, true, false))?;
@@ -275,10 +285,11 @@ impl SaveTo<'_> {
             a.dev() == b.dev() && a.ino() == b.ino()
         };
         let there = std::fs::metadata(&target);
-        if target == own
-            || there
-                .as_ref()
-                .is_ok_and(|t| std::fs::metadata(own).is_ok_and(|o| same(t, &o)))
+        if let Some(own) = own
+            && (target == own
+                || there
+                    .as_ref()
+                    .is_ok_and(|t| std::fs::metadata(own).is_ok_and(|o| same(t, &o))))
         {
             return Err(Error::new(
                 ErrorCode::InvalidInput,
@@ -328,6 +339,42 @@ fn held_elsewhere(given: &str, holder: SessionId) -> Error {
     .with_suggestion(format!(
         "give another path, or close session {holder} first"
     ))
+}
+
+/// The refusal of a `commit` with no path in session `id`, which is untitled (opened with
+/// no path): it has no file to save to, so it's given one (a Save As).
+fn untitled_commit(id: SessionId) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("session {id} is untitled: it has no file to save to"),
+    )
+    .with_parameter("path")
+    .with_suggestion("give path: where to save it (Save As)")
+}
+
+/// The refusal of what an untitled session `id` would save outside a transaction (an edit,
+/// which is saved as it's made, decision 1; `format` writing): it has no file to save to.
+fn untitled_save(id: SessionId) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("session {id} is untitled: it has no file to save to"),
+    )
+    .with_parameter("session")
+    .with_cause("outside a transaction an edit is saved as it's made")
+    .with_suggestion(
+        "begin a transaction first; its commit, given a path, saves every edit it holds (Save As)",
+    )
+}
+
+/// The refusal of `cache_clear` in session `id`, which is untitled: it keeps no rebuild
+/// cache, having no file for one to be beside.
+pub(super) fn untitled_cache(id: SessionId) -> Error {
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("session {id} is untitled: it has no file, so no rebuild cache beside one"),
+    )
+    .with_parameter("session")
+    .with_suggestion("save it first (commit with a path), then clear the cache beside the file")
 }
 
 /// Whose state a commit saves: an open transaction's, or an edit's candidate, made outside
@@ -853,8 +900,11 @@ impl<C: Kernel + 'static> Session<C> {
         let state = {
             let held = self.held.read();
             let begun = self.transaction(&held)?;
+            let Some(file) = &held.file else {
+                return Err(Problems::from(untitled_commit(self.id)));
+            };
             Saving {
-                path: held.path.clone(),
+                path: file.path.clone(),
                 text: Arc::clone(&held.text),
                 gated: Arc::clone(&held.gated),
                 revision: held.revision,
@@ -879,7 +929,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// through a link out of it, in a `.silico-cache/` directory, a file there and no
     /// `replace`, or not a file; and for the session's own file (a commit with no path
     /// saves it) or one another session holds or is opening, by any path to it. The path
-    /// is checked before the rebuild is waited for, and again as it's written.
+    /// is checked before the rebuild is waited for, and again as it's written. An untitled
+    /// session has no own file to check it against: its first save is this, after which it
+    /// holds the file as a session opened on it does.
     pub(super) fn commit_as(
         self: &Arc<Self>,
         stop: &Ticket,
@@ -889,11 +941,14 @@ impl<C: Kernel + 'static> Session<C> {
     ) -> Result<Committed, Problems> {
         // Taken under the lock, and the path checked with it let go: the check reads the
         // file system, which may stall, and `status` reads the held state.
-        let (state, own, part_written) = {
+        let (state, own) = {
             let held = self.held.read();
             let begun = self.transaction(&held)?;
             let state = Saving {
-                path: held.path.clone(),
+                path: held
+                    .file
+                    .as_ref()
+                    .map_or_else(|| to.given.clone(), |file| file.path.clone()),
                 text: Arc::clone(&held.text),
                 gated: Arc::clone(&held.gated),
                 revision: held.revision,
@@ -901,14 +956,21 @@ impl<C: Kernel + 'static> Session<C> {
                 begun,
                 changed_outside: None,
             };
-            (state, held.resolved.clone(), held.part_written.clone())
+            let own = held.file.as_ref().map(|file| {
+                (
+                    file.path.clone(),
+                    file.resolved.clone(),
+                    file.part_written.clone(),
+                )
+            });
+            (state, own)
         };
-        to.target(self.workspace.as_ref(), &own)?;
-        let path = state.path.clone();
+        let own_file = own.as_ref().map(|(_, resolved, _)| resolved.as_path());
+        to.target(self.workspace.as_ref(), own_file)?;
         let (mut committed, _) =
             self.save_state(stop, state, Through::Transaction, read, claim, Some(to))?;
         // The old file's mark, let go with it: said, so where its old text is isn't lost.
-        if let Some(old) = part_written {
+        if let Some((path, _, Some(old))) = own {
             committed.problems.push(left_part_written(&path, &old));
         }
         Ok(committed)
@@ -936,8 +998,14 @@ impl<C: Kernel + 'static> Session<C> {
         drop(prepared);
         let state = {
             let held = self.held.read();
+            // Saved as it's made, so an untitled session, with no file to save it to,
+            // refuses it as it is: nothing held, no revision given, no model read.
+            let Some(file) = &held.file else {
+                *read = None;
+                return Err(Problems::from(untitled_save(self.id)));
+            };
             Saving {
-                path: held.path.clone(),
+                path: file.path.clone(),
                 text,
                 gated,
                 revision: held.next()?,
@@ -1134,7 +1202,8 @@ impl<C: Kernel + 'static> Session<C> {
     /// false, and with `write` false nothing changes. Refused, writing nothing, for a
     /// document the gate refused (its problems), for a feature in `accept` the document
     /// hasn't, and as a commit is. A kernel fault is saved around, as a commit saves around
-    /// it. As the command `stop` stops.
+    /// it. In an untitled session, with no file to write, `write` outside a transaction is
+    /// refused before anything is rebuilt; its `path` is none. As the command `stop` stops.
     pub(super) fn format(
         self: &Arc<Self>,
         stop: &Ticket,
@@ -1145,8 +1214,11 @@ impl<C: Kernel + 'static> Session<C> {
     ) -> Result<Reformatted, Problems> {
         let (path, bytes, text, gated, revision, reaching, transaction) = {
             let held = self.held.read();
+            if write && held.transaction.is_none() && held.file.is_none() {
+                return Err(Problems::from(untitled_save(self.id)));
+            }
             (
-                held.path.clone(),
+                held.file.as_ref().map(|file| file.path.clone()),
                 Arc::clone(&held.bytes),
                 Arc::clone(&held.text),
                 Arc::clone(&held.gated),
@@ -1296,7 +1368,10 @@ impl<C: Kernel + 'static> Session<C> {
     /// before the save began (past it, a cancel comes too late, and the command answers with
     /// its real result). With `to`, a Save As: written there ([`save_to`](Self::save_to)),
     /// not over the session's file, and the session's file from then on, its path as `to`
-    /// gives it, the disk watch moved to it.
+    /// gives it, the disk watch moved to it (an untitled session has none yet: it's given
+    /// one once the save has answered, [`registry::watch_saved`](super::registry::watch_saved)).
+    /// With none, refused for an
+    /// untitled session, which has no file to save over.
     fn write(
         &self,
         stop: &Ticket,
@@ -1311,21 +1386,28 @@ impl<C: Kernel + 'static> Session<C> {
             reach,
             publish,
         } = save;
-        let (next, path, resolved, bytes) = {
+        let (next, own, bytes) = {
             let held = self.held.read();
             (
                 held.next()?,
-                held.path.clone(),
-                held.resolved.clone(),
+                held.file
+                    .as_ref()
+                    .map(|own| (own.path.clone(), own.resolved.clone())),
                 Arc::clone(&held.bytes),
             )
         };
-        let (saving, resolved) = match to {
-            None => (
-                Some(self.save(stop, &path, &resolved, &bytes, &saved, saver)?),
+        let (saving, resolved) = match (to, own) {
+            (None, Some((path, resolved))) => (
+                self.save(stop, &path, &resolved, &bytes, &saved, saver)?,
                 resolved,
             ),
-            Some(to) => (None, self.save_to(stop, to, &resolved, &saved)?),
+            // Every save over the session's file is refused before it's made for an untitled
+            // session (`commit`, an edit's commit, `format`): this is never reached.
+            (None, None) => return Err(Problems::from(untitled_commit(self.id))),
+            (Some(to), own) => {
+                let own = own.as_ref().map(|(_, resolved)| resolved.as_path());
+                (None, self.save_to(stop, to, own, &saved)?)
+            }
         };
         claim(&resolved);
         let carried = reach
@@ -1348,11 +1430,15 @@ impl<C: Kernel + 'static> Session<C> {
         match (saving, to) {
             (Some(saving), _) => saving.saved(saved),
             (None, Some(to)) => {
-                held.path = to.given.clone();
-                held.resolved = resolved.clone();
-                // That was the old file's.
-                held.part_written = None;
-                self.disk.moved(resolved, saved);
+                // The old file's mark, if it had one, goes with it.
+                held.file = Some(HeldFile {
+                    path: to.given.clone(),
+                    resolved: resolved.clone(),
+                    part_written: None,
+                });
+                if let Some(disk) = self.disk.get() {
+                    disk.moved(resolved, saved);
+                }
             }
             (None, None) => {}
         }
@@ -1404,20 +1490,29 @@ impl<C: Kernel + 'static> Session<C> {
     /// A file this session's own save left part written isn't compared, nor reloaded (the
     /// next save says where its old text is), until it holds what the session last read or
     /// wrote again: the old text put back, which clears the mark.
+    ///
+    /// An untitled session has no file to read: what it holds is as held, always.
     pub(super) fn reload(
         &self,
         rereads: Rereads,
         claim: &dyn Fn(Claim<'_>) -> Result<(), Unclaimed>,
     ) -> Result<Reload, Problems> {
-        let (path, resolved, bytes, transaction, part_written) = {
+        let (own, bytes, transaction) = {
             let held = self.held.read();
             (
-                held.path.clone(),
-                held.resolved.clone(),
+                held.file.as_ref().map(|own| {
+                    (
+                        own.path.clone(),
+                        own.resolved.clone(),
+                        own.part_written.is_some(),
+                    )
+                }),
                 Arc::clone(&held.bytes),
                 held.transaction.is_some(),
-                held.part_written.is_some(),
             )
+        };
+        let Some((path, resolved, part_written)) = own else {
+            return Ok(Reload::AsHeld);
         };
         if rereads == Rereads::Never || (transaction && rereads != Rereads::Always) {
             return Ok(Reload::AsHeld);
@@ -1448,7 +1543,9 @@ impl<C: Kernel + 'static> Session<C> {
                 && now == *bytes
             {
                 claimed(opened)?;
-                self.held.session_changing().part_written = None;
+                if let Some(file) = &mut self.held.session_changing().file {
+                    file.part_written = None;
+                }
                 tracing::info!(session = %self.id, "the file a save left part written holds its old text again");
             }
             return Ok(Reload::AsHeld);
@@ -1503,7 +1600,9 @@ impl<C: Kernel + 'static> Session<C> {
         held.bytes = Arc::clone(&now);
         // Under the held state's lock, the watch's taken last: what it compares with from
         // now on, the file unchanged.
-        self.disk.held(now);
+        if let Some(disk) = self.disk.get() {
+            disk.held(now);
+        }
         held.last_reload = Some(next);
         drop(held);
         tracing::info!(session = %self.id, revision = next.number(), "the file changed outside the session: reloaded");
@@ -1520,6 +1619,7 @@ impl<C: Kernel + 'static> Session<C> {
     /// the session's disk watch: what it gives back is [`saved`](crate::disk::Saving::saved)
     /// where the session takes what it wrote, so no comparison reads its own save as a
     /// change; dropped on a failure, the watch's finding unknown until it compares again.
+    /// (A session with a file has its watch from the moment it has the file.)
     fn save(
         &self,
         stop: &Ticket,
@@ -1528,8 +1628,14 @@ impl<C: Kernel + 'static> Session<C> {
         bytes: &[u8],
         text: &[u8],
         saver: Saver,
-    ) -> Result<crate::disk::Saving<'_>, Problems> {
-        if let Some(old) = &self.held.read().part_written {
+    ) -> Result<Option<crate::disk::Saving<'_>>, Problems> {
+        if let Some(old) = self
+            .held
+            .read()
+            .file
+            .as_ref()
+            .and_then(|file| file.part_written.as_ref())
+        {
             return Err(Problems::from(part_written(path, old)));
         }
         stop.settle()?;
@@ -1537,7 +1643,7 @@ impl<C: Kernel + 'static> Session<C> {
             workspace,
             given: Path::new(path),
         });
-        let saving = self.disk.saving();
+        let saving = self.disk.get().map(crate::disk::DiskWatch::saving);
         #[cfg(test)]
         self.writing.pass();
         file::save_within(resolved, bytes, text, within)
@@ -1545,7 +1651,8 @@ impl<C: Kernel + 'static> Session<C> {
         Ok(saving)
     }
 
-    /// `text` saved as `to` says (a Save As), the session's own file at `own` untouched, as
+    /// `text` saved as `to` says (a Save As), the session's own file at `own` (none for an
+    /// untitled session) untouched, as
     /// the command `stop` stops: its stop settled first, so from here a cancel comes too
     /// late; the path checked again, claimed for the session, and written whole, through a
     /// new file renamed into place. Where it wrote, through any links; or refused, nothing
@@ -1554,7 +1661,7 @@ impl<C: Kernel + 'static> Session<C> {
         &self,
         stop: &Ticket,
         to: &SaveTo<'_>,
-        own: &Path,
+        own: Option<&Path>,
         text: &[u8],
     ) -> Result<PathBuf, Problems> {
         stop.settle()?;
@@ -1585,9 +1692,11 @@ impl<C: Kernel + 'static> Session<C> {
     /// couldn't be written; and, if it left the file part written, that marked, for the next
     /// save to say.
     pub(super) fn unsaved(&self, path: &str, unsaved: file::Unsaved, saver: Saver) -> Problems {
-        if let Some(old) = unsaved.old_text_in {
+        if let Some(old) = unsaved.old_text_in
+            && let Some(file) = &mut self.held.session_changing().file
+        {
             // The session's record of its file, past the command's settling: it stands.
-            self.held.session_changing().part_written = Some(old);
+            file.part_written = Some(old);
         }
         let error = unsaved.error;
         Problems::from(if error.code() == ErrorCode::Conflict {
@@ -1793,15 +1902,16 @@ pub(super) enum Rereads {
     Always,
     /// Never: the commands that need nothing of the document, `close` (which always
     /// closes) and `cache_clear` (which clears the directory's cache whatever the file holds).
+    /// (An untitled session never reads, having no file.)
     Never,
 }
 
 /// What a session found of its file before a command ([`Session::reload`]), given to the
 /// command.
 pub(super) enum Reload {
-    /// Nothing to change: the file unread (inside a transaction, or for a command that needs
-    /// nothing of the document: `close`, `cache_clear`), or as the session last read or
-    /// wrote it.
+    /// Nothing to change: the file unread (inside a transaction, for a command that needs
+    /// nothing of the document, `close` and `cache_clear`, or with no file, the session
+    /// untitled), or as the session last read or wrote it.
     AsHeld,
     /// Found changed outside the session, and reloaded: the response's `reloaded`.
     Reloaded,

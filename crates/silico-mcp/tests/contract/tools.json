@@ -397,8 +397,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -511,19 +514,22 @@
         "readOnlyHint": false,
         "title": "Open a document"
       },
-      "description": "Open a document's file as a session, or make a new, empty one (`create: true`, refused if anything is at the path). The path is relative to the workspace and may not lead out of it. Give the session's ID (`s1`, ...) in every later request to it. A document the gate refuses still opens, its problems in the result, so it can be mended with `replace_text`.",
+      "description": "Open a document's file as a session, or make a new, empty one (`create: true`, refused if anything is at the path). The path is relative to the workspace and may not lead out of it. With `path: null` and `create: true`, an untitled part: an empty document with no file, written nowhere until a `commit` inside a transaction gives it a path (Save As), after which the session holds that file; until then an edit outside a transaction, `commit` with `path: null`, `format` writing outside one, and `cache_clear` are refused. Give the session's ID (`s1`, ...) in every later request to it. A document the gate refuses still opens, its problems in the result, so it can be mended with `replace_text`.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "`open`'s request: open a document's file as a session, or make a new, empty one. A\ndocument the gate refuses still opens, its problems in the result, so it can be mended\nwith `replace_text`.",
+        "description": "`open`'s request: open a document's file as a session, or make a new, empty one, at a\npath or, with `path` null, untitled. A document the gate refuses still opens, its\nproblems in the result, so it can be mended with `replace_text`.",
         "properties": {
           "create": {
-            "description": "Whether to make a new, empty document at the path: refused if anything is there.",
+            "description": "Whether to make a new, empty document at the path: refused if anything is there.\nMust be true when `path` is null.",
             "type": "boolean"
           },
           "path": {
-            "description": "The document's path, as every response names the session's: a regular file, if it\nisn't to be made. A file this process holds open in another session, by any name, is\nrefused.",
-            "type": "string"
+            "description": "The document's path, as every response names the session's: a regular file, if it\nisn't to be made. A file this process holds open in another session, by any name, is\nrefused. Null, with `create` true, for an untitled document: an empty one with no\nfile, nothing written until a `commit` gives it a path (Save As). Outside a\ntransaction an edit is saved as it's made, so an untitled document's edits are made\ninside one.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -748,8 +754,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -820,8 +829,11 @@
                     ]
                   },
                   "path": {
-                    "description": "The path, as given.",
-                    "type": "string"
+                    "description": "The path, as given: null for an untitled document.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "problems": {
                     "description": "The gate's problems with the document, the first 100. A document with any still\nopens, and the commands that need a document the gate took refuse until\n`replace_text` mends it.",
@@ -1110,8 +1122,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -1643,8 +1658,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -2133,8 +2151,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -2508,8 +2529,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -2613,7 +2637,7 @@
         "description": "`commit`'s request: end the session's transaction, saving its document to its own\nfile, or, given a path, to the file there (Save As), which the session then holds.",
         "properties": {
           "path": {
-            "description": "null to save to the session's own file. A path (relative to the workspace's root\nunder `silico serve`) to save to that file instead, written even if nothing changed:\nit must end in .silico, can't be the session's own file or one another session\nholds, and the session holds it from then on, letting its old file go.",
+            "description": "null to save to the session's own file. A path (relative to the workspace's root\nunder `silico serve`) to save to that file instead, written even if nothing changed:\nit must end in .silico, can't be the session's own file or one another session\nholds, and the session holds it from then on, letting its old file go. An untitled\nsession (opened with `path` null) has no file of its own: its commit must give a\npath, its first save, after which it holds that file as if it had been opened there.",
             "type": [
               "string",
               "null"
@@ -2852,8 +2876,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -3213,8 +3240,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -3567,8 +3597,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -3631,8 +3664,11 @@
                     "type": "boolean"
                   },
                   "path": {
-                    "description": "The document's path, as `open` was given it.",
-                    "type": "string"
+                    "description": "The document's path, as `open` was given it: null while the session is untitled.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "problems": {
                     "description": "What format couldn't fix, the first 100: failed features, which keep their\nfingerprints, and drift it didn't accept.",
@@ -6343,8 +6379,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -7484,8 +7523,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -8754,8 +8796,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -9872,8 +9917,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -10241,8 +10289,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -10565,8 +10616,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -10915,8 +10969,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -11125,7 +11182,7 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
-        "description": "`cache_clear`'s request: remove every entry of the rebuild cache beside the session's\ndocument. The cache is the directory's, shared by every document in it, and an entry\nremoved is only a miss: the next rebuild of each step makes it again.",
+        "description": "`cache_clear`'s request: remove every entry of the rebuild cache beside the session's\ndocument. The cache is the directory's, shared by every document in it, and an entry\nremoved is only a miss: the next rebuild of each step makes it again. An untitled\nsession (opened with `path` null) keeps no cache until its first save gives it the one\nbeside its file: its clear is refused, naming `session`.",
         "properties": {
           "session": {
             "description": "The session's ID, as `open` gave it.",
@@ -11349,8 +11406,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -12139,8 +12199,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -13071,8 +13134,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -13436,8 +13502,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -13846,8 +13915,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -14225,8 +14297,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -14657,8 +14732,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -15257,8 +15335,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -15726,8 +15807,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -16188,8 +16272,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -16662,8 +16749,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -17102,8 +17192,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -17496,8 +17589,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -17981,8 +18077,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -18431,8 +18530,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -18863,8 +18965,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -19700,8 +19805,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -20121,8 +20229,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -22288,8 +22399,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -22745,8 +22859,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -23227,8 +23344,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -23722,8 +23842,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -24208,8 +24331,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -24665,8 +24791,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -25227,8 +25356,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -25681,8 +25813,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -26070,8 +26205,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
@@ -26429,8 +26567,11 @@
                 "type": "string"
               },
               "path": {
-                "description": "The document's path, as `open` was given it.",
-                "type": "string"
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "reloaded": {
                 "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",

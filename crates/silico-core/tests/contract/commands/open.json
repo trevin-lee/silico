@@ -2,15 +2,18 @@
   "request": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`open`'s request: open a document's file as a session, or make a new, empty one. A\ndocument the gate refuses still opens, its problems in the result, so it can be mended\nwith `replace_text`.",
+    "description": "`open`'s request: open a document's file as a session, or make a new, empty one, at a\npath or, with `path` null, untitled. A document the gate refuses still opens, its\nproblems in the result, so it can be mended with `replace_text`.",
     "properties": {
       "create": {
-        "description": "Whether to make a new, empty document at the path: refused if anything is there.",
+        "description": "Whether to make a new, empty document at the path: refused if anything is there.\nMust be true when `path` is null.",
         "type": "boolean"
       },
       "path": {
-        "description": "The document's path, as every response names the session's: a regular file, if it\nisn't to be made. A file this process holds open in another session, by any name, is\nrefused.",
-        "type": "string"
+        "description": "The document's path, as every response names the session's: a regular file, if it\nisn't to be made. A file this process holds open in another session, by any name, is\nrefused. Null, with `create` true, for an untitled document: an empty one with no\nfile, nothing written until a `commit` gives it a path (Save As). Outside a\ntransaction an edit is saved as it's made, so an untitled document's edits are made\ninside one.",
+        "type": [
+          "string",
+          "null"
+        ]
       }
     },
     "required": [
@@ -158,8 +161,11 @@
         ]
       },
       "path": {
-        "description": "The path, as given.",
-        "type": "string"
+        "description": "The path, as given: null for an untitled document.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "problems": {
         "description": "The gate's problems with the document, the first 100. A document with any still\nopens, and the commands that need a document the gate took refuse until\n`replace_text` mends it.",

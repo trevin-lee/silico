@@ -39,21 +39,22 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         workspace: None,
         undo_bytes: crate::document::undo::UNDO_BYTES,
         held: Holding::new(Held {
-            path: "a.silico".to_owned(),
-            resolved: PathBuf::from("a.silico"),
+            file: Some(HeldFile {
+                path: "a.silico".to_owned(),
+                resolved: PathBuf::from("a.silico"),
+                part_written: None,
+            }),
             bytes: Arc::new(BOX.as_bytes().to_vec()),
             text: Arc::new(BOX.as_bytes().to_vec()),
             gated: Arc::new(Gated::of(BOX.as_bytes())),
             revision: Revision::OPENED,
             carried: Arc::new(BTreeSet::new()),
             transaction: None,
-            part_written: None,
             last_reload: None,
         }),
         queue: Mutex::new(Some(sender)),
         rebuilds: Mutex::new(Rebuilds {
             engine: Recompute::new(kernel.client()),
-            cache: Cache::unsealed("/nonexistent/.silico-cache"),
             running: None,
             published: None,
             ended: None,
@@ -69,13 +70,13 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
         command: Mutex::new(None),
         newest: Arc::default(),
         logs: crate::command::logs::LogBuffer::new(),
-        disk: DiskWatch::new(
+        disk: OnceLock::from(DiskWatch::new(
             "a.silico",
             None,
             Arc::new(BOX.as_bytes().to_vec()),
             Duration::ZERO,
             None,
-        ),
+        )),
         reloads: Mutex::default(),
         drags: Mutex::default(),
         waker: Arc::default(),
@@ -668,7 +669,7 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
     let started = start(
         Arc::clone(&sessions.registry),
         SessionId(1),
-        made.to_str().unwrap(),
+        made.to_str(),
         true,
         &crate::command::session::cancel::Ticket::opening(),
         &reply,
@@ -684,7 +685,7 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
         start(
             Arc::clone(&sessions.registry),
             SessionId(2),
-            kept.to_str().unwrap(),
+            kept.to_str(),
             false,
             &crate::command::session::cancel::Ticket::opening(),
             &reply,
@@ -748,6 +749,27 @@ impl Held {
     /// What the session's edits reach now ([`Reaching::reach`]).
     fn reach(&self) -> BTreeSet<FeatureId> {
         self.reaching().reach()
+    }
+
+    /// Its file's path, as `open` was given it: none if it's untitled.
+    fn path(&self) -> Option<&str> {
+        self.file.as_ref().map(|file| file.path.as_str())
+    }
+
+    /// Where its file's old text is, if its own save left the file part written.
+    fn part_written(&self) -> Option<&PathBuf> {
+        self.file
+            .as_ref()
+            .and_then(|file| file.part_written.as_ref())
+    }
+
+    /// Its file's mark of a save left part written, to set (the file there, as every test
+    /// of it opens one).
+    fn part_written_mut(&mut self) -> &mut Option<PathBuf> {
+        match &mut self.file {
+            Some(file) => &mut file.part_written,
+            None => panic!("the session is untitled: it has no file to mark"),
+        }
     }
 }
 
@@ -2205,7 +2227,7 @@ fn a_rollback_restores_what_begin_saw_published_and_no_transaction_model_comes_a
 fn a_save_this_session_left_part_written_refuses_the_next_saying_where_the_text_is() {
     let f = opened(STORED);
     let old = f.path.with_file_name(".a.silico.fmt-1");
-    f.session().held.session_changing().part_written = Some(old.clone());
+    *f.session().held.session_changing().part_written_mut() = Some(old.clone());
     // What a write in place cut short leaves: the first half of the new text.
     let half = &COMMITTED[..COMMITTED.len() / 2];
     std::fs::write(&f.path, half).unwrap();
@@ -2236,7 +2258,7 @@ fn a_save_this_session_left_part_written_refuses_the_next_saying_where_the_text_
     let again = f.sessions.format(&f.id, None, true).wait();
     assert!(!again.session.unwrap().reloaded);
     assert!(again.result.unwrap().written);
-    assert_eq!(f.session().held.read().part_written, None);
+    assert_eq!(f.session().held.read().part_written(), None);
     assert_ne!(f.file(), STORED);
 }
 
@@ -2250,7 +2272,7 @@ fn a_save_as_from_a_file_left_part_written_writes_and_says_where_its_old_text_is
     // Marked inside the transaction, where nothing reads the file again (a read that finds
     // it as the session wrote it clears the mark).
     f.sessions.begin(&f.id).wait().result.unwrap();
-    f.session().held.session_changing().part_written = Some(old.clone());
+    *f.session().held.session_changing().part_written_mut() = Some(old.clone());
     let to = f.path.with_file_name("b.silico");
     let response = f.sessions.save_as(&f.id, &to, false).wait();
     let committed = response.result.unwrap();
@@ -2275,7 +2297,7 @@ fn a_save_as_from_a_file_left_part_written_writes_and_says_where_its_old_text_is
             shown_path(&old)
         )
     );
-    assert_eq!(f.session().held.read().part_written, None);
+    assert_eq!(f.session().held.read().part_written(), None);
 }
 
 /// `f`'s Save As to `to` started and held just before it writes, `meanwhile` done, then
@@ -2317,7 +2339,7 @@ fn a_save_as_claims_its_path_before_it_writes_so_no_session_opens_it_meanwhile()
     );
     let committed = response.result.unwrap();
     assert!(committed.written);
-    assert_eq!(f.session().held.read().path, to.to_str().unwrap());
+    assert_eq!(f.session().held.read().path(), to.to_str());
     assert_eq!(
         std::fs::read(&to).unwrap(),
         f.session().held.read().text.as_slice()
@@ -2343,7 +2365,7 @@ fn a_save_as_whose_path_a_link_is_put_on_after_its_check_writes_nothing() {
         Some("nothing was written: commit again")
     );
     assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "another file");
-    assert_eq!(f.session().held.read().path, f.path.to_str().unwrap());
+    assert_eq!(f.session().held.read().path(), f.path.to_str());
 }
 
 #[test]
@@ -2366,14 +2388,14 @@ fn a_save_as_whose_path_becomes_another_sessions_document_after_its_check_writes
         problems.errors()[0]
     );
     assert_eq!(std::fs::read_to_string(&to).unwrap(), BOX);
-    assert_eq!(f.session().held.read().path, f.path.to_str().unwrap());
+    assert_eq!(f.session().held.read().path(), f.path.to_str());
 }
 
 #[test]
 fn a_file_this_sessions_own_save_left_part_written_isnt_reloaded() {
     let f = opened(STORED);
     let old = f.path.with_file_name(".a.silico.fmt-1");
-    f.session().held.session_changing().part_written = Some(old.clone());
+    *f.session().held.session_changing().part_written_mut() = Some(old.clone());
     // What its save left: neither what the session wrote nor what was there.
     std::fs::write(&f.path, "part written").unwrap();
     let text = f.sessions.text(&f.id, None).wait();
@@ -2556,7 +2578,7 @@ fn a_save_that_left_the_file_part_written_is_marked_for_the_next() {
         Saver::Format,
     );
     assert_eq!(problems.errors()[0].parameter(), Some("path"));
-    assert_eq!(session.held.read().part_written, None);
+    assert_eq!(session.held.read().part_written(), None);
     // Left part written, its old text beside it: marked, so the next save says where.
     let old = f.path.with_file_name(".a.silico.fmt-1");
     let problems = session.unsaved(
@@ -2574,7 +2596,7 @@ fn a_save_that_left_the_file_part_written_is_marked_for_the_next() {
         ),
         (ErrorCode::IoFailed, Some("path"))
     );
-    assert_eq!(session.held.read().part_written, Some(old));
+    assert_eq!(session.held.read().part_written(), Some(&old));
 }
 
 #[test]

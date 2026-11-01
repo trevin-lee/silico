@@ -100,6 +100,8 @@ mod adversarial_timeline;
 mod adversarial_type_words;
 #[path = "adversarial_undo_commands.rs"]
 mod adversarial_undo_commands;
+#[path = "adversarial_untitled.rs"]
+mod adversarial_untitled;
 #[path = "adversarial_warnings.rs"]
 mod adversarial_warnings;
 #[path = "adversarial_wire_commands.rs"]
@@ -178,6 +180,8 @@ mod session_sketch_geometry_edits;
 mod session_tracing;
 #[path = "session_transactions.rs"]
 mod session_transactions;
+#[path = "session_untitled.rs"]
+mod session_untitled;
 #[path = "session_workspace.rs"]
 mod session_workspace;
 #[path = "shared_result_checks.rs"]

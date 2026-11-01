@@ -1226,8 +1226,9 @@ pub struct Recompute<K: Kernel + 'static> {
 
 struct Engine<K> {
     kernel: K,
-    /// Where results are kept on disk, if anywhere.
-    cache: Option<Cache>,
+    /// Where results are kept on disk, if anywhere: given as the engine is made, or once
+    /// after ([`Recompute::keep_in`]: an untitled session's, at its first save).
+    cache: OnceLock<Cache>,
     state: Mutex<EngineState>,
     /// Signalled when a recompute's sketch thread gives back its turn at the solvers, or a
     /// recompute starts or is cancelled: a recompute waiting for its turn wakes to take it,
@@ -1653,10 +1654,14 @@ impl<K: Kernel + 'static> Recompute<K> {
 
     fn build(kernel: K, cache: Option<Cache>) -> Self {
         let generation = kernel.generation();
+        let kept = OnceLock::new();
+        if let Some(cache) = cache {
+            let _ = kept.set(cache);
+        }
         Self {
             engine: Arc::new(Engine {
                 kernel,
-                cache,
+                cache: kept,
                 sketch_turn: Condvar::new(),
                 solvers: Mutex::new(SketchSolvers::workers()),
                 state: Mutex::new(EngineState {
@@ -1682,6 +1687,20 @@ impl<K: Kernel + 'static> Recompute<K> {
 
     pub fn kernel(&self) -> &K {
         &self.engine.kernel
+    }
+
+    /// From now on, each step's result is kept in `cache` too, and taken from there when
+    /// it's kept, as [`with_cache`](Self::with_cache) gives it: for an engine made with
+    /// none (an untitled session's, until its first save gives it the cache beside its
+    /// file). A recompute running takes it for the steps it hasn't read or written yet.
+    /// Given once: an engine that has a cache keeps it, and this says whether it was taken.
+    pub fn keep_in(&self, cache: Cache) -> bool {
+        self.engine.cache.set(cache).is_ok()
+    }
+
+    /// The cache the engine keeps its steps in, if it has one.
+    pub fn cache(&self) -> Option<&Cache> {
+        self.engine.cache.get()
     }
 
     /// The model the newest finished recompute published, if any has.
@@ -3477,7 +3496,7 @@ impl<K: Kernel + 'static> Engine<K> {
             .cloned()
             .collect();
         // What's kept on disk for this kernel, for the steps not kept in memory.
-        if let Some(cache) = self.cache.as_ref().filter(|_| kept) {
+        if let Some(cache) = self.cache.get().filter(|_| kept) {
             let kernel = self.kernel.identity();
             for key in &plan.order {
                 if !done.contains_key(key)
@@ -4082,7 +4101,7 @@ impl<K: Kernel + 'static> Engine<K> {
             for _ in 0..woken {
                 changed.notify_one();
             }
-            if let (Some(cache), Some(built)) = (&self.cache, to_keep) {
+            if let (Some(cache), Some(built)) = (self.cache.get(), to_keep) {
                 cache.put(self.kernel.identity(), &key, &built);
             }
             let mut s = lock(schedule);

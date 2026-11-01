@@ -184,7 +184,7 @@ fn opens_and_checks_problems_are_their_first_hundred_and_all_counted() {
     };
     let opened = Opened {
         session: SessionId::parse("s1").unwrap(),
-        path: "p.silico".to_owned(),
+        path: Some("p.silico".to_owned()),
         created: false,
         features: Some(1),
         bodies: Vec::new(),
@@ -237,7 +237,7 @@ fn formats_result_is_written_as_the_design_gives_it_each_list_its_own() {
         &Reformatted {
             changed: true,
             written: true,
-            path: "bracket.silico".to_owned(),
+            path: Some("bracket.silico".to_owned()),
             refingerprinted: ids(&["k7f2qx3m", "p0000001"]),
             resolved: Vec::new(),
             accepted: ids(&["k7f2qx3m"]),
@@ -248,7 +248,7 @@ fn formats_result_is_written_as_the_design_gives_it_each_list_its_own() {
     let other = Reformatted {
         changed: false,
         written: false,
-        path: "p.silico".to_owned(),
+        path: Some("p.silico".to_owned()),
         refingerprinted: ids(&["a0000001"]),
         resolved: ids(&["s0000001"]),
         accepted: ids(&["b0000001"]),

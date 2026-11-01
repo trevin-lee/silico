@@ -193,7 +193,7 @@ fn open_gate(gate: &Gate) {
 #[track_caller]
 fn told(f: &Fixture) {
     let deadline = Instant::now() + WAIT;
-    while f.session().disk.changed_told() == 0 {
+    while f.session().disk.get().unwrap().changed_told() == 0 {
         assert!(Instant::now() < deadline, "no comparison told the session");
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -913,7 +913,7 @@ fn a_part_written_file_reads_changed_and_is_never_reloaded() {
     let f = opened(STORED);
     f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
     let old = f.path.with_file_name(".a.silico.fmt-1");
-    f.session().held.session_changing().part_written = Some(old);
+    *f.session().held.session_changing().part_written_mut() = Some(old);
     std::fs::write(&f.path, "part written").unwrap();
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
     f.status_stays(Duration::from_millis(300), |status, revision| {
@@ -1226,11 +1226,15 @@ fn a_comparison_the_session_read_past_before_it_told_queues_no_reload() {
     let (release, released) = mpsc::channel::<()>();
     let released = Arc::new(Mutex::new(released));
     let at_hold = Mutex::new(at_hold);
-    f.session().disk.before_changed(Arc::new(move || {
-        let _ = lock(&at_hold).send(());
-        // Until the test lets it go (its sender dropped).
-        let _ = lock(&released).recv();
-    }));
+    f.session()
+        .disk
+        .get()
+        .unwrap()
+        .before_changed(Arc::new(move || {
+            let _ = lock(&at_hold).send(());
+            // Until the test lets it go (its sender dropped).
+            let _ = lock(&released).recv();
+        }));
     // A reload, if one is queued, held where the test can see it start.
     let (reload_started, through) = shut(&f.session().reloading);
     std::fs::write(&f.path, SPHERE).unwrap();
@@ -1249,7 +1253,7 @@ fn a_comparison_the_session_read_past_before_it_told_queues_no_reload() {
     // Let go: its telling done, it queued nothing.
     drop(release);
     let deadline = Instant::now() + WAIT;
-    while f.session().disk.changed_told() == 0 {
+    while f.session().disk.get().unwrap().changed_told() == 0 {
         assert!(
             Instant::now() < deadline,
             "the comparison never told the session"

@@ -2455,7 +2455,7 @@ mod tests {
     fn an_answer_moves_the_tabs_revision_and_transaction_forward_never_back() {
         let info = |revision: u64, transaction: bool| silico_core::command::SessionInfo {
             id: SessionId::parse("s1").unwrap(),
-            path: "a.silico".to_owned(),
+            path: Some("a.silico".to_owned()),
             revision: Revision::from_number(revision).unwrap(),
             transaction,
             reloaded: false,
