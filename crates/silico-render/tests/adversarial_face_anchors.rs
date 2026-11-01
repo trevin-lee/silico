@@ -290,12 +290,16 @@ fn misses_past_depth(
 /// and at the check's limits f32 moves it by at most an eighth of one.
 const EDGE_SLACK: f64 = 1.0;
 
-/// Whether the centre of the pixel at `(col, row)` is within an eighth of a pixel of where
-/// face `face` of the box at `low` of `size` projects (by hand, its four corners, every one
-/// before a perspective eye): the precision the renderer holds a face to, which the casts,
-/// half a pixel apart, can't see of a face seen so nearly edge on that it's a sliver
-/// narrower than that (a slab's side from 0.008 mm off its plane, 0.006 pixels wide where
-/// a cast found it drawn over a pixel's centre).
+/// Whether face `face` of the box at `low` of `size`, drawn at the pixel `(col, row)` where
+/// the casts saw something else, is what's seen within an eighth of a pixel of the pixel's
+/// centre: where it projects (by hand, its four corners, every one before a perspective
+/// eye) comes within an eighth of a pixel of the centre, and a ray cast there, at its
+/// nearest point, sees it first. The precision the renderer holds a face to, which the
+/// casts, half a pixel apart, can't see of a sliver narrower than that (a slab's side from
+/// 0.008 mm off its plane, 0.006 pixels wide; its top 1 mm across from 640 mm, 0.026 wide).
+/// A sliver no wider than an eighth of a pixel (the eye in its plane, say) is forgiven
+/// there too, as no ray can be cast to see it. A face hidden there, wider, is never
+/// forgiven: one drawn in front of the face it's behind is a miss.
 fn near_face(
     scene: &RenderScene,
     low: [f64; 3],
@@ -337,24 +341,42 @@ fn near_face(
     }
     let q: Vec<(f64, f64)> = corners.iter().map(|&p| pixel(scene, p)).collect();
     let (x, y) = (col as f64 + 0.5, row as f64 + 0.5);
-    // Inside the projected quad (convex: a face's corners in perspective too), or within an
-    // eighth of a pixel of one of its sides.
-    let sides: Vec<f64> = (0..4)
-        .map(|i| {
-            let ((ax, ay), (bx, by)) = (q[i], q[(i + 1) % 4]);
-            (bx - ax) * (y - ay) - (by - ay) * (x - ax)
-        })
-        .collect();
-    if sides.iter().all(|&s| s >= 0.0) || sides.iter().all(|&s| s <= 0.0) {
-        return true;
-    }
-    (0..4).any(|i| {
+    // The centre, if the projected quad (convex: a face's corners in perspective too) holds
+    // it, and each point of its sides within an eighth of a pixel of the centre, a hair
+    // toward the quad's middle: where a ray seeing the face there passes.
+    let middle = q.iter().fold((0.0, 0.0), |(mx, my), &(qx, qy)| {
+        (mx + qx / 4.0, my + qy / 4.0)
+    });
+    let mut points = vec![(x, y)];
+    for i in 0..4 {
         let ((ax, ay), (bx, by)) = (q[i], q[(i + 1) % 4]);
         let (dx, dy) = (bx - ax, by - ay);
         let t = (((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
-        let (ex, ey) = (ax + t * dx - x, ay + t * dy - y);
-        (ex * ex + ey * ey).sqrt() <= 0.125
-    })
+        let (px, py) = (ax + t * dx, ay + t * dy);
+        if ((px - x) * (px - x) + (py - y) * (py - y)).sqrt() <= 0.125 {
+            points.push((px + (middle.0 - px) * 1e-6, py + (middle.1 - py) * 1e-6));
+        }
+    }
+    // A sliver no wider than an eighth of a pixel anywhere (twice its projected area over
+    // its longer diagonal), the eye in its plane among them, which a ray seeing it can't
+    // be cast at: forgiven where it comes within an eighth of a pixel.
+    let area = (0..4)
+        .map(|i| {
+            let ((ax, ay), (bx, by)) = (q[i], q[(i + 1) % 4]);
+            ax * by - bx * ay
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let diagonal = |i: usize| {
+        let ((ax, ay), (bx, by)) = (q[i], q[i + 2]);
+        ((bx - ax) * (bx - ax) + (by - ay) * (by - ay)).sqrt()
+    };
+    let thin = 2.0 * area <= 0.125 * diagonal(0).max(diagonal(1));
+    (thin && points.len() > 1)
+        || points
+            .into_iter()
+            .any(|(u, v)| cast(scene, low, size, u, v) == [1, face])
 }
 
 /// Whether the pixel at `(col, row)` is within [`EDGE_SLACK`] of where the edge `edge` of
@@ -1083,6 +1105,62 @@ fn scene_of(low: [f64; 3], size: [f64; 3], look: &Look, step: [f64; 3]) -> Optio
     scene.check().is_ok().then_some(scene)
 }
 
+/// Of the slab at `low` of `size`'s misses in `scene`, those that are the faces' own: not a
+/// face behind the one in front less than `depth` behind it along the ray (f32's depth over
+/// the scene's can't tell them apart: `a_long_slab_seen_from_its_end_...`'s break, not the
+/// anchor's), not an edge (about the camera's point, off on its own: the tests of the edges
+/// above), and not a sliver drawn within an eighth of a pixel of where it projects
+/// ([`near_face`]).
+fn face_misses(
+    scene: &RenderScene,
+    low: [f64; 3],
+    size: [f64; 3],
+    misses: Vec<Miss>,
+    depth: f64,
+) -> Vec<Miss> {
+    misses_past_depth(scene, low, size, misses, depth)
+        .into_iter()
+        .filter(|&(_, got, _)| got[1] & EDGE_BIT == 0)
+        .filter(|&((col, row), got, _)| {
+            !(got[0] == 1 && near_face(scene, low, size, got[1], col, row))
+        })
+        .collect()
+}
+
+#[test]
+fn a_face_drawn_over_the_one_in_front_of_it_is_a_miss_the_proptests_never_forgive() {
+    // The swap a review made of the proptests' allowance: every pixel of the face in front
+    // given its opposite face's ID instead. Orthographic and perspective, the bench's box
+    // from the front; every swapped pixel clear of a boundary is still a miss.
+    let mut w = worker();
+    let mut perspective = silico_render::bench::front_of_a_box(64, 48);
+    perspective.camera.projection = Projection::Perspective {
+        field_of_view: 50.0,
+    };
+    perspective.camera.eye = [21.0, -40.0, 7.0];
+    for scene in [silico_render::bench::front_of_a_box(64, 48), perspective] {
+        let (low, size) = ([0.0; 3], [40.0, 20.0, 10.0]);
+        let (_, mut ids) = draw(&mut w, &scene);
+        let (clean, on) = cast_misses(&scene, low, size, &ids, 1);
+        assert!(clean.is_empty() && on > 100, "{:?} {on}", scene.camera);
+        let mut swapped = 0;
+        for id in &mut ids {
+            if *id == FRONT {
+                *id = [1, 4];
+                swapped += 1;
+            }
+        }
+        let (wrong, _) = cast_misses(&scene, low, size, &ids, 1);
+        let kept = face_misses(&scene, low, size, wrong.clone(), 0.0);
+        assert!(
+            swapped > 100 && wrong.len() > 100,
+            "{swapped} {}",
+            wrong.len()
+        );
+        assert_eq!(kept.len(), wrong.len(), "{:?}: some forgiven", scene.camera);
+    }
+}
+
 /// [`random_close_looks_at_long_slabs_draw_every_clear_pixel_as_a_ray_cast_by_hand_sees_it`],
 /// in perspective alone if `perspective`.
 fn random_close_looks(perspective: bool) {
@@ -1118,17 +1196,7 @@ fn random_close_looks(perspective: bool) {
                     Projection::Perspective { .. } => scene.camera.eye,
                 };
                 let depth = 4.0 * scene.reach(from) * f64::from(f32::EPSILON);
-                // The edges, about the camera's point, are off on their own (the tests of
-                // the edges above): only the faces are held to the cast here.
-                // And a face drawn over a pixel whose centre is within an eighth of a pixel
-                // of where it projects is where it is, though no cast saw it there.
-                let wrong: Vec<_> = misses_past_depth(&scene, low, size, wrong, depth)
-                    .into_iter()
-                    .filter(|&(_, got, _)| got[1] & EDGE_BIT == 0)
-                    .filter(|&((col, row), got, _)| {
-                        !(got[0] == 1 && near_face(&scene, low, size, got[1], col, row))
-                    })
-                    .collect();
+                let wrong = face_misses(&scene, low, size, wrong, depth);
                 if on > 0 {
                     seen.set(seen.get() + 1);
                 }
@@ -1680,6 +1748,212 @@ fn a_triangle_reaching_the_pyramids_side_is_drawn_within_an_eighth_of_a_pixel() 
             "{reach}: {} pixels off, the first {:?}",
             misses.len(),
             &misses[..misses.len().min(5)]
+        );
+    }
+}
+
+#[test]
+fn turning_in_place_inside_a_box_draws_every_pixel_as_the_cast_sees_it() {
+    // From the box's centre along +y, then from the same eye along +x, then +y again at 60°,
+    // on one worker: each view's cut faces cut again for it (their pyramid moves with the
+    // view's axes, and with its angle), every pixel clear of a boundary what the cast sees
+    // and each against a fresh worker's drawing byte for byte.
+    let mut held = worker();
+    let mut along_x = box_from([20.0, 10.0, 5.0]);
+    along_x.camera.target = [30.0, 10.0, 5.0];
+    let mut narrower = box_from([20.0, 10.0, 5.0]);
+    narrower.camera.projection = Projection::Perspective {
+        field_of_view: 60.0,
+    };
+    for (i, scene) in [box_from([20.0, 10.0, 5.0]), along_x, narrower]
+        .iter()
+        .enumerate()
+    {
+        let (png, ids) = draw(&mut held, scene);
+        let (wrong, on) = cast_misses(scene, [0.0; 3], [40.0, 20.0, 10.0], &ids, 1);
+        assert!(on > 1_000, "view {i}: {on}");
+        assert!(
+            wrong.is_empty(),
+            "view {i}: {} pixels clear of a boundary differ, the first {:?}",
+            wrong.len(),
+            &wrong[..wrong.len().min(5)]
+        );
+        let (fresh_png, fresh_ids) = draw(&mut worker(), scene);
+        assert!(
+            ids == fresh_ids && png == fresh_png,
+            "view {i}: not a fresh worker's"
+        );
+    }
+}
+
+/// What the ray through the pixel at `(u, v)` (in pixels from the top left) sees first of
+/// `scene`'s meshes, a nanometre or more deep, by a ray cast against each triangle in f64:
+/// its body's and face's IDs, or the background.
+fn cast_mesh(scene: &RenderScene, u: f64, v: f64) -> PixelId {
+    let (origin, dir) = ray(scene, u, v);
+    let (forward, _, _) = basis(&scene.camera);
+    let along = dot(dir, forward);
+    let mut best: Option<(f64, PixelId)> = None;
+    for b in &scene.bodies {
+        let mesh = &b.mesh;
+        let mut first = 0usize;
+        for (face, &count) in mesh.face_triangles.iter().enumerate() {
+            let count = usize::try_from(count).unwrap();
+            for t in &mesh.triangles[first..first + count] {
+                let [p, q, r] = t.map(|i| mesh.positions[usize::try_from(i).unwrap()]);
+                let (e1, e2) = (sub(q, p), sub(r, p));
+                let h = cross(dir, e2);
+                let det = dot(e1, h);
+                if det.abs() < 1e-300 {
+                    continue;
+                }
+                let s = sub(origin, p);
+                let a = dot(s, h) / det;
+                let qv = cross(s, e1);
+                let c = dot(dir, qv) / det;
+                let at = dot(e2, qv) / det;
+                let depth = match scene.camera.projection {
+                    Projection::Perspective { .. } => at * along,
+                    Projection::Orthographic { .. } => f64::INFINITY,
+                };
+                if a >= 0.0
+                    && c >= 0.0
+                    && a + c <= 1.0
+                    && at > 0.0
+                    && depth >= NEAREST
+                    && best.is_none_or(|(t, _)| at < t)
+                {
+                    best = Some((at, [b.body, u32::try_from(face + 1).unwrap()]));
+                }
+            }
+            first += count;
+        }
+    }
+    best.map_or(BACKGROUND, |(_, id)| id)
+}
+
+/// [`cast_misses`] by [`cast_mesh`]: every pixel whose ray and those every half pixel up to
+/// 2.5 pixels about it all see the same face of `scene`'s meshes must be it; the pixels
+/// that differ (at, got, want), and how many were checked on a body.
+fn mesh_misses(scene: &RenderScene, ids: &[PixelId]) -> (Vec<Miss>, usize) {
+    let (w, h) = (i64::from(scene.width), i64::from(scene.height));
+    let (gw, gh) = (2 * w + 2 * AROUND + 1, 2 * h + 2 * AROUND + 1);
+    let half = |n: i64| 0.5 * (n - AROUND) as f64;
+    let grid: Vec<PixelId> = (0..gh)
+        .flat_map(|j| (0..gw).map(move |i| (i, j)))
+        .map(|(i, j)| cast_mesh(scene, half(i), half(j)))
+        .collect();
+    let seen = |i: i64, j: i64| grid[usize::try_from(j * gw + i).unwrap()];
+    let (mut on, mut wrong) = (0usize, Vec::new());
+    for row in 0..h {
+        for col in 0..w {
+            let (i, j) = (2 * col + 1 + AROUND, 2 * row + 1 + AROUND);
+            let want = seen(i, j);
+            if !(-AROUND..=AROUND)
+                .all(|di| (-AROUND..=AROUND).all(|dj| seen(i + di, j + dj) == want))
+            {
+                continue;
+            }
+            on += usize::from(want != BACKGROUND);
+            let got = ids[usize::try_from(row * w + col).unwrap()];
+            if got != want {
+                wrong.push(((col, row), got, want));
+            }
+        }
+    }
+    (wrong, on)
+}
+
+#[test]
+fn a_room_a_curved_face_beside_the_eye_and_part_of_a_body_draw_as_the_cast_sees_them() {
+    // Each pixel against a ray cast by hand, clear of a boundary:
+    // - a metre cube from its centre at 90°, turned 10° and 22°: its walls cut about the eye
+    //   (the room `render.rs` counts);
+    // - a quarter of a cylinder, radius 10, from its box's empty corner (9.5, 9.5, 5)
+    //   looking at its axis, turned 10° either way: its box crosses the eye's plane, its
+    //   points don't, so it's drawn as it is;
+    // - the bench's box orthographic, 4 high about (5, 0, 5), then panned to (39, 0, 5):
+    //   only the faces the view's rectangle meets placed.
+    let mut w = worker();
+    let mut scenes = vec![];
+    for yaw in [10.0f64, 22.0] {
+        let a = yaw.to_radians();
+        scenes.push(RenderScene {
+            bodies: vec![body(1, box_mesh([-500.0; 3], [1000.0; 3]))],
+            camera: Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 90.0,
+                },
+                eye: [0.0; 3],
+                target: [10.0 * libm::sin(a), 10.0 * libm::cos(a), 0.0],
+                up: [0.0, 0.0, 1.0],
+            },
+            width: 64,
+            height: 48,
+            ids: true,
+        });
+    }
+    let mut quarter = Mesh {
+        positions: vec![],
+        normals: vec![],
+        triangles: vec![],
+        face_triangles: vec![24],
+        edge_points: vec![],
+        edge_point_counts: vec![],
+        valid: None,
+    };
+    for k in 0..=12u32 {
+        let a = f64::from(k) / 12.0 * std::f64::consts::FRAC_PI_2;
+        let (c, s) = (libm::cos(a), libm::sin(a));
+        quarter
+            .positions
+            .extend([[10.0 * c, 10.0 * s, 0.0], [10.0 * c, 10.0 * s, 10.0]]);
+        quarter.normals.extend([[c as f32, s as f32, 0.0]; 2]);
+    }
+    for k in 0..12u32 {
+        let (i, j) = (2 * k, 2 * k + 2);
+        quarter.triangles.extend([[i, j, j + 1], [i, j + 1, i + 1]]);
+    }
+    for turn in [-10.0f64, 0.0, 10.0] {
+        let a = (225.0 + turn).to_radians();
+        scenes.push(RenderScene {
+            bodies: vec![body(1, quarter.clone())],
+            camera: Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 60.0,
+                },
+                eye: [9.5, 9.5, 5.0],
+                target: [9.5 + 10.0 * libm::cos(a), 9.5 + 10.0 * libm::sin(a), 5.0],
+                up: [0.0, 0.0, 1.0],
+            },
+            width: 64,
+            height: 48,
+            ids: true,
+        });
+    }
+    for x in [5.0, 39.0] {
+        scenes.push(RenderScene {
+            bodies: vec![body(1, box_mesh([0.0; 3], [40.0, 20.0, 10.0]))],
+            camera: Camera {
+                projection: Projection::Orthographic { view_height: 4.0 },
+                eye: [x, -50.0, 5.0],
+                target: [x, 0.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            },
+            width: 64,
+            height: 48,
+            ids: true,
+        });
+    }
+    for (i, scene) in scenes.iter().enumerate() {
+        let (_, ids) = draw(&mut w, scene);
+        let (wrong, on) = mesh_misses(scene, &ids);
+        assert!(on > 500, "scene {i}: {on}");
+        assert!(
+            wrong.is_empty(),
+            "scene {i}: {} pixels clear of a boundary differ, the first {:?}",
+            wrong.len(),
+            &wrong[..wrong.len().min(5)]
         );
     }
 }

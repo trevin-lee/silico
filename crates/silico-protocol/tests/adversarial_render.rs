@@ -667,3 +667,111 @@ fn a_boxs_farthest_corner_bounds_its_points_reach_from_anywhere() {
         })
         .unwrap();
 }
+
+#[test]
+fn the_frustums_side_holds_its_border_and_not_an_ulp_past_it() {
+    // From the origin along +y, up +z (right +x, so a point's x across the view is its x and
+    // its depth its y, exactly), 60° over 48 rows, 64 wide: the right side is x = a t × depth,
+    // t = tan 30°, a = 4/3. A flat box at depth 1 from x = a t to a t + 1: its corner on the
+    // side, the rest past it: crosses; from an ulp farther: out. A box wholly behind the eye:
+    // out; one at depth 0, on the eye's plane: out too (the frustum's floor is open).
+    use silico_protocol::{Class, ViewRegion};
+    let camera = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 60.0,
+        },
+        eye: [0.0; 3],
+        target: [0.0, 10.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let frame = camera.check(64, 48).unwrap();
+    let f = ViewRegion::frustum(&camera, &frame, 64, 48);
+    let tx = libm::tan(30f64.to_radians()) * (64.0 / 48.0);
+    let flat = |x: f64| ([x, 1.0, -0.1], [x + 1.0, 1.0, 0.1]);
+    assert_eq!(f.class_of_box(flat(tx)), Class::Crosses);
+    assert_eq!(f.class_of_box(flat(tx.next_up())), Class::Out);
+    assert_eq!(
+        f.class_of_box(([-1.0, 0.1, -0.01], [1.0, 0.2, 0.01])),
+        Class::Crosses
+    );
+    assert_eq!(
+        f.class_of_box(([-0.01, 1.0, -0.01], [0.01, 2.0, 0.01])),
+        Class::In
+    );
+    assert_eq!(
+        f.class_of_box(([-1.0, -2.0, -1.0], [1.0, -1.0, 1.0])),
+        Class::Out
+    );
+    assert_eq!(
+        f.class_of_box(([-1.0, 0.0, -1.0], [1.0, 0.0, 1.0])),
+        Class::Out
+    );
+    // No points: out.
+    assert_eq!(f.class(std::iter::empty()), Class::Out);
+}
+
+#[test]
+fn a_box_in_or_out_of_a_region_never_contradicts_its_points() {
+    // `/break-it` on the classes: random triangles, random cameras; against the frustum and
+    // the pyramid, where a triangle's box is in, each of its points is in; where its box is
+    // out, each of its points is outside one same side; and its points' own class is as a
+    // point-by-point check says.
+    use silico_protocol::{Class, ViewRegion, box_of, pyramid_slope};
+    let mut runner = TestRunner::new_with_rng(
+        Config {
+            cases: 3000,
+            failure_persistence: None,
+            ..Config::default()
+        },
+        TestRng::deterministic_rng(RngAlgorithm::ChaCha),
+    );
+    let point = || [-20.0..20.0f64, -20.0..20.0f64, -20.0..20.0f64];
+    runner
+        .run(
+            &(point(), point(), point(), point(), point(), 1.0..170.0f64),
+            |(a, b, c, eye, target, fov)| {
+                let camera = Camera {
+                    projection: Projection::Perspective { field_of_view: fov },
+                    eye,
+                    target,
+                    up: [0.0, 0.0, 1.0],
+                };
+                let Ok(frame) = camera.check(64, 48) else {
+                    return Ok(());
+                };
+                let tan = libm::tan(fov.to_radians() / 2.0);
+                let regions = [
+                    ViewRegion::frustum(&camera, &frame, 64, 48),
+                    ViewRegion::pyramid(eye, &frame, pyramid_slope(tan, 48)),
+                ];
+                let points = [a, b, c];
+                let bounds = box_of(points.iter()).unwrap();
+                for region in regions {
+                    let by_point: Vec<Vec<bool>> = points
+                        .iter()
+                        .map(|&p| {
+                            let e = region.eye_frame(p);
+                            region.sides.iter().map(|s| s.holds(e)).collect()
+                        })
+                        .collect();
+                    let all_in = by_point.iter().all(|p| p.iter().all(|&h| h));
+                    let out_by_one = (0..5).any(|k| by_point.iter().all(|p| !p[k]));
+                    let want = if out_by_one {
+                        Class::Out
+                    } else if all_in {
+                        Class::In
+                    } else {
+                        Class::Crosses
+                    };
+                    prop_assert_eq!(region.class(points), want);
+                    match region.class_of_box(bounds) {
+                        Class::In => prop_assert!(all_in, "box in, a point out"),
+                        Class::Out => prop_assert!(out_by_one, "box out, the points not"),
+                        Class::Crosses => {}
+                    }
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+}

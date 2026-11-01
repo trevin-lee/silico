@@ -5,7 +5,7 @@
 //! trigonometry, so a view's camera is the same on every platform: it's a result.
 
 use silico_protocol::vec3::{cross, dot, sub};
-use silico_protocol::{Camera, Projection};
+use silico_protocol::{Camera, Class, Projection, ViewRegion};
 
 /// A named view: where it looks from, as Fusion's ViewCube names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -274,61 +274,8 @@ pub fn meshing_depth(camera: &Camera, [low, high]: [[f64; 3]; 2]) -> f64 {
 /// fails its check.
 pub fn sees(camera: &Camera, width: u32, height: u32, [low, high]: [[f64; 3]; 2]) -> Option<bool> {
     let frame = camera.frame().ok()?;
-    let corners = (0..8).map(|i| {
-        [
-            if i & 1 == 0 { low[0] } else { high[0] },
-            if i & 2 == 0 { low[1] } else { high[1] },
-            if i & 4 == 0 { low[2] } else { high[2] },
-        ]
-    });
-    let aspect = f64::from(width) / f64::from(height);
-    Some(match camera.projection {
-        Projection::Orthographic { view_height } => {
-            let (half_up, half_right) = (view_height / 2.0, view_height * aspect / 2.0);
-            let (mut up, mut right) = (
-                (f64::INFINITY, f64::NEG_INFINITY),
-                (f64::INFINITY, f64::NEG_INFINITY),
-            );
-            for c in corners {
-                let d = [
-                    c[0] - camera.target[0],
-                    c[1] - camera.target[1],
-                    c[2] - camera.target[2],
-                ];
-                let (u, r) = (dot(d, frame.up), dot(d, frame.right));
-                up = (up.0.min(u), up.1.max(u));
-                right = (right.0.min(r), right.1.max(r));
-            }
-            up.0 <= half_up && up.1 >= -half_up && right.0 <= half_right && right.1 >= -half_right
-        }
-        Projection::Perspective { field_of_view } => {
-            let ty = libm::tan(field_of_view.to_radians() / 2.0);
-            let tx = ty * aspect;
-            // Each corner's depth along the view and its offsets across it, from the eye:
-            // the box is out of view if every corner is behind the eye, or past one side.
-            let mut outside = [true; 5];
-            for c in corners {
-                let d = [
-                    c[0] - camera.eye[0],
-                    c[1] - camera.eye[1],
-                    c[2] - camera.eye[2],
-                ];
-                let depth = -dot(d, frame.back);
-                let (x, y) = (dot(d, frame.right), dot(d, frame.up));
-                let tests = [
-                    depth <= 0.0,
-                    x > depth * tx,
-                    -x > depth * tx,
-                    y > depth * ty,
-                    -y > depth * ty,
-                ];
-                for (side, out) in outside.iter_mut().zip(tests) {
-                    *side = *side && out;
-                }
-            }
-            !outside.iter().any(|&out| out)
-        }
-    })
+    // The image's frustum, as the renderer culls bodies and faces by it.
+    Some(ViewRegion::frustum(camera, &frame, width, height).class_of_box((low, high)) != Class::Out)
 }
 
 #[cfg(test)]

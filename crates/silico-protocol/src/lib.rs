@@ -70,11 +70,13 @@ pub use refusal::{
     OUT_OF_MEMORY, Operation, Refusal, Returned, Role, Trouble,
 };
 pub use render::{
-    Camera, EDGE_BIT, F32_ROUNDING, Frame, InView, InViewBody, MAX_RENDER_COORDINATE,
-    MAX_RENDER_EDGES, MAX_RENDER_FACES, MAX_RENDER_SIDE, MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE,
-    MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT, PRECISION_OF_PIXEL, PixelId, PointBox, Projection,
-    RenderAdapter, RenderBody, RenderScene, check_bodies_in_view, check_render_mesh,
-    field_of_view_range, least_view_height, points_box, reach_of_box, reach_of_points,
+    Camera, Class, EDGE_BIT, F32_ROUNDING, Frame, HalfSpace, InView, InViewBody,
+    MAX_RENDER_COORDINATE, MAX_RENDER_EDGES, MAX_RENDER_FACES, MAX_RENDER_SIDE,
+    MAX_RENDER_TRIANGLES, MIN_EYE_DISTANCE, MIN_UP_ACROSS_VIEW, MIN_VIEW_HEIGHT,
+    PRECISION_OF_PIXEL, PixelId, PointBox, Projection, RenderAdapter, RenderBody, RenderScene,
+    ViewRegion, box_corners, box_of, check_bodies_in_view, check_render_mesh, corner_sec2,
+    field_of_view_range, least_view_height, points_box, pyramid_slope, reach_of_box,
+    reach_of_points,
 };
 pub use sketch::{
     Algorithm, DragBegin, Dragged, Follow, Geometry, MAX_DRAG_UNKNOWNS, MAX_JACOBIAN_ENTRIES,

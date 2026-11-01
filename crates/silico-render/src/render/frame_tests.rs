@@ -250,8 +250,9 @@ fn a_body_forgotten_is_drawn_no_more_and_one_replaced_is_uploaded_again() {
             let found = hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE)));
             assert_eq!(found, Some((1, Element::Face(3), [32, 26])));
             // The same mesh again, by its Arc or an equal one, uploads nothing; another, the
-            // box moved 100 mm right (out of view: from column 32 + 79 × 12/11 = 118), is
-            // uploaded again and drawn where it now is.
+            // box moved 100 mm right (out of view: from column 32 + 79 × 12/11 = 118), drops
+            // the old meshes, and isn't placed where the view can't see it: nothing uploaded
+            // until a view does.
             let before = r.uploads();
             let mesh = the_box();
             r.upload(1, &mesh).unwrap();
@@ -264,7 +265,7 @@ fn a_body_forgotten_is_drawn_no_more_and_one_replaced_is_uploaded_again() {
             )
             .unwrap();
             assert_eq!(hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE))), None);
-            assert_eq!(r.uploads(), before + 6);
+            assert_eq!(r.uploads(), before);
         },
     );
 }

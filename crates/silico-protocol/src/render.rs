@@ -124,9 +124,25 @@ pub fn least_view_height(height: u32, reach: f64) -> f64 {
 /// draws nothing.
 fn angle_draws(field_of_view: f64, width: u32, height: u32) -> bool {
     let tan = libm::tan(field_of_view.to_radians() / 2.0);
+    corner_sec2(tan, width, height) <= pyramid_slope(tan, height)
+}
+
+/// How much more a point's error moves the image at its corner than at its centre, in a
+/// perspective view `width` by `height` whose half-angle's tangent is `tan`: the corner
+/// ray's sec², `1 + t²(1 + aspect²)`.
+pub fn corner_sec2(tan: f64, width: u32, height: u32) -> f64 {
     let aspect = f64::from(width) / f64::from(height);
-    let corner = 1.0 + tan * tan * (1.0 + aspect * aspect);
-    F32_ROUNDING * corner * f64::from(height) <= PRECISION_OF_PIXEL * 2.0 * tan
+    1.0 + tan * tan * (1.0 + aspect * aspect)
+}
+
+/// How far across a perspective view a point may be for its depth, `2^20 t / height`, in an
+/// image `height` pixels high whose half-angle's tangent is `tan`: so it projects at most
+/// 2^19 pixels off the view's axis, where f32 holds it to [`PRECISION_OF_PIXEL`]
+/// (`PRECISION_OF_PIXEL × 2t / F32_ROUNDING / height`). The slope of the pyramid a
+/// perspective view's faces and edges are cut to, and, against [`corner_sec2`], the bound
+/// on its angle.
+pub fn pyramid_slope(tan: f64, height: u32) -> f64 {
+    PRECISION_OF_PIXEL * 2.0 * tan / F32_ROUNDING / f64::from(height)
 }
 
 /// The narrowest and widest a perspective view's angle may be, in degrees, in an image `width`
@@ -141,7 +157,7 @@ pub fn field_of_view_range(width: u32, height: u32) -> (f64, f64) {
     let aspect = f64::from(width.max(1)) / h;
     let k = 1.0 + aspect * aspect;
     // 2^20, the bound's factor: F32_ROUNDING's 2^22 times an eighth times 2.
-    let b = 2.0 * PRECISION_OF_PIXEL / F32_ROUNDING;
+    let b = pyramid_slope(1.0, 1);
     let root = (b * b - 4.0 * h * h * k).max(0.0).sqrt();
     // The smaller root as c / (a x_large), so it keeps its digits.
     let large = (b + root) / (2.0 * h * k);
@@ -175,12 +191,22 @@ pub fn field_of_view_range(width: u32, height: u32) -> (f64, f64) {
 /// still be within it.
 fn to_six_decimals(x: f64, up: bool) -> f64 {
     let scaled = x * 1e6;
-    let shown = if up { scaled.ceil() } else { scaled.floor() } / 1e6;
-    match up {
-        true if shown < x => x.next_up(),
-        false if shown > x => x.next_down(),
-        _ => shown,
+    let (mut n, step) = if up {
+        (scaled.ceil(), 1.0)
+    } else {
+        (scaled.floor(), -1.0)
+    };
+    // `x × 1e6` rounds, so its ceiling (or floor) may be a step short of `x`: the next
+    // six-decimal value then, never a long number the wire would round back past it.
+    for _ in 0..4 {
+        let shown = n / 1e6;
+        if (up && shown >= x) || (!up && shown <= x) {
+            return shown;
+        }
+        n += step;
     }
+    // Past 2^53 millionths no six-decimal value is between, and `x` is one.
+    x
 }
 
 /// A scene for the render worker: the bodies in view, the camera, and the image's size.
@@ -478,7 +504,11 @@ pub type PointBox = ([f64; 3], [f64; 3]);
 /// The box of `mesh`'s points, its positions and its edges' points; none for a mesh of
 /// neither.
 pub fn points_box(mesh: &Mesh) -> Option<PointBox> {
-    let mut points = mesh.positions.iter().chain(&mesh.edge_points);
+    box_of(mesh.positions.iter().chain(&mesh.edge_points))
+}
+
+/// The box of `points`; none for none.
+pub fn box_of<'a>(mut points: impl Iterator<Item = &'a [f64; 3]>) -> Option<PointBox> {
     let first = *points.next()?;
     Some(points.fold((first, first), |(low, high), p| {
         (
@@ -486,6 +516,169 @@ pub fn points_box(mesh: &Mesh) -> Option<PointBox> {
             std::array::from_fn(|k| high[k].max(p[k])),
         )
     }))
+}
+
+/// A box's eight corners, the `i`th taking `high` on each axis `k` whose bit `i >> k & 1` is
+/// set, `low` on the others.
+pub fn box_corners((low, high): PointBox) -> [[f64; 3]; 8] {
+    std::array::from_fn(|i| std::array::from_fn(|k| if i >> k & 1 == 0 { low[k] } else { high[k] }))
+}
+
+/// A half-space of a view's eye frame (x and y across the view, right and up, and the depth
+/// along it): the points whose linear form `normal · p + offset` is at least 0, or above 0
+/// if `open`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HalfSpace {
+    pub normal: [f64; 3],
+    pub offset: f64,
+    pub open: bool,
+}
+
+impl HalfSpace {
+    /// The linear form at `p`, in the eye's frame.
+    pub fn value(&self, p: [f64; 3]) -> f64 {
+        dot(self.normal, p) + self.offset
+    }
+
+    /// Whether `p`, in the eye's frame, is in it.
+    pub fn holds(&self, p: [f64; 3]) -> bool {
+        let v = self.value(p);
+        if self.open { v > 0.0 } else { v >= 0.0 }
+    }
+}
+
+/// Where points lie against a [`ViewRegion`]: every one in it, every one outside one of its
+/// half-spaces (so none in it), or neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Class {
+    In,
+    Out,
+    Crosses,
+}
+
+/// A convex region of a view, five half-spaces of its eye frame about `origin` (the eye, or
+/// an orthographic view's target): the image's frustum ([`ViewRegion::frustum`]), what can have
+/// a pixel; or a perspective view's pyramid ([`ViewRegion::pyramid`]), what f32 draws to an
+/// eighth of a pixel. One test serves both: [`ViewRegion::class`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewRegion {
+    pub origin: [f64; 3],
+    pub frame: Frame,
+    pub sides: [HalfSpace; 5],
+}
+
+impl ViewRegion {
+    /// The frustum of `camera`'s view (its `frame`) of an image `width` by `height`: a
+    /// perspective view's F = { depth > 0, |x| ≤ a t depth, |y| ≤ t depth } about the eye
+    /// (t the tangent of half its angle, a the aspect); an orthographic view's rectangle,
+    /// `view_height` high, about the target, every depth.
+    pub fn frustum(camera: &Camera, frame: &Frame, width: u32, height: u32) -> ViewRegion {
+        let aspect = f64::from(width) / f64::from(height);
+        let side = |normal: [f64; 3], offset: f64, open: bool| HalfSpace {
+            normal,
+            offset,
+            open,
+        };
+        let (origin, sides) = match camera.projection {
+            Projection::Perspective { field_of_view } => {
+                let ty = libm::tan(field_of_view.to_radians() / 2.0);
+                let tx = ty * aspect;
+                (
+                    camera.eye,
+                    [
+                        side([0.0, 0.0, 1.0], 0.0, true),
+                        side([-1.0, 0.0, tx], 0.0, false),
+                        side([1.0, 0.0, tx], 0.0, false),
+                        side([0.0, -1.0, ty], 0.0, false),
+                        side([0.0, 1.0, ty], 0.0, false),
+                    ],
+                )
+            }
+            Projection::Orthographic { view_height } => {
+                let (half_up, half_right) = (view_height / 2.0, view_height * aspect / 2.0);
+                (
+                    camera.target,
+                    [
+                        // Every depth: an orthographic camera sits behind the scene.
+                        side([0.0; 3], 0.0, false),
+                        side([-1.0, 0.0, 0.0], half_right, false),
+                        side([1.0, 0.0, 0.0], half_right, false),
+                        side([0.0, -1.0, 0.0], half_up, false),
+                        side([0.0, 1.0, 0.0], half_up, false),
+                    ],
+                )
+            }
+        };
+        ViewRegion {
+            origin,
+            frame: *frame,
+            sides,
+        }
+    }
+
+    /// The pyramid of a perspective view from `eye` (its `frame`) whose slope is `b`
+    /// ([`pyramid_slope`]): P = { depth ≥ [`MIN_EYE_DISTANCE`], |x| + |y| ≤ b × depth }.
+    pub fn pyramid(eye: [f64; 3], frame: &Frame, b: f64) -> ViewRegion {
+        let side = |sx: f64, sy: f64| HalfSpace {
+            normal: [-sx, -sy, b],
+            offset: 0.0,
+            open: false,
+        };
+        ViewRegion {
+            origin: eye,
+            frame: *frame,
+            sides: [
+                HalfSpace {
+                    normal: [0.0, 0.0, 1.0],
+                    offset: -MIN_EYE_DISTANCE,
+                    open: false,
+                },
+                side(1.0, 1.0),
+                side(1.0, -1.0),
+                side(-1.0, 1.0),
+                side(-1.0, -1.0),
+            ],
+        }
+    }
+
+    /// `p`, a point in the document, in the region's eye frame, in f64: across the view
+    /// (right, up) from its origin, and its depth along it.
+    pub fn eye_frame(&self, p: [f64; 3]) -> [f64; 3] {
+        let d = sub(p, self.origin);
+        [
+            dot(self.frame.right, d),
+            dot(self.frame.up, d),
+            -dot(self.frame.back, d),
+        ]
+    }
+
+    /// Where `points`, in the document, lie against the region; [`Class::Out`] for none.
+    pub fn class(&self, points: impl IntoIterator<Item = [f64; 3]>) -> Class {
+        let mut outside = [true; 5];
+        let (mut any, mut all_in) = (false, true);
+        for p in points {
+            let e = self.eye_frame(p);
+            any = true;
+            for (side, out) in self.sides.iter().zip(&mut outside) {
+                let holds = side.holds(e);
+                all_in &= holds;
+                *out &= !holds;
+            }
+        }
+        if !any || outside.iter().any(|&out| out) {
+            Class::Out
+        } else if all_in {
+            Class::In
+        } else {
+            Class::Crosses
+        }
+    }
+
+    /// Where the box `bounds` lies, by its eight corners: as every point of it does where
+    /// that's [`Class::In`] or [`Class::Out`] (the region is convex, each half-space linear).
+    pub fn class_of_box(&self, bounds: PointBox) -> Class {
+        self.class(box_corners(bounds))
+    }
 }
 
 /// How far `mesh`'s farthest point (a position or an edge's point) is from `from`: exact,
@@ -700,7 +893,39 @@ impl RenderBody {
 
 #[cfg(test)]
 mod tests {
-    use super::length_and_unit;
+    use super::{length_and_unit, to_six_decimals};
+
+    #[test]
+    fn a_bound_given_to_six_decimals_is_on_its_side_and_six_decimals_long() {
+        // One ulp above (below) a six-decimal value N / 1e6, whose product with 1e6 rounds
+        // back to N: the next six-decimal value up (down), not the long number one ulp off,
+        // which the wire would round back past the bound.
+        for n in [
+            2_653_911_595.0f64,
+            447_635.0,
+            179_104_744.0,
+            1.0,
+            123_456_789_012.0,
+        ] {
+            let at = n / 1e6;
+            let above = at.next_up();
+            let up = to_six_decimals(above, true);
+            assert!(up >= above, "{n}: {up}");
+            assert_eq!(up, (n + 1.0) / 1e6, "{n}");
+            let below = at.next_down();
+            let down = to_six_decimals(below, false);
+            assert!(down <= below, "{n}: {down}");
+            assert_eq!(down, (n - 1.0) / 1e6, "{n}");
+            // N / 1e6 itself is given as it is.
+            assert_eq!(to_six_decimals(at, true), at);
+            assert_eq!(to_six_decimals(at, false), at);
+            for shown in [up, down] {
+                let written = format!("{shown}");
+                let decimals = written.split('.').nth(1).map_or(0, str::len);
+                assert!(decimals <= 6, "{written}");
+            }
+        }
+    }
 
     #[test]
     fn a_zero_vector_has_no_length_or_direction_and_the_least_positive_one_has() {

@@ -8,8 +8,9 @@
 //! face's anchor and transform, its instance, the edges' strips: `Renderer::placed`).
 //!
 //! Then the ten copies at 1920 by 1080 from inside the first copy's box, the eye at its
-//! centre turning 12 degrees a view (60°): the faces about the eye cut to each view's
-//! pyramid and uploaded again for it, the rest moved as on the orbit (`inside` lines).
+//! centre turning 12 degrees a view (60°): what can have no pixel not placed, the faces
+//! about the eye whose points cross the view's pyramid cut and uploaded again for it, the
+//! rest moved as on the orbit; then the last view again, still (`inside` lines).
 //!
 //! Recorded, never budgeted: it fails on no time. Run with
 //! `SILICO_KERNEL_WORKER=target/release/silico-kernel-worker SILICO_BENCH_BREP=part.brep
@@ -133,18 +134,29 @@ fn inside(renderer: &mut Renderer, mesh: &Mesh, extent: f64) -> Result<String, B
         placed.push(renderer.placed());
         uploads.push(renderer.uploads() - before);
     }
+    // The last view again, still: nothing to cut again, nothing uploaded.
+    let (mut still, mut still_uploads) = (vec![], 0);
+    for _ in 0..VIEWS {
+        let before = renderer.uploads();
+        time(renderer, &scene(VIEWS))?;
+        still.push(renderer.placed());
+        still_uploads += renderer.uploads() - before;
+    }
     changes.sort();
     placed.sort();
     uploads.sort();
+    still.sort();
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
     Ok(format!(
-        "inside copies 10 size 1920x1080 view_change_median_ms {:.2} view_change_p95_ms {:.2} placing_median_ms {:.3} placing_p95_ms {:.3} meshes_uploaded_per_view_median {} max {}\n",
+        "inside copies 10 size 1920x1080 view_change_median_ms {:.2} view_change_p95_ms {:.2} placing_median_ms {:.3} placing_p95_ms {:.3} meshes_uploaded_per_view_median {} max {} still_placing_median_ms {:.3} still_placing_p95_ms {:.3} still_uploads {still_uploads}\n",
         ms(changes[VIEWS / 2]),
         ms(changes[VIEWS * 95 / 100]),
         ms(placed[VIEWS / 2]),
         ms(placed[VIEWS * 95 / 100]),
         uploads[VIEWS / 2],
         uploads[VIEWS - 1],
+        ms(still[VIEWS / 2]),
+        ms(still[VIEWS * 95 / 100]),
     ))
 }
 
