@@ -399,3 +399,6 @@ crates/silico-core/src/face_plane.rs | frame | replace * with / | #344
 crates/silico-core/src/face_plane.rs | frame | replace * with / | #344
 crates/silico-core/src/fake.rs | frame_box | replace + with - | #339
 crates/silico-core/src/recompute.rs | faces_at | replace < with <= | #344
+crates/silico-core/src/recompute.rs | Engine<K>::run | replace > with >= | #344
+crates/silico-core/src/document/suppression.rs | lost | replace < with <= | #344
+crates/silico-core/src/document/sketch.rs | AxisToken::default_x | replace > with >= | #344

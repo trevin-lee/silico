@@ -705,3 +705,45 @@ fn a_face_sketch_whose_faces_solid_couldnt_be_described_reads_the_fault_as_the_s
         "{checked}"
     );
 }
+
+#[test]
+fn a_face_sketch_whose_frame_lies_past_the_reach_is_the_documents_refusal_on_plane_never_a_bug() {
+    // The box's top described as a plane of normal +X through (2e6, 0, 0): a unit normal,
+    // so the face is described soundly, but the frame's origin, n(n·p) = (2e6, 0, 0), lies
+    // 2e6 mm out, past √3 · 1e6: no sketch can be placed there. That's the document's
+    // (the sketch sits on a face too far out), refused as invalid_input on plane, never an
+    // internal error. Written out by hand.
+    let kernel = FakeKernel::new(2).unwrap();
+    kernel.answer_instead(|op| {
+        let Op::DescribeAll { shape } = op else {
+            return None;
+        };
+        let mut description = FakeKernel::described(shape)?;
+        if let Some(top) = description.faces.get_mut(5) {
+            top.surface = silico_protocol::Surface::Plane {
+                normal: [1.0, 0.0, 0.0],
+                location: [2e6, 0.0, 0.0],
+            };
+        }
+        Some(silico_protocol::Reply::DescribedAll(description))
+    });
+    let features = vec![
+        cube(),
+        on("s0000001", &face("b0000001.box.Face6", "+y", false)),
+    ];
+    let far = opened_on(kernel, FakeSketches::new(), &features);
+    let refused = error(
+        "invalid_input",
+        "the sketch's face's frame can't place a sketch: the face frame's origin must be within √3 · 1e6 mm (a kilometre on each axis) of the model's origin, got [2000000.0, 0.0, 0.0], 2000000 mm out",
+        "s0000001",
+        &[],
+        Some("plane"),
+        "put the sketch on a face nearer the model's origin: a face's frame is placed from the origin projected onto its plane",
+        &[],
+    );
+    let read = far.read("s0000001");
+    assert_eq!(read["ok"], true, "{read}");
+    assert_eq!(read["result"]["plane"], Value::Null, "{read}");
+    assert_eq!(read["result"]["plane_problem"], refused, "{read}");
+    assert_eq!(far.problems(), [refused]);
+}
