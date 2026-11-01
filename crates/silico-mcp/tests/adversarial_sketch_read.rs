@@ -103,6 +103,7 @@ fn the_sketch_tool_answers_a_sketch_or_says_why_its_solver_isnt_there() {
                 "profile_problems": [open_end("p0000001"), open_end("p0000002")],
                 "profile_problems_total": 2,
                 "solve_problem": null,
+                "plane_problem": null,
             }),
             "{result}"
         );
