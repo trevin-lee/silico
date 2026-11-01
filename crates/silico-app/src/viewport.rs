@@ -542,10 +542,15 @@ impl View {
         (stale || outside).then_some(asked)
     }
 
-    /// A retry due at `now` that no read was wanted for: its run ends, so a later refusal
-    /// starts again at the shortest delay.
-    fn ended_if_due(&mut self, now: Instant) {
-        if self.reading.is_none() && self.retry.as_ref().is_some_and(|retry| retry.at <= now) {
+    /// A retry due at `now` that no read was wanted for, the view `settled`: its run ends,
+    /// so a later refusal starts again at the shortest delay. A frame the view moves in
+    /// wants no read for that alone, and ends nothing, or a run falling due mid-orbit would
+    /// never grow past the shortest.
+    fn ended_if_due(&mut self, settled: bool, now: Instant) {
+        if settled
+            && self.reading.is_none()
+            && self.retry.as_ref().is_some_and(|retry| retry.at <= now)
+        {
             self.retry = None;
         }
     }
@@ -996,9 +1001,9 @@ pub fn show<P: Clients + 'static>(
     }
     match view.wanted(tab.published, size, settled, now) {
         Some(asked) => view.start(sessions, &tab.id, asked),
-        // A retry due with no read wanted ends its run: a later refusal starts again at the
-        // shortest delay.
-        None => view.ended_if_due(now),
+        // A retry due with no read wanted of the view at rest ends its run: a later refusal
+        // starts again at the shortest delay. Not while it moves, which reads nothing.
+        None => view.ended_if_due(settled, now),
     }
     if view.reading.is_none()
         && let Some(wait) = view.wake_in(now)
@@ -2116,11 +2121,31 @@ mod tests {
         view.camera = front(80.0);
         let due = at + Duration::from_secs(1);
         assert_eq!(view.wanted(revision(3), [1000, 1000], true, due), None);
-        view.ended_if_due(due);
+        view.ended_if_due(true, due);
         assert!(view.retry.is_none());
         view.camera = front(40.0);
         let request = asked(&view, 3);
         view.took(request, false, refusal(ErrorCode::WorkerCrashed, None), due);
         assert_eq!(view.wake_in(due), Some(Duration::from_millis(250)));
+    }
+
+    #[test]
+    fn a_retry_falling_due_while_the_view_moves_doesnt_end_its_run() {
+        // Refused at revision 3, the bodies of 3 (front(40)'s 0.02 is out of their serves).
+        // At +250 ms the view is moving (front(30), not settled): no read, and the run goes
+        // on; settled there, it's read and refused, and the next waits 500 ms, not 250.
+        let at = now();
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        view.camera = front(40.0);
+        let request = asked(&view, 3);
+        view.took(request, false, refusal(ErrorCode::WorkerCrashed, None), at);
+        let due = at + Duration::from_millis(250);
+        view.camera = front(30.0);
+        assert_eq!(view.wanted(revision(3), [1000, 1000], false, due), None);
+        view.ended_if_due(false, due);
+        assert!(view.retry.is_some());
+        let settled = view.wanted(revision(3), [1000, 1000], true, due).unwrap();
+        view.took(settled, false, refusal(ErrorCode::WorkerCrashed, None), due);
+        assert_eq!(view.wake_in(due), Some(Duration::from_millis(500)));
     }
 }

@@ -1486,14 +1486,67 @@ fn a_body_shown_again_raises_a_view_under_the_least_its_reach_allows() {
         .filter_map(|body| body.bounds)
         .collect();
     assert!(!navigate::drawable(view(&h).camera(), boxes.clone()));
+    // No read lands across the show (its answer would clamp the view too): the kernel
+    // refuses to mesh, and the read count is the same after.
+    let failing = failing_kernel(&f);
+    failing.store(true, Ordering::SeqCst);
+    step_until(&mut h, "no read out", |h| !view(h).reading());
+    let reads = view(&h).reads();
     h.get_by_label("Show Large").click();
     step(&mut h);
     step(&mut h);
+    assert_eq!(view(&h).reads(), reads);
     assert!(navigate::drawable(view(&h).camera(), boxes.clone()));
     let both = (2975.0f64 * 2975.0 + 2.0 * 975.0 * 975.0).sqrt() * 1e-5 * 1.01;
     assert!((view_height(view(&h).camera()) - both).abs() < 1e-12);
     let last = record.lock().unwrap().frames.last().unwrap().clone();
     assert_eq!(last.bodies, [1, 2]);
     assert!(navigate::drawable(&last.camera, boxes));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_retry_falling_due_mid_pan_keeps_its_run_growing() {
+    // Refused once (the next in 250 ms); the time moved past it while the middle button
+    // pans, frame after frame: nothing is read, and the run isn't ended. Let go: the view
+    // at rest is read, refused again, and the next waits 500 ms, not 250.
+    let f = fixture();
+    let failing = failing_kernel(&f);
+    let (time, clock) = hand_clock();
+    let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
+    meshes_settled(&mut h, 0);
+    failing.store(true, Ordering::SeqCst);
+    let reads = view(&h).reads();
+    let wakes = h.state().wakes();
+    let zoomed = the_small_cube_at_0_04(&h);
+    view_mut(&mut h).set_camera(zoomed);
+    step_until(&mut h, "the refused read", |h| {
+        view(h).reads() > reads && !view(h).reading()
+    });
+    woken(&mut h, wakes);
+    let at = rect(&h).center() - vec2(100.0, 0.0);
+    h.hover_at(at);
+    button(&h, at, PointerButton::Middle, true);
+    step(&mut h);
+    advance(&time, Duration::from_millis(300));
+    for i in 1..=10u8 {
+        h.hover_at(at + vec2(2.0 * f32::from(i), 0.0));
+        step(&mut h);
+    }
+    assert_eq!(view(&h).reads(), reads + 1);
+    let wakes = h.state().wakes();
+    button(&h, at + vec2(20.0, 0.0), PointerButton::Middle, false);
+    step_until(&mut h, "the read at rest refused", |h| {
+        view(h).reads() == reads + 2 && !view(h).reading()
+    });
+    woken(&mut h, wakes);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let delay = repaint_delay(&h).unwrap_or_default();
+    assert!(
+        delay <= Duration::from_millis(500) && delay > Duration::from_millis(480),
+        "{delay:?}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
