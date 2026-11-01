@@ -9952,3 +9952,55 @@ fn an_opens_pick_refused_at_once_asks_for_the_frame_that_says_so() {
     assert!(h.state().tabs().is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe() {
+    on_lavapipe(
+        "the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            // As main.rs does, once at startup.
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            let path = f.file("box.silico", A_BOX);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            // The browser's empty space, left of the viewport and above the timeline: the
+            // panels' Gray.100 (DESIGN.md, *Tokens*).
+            let viewport = the_viewport(&h);
+            let browser = viewport.left_bottom() + eframe::egui::vec2(-20.0, -20.0);
+            assert_eq!(pixel(browser), [0x0d, 0x0d, 0x0d, 0xff]);
+            // The open document's tab, selected: Blue.500 at its left edge, inside its fill
+            // and short of its text.
+            let tab = h
+                .query_all_by_label("box.silico")
+                .map(|node| node.rect())
+                .find(|rect| rect.top() < 30.0)
+                .expect("the document's tab");
+            let inside = eframe::egui::pos2(tab.left() + 1.5, tab.center().y);
+            assert_eq!(pixel(inside), [0x18, 0x6a, 0xdd, 0xff], "{tab:?}");
+        },
+    );
+}
