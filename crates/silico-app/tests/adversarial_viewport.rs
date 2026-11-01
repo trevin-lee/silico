@@ -1451,9 +1451,11 @@ fn wheel_notches_during_a_backoff_read_at_most_once() {
 fn a_body_shown_again_raises_a_view_under_the_least_its_reach_allows() {
     // The large cube hidden, the view zoomed in to the least the small one allows from
     // (25, 25, 25); the large cube shown again: in the next frame the view is raised to
-    // the least of both, so the renderer draws it.
+    // the least of both, so the renderer draws it. The viewport's time is the test's, so no
+    // retry falls due on a slow runner.
     let f = fixture();
-    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
+    let (_time, clock) = hand_clock();
+    let (mut h, record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
     meshes_settled(&mut h, 0);
     step_until(&mut h, "the browser", |h| {
         h.query_by_label("Hide Large").is_some()
