@@ -103,8 +103,6 @@ pub struct Panes<'a, P: Clients + 'static> {
     pub started: &'a mut bool,
     /// What the viewport's renderer holds, and how its frames reach it.
     pub drawing: &'a mut crate::viewport::Drawing,
-    /// What draws over the viewport's bodies, if anything does (sketch mode, M5.7).
-    pub overlay: &'a mut Option<crate::app::Overlay>,
 }
 
 impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
@@ -116,18 +114,7 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
         });
         if *pane == Pane::Viewport {
             // The canvas reaches the pane's edges.
-            let overlay = &mut *self.overlay;
-            crate::viewport::show(
-                ui,
-                self.tab.as_deref_mut(),
-                self.sessions,
-                self.drawing,
-                |painter, frame| {
-                    if let Some(overlay) = overlay {
-                        overlay(painter, frame);
-                    }
-                },
-            );
+            crate::viewport::show(ui, self.tab.as_deref_mut(), self.sessions, self.drawing);
             return UiResponse::None;
         }
         egui::Frame::new()

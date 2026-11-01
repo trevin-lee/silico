@@ -87,11 +87,13 @@ impl ViewBody {
 }
 
 /// What the viewport is this frame, for what draws over it and picks in it (sketch mode,
-/// M5.7): where it is in the window, in points; the camera; the size in physical pixels;
-/// the display's scale; the pointer, in physical pixels from the viewport's top left, if
-/// it's over the viewport; and the left button's events the pane didn't take itself.
+/// M5.7): the tab's session; where it is in the window, in points; the camera; the size in
+/// physical pixels; the display's scale; the pointer, in physical pixels from the
+/// viewport's top left, if it's over the viewport; and the left button's events the pane
+/// didn't take itself.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewFrame {
+    pub session: SessionId,
     pub rect: Rect,
     pub camera: Camera,
     pub size_px: [u32; 2],
@@ -100,10 +102,16 @@ pub struct ViewFrame {
     /// The left button's events on the canvas, in order, raw: none the ViewCube or the
     /// navigation bar took, and none while a navigation tool makes a left drag navigate.
     /// Who acts on them (sketch mode, the selection) is the tab's mode, not the pane's.
+    ///
+    /// Every Press is followed by exactly one Release or Cancel, in this frame or a later
+    /// one, given to the same tab (a Cancel to a tab no longer shown is given to it there,
+    /// [`end_unshown`]), with only Moves between; and nothing is handed on between that
+    /// end and the next Press but a DoubleClick, straight after the Release that made it.
     pub left: Vec<LeftEvent>,
 }
 
-/// What a left-button event was.
+/// What a left-button event was. A Press begins a stream, which ends in exactly one Release
+/// or Cancel ([`ViewFrame::left`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeftKind {
     /// Pressed on the canvas.
@@ -112,7 +120,14 @@ pub enum LeftKind {
     Move,
     /// Let go, after a press on the canvas.
     Release,
-    /// egui's double-click on the canvas (a second press within its delay and distance).
+    /// Held no longer, with no release: the pointer left the window, the window lost the
+    /// focus, a navigation tool or the ViewCube took the drag, another press came with no
+    /// release before it, egui's pointer was let go with no release event, or the tab
+    /// stopped being shown. What the stream did is undone, not done; it's at where the
+    /// stream was last (its press, or its last move).
+    Cancel,
+    /// egui's double-click on the canvas (a second press within its delay and distance),
+    /// straight after the Release that made it.
     DoubleClick,
 }
 
@@ -121,6 +136,11 @@ pub enum LeftKind {
 /// frame it came in (the pane's frame number, [`crate::renderer::Frame::serial`]'s), and
 /// egui's input time, in seconds, so a consumer's double-clicks and drag thresholds are
 /// the same in a test as in a window.
+///
+/// `at_px` is in physical pixels, not points, and may lie outside the viewport (a drag
+/// let go past its edge, the window's other panes): a consumer clamps it to the size
+/// before it makes a [`PixelRect`] of it. Every event of one frame has the frame's one
+/// `time`: egui gives its events no time of their own.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LeftEvent {
     pub kind: LeftKind,
@@ -129,6 +149,16 @@ pub struct LeftEvent {
     pub ctrl: bool,
     pub frame: u64,
     pub time: f64,
+}
+
+/// The left button held from a press on the canvas, kept for the whole pane, not a tab's
+/// (the pointer is the window's, whichever tab is shown): the tab it was pressed in, by its
+/// session, and where its stream was last (its press, or its last move), in physical
+/// pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LeftHeld {
+    session: SessionId,
+    at_px: [f32; 2],
 }
 
 /// What a `meshes` read was asked under: the published revision, the camera, and the size.
@@ -216,8 +246,6 @@ pub struct View {
     /// The camera and size of the last frame, to tell when the view has settled.
     last: Option<(Camera, [u32; 2])>,
     drag: Option<Drag>,
-    /// The left button is held from a press on the canvas, its events handed on.
-    left_held: bool,
     /// The navigation bar's tool, if one is chosen.
     pub tool: Option<Navigation>,
     /// The elements drawn highlighted, set from outside (M5.7's selection): passed through,
@@ -249,7 +277,6 @@ impl Default for View {
             reads: 0,
             last: None,
             drag: None,
-            left_held: false,
             tool: None,
             highlights: BTreeSet::new(),
             picking: None,
@@ -719,62 +746,110 @@ impl View {
         self.moved(camera);
     }
 
-    /// The left button's events this frame that the pane doesn't take itself, in physical
-    /// pixels from the viewport's top left, of frame `frame`: a press on the canvas (where
-    /// the ViewCube and the bar, on top, aren't), the moves while it's held, its release,
-    /// and egui's double-click; none while a navigation tool makes a left drag navigate.
-    fn left_events(&mut self, ui: &Ui, response: &egui::Response, frame: u64) -> Vec<LeftEvent> {
-        if self.tool.is_some() {
-            self.left_held = false;
-            return Vec::new();
-        }
-        let rect = response.rect;
+    /// The left button's events this frame that the pane doesn't take itself, for the tab of
+    /// session `session`, in physical pixels from `rect`'s top left (the viewport's, as its
+    /// frame gives it, not the canvas response's, which is rounded), of frame `frame`: a
+    /// press on the canvas (where the ViewCube and the bar, on top, aren't, and not while
+    /// the pane drags: the middle button's pan or orbit, or the cube's), the moves while it's
+    /// held, its release or its cancel, and egui's double-click; none while a navigation
+    /// tool makes a left drag navigate. `held` is the pane's, which [`end_unshown`] has
+    /// already ended if another tab's.
+    fn left_events(
+        &self,
+        held: &mut Option<LeftHeld>,
+        session: SessionId,
+        ui: &Ui,
+        rect: Rect,
+        response: &egui::Response,
+        frame: u64,
+    ) -> Vec<LeftEvent> {
         let ppp = ui.ctx().pixels_per_point();
         let px = |at: Pos2| [(at.x - rect.left()) * ppp, (at.y - rect.top()) * ppp];
-        let (events, time, modifiers) =
-            ui.input(|input| (input.events.clone(), input.time, input.modifiers));
-        let event = |kind, at: Pos2, held: egui::Modifiers| LeftEvent {
-            kind,
-            at_px: px(at),
-            shift: held.shift,
-            ctrl: held.command,
-            frame,
-            time,
-        };
+        // A navigation tool's drag, or the cube's: the pane's, which ends what was held.
+        let taken = self.tool.is_some() || self.drag == Some(Drag::Cube);
+        let pressable = response.hovered() && self.drag.is_none();
         let mut left = Vec::new();
-        for each in events {
-            match each {
-                egui::Event::PointerButton {
-                    pos,
-                    button: PointerButton::Primary,
-                    pressed: true,
-                    modifiers,
-                } if response.hovered() && rect.contains(pos) => {
-                    self.left_held = true;
-                    left.push(event(LeftKind::Press, pos, modifiers));
+        // Read where the events are, not cloned out each frame.
+        let (released, time, modifiers) = ui.input(|input| {
+            let time = input.time;
+            let event = |kind, at_px, keys: egui::Modifiers| LeftEvent {
+                kind,
+                at_px,
+                shift: keys.shift,
+                ctrl: keys.command,
+                frame,
+                time,
+            };
+            let mut released = false;
+            if taken {
+                if let Some(was) = held.take() {
+                    left.push(event(LeftKind::Cancel, was.at_px, input.modifiers));
                 }
-                egui::Event::PointerButton {
-                    pos,
-                    button: PointerButton::Primary,
-                    pressed: false,
-                    modifiers,
-                } if self.left_held => {
-                    self.left_held = false;
-                    left.push(event(LeftKind::Release, pos, modifiers));
-                }
-                egui::Event::PointerMoved(pos) if self.left_held => {
-                    left.push(event(LeftKind::Move, pos, modifiers));
-                }
-                egui::Event::PointerGone | egui::Event::WindowFocused(false) => {
-                    self.left_held = false;
-                }
-                _ => {}
+                return (false, time, input.modifiers);
             }
-        }
-        if response.double_clicked_by(PointerButton::Primary)
+            for each in &input.events {
+                match *each {
+                    egui::Event::PointerButton {
+                        pos,
+                        button: PointerButton::Primary,
+                        pressed: true,
+                        modifiers,
+                    } if pressable && rect.contains(pos) => {
+                        // A press whose release never came ends before this one begins.
+                        if let Some(was) = held.take() {
+                            left.push(event(LeftKind::Cancel, was.at_px, modifiers));
+                        }
+                        let at_px = px(pos);
+                        *held = Some(LeftHeld { session, at_px });
+                        left.push(event(LeftKind::Press, at_px, modifiers));
+                        released = false;
+                    }
+                    egui::Event::PointerButton {
+                        pos,
+                        button: PointerButton::Primary,
+                        pressed: false,
+                        modifiers,
+                    } => {
+                        if held.take().is_some() {
+                            left.push(event(LeftKind::Release, px(pos), modifiers));
+                            released = true;
+                        }
+                    }
+                    egui::Event::PointerMoved(pos) => {
+                        if let Some(held) = held.as_mut() {
+                            held.at_px = px(pos);
+                            left.push(event(LeftKind::Move, held.at_px, input.modifiers));
+                        }
+                    }
+                    egui::Event::PointerGone | egui::Event::WindowFocused(false) => {
+                        if let Some(was) = held.take() {
+                            left.push(event(LeftKind::Cancel, was.at_px, input.modifiers));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Let go with no release event this frame (egui's pointer says so): ended too.
+            if !input.pointer.primary_down()
+                && let Some(was) = held.take()
+            {
+                left.push(event(LeftKind::Cancel, was.at_px, input.modifiers));
+            }
+            (released, time, input.modifiers)
+        });
+        // Straight after the Release that made it: no press came after it this frame.
+        if released
+            && response.double_clicked_by(PointerButton::Primary)
             && let Some(at) = response.interact_pointer_pos()
         {
-            left.push(event(LeftKind::DoubleClick, at, modifiers));
+            left.push(LeftEvent {
+                kind: LeftKind::DoubleClick,
+                at_px: px(at),
+                shift: modifiers.shift,
+                ctrl: modifiers.command,
+                frame,
+                time,
+            });
         }
         left
     }
@@ -896,6 +971,8 @@ pub struct Drawing {
     clock: Option<silico_core::disk::Clock>,
     /// Why there's no renderer, if one couldn't be made: the pane says so.
     unavailable: Option<String>,
+    /// The left button held from a press on the canvas, whichever tab it was pressed in.
+    held: Option<LeftHeld>,
 }
 
 impl Drawing {
@@ -1054,7 +1131,6 @@ pub fn show<P: Clients + 'static>(
     tab: Option<&mut Tab>,
     sessions: &Arc<Sessions<P>>,
     drawing: &mut Drawing,
-    overlay: impl FnOnce(&egui::Painter, &ViewFrame),
 ) {
     let rect = ui.available_rect_before_wrap();
     ui.painter()
@@ -1108,7 +1184,14 @@ pub fn show<P: Clients + 'static>(
     }
     drawing.take_refused();
     view.navigate(ui, &response, size_px);
-    let left = view.left_events(ui, &response, drawing.frames);
+    let left = view.left_events(
+        &mut drawing.held,
+        tab.id,
+        ui,
+        rect,
+        &response,
+        drawing.frames,
+    );
     let size = read_size(size_px);
     let settled = view.drag.is_none() && view.last.as_ref() == Some(&(view.camera.clone(), size));
     if !settled {
@@ -1134,6 +1217,7 @@ pub fn show<P: Clients + 'static>(
         .filter(|at| rect.contains(*at))
         .map(|at| [(at.x - rect.left()) * ppp, (at.y - rect.top()) * ppp]);
     view.frame = Some(ViewFrame {
+        session: tab.id,
         rect,
         camera: view.camera.clone(),
         size_px,
@@ -1184,11 +1268,58 @@ pub fn show<P: Clients + 'static>(
     // Over the bodies, under the ViewCube and the bar, in the pane's own layer: what the
     // tab's mode draws (a sketch, a selection's marks). It takes no input; the cube's and
     // the bar's, registered after, come first. A camera they change is drawn next frame.
-    if let Some(frame) = &view.frame {
-        overlay(&ui.painter_at(rect), frame);
+    if let Some(frame) = view.frame.take() {
+        overlaid(tab, &ui.painter_at(rect), &frame);
+        tab.view.frame = Some(frame);
     }
-    view_cube(ui, rect, view, size_px);
-    navigation_bar(ui, rect, view, size_px);
+    view_cube(ui, rect, &mut tab.view, size_px);
+    navigation_bar(ui, rect, &mut tab.view, size_px);
+}
+
+/// The tab's overlay given `frame`, and a test's watch after it, if one is set.
+fn overlaid(tab: &mut Tab, painter: &egui::Painter, frame: &ViewFrame) {
+    tab.overlay(painter, frame);
+    if let Some(watch) = &mut tab.watch {
+        watch(painter, frame);
+    }
+}
+
+/// Ends the left button's stream of a tab that isn't the one about to be shown (`shown`):
+/// an open shown over it, Ctrl+W, or another tab chosen, mid-drag. Called each frame
+/// before the pane draws. The stream's Cancel, where it was last, is given to that tab's
+/// overlay with the frame it was last shown in and a painter that draws nothing (it isn't
+/// shown); to none if the tab has gone. The tab shown is given nothing of it: the moves
+/// and the release to come aren't of a press of its own.
+pub fn end_unshown(
+    ctx: &egui::Context,
+    drawing: &mut Drawing,
+    shown: Option<SessionId>,
+    tabs: &mut [Tab],
+) {
+    let Some(held) = drawing.held.filter(|held| Some(held.session) != shown) else {
+        return;
+    };
+    drawing.held = None;
+    let Some(tab) = tabs.iter_mut().find(|tab| tab.id == held.session) else {
+        return;
+    };
+    // It was shown when it was pressed in, so it has a frame.
+    let Some(mut frame) = tab.view.frame.clone() else {
+        return;
+    };
+    let (time, modifiers) = ctx.input(|input| (input.time, input.modifiers));
+    frame.pointer_px = None;
+    frame.left = vec![LeftEvent {
+        kind: LeftKind::Cancel,
+        at_px: held.at_px,
+        shift: modifiers.shift,
+        ctrl: modifiers.command,
+        frame: drawing.frames,
+        time,
+    }];
+    let mut painter = egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::NOTHING);
+    painter.set_invisible();
+    overlaid(tab, &painter, &frame);
 }
 
 /// The ViewCube's faces: each named view's face, its outward normal.
@@ -1354,7 +1485,8 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
 }
 
 /// The navigation bar, floating at the canvas's bottom centre (section 8): Orbit, Pan, and
-/// Zoom, each the left drag's tool while chosen (a second click lets it go), and Fit.
+/// Zoom, each the left drag's tool while chosen (a second click lets it go), and Fit. A
+/// press anywhere on it, its padding too, is its own, never the canvas's.
 fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
     let size = Vec2::new(theme::NAVIGATION_BAR_WIDTH, theme::NAVIGATION_BAR_HEIGHT);
     let rect = Rect::from_center_size(
@@ -1368,7 +1500,9 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
         UiBuilder::new()
             .id_salt("navigation_bar")
             .max_rect(rect)
-            .layout(Layout::left_to_right(Align::Center)),
+            .layout(Layout::left_to_right(Align::Center))
+            // Under its buttons, over the canvas: the frame's padding absorbs a press.
+            .sense(Sense::click_and_drag()),
         |ui| {
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Toolbar);
