@@ -114,7 +114,7 @@ fn every_oracle_sketch_solved_is_its_own_solution_as_stored_and_from_twenty_star
         .iter()
         .map(|f| (f.id.clone(), f.name.as_str().to_owned()))
         .collect();
-    assert_eq!(features.len(), 16, "the oracle's sketch cases");
+    assert_eq!(features.len(), 18, "the oracle's sketch cases");
     let mut w = SketchWorker::start_worker(Path::new(WORKER)).unwrap();
     let mut rng = Rng(0x0f19_ed90);
     let (mut solved, mut tried) = (0, 0);
