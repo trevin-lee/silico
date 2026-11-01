@@ -1013,9 +1013,12 @@ pub struct StepCounter(Arc<(Mutex<Counted>, Condvar)>);
 pub struct StepCount {
     /// The steps settled: built, failed, kept from before, or never to run (an input
     /// failed, or only refused features need it). All of them once the recompute finishes.
+    /// It never goes back, round to round.
     pub done: usize,
     /// The steps of its plan: none until its plan is made (after the sketches it sweeps are
-    /// solved).
+    /// solved). A rebuild with sketches on faces plans in rounds, each adding the steps of
+    /// the features whose faces the rounds before it placed (docs/ports/attacher.md, *In
+    /// rounds*): so this grows, round to round, and never shrinks.
     pub steps: usize,
     /// The step started last of those running, as its feature and the feature's type
     /// (`f0000001 fillet`): none while no step runs.
@@ -1027,6 +1030,8 @@ pub struct StepCount {
 #[derive(Default)]
 struct Counted {
     count: StepCount,
+    /// How many plans it has made: one a round.
+    rounds: usize,
     /// What each step is called, by key: its first feature and that feature's type.
     labels: BTreeMap<Key, String>,
     /// The steps running, in the order they started.
@@ -1058,16 +1063,27 @@ impl StepCounter {
         self.0.1.notify_all();
     }
 
-    /// The plan made: `steps` steps, `done` of them settled already, each called as
-    /// `labels` says.
+    /// A round's plan made: `steps` steps, `done` of them settled already, each called as
+    /// `labels` says. Neither count goes back: a later round's plan holds the steps of the
+    /// rounds before it (some settled there without a result kept, never to run, which it
+    /// counts unsettled), so the count stays at least what it was.
     fn planned(&self, steps: usize, done: usize, labels: BTreeMap<Key, String>) {
         {
             let mut counted = lock(&self.0.0);
-            counted.count.steps = steps;
-            counted.count.done = done;
+            let count = &mut counted.count;
+            count.steps = count.steps.max(steps);
+            count.done = count.done.max(done).min(count.steps);
             counted.labels = labels;
+            counted.rounds += 1;
         }
         self.changed();
+    }
+
+    /// How many rounds the recompute has planned so far (docs/ports/attacher.md, *In
+    /// rounds*): a test's measure of how far it went.
+    #[cfg(any(test, feature = "fake"))]
+    pub fn rounds(&self) -> usize {
+        lock(&self.0.0).rounds
     }
 
     /// The step `key` started.
@@ -1089,6 +1105,7 @@ impl StepCounter {
             count,
             labels,
             running,
+            ..
         } = &mut *counted;
         count.done = (count.done + 1).min(count.steps);
         if ran {
@@ -3176,13 +3193,16 @@ struct Rebuild<'a> {
 }
 
 /// What a round of a rebuild takes from those before it: its number, from 0, and the
-/// results they had, by key, with the solids they couldn't measure and the fillets whose
-/// edges didn't resolve: the steps they hold aren't asked again.
+/// results they had, by key, with the solids they couldn't measure, the solids they measured
+/// or tried to, and the fillets whose edges didn't resolve: the steps they hold aren't asked
+/// again, nor the measures (a measure a worker failed is asked again by the next rebuild,
+/// not the next round).
 #[derive(Default)]
 struct Carried {
     round: usize,
     done: BTreeMap<Key, StepResult>,
     unmeasured: BTreeMap<Key, Error>,
+    measured: BTreeSet<Key>,
     unresolved: BTreeMap<Key, crate::references::Broken>,
 }
 
@@ -3204,6 +3224,9 @@ struct Schedule {
     ready: VecDeque<Job>,
     /// Features' solids that couldn't be measured, by their steps' keys: why.
     unmeasured: BTreeMap<Key, Error>,
+    /// Features' solids measured, or tried, in this rebuild (any round), by their steps'
+    /// keys: none is measured twice in one rebuild.
+    measured: BTreeSet<Key>,
     running: usize,
     superseded: bool,
     /// A step that panicked, a bug in Silico: the recompute stops, and fails with this.
@@ -3272,6 +3295,14 @@ impl<K: Kernel + 'static> Engine<K> {
         let mut carried = Carried::default();
         let (model, keys) = loop {
             let round = carried.round;
+            // A recompute cancelled or superseded meanwhile plans no more rounds: a warm
+            // round asks nothing of the kernel, so nothing else would stop it.
+            if round > 0 {
+                let state = lock(&self.state);
+                if state.generation != generation || state.cancelled {
+                    return Ok(RunOutcome::Superseded);
+                }
+            }
             let plan = Plan::of(document, &first.swept, &frames);
             let Some(Round { schedule, keys }) =
                 self.build_round(&rebuild, &plan, carried, &mut solutions)?
@@ -3306,6 +3337,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 round: round + 1,
                 done: schedule.done,
                 unmeasured: schedule.unmeasured,
+                measured: schedule.measured,
                 unresolved: schedule.unresolved,
             };
         };
@@ -3443,6 +3475,7 @@ impl<K: Kernel + 'static> Engine<K> {
             users: BTreeMap::new(),
             ready: VecDeque::new(),
             unmeasured: carried.unmeasured,
+            measured: carried.measured,
             unresolved: carried.unresolved,
             refusals: Refusals::default(),
             running: 0,
@@ -3480,11 +3513,15 @@ impl<K: Kernel + 'static> Engine<K> {
             }
         }
         // Features' solids built before (kept, or from the cache) but not summarized or
-        // described yet, unless the kernel refused to for their values: it would again.
+        // described yet, unless the kernel refused to for their values (it would again), or
+        // a round before this one measured them or tried to (a worker that failed is asked
+        // again by the next rebuild).
         for key in &plan.results {
             if let Some(Ok(built)) = schedule.done.get(key) {
                 if built.needs_measure() {
-                    schedule.ready.push_back(Job::Measure(*key));
+                    if schedule.measured.insert(*key) {
+                        schedule.ready.push_back(Job::Measure(*key));
+                    }
                 } else if let Some(error) = built.measure_refused() {
                     schedule.unmeasured.insert(*key, error.clone());
                 }
@@ -3975,7 +4012,7 @@ impl<K: Kernel + 'static> Engine<K> {
                         // This thread takes a job itself next (it has nothing to write: a
                         // feature's solid is written once measured), so the measure wakes no
                         // other.
-                        if plan.results.contains(&key) {
+                        if plan.results.contains(&key) && s.measured.insert(key) {
                             s.ready.push_back(Job::Measure(key));
                         }
                     }
@@ -3986,6 +4023,8 @@ impl<K: Kernel + 'static> Engine<K> {
                     let measured = Arc::new(measured);
                     to_keep = Some(Arc::clone(&measured));
                     s.done.insert(key, Ok(measured));
+                    // Measured: so not unmeasured, whatever an earlier try said.
+                    s.unmeasured.remove(&key);
                     // The checks this measure decides (its feature's, and those whose base it
                     // is): what only refused features need is no longer started.
                     let Schedule { done, refusals, .. } = &mut *s;
@@ -4356,6 +4395,14 @@ struct Faces {
 /// or block it; the rest are read for a broken name's candidates. A sketch placed on a
 /// frame whose profile (in `swept`) would reach past a kilometre there is refused
 /// ([`beyond_reach`](crate::face_plane::beyond_reach)).
+///
+/// Linear in the timeline each round, however many sketches wait: each solid has at most
+/// one consumer (the gate's consumed-solid rule), so what's made from a maker is one chain
+/// of consumers, and the solid of it live at a sketch's place is the chain's last link
+/// before the sketch. Each maker's chain is walked once a round, up to its first link that
+/// waits (every link after it waits too: each uses the one before), and each feature's
+/// inputs are read once a round; the solids live at each sketch's place are kept as the
+/// timeline is walked, for a broken name's candidates.
 fn placed_faces(
     document: &Checked,
     plan: &Plan,
@@ -4372,24 +4419,29 @@ fn placed_faces(
     {
         return faces;
     }
-    // Once a round: what stands for each feature's solid, and each solid's first consumer
-    // (by place, through what stands for each input), so a solid is live at a sketch's
-    // place exactly when none consumes it before the sketch. Each a function of earlier
-    // features alone, so the same for every sketch's place.
+    // Once a round: what stands for each feature's solid, and each solid's consumer (by
+    // place, through what stands for each input), with the solids each feature consumes:
+    // so a solid is live at a sketch's place exactly when none consumes it before the
+    // sketch. Each a function of earlier features alone, so the same for every sketch.
     let place = |id: &FeatureId| document.place(id);
     let standing = crate::document::suppression::standing(features, &place);
-    let inputs =
-        |j: usize| crate::document::suppression::effective_inputs(features, &standing, &place, j);
     let mut consumer: Vec<Option<usize>> = vec![None; features.len()];
+    let mut consumes: Vec<Vec<usize>> = vec![Vec::new(); features.len()];
     for (c, feature) in features.iter().enumerate() {
+        face_walked(1);
         if feature.suppressed {
             continue;
         }
-        for (_, stands) in inputs(c) {
-            if let Some(slot) = stands.and_then(|s| consumer.get_mut(s))
+        let inputs = crate::document::suppression::effective_inputs(features, &standing, &place, c);
+        for (_, stands) in inputs {
+            if let Some(s) = stands
+                && let Some(slot) = consumer.get_mut(s)
                 && slot.is_none()
             {
                 *slot = Some(c);
+                if let Some(consumed) = consumes.get_mut(c) {
+                    consumed.push(s);
+                }
             }
         }
     }
@@ -4425,6 +4477,30 @@ fn placed_faces(
             FeatureOutcome::Sketch(_) | FeatureOutcome::Suppressed => None,
         }
     };
+    // Each maker's chain of consumers, by place, walked once a round on first need: its
+    // links in order, and whether its last waits (the walk stops there: so does the rest).
+    let mut chains: BTreeMap<usize, (Vec<usize>, bool)> = BTreeMap::new();
+    let walk = |maker: usize| -> (Vec<usize>, bool) {
+        let mut links = vec![maker];
+        let mut at = maker;
+        loop {
+            face_walked(1);
+            if plan.waits.contains(&at) {
+                return (links, true);
+            }
+            match consumer.get(at).copied().flatten() {
+                Some(next) => {
+                    links.push(next);
+                    at = next;
+                }
+                None => return (links, false),
+            }
+        }
+    };
+    // The solids live at the place reached so far, by place: those made before it, not
+    // suppressed, and consumed by none before it.
+    let mut alive: BTreeSet<usize> = BTreeSet::new();
+    let mut reached = 0;
     for (at, planned) in plan.features.iter().enumerate() {
         if !matches!(planned.on_face, OnFace::Waits) {
             continue;
@@ -4436,20 +4512,20 @@ fn placed_faces(
         let Some(face) = face else {
             continue;
         };
-        // The face's own feature waits: so does every solid made from it, the only ones
-        // its face can be in, and the sketch with them, with no walk of the timeline (in a
-        // chain of sketches each on the last pad's face, every sketch but the next one waits
-        // so, each round).
-        if let Some(own) = face.feature()
-            && document
-                .place(&own)
-                .is_some_and(|p| p < at && plan.waits.contains(&p))
-        {
-            faces.waiting.insert(planned.id.clone(), own);
-            continue;
+        face_walked(1);
+        for (j, feature) in features.iter().enumerate().take(at).skip(reached) {
+            face_walked(1);
+            for consumed in consumes.get(j).into_iter().flatten() {
+                alive.remove(consumed);
+            }
+            if !feature.suppressed && feature.operation.makes_solid() {
+                alive.insert(j);
+            }
         }
-        // The features before it built from one of the name's makers, by place: a maker, or
-        // a feature whose effective input is one (each input after what it consumes).
+        reached = reached.max(at);
+        // The features before it its name's makers, by place; and the solid of each one's
+        // chain live here, its last link before the sketch: unless a link before the
+        // sketch waits, when it waits for that link's.
         let makers: BTreeSet<usize> =
             crate::naming::Name::parse(face.face.as_str(), &|f| plan.maker(f))
                 .map(|name| {
@@ -4459,27 +4535,33 @@ fn placed_faces(
                         .collect()
                 })
                 .unwrap_or_default();
-        let mut descends = vec![false; at];
-        for j in 0..at {
-            let from_maker = makers.contains(&j)
-                || inputs(j)
-                    .iter()
-                    .any(|(_, stands)| stands.is_some_and(|s| descends.get(s) == Some(&true)));
-            if let Some(slot) = descends.get_mut(j) {
-                *slot = from_maker;
-            }
-        }
-        let is_live = |j: usize, feature: &crate::document::Feature| {
-            !feature.suppressed
-                && feature.operation.makes_solid()
-                && consumer.get(j).copied().flatten().is_none_or(|c| c >= at)
-        };
-        let mut related = Vec::new();
-        let mut unnamed = None;
-        for (j, feature) in features.iter().enumerate().take(at) {
-            if !is_live(j, feature) || descends.get(j) != Some(&true) {
+        let mut tails: BTreeSet<usize> = BTreeSet::new();
+        let mut waits_on = None;
+        for maker in makers {
+            let (links, last_waits) = chains.entry(maker).or_insert_with(|| walk(maker));
+            let before = links.partition_point(|&link| link < at);
+            let Some(&tail) = before.checked_sub(1).and_then(|i| links.get(i)) else {
+                continue;
+            };
+            if *last_waits && before == links.len() {
+                // The chain's last link walked, which waits, is before the sketch.
+                waits_on = waits_on.or_else(|| features.get(tail).map(|f| f.id.clone()));
                 continue;
             }
+            if alive.contains(&tail) {
+                tails.insert(tail);
+            }
+        }
+        if let Some(on) = waits_on {
+            faces.waiting.insert(planned.id.clone(), on);
+            continue;
+        }
+        let mut related = Vec::new();
+        let mut unnamed = None;
+        for &j in &tails {
+            let Some(feature) = features.get(j) else {
+                continue;
+            };
             match live(j, feature) {
                 Some(Ok(solid)) => related.push(solid),
                 Some(Err(())) => {
@@ -4504,12 +4586,10 @@ fn placed_faces(
         // The rest of the live solids, read only for a broken name's candidates (a solid
         // whose map couldn't be named offers none).
         let others = || {
-            features
+            alive
                 .iter()
-                .enumerate()
-                .take(at)
-                .filter(|(j, feature)| is_live(*j, feature) && descends.get(*j) != Some(&true))
-                .filter_map(|(j, feature)| live(j, feature)?.ok())
+                .filter(|j| !tails.contains(j))
+                .filter_map(|&j| live(j, features.get(j)?)?.ok())
                 .collect()
         };
         match crate::face_plane::place(&planned.id, face, &related, &others, &|f| plan.maker(f)) {
@@ -4529,6 +4609,28 @@ fn placed_faces(
         }
     }
     faces
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What [`face_walks`] says.
+    static FACE_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many steps [`placed_faces`] has taken on this thread so far: one for each feature
+/// whose inputs it read, each link of a maker's chain walked, each sketch whose face it
+/// looked for, and each feature passed to keep the solids live at a sketch's place.
+#[cfg(test)]
+pub(crate) fn face_walks() -> u64 {
+    FACE_WALKS.with(std::cell::Cell::get)
+}
+
+/// `steps` more of [`placed_faces`]' walk, for [`face_walks`].
+fn face_walked(steps: u64) {
+    #[cfg(test)]
+    FACE_WALKS.with(|walks| walks.set(walks.get() + steps));
+    #[cfg(not(test))]
+    let _ = steps;
 }
 
 /// Why the sketch `sketch` of `document`, its face's frame resolved as `frame`, can't be
@@ -5126,6 +5228,161 @@ mod tests {
         let ended = answer.recv_timeout(wait).unwrap();
         assert_eq!((ended.done, ended.steps, ended.ended), (2, 2, true));
         waiter.join().unwrap();
+    }
+
+    #[test]
+    fn a_later_rounds_plan_never_takes_the_count_back() {
+        // Found by the robustness review: each round's plan set the count to its own, and a
+        // later round counts unsettled the steps the round before settled without a result
+        // (never to run): `done` went back. The steps of a later round's plan hold the
+        // earlier's, so `steps` only grows; `done` stays at least what it was.
+        let counter = StepCounter::default();
+        counter.planned(5, 5, BTreeMap::new());
+        assert_eq!((counter.now().done, counter.now().steps), (5, 5));
+        counter.planned(8, 3, BTreeMap::new());
+        assert_eq!((counter.now().done, counter.now().steps), (5, 8));
+        counter.planned(7, 6, BTreeMap::new());
+        assert_eq!((counter.now().done, counter.now().steps), (6, 8));
+        assert_eq!(counter.rounds(), 3);
+    }
+
+    /// A rectangle sketch `id` on the face `face` (token `+x`), as a document writes it, its
+    /// corners from (`x`, 1), 1 × 1.
+    fn face_sketch(id: &str, face: &str, x: f64) -> String {
+        // Its points p1… to p4…, and its lines n1… to n4…, each the sketch's ID's last six.
+        let tail = &id[2..];
+        let points: Vec<String> = [(x, 1.0), (x + 1.0, 1.0), (x + 1.0, 2.0), (x, 2.0)]
+            .iter()
+            .zip(1..)
+            .map(|((px, py), n)| {
+                format!(r#"{{"id": "p{n}{tail}", "x": {px}, "y": {py}, "construction": false}}"#)
+            })
+            .collect();
+        let lines: Vec<String> = (1..=4)
+            .map(|n| {
+                format!(
+                    r#"{{"id": "n{n}{tail}", "from": "p{n}{tail}", "to": "p{}{tail}", "construction": false}}"#,
+                    n % 4 + 1
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "S", "plane": {{"face": "{face}", "x": "+x", "reversed": false}}, "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
+            points.join(", "),
+            lines.join(", ")
+        )
+    }
+
+    /// A pad `id` of `sketch`, 1 long, onto `base`.
+    fn face_pad(id: &str, base: &str, sketch: &str) -> String {
+        format!(
+            r#"{{"id": "{id}", "type": "pad", "v": 1, "name": "P", "base": "{base}", "sketch": "{sketch}", "extent": {{"type": "one_side", "length": 1, "reversed": false}}}}"#
+        )
+    }
+
+    fn checked_of(features: &[String]) -> Checked {
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "features": [{}]}}"#,
+            features.join(", ")
+        );
+        Checked::new(crate::document::read(text.as_bytes()).unwrap()).unwrap()
+    }
+
+    /// `document` rebuilt on the fake, on this thread (so [`face_walks`] counts its walk):
+    /// the walk's steps, and the rounds.
+    fn walked_rebuilding(document: Checked) -> (u64, usize, Arc<Model>) {
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+            .with_sketches(crate::fake::FakeSketches::new());
+        let generation = lock(&engine.engine.state).generation;
+        let progress = StepCounter::default();
+        let before = face_walks();
+        let outcome = engine
+            .engine
+            .run(&Arc::new(document), generation, &progress, Reads::Kept)
+            .unwrap();
+        let RunOutcome::Published(model) = outcome else {
+            panic!("not published");
+        };
+        (face_walks() - before, progress.rounds(), model)
+    }
+
+    #[test]
+    fn many_sketches_on_one_face_of_a_chain_cost_each_round_a_walk_linear_in_the_timeline() {
+        // The robustness review: a box B, then K times a sketch S_k on B's top and a pad P_k
+        // of it onto P_{k−1} (P_1 onto B). S_k's face is looked for in P_{k−1}, the last of
+        // B's chain of consumers before it, so the rounds are K (each places one), and a
+        // last that finds nothing waiting. Each round walked, for each sketch waiting, every
+        // feature before it (what's made from B, then which of those are live): K² a round,
+        // K³ in all. Now each round reads each feature's inputs once, walks B's chain once
+        // (to its first link that waits), looks at each sketch once, and passes each feature
+        // once to keep what's live: at most 4 F steps a round, F = 2K + 1 the features. For
+        // K = 50, F = 101: at most 404 a round, where the walk per sketch made about 2 · 2k
+        // for each sketch k waiting, some 3,300 a round on average.
+        let k = 50;
+        let mut features = vec![
+            r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#
+                .to_owned(),
+        ];
+        for n in 1..=k {
+            let sketch = format!("s{n:07}");
+            let base = if n == 1 {
+                "b0000001".to_owned()
+            } else {
+                format!("p{:07}", n - 1)
+            };
+            features.push(face_sketch(&sketch, "b0000001.box.Face6", (n % 8) as f64));
+            features.push(face_pad(&format!("p{n:07}"), &base, &sketch));
+        }
+        let f = features.len() as u64;
+        let (walks, rounds, model) = walked_rebuilding(checked_of(&features));
+        // The fake types no face a plane: S1 is refused, and the rest blocked on it.
+        assert!(matches!(
+            model.outcome(&FeatureId::new("s0000001").unwrap()),
+            Some(FeatureOutcome::Broken { .. })
+        ));
+        assert_eq!(
+            model.outcome(&FeatureId::new("p0000050").unwrap()),
+            Some(&FeatureOutcome::Blocked {
+                on: FeatureId::new("s0000001").unwrap()
+            })
+        );
+        assert_eq!(rounds, k + 1);
+        assert!(
+            walks <= 4 * f * rounds as u64,
+            "{walks} steps in {rounds} rounds, past 4 F = {} a round",
+            4 * f
+        );
+    }
+
+    #[test]
+    fn four_hundred_sketches_on_one_boxs_faces_are_looked_for_in_one_walk_of_the_timeline() {
+        // Each sketch is on the box, live before every one: all placed (refused, on the fake)
+        // in the first round, and a second finds none waiting. The first's walk reads each
+        // feature's inputs once, walks the box's chain (itself) once, and passes each feature
+        // once: at most 4 F steps, F = 401. Each walking the features before it made
+        // 400 · 401 of them.
+        let mut features = vec![
+            r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#
+                .to_owned(),
+        ];
+        for n in 1..=400usize {
+            features.push(face_sketch(
+                &format!("s{n:07}"),
+                &format!("b0000001.box.Face{}", n % 6 + 1),
+                1.0,
+            ));
+        }
+        let f = features.len() as u64;
+        let (walks, rounds, model) = walked_rebuilding(checked_of(&features));
+        assert_eq!(rounds, 2);
+        assert!(walks <= 4 * f, "{walks} steps, past 4 F = {}", 4 * f);
+        for n in 1..=400usize {
+            let id = FeatureId::new(&format!("s{n:07}")).unwrap();
+            let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id) else {
+                panic!("{id}: {:?}", model.outcome(&id));
+            };
+            assert!(errors[0].message().contains("isn't planar"), "{errors:?}");
+        }
     }
 
     #[test]
@@ -6025,12 +6282,12 @@ mod tests {
     /// steps, and a frame's −0 is its +0. Spelled out by hand from the doc.
     #[test]
     fn a_revolves_axis_on_a_face_frame_square_only_to_its_check_is_made_a_unit() {
-        // A frame whose x and y are 9e-15 from square (inside the check's 1e-14): x = +X,
-        // y = (9e-15, 1, 0) to rounding. A line at 45° in the sketch, (√½, √½): x·l₀ + y·l₁ =
-        // (√½(1 + 9e-15), √½, 0), whose length is √(1 + 9e-15 + …) ≈ 1 + 4.5e-15, past 4ε
-        // (8.9e-16) from a unit, which the revolution's check refuses. Normalized, it's
-        // within it, and the request is made.
-        let y = silico_protocol::vec3::normalize([9e-15, 1.0, 0.0]);
+        // A frame whose x and y are 3e-15 from square (inside the check's 16ε, 3.6e-15): x =
+        // +X, y = (3e-15, 1, 0) to rounding. A line at 45° in the sketch, (√½, √½): x·l₀ +
+        // y·l₁ = (√½(1 + 3e-15), √½, 0), whose length is √(1 + 3e-15 + …) ≈ 1 + 1.5e-15,
+        // past 4ε (8.9e-16) from a unit, which the revolution's check refuses. Normalized,
+        // it's within it, and the request is made.
+        let y = silico_protocol::vec3::normalize([3e-15, 1.0, 0.0]);
         let frame = silico_protocol::FaceFrame {
             origin: [0.0, 0.0, 10.0],
             x: [1.0, 0.0, 0.0],

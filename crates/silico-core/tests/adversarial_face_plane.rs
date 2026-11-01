@@ -17,17 +17,20 @@
 use super::model::WAIT;
 use super::sweeps::{box_at, checked, checked_document, document, id, one_side, pad, rectangle};
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use silico_core::ErrorCode;
 use silico_core::cache::Cache;
 use silico_core::command::{Call, Sessions};
 use silico_core::document::{Checked, Operation, read, write};
 use silico_core::fake::{FakeKernel, FakeSketches};
+use silico_core::kernel::{Generation, Kernel, KernelRequest, Op};
+use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::sketch::SketchSolver;
+use silico_core::{Error, ErrorCode};
 
 fn face(name: &str, x: &str, reversed: bool) -> String {
     format!(
@@ -305,15 +308,19 @@ fn chain(n: usize) -> Vec<String> {
     features
 }
 
-/// A chain of `n` rebuilt on the fake: the time it took. Each sketch but the first is
+/// A chain of `n` rebuilt on the fake: the rounds it took. Each sketch but the first is
 /// blocked on the first, whose face the fake doesn't type a plane.
-fn rebuild_chain(n: usize) -> Duration {
+fn rebuild_chain(n: usize) -> usize {
     let features = chain(n);
     let document = checked_document(&strs(&features));
     let engine = engine();
-    let started = Instant::now();
-    let model = publish(&engine, document);
-    let took = started.elapsed();
+    let run = engine.start(document);
+    let progress = run.progress();
+    let model = match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        Ok(other) => panic!("not published: {other:?}"),
+        Err(_) => panic!("the rebuild didn't finish in {WAIT:?}"),
+    };
     let first = id("s0000001");
     assert!(
         matches!(model.outcome(&first), Some(FeatureOutcome::Broken { .. })),
@@ -330,39 +337,28 @@ fn rebuild_chain(n: usize) -> Duration {
         }
     }
     assert_eq!(model.error_count(), 1);
-    took
+    progress.rounds()
 }
 
 #[test]
-fn a_chain_of_sixty_sketches_each_on_the_last_pads_face_rebuilds_in_sixty_rounds_promptly() {
+fn a_chain_of_sixty_sketches_each_on_the_last_pads_face_rebuilds_in_sixty_rounds() {
     // Sixty sketches on faces, each on the one before's pad: a part modelled the way
     // FreeCAD users model, every feature sketched on the last. Each round places one, so
-    // sixty rounds; each round's plan, model, and face search must stay cheap.
-    let took = rebuild_chain(60);
-    assert!(took < Duration::from_secs(20), "{took:?}");
+    // sixty rounds, and one more that finds none waiting. (Each round's walk is linear in
+    // the timeline, counted, not timed, in recompute's unit tests:
+    // many_sketches_on_one_face_of_a_chain_cost_each_round_a_walk_linear_in_the_timeline.)
+    assert_eq!(rebuild_chain(60), 61);
 }
 
 #[test]
-fn a_chain_of_sketches_on_faces_grows_no_faster_than_the_square_of_its_length() {
-    // The rounds are one per link; each looks at every sketch still waiting, and for each
-    // walks the features before it: so a chain of n costs about n³ if nothing is shared.
-    // Doubling the chain from 100 to 200 should cost about four times as much (n²), not
-    // eight (n³).
-    //
-    // BREAKS: each round runs `placed_faces` over every sketch still waiting, and each of
-    // those walks every feature before it (its standing, its makers' descendants, and the
-    // solids consumed, a map of them built again for each sketch), though only the first
-    // can be placed: n rounds of n sketches of n features, n³. Measured in a debug build:
-    // 80 links 0.64 s, 160 4.5 s, 320 36 s (ratio 7 to 8 per doubling); a part of 300
-    // sketches each on the last pad's face spends half a minute planning every rebuild,
-    // every step cached.
-    let small = rebuild_chain(100);
-    let large = rebuild_chain(200);
-    let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-3);
-    assert!(
-        ratio < 5.5,
-        "doubling the chain cost {ratio:.1} times as much: {small:?} then {large:?}"
-    );
+fn a_chain_of_two_hundred_sketches_on_faces_takes_a_round_a_link() {
+    // BREAKS (found by break-it, timed then): each round ran `placed_faces` over every
+    // sketch still waiting, and each walked every feature before it, though only the first
+    // can be placed: n rounds of n sketches of n features, n³ (80 links 0.64 s, 160 4.5 s,
+    // 320 36 s in a debug build). Now counted, not timed (recompute's unit tests count the
+    // walk a round); here, the rounds: one a link, and one more.
+    assert_eq!(rebuild_chain(100), 101);
+    assert_eq!(rebuild_chain(200), 201);
 }
 
 #[test]
@@ -376,10 +372,17 @@ fn four_hundred_sketches_on_one_boxs_faces_resolve_in_one_round() {
         ));
     }
     let document = checked_document(&strs(&features));
-    let started = Instant::now();
-    let model = publish(&engine(), document);
-    let took = started.elapsed();
-    assert!(took < Duration::from_secs(20), "{took:?}");
+    let engine = engine();
+    let run = engine.start(document);
+    let progress = run.progress();
+    let model = match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+    };
+    // Every sketch placed (refused, on the fake) in the first round, and a second that
+    // finds none waiting. (The walk, counted: recompute's unit test
+    // four_hundred_sketches_on_one_boxs_faces_are_looked_for_in_one_walk_of_the_timeline.)
+    assert_eq!(progress.rounds(), 2);
     for k in 1..=400 {
         let sketch = id(&format!("s{k:07}"));
         let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&sketch) else {
@@ -433,6 +436,14 @@ fn a_sketch_on_a_face_of_a_box_consumed_by_a_fillet_before_it_is_looked_for_in_t
     };
     assert_eq!(errors[0].code(), ErrorCode::ReferenceBroken, "{errors:?}");
     assert_eq!(errors[0].parameter(), Some("plane.face"));
+    // Found (in the fillet's solid, the fillet keeping the top), then refused as the fake
+    // types it: not "names no face", which would mean it wasn't found.
+    assert!(
+        errors[0].message().contains("isn't planar"),
+        "{}",
+        errors[0].message()
+    );
+    assert!(!errors[0].message().contains("names no face"));
     assert_eq!(
         model.outcome(&id("p0000001")),
         Some(&FeatureOutcome::Blocked { on: id("s0000001") })
@@ -453,6 +464,13 @@ fn a_sketch_on_a_fuses_tool_face_is_looked_for_in_the_fuse() {
         panic!("{:?}", model.outcome(&id("s0000001")));
     };
     assert_eq!(errors[0].code(), ErrorCode::ReferenceBroken);
+    // Found in the fuse's solid, then refused as the fake types it, not as no face.
+    assert!(
+        errors[0].message().contains("isn't planar"),
+        "{}",
+        errors[0].message()
+    );
+    assert!(!errors[0].message().contains("names no face"));
 }
 
 #[test]
@@ -511,6 +529,241 @@ fn a_rebuild_superseded_in_its_rounds_gives_way_and_the_next_publishes_whole() {
         model.outcome(&id("p0000080")),
         Some(&FeatureOutcome::Blocked { on: id("s0000001") })
     );
+}
+
+/// A box, a sketch on its top, and a pad of it: two rounds (the sketch's face is looked for
+/// once the box is built), the sketch refused on the fake and the pad blocked.
+fn two_rounds() -> Vec<String> {
+    vec![
+        cube(),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        pad("p0000001", Some("b0000001"), "s0000001", &one_side("3")),
+    ]
+}
+
+/// How many requests `picks` picks the fake kernel started.
+fn started(kernel: &FakeKernel, picks: impl Fn(&Op) -> bool) -> usize {
+    kernel.calls().iter().filter(|call| picks(&call.op)).count()
+}
+
+#[test]
+fn a_fresh_rebuild_in_two_rounds_makes_the_box_once() {
+    // The second round takes the first's steps as they are, by key, reading nothing kept
+    // from before the rebuild: the box is made once, not again for the round after.
+    let engine = engine();
+    let run = engine.start_fresh(checked_document(&strs(&two_rounds())));
+    let progress = run.progress();
+    match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(_))) => {}
+        other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+    }
+    assert_eq!(progress.rounds(), 2);
+    assert_eq!(started(engine.kernel(), |op| op.name() == "MakeBox"), 1);
+}
+
+#[test]
+fn a_fillets_broken_references_are_all_said_after_the_rounds() {
+    // Found by the tests review: a fillet's broken references are kept by its step's key
+    // across the rounds (`unresolved`), the step itself kept failed. A fillet with one
+    // edge that's there and two that aren't, and a sketch on the box's top after it (two
+    // rounds): the fillet is broken with both, the total 2, as in a rebuild of one round.
+    let fillet = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "F", "base": "b0000001", "edges": ["b0000001.box.Edge1", "b0000001.box.Edge13", "b0000001.box.Edge40"], "radius": 1}"#;
+    let features = [
+        cube(),
+        fillet.to_owned(),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+    ];
+    let engine = engine();
+    let run = engine.start(checked_document(&strs(&features)));
+    let progress = run.progress();
+    let model = match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+    };
+    assert_eq!(progress.rounds(), 2);
+    let Some(FeatureOutcome::Broken { errors, total }) = model.outcome(&id("f0000001")) else {
+        panic!("{:?}", model.outcome(&id("f0000001")));
+    };
+    assert_eq!(*total, 2);
+    let said: Vec<(Option<&str>, Vec<String>)> = errors
+        .iter()
+        .map(|e| (e.parameter(), e.elements().to_vec()))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (Some("edges.1"), vec!["b0000001.box.Edge13".to_owned()]),
+            (Some("edges.2"), vec!["b0000001.box.Edge40".to_owned()]),
+        ]
+    );
+    // And the sketch, looked for in the fillet's solid, is blocked by it.
+    assert_eq!(
+        model.outcome(&id("s0000001")),
+        Some(&FeatureOutcome::Blocked { on: id("f0000001") })
+    );
+}
+
+#[test]
+fn a_summary_that_failed_once_in_the_first_round_is_asked_no_more_that_rebuild() {
+    // The robustness review: a measure a worker failed in the first round was asked again
+    // in the second, and, measured then, its first failure stayed beside the measure: a
+    // solid summarized and unmeasured at once. Now each solid is measured once a rebuild:
+    // the box's summary, failed by a crash the first time it's asked, is unmeasured with
+    // that error, and asked again only by the next rebuild.
+    let engine = engine();
+    let once = Arc::new(AtomicBool::new(true));
+    let first = Arc::clone(&once);
+    engine.kernel().refuse(move |op| {
+        (matches!(op, Op::Summarize { .. }) && first.swap(false, Ordering::SeqCst))
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+    });
+    let model = publish(&engine, checked_document(&strs(&two_rounds())));
+    assert_eq!(
+        started(engine.kernel(), |op| matches!(op, Op::Summarize { .. })),
+        1
+    );
+    let Some(FeatureOutcome::Built { built, .. }) = model.outcome(&id("b0000001")) else {
+        panic!("{:?}", model.outcome(&id("b0000001")));
+    };
+    assert!(built.summary().is_none());
+    let unmeasured = model.unmeasured(&id("b0000001")).map(Error::code);
+    assert_eq!(unmeasured, Some(ErrorCode::WorkerCrashed));
+    // The next rebuild asks again, and measures it: measured, and no longer unmeasured.
+    let model = publish(&engine, checked_document(&strs(&two_rounds())));
+    assert_eq!(
+        started(engine.kernel(), |op| matches!(op, Op::Summarize { .. })),
+        2
+    );
+    let Some(FeatureOutcome::Built { built, .. }) = model.outcome(&id("b0000001")) else {
+        panic!();
+    };
+    assert!(built.summary().is_some());
+    assert!(model.unmeasured(&id("b0000001")).is_none());
+}
+
+#[test]
+fn a_describe_that_crashes_its_worker_is_asked_once_a_rebuild_not_once_a_round() {
+    let engine = engine();
+    engine.kernel().refuse(|op| {
+        matches!(op, Op::DescribeAll { .. })
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+    });
+    let model = publish(&engine, checked_document(&strs(&two_rounds())));
+    assert_eq!(
+        started(engine.kernel(), |op| matches!(op, Op::DescribeAll { .. })),
+        1
+    );
+    // The sketch on the box's face fails with why the box has no description.
+    let Some(FeatureOutcome::Failed(e)) = model.outcome(&id("s0000001")) else {
+        panic!("{:?}", model.outcome(&id("s0000001")));
+    };
+    assert_eq!(e.code(), ErrorCode::WorkerCrashed, "{e:?}");
+    // A rebuild asks it again (a crash may not be the solid's), once.
+    publish(&engine, checked_document(&strs(&two_rounds())));
+    assert_eq!(
+        started(engine.kernel(), |op| matches!(op, Op::DescribeAll { .. })),
+        2
+    );
+}
+
+/// The fake kernel, whose identity, asked once a round by a recompute with a cache, holds
+/// the first round of a rebuild armed until it's let go: so a test can act between rounds.
+struct Gated {
+    kernel: FakeKernel,
+    gate: Arc<(Mutex<Gate>, Condvar)>,
+}
+
+#[derive(Default)]
+struct Gate {
+    armed: bool,
+    asked: usize,
+    held: bool,
+    let_go: bool,
+}
+
+impl Kernel for Gated {
+    fn identity(&self) -> &str {
+        let (gate, changed) = &*self.gate;
+        let mut state = gate.lock().unwrap();
+        if state.armed {
+            state.asked += 1;
+            if state.asked == 1 {
+                state.held = true;
+                changed.notify_all();
+                while !state.let_go {
+                    state = changed.wait(state).unwrap();
+                }
+            }
+        }
+        self.kernel.identity()
+    }
+
+    fn generation(&self) -> Generation {
+        self.kernel.generation()
+    }
+
+    fn advance(&self, generation: Generation) {
+        self.kernel.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: Generation,
+        request: KernelRequest<T>,
+    ) -> Pending<T> {
+        self.kernel.submit(generation, request)
+    }
+}
+
+#[test]
+fn a_warm_rebuild_cancelled_between_its_rounds_plans_no_later_round() {
+    // The robustness review: a round whose steps are all kept asks the kernel nothing, so
+    // only a check at each round's top stops a cancelled rebuild before it plans every
+    // round left (a long chain's, each its walk). Built once to warm it, then rebuilt with
+    // the first round held at its kernel's identity (asked once a round, as the cache is
+    // read), cancelled there, and let go: superseded, with that one round planned.
+    let dir = tempfile::tempdir().unwrap();
+    let gate = Arc::new((Mutex::new(Gate::default()), Condvar::new()));
+    let engine = Recompute::with_cache(
+        Gated {
+            kernel: FakeKernel::new(2).unwrap(),
+            gate: Arc::clone(&gate),
+        },
+        Cache::unsealed(dir.path()),
+    )
+    .with_sketches(FakeSketches::new());
+    let features = chain(3);
+    let warm = engine.start(checked_document(&strs(&features)));
+    let warmed = warm.progress();
+    assert!(matches!(
+        warm.wait_timeout(WAIT),
+        Ok(Ok(RunOutcome::Published(_)))
+    ));
+    assert_eq!(warmed.rounds(), 4);
+    gate.0.lock().unwrap().armed = true;
+    let run = engine.start(checked_document(&strs(&features)));
+    let progress = run.progress();
+    {
+        let (state, changed) = &*gate;
+        let mut state = state.lock().unwrap();
+        while !state.held {
+            let (next, timeout) = changed.wait_timeout(state, WAIT).unwrap();
+            assert!(!timeout.timed_out(), "the first round never asked");
+            state = next;
+        }
+    }
+    engine.cancel();
+    {
+        let (state, changed) = &*gate;
+        state.lock().unwrap().let_go = true;
+        changed.notify_all();
+    }
+    assert!(matches!(
+        run.wait_timeout(WAIT),
+        Ok(Ok(RunOutcome::Superseded))
+    ));
+    assert_eq!(progress.rounds(), 1);
+    assert_eq!(gate.0.lock().unwrap().asked, 1);
 }
 
 // ---- the sketch read ----
@@ -581,6 +834,123 @@ fn the_sketch_read_of_a_face_sketch_blocked_upstream_is_refused_naming_the_root_
     assert_ne!(read["errors"][0]["code"], "internal", "{read}");
     let status = call(&sessions, "status", &json!({"session": "s1"}).to_string());
     assert_eq!(status["ok"], true, "{status}");
+}
+
+/// The fake's description of `shape` with each face's surface as `surface` gives it, by
+/// number from 1: a planar face whose normal is +Z, through the origin, or a cylinder's.
+fn surfaced(
+    shape: &silico_core::kernel::ShapeData,
+    planar: impl Fn(usize) -> bool,
+) -> Option<silico_protocol::Reply> {
+    use silico_protocol::{Axis, Surface};
+    let mut description = FakeKernel::described(shape)?;
+    for (number, face) in (1..).zip(description.faces.iter_mut()) {
+        face.surface = if planar(number) {
+            Surface::Plane {
+                normal: [0.0, 0.0, 1.0],
+                location: [0.0, 0.0, 0.0],
+            }
+        } else {
+            Surface::Cylinder {
+                axis: Axis {
+                    origin: [0.0; 3],
+                    direction: [0.0, 0.0, 1.0],
+                },
+                radius: 1.0,
+            }
+        };
+    }
+    Some(silico_protocol::Reply::DescribedAll(description))
+}
+
+#[test]
+fn a_broken_faces_candidates_are_the_same_bytes_however_long_another_branch_is_held() {
+    // From Main: candidates read across live solids must not depend on which settles
+    // first. The box b1's faces are a cylinder's but its Face1; every other solid's are
+    // planes. s1, on b1's top, is refused as not planar, its candidates b1's Face1, then the
+    // planar faces of the other live solids by name: the pad p2's, a branch of its own
+    // (b2, sketched on its top in a round of its own, padded). So s1's refusal waits for
+    // p2, which a first round hasn't built. Each of several fresh sessions holds p2's
+    // sweep a different time; check's envelope is the same bytes in each.
+    let features = vec![
+        cube(),
+        box_at("b0000002", [20.0, 0.0, 0.0], 1.0, 1.0, 1.0),
+        on_face("s0000002", &face("b0000002.box.Face6", "+x", false)),
+        pad("p0000002", Some("b0000002"), "s0000002", &one_side("1")),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+    ];
+    let mut envelopes = Vec::new();
+    for held in [0u64, 5, 40, 150] {
+        let dir = tempfile::tempdir().unwrap();
+        let kernel = Arc::new(FakeKernel::new(2).unwrap());
+        kernel.answer_instead(|op| match op {
+            Op::DescribeAll { shape } => {
+                let b1 = FakeKernel::describe(shape).as_deref() == Some("box(10, 10, 10)");
+                surfaced(shape, |number| !b1 || number == 1)
+            }
+            _ => None,
+        });
+        let hold = kernel.hold(|op| matches!(op, Op::Prism { .. }));
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(held));
+            hold.release();
+        });
+        let sessions = Sessions::with_stand_ins(
+            Arc::clone(&kernel),
+            |cache: &std::path::Path| Cache::unsealed(cache),
+            || Ok(Box::new(FakeSketches::new()) as Box<dyn SketchSolver>),
+        );
+        let path = dir.path().join("part.silico");
+        std::fs::write(&path, document(&strs(&features))).unwrap();
+        let opened = call(
+            &sessions,
+            "open",
+            &json!({"path": path.to_str().unwrap(), "create": false}).to_string(),
+        );
+        assert_eq!(opened["ok"], true, "{opened}");
+        let arguments = json!({"session": "s1", "model": "current", "fresh": false}).to_string();
+        let checked = match sessions.call("check", &arguments) {
+            Call::Running(calling) => match calling.wait_timeout(WAIT) {
+                Ok(answered) => answered.text,
+                Err(_) => panic!("check didn't answer in {WAIT:?}"),
+            },
+            Call::Unknown => panic!("no check"),
+        };
+        release.join().unwrap();
+        // Each session's file is its own: the rest of the envelope is compared.
+        envelopes.push(checked.replace(path.to_str().unwrap(), "PART"));
+    }
+    for (envelope, held) in envelopes.iter().zip([0, 5, 40, 150]).skip(1) {
+        assert_eq!(envelope, &envelopes[0], "held {held} ms");
+    }
+    let checked: Value = serde_json::from_str(&envelopes[0]).unwrap();
+    let errors = checked["result"]["problems"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{checked}"));
+    let refused = errors
+        .iter()
+        .find(|e| e["feature"] == "s0000001")
+        .unwrap_or_else(|| panic!("{checked}"));
+    assert_eq!(refused["code"], "reference_broken", "{refused}");
+    let candidates: Vec<&str> = refused["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    // b1's one planar face, its own feature's, first; then p2's by name, those it keeps of
+    // b2 named as b2 names them (p2 consumes b2): five in all.
+    assert_eq!(
+        candidates,
+        [
+            "b0000001.box.Face1",
+            "b0000002.box.Face1",
+            "b0000002.box.Face2",
+            "b0000002.box.Face3",
+            "b0000002.box.Face4",
+        ],
+        "{refused}"
+    );
 }
 
 // ---- any face plane, read, written, gated, and rebuilt ----
