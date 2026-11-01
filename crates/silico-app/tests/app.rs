@@ -8113,3 +8113,260 @@ fn a_viewport_with_no_renderer_says_why_in_its_pane() {
     ));
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- What draws over the viewport, and the left button handed on ----
+
+/// The colour the overlay test marks the bodies' place with (as the paint callback would
+/// stand there), and the overlay's own.
+const BODIES_MARK: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(1, 2, 3);
+const OVERLAY_MARK: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(4, 5, 6);
+
+/// What a frame showed the overlay: the frame's serial (as the renderer was given it), its
+/// ViewFrame, and egui's input time.
+#[derive(Default)]
+struct Overlaid {
+    serial: Option<u64>,
+    frames: Vec<(u64, silico_app::viewport::ViewFrame, f64)>,
+}
+
+type Overlays = Arc<Mutex<Overlaid>>;
+
+/// A present that marks where the bodies' paint callback stands, and keeps each frame's
+/// serial for the overlay that follows it.
+struct Marking(Overlays);
+
+impl silico_app::renderer::Present for Marking {
+    fn present(
+        &mut self,
+        painter: &eframe::egui::Painter,
+        rect: eframe::egui::Rect,
+        _: Vec<silico_app::renderer::Change>,
+        frame: Option<silico_app::renderer::FrameData>,
+    ) {
+        if let Some(frame) = frame {
+            painter.rect_filled(
+                eframe::egui::Rect::from_min_size(rect.min, eframe::egui::vec2(3.0, 3.0)),
+                0.0,
+                BODIES_MARK,
+            );
+            self.0.lock().unwrap().serial = Some(frame.serial);
+        }
+    }
+    fn picked(&mut self) -> Option<silico_app::renderer::Picking> {
+        None
+    }
+    fn refused(&mut self) -> std::collections::BTreeSet<u32> {
+        std::collections::BTreeSet::new()
+    }
+}
+
+impl Fixture {
+    /// The app with `text` open, its viewport marked and overlaid, every overlay's frame
+    /// kept.
+    fn overlaid(&self, text: &str) -> (AppHarness, Overlays) {
+        let path = self.file("example.silico", text);
+        let seen = Overlays::default();
+        let kept = Arc::clone(&seen);
+        let app = App::new(Arc::clone(&self.sessions))
+            .presenting(Box::new(Marking(Arc::clone(&seen))))
+            .overlaying(Box::new(move |painter, frame| {
+                let time = painter.ctx().input(|input| input.time);
+                let mut seen = kept.lock().unwrap();
+                let serial = seen.serial.take().expect("the bodies' frame first");
+                seen.frames.push((serial, frame.clone(), time));
+                painter.circle_filled(frame.rect.center(), 4.0, OVERLAY_MARK);
+            }));
+        let mut h = {
+            let _marked = never_waits::marked();
+            Harness::builder()
+                .with_size((1280.0, 800.0))
+                .with_step_dt(1.0 / 60.0)
+                .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+        };
+        h.state_mut().open(path.to_str().unwrap(), false);
+        meshes_settled(&mut h);
+        (h, seen)
+    }
+}
+
+/// Every shape the last frame painted, in paint order, nested ones flattened.
+fn painted(h: &AppHarness) -> Vec<eframe::egui::Shape> {
+    fn flat(shape: &eframe::egui::Shape, into: &mut Vec<eframe::egui::Shape>) {
+        match shape {
+            eframe::egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| flat(s, into)),
+            other => into.push(other.clone()),
+        }
+    }
+    let mut shapes = Vec::new();
+    for clipped in &h.output().shapes {
+        flat(&clipped.shape, &mut shapes);
+    }
+    shapes
+}
+
+#[test]
+fn the_overlay_sees_the_frame_and_paints_over_the_bodies_and_under_the_view_cube() {
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    step(&mut h);
+    // What it was shown is the frame as the pane keeps it, of the frame's own serial.
+    {
+        let seen = seen.lock().unwrap();
+        let (_, frame, _) = seen.frames.last().unwrap();
+        assert_eq!(Some(frame), view(&h).frame());
+    }
+    let shapes = painted(&h);
+    let place = |what: &str, found: &dyn Fn(&eframe::egui::Shape) -> bool| {
+        shapes
+            .iter()
+            .position(found)
+            .unwrap_or_else(|| panic!("no {what} painted"))
+    };
+    let bodies = place(
+        "bodies' mark",
+        &|shape| matches!(shape, eframe::egui::Shape::Rect(r) if r.fill == BODIES_MARK),
+    );
+    let overlay = place(
+        "overlay",
+        &|shape| matches!(shape, eframe::egui::Shape::Circle(c) if c.fill == OVERLAY_MARK),
+    );
+    // The ViewCube's Front face's label, and the navigation bar's Fit.
+    let text = |word: &'static str| move |shape: &eframe::egui::Shape| matches!(shape, eframe::egui::Shape::Text(t) if t.galley.text() == word);
+    let cube = place("ViewCube's Front", &text("Front"));
+    let bar = place("bar's Fit", &text("Fit"));
+    assert!(bodies < overlay, "{bodies} {overlay}");
+    assert!(overlay < cube && overlay < bar, "{overlay} {cube} {bar}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+fn left_seen(seen: &Overlays) -> Vec<(u64, silico_app::viewport::LeftEvent, f64)> {
+    seen.lock()
+        .unwrap()
+        .frames
+        .iter()
+        .flat_map(|(serial, frame, time)| frame.left.iter().map(move |e| (*serial, *e, *time)))
+        .collect()
+}
+
+fn button_event(
+    h: &AppHarness,
+    at: eframe::egui::Pos2,
+    button: eframe::egui::PointerButton,
+    pressed: bool,
+    modifiers: eframe::egui::Modifiers,
+) {
+    h.event(eframe::egui::Event::PointerButton {
+        pos: at,
+        button,
+        pressed,
+        modifiers,
+    });
+}
+
+#[test]
+fn the_left_buttons_events_on_the_canvas_are_handed_on_with_their_frame_and_time() {
+    use silico_app::viewport::LeftKind;
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let at = rect.center() - eframe::egui::vec2(100.0, 0.0);
+    let left = eframe::egui::PointerButton::Primary;
+    let held = eframe::egui::Modifiers {
+        shift: true,
+        command: true,
+        ..Default::default()
+    };
+    seen.lock().unwrap().frames.clear();
+    h.hover_at(at);
+    button_event(&h, at, left, true, held);
+    h.hover_at(at + eframe::egui::vec2(10.0, 5.0));
+    button_event(&h, at + eframe::egui::vec2(10.0, 5.0), left, false, held);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    let events = left_seen(&seen);
+    let kinds: Vec<LeftKind> = events.iter().map(|(_, e, _)| e.kind).collect();
+    assert_eq!(kinds, [LeftKind::Press, LeftKind::Move, LeftKind::Release]);
+    // At physical pixels from the viewport's top left (one a point here), the modifiers
+    // held, and each of the frame it came in, at egui's time then.
+    let px = |p: eframe::egui::Pos2| [p.x - rect.left(), p.y - rect.top()];
+    assert_eq!(events[0].1.at_px, px(at));
+    assert_eq!(events[2].1.at_px, px(at + eframe::egui::vec2(10.0, 5.0)));
+    assert!(events[0].1.shift && events[0].1.ctrl);
+    for (serial, event, time) in &events {
+        assert_eq!(event.frame, *serial);
+        assert_eq!(event.time, *time);
+    }
+    assert!(events[0].1.frame < events[2].1.frame);
+    assert!(events[0].1.time < events[2].1.time);
+    // Two clicks a frame apart: egui's double-click, handed on too.
+    seen.lock().unwrap().frames.clear();
+    let none = eframe::egui::Modifiers::NONE;
+    for _ in 0..2 {
+        button_event(&h, at, left, true, none);
+        button_event(&h, at, left, false, none);
+    }
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let kinds: Vec<LeftKind> = left_seen(&seen).iter().map(|(_, e, _)| e.kind).collect();
+    assert!(kinds.contains(&LeftKind::DoubleClick), "{kinds:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn no_left_event_is_handed_on_while_a_tool_navigates_nor_for_the_view_cube_middle_or_wheel() {
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let at = rect.center() - eframe::egui::vec2(100.0, 0.0);
+    let none = eframe::egui::Modifiers::NONE;
+    let drag = |h: &mut AppHarness, button| {
+        h.hover_at(at);
+        button_event(h, at, button, true, none);
+        h.hover_at(at + eframe::egui::vec2(20.0, 0.0));
+        button_event(h, at + eframe::egui::vec2(20.0, 0.0), button, false, none);
+        for _ in 0..4 {
+            step(h);
+        }
+    };
+    // The Orbit tool chosen: a left drag orbits, and nothing is handed on.
+    h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+        .get_by_label("Orbit")
+        .click();
+    step(&mut h);
+    let camera = view(&h).camera().clone();
+    seen.lock().unwrap().frames.clear();
+    drag(&mut h, eframe::egui::PointerButton::Primary);
+    assert_ne!(view(&h).camera(), &camera, "the tool didn't orbit");
+    assert!(left_seen(&seen).is_empty());
+    h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+        .get_by_label("Orbit")
+        .click();
+    step(&mut h);
+    // A ViewCube click, the middle button, and the wheel: none either.
+    seen.lock().unwrap().frames.clear();
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Front")
+        .click();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    drag(&mut h, eframe::egui::PointerButton::Middle);
+    h.hover_at(at);
+    h.event(eframe::egui::Event::MouseWheel {
+        unit: eframe::egui::MouseWheelUnit::Point,
+        delta: eframe::egui::vec2(0.0, 50.0),
+        phase: eframe::egui::TouchPhase::Move,
+        modifiers: none,
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(left_seen(&seen).is_empty(), "{:?}", left_seen(&seen));
+    // And with no tool, the same left drag is handed on: what the test above wasn't
+    // missing for want of events.
+    drag(&mut h, eframe::egui::PointerButton::Primary);
+    assert_eq!(left_seen(&seen).len(), 3);
+    assert_eq!(never_waits::waits(), 0);
+}

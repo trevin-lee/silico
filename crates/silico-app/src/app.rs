@@ -167,7 +167,13 @@ pub struct App<P: Clients + 'static> {
     modal_key: Option<Key>,
     /// What the viewport's renderer holds, and how its frames reach it (M5.6).
     drawing: crate::viewport::Drawing,
+    /// What draws over the viewport's bodies, under its ViewCube and bar, if anything does.
+    overlay: Option<Overlay>,
 }
+
+/// What draws over the viewport's bodies each frame, given its painter (the pane's own
+/// layer, clipped to it) and the frame (sketch mode, M5.7's selection).
+pub type Overlay = Box<dyn FnMut(&egui::Painter, &crate::viewport::ViewFrame)>;
 
 impl<P: Clients + 'static> App<P> {
     /// An app on `sessions`, with no document open.
@@ -193,7 +199,15 @@ impl<P: Clients + 'static> App<P> {
             waker_set: false,
             modal_key: None,
             drawing: crate::viewport::Drawing::default(),
+            overlay: None,
         }
+    }
+
+    /// The app, `overlay` drawing over its viewport's bodies each frame.
+    #[must_use]
+    pub fn overlaying(mut self, overlay: Overlay) -> Self {
+        self.overlay = Some(overlay);
+        self
     }
 
     /// The app, its viewport's frames drawn through `present` (M5.6): egui's paint callback
@@ -293,6 +307,7 @@ impl<P: Clients + 'static> App<P> {
                 sessions,
                 name,
                 drawing,
+                overlay,
                 ..
             } = self;
             let mut panes = Panes {
@@ -301,6 +316,7 @@ impl<P: Clients + 'static> App<P> {
                 name,
                 started: &mut started,
                 drawing,
+                overlay,
             };
             tree.ui(&mut panes, ui);
         });

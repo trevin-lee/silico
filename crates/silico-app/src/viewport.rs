@@ -86,9 +86,10 @@ impl ViewBody {
     }
 }
 
-/// What the viewport was last frame, for what picks in it (M5.7): where it was in the
-/// window, in points; the camera; the size in physical pixels; the display's scale; and
-/// the pointer, in physical pixels from the viewport's top left, if it's over the viewport.
+/// What the viewport is this frame, for what draws over it and picks in it (sketch mode,
+/// M5.7): where it is in the window, in points; the camera; the size in physical pixels;
+/// the display's scale; the pointer, in physical pixels from the viewport's top left, if
+/// it's over the viewport; and the left button's events the pane didn't take itself.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewFrame {
     pub rect: Rect,
@@ -96,6 +97,38 @@ pub struct ViewFrame {
     pub size_px: [u32; 2],
     pub pixels_per_point: f32,
     pub pointer_px: Option<[f32; 2]>,
+    /// The left button's events on the canvas, in order, raw: none the ViewCube or the
+    /// navigation bar took, and none while a navigation tool makes a left drag navigate.
+    /// Who acts on them (sketch mode, the selection) is the tab's mode, not the pane's.
+    pub left: Vec<LeftEvent>,
+}
+
+/// What a left-button event was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeftKind {
+    /// Pressed on the canvas.
+    Press,
+    /// Moved while held, from a press on the canvas.
+    Move,
+    /// Let go, after a press on the canvas.
+    Release,
+    /// egui's double-click on the canvas (a second press within its delay and distance).
+    DoubleClick,
+}
+
+/// A left-button event on the canvas: what it was, where (physical pixels from the
+/// viewport's top left), the modifiers held (Ctrl is Cmd on macOS, egui's `command`), the
+/// frame it came in (the pane's frame number, [`crate::renderer::Frame::serial`]'s), and
+/// egui's input time, in seconds, so a consumer's double-clicks and drag thresholds are
+/// the same in a test as in a window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LeftEvent {
+    pub kind: LeftKind,
+    pub at_px: [f32; 2],
+    pub shift: bool,
+    pub ctrl: bool,
+    pub frame: u64,
+    pub time: f64,
 }
 
 /// What a `meshes` read was asked under: the published revision, the camera, and the size.
@@ -183,6 +216,8 @@ pub struct View {
     /// The camera and size of the last frame, to tell when the view has settled.
     last: Option<(Camera, [u32; 2])>,
     drag: Option<Drag>,
+    /// The left button is held from a press on the canvas, its events handed on.
+    left_held: bool,
     /// The navigation bar's tool, if one is chosen.
     pub tool: Option<Navigation>,
     /// The elements drawn highlighted, set from outside (M5.7's selection): passed through,
@@ -214,6 +249,7 @@ impl Default for View {
             reads: 0,
             last: None,
             drag: None,
+            left_held: false,
             tool: None,
             highlights: BTreeSet::new(),
             picking: None,
@@ -683,6 +719,66 @@ impl View {
         self.moved(camera);
     }
 
+    /// The left button's events this frame that the pane doesn't take itself, in physical
+    /// pixels from the viewport's top left, of frame `frame`: a press on the canvas (where
+    /// the ViewCube and the bar, on top, aren't), the moves while it's held, its release,
+    /// and egui's double-click; none while a navigation tool makes a left drag navigate.
+    fn left_events(&mut self, ui: &Ui, response: &egui::Response, frame: u64) -> Vec<LeftEvent> {
+        if self.tool.is_some() {
+            self.left_held = false;
+            return Vec::new();
+        }
+        let rect = response.rect;
+        let ppp = ui.ctx().pixels_per_point();
+        let px = |at: Pos2| [(at.x - rect.left()) * ppp, (at.y - rect.top()) * ppp];
+        let (events, time, modifiers) =
+            ui.input(|input| (input.events.clone(), input.time, input.modifiers));
+        let event = |kind, at: Pos2, held: egui::Modifiers| LeftEvent {
+            kind,
+            at_px: px(at),
+            shift: held.shift,
+            ctrl: held.command,
+            frame,
+            time,
+        };
+        let mut left = Vec::new();
+        for each in events {
+            match each {
+                egui::Event::PointerButton {
+                    pos,
+                    button: PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
+                } if response.hovered() && rect.contains(pos) => {
+                    self.left_held = true;
+                    left.push(event(LeftKind::Press, pos, modifiers));
+                }
+                egui::Event::PointerButton {
+                    pos,
+                    button: PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                } if self.left_held => {
+                    self.left_held = false;
+                    left.push(event(LeftKind::Release, pos, modifiers));
+                }
+                egui::Event::PointerMoved(pos) if self.left_held => {
+                    left.push(event(LeftKind::Move, pos, modifiers));
+                }
+                egui::Event::PointerGone | egui::Event::WindowFocused(false) => {
+                    self.left_held = false;
+                }
+                _ => {}
+            }
+        }
+        if response.double_clicked_by(PointerButton::Primary)
+            && let Some(at) = response.interact_pointer_pos()
+        {
+            left.push(event(LeftKind::DoubleClick, at, modifiers));
+        }
+        left
+    }
+
     /// The person's navigation this frame (section 8, *Navigation*, Fusion's preset): the
     /// wheel zooms toward the cursor; the middle button pans, and orbits with Shift; a left
     /// drag does the navigation bar's tool, if one is chosen; F6, or a double-click of the
@@ -958,6 +1054,7 @@ pub fn show<P: Clients + 'static>(
     tab: Option<&mut Tab>,
     sessions: &Arc<Sessions<P>>,
     drawing: &mut Drawing,
+    overlay: impl FnOnce(&egui::Painter, &ViewFrame),
 ) {
     let rect = ui.available_rect_before_wrap();
     ui.painter()
@@ -1011,8 +1108,7 @@ pub fn show<P: Clients + 'static>(
     }
     drawing.take_refused();
     view.navigate(ui, &response, size_px);
-    view_cube(ui, rect, view, size_px);
-    navigation_bar(ui, rect, view, size_px);
+    let left = view.left_events(ui, &response, drawing.frames);
     let size = read_size(size_px);
     let settled = view.drag.is_none() && view.last.as_ref() == Some(&(view.camera.clone(), size));
     if !settled {
@@ -1043,6 +1139,7 @@ pub fn show<P: Clients + 'static>(
         size_px,
         pixels_per_point: ppp,
         pointer_px,
+        left,
     });
     // Ascending, each once, as the renderer takes them: the table's order.
     let bodies: Vec<u32> = view
@@ -1084,6 +1181,14 @@ pub fn show<P: Clients + 'static>(
         // An idle egui draws no frame, and its answer is taken only in one.
         ui.ctx().request_repaint();
     }
+    // Over the bodies, under the ViewCube and the bar, in the pane's own layer: what the
+    // tab's mode draws (a sketch, a selection's marks). It takes no input; the cube's and
+    // the bar's, registered after, come first. A camera they change is drawn next frame.
+    if let Some(frame) = &view.frame {
+        overlay(&ui.painter_at(rect), frame);
+    }
+    view_cube(ui, rect, view, size_px);
+    navigation_bar(ui, rect, view, size_px);
 }
 
 /// The ViewCube's faces: each named view's face, its outward normal.
