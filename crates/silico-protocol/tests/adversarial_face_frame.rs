@@ -81,9 +81,12 @@ fn a_frames_origin_exactly_at_its_reach_passes_and_a_hair_past_is_refused() {
     }
     // √3 · 1e6 times 1 + 16ε, worked by hand: 1732050.8075688833, past the bare √3 · 1e6
     // (1732050.8075688772) by its rounding's slack, and by no more than a few of its ulps.
+    // Read at run time, not in a const block, so a mutant of the bound fails this test
+    // rather than the build (a mutant that doesn't build is unviable, not caught).
+    let bound = std::hint::black_box(MAX_FRAME_ORIGIN);
     assert!(
-        MAX_FRAME_ORIGIN > 1_732_050.807_568_877_2 && MAX_FRAME_ORIGIN < 1_732_050.807_568_9,
-        "{MAX_FRAME_ORIGIN}"
+        bound > 1_732_050.807_568_877_2 && bound < 1_732_050.807_568_9,
+        "{bound}"
     );
 }
 
