@@ -170,6 +170,20 @@ pub struct PixelRect {
     pub size: [u32; 2],
 }
 
+impl PixelRect {
+    /// Whether a frame takes it as its picking: from 1 to [`MAX_PICKING_SIDE`] pixels on
+    /// each side, its corner within [`MAX_PICKING_OFFSET`] of the frame's top left. The one
+    /// rule, for the frame's check and for a caller asking before it sends one.
+    pub fn takes(&self) -> bool {
+        let sides = self.size.iter().all(|s| (1..=MAX_PICKING_SIDE).contains(s));
+        let corner = self
+            .min
+            .iter()
+            .all(|c| c.unsigned_abs() <= MAX_PICKING_OFFSET.unsigned_abs());
+        sides && corner
+    }
+}
+
 /// One frame of the app's viewport: how it's seen, how large it is, and what's drawn.
 #[derive(Debug, Clone, Copy)]
 pub struct Frame<'a> {
@@ -568,20 +582,15 @@ impl Renderer {
                 numbers.dedup();
             }
         }
-        if let Some(rect) = frame.picking {
-            let sides = rect.size.iter().all(|s| (1..=MAX_PICKING_SIDE).contains(s));
-            let corner = rect
-                .min
-                .iter()
-                .all(|c| c.unsigned_abs() <= MAX_PICKING_OFFSET.unsigned_abs());
-            if !(sides && corner) {
-                return Err(InvalidParameter {
-                    parameter: "picking",
-                    message: format!(
-                        "picking {rect:?} must be from 1 to {MAX_PICKING_SIDE} pixels on each side, its corner within {MAX_PICKING_OFFSET} of the frame's"
-                    ),
-                });
-            }
+        if let Some(rect) = frame.picking
+            && !rect.takes()
+        {
+            return Err(InvalidParameter {
+                parameter: "picking",
+                message: format!(
+                    "picking {rect:?} must be from 1 to {MAX_PICKING_SIDE} pixels on each side, its corner within {MAX_PICKING_OFFSET} of the frame's"
+                ),
+            });
         }
         // The bodies' reach, from their boxes' farthest corners: at most √3 past the
         // farthest point, which only sets the clipping, past everything drawn either way.
