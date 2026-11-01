@@ -20,6 +20,7 @@ pub mod renderer;
 pub mod start;
 pub mod tab;
 pub mod theme;
+pub mod toolbar;
 pub mod viewport;
 mod wake;
 

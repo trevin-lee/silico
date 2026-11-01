@@ -603,6 +603,85 @@ pub const DOC_TAB_CLOSE_HOVER: Color32 = TEXT_STRONG;
 pub const TOOLTIP_TITLE_GAP: f32 = 8.0;
 pub const TOOLTIP_DESCRIPTION_GAP: f32 = 2.0;
 
+// ---- The toolbar (`#toolbar`, `.tb-*`, `.btn-finish`) ----
+
+/// The toolbar's fill (`#toolbar`, Gray.100) and its border below it (Gray.250).
+pub const TOOLBAR_BG: Color32 = PANEL_BG;
+pub const TOOLBAR_BORDER: Color32 = PANEL_BORDER;
+
+/// The border below the toolbar's tabs, and at each panel's right (`.tb-tabs`, `.tb-panel`,
+/// Gray.200).
+pub const TOOLBAR_DIVIDER: Color32 = GRAY_200;
+
+/// The letter spacing of the toolbar's capitals: its workspace, tabs, and panels' labels.
+pub const TOOLBAR_LETTER_SPACING: f32 = 0.5;
+
+/// The tabs' row (`.tb-tabs`): its padding at its left, and the gap between its items.
+pub const TOOLBAR_TABS_PADDING: f32 = 8.0;
+pub const TOOLBAR_TABS_GAP: f32 = 2.0;
+
+/// The workspace's name, DESIGN (`.tb-ws`): its padding at its left, right, and bottom,
+/// where its text sits; its margin after its border (Gray.250); its text (Gray.550).
+pub const TOOLBAR_WORKSPACE_PADDING_LEFT: f32 = 4.0;
+pub const TOOLBAR_WORKSPACE_PADDING_RIGHT: f32 = 10.0;
+pub const TOOLBAR_WORKSPACE_PADDING_BOTTOM: f32 = 5.0;
+pub const TOOLBAR_WORKSPACE_MARGIN: f32 = 6.0;
+pub const TOOLBAR_WORKSPACE_BORDER: Color32 = PANEL_BORDER;
+pub const TOOLBAR_WORKSPACE_TEXT: Color32 = TEXT_SUBDUED;
+
+/// A tab (`.tb-tab`): its height, its padding at its sides, and its top corners; its text
+/// (Gray.550), hovered (Gray.800); the shown tab's (`.active`, white on Gray.200); and the
+/// contextual tab's, SKETCH (`.ctx`, Blue.900 on Blue.500).
+pub const TOOLBAR_TAB_HEIGHT: f32 = 22.0;
+pub const TOOLBAR_TAB_PADDING: f32 = 10.0;
+pub const TOOLBAR_TAB_CORNER_RADIUS: u8 = SMALL_CORNER_RADIUS;
+pub const TOOLBAR_TAB_TEXT: Color32 = TEXT_SUBDUED;
+pub const TOOLBAR_TAB_HOVER_TEXT: Color32 = GRAY_800;
+pub const TOOLBAR_TAB_ACTIVE_TEXT: Color32 = TEXT_STRONG;
+pub const TOOLBAR_TAB_ACTIVE_BG: Color32 = GRAY_200;
+pub const TOOLBAR_TAB_CONTEXT_TEXT: Color32 = ON_SELECTION;
+pub const TOOLBAR_TAB_CONTEXT_BG: Color32 = SELECTION_BG;
+
+/// The panels' row (`.tb-panels`): its padding at its sides; and a panel's (`.tb-panel`) at
+/// its top and sides; the gap between its buttons (`.tb-row`).
+pub const TOOLBAR_PANELS_PADDING: f32 = 6.0;
+pub const TOOLBAR_PANEL_PADDING_TOP: f32 = 4.0;
+pub const TOOLBAR_PANEL_PADDING_SIDE: f32 = 6.0;
+pub const TOOLBAR_BUTTON_GAP: f32 = 1.0;
+
+/// A toolbar button (`.tb-btn`): its corners; its icon at rest (Gray.750); hovered, white
+/// on Gray.300; off, Gray.400.
+pub const TOOLBAR_BUTTON_CORNER_RADIUS: u8 = SMALL_CORNER_RADIUS;
+pub const TOOLBAR_BUTTON_ICON: Color32 = TEXT_DEFAULT;
+pub const TOOLBAR_BUTTON_HOVER_BG: Color32 = WIDGET_BG;
+pub const TOOLBAR_BUTTON_HOVER_ICON: Color32 = TEXT_STRONG;
+pub const TOOLBAR_BUTTON_DISABLED_ICON: Color32 = TEXT_DISABLED;
+
+/// A panel's label and its drop-down (`.tb-label`): its text's size and line; its padding
+/// over and under, and at its sides; the gap before its arrow, and the arrow's side; its
+/// corners; its margin above; its text (Gray.550), and hovered, white on Gray.250.
+pub const TOOLBAR_LABEL_SIZE: f32 = 10.0;
+pub const TOOLBAR_LABEL_LINE_HEIGHT: f32 = 14.0;
+pub const TOOLBAR_LABEL_PADDING: Margin = Margin::symmetric(4, 1);
+pub const TOOLBAR_LABEL_GAP: f32 = 2.0;
+pub const TOOLBAR_LABEL_ARROW_SIZE: f32 = 8.0;
+pub const TOOLBAR_LABEL_CORNER_RADIUS: u8 = 3;
+pub const TOOLBAR_LABEL_MARGIN_TOP: f32 = 1.0;
+pub const TOOLBAR_LABEL_TEXT: Color32 = TEXT_SUBDUED;
+pub const TOOLBAR_LABEL_HOVER_TEXT: Color32 = TEXT_STRONG;
+pub const TOOLBAR_LABEL_HOVER_BG: Color32 = HOVER_BG;
+
+/// Finish Sketch at the panels' right end (`.tb-finish`, `.btn-finish`): the room at its
+/// right; its height (a toolbar button's), its padding at its sides, and the gap after its
+/// icon; its fill (Blue.500) and its text (white); its fill hovered (the prototype's
+/// `#2a78e8`).
+pub const TOOLBAR_FINISH_MARGIN: f32 = 8.0;
+pub const TOOLBAR_FINISH_PADDING: f32 = 12.0;
+pub const TOOLBAR_FINISH_GAP: f32 = 6.0;
+pub const TOOLBAR_FINISH_BG: Color32 = SELECTION_BG;
+pub const TOOLBAR_FINISH_TEXT: Color32 = TEXT_STRONG;
+pub const TOOLBAR_FINISH_HOVER_BG: Color32 = hex(0x2a78e8);
+
 // ---- Key caps (`.kbd`) ----
 
 /// A key cap's fill (Gray.250).
@@ -1227,6 +1306,107 @@ mod tests {
             ("DOC_TAB_CLOSE", DOC_TAB_CLOSE, 0x939090),
             ("DOC_TAB_CLOSE_HOVER", DOC_TAB_CLOSE_HOVER, 0xffffff),
             ("DOC_TAB_CLOSE_HOVER_BG", DOC_TAB_CLOSE_HOVER_BG, 0x525151),
+        ] {
+            assert_eq!(color, opaque(hex), "{name}");
+        }
+    }
+
+    /// The toolbar's values, typed from styles.css's `#toolbar`, `.tb-*`, and
+    /// `.btn-finish`, its `--toolbar-*` sizes, and its `--g*` greys and `--blue*`.
+    #[test]
+    fn the_toolbars_tokens_are_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `--toolbar-tabs-h: 24px; --toolbar-h: 52px`.
+        assert_eq!(TOOLBAR_TABS_HEIGHT, 24.0);
+        assert_eq!(TOOLBAR_PANELS_HEIGHT, 52.0);
+        // `.tb-tabs`: `padding-left: 8px; gap: 2px`.
+        assert_eq!(TOOLBAR_TABS_PADDING, 8.0);
+        assert_eq!(TOOLBAR_TABS_GAP, 2.0);
+        // `.tb-ws`: `padding: 0 10px 5px 4px; margin-right: 6px`.
+        assert_eq!(TOOLBAR_WORKSPACE_PADDING_LEFT, 4.0);
+        assert_eq!(TOOLBAR_WORKSPACE_PADDING_RIGHT, 10.0);
+        assert_eq!(TOOLBAR_WORKSPACE_PADDING_BOTTOM, 5.0);
+        assert_eq!(TOOLBAR_WORKSPACE_MARGIN, 6.0);
+        // `.tb-tab`: `padding: 0 10px; height: 22px`, `--r-sm` at its top; `letter-spacing:
+        // .5px` there, on `.tb-ws`, and on `.tb-label`.
+        assert_eq!(TOOLBAR_TAB_HEIGHT, 22.0);
+        assert_eq!(TOOLBAR_TAB_PADDING, 10.0);
+        assert_eq!(TOOLBAR_TAB_CORNER_RADIUS, 4);
+        assert_eq!(TOOLBAR_LETTER_SPACING, 0.5);
+        // `.tb-panels`: `padding: 0 6px`; `.tb-panel`: `padding: 4px 6px 0`; `.tb-row`:
+        // `gap: 1px`.
+        assert_eq!(TOOLBAR_PANELS_PADDING, 6.0);
+        assert_eq!(TOOLBAR_PANEL_PADDING_TOP, 4.0);
+        assert_eq!(TOOLBAR_PANEL_PADDING_SIDE, 6.0);
+        assert_eq!(TOOLBAR_BUTTON_GAP, 1.0);
+        // `.tb-btn`: 30 square, `--r-sm`.
+        assert_eq!(TOOLBAR_BUTTON_SIZE, 30.0);
+        assert_eq!(TOOLBAR_BUTTON_CORNER_RADIUS, 4);
+        // `.tb-label`: `font-size: 10px; line-height: 14px; gap: 2px; padding: 1px 4px;
+        // border-radius: 3px; margin-top: 1px`, its `svg` 8 square.
+        assert_eq!(TOOLBAR_LABEL_SIZE, 10.0);
+        assert_eq!(TOOLBAR_LABEL_LINE_HEIGHT, 14.0);
+        assert_eq!(TOOLBAR_LABEL_GAP, 2.0);
+        assert_eq!(TOOLBAR_LABEL_PADDING, Margin::symmetric(4, 1));
+        assert_eq!(TOOLBAR_LABEL_CORNER_RADIUS, 3);
+        assert_eq!(TOOLBAR_LABEL_MARGIN_TOP, 1.0);
+        assert_eq!(TOOLBAR_LABEL_ARROW_SIZE, 8.0);
+        // `.tb-finish`: `padding: 0 8px`; `.btn-finish`: `padding: 0 12px; gap: 6px`.
+        assert_eq!(TOOLBAR_FINISH_MARGIN, 8.0);
+        assert_eq!(TOOLBAR_FINISH_PADDING, 12.0);
+        assert_eq!(TOOLBAR_FINISH_GAP, 6.0);
+        for (name, color, hex) in [
+            // `#toolbar`: `--g100`, its `border-bottom` `--g250`; `.tb-tabs`' and
+            // `.tb-panel`'s borders, `--g200`; `.tb-ws`, `--g550` by a `--g250` border.
+            ("TOOLBAR_BG", TOOLBAR_BG, 0x0d0d0d),
+            ("TOOLBAR_BORDER", TOOLBAR_BORDER, 0x272626),
+            ("TOOLBAR_DIVIDER", TOOLBAR_DIVIDER, 0x212121),
+            ("TOOLBAR_WORKSPACE_TEXT", TOOLBAR_WORKSPACE_TEXT, 0x939090),
+            (
+                "TOOLBAR_WORKSPACE_BORDER",
+                TOOLBAR_WORKSPACE_BORDER,
+                0x272626,
+            ),
+            // `.tb-tab`, `--g550`; `:hover`, `--g800`; `.active`, `--g1000` on `--g200`;
+            // `.ctx`, `--blue-text` on `--blue`.
+            ("TOOLBAR_TAB_TEXT", TOOLBAR_TAB_TEXT, 0x939090),
+            ("TOOLBAR_TAB_HOVER_TEXT", TOOLBAR_TAB_HOVER_TEXT, 0xe0dfdf),
+            ("TOOLBAR_TAB_ACTIVE_TEXT", TOOLBAR_TAB_ACTIVE_TEXT, 0xffffff),
+            ("TOOLBAR_TAB_ACTIVE_BG", TOOLBAR_TAB_ACTIVE_BG, 0x212121),
+            (
+                "TOOLBAR_TAB_CONTEXT_TEXT",
+                TOOLBAR_TAB_CONTEXT_TEXT,
+                0xf0f2ff,
+            ),
+            ("TOOLBAR_TAB_CONTEXT_BG", TOOLBAR_TAB_CONTEXT_BG, 0x186add),
+            // `.tb-btn`, `--g750`; `:hover`, `--g1000` on `--g300`; `:disabled`, `--g400`.
+            ("TOOLBAR_BUTTON_ICON", TOOLBAR_BUTTON_ICON, 0xcfcfcf),
+            ("TOOLBAR_BUTTON_HOVER_BG", TOOLBAR_BUTTON_HOVER_BG, 0x2c2b2b),
+            (
+                "TOOLBAR_BUTTON_HOVER_ICON",
+                TOOLBAR_BUTTON_HOVER_ICON,
+                0xffffff,
+            ),
+            (
+                "TOOLBAR_BUTTON_DISABLED_ICON",
+                TOOLBAR_BUTTON_DISABLED_ICON,
+                0x646363,
+            ),
+            // `.tb-label`, `--g550`; `:hover`, `--g1000` on `--g250`.
+            ("TOOLBAR_LABEL_TEXT", TOOLBAR_LABEL_TEXT, 0x939090),
+            (
+                "TOOLBAR_LABEL_HOVER_TEXT",
+                TOOLBAR_LABEL_HOVER_TEXT,
+                0xffffff,
+            ),
+            ("TOOLBAR_LABEL_HOVER_BG", TOOLBAR_LABEL_HOVER_BG, 0x272626),
+            // `.btn-finish`: `--g1000` on `--blue`; `:hover`, `#2a78e8`.
+            ("TOOLBAR_FINISH_BG", TOOLBAR_FINISH_BG, 0x186add),
+            ("TOOLBAR_FINISH_TEXT", TOOLBAR_FINISH_TEXT, 0xffffff),
+            ("TOOLBAR_FINISH_HOVER_BG", TOOLBAR_FINISH_HOVER_BG, 0x2a78e8),
         ] {
             assert_eq!(color, opaque(hex), "{name}");
         }

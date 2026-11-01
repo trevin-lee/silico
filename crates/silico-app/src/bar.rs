@@ -144,6 +144,20 @@ pub(crate) fn button(
     })
 }
 
+/// The drop-down menu `add` fills, opened and closed by clicks on `response` (`.menu`):
+/// the File menu, and the toolbar's.
+pub(crate) fn menu(response: &Response, add: impl FnOnce(&mut Ui)) {
+    let config = egui::containers::menu::MenuConfig::new();
+    egui::Popup::menu(response)
+        .close_behavior(config.close_behavior)
+        .style(config.style.clone())
+        .info(
+            egui::UiStackInfo::new(egui::UiKind::Menu)
+                .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
+        )
+        .show(add);
+}
+
 /// The separator between the bar's buttons and the documents' tabs (`.ab-sep`).
 pub(crate) fn separator(ui: &mut Ui) {
     let size = Vec2::new(

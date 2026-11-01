@@ -29,7 +29,7 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Every kind, in the toolbar's order.
+    /// Every kind: the primitives, then the sweeps.
     pub const ALL: [Kind; 9] = [
         Kind::Box,
         Kind::Cylinder,
