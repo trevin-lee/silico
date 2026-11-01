@@ -79,8 +79,12 @@ fn a_frames_origin_exactly_at_its_reach_passes_and_a_hair_past_is_refused() {
             refused(past, "the face frame's origin must be within √3 · 1e6 mm");
         }
     }
-    // √3 · 1e6 and its rounding: just over 1.732e6, under 1.7321e6.
-    const { assert!(MAX_FRAME_ORIGIN > 1.732_050_807e6 && MAX_FRAME_ORIGIN < 1.7321e6) };
+    // √3 · 1e6 times 1 + 16ε, worked by hand: 1732050.8075688833, past the bare √3 · 1e6
+    // (1732050.8075688772) by its rounding's slack, and by no more than a few of its ulps.
+    assert!(
+        MAX_FRAME_ORIGIN > 1_732_050.807_568_877_2 && MAX_FRAME_ORIGIN < 1_732_050.807_568_9,
+        "{MAX_FRAME_ORIGIN}"
+    );
 }
 
 #[test]
