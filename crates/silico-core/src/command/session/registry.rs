@@ -293,7 +293,7 @@ pub(super) fn start<P: Clients + 'static>(
             .unwrap_or_default();
         // Its file, if it has one, watched on disk from here, against the bytes it read (or
         // made), at the path they were read from.
-        watch(&registry, &session);
+        watch_file(&registry, &session, false);
         book.sessions.insert(id, Arc::clone(&session));
         for read in reads {
             read(Turn::Run(&session));
@@ -355,13 +355,18 @@ pub(super) fn start<P: Clients + 'static>(
 /// Session `session`'s file, if it has one and isn't watched yet, watched on disk from now
 /// on (docs/design/m5.0-app.md, section 4): compared against the bytes the session holds,
 /// at the path it holds, the client woken as the finding changes, and a change found with no
-/// transaction open reloaded on the session's own thread (A3). Whether it set the watch: not
-/// for an untitled session, which has no file to watch, nor for one watched already. Set at
-/// `open` for a file, and for an untitled session at its first save ([`watch_saved`]); one
-/// session's watch is set once, and moved, never replaced, by a Save As after.
-pub(super) fn watch<P: Clients + 'static>(
+/// transaction open reloaded on the session's own thread (A3). With `written`, the bytes
+/// are what the session just wrote there, so the watch is made already finding the file
+/// `unchanged`, as a Save As's moved watch does, before it's published: no comparison can
+/// run against it first. Without, as `open` makes one, it finds nothing until its first
+/// comparison ends. Whether it set the watch: not for an untitled session, which has no
+/// file to watch, nor for one watched already. Set at `open` for a file, and for an untitled
+/// session at its first save ([`watch_saved`]); one session's watch is set once, and moved,
+/// never replaced, by a Save As after.
+pub(super) fn watch_file<P: Clients + 'static>(
     registry: &Arc<Registry<P>>,
     session: &Arc<Session<P::Client>>,
+    written: bool,
 ) -> bool {
     if session.disk.get().is_some() {
         return false;
@@ -385,19 +390,23 @@ pub(super) fn watch<P: Clients + 'static>(
         None => DiskWatch::new(
             resolved,
             registry.workspace.clone(),
-            bytes,
+            Arc::clone(&bytes),
             registry.disk_interval,
             Some(notify),
         ),
         Some((read, now)) => DiskWatch::clocked(
             resolved,
-            bytes,
+            Arc::clone(&bytes),
             registry.disk_interval,
             Some(notify),
             Arc::clone(read),
             Arc::clone(now),
         ),
     };
+    if written {
+        // Not published yet, so nothing has compared, nor can before this.
+        disk.held(bytes);
+    }
     if session.disk.set(disk).is_err() {
         return false;
     }
@@ -410,32 +419,31 @@ pub(super) fn watch<P: Clients + 'static>(
     true
 }
 
-/// After a Save As of `session`, run on its thread once the save has answered: if it was
-/// untitled until then (its first save), what `open` of the file it wrote would have given
-/// it, so from now on it's as a session opened on that file. Its file watched on disk
-/// ([`watch`]), found unchanged at once, since it holds what it just wrote (as a Save As
-/// finds the file it moved to); and its engine's steps kept in the cache beside the file,
-/// shared with every session on a document there, as `open` opens it. A session that had a
-/// file keeps its watch, moved by the save, and its cache, the one beside the file it opened
-/// (M5.4, as built).
+/// After a Save As of `session`, run on its thread after the save has written, before the
+/// commit answers: if it was untitled until then (its first save), what `open` of the file
+/// it wrote would have given it, so from now on it's as a session opened on that file. Its
+/// file watched on disk ([`watch_file`]), found unchanged from the start, since it holds
+/// what it just wrote (as a Save As finds the file it moved to); and its engine's steps kept
+/// in the cache beside the file, shared with every session on a document there, as `open`
+/// opens it. A session that had a file keeps its watch, moved by the save, and its cache,
+/// the one beside the file it opened (M5.4, as built).
 pub(super) fn watch_saved<P: Clients + 'static>(
     registry: &Arc<Registry<P>>,
     session: &Arc<Session<P::Client>>,
 ) {
-    if !watch(registry, session) {
+    if !watch_file(registry, session, true) {
         return;
     }
     let _span = tracing::info_span!("first_save").entered();
-    let (resolved, bytes) = {
-        let held = session.held.read();
-        let Some(file) = &held.file else {
-            return;
-        };
-        (file.resolved.clone(), Arc::clone(&held.bytes))
+    let Some(resolved) = session
+        .held
+        .read()
+        .file
+        .as_ref()
+        .map(|file| file.resolved.clone())
+    else {
+        return;
     };
-    if let Some(disk) = session.disk.get() {
-        disk.held(bytes);
-    }
     // Opened with no lock held: the cache reads the user's secret.
     let cache = registry.cache(&file::cache_directory(&resolved));
     lock(&session.rebuilds).engine.keep_in(cache);

@@ -33,7 +33,7 @@ fn an_agent_opens_an_untitled_part_edits_it_in_a_transaction_and_saves_it_with_a
     let open_tool = tool(&list, "open");
     let described = open_tool["description"].as_str().unwrap();
     assert!(
-        described.contains("With `path: null` and `create: true`, an untitled part"),
+        described.ends_with(silico_mcp::tools::UNTITLED),
         "{described}"
     );
     // Opened untitled: §2's result and envelope, holding to the tool's output schema.

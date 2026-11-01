@@ -1654,14 +1654,10 @@ impl<K: Kernel + 'static> Recompute<K> {
 
     fn build(kernel: K, cache: Option<Cache>) -> Self {
         let generation = kernel.generation();
-        let kept = OnceLock::new();
-        if let Some(cache) = cache {
-            let _ = kept.set(cache);
-        }
         Self {
             engine: Arc::new(Engine {
                 kernel,
-                cache: kept,
+                cache: cache.map_or_else(OnceLock::new, OnceLock::from),
                 sketch_turn: Condvar::new(),
                 solvers: Mutex::new(SketchSolvers::workers()),
                 state: Mutex::new(EngineState {
@@ -1693,9 +1689,9 @@ impl<K: Kernel + 'static> Recompute<K> {
     /// it's kept, as [`with_cache`](Self::with_cache) gives it: for an engine made with
     /// none (an untitled session's, until its first save gives it the cache beside its
     /// file). A recompute running takes it for the steps it hasn't read or written yet.
-    /// Given once: an engine that has a cache keeps it, and this says whether it was taken.
-    pub fn keep_in(&self, cache: Cache) -> bool {
-        self.engine.cache.set(cache).is_ok()
+    /// Given once: an engine that has a cache keeps it, and one given after is let go.
+    pub fn keep_in(&self, cache: Cache) {
+        let _ = self.engine.cache.set(cache);
     }
 
     /// The cache the engine keeps its steps in, if it has one.

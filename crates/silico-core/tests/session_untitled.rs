@@ -17,7 +17,8 @@ use silico_protocol::Reply;
 
 use silico_core::kernel::Op;
 
-use crate::calls::{BOX, Fixture, OUTSIDE, envelope, fixture};
+use crate::calls::{BOX, Fixture, OUTSIDE, call, envelope, fixture, sessions_on};
+use crate::example::EXAMPLE;
 use crate::export_report::tetra;
 use crate::session_save_as::canonical;
 use crate::sessions::HANG;
@@ -700,4 +701,152 @@ fn an_untitled_boxs_names_and_fingerprint_are_a_file_sessions() {
     assert_eq!(formatted["ok"], true, "{formatted}");
     assert_eq!(f.on_disk("untitled.silico"), f.on_disk("part.silico"));
     assert_eq!(f.on_disk("untitled.silico"), canonical(40));
+}
+
+// ---- After the review (#354) ----
+
+/// An untitled session opened on `sessions`, a transaction begun, and its document made
+/// `text` (inside the transaction, as `replace_text` makes one): its ID.
+fn untitled_holding(
+    sessions: &silico_core::command::Sessions<std::sync::Arc<silico_core::fake::FakeKernel>>,
+    text: &str,
+) -> String {
+    let open = envelope(&call(sessions, "open", UNTITLED));
+    assert_eq!(open["ok"], true, "{open}");
+    let s = open["session"]["id"].as_str().unwrap().to_owned();
+    let begin = envelope(&call(
+        sessions,
+        "begin",
+        &format!(r#"{{"session": "{s}"}}"#),
+    ));
+    assert_eq!(begin["ok"], true, "{begin}");
+    let replaced = envelope(&call(
+        sessions,
+        "replace_text",
+        &format!(
+            r#"{{"session": "{s}", "revision": 1, "text": {}}}"#,
+            serde_json::to_string(text).unwrap()
+        ),
+    ));
+    assert_eq!(replaced["ok"], true, "{replaced}");
+    s
+}
+
+#[test]
+fn an_untitled_parts_step_header_and_assembly_are_named_from_the_file_written() {
+    // With no document file, the header's FILE_NAME is the exported file's last component
+    // and the assembly its stem (docs/ports/step-export.md, as built), as the fake STEP
+    // writer writes them back line by line: line 1 the file name, line 2 the assembly of
+    // the two parts (the cut, and the box it consumed, named).
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let (kernel, sessions, _) = sessions_on(&root, |_| {});
+    let sessions = sessions.exporting_step(std::sync::Arc::clone(&kernel));
+    let s = untitled_holding(&sessions, EXAMPLE);
+    let other = root.join("elsewhere");
+    std::fs::create_dir(&other).unwrap();
+    for (to, file_name, assembly) in [
+        (root.join("out.step"), "out.step", "out"),
+        (other.join("part-b.stp"), "part-b.stp", "part-b"),
+    ] {
+        let exported = envelope(&call(
+            &sessions,
+            "export",
+            &format!(
+                r#"{{"session": "{s}", "format": "step", "path": {}, "replace": false, "features": ["m3tq8v0z", "k7f2qx3m"], "tolerance": null}}"#,
+                serde_json::to_string(to.to_str().unwrap()).unwrap()
+            ),
+        ));
+        assert_eq!(exported["ok"], true, "{exported}");
+        let text = std::fs::read_to_string(&to).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[1], format!("FILE_NAME('{file_name}')"), "{text}");
+        assert_eq!(lines[2], format!("ASSEMBLY('{assembly}')"), "{text}");
+    }
+}
+
+#[test]
+fn a_drag_is_refused_as_it_begins_in_an_untitled_session_outside_a_transaction() {
+    // Its end would be an edit saved as it's made, which the session has no file for:
+    // refused at `drag_begin`, before any sketch worker is started (the review of #354).
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&started);
+    let sessions = silico_core::command::Sessions::with_stand_ins(
+        std::sync::Arc::new(silico_core::fake::FakeKernel::new(2).unwrap()),
+        move |cache| silico_core::cache::Cache::with_secret(cache, &secret),
+        move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(silico_core::fake::FakeSketches::new())
+                as Box<dyn silico_core::sketch::SketchSolver>)
+        },
+    );
+    let open = envelope(&call(&sessions, "open", UNTITLED));
+    let s = open["session"]["id"].as_str().unwrap().to_owned();
+    let drag = format!(
+        r#"{{"session": "{s}", "sketch": "s0000001", "point": "pa000003", "curve": null, "press": null}}"#
+    );
+    let refused = envelope(&call(&sessions, "drag_begin", &drag));
+    refused_as(
+        the_error(&refused),
+        &format!("session {s} is untitled: {NO_FILE}"),
+        "session",
+        Some(SAVED_AS_MADE),
+        BEGIN_FIRST,
+    );
+    assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let status = envelope(&call(
+        &sessions,
+        "status",
+        &format!(r#"{{"session": "{s}"}}"#),
+    ));
+    assert_eq!(status["result"]["drag"], Value::Null, "{status}");
+    // Inside a transaction, it's judged as any session's drag: here, of no such sketch.
+    let begin = envelope(&call(
+        &sessions,
+        "begin",
+        &format!(r#"{{"session": "{s}"}}"#),
+    ));
+    assert_eq!(begin["ok"], true);
+    let inside = envelope(&call(&sessions, "drag_begin", &drag));
+    assert_eq!(the_error(&inside)["parameter"], "sketch", "{inside}");
+}
+
+#[test]
+fn status_straight_after_the_first_save_finds_the_file_unchanged() {
+    // The watch is made holding what the save wrote: `status`, the first command after the
+    // commit, reads `unchanged`, not `null` before a first comparison has ended.
+    let f = fixture();
+    let s = f.untitled();
+    f.begun(&s);
+    assert_eq!(f.commit_to(&s, r#""part.silico""#, false)["ok"], true);
+    assert_eq!(f.status(&s)["result"]["disk"], "unchanged");
+}
+
+#[test]
+fn the_apps_first_save_writes_an_absolute_path_over_a_file_there() {
+    // The app's own save: no workspace, the path the system's save panel gives (absolute),
+    // a file already there, and `replace: true` (the panel asked).
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let (_kernel, sessions, caches) = sessions_on(&root, |_| {});
+    let target = root.join("x.silico");
+    std::fs::write(&target, "an old file").unwrap();
+    let s = untitled_holding(&sessions, BOX);
+    let path = target.to_str().unwrap();
+    let saved = envelope(&call(
+        &sessions,
+        "commit",
+        &format!(
+            r#"{{"session": "{s}", "path": {}, "replace": true}}"#,
+            serde_json::to_string(path).unwrap()
+        ),
+    ));
+    assert_eq!(saved["ok"], true, "{saved}");
+    assert_eq!(saved["session"]["path"], path);
+    assert_eq!(saved["result"]["path"], path);
+    // The box's text in canonical form, fingerprinted: it was reached in the transaction.
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), canonical(40));
+    assert_eq!(caches.lock().unwrap().clone(), [root.join(".silico-cache")]);
 }

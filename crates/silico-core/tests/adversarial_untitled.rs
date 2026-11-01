@@ -343,8 +343,7 @@ fn two_untitled_sessions_saving_to_one_path_at_once_write_it_once() {
         // The other session holds it, or a file was put there since this one looked.
         assert!(
             message == format!("\"one.silico\" is open in session {winner}")
-                || (!replace && message == "\"one.silico\" exists")
-                || code == "conflict",
+                || (!replace && message == "\"one.silico\" exists"),
             "{message}"
         );
         let text = std::fs::read_to_string(f.work.join("one.silico")).unwrap();

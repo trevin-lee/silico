@@ -353,8 +353,9 @@ fn untitled_commit(id: SessionId) -> Error {
 }
 
 /// The refusal of what an untitled session `id` would save outside a transaction (an edit,
-/// which is saved as it's made, decision 1; `format` writing): it has no file to save to.
-fn untitled_save(id: SessionId) -> Error {
+/// which is saved as it's made, decision 1; `format` writing; a drag, whose end is such an
+/// edit, refused as it begins): it has no file to save to.
+pub(super) fn untitled_save(id: SessionId) -> Error {
     Error::new(
         ErrorCode::InvalidInput,
         format!("session {id} is untitled: it has no file to save to"),
@@ -1368,8 +1369,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// before the save began (past it, a cancel comes too late, and the command answers with
     /// its real result). With `to`, a Save As: written there ([`save_to`](Self::save_to)),
     /// not over the session's file, and the session's file from then on, its path as `to`
-    /// gives it, the disk watch moved to it (an untitled session has none yet: it's given
-    /// one once the save has answered, [`registry::watch_saved`](super::registry::watch_saved)).
+    /// gives it, the disk watch moved to it (an untitled session has none yet: it's given one
+    /// after the save has written, before the commit answers,
+    /// [`registry::watch_saved`](super::registry::watch_saved)).
     /// With none, refused for an
     /// untitled session, which has no file to save over.
     fn write(
