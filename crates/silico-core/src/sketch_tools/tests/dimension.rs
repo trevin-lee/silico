@@ -2374,10 +2374,13 @@ fn a_later_read_releases_an_open_offer() {
 fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
     // Round 5, item 2: placed on revision 1's read; the core answers the add as revision 3
     // (an edit came between); the tool given revision 3's read, its freedoms not dropped
-    // (which across one add would offer). Satisfied: no offer, settled. Redundant: offered.
+    // (which across one add would offer). Satisfied: no offer, settled. Redundant, partially
+    // redundant, or conflicting: offered.
     for (state, offered) in [
         (ConstraintState::Satisfied, false),
         (ConstraintState::Redundant, true),
+        (ConstraintState::PartiallyRedundant, true),
+        (ConstraintState::Conflicting, true),
     ] {
         let sketch = corner();
         let sketch_id = sketch_id();
