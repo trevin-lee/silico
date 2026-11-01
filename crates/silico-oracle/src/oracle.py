@@ -499,9 +499,12 @@ def angle_on(c, g, positioned=False):
 def put_angle_back(s, cap, curve, pieces):
     """The angle `cap` put back on each of `pieces` (geometry IDs) in place of `curve` (the
     edited curve's ID), its positions as they were: split's on its first piece
-    (#se-split-angle-segfault), trim's on every line piece (#se-trim-a-positioned-angle)."""
+    (#se-split-angle-segfault), trim's on every line piece (#se-trim-a-positioned-angle).
+    Only the copy on `curve` itself keeps the angle's name (Silico's ID): FreeCAD refuses a
+    name twice, and Silico gives each other piece's copy a new ID."""
     for piece in pieces:
-        put_back(s, cap, [[index_of(s, piece if r == curve else r), pos] for r, pos in cap["refs"]])
+        own = cap if piece == curve else dict(cap, name="")
+        put_back(s, own, [[index_of(s, piece if r == curve else r), pos] for r, pos in cap["refs"]])
 
 
 def drop(s, indices):
