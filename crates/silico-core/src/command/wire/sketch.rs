@@ -57,7 +57,11 @@ impl ToWire for SketchRequest {
 impl ToWire for SketchRead {
     /// `sketch`'s result: the sketch's plane, state, and degrees of freedom; each member as
     /// the document writes it, with its state; the profile's regions, or why there's none;
-    /// why it wasn't solved; and why its plane wasn't resolved (its plane then null).
+    /// why it wasn't solved; and why its plane wasn't resolved, its plane then null
+    /// ([`SketchRead::plane`]: a broken face's `reference_broken`, `invalid_input` on
+    /// `plane` for a frame that can't place the sketch or a profile or axis past the reach,
+    /// a blocked sketch's error as a read of its own solid gives it (the root, or the
+    /// kernel fault, kept), or a bug's `internal`).
     fn to_wire(&self) -> Json<'_> {
         let frame = |frame: &SketchPlane| {
             Json::object([

@@ -1013,8 +1013,8 @@ pub struct StepCounter(Arc<(Mutex<Counted>, Condvar)>);
 pub struct StepCount {
     /// The steps settled: built, failed, kept from before, or never to run (an input
     /// failed, or only refused features need it). All of them once the recompute finishes.
-    /// Each counted once, by its key, however many rounds settle it: so it never goes back,
-    /// round to round, and never reaches `steps` while a step is still to settle.
+    /// Each counted once, by its key, however many rounds settle it: it never counts a step
+    /// twice, and never goes back, round to round.
     pub done: usize,
     /// The steps of its plan: none until its plan is made (after the sketches it sweeps are
     /// solved). A rebuild with sketches on faces plans in rounds, each adding the steps of

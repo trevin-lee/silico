@@ -33,9 +33,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// error for a sketch it couldn't solve or diagnose for a reason that isn't the sketch's
     /// (a worker's failure), as `check` reports it. A sketch on a face that wasn't resolved
     /// isn't refused: its plane is the rebuild's error for it ([`SketchRead::plane`]). Read
-    /// as every model is
-    /// ([`read_model`](Self::read_model)): the current one queued, waiting for the revision's
-    /// rebuild, or the newest published at once, counted among the session's published reads.
+    /// as every model is ([`read_model`](Self::read_model)): the current one queued, waiting
+    /// for the revision's rebuild, or the newest published at once, counted among the
+    /// session's published reads.
     pub fn sketch(
         &self,
         session: &SessionId,
@@ -61,10 +61,12 @@ pub struct SketchRead {
     pub sketch: FeatureId,
     /// The plane it's drawn on, as its rebuild resolved it: an origin plane's, or, for a
     /// sketch on a face, the face's frame (docs/ports/attacher.md, F1 and F2); or, for a
-    /// sketch on a face the rebuild couldn't resolve, its one error for it, as `check`
-    /// reports the sketch (its face's reference broken, with candidates; the feature it's
-    /// blocked on; or the worker's failure describing the face, the kernel fault kept). Its
-    /// 2D is read all the same: the rebuild solves a sketch before it places it.
+    /// sketch on a face the rebuild couldn't place, its one error for it: its face's
+    /// reference broken, with candidates, as `check` reports it; the frame unable to place
+    /// the sketch, or its profile or axis placed past the reach (`invalid_input` on
+    /// `plane`); the error a read of the sketch's own solid gives when it's blocked (the
+    /// root it's blocked on, or the kernel fault, kept); or a bug's (`internal`). Its 2D is
+    /// read all the same: the rebuild solves a sketch before it places it.
     pub plane: Result<SketchPlane, Error>,
     /// The sketch in its document form: its points, circles' radii, and reference
     /// dimensions' values as the solve gave them, written as a save writes them (M3.4); or,
