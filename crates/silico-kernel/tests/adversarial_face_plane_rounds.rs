@@ -189,7 +189,7 @@ fn a_sketch_on_a_slanted_face_whose_frame_origin_is_past_a_kilometre_but_whose_p
 }
 
 #[test]
-fn two_alike_sketches_on_one_slanted_face_refused_alike_are_each_refused_in_their_own_words() {
+fn two_alike_sketches_on_one_slanted_face_share_its_faces_step_and_each_pads_a_body_of_its_own() {
     // Two sketches drawn alike on the slanted side of the previous test share one faces
     // step (its key has no ID): a refusal of it, kept by its key, must name each pad as
     // its own, never the first pad for both.
@@ -577,6 +577,7 @@ fn a_sketch_on_a_boxs_top_after_a_fuse_with_another_box_is_found_in_the_fuse_and
     );
     let s = built_summary(&model, "p0000001");
     near(s.volume, 1025.0, 1e-9, "the pad onto the fuse");
+    assert!(s.valid, "the pad onto the fuse isn't valid");
     let [low, high] = s.bounds.unwrap();
     for k in 0..3 {
         near(low[k], [0.0, 0.0, 0.0][k], 1e-7, "the low corner");
@@ -615,14 +616,12 @@ fn a_sketch_on_a_boxs_top_after_a_fillet_of_a_bottom_edge_is_found_in_the_fillet
         ([0.0, 0.0, 10.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
     );
     let filleted = 1000.0 - (1.0 - std::f64::consts::FRAC_PI_4) * 10.0;
-    near(
-        built_summary(&model, "f0000001").volume,
-        filleted,
-        1e-6,
-        "the fillet",
-    );
+    let fillet = built_summary(&model, "f0000001");
+    near(fillet.volume, filleted, 1e-6, "the fillet");
+    assert!(fillet.valid, "the fillet isn't valid");
     let s = built_summary(&model, "p0000001");
     near(s.volume, filleted + 24.0, 1e-6, "the pad onto the fillet");
+    assert!(s.valid, "the pad onto the fillet isn't valid");
     near(s.bounds.unwrap()[1][2], 13.0, 1e-7, "the pad's top");
 }
 
@@ -647,12 +646,9 @@ fn a_sketch_on_a_boxs_top_after_a_pad_under_it_is_found_in_the_pad() {
         pad("p0000001", Some("p0000009"), "s0000001", &one_side("3")),
     ];
     let model = publish(&engine(), &features);
-    near(
-        built_summary(&model, "p0000009").volume,
-        1004.0,
-        1e-9,
-        "the pad under the box",
-    );
+    let below = built_summary(&model, "p0000009");
+    near(below.volume, 1004.0, 1e-9, "the pad under the box");
+    assert!(below.valid, "the pad under the box isn't valid");
     let f = frame_of(&model, "s0000001");
     assert_eq!(
         (f.origin, f.x, f.y),
@@ -660,6 +656,7 @@ fn a_sketch_on_a_boxs_top_after_a_pad_under_it_is_found_in_the_pad() {
     );
     let s = built_summary(&model, "p0000001");
     near(s.volume, 1028.0, 1e-9, "the pad on top");
+    assert!(s.valid, "the pad on top isn't valid");
     let [low, high] = s.bounds.unwrap();
     for k in 0..3 {
         near(low[k], [0.0, 0.0, -1.0][k], 1e-7, "the low corner");
@@ -745,6 +742,7 @@ fn a_stored_token_that_isnt_the_default_turns_the_sketch_on_the_boxs_top() {
     );
     let s = built_summary(&model, "p0000001");
     near(s.volume, 24.0, 1e-9, "the pad");
+    assert!(s.valid, "the pad isn't valid");
     let [low, high] = s.bounds.unwrap();
     for k in 0..3 {
         near(low[k], [1.0, 1.0, 10.0][k], 1e-7, "the pad's low corner");
@@ -802,7 +800,8 @@ fn fifty_sketches_on_a_boxs_top_each_padded_onto_the_last_build_in_fifty_rounds(
     // a pad P_k of it onto P_{k−1} (P_1 onto B). Each pad's fuse leaves B's top one face,
     // its name kept, so S_k is found in P_{k−1}: each frame ((0, 0, 10), +X, +Y). Each S_k a
     // 0.5 × 0.5 square of its own on the top, padded 1: 1000 + 50 · 0.25 = 1012.5, from (0,
-    // 0, 0) to (10, 10, 11).
+    // 0, 0) to (10, 10, 11). Fifty rounds, each placing one sketch, and a last that finds
+    // none waiting: 51.
     let mut features = vec![box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0)];
     for k in 0..50 {
         let (column, row) = ((k % 10) as f64, (k / 10) as f64);
@@ -826,7 +825,16 @@ fn fifty_sketches_on_a_boxs_top_each_padded_onto_the_last_build_in_fifty_rounds(
             &one_side("1"),
         ));
     }
-    let model = publish(&engine(), &features);
+    let engine = engine();
+    let refs: Vec<&str> = features.iter().map(String::as_str).collect();
+    let run = engine.start(checked_document(&refs));
+    let progress = run.progress();
+    let model = match run.wait_timeout(HANG) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        Ok(other) => panic!("not published: {other:?}"),
+        Err(_) => panic!("the rebuild didn't finish in {HANG:?}"),
+    };
+    assert_eq!(progress.rounds(), 51);
     for k in 1..=50 {
         let f = frame_of(&model, &format!("s{k:07}"));
         assert_eq!(
@@ -837,6 +845,7 @@ fn fifty_sketches_on_a_boxs_top_each_padded_onto_the_last_build_in_fifty_rounds(
     }
     let s = built_summary(&model, "p0000050");
     near(s.volume, 1012.5, 1e-9, "the last pad");
+    assert!(s.valid, "the last pad isn't valid");
     let [low, high] = s.bounds.unwrap();
     for k in 0..3 {
         near(low[k], 0.0, 1e-7, "the low corner");

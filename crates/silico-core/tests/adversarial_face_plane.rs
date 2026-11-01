@@ -232,28 +232,31 @@ fn a_megabyte_face_name_is_refused_by_the_gate_promptly_with_a_message_cut_short
 // ---- the gate ----
 
 #[test]
-fn a_face_named_of_an_earlier_sketch_is_refused_by_the_gate_or_broken_with_candidates() {
-    // A sketch's faces (s0000001.sketch.Face1) aren't a solid's: a sketch on one is either
-    // the gate's refusal or the rebuild's reference_broken, never a frame or a bug.
+fn a_face_named_of_an_earlier_sketch_is_refused_by_the_gate_naming_what_to_name_instead() {
+    // A sketch's faces (s0000001.sketch.Face1) are in no solid: the gate refuses the name
+    // on plane.face, saying to name what a feature made of it, so no rebuild meets it.
     let features = [
         rectangle("s0000001", "xy", [0.0, 0.0], 4.0, 2.0),
         pad("p0000001", None, "s0000001", &one_side("3")),
         on_face("s0000002", &face("s0000001.sketch.Face1", "+x", false)),
     ];
-    match checked(&strs(&features)) {
-        Err(invalid) => {
-            assert_eq!(invalid.errors()[0].parameter(), Some("plane.face"));
-        }
-        Ok(()) => {
-            let model = publish(&engine(), checked_document(&strs(&features)));
-            let outcome = model.outcome(&id("s0000002"));
-            let Some(FeatureOutcome::Broken { errors, .. }) = outcome else {
-                panic!("{outcome:?}");
-            };
-            assert_eq!(errors[0].code(), ErrorCode::ReferenceBroken, "{errors:?}");
-            assert_eq!(errors[0].parameter(), Some("plane.face"));
-        }
-    }
+    let invalid = checked(&strs(&features)).unwrap_err();
+    assert_eq!(invalid.errors().len(), 1, "{:?}", invalid.errors());
+    let e = &invalid.errors()[0];
+    assert_eq!(e.code(), ErrorCode::InvalidInput);
+    assert_eq!(e.feature(), Some("s0000002"));
+    assert_eq!(e.parameter(), Some("plane.face"));
+    assert_eq!(
+        e.message(),
+        "plane.face, \"s0000001.sketch.Face1\", isn't a face's name: s0000001 is a sketch: its elements are in no solid; name what a feature made of it, at column 1"
+    );
+    assert_eq!(
+        e.suggestion(),
+        Some(
+            "write the face's name as Silico names it (feature.type.Face...), of a feature before this sketch"
+        )
+    );
+    assert!(e.candidates().is_empty());
 }
 
 #[test]
@@ -878,7 +881,11 @@ fn a_broken_faces_candidates_are_the_same_bytes_however_long_another_branch_is_h
     // planar faces of the other live solids by name: the pad p2's, a branch of its own
     // (b2, sketched on its top in a round of its own, padded). So s1's refusal waits for
     // p2, which a first round hasn't built. Each of several fresh sessions holds p2's
-    // sweep a different time; check's envelope is the same bytes in each.
+    // sweep a different time; check's envelope is the same bytes in each. A determinism
+    // check, not a race: rounds are barriers (a round's plan is made once the round before
+    // has settled every step), so the holds don't change the order steps settle in across
+    // rounds, and the refusal's wait for p2 is what makes its candidates whole
+    // (face_plane.rs's tests of `place` pin the wait itself).
     let features = vec![
         cube(),
         box_at("b0000002", [20.0, 0.0, 0.0], 1.0, 1.0, 1.0),

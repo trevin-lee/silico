@@ -5400,6 +5400,12 @@ mod tests {
             "{walks} steps in {rounds} rounds, past 4 F = {} a round",
             4 * f
         );
+        // And at least F a round: each round passes each feature once to keep what's live,
+        // so a count that missed the walk (or a walk that skipped features) reads under it.
+        assert!(
+            walks >= f * rounds as u64,
+            "{walks} steps in {rounds} rounds, under F = {f} a round"
+        );
     }
 
     #[test]
@@ -5424,6 +5430,11 @@ mod tests {
         let (walks, rounds, model) = walked_rebuilding(checked_of(&features));
         assert_eq!(rounds, 2);
         assert!(walks <= 4 * f, "{walks} steps, past 4 F = {}", 4 * f);
+        // And at least F a round: each round passes each feature once.
+        assert!(
+            walks >= f * rounds as u64,
+            "{walks} steps in {rounds} rounds, under F = {f} a round"
+        );
         for n in 1..=400usize {
             let id = FeatureId::new(&format!("s{n:07}")).unwrap();
             let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id) else {
