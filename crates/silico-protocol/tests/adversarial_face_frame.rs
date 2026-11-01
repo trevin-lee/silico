@@ -391,6 +391,95 @@ fn a_normal_of_no_length_or_none_to_measure_is_refused_as_invalid_naming_the_nor
 }
 
 #[test]
+fn a_normal_off_a_unit_by_more_than_describes_tolerance_is_refused_saying_its_true_length() {
+    // `describe` gives a plane's normal a unit to 1e-6 (NORMAL_LENGTH_TOLERANCE): one off
+    // it by more is a fault in what described the face, refused with its length as it is.
+    // 1e-160 long squares into the subnormals (1e-320, partial underflow), 1e200 long past
+    // f64's range (inf): each said as its own length, not a rounded or infinite one.
+    for (n, said) in [
+        (
+            [1e-160, 0.0, 0.0],
+            "the face's normal must be a unit vector to 1e-6, got [1e-160, 0.0, 0.0], 1e-160 long",
+        ),
+        (
+            [1e200, 0.0, 0.0],
+            "the face's normal must be a unit vector to 1e-6, got [1e200, 0.0, 0.0], 1e200 long",
+        ),
+        (
+            [0.0, 0.0, 1.0 + 2e-6],
+            "the face's normal must be a unit vector to 1e-6, got [0.0, 0.0, 1.000002], 1.000002 long",
+        ),
+        (
+            [0.0, 0.0, 0.0],
+            "the face's normal must be a unit vector to 1e-6, got [0.0, 0.0, 0.0], 0 long",
+        ),
+    ] {
+        match FaceFrame::from_normal([0.0; 3], n, [1.0, 0.0, 0.0]) {
+            Err(FaceFrameError::Invalid(e)) => {
+                assert_eq!(e.parameter, "plane", "{n:?}");
+                assert_eq!(e.message, said, "{n:?}");
+            }
+            other => panic!("{n:?}: {other:?}"),
+        }
+    }
+    // (0, 0, 1 + 1e-6), at the tolerance, on a face at z = 1000: taken, made a unit, so
+    // o = n̂(n̂·p) = (0, 0, 1000) to 4ε of it. Unnormalized, n(n·p) would put it 2e-3 up.
+    let n = [0.0, 0.0, 1.0 + 1e-6];
+    let frame = FaceFrame::from_normal([3.0, -4.0, 1000.0], n, [1.0, 0.0, 0.0]).unwrap();
+    assert!(
+        (frame.origin[2] - 1000.0).abs() <= 4.0 * f64::EPSILON * 1000.0,
+        "{:?}",
+        frame.origin
+    );
+    assert_eq!((frame.origin[0], frame.origin[1]), (0.0, 0.0));
+    assert_eq!(frame.x, [1.0, 0.0, 0.0]);
+    assert_eq!(frame.y, [0.0, 1.0, 0.0]);
+}
+
+#[test]
+fn a_normals_length_is_taken_to_the_last_float_within_the_tolerance_and_refused_one_past() {
+    // From #344's review: the boundary of NORMAL_LENGTH_TOLERANCE pinned by bits, as
+    // `describe` reads its rule (|length - 1| <= 1e-6). Lengths near 1 differ from 1 by
+    // multiples of 2^-53, and 1e-6 (0x1.0c6f7a0b5ed8dp-20) isn't one, so no length is
+    // exactly 1e-6 off: the boundary is the pair of floats either side of it, worked by
+    // hand. Above 1: 1 + 1e-6 rounds to 0x3ff000010c6f7a0b, 0x1.0c6f7a0bp-20 off (under
+    // 1e-6), taken; the next float, 0x1.0c6f7a0cp-20 off, refused. Below: 1 - 1e-6 rounds to
+    // 0x3feffffde7210be9, 0x1.0c6f7a0b8p-20 off (over), refused; the next float up,
+    // 0x1.0c6f7a0bp-20 off, taken. Each normal is (0, 0, z), its norm z exactly.
+    let tolerance = silico_protocol::NORMAL_LENGTH_TOLERANCE;
+    assert_eq!(tolerance.to_bits(), 0x3eb0_c6f7_a0b5_ed8d);
+    for (bits, taken) in [
+        (0x3ff0_0001_0c6f_7a0b_u64, true),
+        (0x3ff0_0001_0c6f_7a0c, false),
+        (0x3fef_fffd_e721_0bea, true),
+        (0x3fef_fffd_e721_0be9, false),
+    ] {
+        let z = f64::from_bits(bits);
+        assert_ne!((z - 1.0).abs(), tolerance, "{z}");
+        let made = FaceFrame::from_normal([0.0; 3], [0.0, 0.0, z], [1.0, 0.0, 0.0]);
+        match (taken, made) {
+            (true, Ok(frame)) => {
+                assert_eq!(
+                    (frame.x, frame.y),
+                    ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+                    "{z}"
+                );
+            }
+            (false, Err(FaceFrameError::Invalid(e))) => {
+                assert_eq!(
+                    e.message,
+                    format!(
+                        "the face's normal must be a unit vector to 1e-6, got [0.0, 0.0, {z:?}], {z} long"
+                    ),
+                    "{bits:#x}"
+                );
+            }
+            (taken, made) => panic!("{bits:#x} ({z}): taken {taken}, but {made:?}"),
+        }
+    }
+}
+
+#[test]
 fn a_box_corners_diagonal_origin_needs_the_bounds_rounding() {
     // The far corner of a box a kilometre out on every axis, on a face whose normal is
     // the diagonal: o = n(n·p) is the corner itself, √3 · 1e6 out, but worked out it comes

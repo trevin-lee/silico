@@ -29,7 +29,7 @@ fn profile_of(d: &Draw) -> Option<Result<Profile, silico_core::profile::Refused>
 /// The kernel request for the profile's faces, as the core would make it: the error it
 /// refuses them with, if it does.
 fn request(p: &Profile) -> Result<(), silico_core::Error> {
-    let regions = p.faces();
+    let regions = p.faces(p.plane.origin().unwrap().into());
     KernelRequest::make_faces(&regions).map(|_| ())
 }
 
@@ -411,7 +411,7 @@ fn a_curve_whose_own_ends_are_within_the_tolerance_is_not_told_to_share_the_poin
 /// Every number a faces request holds: each curve's values, as `Curve` holds them.
 fn sent_values(p: &Profile) -> Vec<f64> {
     use silico_protocol::Curve;
-    p.faces()
+    p.faces(p.plane.origin().unwrap().into())
         .curves()
         .flat_map(|c| match *c {
             Curve::Line { start, end } => vec![start[0], start[1], end[0], end[1]],

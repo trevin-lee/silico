@@ -139,7 +139,8 @@ impl Region {
 /// several faces; whether a feature takes them is the feature's (M3.6).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Profile {
-    /// The sketch's plane, which its faces are made on.
+    /// The sketch's plane, as its document writes it: an origin plane, or a face, whose
+    /// frame only a rebuild resolves (`Profile::faces` takes the plane resolved).
     pub plane: Plane,
     pub regions: Vec<Region>,
 }
@@ -726,7 +727,7 @@ pub(crate) fn of_sketch(
     // them.
     let loops =
         walk(&curves, &at_point).map_err(|e| Refused::of(e.with_feature(feature.as_str())))?;
-    let profile = regions(&curves, &ids, &loops, sketch.plane)
+    let profile = regions(&curves, &ids, &loops, sketch.plane.clone())
         .map_err(|e| Refused::of(e.with_feature(feature.as_str())))?;
     let named =
         |l: &Loop| -> Vec<String> { l.curves.iter().map(|e| e.curve.to_string()).collect() };
@@ -1818,13 +1819,13 @@ fn regions(
 }
 
 impl Profile {
-    /// The profile as the kernel's faces request takes it (`KernelRequest::make_faces`):
-    /// its plane, and its regions in order, each loop's curves as walked ([`Edge::sent`]),
-    /// outer loops counter-clockwise and holes clockwise, exactly as the profile measured
-    /// them.
-    pub fn faces(&self) -> silico_protocol::FaceRegions {
+    /// The profile as the kernel's faces request takes it (`KernelRequest::make_faces`), on
+    /// `plane`, the sketch's plane as the rebuild resolved it (an origin plane's, or a face's
+    /// frame): its regions in order, each loop's curves as walked ([`Edge::sent`]), outer
+    /// loops counter-clockwise and holes clockwise, exactly as the profile measured them.
+    pub fn faces(&self, plane: silico_protocol::SketchPlane) -> silico_protocol::FaceRegions {
         silico_protocol::FaceRegions {
-            plane: silico_protocol::SketchPlane::from(self.plane),
+            plane,
             regions: self
                 .regions
                 .iter()

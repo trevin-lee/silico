@@ -234,7 +234,7 @@ fn built(doc: &Checked) -> (silico_protocol::ShapeSummary, Vec<f64>, Vec<usize>)
     let feature = FeatureId::new(FEATURE).unwrap();
     let solution = solve(doc, &feature, &mut FakeSketches::new()).unwrap();
     let found = profile(doc, &feature, &solution).unwrap_or_else(|r| panic!("{:?}", r.errors()));
-    let regions = found.faces();
+    let regions = found.faces(found.plane.origin().unwrap().into());
     KernelRequest::make_faces(&regions).unwrap();
     let shape = make_faces(&regions).unwrap().shape;
     (

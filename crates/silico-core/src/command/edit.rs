@@ -1274,8 +1274,8 @@ fn referencing_any(
                     .find(|f| &f.id == maker)
                     .map(|f| Maker::of(&f.operation))
             };
-            feature.operation.edges().iter().any(|edge| {
-                Name::parse(edge.as_str(), &makers).is_ok_and(|name| reaches(&name, id, &reached))
+            feature.operation.stored_names().any(|(_, stored)| {
+                Name::parse(stored.as_str(), &makers).is_ok_and(|name| reaches(&name, id, &reached))
             })
         })
         .map(|(_, feature)| feature.id.clone())

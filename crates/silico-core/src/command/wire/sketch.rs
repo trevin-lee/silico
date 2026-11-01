@@ -17,6 +17,7 @@ use crate::command::{ModelChoice, Problems, SessionId};
 use crate::document::json::Node;
 use crate::document::{Coordinate, ElementId, ElementKind, FeatureId, Form, PROBLEMS_LISTED};
 use crate::sketch_states::{ConstraintState, MemberState, SketchState};
+use silico_protocol::SketchPlane;
 
 /// A `sketch` request: the session, the model it reads, and the sketch.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,9 +57,20 @@ impl ToWire for SketchRequest {
 impl ToWire for SketchRead {
     /// `sketch`'s result: the sketch's plane, state, and degrees of freedom; each member as
     /// the document writes it, with its state; the profile's regions, or why there's none;
-    /// and why it wasn't solved.
+    /// why it wasn't solved; and why its plane wasn't resolved, its plane then null
+    /// ([`SketchRead::plane`]: a broken face's `reference_broken`, `invalid_input` on
+    /// `plane` for a frame that can't place the sketch or a profile or axis past the reach,
+    /// a blocked sketch's error as a read of its own solid gives it (the root, or the
+    /// kernel fault, kept), or a bug's `internal`).
     fn to_wire(&self) -> Json<'_> {
-        let frame = silico_protocol::SketchPlane::from(self.plane);
+        let frame = |frame: &SketchPlane| {
+            Json::object([
+                ("origin", Json::direction(frame.origin())),
+                ("x", Json::direction(frame.x_axis())),
+                ("y", Json::direction(frame.y_axis())),
+                ("normal", Json::direction(frame.normal())),
+            ])
+        };
         let states = &self.states;
         // Every member has one: a read whose member had none was refused as a bug
         // (`command::sketch`'s `every_member_stated`), so none is ever written null.
@@ -72,15 +84,7 @@ impl ToWire for SketchRead {
             Json::sketch_lists(&self.members, state).map(|(_, list)| list);
         Json::object([
             ("sketch", self.sketch.to_wire()),
-            (
-                "plane",
-                Json::object([
-                    ("origin", Json::direction(frame.origin())),
-                    ("x", Json::direction(frame.x_axis())),
-                    ("y", Json::direction(frame.y_axis())),
-                    ("normal", Json::direction(frame.normal())),
-                ]),
-            ),
+            ("plane", Json::or_null(self.plane.as_ref().ok(), frame)),
             ("state", Json::str(states.state.as_str())),
             ("dofs", Json::integer(i64::from(states.dofs))),
             ("points", points),
@@ -103,6 +107,10 @@ impl ToWire for SketchRead {
             (
                 "solve_problem",
                 Json::or_null(states.solve_problem.as_ref(), ToWire::to_wire),
+            ),
+            (
+                "plane_problem",
+                Json::or_null(self.plane.as_ref().err(), ToWire::to_wire),
             ),
         ])
     }
@@ -141,7 +149,10 @@ pub struct SketchRequestSchema {
 pub struct SketchResultSchema {
     /// The sketch, by its feature's ID.
     pub sketch: FeatureId,
-    pub plane: SketchFrameSchema,
+    /// The sketch's plane, as its rebuild resolved it: null when the rebuild couldn't
+    /// resolve it (a sketch on a face whose face broke, or whose face's feature didn't
+    /// build); `plane_problem` says why.
+    pub plane: Option<SketchFrameSchema>,
     pub state: SketchStateSchema,
     /// The degrees of freedom left, PlaneGCS's number as given: its unknowns less the rank
     /// of its equations, so 0 or more while something is free, a conflict or not (two
@@ -178,6 +189,13 @@ pub struct SketchResultSchema {
     /// no solution (`solve_failed`), or geometry that can't be held (`invalid_result`,
     /// `invalid_input`). Null when it solved.
     pub solve_problem: Option<ErrorSchema>,
+    /// Why `plane` is null: the rebuild's one error for the sketch, as `check` and a read of
+    /// a feature's solid give it. For a sketch on a face: its face's reference broken
+    /// (`reference_broken`, with candidates, on `plane.face` or `plane.x`); the feature it's
+    /// blocked on, if its face's feature didn't build; or the worker's failure describing
+    /// the face. Null when the rebuild resolved the plane. The rest of the read is the
+    /// sketch as solved all the same.
+    pub plane_problem: Option<ErrorSchema>,
 }
 
 /// The sketch's plane in global coordinates: its origin, and the directions of its x, its y,

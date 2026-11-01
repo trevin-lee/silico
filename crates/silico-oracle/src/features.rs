@@ -15,8 +15,8 @@ use serde::Serialize;
 use silico_core::Error;
 use silico_core::command::rebuild;
 use silico_core::document::{
-    Axis, Checked, Feature, FeatureId, Operation, PadExtent, Plane, PocketExtent, Position, Sketch,
-    TurnExtent, read,
+    Axis, Checked, Feature, FeatureId, Operation, OriginPlane, PadExtent, Plane, PocketExtent,
+    Position, Sketch, TurnExtent, read,
 };
 use silico_core::kernel::KernelWorker;
 use silico_core::pool::KernelPool;
@@ -447,10 +447,18 @@ fn part_design(
         } => primitive("torus", position, vec![radius1.mm(), radius2.mm()]),
         Operation::Sketch(sketch) => Ok(PartDesignFeature::Sketch {
             id,
-            plane: match sketch.plane {
-                Plane::Xy => "XY_Plane",
-                Plane::Xz => "XZ_Plane",
-                Plane::Yz => "YZ_Plane",
+            plane: match &sketch.plane {
+                Plane::Origin(OriginPlane::Xy) => "XY_Plane",
+                Plane::Origin(OriginPlane::Xz) => "XZ_Plane",
+                Plane::Origin(OriginPlane::Yz) => "YZ_Plane",
+                // FreeCAD's FlatFace attachment, with the AttachmentOffset that turns its x onto
+                // the token's (docs/ports/attacher.md, *Tests to port*), isn't in the harness yet.
+                Plane::Face(_) => {
+                    return Err(format!(
+                        "{} is a sketch on a face, which the oracle harness doesn't build in FreeCAD yet",
+                        feature.id
+                    ));
+                }
             },
             geometry: geometry(sketch)?,
         }),

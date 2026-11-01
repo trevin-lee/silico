@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::primitive::{InvalidParameter, LENGTH_TOLERANCE, MAX_LENGTH, format_number};
 use crate::sketch::MAX_SKETCH_GEOMETRY;
 use crate::sweep::{UNIT_SLACK, check_unit};
-use crate::vec3;
+use crate::{NORMAL_LENGTH_TOLERANCE, vec3};
 
 /// The most curves a request may have, over all its loops: a sketch's most pieces of
 /// geometry.
@@ -87,8 +87,9 @@ pub enum FaceFrameError {
     /// The stored axis lies along the face's normal: its projection onto the plane is this
     /// long, under [`MIN_AXIS_OFF_NORMAL`].
     AxisAlongNormal(f64),
-    /// A value given or made isn't one a frame can hold (an input not finite, or the frame
-    /// made refused by [`FaceFrame::check`]): what's wrong, naming the plane.
+    /// A value given or made isn't one a frame can hold (an input not finite, a normal that
+    /// isn't a unit vector to [`NORMAL_LENGTH_TOLERANCE`], or the frame made refused by
+    /// [`FaceFrame::check`]): what's wrong, naming the plane.
     Invalid(InvalidParameter),
 }
 
@@ -103,11 +104,12 @@ impl FaceFrame {
     /// zero is +0 whatever the sign `describe` gave it. A `reversed` sketch is the frame of
     /// −n and −a: o is the same, and x negated, y the same, exactly.
     ///
-    /// Refused as invalid if any input isn't finite or the normal has no length to make a
-    /// unit of (zero, or too long or short to square); as `AxisAlongNormal` if the axis
-    /// lies along the normal (|a − n(n·a)|
-    /// under [`MIN_AXIS_OFF_NORMAL`]), or if the frame made isn't one [`FaceFrame::check`]
-    /// takes (its origin past [`MAX_FRAME_ORIGIN`]).
+    /// Refused as `AxisAlongNormal` if the axis lies along the normal (|a − n(n·a)| under
+    /// [`MIN_AXIS_OFF_NORMAL`]); as invalid if any input isn't finite, if the normal isn't a
+    /// unit vector to [`NORMAL_LENGTH_TOLERANCE`] (as `describe` gives a plane's: one zero,
+    /// 1e-160, or 1e200 long is a fault in what described it, not a normal to make a unit
+    /// of), or if the frame made isn't one [`FaceFrame::check`] takes (its origin past
+    /// [`MAX_FRAME_ORIGIN`]).
     pub fn from_normal(
         on_plane: [f64; 3],
         n: [f64; 3],
@@ -125,9 +127,20 @@ impl FaceFrame {
             }
         }
         let length = vec3::norm(n);
-        if !(length > 0.0 && length.is_finite()) {
+        let off_unit = (length - 1.0).abs();
+        if off_unit.is_nan() || off_unit > NORMAL_LENGTH_TOLERANCE {
+            // Its length as it is, measured scaled by its largest component: a normal 1e200
+            // long squares past f64's range, and one 1e-160 long into its subnormals, where
+            // the bare norm is inf or rounded.
+            let largest = n.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
+            let length = if largest > 0.0 {
+                largest * vec3::norm(n.map(|c| c / largest))
+            } else {
+                0.0
+            };
             return Err(FaceFrameError::Invalid(frame_invalid(format!(
-                "the face's normal must have a length to make a unit of, got {n:?}, {} long",
+                "the face's normal must be a unit vector to {}, got {n:?}, {} long",
+                format_number(NORMAL_LENGTH_TOLERANCE),
                 format_number(length)
             ))));
         }

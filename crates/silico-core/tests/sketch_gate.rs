@@ -10,7 +10,7 @@ use fixture::{
     problems,
 };
 use silico_core::ErrorCode;
-use silico_core::document::{Operation, Plane, read, write};
+use silico_core::document::{Operation, OriginPlane, Plane, read, write};
 
 /// A second line, nb from pb to pc, beside the base sketch's.
 const LINE2: &str =
@@ -37,11 +37,15 @@ fn none(text: &str) {
 
 #[test]
 fn each_plane_reads_as_its_own_value() {
-    for (text, plane) in [("xy", Plane::Xy), ("xz", Plane::Xz), ("yz", Plane::Yz)] {
+    for (text, plane) in [
+        ("xy", OriginPlane::Xy),
+        ("xz", OriginPlane::Xz),
+        ("yz", OriginPlane::Yz),
+    ] {
         let doc = document(&fields("", "", "", "", "")).replace("\"xy\"", &format!("\"{text}\""));
         let d = read(doc.as_bytes()).unwrap();
         match &d.features[0].operation {
-            Operation::Sketch(s) => assert_eq!(s.plane, plane, "{text}"),
+            Operation::Sketch(s) => assert_eq!(s.plane, Plane::Origin(plane), "{text}"),
             other => panic!("{other:?}"),
         }
         assert!(

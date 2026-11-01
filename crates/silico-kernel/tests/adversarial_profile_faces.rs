@@ -35,7 +35,7 @@ fn made(d: &Draw) -> Option<Profile> {
 
 /// The regions the core sends for `d`'s profile, through the request's check.
 fn regions(p: &Profile) -> FaceRegions {
-    let regions = p.faces();
+    let regions = p.faces(p.plane.origin().unwrap().into());
     KernelRequest::make_faces(&regions).unwrap();
     regions
 }
@@ -97,7 +97,7 @@ proptest! {
         let Some(p) = made(&d) else {
             return Ok(());
         };
-        let sent = p.faces();
+        let sent = p.faces(p.plane.origin().unwrap().into());
         if KernelRequest::make_faces(&sent).is_err() {
             // The core's own seam (the strip at the sliver boundary): its test's.
             return Ok(());

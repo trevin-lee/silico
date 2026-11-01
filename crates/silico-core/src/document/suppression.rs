@@ -24,7 +24,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{Checked, Document, Feature, FeatureId, Operation};
+use super::{Checked, Document, Feature, FeatureId, NameField, Operation};
 use crate::naming::{Maker, Name};
 use crate::{Error, ErrorCode};
 
@@ -34,11 +34,12 @@ use crate::{Error, ErrorCode};
 pub(crate) enum Cause {
     /// Its sketch is suppressed.
     Sketch,
-    /// A name it stores has a suppressed maker; which of its names, by its place in `edges`.
-    Names(usize),
-    /// A name it stores (by its place in `edges`) has a maker (by its place in the timeline)
+    /// A name it stores has a suppressed maker; which of its names, by where it's stored
+    /// (`edges.0`, `plane.face`).
+    Names(NameField),
+    /// A name it stores (by where it's stored) has a maker (by its place in the timeline)
     /// that reaches the feature's base only as a suppressed boolean's tool.
-    Lost { edge: usize, maker: usize },
+    Lost { field: NameField, maker: usize },
     /// An input it needs (`base` or `tool`) has no unsuppressed feature up its chain.
     Chain(&'static str),
 }
@@ -257,7 +258,7 @@ fn lost(
     features: &[Feature],
     links: &Links,
     at: usize,
-    made: &[(usize, usize)],
+    made: &[(NameField, usize)],
     suppressed: &dyn Fn(usize) -> bool,
 ) -> Option<(usize, Cause)> {
     let base = features
@@ -265,7 +266,7 @@ fn lost(
         .and_then(|f| base_of(&f.operation))
         .and_then(|b| links.place(b))
         .filter(|&b| b < at)?;
-    made.iter().find_map(|&(edge, maker)| {
+    made.iter().find_map(|&(field, maker)| {
         let mut step = maker;
         let mut through = None;
         while step != base {
@@ -276,31 +277,32 @@ fn lost(
             }
             step = next;
         }
-        through.map(|boolean| (boolean, Cause::Lost { edge, maker }))
+        through.map(|boolean| (boolean, Cause::Lost { field, maker }))
     })
 }
 
-/// The places of the makers of each name `feature` stores, with the name's place in its
-/// `edges`, in the order written, each maker once a name; a name that doesn't parse names
-/// none (the gate refuses it on its own). `before` finds an earlier feature by ID.
+/// The places of the makers of each name `feature` stores ([`Operation::stored_names`]: a
+/// fillet's or chamfer's `edges`, a sketch's face), with where the name is stored, in the
+/// order written, each maker once a name; a name that doesn't parse names none (the gate
+/// refuses it on its own). `before` finds an earlier feature by ID.
 fn makers(
     features: &[Feature],
     feature: &Feature,
     before: &dyn Fn(&FeatureId) -> Option<usize>,
-) -> Vec<(usize, usize)> {
+) -> Vec<(NameField, usize)> {
     let maker = |id: &FeatureId| {
         before(id)
             .and_then(|p| features.get(p))
             .map(|f| Maker::of(&f.operation))
     };
     let mut found = Vec::new();
-    for (i, edge) in feature.operation.edges().iter().enumerate() {
-        let Ok(name) = Name::parse(edge.as_str(), &maker) else {
+    for (field, stored) in feature.operation.stored_names() {
+        let Ok(name) = Name::parse(stored.as_str(), &maker) else {
             continue;
         };
         for id in name.features() {
             if let Some(p) = before(id) {
-                found.push((i, p));
+                found.push((field, p));
             }
         }
     }
@@ -389,16 +391,16 @@ pub(crate) fn unsuppressed_dependent(
     };
     let (parameter, why) = match cause {
         Cause::Sketch => ("sketch".to_owned(), format!("its sketch {p} {is}")),
-        Cause::Names(i) => (
-            format!("edges.{i}"),
-            format!("edges.{i} names an element of {p}, which {is}"),
+        Cause::Names(field) => (
+            field.to_string(),
+            format!("{field} names an element of {p}, which {is}"),
         ),
-        Cause::Lost { edge, maker } => {
+        Cause::Lost { field, maker } => {
             let maker = features.get(maker).map_or("", |f| f.id.as_str());
             (
-                format!("edges.{edge}"),
+                field.to_string(),
                 format!(
-                    "edges.{edge} names an element of {maker}, which reaches its base only as {p}'s tool, and {p} {is}"
+                    "{field} names an element of {maker}, which reaches its base only as {p}'s tool, and {p} {is}"
                 ),
             )
         }
@@ -775,7 +777,7 @@ mod tests {
                 &st,
                 true
             ),
-            Some((0, Cause::Names(0)))
+            Some((0, Cause::Names(NameField::Edge(0))))
         );
         // Named elsewhere (a sketch's element can't be, so a second box), c2's only cause
         // is its chain, by its base, c1.

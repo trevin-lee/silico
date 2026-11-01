@@ -200,8 +200,8 @@ It ends when a round resolves nothing new. A sketch still waiting then is blocke
 - `timeline`'s `inputs` gain the feature that makes the face: the name's own feature (`k7f2qx3m` of `k7f2qx3m.box.Face6`).
 - Suppressing a maker of the name suppresses the sketch with it (M5.1's dependents, which already list A4's face).
 - `move_feature` and `remove_feature` treat the name as a fillet's edge: a move to before a maker, or a removal of one, is refused by the gate as a cycle or a broken reference.
-- `sketch` reports the frame as resolved.
-- `add_feature` and `set_field` take the face plane (M4.1 section 5). `add_feature` may leave out `plane.x`: the face is looked up as above in the model rebuilt up to the sketch's place, so the edit waits for that rebuild, and `x` is written as the face's `default_x`. A name that finds nothing is refused as `reference_broken`, with candidates, and the edit isn't made.
+- `sketch` reports the frame as resolved, or `plane` null with the refusal in `plane_problem` (the rest of the read whole, its sweeps still blocked on it).
+- `add_feature` and `set_field` take the face plane (M4.1 section 5). `add_feature` may leave out `plane.x`: the face is looked up as above in the model rebuilt up to the sketch's place, so the edit waits for that rebuild, and `x` is written as the face's `default_x`. A name that finds nothing is refused as `reference_broken`, with candidates, and the edit isn't made. `add_feature` leaving out `plane.x`, and `set_field` on `plane` as this says, are M5.9's next part (part 3): until it, a face plane is written whole, its `x` included. Its key test: `add_feature` with no `plane.x` on each of a cube's six faces writes F1's table's token (the faces' `default_x`), and one whose face isn't found is refused as `reference_broken` with candidates, the document unchanged.
 
 ### Where Silico differs from FreeCAD on purpose
 
@@ -333,7 +333,7 @@ Not ported: TNP `testPartDesignElementPadSketch` (544-571), which A4 lists. It h
 - `default_x` from `describe` equals the token written at creation.
 - The document round trip: the fixture writes back byte for byte.
 - Open point 1's departure pinned: pads of an `xz` and a `yz` sketch, FreeCAD's x on all six faces as measured (`xz`: −Z, +Z, +X, +X, +X, −X; `yz`: +Y, +Y, −Z, +Z, +Y, −Y, for normals −X, +X, −Y, +Y, −Z, +Z), and Silico's `default_x` the global table's (`-y`, `+y`, `+x`, `-x`, `+x`, `+x`).
-- The oracle harness honours the token: each face sketch's `AttachmentOffset` turns FreeCAD's x onto the document's, so cases on `xz` and `yz` bodies may use any token.
+- The oracle harness honours the token: each face sketch's `AttachmentOffset` turns FreeCAD's x onto the document's, so cases on `xz` and `yz` bodies may use any token. Until it does, the harness refuses a case with a face sketch, naming the sketch (`crates/silico-oracle/src/features.rs`), and the face sketches' oracle cases come with the next `tests/oracle` batch the maintainer approves (the directory is protected).
 
 **M5.9's key tests** (docs/roadmap/m5-app.md, docs/design/m5.0-app.md):
 - A sketch on a box's top face places its profile at the face's height and in its frame: its pad's volume, bounds, and faces' positions by hand.
