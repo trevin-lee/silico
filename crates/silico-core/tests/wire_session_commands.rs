@@ -962,20 +962,65 @@ fn every_snapshot_of_these_commands_has_the_names_an_agent_reads() {
             "{key}"
         );
     }
+    // A sketch's plane is the document's, but for its face plane, whose x may be left out
+    // (M4.1 section 5).
     let mut types = document["$defs"]["Feature"]["oneOf"].clone();
     for variant in types.as_array_mut().unwrap() {
-        if matches!(
-            variant["properties"]["type"]["const"].as_str(),
-            Some("pad" | "revolve")
-        ) {
-            variant["properties"]["base"] = serde_json::json!({
-                "anyOf": [{"$ref": "#/$defs/FeatureId"}, {"type": "null"}],
-                "description": "Null is the same as left out.",
-            });
+        match variant["properties"]["type"]["const"].as_str() {
+            Some("pad" | "revolve") => {
+                variant["properties"]["base"] = serde_json::json!({
+                    "anyOf": [{"$ref": "#/$defs/FeatureId"}, {"type": "null"}],
+                    "description": "Null is the same as left out.",
+                });
+            }
+            Some("sketch") => {
+                assert_eq!(
+                    variant["properties"]["plane"],
+                    serde_json::json!({"$ref": "#/$defs/Plane"})
+                );
+                variant["properties"]["plane"] = serde_json::json!({
+                    "anyOf": [
+                        {"$ref": "#/$defs/OriginPlane"},
+                        {"$ref": "#/$defs/FacePlaneRequest"},
+                    ],
+                    "description": "The plane the sketch is drawn on: one of the origin's, by its word (D6), or a planar face of the model, by its name, with the axis the sketch's x follows, which may be left out for the face's default, and whether it's flipped (docs/ports/attacher.md, F1 and F2; M5.9).",
+                });
+            }
+            _ => {}
         }
     }
     assert_eq!(new["oneOf"], types);
     assert_eq!(new["unevaluatedProperties"], false);
+    // The request's face plane: the document's, closed to the same three members, its face
+    // and reversed as the document's, its x the document's token or null, and not required.
+    let request = &added["request"]["$defs"]["FacePlaneRequest"];
+    let face = &document["$defs"]["FacePlane"];
+    assert_eq!(request["type"], "object");
+    assert_eq!(request["additionalProperties"], false);
+    assert_eq!(request["required"], serde_json::json!(["face", "reversed"]));
+    assert_eq!(
+        face["required"],
+        serde_json::json!(["face", "x", "reversed"])
+    );
+    assert_eq!(
+        request["properties"]["reversed"],
+        face["properties"]["reversed"]
+    );
+    assert_eq!(
+        request["properties"]["face"]["$ref"],
+        face["properties"]["face"]["$ref"]
+    );
+    assert_eq!(
+        request["properties"]["x"]["anyOf"],
+        serde_json::json!([{"$ref": "#/$defs/AxisToken"}, {"type": "null"}])
+    );
+    assert_eq!(
+        added["request"]["$defs"]["AxisToken"],
+        document["$defs"]["AxisToken"]
+    );
+    // The document's Plane and FacePlane aren't the request's.
+    assert!(added["request"]["$defs"].get("Plane").is_none());
+    assert!(added["request"]["$defs"].get("FacePlane").is_none());
 }
 
 /// Every definition `schema` refers to, by name.
@@ -1365,4 +1410,68 @@ fn the_designs_refusals_are_the_sessions_own_and_hold_to_the_error_contract() {
         "replace_text/refused-syntax",
         the_refusal(&replace(&broken)),
     );
+}
+
+#[test]
+fn a_new_sketch_on_a_face_leaving_out_its_x_holds_to_the_request_schema_and_the_documents_doesnt() {
+    let schema = schema_of("add_feature", "request");
+    let document: serde_json::Value =
+        serde_json::from_str(&committed("document-schema.json")).unwrap();
+    let request = |plane: &str| {
+        format!(
+            r#"{{"session": "s1", "revision": 6, "before": null, "feature": {{"type": "sketch", "name": "On top", "plane": {plane}, "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}}}}"#
+        )
+    };
+    let feature = |text: &str| -> serde_json::Value {
+        let mut feature =
+            serde_json::from_str::<serde_json::Value>(text).unwrap()["feature"].clone();
+        feature["id"] = serde_json::json!("s0000009");
+        feature["v"] = serde_json::json!(1);
+        feature
+    };
+    // The document's own feature schema, the definitions its references reach.
+    let feature_schema = {
+        let mut root = document.clone();
+        root["$ref"] = serde_json::json!("#/$defs/Feature");
+        root.as_object_mut().unwrap().remove("properties");
+        root.as_object_mut().unwrap().remove("required");
+        root.as_object_mut().unwrap().remove("type");
+        root.as_object_mut().unwrap().remove("additionalProperties");
+        root
+    };
+    for (what, plane) in [
+        (
+            "x left out",
+            r#"{"face": "b0000001.box.Face6", "reversed": false}"#,
+        ),
+        (
+            "x null",
+            r#"{"face": "b0000001.box.Face6", "x": null, "reversed": false}"#,
+        ),
+    ] {
+        let text = request(plane);
+        holds(&schema, &text, what);
+        // The document never holds a face plane without its x.
+        fails(&feature_schema, &feature(&text).to_string(), what);
+    }
+    // Given, it's the document's, and holds to both.
+    let text = request(r#"{"face": "b0000001.box.Face6", "x": "+y", "reversed": false}"#);
+    holds(&schema, &text, "x given");
+    holds(&feature_schema, &feature(&text).to_string(), "x given");
+    holds(&schema, &request(r#""xz""#), "an origin plane");
+    for (what, plane) in [
+        (
+            "x not a token",
+            r#"{"face": "b0000001.box.Face6", "x": "+w", "reversed": false}"#,
+        ),
+        (
+            "a member it hasn't",
+            r#"{"face": "b0000001.box.Face6", "reversed": false, "y": "+z"}"#,
+        ),
+        ("no reversed", r#"{"face": "b0000001.box.Face6"}"#),
+        ("no face", r#"{"x": "+x", "reversed": false}"#),
+        ("an empty face", r#"{"face": "", "reversed": false}"#),
+    ] {
+        fails(&schema, &request(plane), what);
+    }
 }

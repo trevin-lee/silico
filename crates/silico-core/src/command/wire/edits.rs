@@ -23,7 +23,7 @@ use crate::command::{
 };
 use crate::document::chain::Rewired;
 use crate::document::json::Node;
-use crate::document::{Feature, FeatureId};
+use crate::document::{AxisToken, ElementName, Feature, FeatureId};
 
 /// An `add_feature` request: the session, the revision the edit was made against, the
 /// feature to add it before (none for the end), and the feature, an object as the document
@@ -465,11 +465,52 @@ impl JsonSchema for NewFeatureSchema {
                             null_left_out(property, None);
                         }
                     }
+                    if type_name == "sketch"
+                        && let Some(plane) = properties.get_mut("plane")
+                    {
+                        *plane = plane_request(generator);
+                    }
                 }
             }
         }
         schema
     }
+}
+
+/// A new sketch's `plane`: an origin plane's word, or a face plane whose `x` may be left
+/// out ([`FacePlaneRequestSchema`]).
+fn plane_request(generator: &mut SchemaGenerator) -> serde_json::Value {
+    let origin = generator.subschema_for::<crate::document::OriginPlane>();
+    let face = generator.subschema_for::<FacePlaneRequestSchema>();
+    serde_json::json!({
+        "anyOf": [origin, face],
+        "description": "The plane the sketch is drawn on: one of the origin's, by its word \
+                        (D6), or a planar face of the model, by its name, with the axis the \
+                        sketch's x follows, which may be left out for the face's default, \
+                        and whether it's flipped (docs/ports/attacher.md, F1 and F2; M5.9).",
+    })
+}
+
+/// A face plane as `add_feature` takes it (M4.1 section 5): the document's face plane, but
+/// its `x` may be left out, or given as null, for the face's default (F1), which the core
+/// works out and writes. The face is looked for in the model of the document the sketch is
+/// added to, in the solids live at the sketch's place, so the edit waits for that model.
+/// The document always holds `x`.
+#[derive(JsonSchema)]
+#[schemars(rename = "FacePlaneRequest", deny_unknown_fields)]
+pub struct FacePlaneRequestSchema {
+    /// The face, by its name, as Silico names it (`k7f2qx3m.box.Face6`), of a feature
+    /// before the sketch: one of the solids live at the sketch's place must hold it, by a
+    /// stable name, and OCCT must type it a plane, for its default x to be known.
+    pub face: ElementName,
+    /// The global axis the sketch's x follows: projected onto the face, it's the sketch's
+    /// x. Left out, or null, for the face's `default_x` (F1), as `elements` reports it,
+    /// which the core writes.
+    #[schemars(default)]
+    pub x: Option<AxisToken>,
+    /// Whether the sketch is flipped: its normal into the face's solid, not out of it, and
+    /// its x against the axis's projection; its y kept.
+    pub reversed: bool,
 }
 
 /// `property`, a member a new feature may leave out, taking `null` too, which the document's

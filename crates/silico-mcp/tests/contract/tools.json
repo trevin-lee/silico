@@ -3713,7 +3713,7 @@
         "readOnlyHint": false,
         "title": "Add a feature"
       },
-      "description": "Add a feature at the end of the session's timeline (`before: null`), or before another: then each input it takes (its base, its tool) that a feature after it consumed is consumed by it instead, that feature's field rewired to it, listed in `rewired`. Give the revision the edit was made against, as the session's last answer says it. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "description": "Add a feature at the end of the session's timeline (`before: null`), or before another: then each input it takes (its base, its tool) that a feature after it consumed is consumed by it instead, that feature's field rewired to it, listed in `rewired`. A sketch on a face may leave out its plane's `x`: the core writes the face's `default_x`, as `elements` reports it, waiting for the model's rebuild. Give the revision the edit was made against, as the session's last answer says it. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
       "inputSchema": {
         "$defs": {
           "Angle": {
@@ -3772,26 +3772,32 @@
             "minLength": 1,
             "type": "string"
           },
-          "FacePlane": {
+          "FacePlaneRequest": {
             "additionalProperties": false,
-            "description": "A sketch on a planar face (docs/ports/attacher.md, *What Silico does*): the face, by its\nname in Silico's form, found in the solids live at the sketch's place at each rebuild;\nthe global axis the sketch's x follows, projected onto the face; and whether the sketch\nis flipped, its normal and x negated and its y kept. Where it then sits is the\nrebuild's to say: nothing of the frame is stored.",
+            "description": "A face plane as `add_feature` takes it (M4.1 section 5): the document's face plane, but\nits `x` may be left out, or given as null, for the face's default (F1), which the core\nworks out and writes. The face is looked for in the model of the document the sketch is\nadded to, in the solids live at the sketch's place, so the edit waits for that model.\nThe document always holds `x`.",
             "properties": {
               "face": {
                 "$ref": "#/$defs/ElementName",
-                "description": "The face, by its name, as Silico names it (`k7f2qx3m.box.Face6`), of a feature\nbefore the sketch."
+                "description": "The face, by its name, as Silico names it (`k7f2qx3m.box.Face6`), of a feature\nbefore the sketch: one of the solids live at the sketch's place must hold it, by a\nstable name, and OCCT must type it a plane, for its default x to be known."
               },
               "reversed": {
                 "description": "Whether the sketch is flipped: its normal into the face's solid, not out of it, and\nits x against the axis's projection; its y kept.",
                 "type": "boolean"
               },
               "x": {
-                "$ref": "#/$defs/AxisToken",
-                "description": "The global axis the sketch's x follows: projected onto the face, it's the sketch's x."
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/AxisToken"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The global axis the sketch's x follows: projected onto the face, it's the sketch's\nx. Left out, or null, for the face's `default_x` (F1), as `elements` reports it,\nwhich the core writes."
               }
             },
             "required": [
               "face",
-              "x",
               "reversed"
             ],
             "type": "object"
@@ -4070,7 +4076,15 @@
                     "type": "array"
                   },
                   "plane": {
-                    "$ref": "#/$defs/Plane"
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/OriginPlane"
+                      },
+                      {
+                        "$ref": "#/$defs/FacePlaneRequest"
+                      }
+                    ],
+                    "description": "The plane the sketch is drawn on: one of the origin's, by its word (D6), or a planar face of the model, by its name, with the axis the sketch's x follows, which may be left out for the face's default, and whether it's flipped (docs/ports/attacher.md, F1 and F2; M5.9)."
                   },
                   "points": {
                     "description": "The sketch's points, which its curves share: two curves that meet name the same\npoint.",
@@ -4403,17 +4417,6 @@
                 "type": "object"
               }
             ]
-          },
-          "Plane": {
-            "anyOf": [
-              {
-                "$ref": "#/$defs/OriginPlane"
-              },
-              {
-                "$ref": "#/$defs/FacePlane"
-              }
-            ],
-            "description": "The plane a sketch is drawn on: one of the origin's, by its word (D6), or a planar face\nof the model, by its name, with the axis the sketch's x follows and whether it's flipped\n(docs/ports/attacher.md, F1 and F2; M5.9)."
           },
           "PocketExtent": {
             "description": "How far a pocket goes from its sketch's plane: a pad's forms, or through everything of\nits base along its direction (against it when `reversed`).",
@@ -7156,7 +7159,7 @@
         "readOnlyHint": false,
         "title": "Set a field"
       },
-      "description": "Set one field of one feature, by the feature's ID and the field's path (`extent.length`; a sketch's members by their IDs). Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "description": "Set one field of one feature, by the feature's ID and the field's path (`extent.length`, a sketch's `plane` or its face plane's `plane.face`; a sketch's members by their IDs). Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
       "inputSchema": {
         "$defs": {
           "FeatureId": {

@@ -1595,6 +1595,14 @@ impl<P: Clients + 'static> Sessions<P> {
     /// mend) stored a fingerprint for carries that fingerprint, whatever its fields, so the
     /// saved file is a function of the document's state, not of the edits' path: what the
     /// edits reach decides whether it's read, as for a feature never removed.
+    /// A sketch on a face may leave out its plane's `x` (or give it as `null`), and its face's
+    /// `default_x` (F1) is written (M4.1 section 5): once the rest of the edit is through the
+    /// gate, the face is looked for, as a rebuild looks for it, in the solids live at the
+    /// sketch's place in the model of the session's current document, which the edit waits
+    /// for (its rebuild started if none runs); refused, the edit not made, naming
+    /// `feature.plane.face`, for a name that finds nothing or no stable face, a face that
+    /// isn't planar (each `reference_broken`, with candidates), or one whose solid's feature
+    /// failed or was blocked, naming that feature.
     /// Through the gate, all at once; inside a transaction, applied, starting no rebuild;
     /// outside one, saved as its own transaction (decision 1). Refused whole, the session as
     /// it was, as every edit is ([`Session::edit`]), for a `before` the document hasn't, and
@@ -1617,18 +1625,31 @@ impl<P: Clients + 'static> Sessions<P> {
                     stop,
                     revision,
                     |base| {
-                        let edit::Inserted {
-                            feature,
-                            index,
-                            rewired,
-                            candidate,
-                        } = edit::add_feature(
+                        let mut feature = feature;
+                        let defaulted = edit::leaves_out_x(&mut feature);
+                        let inserted = edit::add_feature(
                             base.checked()?,
                             before.as_ref(),
                             feature,
                             base.begun,
                             |document| lock(&ids).next_free(document),
                         )?;
+                        // A face's default x needs the model of the document the sketch is
+                        // added to (M4.1 section 5): its revision's rebuild waited for, or
+                        // started, on this session's thread, only once the rest of the
+                        // edit is through the gate.
+                        let inserted = if defaulted {
+                            let current = session.current(stop).map_err(Unbuilt::problems)?;
+                            edit::with_default_x(inserted, &current.model)?
+                        } else {
+                            inserted
+                        };
+                        let edit::Inserted {
+                            feature,
+                            index,
+                            rewired,
+                            candidate,
+                        } = inserted;
                         Ok(((feature, index, rewired), Some(candidate)))
                     },
                     model,

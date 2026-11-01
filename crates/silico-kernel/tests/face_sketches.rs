@@ -609,8 +609,8 @@ fn the_sketch_read_of_a_face_sketch_whose_face_broke_answers_its_2d_and_mends_by
         measured["errors"][0]["message"],
         "p0000001 didn't build, since it uses s0000001, which failed"
     );
-    // The repair: the plane's face set to the candidate, by replace_text (set_field of
-    // plane is M5.9's part 3). The read's plane is the box's top's frame (F1: origin the
+    // The repair: the plane's face set to the candidate, by replace_text (and by set_field,
+    // below). The read's plane is the box's top's frame (F1: origin the
     // face's centroid's projection, (0, 0, 10) for +x on a top through it), no plane
     // problem, the 2D unchanged; and the pad builds, 1000 + 4 × 2 × 3 = 1024, to z = 13.
     let mended = document(&features.iter().map(String::as_str).collect::<Vec<_>>())
@@ -696,4 +696,325 @@ fn the_sketch_read_of_a_sketch_on_a_cylinders_side_answers_with_the_planar_faces
     assert_eq!(xy["ok"], true, "{xy}");
     assert_eq!(xy["result"]["plane_problem"], Value::Null, "{xy}");
     assert_eq!(two_d(&read), two_d(&xy));
+}
+
+// M5.9's part 3: `add_feature` of a sketch on a face that leaves out its plane's `x`, which
+// the core writes as the face's `default_x` (M4.1 section 5), and `set_field` of `plane`.
+
+impl Fixture {
+    fn revision(&self, session: &str) -> u64 {
+        let status = self.call("status", &json!({"session": session}).to_string());
+        status["session"]["revision"].as_u64().unwrap()
+    }
+
+    fn text(&self, session: &str) -> String {
+        let text = self.call(
+            "text",
+            &json!({"session": session, "feature": null}).to_string(),
+        );
+        text["result"]["text"].as_str().unwrap().to_owned()
+    }
+
+    /// `add_feature` of `feature`, before `before` or at the end, against the session's
+    /// revision.
+    fn add(&self, session: &str, before: Option<&str>, feature: &Value) -> Value {
+        let revision = self.revision(session);
+        self.call(
+            "add_feature",
+            &json!({"session": session, "revision": revision, "before": before, "feature": feature})
+                .to_string(),
+        )
+    }
+
+    /// `set_field` of `feature`'s `field` to `value`, against the session's revision.
+    fn set(&self, session: &str, feature: &str, field: &str, value: Value) -> Value {
+        let revision = self.revision(session);
+        self.call(
+            "set_field",
+            &json!({"session": session, "revision": revision, "feature": feature, "field": field, "value": value})
+                .to_string(),
+        )
+    }
+
+    /// The face `name`'s `default_x`, as `elements` reports it, of `feature`'s solid.
+    fn default_x(&self, session: &str, feature: &str, name: &str) -> Value {
+        let listed = self.call(
+            "elements",
+            &json!({"session": session, "model": "current", "feature": feature, "after": null, "limit": 1000})
+                .to_string(),
+        );
+        assert_eq!(listed["ok"], true, "{listed}");
+        listed["result"]["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == name)
+            .unwrap_or_else(|| panic!("{feature} has no {name}: {listed}"))["default_x"]
+            .clone()
+    }
+}
+
+/// A 1 × 1 square from (1, 1), sketch `id`, on the face `face`, its `x` left out.
+fn without_x(id: &str, face: &str) -> Value {
+    let mut sketch: Value =
+        serde_json::from_str(&rectangle(id, "xy", [1.0, 1.0], 1.0, 1.0)).unwrap();
+    sketch["plane"] = json!({"face": face, "reversed": false});
+    sketch
+}
+
+#[test]
+fn a_sketch_added_on_each_face_of_a_cube_without_its_x_takes_the_notes_token_and_elements_default_x()
+ {
+    // The note's table for a box's six faces (docs/ports/attacher.md, *Worked frames*), for
+    // a 10 mm cube at the origin as OCCT numbers its faces.
+    let table = [
+        ("Face1", "-y"),
+        ("Face2", "+y"),
+        ("Face3", "+x"),
+        ("Face4", "-x"),
+        ("Face5", "+x"),
+        ("Face6", "+x"),
+    ];
+    let f = fixture();
+    let session = f.open(
+        "cube.silico",
+        &[box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0)],
+    );
+    for (i, (number, token)) in table.iter().enumerate() {
+        let face = format!("b0000001.box.{number}");
+        let sketch = format!("s000000{}", i + 1);
+        let revision = f.revision(&session);
+        let added = f.add(&session, None, &without_x(&sketch, &face));
+        assert_eq!(added["ok"], true, "{number}: {added}");
+        assert_eq!(
+            added["result"]["feature"]["plane"],
+            json!({"face": face, "x": token, "reversed": false}),
+            "{number}"
+        );
+        assert_eq!(f.revision(&session), revision + 1);
+        // The token is the face's default_x as `elements` reports it.
+        assert_eq!(f.default_x(&session, "b0000001", &face), json!(token));
+        // And the rebuild places the sketch on the note's frame for it: its x is the token's
+        // axis (each face's normal is an axis, so the projection is the axis itself).
+        let read = f.read_sketch(&session, &sketch);
+        assert_eq!(read["result"]["plane_problem"], Value::Null, "{read}");
+        let axis = match *token {
+            "+x" => json!([1, 0, 0]),
+            "-x" => json!([-1, 0, 0]),
+            "+y" => json!([0, 1, 0]),
+            "-y" => json!([0, -1, 0]),
+            other => panic!("{other}"),
+        };
+        assert_eq!(read["result"]["plane"]["x"], axis, "{number}: {read}");
+    }
+}
+
+#[test]
+fn a_cylinders_side_added_without_x_is_refused_as_not_planar_with_the_planar_faces_and_not_made() {
+    let f = fixture();
+    let session = f.open(
+        "pin.silico",
+        &[r#"{"id": "c0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [0, 0, 0], "radius": 5, "height": 10}"#
+            .to_owned()],
+    );
+    let (revision, text) = (f.revision(&session), f.text(&session));
+    let answer = f.add(
+        &session,
+        None,
+        &without_x("s0000001", "c0000001.cylinder.Face1"),
+    );
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert_eq!(
+        answer["errors"][0],
+        json!({
+            "code": "reference_broken",
+            "message": "plane.face, \"c0000001.cylinder.Face1\", names a face that isn't planar: OCCT types its surface a cylinder, and a sketch sits only on a face typed a plane",
+            "feature": "s0000001",
+            "elements": ["c0000001.cylinder.Face1"],
+            "elements_total": 1,
+            "parameter": "feature.plane.face",
+            "cause": null,
+            "suggestion": "name the face as its feature now names it: the candidates are the likeliest, none taken for it",
+            "candidates": ["c0000001.cylinder.Face2", "c0000001.cylinder.Face3"],
+            "advice": null,
+        })
+    );
+    assert_eq!((f.revision(&session), f.text(&session)), (revision, text));
+    // Its top, Face2, faces +Z: +x.
+    let added = f.add(
+        &session,
+        None,
+        &without_x("s0000001", "c0000001.cylinder.Face2"),
+    );
+    assert_eq!(added["result"]["feature"]["plane"]["x"], "+x", "{added}");
+}
+
+#[test]
+fn a_sketch_added_before_a_fuse_finds_its_face_in_the_boxs_own_solid_and_after_it_through_the_fuse()
+{
+    // b1, a 10 mm cube; b2, 10 × 10 × 5 on its top; fused. b1's top, Face6, lies inside the
+    // fuse: live in b1's solid before the fuse, and gone from the fuse after it. Its side,
+    // Face2 (+X), is the fuse's too.
+    let f = fixture();
+    let session = f.open(
+        "fused.silico",
+        &[
+            box_at("b0000001", [0.0, 0.0, 0.0], 10.0, 10.0, 10.0),
+            box_at("b0000002", [0.0, 0.0, 10.0], 10.0, 10.0, 5.0),
+            r#"{"id": "f0000001", "type": "fuse", "v": 1, "name": "Both", "base": "b0000001", "tool": "b0000002"}"#
+                .to_owned(),
+        ],
+    );
+    assert_eq!(
+        f.call("begin", &json!({"session": session}).to_string())["ok"],
+        true
+    );
+    let before = f.add(
+        &session,
+        Some("f0000001"),
+        &without_x("s0000001", "b0000001.box.Face6"),
+    );
+    assert_eq!(before["ok"], true, "{before}");
+    assert_eq!(before["result"]["index"], 2);
+    assert_eq!(before["result"]["feature"]["plane"]["x"], "+x");
+    assert_eq!(
+        f.call("rollback", &json!({"session": session}).to_string())["ok"],
+        true
+    );
+    let (revision, text) = (f.revision(&session), f.text(&session));
+    let after = f.add(&session, None, &without_x("s0000001", "b0000001.box.Face6"));
+    assert_eq!(after["ok"], false, "{after}");
+    assert_eq!(after["errors"][0]["code"], "reference_broken", "{after}");
+    assert_eq!(after["errors"][0]["parameter"], "feature.plane.face");
+    assert_eq!((f.revision(&session), f.text(&session)), (revision, text));
+    let side = f.add(&session, None, &without_x("s0000001", "b0000001.box.Face2"));
+    assert_eq!(side["ok"], true, "{side}");
+    assert_eq!(side["result"]["feature"]["plane"]["x"], "+y");
+    assert_eq!(side["result"]["index"], 3);
+}
+
+#[test]
+fn a_sketch_added_on_a_side_an_edit_just_turned_takes_the_turned_faces_default() {
+    // A pad of the quadrilateral (0, 0), (10, 0), (5, 10), (0, 10), counter-clockwise: its
+    // side from (10, 0) to (5, 10), na000002, runs along (−5, 10), so its outward normal is
+    // (10, 5)/√125, nearest +X: `+y`. With pa000003 at (25, 10) it runs along (15, 10), its
+    // normal (10, −15)/√325, nearest −Y: `+x`.
+    let side = "p0000001.pad.Face(G s0000001.sketch.Edge.na000002)";
+    let f = fixture();
+    let session = f.open(
+        "slant.silico",
+        &[
+            polygon(
+                "s0000001",
+                "xy",
+                &[[0.0, 0.0], [10.0, 0.0], [5.0, 10.0], [0.0, 10.0]],
+            ),
+            pad("p0000001", None, "s0000001", &one_side("5")),
+        ],
+    );
+    let begin = || {
+        assert_eq!(
+            f.call("begin", &json!({"session": session}).to_string())["ok"],
+            true
+        );
+    };
+    // As opened: `+y`, its model published.
+    begin();
+    let added = f.add(&session, None, &without_x("s0000002", side));
+    assert_eq!(added["result"]["feature"]["plane"]["x"], "+y", "{added}");
+    assert_eq!(
+        f.call("rollback", &json!({"session": session}).to_string())["ok"],
+        true
+    );
+    // Inside a transaction, an edit turns the side and starts no rebuild: the published
+    // model is still the side's before. The add waits for the current document's.
+    begin();
+    let moved = f.set(&session, "s0000001", "points.pa000003.x", json!(25));
+    assert_eq!(moved["ok"], true, "{moved}");
+    let added = f.add(&session, None, &without_x("s0000002", side));
+    assert_eq!(added["ok"], true, "{added}");
+    assert_eq!(added["result"]["feature"]["plane"]["x"], "+x", "{added}");
+    assert_eq!(f.default_x(&session, "p0000001", side), json!("+x"));
+    assert_eq!(
+        f.call("rollback", &json!({"session": session}).to_string())["ok"],
+        true
+    );
+    // Outside one, the edit is committed, and the add right after it takes the turned side's.
+    let moved = f.set(&session, "s0000001", "points.pa000003.x", json!(25));
+    assert_eq!(moved["ok"], true, "{moved}");
+    let added = f.add(&session, None, &without_x("s0000002", side));
+    assert_eq!(added["result"]["feature"]["plane"]["x"], "+x", "{added}");
+    assert!(
+        f.text(&session).contains(&format!(
+            r#""plane": {{"face": "{side}", "x": "+x", "reversed": false}}"#
+        )),
+        "{}",
+        f.text(&session)
+    );
+}
+
+#[test]
+fn a_face_sketch_whose_face_broke_is_mended_by_set_field_of_its_plane_and_its_pad_builds() {
+    // #347's case: Face7 names nothing of a box. set_field of plane to the candidate, its x
+    // given: the read's plane is the box's top's frame, and the pad builds, 1000 + 4 × 2 ×
+    // 3 = 1024, to z = 13.
+    let f = fixture();
+    let mut features = padded(10.0);
+    features[1] = features[1].replace("b0000001.box.Face6", "b0000001.box.Face7");
+    let session = f.open("broken.silico", &features);
+    let read = f.read_sketch(&session, "s0000001");
+    assert_eq!(read["result"]["plane"], Value::Null, "{read}");
+    let candidate = read["result"]["plane_problem"]["candidates"][0].clone();
+    assert_eq!(candidate, "b0000001.box.Face6");
+    let set = f.set(
+        &session,
+        "s0000001",
+        "plane",
+        json!({"face": candidate, "x": "+x", "reversed": false}),
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    assert_eq!(
+        set["result"]["before"],
+        json!({"face": "b0000001.box.Face7", "x": "+x", "reversed": false})
+    );
+    assert_eq!(
+        set["result"]["after"],
+        json!({"face": "b0000001.box.Face6", "x": "+x", "reversed": false})
+    );
+    let again = f.read_sketch(&session, "s0000001");
+    assert_eq!(
+        again["result"]["plane"],
+        json!({"origin": [0, 0, 10], "x": [1, 0, 0], "y": [0, 1, 0], "normal": [0, 0, 1]})
+    );
+    assert_eq!(again["result"]["plane_problem"], Value::Null, "{again}");
+    assert_eq!(two_d(&again), two_d(&read));
+    let measured = f.call(
+        "mass_properties",
+        &json!({"session": session, "model": "current", "feature": "p0000001"}).to_string(),
+    );
+    assert_eq!(measured["ok"], true, "{measured}");
+    let volume = measured["result"]["bodies"][0]["volume"].as_f64().unwrap();
+    assert_near(volume, 1024.0, 1e-9 * 1024.0, "the mended pad's volume");
+    // Its face set alone, plane.face, is the same repair.
+    let mut features = padded(10.0);
+    features[1] = features[1].replace("b0000001.box.Face6", "b0000001.box.Face7");
+    let other = f.open("broken-2.silico", &features);
+    let set = f.set(
+        &other,
+        "s0000001",
+        "plane.face",
+        json!("b0000001.box.Face6"),
+    );
+    assert_eq!(set["ok"], true, "{set}");
+    let measured = f.call(
+        "mass_properties",
+        &json!({"session": other, "model": "current", "feature": "p0000001"}).to_string(),
+    );
+    let volume = measured["result"]["bodies"][0]["volume"].as_f64().unwrap();
+    assert_near(
+        volume,
+        1024.0,
+        1e-9 * 1024.0,
+        "the pad mended by plane.face",
+    );
 }
