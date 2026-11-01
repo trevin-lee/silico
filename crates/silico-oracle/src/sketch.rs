@@ -307,8 +307,11 @@ pub fn freecad_sketch(sketch: &Sketch, translation: &Translation) -> Result<Free
             Form::Perpendicular { a, b } => {
                 make("Perpendicular", vec![curve(a)?, curve(b)?], None, true)
             }
-            // FreeCAD's angle with explicit start points (Sketch.cpp's addAngleConstraint
-            // with PointPos): `a` from its start, `b` from its end when reversed.
+            // Unreversed, FreeCAD's angle without positions, as before `reversed` existed, so
+            // the oracle's cases ask what they asked (split_line_with_angle's 1.1.3 crash
+            // among them). Reversed, its angle with explicit start points (Sketch.cpp's
+            // addAngleConstraint with PointPos): `a` from its start, `b` from its end. The
+            // equation is the same either way for an unreversed angle.
             Form::Angle {
                 a,
                 b,
@@ -317,7 +320,11 @@ pub fn freecad_sketch(sketch: &Sketch, translation: &Translation) -> Result<Free
                 driving,
             } => make(
                 "Angle",
-                vec![curve(a)?, 1, curve(b)?, if *reversed { 2 } else { 1 }],
+                if *reversed {
+                    vec![curve(a)?, 1, curve(b)?, 2]
+                } else {
+                    vec![curve(a)?, curve(b)?]
+                },
                 Some(value.degrees().to_radians()),
                 *driving,
             ),

@@ -293,6 +293,24 @@ fn a_keys_references_are_sorted_only_as_its_kind_has_them() {
     assert!(!key("Angle", &refs, false, &name).driving);
 }
 
+#[test]
+fn an_angles_key_names_its_lines_and_whether_one_is_taken_from_its_end() {
+    // A place's name says its position, so a key that named an angle's ends would show it.
+    let name = |g: i32, pos: i32, _: bool| format!("g{g}.{pos}");
+    let angle = |ints: &[i32]| key("Angle", &pairs("Angle", ints), true, &name).refs;
+    // Silico's forms: as drawn, two curves; reversed, FreeCAD's start-point form.
+    assert_eq!(angle(&[3, 5]), ["g3.0", "g5.0"]);
+    assert_eq!(angle(&[3, 1, 5, 2]), ["g3.0", "g5.0", "reversed"]);
+    // FreeCAD's after an edit, by its references: both from their starts is as drawn; the
+    // first from its end is the same reversal (the same equation).
+    let theirs = |refs: &[[i32; 2]]| key("Angle", refs, true, &name).refs;
+    assert_eq!(theirs(&[[3, 1], [5, 2]]), angle(&[3, 1, 5, 2]));
+    assert_eq!(theirs(&[[3, 2], [5, 1]]), angle(&[3, 1, 5, 2]));
+    assert_eq!(theirs(&[[3, 1], [5, 1]]), angle(&[3, 5]));
+    assert_eq!(theirs(&[[3, 2], [5, 2]]), angle(&[3, 5]));
+    assert_eq!(theirs(&[[3, 0], [5, 0]]), angle(&[3, 5]));
+}
+
 /// A sketch of `points` (ID, x, y), `lines` (ID, from, to), `circles` (ID, centre, radius),
 /// `arcs` (ID, centre, start, end), and `constraints` (each as its JSON), through the gate.
 fn sketch_of(
