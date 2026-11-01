@@ -386,6 +386,24 @@ mod tests {
         let fitted = fit(&perspective, [[0.0; 3], [20.0; 3]], 500, 500).unwrap();
         let back = 11.0 / libm::tan(15f64.to_radians()) + 10.0 * 3f64.sqrt();
         near(fitted.eye, [10.0, 10.0 - back, 10.0], 1e-9);
+        // Still perspective, at its own angle: a fit keeps the projection.
+        assert_eq!(
+            fitted.projection,
+            Projection::Perspective {
+                field_of_view: 30.0
+            }
+        );
+    }
+
+    #[test]
+    fn a_point_spans_the_views_height_over_the_points_and_a_view_of_no_points_none() {
+        // 80 mm over 400 points: 0.2 mm a point. Over no points, or a height that isn't a
+        // number of points, there's no span: a pan of an empty pane moves nothing.
+        assert_eq!(mm_per_point(&front(), 400.0), Some(0.2));
+        assert_eq!(mm_per_point(&front(), 0.0), None);
+        assert_eq!(mm_per_point(&front(), -400.0), None);
+        assert_eq!(mm_per_point(&front(), f64::INFINITY), None);
+        assert_eq!(mm_per_point(&front(), f64::NAN), None);
     }
 
     #[test]

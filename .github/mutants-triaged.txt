@@ -409,3 +409,14 @@ crates/silico-core/src/sketch_tools/geometry.rs | to_segment | replace > with >=
 crates/silico-core/src/sketch_tools/infer.rs | tangent_arc | replace > with >= | #335
 crates/silico-core/src/sketch_tools/infer.rs | counter_clockwise | replace < with <= | #335
 crates/silico-core/src/sketch_tools/mod.rs | SketchTool::handle | replace > with >= | #335
+# The viewport's zoom stop (#341). `View::zoom` caps an orthographic zoom in at `most`, the
+# octaves down to `least`, the least view height the drawn bodies' reach allows: `reach` is
+# a max over finite boxes from a finite target, so `least` is finite and never below 0, and
+# the camera's view height is positive and finite. `scroll > 0.0` as `>= 0.0`: at a scroll of
+# 0 (or −0) the cap gives 0 (or −0) again, and `scroll != 0.0` zooms by neither. `least > 0.0`
+# as `>= 0.0`: at a least of 0, `most` is −200 · log2(0) = +∞, which caps nothing. `&&` as
+# `||`: a zoom out (scroll ≤ 0) is never above the cap, which is at least 0, so `min` keeps
+# it; a zoom in with a least of 0 is capped at +∞, as above. Each gives the scroll unchanged.
+crates/silico-app/src/viewport.rs | View::zoom | replace > with >= | #341
+crates/silico-app/src/viewport.rs | View::zoom | replace > with >= | #341
+crates/silico-app/src/viewport.rs | View::zoom | replace && with || | #341

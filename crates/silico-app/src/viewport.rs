@@ -384,10 +384,11 @@ impl View {
                 self.take_bodies(read.bodies);
             }
             // Home fits the bodies by their boxes: with none to fit (no body, or one that
-            // couldn't be measured), the tab keeps its camera and reads with it.
+            // couldn't be measured), the tab keeps its camera and reads with it. Never said,
+            // even when the person moved the view while it was read: Home was the app's own
+            // ask, not theirs.
             Err(problems)
                 if named
-                    && !self.placed
                     && problems
                         .errors()
                         .iter()
@@ -1606,6 +1607,18 @@ mod tests {
     fn the_view_cubes_labels_are_the_named_views_in_words() {
         assert_eq!(words(NamedView::TopFrontRight), "Top front right");
         assert_eq!(words(NamedView::Front), "Front");
+    }
+
+    #[test]
+    fn the_view_cube_sits_its_margin_in_from_the_canvass_top_right_under_home() {
+        // A canvas from (100, 50) to (900, 650): the cube's 96-point square 8 points in
+        // from its right edge, 900 − 8 − 96 = 796, and 8 points down past Home's 20-point
+        // row, 50 + 8 + 20 = 78.
+        let viewport = Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(900.0, 650.0));
+        assert_eq!(
+            view_cube_rect(viewport),
+            Rect::from_min_max(egui::pos2(796.0, 78.0), egui::pos2(892.0, 174.0))
+        );
     }
 
     #[test]

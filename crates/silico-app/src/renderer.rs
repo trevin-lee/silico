@@ -577,6 +577,27 @@ mod tests {
     }
 
     #[test]
+    fn the_bodies_a_callback_found_refused_are_given_to_the_pane_once() {
+        // Body 2's mesh, of 11 points, is refused as the frame's callback is prepared; body
+        // 1's is taken. The pane is told of body 2 alone, and asked again, of none.
+        let ctx = egui::Context::default();
+        let painter = egui::Painter::new(ctx, egui::LayerId::background(), egui::Rect::EVERYTHING);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(10.0, 10.0));
+        let mut gpu = OnGpu::<Counting>::new();
+        gpu.present(
+            &painter,
+            rect,
+            vec![Change::Upload(1, mesh(3)), Change::Upload(2, mesh(11))],
+            None,
+        );
+        assert!(gpu.refused().is_empty());
+        let mut renderer = Counting::default();
+        prepared(Some(&mut renderer), &gpu.shared, &data(&[1, 2], &[]));
+        assert_eq!(gpu.refused().into_iter().collect::<Vec<_>>(), [2]);
+        assert!(gpu.refused().is_empty());
+    }
+
+    #[test]
     fn a_renderer_refusing_every_frame_is_said_once_and_still_told_of_each_change() {
         let shared = Mutex::new(Shared::default());
         let mut renderer = Counting::default();

@@ -662,6 +662,79 @@ fn a_read_refused_while_the_kernel_fails_is_asked_again_on_its_backoff_and_a_new
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The tab's message, once the tab is open.
+fn message(h: &AppHarness) -> Option<String> {
+    h.state().tabs().first().and_then(|tab| tab.message.clone())
+}
+
+#[test]
+fn a_refusal_said_is_cleared_by_the_next_answer_but_a_message_said_since_is_kept() {
+    // The first read, of Home's view, refused while the kernel fails: said. Mended, the
+    // retry due in 250 ms, Home's again, answers, and what the refusal said is cleared. A
+    // new revision refused again is said again; then something else is said on the tab (a
+    // refused edit, say), and the retry's answer leaves that be: it clears only its own
+    // refusal.
+    let f = fixture();
+    let failing = failing_kernel(&f);
+    failing.store(true, Ordering::SeqCst);
+    let (time, clock) = hand_clock();
+    let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
+    step_until(&mut h, "the first read's refusal said", |h| {
+        message(h).is_some()
+    });
+    // Said by that read itself, Home's: its refusal isn't Home's want of a box.
+    assert_eq!(view(&h).reads(), 1);
+    let said = message(&h).unwrap();
+    assert!(
+        said.starts_with("The view's meshes couldn't be read: the worker crashed meshing"),
+        "{said}"
+    );
+    failing.store(false, Ordering::SeqCst);
+    advance(&time, Duration::from_millis(250));
+    meshes_settled(&mut h, 0);
+    assert_eq!(message(&h), None);
+    // The retry was of Home's view too, and its camera taken: onto the centre of the two
+    // boxes' joined box, (0, 0, 0) to (3000, 1000, 1000).
+    assert_eq!(view(&h).reads(), 2);
+    assert_eq!(view(&h).camera().target, [1500.0, 500.0, 500.0]);
+    // A new revision, refused.
+    failing.store(true, Ordering::SeqCst);
+    let id = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&id).session.unwrap().revision;
+    f.sessions
+        .set_field(
+            &id,
+            revision,
+            FeatureId::new("k7f2qx3m").unwrap(),
+            "height".to_owned(),
+            json::read(b"60").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new revision's refusal said", |h| {
+        message(h).is_some()
+    });
+    let again = message(&h).unwrap();
+    assert!(
+        again.starts_with("The view's meshes couldn't be read: the worker crashed meshing"),
+        "{again}"
+    );
+    let other = "Something else the tab says".to_owned();
+    h.state_mut().tabs_mut()[0].message = Some(other.clone());
+    failing.store(false, Ordering::SeqCst);
+    advance(&time, Duration::from_millis(250));
+    step_until(&mut h, "the new revision read", |h| {
+        view(h)
+            .bodies()
+            .get(&1)
+            .is_some_and(|body| body.bounds.unwrap()[1][2] == 60.0)
+    });
+    meshes_settled(&mut h, 0);
+    assert_eq!(message(&h), Some(other));
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn a_due_retry_with_no_read_wanted_asks_for_no_frame_at_the_displays_rate() {
     // Refused, then the view set back where the last answer was: when the retry falls due,

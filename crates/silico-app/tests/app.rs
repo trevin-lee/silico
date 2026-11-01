@@ -7397,6 +7397,230 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The ViewCube's buttons by label, each with its rectangle.
+fn cube_buttons(h: &AppHarness) -> std::collections::BTreeMap<String, eframe::egui::Rect> {
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .query_all_by_role(Role::Button)
+        .filter_map(|node| Some((node.accesskit_node().label()?, node.rect())))
+        .collect()
+}
+
+/// The ViewCube's faces as drawn last frame: each polygon's corners and fill, in order.
+fn cube_faces(h: &AppHarness) -> Vec<(Vec<eframe::egui::Pos2>, eframe::egui::Color32)> {
+    let cube = silico_app::viewport::view_cube_rect(the_viewport(h));
+    h.output()
+        .shapes
+        .iter()
+        .filter(|clipped| clipped.clip_rect == cube)
+        .filter_map(|clipped| match &clipped.shape {
+            eframe::egui::Shape::Path(path) => Some((path.points.clone(), path.fill)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[track_caller]
+fn at_point(got: eframe::egui::Pos2, expected: eframe::egui::Pos2, what: &str) {
+    assert!(
+        (got - expected).length() < 1e-3,
+        "{what}: {got:?} against {expected:?}"
+    );
+}
+
+#[test]
+fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
+    // From (1, −1, 1) onto the cut's box's centre, z up: the view's right is (1, 1, 0)/√2
+    // and its up (−1, 1, 2)/√6, so the cube's point (x, y, z), its faces at ±1, is drawn
+    // at ((x + y)/√2, −(−x + y + 2z)/√6) · s from the cube's centre, y down, s half its
+    // edge, 0.28 of its 96-point side. The front, right, and top face the view, each at
+    // 1/√3 (over a quarter, so each is labelled where its centre is drawn), shaded 0.6 of
+    // the fill edge-on rising to all of it square-on: 0.6 + 0.4/√3. The corners facing it
+    // more than a tenth, 1 or 1/3, are clickable at theirs: the top front right (at the
+    // cube's centre), the top front left, the top back right, and the bottom front right.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+        eye: [120.0, -90.0, 105.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    step(&mut h);
+    step(&mut h);
+    let cube = silico_app::viewport::view_cube_rect(the_viewport(&h));
+    let s = 0.28 * 96.0;
+    let (r2, r6) = (2f32.sqrt(), 6f32.sqrt());
+    let at = |x: f32, y: f32| cube.center() + eframe::egui::vec2(x, y) * s;
+    // The cube's corners as drawn: (1, −1, 1) at the centre; (−1, −1, 1), (1, 1, 1),
+    // (−1, 1, 1) above; (1, −1, −1) below; (−1, −1, −1) and (1, 1, −1) at the sides.
+    let top_front_right = at(0.0, 0.0);
+    let top_front_left = at(-r2, -2.0 / r6);
+    let top_back_right = at(r2, -2.0 / r6);
+    let top_back_left = at(0.0, -4.0 / r6);
+    let bottom_front_right = at(0.0, 4.0 / r6);
+    let bottom_front_left = at(-r2, 2.0 / r6);
+    let bottom_back_right = at(r2, 2.0 / r6);
+    let buttons = cube_buttons(&h);
+    // Home: 44 by 18 points at the cube's top left, in the 20-point row above it.
+    let home = eframe::egui::Rect::from_min_size(
+        cube.left_top() - eframe::egui::vec2(0.0, 20.0),
+        eframe::egui::vec2(44.0, 18.0),
+    );
+    let expected = [
+        ("Front", at(-1.0 / r2, 1.0 / r6)),
+        ("Right", at(1.0 / r2, 1.0 / r6)),
+        ("Top", at(0.0, -2.0 / r6)),
+        ("Top front right", top_front_right),
+        ("Top front left", top_front_left),
+        ("Top back right", top_back_right),
+        ("Bottom front right", bottom_front_right),
+        ("Home", home.center()),
+    ];
+    let mut labels: Vec<&str> = expected.iter().map(|(label, _)| *label).collect();
+    labels.sort_unstable();
+    assert_eq!(
+        buttons.keys().map(String::as_str).collect::<Vec<_>>(),
+        labels
+    );
+    for (label, centre) in expected {
+        at_point(buttons[label].center(), centre, label);
+    }
+    at_point(buttons["Home"].min, home.min, "Home's corner");
+    at_point(buttons["Home"].max, home.max, "Home's far corner");
+    let fill = h.ctx.global_style().visuals.widgets.inactive.bg_fill;
+    let shade = fill.gamma_multiply(0.6 + 0.4 * (1.0 / 3f64.sqrt()) as f32);
+    assert_ne!(shade, fill);
+    let faces = cube_faces(&h);
+    let expected = [
+        (
+            "front",
+            [
+                top_front_right,
+                top_front_left,
+                bottom_front_left,
+                bottom_front_right,
+            ],
+        ),
+        (
+            "right",
+            [
+                top_back_right,
+                bottom_back_right,
+                bottom_front_right,
+                top_front_right,
+            ],
+        ),
+        (
+            "top",
+            [
+                top_back_right,
+                top_front_right,
+                top_front_left,
+                top_back_left,
+            ],
+        ),
+    ];
+    assert_eq!(faces.len(), expected.len(), "{faces:?}");
+    for ((points, colour), (face, corners)) in faces.iter().zip(expected) {
+        assert_eq!(points.len(), 4, "{face}");
+        for (got, corner) in points.iter().zip(corners) {
+            at_point(*got, corner, face);
+        }
+        assert_eq!(*colour, shade, "{face}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_face_turned_a_quarter_toward_the_view_is_drawn_and_left_unlabelled() {
+    // From (0, −√15, 1) onto the origin: the view's back is (0, −√15, 1)/4, so the top
+    // faces it at exactly a quarter (as f64 rounds it, checked), drawn but too oblique to
+    // label or click; the front at √15/4, labelled. The left and right are edge-on and the
+    // back and bottom face away, none drawn. The four front corners face it more than a
+    // tenth, (√15 ± 1)/(4√3); the back ones face away.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let camera = silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+        eye: [0.0, -15f64.sqrt(), 1.0],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 1.0],
+    };
+    assert_eq!(camera.frame().unwrap().back[2], 0.25);
+    view_mut(&mut h).set_camera(camera);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        cube_buttons(&h)
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "Bottom front left",
+            "Bottom front right",
+            "Front",
+            "Home",
+            "Top front left",
+            "Top front right"
+        ]
+    );
+    assert_eq!(cube_faces(&h).len(), 2);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_view_cubes_menu_marks_the_projection_the_view_has() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let marked = |h: &AppHarness, word: &str| {
+        h.get_by_role_and_label(Role::RadioButton, word)
+            .accesskit_node()
+            .toggled()
+            == Some(eframe::egui::accesskit::Toggled::True)
+    };
+    // Orthographic, as a view opens.
+    h.get_by_label("Orbit the view").click_secondary();
+    step(&mut h);
+    assert!(marked(&h, "Orthographic") && !marked(&h, "Perspective"));
+    h.get_by_label("Perspective").click_accesskit();
+    step(&mut h);
+    assert!(view(&h).perspective());
+    // Perspective once chosen.
+    h.get_by_label("Orbit the view").click_secondary();
+    step(&mut h);
+    assert!(marked(&h, "Perspective") && !marked(&h, "Orthographic"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_navigation_bar_floats_its_margin_above_the_canvass_bottom_centre() {
+    // 220 by 26 points about the canvas's middle, its bottom 8 points above the canvas's:
+    // its middle 8 + 13 = 21 points up. Its tools sit in a row along that middle.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let canvas = the_viewport(&h);
+    let bar = eframe::egui::Rect::from_center_size(
+        eframe::egui::pos2(canvas.center().x, canvas.bottom() - 21.0),
+        eframe::egui::vec2(220.0, 26.0),
+    );
+    for word in ["Orbit", "Pan", "Zoom", "Fit"] {
+        let tool = h
+            .get_by_role_and_label(Role::Toolbar, "Navigation bar")
+            .get_by_label(word)
+            .rect();
+        assert!(bar.contains_rect(tool), "{word}: {tool:?} outside {bar:?}");
+        assert!(
+            (tool.center().y - bar.center().y).abs() <= 1.0,
+            "{word}: {tool:?} off {bar:?}'s middle"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn a_middle_double_click_fits() {
     let f = fixture();
@@ -7429,12 +7653,19 @@ fn a_middle_double_click_fits() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-#[test]
-fn a_model_whose_body_cant_be_measured_opens_at_the_cube_home_and_still_reads() {
-    // Every summary answered with no box: Home's view, which fits the bodies' boxes, is
-    // refused, naming `view`; the tab keeps its own camera, Home of a 100 mm cube about
-    // the origin, and reads with it.
-    let f = fixture();
+/// A block, 20 mm a side.
+const UNMEASURED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 20, "width": 20, "height": 20}
+  ]
+}
+"#;
+
+/// Every summary answered with no box, so no body can be measured.
+fn unmeasured(f: &Fixture) {
     f.kernel.answer_instead(|op| {
         matches!(op, Op::Summarize { .. }).then(|| {
             silico_protocol::Reply::Summary(silico_protocol::ShapeSummary {
@@ -7449,16 +7680,16 @@ fn a_model_whose_body_cant_be_measured_opens_at_the_cube_home_and_still_reads() 
             })
         })
     });
-    let text = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 20, "width": 20, "height": 20}
-  ]
 }
-"#;
-    let (mut h, record) = f.drawn("unmeasured.silico", text);
+
+#[test]
+fn a_model_whose_body_cant_be_measured_opens_at_the_cube_home_and_still_reads() {
+    // Every summary answered with no box: Home's view, which fits the bodies' boxes, is
+    // refused, naming `view`; the tab keeps its own camera, Home of a 100 mm cube about
+    // the origin, and reads with it.
+    let f = fixture();
+    unmeasured(&f);
+    let (mut h, record) = f.drawn("unmeasured.silico", UNMEASURED);
     meshes_settled(&mut h);
     assert_eq!(view(&h).reads(), 2);
     let camera = view(&h).camera().clone();
@@ -7467,6 +7698,38 @@ fn a_model_whose_body_cant_be_measured_opens_at_the_cube_home_and_still_reads() 
     looks_from(&camera, [third, -third, third]);
     assert_eq!(view(&h).bodies()[&1].bounds, None);
     assert_eq!(uploads(&record), [1]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn homes_refusal_answered_after_the_view_was_placed_is_never_said_and_the_view_is_read() {
+    // No body can be measured, so the first read, of Home's view, is refused naming
+    // `view`. The view placed by the person while that read is out: Home was the app's own
+    // ask, so its refusal is said no more than when nobody moved, and the view placed is
+    // read next, at once, and kept.
+    let f = fixture();
+    unmeasured(&f);
+    let (mut h, _record) = f.drawn("unmeasured.silico", UNMEASURED);
+    step_until(&mut h, "the first read", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.view.reading())
+    });
+    assert_eq!(view(&h).reads(), 1);
+    let placed = silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 80.0 },
+        eye: [10.0, -100.0, 10.0],
+        target: [10.0; 3],
+        up: [0.0, 0.0, 1.0],
+    };
+    view_mut(&mut h).set_camera(placed.clone());
+    step_until(&mut h, "the placed view read", |h| {
+        assert_eq!(h.state().tabs()[0].message, None);
+        view(h).reads() == 2 && !view(h).reading()
+    });
+    assert_eq!(view(&h).camera(), &placed);
+    assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -7793,6 +8056,31 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
             let pane = h.ctx.global_style().visuals.extreme_bg_color.to_array();
             let middle = pixel(centre.x, centre.y);
             assert!(differs(middle, pane), "{middle:?}: the pane's own colour");
+            // The pane's renderer trait reaches silico-render's own: a frame drawing body 1
+            // is prepared while body 1 is held, and once the trait has forgotten it, refused,
+            // as silico-render refuses a frame drawing a body it doesn't hold.
+            {
+                use silico_app::renderer::ViewRenderer;
+                let mut resources = state.renderer.write();
+                let renderer = resources
+                    .callback_resources
+                    .get_mut::<silico_app::renderer::Renderer>()
+                    .expect("installed");
+                let data = silico_app::renderer::FrameData {
+                    serial: 1 << 20,
+                    camera: view(&h).camera().clone(),
+                    size_px: [64, 64],
+                    pixels_per_point: 1.0,
+                    bodies: vec![1],
+                    highlights: Vec::new(),
+                    picking: None,
+                };
+                assert!(ViewRenderer::prepare(renderer, &data.frame()).is_ok());
+                ViewRenderer::forget(renderer, 1);
+                let refused = ViewRenderer::prepare(renderer, &data.frame())
+                    .expect_err("a frame of a body forgotten");
+                assert_eq!(refused.to_string(), "bodies[0], 1, isn't uploaded");
+            }
             assert_eq!(never_waits::waits(), 0);
         },
     );
