@@ -875,22 +875,19 @@ def edit_trim(s, e, applied):
     if g is None:
         return
     pieces = {keep} | {gid(s, i) for i in range(len(s.Geometry)) if gid(s, i) not in ids_before}
-    # Where the end such an angle names survives the trim, 1.1.3 keeps the angle on the
-    # start-side piece only, which keeps the curve's ID, its position now that piece's end at
-    # the cut (transferConstraints never moves an angle, e66849378b); Silico has it on every
-    # piece, so FreeCAD's is taken off and the angle put on each. Where the end is removed,
-    # FreeCAD's own handling stands, and is compared (#se-trim-a-positioned-angle).
+    # Where the end such an angle names survives the trim, 1.1.3 keeps the angle, unchanged,
+    # on the start-side piece only, which keeps the curve's ID (transferConstraints never
+    # moves an angle, e66849378b): its position is as it was, and is that piece's end at the
+    # cut only in a middle trim where the point it names is b's end. Silico has it on every
+    # piece, so FreeCAD's, found by its name (Silico's ID, which the original keeps), is taken
+    # off and the angle put on each. Where the end is removed, FreeCAD's own handling stands,
+    # and is compared (#se-trim-a-positioned-angle).
     if kind == "line":
         now = [s.getPoint(index_of(s, p), pos) for p in pieces for pos in (1, 2)]
         for cap, named in angles:
             if not all(any((q - end).Length <= EDIT_TOLERANCE for q in now) for end in named):
                 continue
-            other = [r for r, _ in cap["refs"] if r != keep]
-            theirs = [i for i, c in enumerate(s.Constraints)
-                      if c.Type == "Angle"
-                      and any(gid(s, r) in pieces for r, _ in refs_of(c))
-                      and all(gid(s, r) in pieces or gid(s, r) in other for r, _ in refs_of(c))]
-            drop(s, theirs)
+            drop(s, [i for i, c in enumerate(s.Constraints) if cap["name"] and c.Name == cap["name"]])
             put_angle_back(s, cap, keep, sorted(pieces))
             applied.append("se-trim-a-positioned-angle")
     # A new end at a cut joined to the cutter's end by 1.1.3's 5e-5 mm test, where no
