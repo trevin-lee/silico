@@ -953,6 +953,77 @@ fn a_broken_faces_candidates_are_the_same_bytes_however_long_another_branch_is_h
     );
 }
 
+/// An engine whose fake kernel describes the 10 mm box's faces (`box(10, 10, 10)`) as
+/// planes, every other solid's as the fake does (no plane): so a sketch on the box's face
+/// is placed only if it's found in the box's own solid.
+fn engine_with_a_planar_box() -> Recompute<FakeKernel> {
+    let kernel = FakeKernel::new(2).unwrap();
+    kernel.answer_instead(|op| match op {
+        Op::DescribeAll { shape }
+            if FakeKernel::describe(shape).as_deref() == Some("box(10, 10, 10)") =>
+        {
+            surfaced(shape, |_| true)
+        }
+        _ => None,
+    });
+    Recompute::new(kernel).with_sketches(FakeSketches::new())
+}
+
+#[test]
+fn a_face_is_looked_for_past_a_suppressed_consumer_in_what_consumes_its_box_next() {
+    // f1, a fillet of the box, is suppressed; f2, a fillet of f1, builds on the box (f1's
+    // base passed through), so it consumes the box. s1, after f2, finds the top in f2's
+    // solid (typed no plane): refused as not planar. Had the walk stopped at the
+    // suppressed fillet, the box would be live, and s1 placed on its plane.
+    let suppressed = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "F", "suppressed": true, "base": "b0000001", "edges": ["b0000001.box.Edge1"], "radius": 1}"#;
+    let after = r#"{"id": "f0000002", "type": "fillet", "v": 1, "name": "G", "base": "f0000001", "edges": ["b0000001.box.Edge2"], "radius": 1}"#;
+    let features = [
+        cube(),
+        suppressed.to_owned(),
+        after.to_owned(),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+    ];
+    let model = publish(
+        &engine_with_a_planar_box(),
+        checked_document(&strs(&features)),
+    );
+    let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id("s0000001")) else {
+        panic!("{:?}", model.outcome(&id("s0000001")));
+    };
+    assert!(errors[0].message().contains("isn't planar"), "{errors:?}");
+    assert!(model.frame(&id("s0000001")).is_none());
+}
+
+#[test]
+fn a_face_is_looked_for_in_its_box_when_what_consumes_the_box_comes_after_the_sketch() {
+    // s1 is on the box's top before the fillet that consumes the box: the box is live at
+    // s1's place, so its plane (the box's description, planes) places s1: o = n(n·p) with
+    // n = +Z through the origin, (0, 0, 0), x = +X, y = +Y.
+    let fillet = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "F", "base": "b0000001", "edges": ["b0000001.box.Edge1"], "radius": 1}"#;
+    let features = [
+        cube(),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        fillet.to_owned(),
+    ];
+    let model = publish(
+        &engine_with_a_planar_box(),
+        checked_document(&strs(&features)),
+    );
+    assert!(
+        matches!(
+            model.outcome(&id("s0000001")),
+            Some(FeatureOutcome::Sketch(_))
+        ),
+        "{:?}",
+        model.outcome(&id("s0000001"))
+    );
+    let frame = model.frame(&id("s0000001")).unwrap();
+    assert_eq!(
+        (frame.origin, frame.x, frame.y),
+        ([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+    );
+}
+
 // ---- any face plane, read, written, gated, and rebuilt ----
 
 use proptest::prelude::*;
