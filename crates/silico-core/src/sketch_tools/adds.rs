@@ -7,8 +7,8 @@ use std::collections::BTreeSet;
 
 use super::{AddToken, Context};
 use crate::command::Revision;
-use crate::document::ElementId;
 use crate::document::sketch_edit::Members;
+use crate::document::{ElementId, FeatureId};
 
 /// Each tool's serial, from one count for the process. Tokens never reach a request, a
 /// result, a name, or the document, so the count's order (which thread made a tool first)
@@ -19,6 +19,8 @@ static TOOL_SERIALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// tokens as the one it copied.
 #[derive(Debug)]
 pub(super) struct Adds {
+    /// The sketch the tool works in: a context of another starts it afresh.
+    sketch: Option<FeatureId>,
     /// Each add in turn, with the revision it made once the core has answered.
     pending: Vec<Pending>,
     /// This tool's serial, which its tokens carry.
@@ -39,6 +41,7 @@ struct Pending {
 impl Adds {
     pub(super) fn new() -> Self {
         Adds {
+            sketch: None,
             pending: Vec::new(),
             serial: TOOL_SERIALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             next_token: 0,
@@ -78,9 +81,31 @@ impl Adds {
         self.pending.clear();
     }
 
-    /// The adds brought up to `context`'s read: those a read at or past their revision has
-    /// settled forgotten, and what the read holds of the rest left to the read.
-    pub(super) fn settle(&mut self, context: &Context<'_>) {
+    /// The sketch the tool works in, once a context has named one.
+    pub(super) fn sketch(&self) -> Option<&FeatureId> {
+        self.sketch.as_ref()
+    }
+
+    /// The adds brought up to `context`'s read: every add forgotten if it's of another sketch
+    /// than the last (whether so is the answer: the tool then starts afresh); those a read at
+    /// or past their revision has settled forgotten, and what the read holds of the rest left
+    /// to the read.
+    pub(super) fn settle(&mut self, context: &Context<'_>) -> bool {
+        let switched = self.sketch.as_ref() != Some(context.sketch_id);
+        if switched {
+            let afresh = self.sketch.is_some();
+            self.sketch = Some(context.sketch_id.clone());
+            if afresh {
+                self.pending.clear();
+            }
+            self.forget_settled(context);
+            return afresh;
+        }
+        self.forget_settled(context);
+        false
+    }
+
+    fn forget_settled(&mut self, context: &Context<'_>) {
         self.pending
             .retain(|p| p.revision.is_none_or(|made| made > context.revision));
         if !self.pending.is_empty() {

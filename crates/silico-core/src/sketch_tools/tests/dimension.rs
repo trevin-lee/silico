@@ -17,6 +17,8 @@ struct Dim {
     sketch: Sketch,
     revision: Revision,
     tolerance: f64,
+    /// The sketch's state in the read each event comes with.
+    state: SketchState,
     ids: Counter,
     /// Each add's members, as made.
     made: Vec<Members>,
@@ -31,6 +33,7 @@ impl Dim {
             sketch,
             revision: Revision::OPENED,
             tolerance: TOLERANCE,
+            state: SketchState::UnderDefined,
             ids: Counter(100),
             made: Vec::new(),
             messages: Vec::new(),
@@ -47,7 +50,7 @@ impl Dim {
             tolerance: self.tolerance,
             automatic_relations: true,
         };
-        let outcome = self.tool.handle(&context, &mut self.ids, event);
+        let outcome = self.tool.handle(&context, self.state, &mut self.ids, event);
         if let Some(members) = &outcome.add {
             self.revision = self.revision.next().unwrap();
             self.tool.added(outcome.token.unwrap(), self.revision);
@@ -184,6 +187,9 @@ fn a_line_is_its_length_placed_with_the_value_typed() {
         }
     );
     assert_eq!(d.modify(), None);
+    // Busy until a read of the add's revision has come: the next event's.
+    assert!(d.tool.busy());
+    d.to(60.0, 5.0);
     assert!(!d.tool.busy());
 }
 
@@ -438,29 +444,133 @@ fn the_origin_is_a_point_to_dimension_from() {
 }
 
 #[test]
-fn two_points_at_one_place_have_no_distance_but_a_level_offset() {
-    // p (10, 10) and p' 4e-7 mm to its right: 0 to the nanometre, so no direction to hold
-    // them apart in, and no `distance`; but `distance_x`, x(p') − x(p) = 0 to the
-    // nanometre, is a value a signed form holds. Each picked where it's the nearest point:
-    // (9.9999, 10), and (10.000001, 10), 6e-7 from p' and 1e-6 from p. The box is x 10 to
-    // 10.0000004 at y 10, so (10.0000002, 20) is above it.
+fn two_points_at_one_place_have_no_distance_but_a_horizontal_and_vertical_offset() {
+    // p (10, 10) and p' 3e-7 mm right of it and above it: neither level nor plumb within
+    // 1e-7, and √2·3e-7 = 4.2e-7 apart, 0 to the nanometre: no direction to hold them apart
+    // in, so no `distance`; but `distance_x`, x(p') − x(p) = 0 to the nanometre, is a value
+    // a signed form holds. Each picked where it's the nearest point: (9.9999, 9.9999), and
+    // (10.000001, 10.000001). The box is x 10 to 10.0000003, so (10.0000001, 20) is above it.
     let s = with_point(
         with_point(empty(), "p0000001", [10.0, 10.0]),
         "p0000002",
-        [10.0000004, 10.0],
+        [10.0000003, 10.0000003],
     );
     let mut d = Dim::new(s);
-    d.click(9.9999, 10.0).click(10.000001, 10.0);
+    d.click(9.9999, 9.9999).click(10.000001, 10.000001);
     assert_eq!(d.tool.preview().picks, vec![r("p0000001"), r("p0000002")]);
     d.click(30.0, 30.0);
     assert_eq!(d.messages, vec![Message::NoDistance]);
     assert_eq!(d.modify(), None);
-    d.click(10.0000002, 20.0).escape();
+    d.click(10.0000001, 20.0).escape();
     assert_eq!(
         d.placed(),
         Form::DistanceX {
             a: r("p0000001"),
             b: r("p0000002"),
+            value: mm("0"),
+            driving: true
+        }
+    );
+}
+
+#[test]
+fn level_points_are_horizontal_and_plumb_ones_vertical_wherever_the_pointer_is() {
+    // FreeCAD's 76a84f63ab. p (10, 10) and q (40, 10 + 5e-8), level within 1e-7: with the
+    // pointer off the box's corner (60, 50), and inside its line, `distance_x` 30. p and
+    // q' (10 + 5e-8, 40), plumb: `distance_y` 30 off its corner. q'' (40, 10 + 2e-7), not
+    // level: off the corner, `distance`, √(30² + (2e-7)²) = 30 to the nanometre.
+    let level = |dy: f64| {
+        with_point(
+            with_point(empty(), "p0000001", [10.0, 10.0]),
+            "p0000002",
+            [40.0, 10.0 + dy],
+        )
+    };
+    for at in [[60.0, 50.0], [25.0, 10.0], [-5.0, 10.0]] {
+        let mut d = Dim::new(level(5e-8));
+        d.click(10.0, 10.0)
+            .click(40.0, 10.0)
+            .click(at[0], at[1])
+            .escape();
+        assert_eq!(
+            d.placed(),
+            Form::DistanceX {
+                a: r("p0000001"),
+                b: r("p0000002"),
+                value: mm("30"),
+                driving: true
+            },
+            "{at:?}"
+        );
+    }
+    let plumb = with_point(
+        with_point(empty(), "p0000001", [10.0, 10.0]),
+        "p0000002",
+        [10.0 + 5e-8, 40.0],
+    );
+    let mut d = Dim::new(plumb);
+    d.click(10.0, 10.0)
+        .click(10.0, 40.0)
+        .click(60.0, 50.0)
+        .escape();
+    assert_eq!(
+        d.placed(),
+        Form::DistanceY {
+            a: r("p0000001"),
+            b: r("p0000002"),
+            value: mm("30"),
+            driving: true
+        }
+    );
+    let mut d = Dim::new(level(2e-7));
+    d.click(10.0, 10.0)
+        .click(40.0, 10.0)
+        .click(60.0, 50.0)
+        .escape();
+    assert_eq!(
+        d.placed(),
+        Form::Distance {
+            a: r("p0000001"),
+            b: r("p0000002"),
+            value: mm("30"),
+            driving: true
+        }
+    );
+}
+
+#[test]
+fn coincident_points_keep_their_pick_order() {
+    // a (10, 10) and the circle about (10, 10), radius 5, its centre c: level and plumb, so
+    // `distance_x`, 0, where neither is to the left: in the order picked. (10, 10) picks a,
+    // whose ID sorts before c's; (15, 10) the circle, measured at its centre.
+    let s = with_point(
+        with_circle(empty(), "k0000001", [10.0, 10.0], 5.0),
+        "a0000001",
+        [10.0, 10.0],
+    );
+    let mut d = Dim::new(s);
+    d.click(10.0, 10.0)
+        .click(15.0, 10.0)
+        .click(30.0, 30.0)
+        .escape();
+    assert_eq!(
+        d.placed(),
+        Form::DistanceX {
+            a: r("a0000001"),
+            b: r("c0000001"),
+            value: mm("0"),
+            driving: true
+        }
+    );
+    d.click(15.0, 10.0)
+        .click(10.0, 10.0)
+        .click(30.0, 30.0)
+        .escape();
+    assert_eq!(
+        d.placed(),
+        Form::DistanceX {
+            a: r("c0000001"),
+            b: r("a0000001"),
             value: mm("0"),
             driving: true
         }
@@ -536,7 +646,8 @@ fn a_point_on_the_line_has_no_side_and_places_nothing() {
 fn a_circle_with_anything_else_is_measured_at_its_centre() {
     // A circle about (30, 20), radius 5, picked on its edge at (35, 20):
     // - with the line (10, 0)-(50, 0): its centre 20 to the line's left;
-    // - with the point (30, 50), pointer off the box's corner: centre to point, 30;
+    // - with the point (30, 50), plumb with the centre: centre to point, vertically, 30
+    //   (FreeCAD's 76a84f63ab: wherever the pointer is);
     // - with the circle about (60, 60), radius 4, picked at (64, 60): centre to centre,
     //   √(30² + 40²) = 50.
     let s = with_circle(
@@ -575,7 +686,7 @@ fn a_circle_with_anything_else_is_measured_at_its_centre() {
         .escape();
     assert_eq!(
         d.placed(),
-        Form::Distance {
+        Form::DistanceY {
             a: r("c0000001"),
             b: r("p0000001"),
             value: mm("30"),
@@ -926,30 +1037,48 @@ fn two_parallel_lines_are_the_second_lines_from_to_the_first_line() {
 fn lines_are_parallel_by_freecads_test_to_its_edge() {
     // A (10, 10)-(50, 10): direction (40, 0). B from (20, 30) to (60, 30 + e): direction
     // (40, e), and A × B = 40e. FreeCAD's test is 40e < 1e-9: e = 2e-11 gives 8e-10,
-    // parallel, the distance SD4 writes (B's `from`, 20 to A's left); e = 3e-11 gives 1.2e-9,
-    // not parallel, an angle.
-    for (e, parallel) in [(2e-11, true), (3e-11, false)] {
-        let s = with_line(
+    // parallel, the distance SD4 writes, B's `from` 20 to A's left. e = 3e-11 gives 1.2e-9,
+    // not parallel: an angle. A to B sweeps e/40 = 7.5e-13 rad; they meet where
+    // 30 + e(x − 20)/40 = 10, x = 20 − 800/e ≈ −2.67e13, so the pointer at (70, 31) is
+    // 21/2.67e13 ≈ 7.9e-13 rad round from A, past the sweep: `{B, A}`, 360 less 4.3e-11°,
+    // 360 to the nanodegree.
+    let s = |e: f64| {
+        with_line(
             with_line(empty(), "n000000a", [10.0, 10.0], [50.0, 10.0]),
             "n000000b",
             [20.0, 30.0],
             [60.0, 30.0 + e],
-        );
-        let mut d = Dim::new(s);
-        d.click(30.0, 10.0)
-            .click(40.0, 30.0)
-            .click(70.0, 31.0)
-            .escape();
-        assert_eq!(
-            d.placed().type_name(),
-            if parallel {
-                "point_line_distance"
-            } else {
-                "angle"
-            },
-            "{e}"
-        );
-    }
+        )
+    };
+    let mut d = Dim::new(s(2e-11));
+    d.click(30.0, 10.0)
+        .click(40.0, 30.0)
+        .click(70.0, 31.0)
+        .escape();
+    assert_eq!(
+        d.placed(),
+        Form::PointLineDistance {
+            point: r("f000000b"),
+            line: r("n000000a"),
+            value: mm("20"),
+            side: LineSide::Left,
+            driving: true
+        }
+    );
+    let mut d = Dim::new(s(3e-11));
+    d.click(30.0, 10.0)
+        .click(40.0, 30.0)
+        .click(70.0, 31.0)
+        .escape();
+    assert_eq!(
+        d.placed(),
+        Form::Angle {
+            a: r("n000000b"),
+            b: r("n000000a"),
+            value: deg("360"),
+            driving: true
+        }
+    );
 }
 
 #[test]
@@ -1325,10 +1454,25 @@ fn a_dimension_placed_before_a_read_shows_it_keeps_its_id_taken() {
     let mut made = Vec::new();
     for (pick, place) in [([20.0, 10.0], [20.0, 20.0]), ([20.0, 40.0], [20.0, 50.0])] {
         for at in [pick, place] {
-            tool.handle(&context, &mut ids, DimensionEvent::Press(at));
-            tool.handle(&context, &mut ids, DimensionEvent::Release(at));
+            tool.handle(
+                &context,
+                SketchState::UnderDefined,
+                &mut ids,
+                DimensionEvent::Press(at),
+            );
+            tool.handle(
+                &context,
+                SketchState::UnderDefined,
+                &mut ids,
+                DimensionEvent::Release(at),
+            );
         }
-        let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
+        let out = tool.handle(
+            &context,
+            SketchState::UnderDefined,
+            &mut ids,
+            DimensionEvent::Escape,
+        );
         made.push(out.add.unwrap().constraints[0].id.clone());
     }
     assert_eq!(made, vec![id("t0000001"), id("t0000002")]);
@@ -1346,8 +1490,12 @@ fn another_sketch_starts_the_tool_afresh() {
         tolerance: TOLERANCE,
         automatic_relations: true,
     };
-    d.tool
-        .handle(&context, &mut d.ids, DimensionEvent::Move([50.0, 50.0]));
+    d.tool.handle(
+        &context,
+        SketchState::UnderDefined,
+        &mut d.ids,
+        DimensionEvent::Move([50.0, 50.0]),
+    );
     assert!(d.tool.preview().picks.is_empty());
     assert!(!d.tool.busy());
 }
@@ -1405,10 +1553,25 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &mut ids, DimensionEvent::Press(at));
-        tool.handle(&context, &mut ids, DimensionEvent::Release(at));
+        tool.handle(
+            &context,
+            SketchState::UnderDefined,
+            &mut ids,
+            DimensionEvent::Press(at),
+        );
+        tool.handle(
+            &context,
+            SketchState::UnderDefined,
+            &mut ids,
+            DimensionEvent::Release(at),
+        );
     }
-    let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
+    let out = tool.handle(
+        &context,
+        SketchState::UnderDefined,
+        &mut ids,
+        DimensionEvent::Escape,
+    );
     assert_eq!(out.message, None);
     assert_eq!(
         out.add.unwrap().constraints[0].form,
@@ -1420,16 +1583,506 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
     );
     // Its own value refused is the tool's to say: the box stays open.
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &mut ids, DimensionEvent::Press(at));
-        tool.handle(&context, &mut ids, DimensionEvent::Release(at));
+        tool.handle(
+            &context,
+            SketchState::UnderDefined,
+            &mut ids,
+            DimensionEvent::Press(at),
+        );
+        tool.handle(
+            &context,
+            SketchState::UnderDefined,
+            &mut ids,
+            DimensionEvent::Release(at),
+        );
     }
-    tool.handle(&context, &mut ids, DimensionEvent::Typed("0".to_owned()));
-    let out = tool.handle(&context, &mut ids, DimensionEvent::Enter);
+    tool.handle(
+        &context,
+        SketchState::UnderDefined,
+        &mut ids,
+        DimensionEvent::Typed("0".to_owned()),
+    );
+    let out = tool.handle(
+        &context,
+        SketchState::UnderDefined,
+        &mut ids,
+        DimensionEvent::Enter,
+    );
     assert_eq!(out.add, None);
     let Some(Message::ValueRefused(error)) = out.message else {
         panic!("{out:?}");
     };
     assert_eq!(error.parameter(), Some("constraints.t0000002.value"));
+}
+
+// --- Review #345: the box, the clicks, busy -------------------------------------------
+
+/// p (30, 7) above the line from (10, 0) to (50, 0), facing +x.
+fn point_over_line() -> Sketch {
+    with_point(
+        with_line(empty(), "n0000001", [10.0, 0.0], [50.0, 0.0]),
+        "p0000001",
+        [30.0, 7.0],
+    )
+}
+
+#[test]
+fn enter_on_an_untouched_box_places_the_measured_distance_from_a_line() {
+    // B1: the box holds the value alone, "7", never the form's "7 left". The same for SD4's
+    // lines (B's `from` 20 to A's left), a circle's centre and a line (20), and a centreline
+    // (12 to its right).
+    let mut d = Dim::new(point_over_line());
+    d.click(30.0, 7.0).click(20.0, 0.0).click(40.0, 20.0);
+    assert_eq!(d.modify().as_deref(), Some("7"));
+    d.enter();
+    assert_eq!(
+        d.placed(),
+        Form::PointLineDistance {
+            point: r("p0000001"),
+            line: r("n0000001"),
+            value: mm("7"),
+            side: LineSide::Left,
+            driving: true
+        }
+    );
+    let parallel = with_line(
+        with_line(empty(), "n000000a", [10.0, 10.0], [50.0, 10.0]),
+        "n000000b",
+        [20.0, 30.0],
+        [60.0, 30.0],
+    );
+    let mut d = Dim::new(parallel);
+    d.click(30.0, 10.0).click(40.0, 30.0).click(70.0, 20.0);
+    assert_eq!(d.modify().as_deref(), Some("20"));
+    d.enter();
+    assert_eq!(d.placed().type_name(), "point_line_distance");
+    let circle_line = with_circle(
+        with_line(empty(), "n0000001", [10.0, 0.0], [50.0, 0.0]),
+        "k0000001",
+        [30.0, 20.0],
+        5.0,
+    );
+    let mut d = Dim::new(circle_line);
+    d.click(35.0, 20.0).click(20.0, 0.0).click(40.0, 30.0);
+    assert_eq!(d.modify().as_deref(), Some("20"));
+    d.enter();
+    assert_eq!(d.placed().type_name(), "point_line_distance");
+    let mut d = Dim::new(centreline(12.0));
+    d.click(12.0, 5.0).click(0.0, 20.0).click(20.0, 5.0);
+    assert_eq!(d.modify().as_deref(), Some("12"));
+    d.enter();
+    assert_eq!(d.placed().type_name(), "point_line_distance");
+}
+
+/// A construction line from (0, -10) to (0, 40), facing +y, and p at (x, 5).
+fn centreline(x: f64) -> Sketch {
+    construction(
+        with_point(
+            with_line(empty(), "n0000001", [0.0, -10.0], [0.0, 40.0]),
+            "p0000001",
+            [x, 5.0],
+        ),
+        "n0000001",
+    )
+}
+
+#[test]
+fn an_untouched_box_follows_a_newer_read() {
+    // R1: the line's end moved from (40, 50) to (70, 90) while the box is open: 60 across,
+    // 80 up, 100 long. The untouched box now reads "100", and Enter places 100.
+    let mut d = boxed();
+    d.sketch.points[1].x = Coordinate::new(70.0).unwrap();
+    d.sketch.points[1].y = Coordinate::new(90.0).unwrap();
+    d.to(60.0, 5.0);
+    assert_eq!(d.modify().as_deref(), Some("100"));
+    d.enter();
+    assert_eq!(
+        d.placed(),
+        Form::Length {
+            line: r("n0000001"),
+            value: mm("100"),
+            driving: true
+        }
+    );
+}
+
+#[test]
+fn a_typed_box_keeps_its_text_on_the_newest_side_and_order() {
+    // R1: 5 typed for p's distance from the line, then p moved to (30, -7), below it: the
+    // box keeps "5", and Enter places 5 on the line's right, the newest read's side.
+    let mut d = Dim::new(point_over_line());
+    d.click(30.0, 7.0)
+        .click(20.0, 0.0)
+        .click(40.0, 20.0)
+        .typed("5");
+    d.sketch.points[2].y = Coordinate::new(-7.0).unwrap();
+    d.to(40.0, 20.0);
+    assert_eq!(d.modify().as_deref(), Some("5"));
+    d.enter();
+    assert_eq!(
+        d.placed(),
+        Form::PointLineDistance {
+            point: r("p0000001"),
+            line: r("n0000001"),
+            value: mm("5"),
+            side: LineSide::Right,
+            driving: true
+        }
+    );
+    // 20 typed for p (10, 10) and q (40, 30) horizontally, then q moved to (-20, 30), left
+    // of p: the box keeps "20", and the order is q to p, so the value starts positive.
+    let mut d = Dim::new(two_points());
+    d.click(10.0, 10.0)
+        .click(40.0, 30.0)
+        .click(25.0, 45.0)
+        .typed("20");
+    d.sketch.points[1].x = Coordinate::new(-20.0).unwrap();
+    d.enter();
+    assert_eq!(
+        d.placed(),
+        Form::DistanceX {
+            a: r("p0000002"),
+            b: r("p0000001"),
+            value: mm("20"),
+            driving: true
+        }
+    );
+}
+
+#[test]
+fn a_box_the_newer_read_leaves_no_dimension_closes_saying_why() {
+    // R1: p moved onto the line, (30, 0): no distance. And p, measured from a centreline on
+    // its side with the box placed at (20, 5), moved across it to (-12, 5): the box at
+    // (20, 5) is then across, a diameter.
+    let mut d = Dim::new(point_over_line());
+    d.click(30.0, 7.0).click(20.0, 0.0).click(40.0, 20.0);
+    d.sketch.points[2].y = Coordinate::new(0.0).unwrap();
+    d.to(40.0, 20.0);
+    assert_eq!(d.modify(), None);
+    assert_eq!(d.messages, vec![Message::NoDistance]);
+    d.enter();
+    assert!(d.made.is_empty());
+    let mut d = Dim::new(centreline(12.0));
+    d.click(12.0, 5.0).click(0.0, 20.0).click(20.0, 5.0);
+    assert_eq!(d.modify().as_deref(), Some("12"));
+    d.sketch.points[2].x = Coordinate::new(-12.0).unwrap();
+    d.typed("12");
+    assert_eq!(d.modify(), None);
+    assert_eq!(d.messages, vec![Message::AcrossCentreline]);
+}
+
+#[test]
+fn a_long_refused_number_is_cut_to_twenty_characters() {
+    // 0.00000000000000000000000001 (28 characters) has more than 6 decimals: said as its
+    // first 20, "0." and 18 zeros, then "…".
+    let mut d = boxed();
+    d.typed("0.00000000000000000000000001").enter();
+    let Message::ValueRefused(error) = &d.messages[0] else {
+        panic!("{:?}", d.messages);
+    };
+    assert_eq!(
+        error.message(),
+        "0.000000000000000000… has more than 6 decimals"
+    );
+}
+
+#[test]
+fn a_placing_click_may_land_on_something() {
+    // T1: p and q picked, then a click on r (25, 45), above their box: it places, the
+    // horizontal distance 30. The line picked, then clicked again: its length, 50.
+    let mut d = Dim::new(with_point(two_points(), "p0000003", [25.0, 45.0]));
+    d.click(10.0, 10.0).click(40.0, 30.0).click(25.0, 45.0);
+    assert_eq!(
+        d.shown(),
+        Some(Form::DistanceX {
+            a: r("p0000001"),
+            b: r("p0000002"),
+            value: mm("30"),
+            driving: true
+        })
+    );
+    assert_eq!(d.modify().as_deref(), Some("30"));
+    let mut d = Dim::new(with_line(empty(), "n0000001", [10.0, 10.0], [40.0, 50.0]));
+    d.click(25.0, 30.0).click(25.0, 30.0);
+    assert_eq!(d.modify().as_deref(), Some("50"));
+    d.enter();
+    assert_eq!(
+        d.placed(),
+        Form::Length {
+            line: r("n0000001"),
+            value: mm("50"),
+            driving: true
+        }
+    );
+}
+
+#[test]
+fn clicks_while_the_box_is_open_change_nothing() {
+    // T2.
+    let mut d = boxed();
+    d.typed("12").click(60.0, 60.0).right(60.0, 60.0);
+    assert_eq!(d.modify().as_deref(), Some("12"));
+    d.enter();
+    assert_eq!(
+        d.placed(),
+        Form::Length {
+            line: r("n0000001"),
+            value: mm("12"),
+            driving: true
+        }
+    );
+}
+
+#[test]
+fn busy_while_a_pick_a_press_or_the_box_is_held() {
+    // T3.
+    let mut d = Dim::new(corner());
+    assert!(!d.tool.busy());
+    d.click(20.0, 10.0);
+    assert!(d.tool.busy());
+    d.escape();
+    assert!(!d.tool.busy());
+    d.send(DimensionEvent::Press([50.0, 50.0]));
+    assert!(d.tool.busy());
+    d.send(DimensionEvent::Release([50.0, 50.0]));
+    assert!(!d.tool.busy());
+    d.click(20.0, 10.0).click(20.0, 40.0).escape();
+    assert!(d.tool.busy(), "the box open");
+    d.escape();
+    assert!(d.left);
+    assert!(!d.tool.busy());
+}
+
+#[test]
+fn an_angle_is_about_where_the_lines_meet_in_x() {
+    // T4: A (0, 0)-(10, 0) and B (110, 10)-(120, 20), on y = x − 100, meet at (100, 0). The
+    // pointer at (99, 0.5), 153.4° round from A's +x there: `{B, A}` 315; at (101, 0.5),
+    // 26.6°, inside A-to-B's 45: `{A, B}` 45.
+    let s = with_line(
+        with_line(empty(), "n000000a", [0.0, 0.0], [10.0, 0.0]),
+        "n000000b",
+        [110.0, 10.0],
+        [120.0, 20.0],
+    );
+    for (at, forward) in [([99.0, 0.5], false), ([101.0, 0.5], true)] {
+        let mut d = Dim::new(s.clone());
+        d.click(5.0, 0.0)
+            .click(115.0, 15.0)
+            .click(at[0], at[1])
+            .escape();
+        let (a, b, value) = if forward {
+            ("n000000a", "n000000b", "45")
+        } else {
+            ("n000000b", "n000000a", "315")
+        };
+        assert_eq!(
+            d.placed(),
+            Form::Angle {
+                a: r(a),
+                b: r(b),
+                value: deg(value),
+                driving: true
+            },
+            "{at:?}"
+        );
+    }
+}
+
+#[test]
+fn crossing_lines_give_their_sweep_in_the_sector_opposite_it_too() {
+    // A (10, 20)-(30, 20) and B (10, 10)-(30, 30) cross at (20, 20), each at its middle.
+    // A to B sweeps 45. The pointer at (28, 22), 14° round: `{A, B}` 45; opposite it, at
+    // (12, 18), 194°: also `{A, B}` 45; at (12, 25), 148°, between: `{B, A}` 315. Lines
+    // that only meet off their ends keep the sweep alone (an_angle_is_about_where_the_lines
+    // _meet_off_their_ends).
+    let s = with_line(
+        with_line(empty(), "n000000a", [10.0, 20.0], [30.0, 20.0]),
+        "n000000b",
+        [10.0, 10.0],
+        [30.0, 30.0],
+    );
+    for (at, forward) in [
+        ([28.0, 22.0], true),
+        ([12.0, 18.0], true),
+        ([12.0, 25.0], false),
+        ([28.0, 15.0], false),
+    ] {
+        let mut d = Dim::new(s.clone());
+        d.click(14.0, 20.0)
+            .click(26.0, 26.0)
+            .click(at[0], at[1])
+            .escape();
+        let (a, b, value) = if forward {
+            ("n000000a", "n000000b", "45")
+        } else {
+            ("n000000b", "n000000a", "315")
+        };
+        assert_eq!(
+            d.placed(),
+            Form::Angle {
+                a: r(a),
+                b: r(b),
+                value: deg(value),
+                driving: true
+            },
+            "{at:?}"
+        );
+    }
+}
+
+#[test]
+fn a_line_ending_on_another_doesnt_cross_it() {
+    // A T: A (10, 10)-(30, 10) and B from A's middle (20, 10) to (30, 20). B ends there, so
+    // they don't cross, and the sector opposite A to B's 45, at (15, 5), 225° round, is the
+    // reflex's: `{B, A}` 315. (Not a chain corner, head to tail: that's B5's, held.)
+    let s = with_line(
+        with_line(empty(), "n000000a", [10.0, 10.0], [30.0, 10.0]),
+        "n000000b",
+        [20.0, 10.0],
+        [30.0, 20.0],
+    );
+    let mut d = Dim::new(s);
+    d.click(14.0, 10.0)
+        .click(25.0, 15.0)
+        .click(15.0, 5.0)
+        .escape();
+    assert_eq!(
+        d.placed(),
+        Form::Angle {
+            a: r("n000000b"),
+            b: r("n000000a"),
+            value: deg("315"),
+            driving: true
+        }
+    );
+}
+
+#[test]
+fn the_origin_is_picked_where_its_nearer_than_a_point_and_a_point_on_it_otherwise() {
+    // T5. p (0.3, 0.3): at (0.1, 0.1) the origin is 0.14 away, p 0.28: the origin. At
+    // (0.25, 0.25), p is nearer. A point exactly at (0, 0) is picked there, not the origin.
+    let mut d = Dim::new(with_point(empty(), "p0000001", [0.3, 0.3]));
+    d.click(0.1, 0.1);
+    assert_eq!(d.tool.preview().picks, vec![Reference::Origin]);
+    d.escape().click(0.25, 0.25);
+    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    let mut d = Dim::new(with_point(empty(), "p0000001", [0.0, 0.0]));
+    d.click(0.0, 0.0);
+    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+}
+
+#[test]
+fn a_point_on_a_centrelines_left_is_measured_from_its_left() {
+    // T5. p (-12, 5), left of the construction line facing +y: 12 to its left with the
+    // pointer at (-20, 5); at (20, 5), across, nothing.
+    let mut d = Dim::new(centreline(-12.0));
+    d.click(-12.0, 5.0).click(0.0, 20.0).click(20.0, 5.0);
+    assert_eq!(d.messages, vec![Message::AcrossCentreline]);
+    d.click(-20.0, 5.0).escape();
+    assert_eq!(
+        d.placed(),
+        Form::PointLineDistance {
+            point: r("p0000001"),
+            line: r("n0000001"),
+            value: mm("12"),
+            side: LineSide::Left,
+            driving: true
+        }
+    );
+}
+
+#[test]
+fn a_centreline_stays_picked_for_the_next_dimension() {
+    // The help's "additional dimensions": after p's 12 from the centreline, it stays picked;
+    // q (25, 30) picked next is 25 from it. A plain line doesn't stay.
+    let mut d = Dim::new(with_point(centreline(12.0), "p0000002", [25.0, 30.0]));
+    d.click(12.0, 5.0)
+        .click(0.0, 20.0)
+        .click(20.0, 5.0)
+        .escape();
+    assert_eq!(d.tool.preview().picks, vec![r("n0000001")]);
+    d.click(25.0, 30.0).click(30.0, 30.0).escape();
+    assert_eq!(
+        d.placed(),
+        Form::PointLineDistance {
+            point: r("p0000002"),
+            line: r("n0000001"),
+            value: mm("25"),
+            side: LineSide::Right,
+            driving: true
+        }
+    );
+    let mut d = Dim::new(point_over_line());
+    d.click(30.0, 7.0)
+        .click(20.0, 0.0)
+        .click(40.0, 20.0)
+        .escape();
+    assert!(d.tool.preview().picks.is_empty());
+}
+
+#[test]
+fn a_parallel_line_across_a_centreline_is_refused_as_a_point_is() {
+    // The construction line (0, -10)-(0, 40) and L (12, 0)-(12, 30), parallel. L picked
+    // first, the centreline second: SD4, the centreline's `from` (0, -10) to L, 12 to its
+    // left (L faces +y). The pointer on L's side, (20, 5): placed; across, (-20, 5): not.
+    let s = with_line(centreline(50.0), "n0000002", [12.0, 0.0], [12.0, 30.0]);
+    let mut d = Dim::new(s);
+    d.click(12.0, 15.0).click(0.0, 20.0).click(-20.0, 5.0);
+    assert_eq!(d.messages, vec![Message::AcrossCentreline]);
+    d.click(20.0, 5.0).escape();
+    assert_eq!(
+        d.placed(),
+        Form::PointLineDistance {
+            point: r("f0000001"),
+            line: r("n0000002"),
+            value: mm("12"),
+            side: LineSide::Left,
+            driving: true
+        }
+    );
+}
+
+#[test]
+fn the_box_edge_is_inside_the_box_s_span() {
+    // T5: (10, 45) is above the box, on its left edge's line: `distance_x`.
+    let mut d = Dim::new(two_points());
+    d.click(10.0, 10.0).click(40.0, 30.0).to(10.0, 45.0);
+    assert_eq!(d.shown().unwrap().type_name(), "distance_x");
+}
+
+#[test]
+fn the_lock_goes_with_a_pick_the_read_drops() {
+    // T5: p and q, locked horizontal; q gone from the newer read: the lock goes with it.
+    let mut d = Dim::new(two_points());
+    d.click(10.0, 10.0).click(40.0, 30.0).right(25.0, 45.0);
+    assert!(d.tool.preview().locked);
+    d.sketch.points.pop();
+    d.to(25.0, 45.0);
+    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    assert!(!d.tool.preview().locked);
+}
+
+#[test]
+fn another_sketch_forgets_the_placement() {
+    // T5.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    assert!(d.tool.placement().is_some());
+    let other = FeatureId::new("s0000002").unwrap();
+    let context = Context {
+        sketch_id: &other,
+        revision: d.revision,
+        sketch: &d.sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+    };
+    d.tool.handle(
+        &context,
+        SketchState::UnderDefined,
+        &mut d.ids,
+        DimensionEvent::Move([50.0, 50.0]),
+    );
+    assert_eq!(d.tool.placement(), None);
 }
 
 // --- SD7: the offer ------------------------------------------------------------------
@@ -1471,10 +2124,25 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
     };
     let mut tool = SmartDimension::new();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &mut d.ids, DimensionEvent::Press(at));
-        tool.handle(&context, &mut d.ids, DimensionEvent::Release(at));
+        tool.handle(
+            &context,
+            SketchState::UnderDefined,
+            &mut d.ids,
+            DimensionEvent::Press(at),
+        );
+        tool.handle(
+            &context,
+            SketchState::UnderDefined,
+            &mut d.ids,
+            DimensionEvent::Release(at),
+        );
     }
-    let out = tool.handle(&context, &mut d.ids, DimensionEvent::Escape);
+    let out = tool.handle(
+        &context,
+        SketchState::UnderDefined,
+        &mut d.ids,
+        DimensionEvent::Escape,
+    );
     let token = out.token.unwrap();
     let k = out.add.unwrap().constraints[0].id.clone();
     assert_eq!(tool.placement(), None);
@@ -1485,7 +2153,8 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
         Some(Placement {
             sketch: sketch_id.clone(),
             constraint: k,
-            revision: made
+            revision: made,
+            before: SketchState::UnderDefined,
         })
     );
     tool.refused(token);
@@ -1493,51 +2162,53 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
 }
 
 #[test]
-fn a_flagged_dimension_is_offered_driven_leave_or_cancel() {
-    // The corner with `length` of A, 25, driving, placed as t0000101 at revision 2.
+fn an_add_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_cancel() {
+    // The corner with `length` of A, 25, driving, placed as t0000101 at revision 2 on a read
+    // under defined. A read of revision 2 over defined, or with no solution, offers it,
+    // whatever state the solve gave the dimension itself (PlaneGCS may flag another of its
+    // group).
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
     assert_eq!(placement.constraint, id("t0000101"));
+    assert_eq!(placement.before, SketchState::UnderDefined);
     let made = Revision::OPENED.next().unwrap();
     assert_eq!(placement.revision, made);
-    for state in [
-        ConstraintState::Conflicting,
-        ConstraintState::Redundant,
-        ConstraintState::PartiallyRedundant,
-    ] {
-        let read = read_of(
-            d.sketch.clone(),
-            "t0000101",
-            state,
-            SketchState::OverDefined,
-        );
-        let offer = offer(&read, made, &placement).unwrap();
-        assert_eq!(offer.constraint, id("t0000101"));
-        assert_eq!(offer.state, state);
-        assert_eq!(offer.sketch_state, SketchState::OverDefined);
-        assert_eq!(
-            offer.request(OfferChoice::Driven),
-            Some(OfferRequest::SetField {
-                revision: made,
-                feature: sketch_id(),
-                field: "constraints.t0000101.driving".to_owned(),
-                value: json::read(b"false")
-                    .map(|mut n| {
-                        json::unplace(&mut n);
-                        n
-                    })
-                    .unwrap(),
-            })
-        );
-        assert_eq!(offer.request(OfferChoice::Leave), None);
-        assert_eq!(
-            offer.request(OfferChoice::Cancel),
-            Some(OfferRequest::Undo {
-                revision: made,
-                to: None
-            })
-        );
+    for sketch_state in [SketchState::OverDefined, SketchState::NoSolution] {
+        for state in [
+            ConstraintState::Conflicting,
+            ConstraintState::Redundant,
+            ConstraintState::Satisfied,
+            ConstraintState::Unsolved,
+        ] {
+            let read = read_of(d.sketch.clone(), "t0000101", state, sketch_state);
+            let offer = offer(&read, made, &placement).unwrap();
+            assert_eq!(offer.constraint, id("t0000101"));
+            assert_eq!(offer.state, state);
+            assert_eq!(offer.sketch_state, sketch_state);
+            assert_eq!(
+                offer.request(OfferChoice::Driven),
+                Some(OfferRequest::SetField {
+                    revision: made,
+                    feature: sketch_id(),
+                    field: "constraints.t0000101.driving".to_owned(),
+                    value: json::read(b"false")
+                        .map(|mut n| {
+                            json::unplace(&mut n);
+                            n
+                        })
+                        .unwrap(),
+                })
+            );
+            assert_eq!(offer.request(OfferChoice::Leave), None);
+            assert_eq!(
+                offer.request(OfferChoice::Cancel),
+                Some(OfferRequest::Undo {
+                    revision: made,
+                    to: None
+                })
+            );
+        }
     }
     assert_eq!(
         OfferChoice::ALL,
@@ -1546,40 +2217,92 @@ fn a_flagged_dimension_is_offered_driven_leave_or_cancel() {
 }
 
 #[test]
-fn no_offer_for_a_dimension_that_holds_or_another_reads_state() {
+fn no_offer_where_the_add_changed_no_state_to_one_the_prompt_is_for() {
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
     let made = placement.revision;
-    let over = |state| {
+    let read = |of| {
         read_of(
             d.sketch.clone(),
             "t0000101",
-            state,
-            SketchState::OverDefined,
+            ConstraintState::Conflicting,
+            of,
         )
     };
-    // Satisfied, or unsolved on a sketch whose solve was refused: not this one's doing.
-    for state in [ConstraintState::Satisfied, ConstraintState::Unsolved] {
-        assert_eq!(offer(&over(state), made, &placement), None, "{state:?}");
+    // The sketch after it: still solved, or invalid geometry (no prompt in SolidWorks).
+    for of in [
+        SketchState::UnderDefined,
+        SketchState::FullyDefined,
+        SketchState::Invalid,
+    ] {
+        assert_eq!(offer(&read(of), made, &placement), None, "{of:?}");
     }
-    let flagged = over(ConstraintState::Conflicting);
+    let over = read(SketchState::OverDefined);
+    // Over defined or unsolvable before it: not this one's doing.
+    for before in [SketchState::OverDefined, SketchState::NoSolution] {
+        let earlier = Placement {
+            before,
+            ..placement.clone()
+        };
+        assert_eq!(offer(&over, made, &earlier), None, "{before:?}");
+    }
     // A read of an older model, or a newer one: not the add's.
-    assert_eq!(offer(&flagged, Revision::OPENED, &placement), None);
-    assert_eq!(offer(&flagged, made.next().unwrap(), &placement), None);
+    assert_eq!(offer(&over, Revision::OPENED, &placement), None);
+    assert_eq!(offer(&over, made.next().unwrap(), &placement), None);
     // Another sketch's read.
-    let mut elsewhere = flagged.clone();
+    let mut elsewhere = over.clone();
     elsewhere.sketch = FeatureId::new("s0000002").unwrap();
     assert_eq!(offer(&elsewhere, made, &placement), None);
     // Already driven, or gone.
-    let mut driven = flagged.clone();
+    let mut driven = over.clone();
     if let Form::Length { driving, .. } = &mut driven.members.constraints.last_mut().unwrap().form {
         *driving = false;
     }
     assert_eq!(offer(&driven, made, &placement), None);
-    let mut gone = flagged;
+    let mut gone = over;
     gone.members.constraints.clear();
     assert_eq!(offer(&gone, made, &placement), None);
+}
+
+#[test]
+fn the_state_a_dimension_is_placed_on_is_the_reads() {
+    let mut d = Dim::new(corner());
+    d.state = SketchState::NoSolution;
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    assert_eq!(d.tool.placement().unwrap().before, SketchState::NoSolution);
+}
+
+#[test]
+fn a_placement_is_busy_until_its_read_comes_or_it_is_dismissed() {
+    // Placed against revision 1, answered as revision 2: busy while the reads are of 1.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    let made = d.revision;
+    d.revision = Revision::OPENED;
+    d.to(50.0, 50.0);
+    assert!(d.tool.busy());
+    d.tool.dismiss_offer();
+    assert!(!d.tool.busy());
+    assert_eq!(d.tool.placement(), None);
+    d.revision = made;
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    assert!(d.tool.busy());
+    d.to(50.0, 50.0);
+    assert!(!d.tool.busy());
+    assert!(d.tool.placement().is_some());
+}
+
+#[test]
+fn forget_pending_forgets_the_placement_and_what_is_under_way() {
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    d.click(20.0, 10.0);
+    d.tool.forget_pending();
+    assert_eq!(d.tool.placement(), None);
+    assert!(!d.tool.busy());
+    d.to(50.0, 50.0);
+    assert!(d.tool.preview().picks.is_empty());
 }
 
 // --- Any events at all -----------------------------------------------------------------

@@ -54,6 +54,26 @@ impl NewIds for Counter {
     }
 }
 
+/// IDs `00000001`, `00000002`, ... in turn, skipping any taken: they sort before every ID
+/// the tools draw from [`Counter`] (`t...`), so a dimension made with them is the first
+/// constraint of the sketch's order, and PlaneGCS's lowest tag.
+struct First(u32);
+
+impl NewIds for First {
+    fn next(
+        &mut self,
+        taken: &dyn Fn(&ElementId) -> bool,
+    ) -> Result<ElementId, silico_core::Error> {
+        loop {
+            self.0 += 1;
+            let id = ElementId::new(&format!("{:08}", self.0)).unwrap();
+            if !taken(&id) {
+                return Ok(id);
+            }
+        }
+    }
+}
+
 /// Sessions on a fake kernel, each sketch solved by the sketch worker, with the empty
 /// sketch open as s1; and a tool drawing on it.
 struct Fixture {
@@ -61,6 +81,9 @@ struct Fixture {
     sessions: Sessions<Arc<FakeKernel>>,
     tool: SketchTool,
     ids: Counter,
+    /// IDs that sort first, which Smart Dimension draws from while `sort_first` is set.
+    first: First,
+    sort_first: bool,
     keys: Modifiers,
 }
 
@@ -105,6 +128,8 @@ fn opened_with(kind: ToolKind, text: &str) -> Fixture {
         sessions,
         tool: SketchTool::new(kind),
         ids: Counter(0),
+        first: First(0),
+        sort_first: false,
         keys: Modifiers::default(),
     }
 }
@@ -528,7 +553,12 @@ impl Fixture {
             tolerance: TOLERANCE,
             automatic_relations: true,
         };
-        let outcome = tool.handle(&context, &mut self.ids, event.clone());
+        let ids: &mut dyn NewIds = if self.sort_first {
+            &mut self.first
+        } else {
+            &mut self.ids
+        };
+        let outcome = tool.handle(&context, read.states.state, ids, event.clone());
         assert_eq!(outcome.message, None, "{event:?}");
         if let (Some(members), Some(token)) = (outcome.add, outcome.token) {
             let made = self.sketch_add(&members);
@@ -602,8 +632,10 @@ fn dimensioned() -> (Fixture, SmartDimension) {
 }
 
 /// The top-left corner (0, 20) to the bottom-right (50, 0), horizontally, placed above the
-/// rectangle, with `value` typed: x(b) − x(a), 50 as drawn.
+/// rectangle, with `value` typed: x(b) − x(a), 50 as drawn. Its ID sorts before every other
+/// member's, so it's PlaneGCS's lowest tag, and never the one its contest flags on a tie.
 fn third(f: &mut Fixture, tool: &mut SmartDimension, value: &str) {
+    f.sort_first = true;
     f.pick(tool, 0.0, 20.0)
         .pick(tool, 50.0, 0.0)
         .pick(tool, 25.0, 30.0);
@@ -622,6 +654,7 @@ fn a_conflicting_dimension_is_placed_read_over_defined_and_driven_solves_it() {
     third(&mut f, &mut tool, "60");
     let k = tool.placement().unwrap().constraint;
     let read = f.read();
+    assert_eq!(read.members.constraints[0].id, k, "sorted first");
     assert_eq!(read.states.state, SketchState::OverDefined);
     assert_eq!(read.states.constraints[&k], ConstraintState::Conflicting);
     let offer = f.offer(&tool).unwrap();
@@ -680,17 +713,91 @@ fn cancel_undoes_a_conflicting_dimension_to_the_text_before_it_byte_for_byte() {
 }
 
 #[test]
-fn an_agreeing_third_dimension_reads_redundant_and_is_offered_too() {
-    // 50, as drawn: redundant, not conflicting. A driving dimension that repeats others
-    // over-defines (M5.0 item 32), and PlaneGCS flags the latest tag of the group, this one
-    // (its ID, from the tools' count, the last in the sketch's order).
+fn an_agreeing_third_dimension_is_offered_whichever_of_its_group_planegcs_flags() {
+    // 50, as drawn: redundant, not conflicting. Its ID sorts first, so PlaneGCS's contest
+    // (popularity, fewer rows, then the later tag) flags another of the group, the top's
+    // length, the latest tag: a driving dimension that repeats others, so the sketch is over
+    // defined (M5.0 item 32). The offer follows the sketch's state, not the flag.
     let (mut f, mut tool) = dimensioned();
     third(&mut f, &mut tool, "50");
     let read = f.read();
     let k = tool.placement().unwrap().constraint;
+    assert_eq!(read.members.constraints[0].id, k);
     assert_eq!(read.states.state, SketchState::OverDefined);
-    assert_eq!(read.states.constraints[&k], ConstraintState::Redundant);
-    assert_eq!(f.offer(&tool).unwrap().state, ConstraintState::Redundant);
+    assert_eq!(read.states.constraints[&k], ConstraintState::Satisfied);
+    let flagged: Vec<&'static str> = read
+        .members
+        .constraints
+        .iter()
+        .filter(|c| read.states.constraints[&c.id] == ConstraintState::Redundant)
+        .map(|c| c.form.type_name())
+        .collect();
+    assert_eq!(flagged, ["length"], "{:?}", read.states.constraints);
+    let offer = f.offer(&tool).unwrap();
+    assert_eq!(offer.constraint, k);
+    assert_eq!(offer.sketch_state, SketchState::OverDefined);
+}
+
+#[test]
+fn a_dimension_that_leaves_no_solution_is_offered_and_driven_solves_it() {
+    // A triangle clicked with Ctrl held (no relations): (10, 10), (20, 10), (15, 18.660254),
+    // back on its start. Its sides 10 and 10 dimensioned (the boxes skipped: (15, 18.660254)
+    // is 10 from each to the nanometre), it's under defined: six unknowns, two equations,
+    // four freedoms (where it is, its turn, and the angle at (10, 10)). The third side typed 30: no triangle has sides 10, 10, and 30, so no
+    // solution, from a state that wasn't: offered. Driven, it solves, the third measuring
+    // 10 again.
+    let mut f = opened(ToolKind::Line);
+    f.keys.ctrl = true;
+    let apex = [15.0, 18.660254];
+    f.click(10.0, 10.0)
+        .click(20.0, 10.0)
+        .click(apex[0], apex[1])
+        .click(10.1, 10.0);
+    let mut tool = SmartDimension::new();
+    let left = [12.5, (10.0 + apex[1]) / 2.0];
+    let right = [17.5, left[1]];
+    f.pick(&mut tool, 15.0, 10.0).pick(&mut tool, 15.0, 5.0);
+    assert_eq!(tool.preview().modify.as_deref(), Some("10"));
+    f.dimension(&mut tool, DimensionEvent::Escape);
+    f.pick(&mut tool, left[0], left[1])
+        .pick(&mut tool, 5.0, 20.0);
+    assert_eq!(tool.preview().modify.as_deref(), Some("10"));
+    f.dimension(&mut tool, DimensionEvent::Escape);
+    let read = f.read();
+    assert_eq!(read.states.state, SketchState::UnderDefined);
+    assert_eq!(read.states.dofs, 4);
+    f.pick(&mut tool, right[0], right[1])
+        .pick(&mut tool, 30.0, 20.0);
+    f.dimension(&mut tool, DimensionEvent::Typed("30".to_owned()));
+    f.dimension(&mut tool, DimensionEvent::Enter);
+    let read = f.read();
+    assert_eq!(read.states.state, SketchState::NoSolution);
+    let offer = f.offer(&tool).unwrap();
+    assert_eq!(offer.sketch_state, SketchState::NoSolution);
+    assert_eq!(offer.constraint, tool.placement().unwrap().constraint);
+    let Some(OfferRequest::SetField {
+        revision,
+        feature,
+        field,
+        value,
+    }) = offer.request(OfferChoice::Driven)
+    else {
+        panic!("{offer:?}");
+    };
+    f.sessions
+        .set_field(&s1(), revision, feature, field, value)
+        .wait_timeout(HANG)
+        .unwrap_or_else(|_| panic!("set_field didn't answer in {HANG:?}"))
+        .result
+        .unwrap();
+    let read = f.read();
+    assert_eq!(read.states.state, SketchState::UnderDefined);
+    let k = offer.constraint;
+    let placed = read.members.constraints.iter().find(|c| c.id == k).unwrap();
+    assert!(
+        matches!(placed.form, Form::Length { value, driving: false, .. } if value == Length::parse("10").unwrap()),
+        "{placed:?}"
+    );
 }
 
 /// The read's point at (0, 20), and at (50, 0).

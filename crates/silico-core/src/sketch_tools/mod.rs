@@ -85,7 +85,7 @@ use crate::{Error, ErrorCode};
 use adds::Adds;
 
 pub use dimension::{
-    DimensionEvent, DimensionPreview, Offer, OfferChoice, OfferRequest, PARALLEL, Placement,
+    DimensionEvent, DimensionPreview, LEVEL, Offer, OfferChoice, OfferRequest, PARALLEL, Placement,
     SmartDimension, offer,
 };
 pub use infer::{ANGLE_TOLERANCE_DEGREES, CROSSING_CURVES, WAKE};
@@ -355,8 +355,6 @@ impl NewIds for SystemIds {
 pub struct SketchTool {
     state: State,
     preview: Preview,
-    /// The sketch it works in: a context of another starts it afresh.
-    sketch: Option<FeatureId>,
     /// What the tool has added that the newest read may not hold yet, for the next click to
     /// share or find (a chain's last point, a point clicked twice), each add in turn with
     /// the revision it made once the core has answered ([`SketchTool::added`]).
@@ -400,7 +398,6 @@ impl SketchTool {
         SketchTool {
             state,
             preview: Preview::default(),
-            sketch: None,
             adds: Adds::new(),
             woken: Vec::new(),
         }
@@ -467,15 +464,10 @@ impl SketchTool {
     /// at or past their revision has settled forgotten, and what the read holds of the rest
     /// left to the read; and the gesture's points and curves found in the sketch again.
     fn settle(&mut self, context: &Context<'_>) {
-        if self.sketch.as_ref() != Some(context.sketch_id) {
-            if self.sketch.is_some() {
-                self.adds.clear();
-                self.woken.clear();
-                self.restart();
-            }
-            self.sketch = Some(context.sketch_id.clone());
+        if self.adds.settle(context) {
+            self.woken.clear();
+            self.restart();
         }
-        self.adds.settle(context);
     }
 
     /// `ids` woken, the first the newest, the oldest past [`WAKE`] forgotten.

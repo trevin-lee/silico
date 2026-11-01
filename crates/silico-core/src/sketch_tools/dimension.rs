@@ -7,39 +7,48 @@
 //!
 //! - **Picks.** A click on a point (the origin among them, a circle's or an arc's centre too)
 //!   or a curve (a line or an arc where it's drawn, a circle all round, an axis anywhere)
-//!   picks it, up to two; a click on nothing, or once two are picked, places the dimension
-//!   the preview shows there, and opens the Modify box. Esc undoes the last pick, and with
-//!   none leaves the tool ([`Outcome::left`]). A right-click locks the kind the preview
-//!   shows: the pointer then moves the dimension, not its kind, until a pick changes.
+//!   picks it, up to two; a click on nothing, on what's picked, or once two are picked,
+//!   places the dimension the preview shows there, and opens the Modify box. Esc undoes the
+//!   last pick, and with none leaves the tool ([`Outcome::left`]). A right-click locks the
+//!   kind the preview shows: the pointer then moves the dimension, not its kind, until a pick
+//!   changes. After a distance to a centreline, the centreline stays picked for the next, as
+//!   the help's "additional dimensions" have it.
 //! - **What is placed** (SD1), measured on the newest read's coordinates:
 //!   - one line: `length`; one circle: `diameter`; one arc: `radius` (SD8: no toggle);
-//!   - two points: `distance_x` with the pointer above or below the box the two span,
-//!     `distance_y` with it left or right of the box, `distance` elsewhere (inside it, or
-//!     off a corner); `distance_x` and `distance_y` ordered so the value starts positive,
-//!     `a` the point to the left (below), `distance` in the order picked;
+//!   - two points: level within [`LEVEL`], `distance_x`; plumb within it, `distance_y`
+//!     (FreeCAD's `76a84f63ab`); otherwise `distance_x` with the pointer above or below the
+//!     box the two span, `distance_y` with it left or right of the box, `distance` elsewhere
+//!     (inside it, or off a corner), FreeCAD's zones. `distance_x` and `distance_y` ordered
+//!     so the value starts positive, `a` the point to the left (below), the order picked
+//!     where they're level; `distance` in the order picked;
 //!   - a point and a line: `point_line_distance`, its `side` the side of the line the point
 //!     is on as drawn (facing from `from` to `to`; an axis faces +x or +y);
 //!   - a circle or an arc with anything else: as its centre (to a centre by default);
 //!   - two lines that aren't parallel: `angle`, `{first, second}` with the pointer in the
 //!     sweep counter-clockwise from the first's direction to the second's about where they
-//!     meet, `{second, first}` (the reflex) elsewhere; only those two (SD5);
+//!     meet (or, where the two cross, in the sweep opposite it), `{second, first}` (the
+//!     reflex) elsewhere; only those two (SD5);
 //!   - two parallel lines ([`PARALLEL`], FreeCAD's test): `point_line_distance` from the
-//!     second line's `from` to the first line (SD4), the first line's `from` to an axis
-//!     picked second, which has none;
-//!   - a point and a centreline (a construction line, or an axis): `point_line_distance`
-//!     with the pointer on the point's side; across it, a diameter (a doubled distance),
-//!     which isn't offered (SD3), nor are an arc's length and the Min and Max gaps.
+//!     second line's `from` to the first line (SD4); with an axis picked second, the first
+//!     line's `from` to the axis, Silico's own choice (an axis has no `from`);
+//!   - a point, or a parallel line, and a centreline (a construction line, or an axis):
+//!     `point_line_distance` with the pointer on its side; across it, a diameter (a doubled
+//!     distance), which isn't offered (SD3), nor are an arc's length and the Min and Max gaps.
 //! - **The Modify box** opens on placing, holding the measured value rounded to the
 //!   nanometre (or nanodegree), as the document writes it. It takes plain numbers only, read
 //!   as the document reads a value (SD9): a JSON number, at most the quantity's decimals, no
 //!   units, arithmetic, or expressions. Enter places the dimension, `driving: true`, with the
 //!   value typed (SD2); one the reader or the gate refuses is said, and the box stays open.
 //!   Esc skips the box: the dimension is placed with the measured value, rounded by the core
-//!   (SD2); if the gate refuses that, nothing is placed, and the box closes saying why.
+//!   (SD2); if the gate refuses that, nothing is placed, and the box closes saying why. While
+//!   it's open, each newer read measures its dimension again, its kind held: an untouched box
+//!   shows the new value, a typed one keeps its text, and one the read leaves no dimension
+//!   for closes, saying why.
 //! - **Over-defining** (SD7). The add is made whatever the solve will find. Once the app has
 //!   the `sketch` read of the revision the add made, [`offer`] gives SolidWorks' three
-//!   choices if the dimension placed reads conflicting or redundant: driven (`set_field` of
-//!   its `driving` to false), leave it, or Cancel (`undo`).
+//!   choices if the add took the sketch to over defined or to no solution: driven
+//!   (`set_field` of its `driving` to false), leave it, or Cancel (`undo`). The tool stays
+//!   [`busy`](SmartDimension::busy) until that read has come or the offer is dismissed.
 //!
 //! Adds are tracked as the sketch tools' are ([`super::SketchTool`]): each with a token the
 //! viewport answers with the revision it made, or its refusal.
@@ -65,6 +74,14 @@ use crate::{Error, ErrorCode};
 /// (`calculateAngle`, CommandConstraints.cpp, at the clone's `876271d660`), which then
 /// writes the distance SD4 takes. Lines a relation holds parallel are solved so.
 pub const PARALLEL: f64 = 1e-9;
+
+/// How nearly two points' y (or x) must agree for them to be level (or plumb), in
+/// millimetres: FreeCAD's `Precision::Confusion()`, with which its tool gives such points
+/// their horizontal (or vertical) distance wherever the pointer is (`76a84f63ab`).
+pub const LEVEL: f64 = 1e-7;
+
+/// How much of a refused number's text a message repeats, in characters.
+const SHOWN: usize = 20;
 
 /// What Smart Dimension takes: the pointer's events in the sketch's plane, a right-click,
 /// and the Modify box's keys and text.
@@ -104,30 +121,53 @@ pub struct DimensionPreview {
 }
 
 /// A dimension Smart Dimension placed, once the core answered its add: the sketch, the
-/// constraint's ID, and the revision the add made.
+/// constraint's ID, the revision the add made, and the sketch's state in the read it was
+/// placed on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
     pub sketch: FeatureId,
     pub constraint: ElementId,
     pub revision: Revision,
+    pub before: SketchState,
 }
 
 /// Smart Dimension, between events. Not `Clone`, as a sketch tool isn't.
 #[derive(Debug)]
 pub struct SmartDimension {
     adds: Adds,
-    /// The sketch it works in: a context of another starts it afresh.
-    sketch: Option<FeatureId>,
     picks: Vec<Reference>,
     lock: Option<Measure>,
     pressed: bool,
     pointer: Option<Xy>,
-    /// The Modify box, open: the dimension measured, and the box's text.
-    modify: Option<(Form, String)>,
-    /// The last dimension placed: its token, its constraint, and the revision its add made
-    /// once answered.
-    placed: Option<(AddToken, ElementId, Option<Revision>)>,
+    modify: Option<Modify>,
+    placed: Option<Placed>,
     preview: DimensionPreview,
+}
+
+/// The Modify box, open.
+#[derive(Debug, Clone)]
+struct Modify {
+    /// The kind it measures, held while it's open.
+    measure: Measure,
+    /// Whether the person locked it: then a centreline's side doesn't govern it.
+    locked: bool,
+    /// Where it was placed.
+    at: Xy,
+    /// The dimension, measured on the newest read.
+    form: Form,
+    text: String,
+}
+
+/// The last dimension placed: its add's token, its constraint, the revision the add made
+/// once answered, the sketch's state where it was placed, and whether its offer is settled
+/// (a read of its revision has come).
+#[derive(Debug, Clone)]
+struct Placed {
+    token: AddToken,
+    constraint: ElementId,
+    revision: Option<Revision>,
+    before: SketchState,
+    settled: bool,
 }
 
 /// Which dimension of those a pick offers.
@@ -152,8 +192,8 @@ enum Item {
     /// A point, or the origin.
     Point(Reference, Xy),
     /// A line, or an axis: where it starts, its direction (to less from; an axis's unit),
-    /// its `from` point (none for an axis), and whether it's a centreline (construction, or
-    /// an axis).
+    /// its `from` point (none for an axis, which is infinite), and whether it's a centreline
+    /// (construction, or an axis).
     Line {
         reference: Reference,
         at: Xy,
@@ -238,6 +278,16 @@ impl Item {
             other => other,
         }
     }
+
+    fn is_centreline(&self) -> bool {
+        matches!(
+            self,
+            Item::Line {
+                centreline: true,
+                ..
+            }
+        )
+    }
 }
 
 /// A dimension offered: which, and its form with the measured value.
@@ -259,7 +309,6 @@ impl SmartDimension {
     pub fn new() -> Self {
         SmartDimension {
             adds: Adds::new(),
-            sketch: None,
             picks: Vec::new(),
             lock: None,
             pressed: false,
@@ -275,40 +324,57 @@ impl SmartDimension {
         &self.preview
     }
 
-    /// Whether something is under way: a pick held, a press down, or the Modify box open.
+    /// Whether something is under way: a pick held, a press down, the Modify box open, or a
+    /// dimension placed whose offer isn't settled (no read of its add's revision yet, and
+    /// not dismissed), so a second placement doesn't lose the first's offer.
     pub fn busy(&self) -> bool {
-        !self.picks.is_empty() || self.pressed || self.modify.is_some()
+        !self.picks.is_empty()
+            || self.pressed
+            || self.modify.is_some()
+            || self.placed.as_ref().is_some_and(|p| !p.settled)
     }
 
     /// The core took the add `token` names, at `revision`.
     pub fn added(&mut self, token: AddToken, revision: Revision) {
         self.adds.added(token, revision);
-        if let Some((placed, _, made)) = &mut self.placed
-            && *placed == token
+        if let Some(placed) = &mut self.placed
+            && placed.token == token
         {
-            *made = Some(revision);
+            placed.revision = Some(revision);
         }
     }
 
     /// The core refused the add `token` names: it's forgotten.
     pub fn refused(&mut self, token: AddToken) {
         self.adds.refused(token);
-        if self.placed.as_ref().is_some_and(|(t, _, _)| *t == token) {
+        if self.placed.as_ref().is_some_and(|p| p.token == token) {
             self.placed = None;
         }
     }
 
+    /// Forgets every add no read has shown, the last placement, and what's under way, as
+    /// [`SketchTool::forget_pending`](super::SketchTool::forget_pending) does.
+    pub fn forget_pending(&mut self) {
+        self.adds.clear();
+        self.placed = None;
+        self.restart();
+    }
+
+    /// The person has answered (or dismissed) the last placement's offer: it's forgotten.
+    pub fn dismiss_offer(&mut self) {
+        self.placed = None;
+    }
+
     /// The last dimension placed, once the core has answered its add: for [`offer`].
     pub fn placement(&self) -> Option<Placement> {
-        let sketch = self.sketch.clone()?;
-        match &self.placed {
-            Some((_, constraint, Some(revision))) => Some(Placement {
-                sketch,
-                constraint: constraint.clone(),
-                revision: *revision,
-            }),
-            _ => None,
-        }
+        let sketch = self.adds.sketch()?.clone();
+        let placed = self.placed.as_ref()?;
+        Some(Placement {
+            sketch,
+            constraint: placed.constraint.clone(),
+            revision: placed.revision?,
+            before: placed.before,
+        })
     }
 
     /// The tool afresh: nothing picked, no box, no lock.
@@ -319,10 +385,12 @@ impl SmartDimension {
         self.modify = None;
     }
 
-    /// `event` against `context`: what it added, said, or ended; the preview updated.
+    /// `event` against `context`, whose read gives the sketch the state `state`: what it
+    /// added, said, or ended; the preview updated.
     pub fn handle(
         &mut self,
         context: &Context<'_>,
+        state: SketchState,
         ids: &mut dyn NewIds,
         event: DimensionEvent,
     ) -> Outcome {
@@ -335,18 +403,18 @@ impl SmartDimension {
         {
             return Outcome::said(Message::NotFinite);
         }
-        if self.sketch.as_ref() != Some(context.sketch_id) {
-            if self.sketch.is_some() {
-                self.adds.clear();
-                self.placed = None;
-                self.restart();
-            }
-            self.sketch = Some(context.sketch_id.clone());
+        if self.adds.settle(context) {
+            self.placed = None;
+            self.restart();
         }
-        self.adds.settle(context);
+        if let Some(placed) = &mut self.placed
+            && placed.revision.is_some_and(|made| context.revision >= made)
+        {
+            placed.settled = true;
+        }
         let pending = self.adds.members();
         let view = View::of(context.sketch, &pending);
-        self.revalidate(&view);
+        let closed = self.revalidate(&view);
         let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
             context.tolerance
         } else {
@@ -365,32 +433,27 @@ impl SmartDimension {
         {
             self.pointer = Some(at);
         }
-        let outcome = match event {
+        let mut outcome = match event {
             DimensionEvent::Typed(text) => {
-                if let Some((_, box_text)) = &mut self.modify {
-                    *box_text = text;
+                if let Some(modify) = &mut self.modify {
+                    modify.text = text;
                 }
                 Outcome::nothing()
             }
             DimensionEvent::Enter => match self.modify.take() {
-                Some((measured, text)) => match typed(&measured, &text) {
-                    Ok(form) => match self.place(&view, ids, form) {
-                        Ok(outcome) => outcome,
-                        Err(message) => {
-                            self.modify = Some((measured, text));
-                            Outcome::said(message)
-                        }
-                    },
-                    Err(message) => {
-                        self.modify = Some((measured, text));
+                Some(modify) => {
+                    let placed = typed(&modify.form, &modify.text)
+                        .and_then(|form| self.place(&view, ids, form, state));
+                    placed.unwrap_or_else(|message| {
+                        self.modify = Some(modify);
                         Outcome::said(message)
-                    }
-                },
+                    })
+                }
                 None => Outcome::nothing(),
             },
             DimensionEvent::Escape => match self.modify.take() {
-                Some((measured, _)) => self
-                    .place(&view, ids, measured)
+                Some(modify) => self
+                    .place(&view, ids, modify.form, state)
                     .unwrap_or_else(Outcome::said),
                 None if self.picks.pop().is_some() => {
                     self.lock = None;
@@ -414,31 +477,50 @@ impl SmartDimension {
             }
             DimensionEvent::Release(_) => Outcome::nothing(),
             DimensionEvent::RightClick(at) => {
-                if let Ok(offered) = offered(&view, &self.picks, at, None) {
+                if let Ok(offered) = offered(&view, &self.picks, at, None, false) {
                     self.lock = Some(offered.measure);
                 }
                 Outcome::nothing()
             }
         };
+        if outcome.message.is_none() {
+            outcome.message = closed;
+        }
         self.preview = self.drawn(&view, &pointer);
         outcome
     }
 
     /// The picks and the box against `view`, a newer read: a pick it no longer has dropped
-    /// (and the lock with it), and the box closed if what it measures is gone.
-    fn revalidate(&mut self, view: &View<'_>) {
+    /// (and the lock with it); the box's dimension measured again, its kind held, an
+    /// untouched box's text with it, a typed one's kept; or the box closed if the read leaves
+    /// it none, with why, if there's something to say.
+    fn revalidate(&mut self, view: &View<'_>) -> Option<Message> {
         let before = self.picks.len();
         self.picks.retain(|r| Item::of(view, r).is_some());
         if self.picks.len() != before {
             self.lock = None;
         }
-        if let Some((form, _)) = &self.modify
-            && !form
-                .references()
-                .iter()
-                .all(|(_, r, _)| Item::of(view, r).is_some())
-        {
-            self.modify = None;
+        let modify = self.modify.as_mut()?;
+        match offered(
+            view,
+            &self.picks,
+            modify.at,
+            Some(modify.measure),
+            modify.locked,
+        ) {
+            Ok(offered) => {
+                let untouched = Some(&modify.text) == value_text(&modify.form).as_ref();
+                modify.measure = offered.measure;
+                modify.form = offered.form;
+                if untouched {
+                    modify.text = value_text(&modify.form).unwrap_or_default();
+                }
+                None
+            }
+            Err(said) => {
+                self.modify = None;
+                said
+            }
         }
     }
 
@@ -453,10 +535,16 @@ impl SmartDimension {
             self.lock = None;
             return Outcome::nothing();
         }
-        match offered(view, &self.picks, at, self.lock) {
+        let locked = self.lock == Some(Measure::PointLine);
+        match offered(view, &self.picks, at, self.lock, locked) {
             Ok(offered) => {
-                let text = offered.form.value_text().unwrap_or_default();
-                self.modify = Some((offered.form, text));
+                self.modify = Some(Modify {
+                    measure: offered.measure,
+                    locked,
+                    at,
+                    text: value_text(&offered.form).unwrap_or_default(),
+                    form: offered.form,
+                });
                 Outcome::nothing()
             }
             Err(Some(message)) => Outcome::said(message),
@@ -466,19 +554,21 @@ impl SmartDimension {
 
     /// `form` added as a new constraint, unless the gate, given the sketch with it, refuses
     /// the constraint itself (its value out of range, its `side`, what it names): the add,
-    /// its token, and the tool afresh for the next dimension; else the gate's words. A
-    /// problem the gate finds elsewhere (a limit, another member) is the core's to answer,
-    /// so the add is made and its refusal comes back ([`refused`](Self::refused)).
+    /// its token, and the tool afresh for the next dimension, a centreline it measured from
+    /// kept picked; else the gate's words. A problem the gate finds elsewhere (a limit,
+    /// another member) is the core's to answer, so the add is made and its refusal comes
+    /// back ([`refused`](Self::refused)). `state` is the sketch's in the read it's placed on.
     fn place(
         &mut self,
         view: &View<'_>,
         ids: &mut dyn NewIds,
         form: Form,
+        state: SketchState,
     ) -> Result<Outcome, Message> {
         let mut builder = Builder::new(ids, view);
         builder.constraint(form).map_err(Message::NoId)?;
         let members = builder.members;
-        let Some(constraint) = members.constraints.first().map(|c| c.id.clone()) else {
+        let Some(constraint) = members.constraints.first() else {
             return Err(Message::NoId(
                 Error::new(
                     ErrorCode::Internal,
@@ -487,8 +577,9 @@ impl SmartDimension {
                 .with_suggestion(crate::worker::SILICO_BUG),
             ));
         };
+        let id = constraint.id.clone();
         if let Err(refused) = sketch_edit::add(&view.sketch, &members) {
-            let own = format!("constraints.{constraint}");
+            let own = format!("constraints.{id}");
             let about = |e: &Error| {
                 e.parameter()
                     .is_some_and(|p| p == own || p.starts_with(&format!("{own}.")))
@@ -497,9 +588,26 @@ impl SmartDimension {
                 return Err(Message::ValueRefused(error));
             }
         }
+        // The help's centreline dimensions: "Select other lines or points in the sketch to
+        // create additional dimensions."
+        let kept = match &constraint.form {
+            Form::PointLineDistance { .. } => self
+                .picks
+                .iter()
+                .find(|r| Item::of(view, r).is_some_and(|i| i.is_centreline()))
+                .cloned(),
+            _ => None,
+        };
         let token = self.adds.issue(&members);
-        self.placed = Some((token, constraint, None));
+        self.placed = Some(Placed {
+            token,
+            constraint: id,
+            revision: None,
+            before: state,
+            settled: false,
+        });
         self.restart();
+        self.picks.extend(kept);
         Ok(Outcome {
             add: Some(members),
             token: Some(token),
@@ -515,9 +623,9 @@ impl SmartDimension {
             locked: self.lock.is_some(),
             ..DimensionPreview::default()
         };
-        if let Some((form, text)) = &self.modify {
-            preview.dimension = Some(form.clone());
-            preview.modify = Some(text.clone());
+        if let Some(modify) = &self.modify {
+            preview.dimension = Some(modify.form.clone());
+            preview.modify = Some(modify.text.clone());
             return preview;
         }
         let Some(at) = self.pointer else {
@@ -526,7 +634,8 @@ impl SmartDimension {
         if self.picks.len() < 2 {
             preview.hover = pointer.pick(at).filter(|r| !self.picks.contains(r));
         }
-        match offered(view, &self.picks, at, self.lock) {
+        let locked = self.lock == Some(Measure::PointLine);
+        match offered(view, &self.picks, at, self.lock, locked) {
             Ok(offered) => preview.dimension = Some(offered.form),
             Err(message) => preview.unavailable = message,
         }
@@ -534,13 +643,31 @@ impl SmartDimension {
     }
 }
 
+/// A dimension's value as the document writes it, and the Modify box shows it: none for a
+/// form with none.
+fn value_text(form: &Form) -> Option<String> {
+    match form {
+        Form::Angle { value, .. } => Some(value.to_string()),
+        Form::Length { value, .. }
+        | Form::Distance { value, .. }
+        | Form::DistanceX { value, .. }
+        | Form::DistanceY { value, .. }
+        | Form::PointLineDistance { value, .. }
+        | Form::Radius { value, .. }
+        | Form::Diameter { value, .. } => Some(value.to_string()),
+        _ => None,
+    }
+}
+
 /// The dimension `picks` offer with the pointer at `at`, `lock` the kind locked, if any and
-/// if it's one of theirs; or why none.
+/// if it's one of theirs; or why none. `held`: a lock holds a distance across a centreline
+/// too, the pointer then moving only the dimension.
 fn offered(
     view: &View<'_>,
     picks: &[Reference],
     at: Xy,
     lock: Option<Measure>,
+    held: bool,
 ) -> Result<Offered, NotOffered> {
     let items: Vec<Item> = picks.iter().filter_map(|r| Item::of(view, r)).collect();
     match items.as_slice() {
@@ -550,14 +677,12 @@ fn offered(
             if picks.iter().all(|r| r.element().is_none()) {
                 return Err(Some(Message::FixedOnly));
             }
-            let side_at = (lock != Some(Measure::PointLine)).then_some(at);
+            let side_at = (!held).then_some(at);
             match (&first, &second) {
                 (Item::Point(..), Item::Point(..)) => points(&first, &second, at, lock),
-                // A lock holds the distance across a centreline too: the pointer then
-                // moves only the dimension.
                 (Item::Point(..), Item::Line { .. }) => point_line(&first, &second, side_at),
                 (Item::Line { .. }, Item::Point(..)) => point_line(&second, &first, side_at),
-                (Item::Line { .. }, Item::Line { .. }) => lines(&first, &second, at, lock),
+                (Item::Line { .. }, Item::Line { .. }) => lines(&first, &second, at, side_at, lock),
                 _ => Err(None),
             }
         }
@@ -610,11 +735,13 @@ fn single(item: &Item) -> Result<Offered, NotOffered> {
     }
 }
 
-/// Two points: `distance_x` with the pointer above or below the box they span, `distance_y`
-/// with it left or right of it, `distance` elsewhere; or the locked one. `distance_x` and
-/// `distance_y` with `a` the point to the left (below), so the value starts positive, the
-/// order picked where they're level with each other; `distance` in the order picked, refused
-/// where the two are at one place (no direction to hold them apart in).
+/// Two points: the locked kind; else level within [`LEVEL`], `distance_x`, plumb within it,
+/// `distance_y` (FreeCAD's `76a84f63ab`, level first); else `distance_x` with the pointer
+/// above or below the box they span, `distance_y` with it left or right of it, `distance`
+/// elsewhere. `distance_x` and `distance_y` with `a` the point to the left (below), so the
+/// value starts positive, the order picked where they're level with each other; `distance`
+/// in the order picked, refused where the two are at one place (no direction to hold them
+/// apart in).
 fn points(
     first: &Item,
     second: &Item,
@@ -627,6 +754,8 @@ fn points(
     let within = |v: f64, i: usize| p[i].min(q[i]) <= v && v <= p[i].max(q[i]);
     let measure = match lock {
         Some(m @ (Measure::Distance | Measure::DistanceX | Measure::DistanceY)) => m,
+        _ if (p[1] - q[1]).abs() < LEVEL => Measure::DistanceX,
+        _ if (p[0] - q[0]).abs() < LEVEL => Measure::DistanceY,
         _ if within(at[0], 0) && !within(at[1], 1) => Measure::DistanceX,
         _ if within(at[1], 1) && !within(at[0], 0) => Measure::DistanceY,
         _ => Measure::Distance,
@@ -673,10 +802,16 @@ fn points(
     Ok(Offered { measure, form })
 }
 
+/// Whether the pointer `at` is across `line` from `off`, a signed distance from it (to its
+/// left, facing along it, positive).
+fn across(line_at: Xy, along: Xy, off: f64, at: Xy) -> bool {
+    cross(along, sub(at, line_at)) * off < 0.0
+}
+
 /// A point and a line: `point_line_distance`, the side the point is on as drawn; refused
 /// for a point on the line (at the nanometre: no side to hold it on). With the pointer `at`
-/// across a centreline from the point, a diameter, which isn't offered (SD3); `at` none for
-/// two parallel lines (SD4), which a centreline's side doesn't govern.
+/// across a centreline from the point, a diameter, which isn't offered (SD3); `at` none
+/// where the side doesn't govern (a lock, or SD4's lines, which check their own).
 fn point_line(point: &Item, line: &Item, at: Option<Xy>) -> Result<Offered, NotOffered> {
     let (
         Item::Point(p_ref, p),
@@ -699,7 +834,7 @@ fn point_line(point: &Item, line: &Item, at: Option<Xy>) -> Result<Offered, NotO
     }
     if let Some(at) = at
         && *centreline
-        && cross(along, sub(at, *start)) * off < 0.0
+        && across(*start, along, off, at)
     {
         return Err(Some(Message::AcrossCentreline));
     }
@@ -719,15 +854,34 @@ fn point_line(point: &Item, line: &Item, at: Option<Xy>) -> Result<Offered, NotO
     })
 }
 
+/// Whether `t`, a place along a line from `at` along `direction` (0 its start, 1 its end), is
+/// strictly inside it, more than the kernel's tolerance from either end: always for an axis.
+fn inside(line: &Item, t: f64) -> bool {
+    let Item::Line {
+        direction, from, ..
+    } = line
+    else {
+        return false;
+    };
+    if from.is_none() {
+        return true;
+    }
+    let margin = silico_protocol::LENGTH_TOLERANCE / length(*direction);
+    margin < t && t < 1.0 - margin
+}
+
 /// Two lines: parallel ([`PARALLEL`], FreeCAD's test), the second's `from` to the first
-/// (SD4), or the first's `from` to an axis picked second;
-/// otherwise the angle, `{first, second}` with the pointer in the sweep counter-clockwise
-/// from the first's direction to the second's, about where they meet, `{second, first}` (the
-/// reflex) elsewhere, or as locked (SD5).
+/// (SD4), or the first's `from` to an axis picked second, Silico's own choice (an axis has
+/// no `from`); refused, as a point is, with the pointer `side_at` across a centreline from
+/// the other line. Otherwise the angle: `{first, second}` with the pointer in the sweep
+/// counter-clockwise from the first's direction to the second's, about where they meet, or,
+/// where the two cross (each strictly inside the other), in the sweep opposite it; else
+/// `{second, first}` (the reflex); or as locked (SD5).
 fn lines(
     first: &Item,
     second: &Item,
     at: Xy,
+    side_at: Option<Xy>,
     lock: Option<Measure>,
 ) -> Result<Offered, NotOffered> {
     let (
@@ -749,8 +903,20 @@ fn lines(
     else {
         return Err(None);
     };
-    let across = cross(*da, *db);
-    if across.abs() < PARALLEL {
+    let crossed = cross(*da, *db);
+    if crossed.abs() < PARALLEL {
+        // A centreline and a line on its other side: a diameter, not offered (SD3).
+        let centreline = match (first.is_centreline(), second.is_centreline()) {
+            (true, false) => Some((*pa, *da, *pb)),
+            (false, true) => Some((*pb, *db, *pa)),
+            _ => None,
+        };
+        if let (Some(at), Some((c_at, c_dir, other))) = (side_at, centreline)
+            && let Some(along) = unit(c_dir)
+            && across(c_at, along, cross(along, sub(other, c_at)), at)
+        {
+            return Err(Some(Message::AcrossCentreline));
+        }
         // SD4: a point of one, the other's line; an axis has no `from`.
         let (from, at_from, line) = match (fb, fa) {
             (Some(from), _) => (from, *pb, first),
@@ -768,11 +934,20 @@ fn lines(
     let forward = match lock {
         Some(Measure::Angle { forward }) => forward,
         _ => {
-            // Where the lines meet: pa + t·da on b's line.
-            let t = cross(sub(*pb, *pa), *db) / across;
+            // Where the lines meet: pa + t·da, pb + s·db.
+            let between = sub(*pb, *pa);
+            let (t, s) = (cross(between, *db) / crossed, cross(between, *da) / crossed);
             let meet = [pa[0] + t * da[0], pa[1] + t * da[1]];
             let toward = sub(at, meet);
-            length(toward) == 0.0 || degrees(toward) <= sweep
+            let turned = degrees(toward);
+            if length(toward) == 0.0 {
+                true
+            } else if inside(first, t) && inside(second, s) {
+                // Crossing: each sweep and the one opposite it, half a turn round.
+                turned % 180.0 <= sweep % 180.0
+            } else {
+                turned <= sweep
+            }
         }
     };
     let (a, b, value) = if forward {
@@ -799,14 +974,20 @@ fn rounded(mm: f64) -> Result<Length, NotOffered> {
 
 /// `measured` with the value the Modify box's `text` gives it, read as the document reads a
 /// value (SD9): one JSON number, at most the quantity's decimals, in range of what it holds.
+/// A refused number is repeated to its first [`SHOWN`] characters.
 fn typed(measured: &Form, text: &str) -> Result<Form, Message> {
     let node = json::read(text.as_bytes()).map_err(|_| Message::NotANumber)?;
     let Value::Number(number) = node.value else {
         return Err(Message::NotANumber);
     };
+    let shown = if number.chars().count() > SHOWN {
+        format!("{}…", number.chars().take(SHOWN).collect::<String>())
+    } else {
+        number.clone()
+    };
     let refused = |e: crate::document::NumberError, unit: &str| {
         Message::ValueRefused(
-            Error::new(ErrorCode::InvalidInput, format!("{number} {e}")).with_suggestion(format!(
+            Error::new(ErrorCode::InvalidInput, format!("{shown} {e}")).with_suggestion(format!(
                 "type a value in {unit}, as the document writes one"
             )),
         )
@@ -868,7 +1049,7 @@ pub enum OfferRequest {
 }
 
 /// The offer SD7 makes for a dimension placed that over-defines the sketch: the dimension,
-/// how the read flags it, the sketch's state, and what each choice sends.
+/// its state in the read, the sketch's state, and what each choice sends.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Offer {
     pub constraint: ElementId,
@@ -897,11 +1078,19 @@ impl Offer {
     }
 }
 
+/// Whether a sketch in `state` is one the over-defining prompt is for: over defined (a
+/// conflict, or a driving dimension repeating others) or with no solution, as SolidWorks'
+/// prompt repairs "the over defined or unsolvable state".
+fn prompted(state: SketchState) -> bool {
+    matches!(state, SketchState::OverDefined | SketchState::NoSolution)
+}
+
 /// The offer for `placement`, given `read`, the `sketch` read of the model at `revision`:
 /// only for a read of the model the add made (an older one doesn't hold it, and a newer one
-/// is past the moment), of its sketch, where the dimension is there, still driving, and
-/// flagged, conflicting or redundant (SD7). Which constraint of a group the solve flags is
-/// PlaneGCS's: where it flags another, the read shows that one, and no offer is made.
+/// is past the moment), of its sketch, where the dimension is there and still driving, and
+/// the add took the sketch to over defined or no solution from a state that was neither
+/// (SD7). Decided by the sketch's state, not by which constraint the solve flags, which is
+/// PlaneGCS's choice among a group, by the IDs' order.
 pub fn offer(read: &SketchRead, revision: Revision, placement: &Placement) -> Option<Offer> {
     if revision != placement.revision || read.sketch != placement.sketch {
         return None;
@@ -913,10 +1102,11 @@ pub fn offer(read: &SketchRead, revision: Revision, placement: &Placement) -> Op
         .find(|SketchConstraint { id, .. }| *id == placement.constraint)
         .and_then(|c| c.form.driving())?;
     let state = *read.states.constraints.get(&placement.constraint)?;
-    (driving && state.flagged()).then(|| Offer {
+    let sketch_state = read.states.state;
+    (driving && prompted(sketch_state) && !prompted(placement.before)).then(|| Offer {
         constraint: placement.constraint.clone(),
         state,
-        sketch_state: read.states.state,
+        sketch_state,
         placement: placement.clone(),
     })
 }
