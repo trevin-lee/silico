@@ -298,6 +298,105 @@ mod tests {
     use crate::document::{Coordinate, SketchLine, SketchPoint};
     use crate::sketch_states::{MemberState, SketchState};
 
+    /// A 4 × 2 rectangle from (1, 1), sketch `id`, on the face `face`, `+x`; as the
+    /// document writes it.
+    fn rectangle_on(id: &str, face: &str) -> String {
+        let corners = [(1, 1), (5, 1), (5, 3), (1, 3)];
+        let points: Vec<String> = corners
+            .iter()
+            .zip(1..)
+            .map(|((x, y), n)| {
+                format!(r#"{{"id": "pa00000{n}", "x": {x}, "y": {y}, "construction": false}}"#)
+            })
+            .collect();
+        let lines: Vec<String> = (1..=4)
+            .map(|n| {
+                format!(
+                    r#"{{"id": "na00000{n}", "from": "pa00000{n}", "to": "pa00000{}", "construction": false}}"#,
+                    n % 4 + 1
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "S", "plane": {{"face": "{face}", "x": "+x", "reversed": false}}, "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
+            points.join(", "),
+            lines.join(", ")
+        )
+    }
+
+    #[test]
+    fn a_kernel_fault_describing_the_face_is_each_reads_plane_problem_whole_its_advice_kept() {
+        // The worker describing the box crashes, with a cause, a suggestion, and advice to
+        // try once more: s1, on the box's top, fails with the fault; s2, on its pad's top,
+        // is blocked on s1, so it's refused with the same fault. Each read answers, its
+        // plane null and the fault in plane_problem as every read words a kept one: the
+        // feature it met (s1), its cause and advice kept, and its suggestion how a session's
+        // client tries it once more (`fault_suggestion`), written out by hand.
+        use crate::command::wire::{Layout, ToWire, write};
+        use crate::fake::{FakeKernel, FakeSketches};
+        use crate::recompute::{Recompute, RunOutcome};
+        use crate::worker::Advice;
+        let pad = |id: &str, base: &str, sketch: &str| {
+            format!(
+                r#"{{"id": "{id}", "type": "pad", "v": 1, "name": "P", "base": "{base}", "sketch": "{sketch}", "extent": {{"type": "one_side", "length": 1, "reversed": false}}}}"#
+            )
+        };
+        let features = [
+            r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#.to_owned(),
+            rectangle_on("s0000001", "b0000001.box.Face6"),
+            pad("p0000001", "b0000001", "s0000001"),
+            rectangle_on("s0000002", "p0000001.pad.Face(G s0000001.sketch.Face1)"),
+            pad("p0000002", "p0000001", "s0000002"),
+        ];
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+            features.join(", ")
+        );
+        let checked =
+            crate::document::Checked::new(crate::document::read(text.as_bytes()).unwrap()).unwrap();
+        let engine = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new());
+        engine.kernel().refuse(|op| {
+            matches!(op, silico_protocol::Op::DescribeAll { .. }).then(|| {
+                Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed")
+                    .with_cause("it was killed by signal 9")
+                    .with_suggestion("restart the worker")
+                    .with_advice(Advice::TryAgain {
+                        once_more: true,
+                        why: "the worker was slow to start".to_owned(),
+                    })
+            })
+        });
+        let model = match engine
+            .start(std::sync::Arc::new(checked))
+            .wait_timeout(std::time::Duration::from_secs(60))
+        {
+            Ok(Ok(RunOutcome::Published(model))) => model,
+            Ok(other) => panic!("not published: {other:?}"),
+            Err(_) => panic!("the rebuild didn't finish"),
+        };
+        let fault = serde_json::json!({
+            "code": "worker_crashed",
+            "message": "the kernel worker crashed",
+            "feature": "s0000001",
+            "elements": [],
+            "elements_total": 0,
+            "parameter": null,
+            "cause": "it was killed by signal 9",
+            "suggestion": "check with fresh to try it once more: the worker was slow to start",
+            "candidates": [],
+            "advice": "try_once_more",
+        });
+        for sketch in ["s0000001", "s0000002"] {
+            let read = read_sketch(&model, &FeatureId::new(sketch).unwrap())
+                .unwrap_or_else(|e| panic!("{sketch}: {:?}", e.errors()));
+            let wire: serde_json::Value =
+                serde_json::from_str(&write(&read.to_wire(), Layout::OneLine).unwrap()).unwrap();
+            assert_eq!(wire["plane"], serde_json::Value::Null, "{sketch}: {wire}");
+            assert_eq!(wire["plane_problem"], fault, "{sketch}: {wire}");
+            assert_eq!(wire["solve_problem"], serde_json::Value::Null, "{sketch}");
+        }
+    }
+
     fn point(id: &str) -> SketchPoint {
         SketchPoint {
             id: ElementId::new(id).unwrap(),

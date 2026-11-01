@@ -20,7 +20,7 @@ use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::Op;
 use silico_core::sketch::SketchSolver;
 use silico_core::{Error, ErrorCode};
-use silico_protocol::{SolveStatus, Solved};
+use silico_protocol::{SolveStatus, Solved, Value as Unknown};
 
 fn face(name: &str, x: &str, reversed: bool) -> String {
     format!(r#"{{"face": "{name}", "x": "{x}", "reversed": {reversed}}}"#)
@@ -343,8 +343,11 @@ fn a_face_sketch_whose_faces_description_crashed_the_worker_reads_with_the_fault
     let s2_face = face("p0000001.pad.Face(G s0000001.sketch.Face1)", "+x", false);
     let kernel = FakeKernel::new(2).unwrap();
     kernel.refuse(|op| {
-        matches!(op, Op::DescribeAll { .. })
-            .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+        matches!(op, Op::DescribeAll { .. }).then(|| {
+            Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed")
+                .with_cause("it was killed by signal 9")
+                .with_suggestion("restart the worker")
+        })
     });
     let faulted = opened_on(kernel, FakeSketches::new(), &chain(&s2_face));
     let flat = opened(&chain(r#""xy""#));
@@ -354,13 +357,26 @@ fn a_face_sketch_whose_faces_description_crashed_the_worker_reads_with_the_fault
         assert_eq!(read["ok"], true, "{sketch}: {text}");
         let result = &read["result"];
         assert_eq!(result["plane"], Value::Null, "{sketch}");
-        let problem = &result["plane_problem"];
-        assert_eq!(problem["code"], "worker_crashed", "{sketch}: {text}");
-        assert_eq!(problem["message"], "the kernel worker crashed", "{sketch}");
-        let suggestion = problem["suggestion"].as_str().unwrap_or_default();
-        assert!(
-            suggestion.contains("check with fresh"),
-            "{sketch}: {suggestion}"
+        // The fault whole, as every read words a kept one: met describing s1's face (so
+        // s1's, for s2 too, which is blocked on it), its cause kept, and its suggestion the
+        // worker's own, then how a session's client tries it again (`fault_suggestion`).
+        // With the worker's advice too: command/sketch.rs's own test (advice can't be given
+        // from outside the crate).
+        assert_eq!(
+            result["plane_problem"],
+            json!({
+                "code": "worker_crashed",
+                "message": "the kernel worker crashed",
+                "feature": "s0000001",
+                "elements": [],
+                "elements_total": 0,
+                "parameter": null,
+                "cause": "it was killed by signal 9",
+                "suggestion": "restart the worker; then check with fresh to try it again",
+                "candidates": [],
+                "advice": null,
+            }),
+            "{sketch}: {text}"
         );
         assert_eq!(result["solve_problem"], Value::Null, "{sketch}");
         // s2's own 2D, on xy in a healthy chain, is the same bytes; s1's is the box's
@@ -438,8 +454,19 @@ fn a_broken_face_sketch_is_still_refused_where_the_model_holds_no_data() {
     let off = opened(&[cube(), suppressed]);
     let read = off.read("s0000001");
     assert_eq!(read["ok"], false, "{read}");
-    assert_eq!(read["errors"][0]["feature"], "s0000001", "{read}");
-    assert_ne!(read["errors"][0]["code"], "internal", "{read}");
+    assert_eq!(
+        read["errors"],
+        json!([error(
+            "invalid_input",
+            "s0000001 is suppressed, so it isn't solved",
+            "s0000001",
+            &[],
+            Some("sketch"),
+            "unsuppress s0000001 first (suppress_feature with suppressed false), or name a sketch that isn't suppressed",
+            &[],
+        )]),
+        "{read}"
+    );
 }
 
 #[test]
@@ -447,25 +474,11 @@ fn a_face_sketch_whose_x_lies_along_its_faces_normal_reads_with_the_axes_that_wo
     // The box's faces described as planes facing +Z through the origin: s1's face found,
     // its x, -z, along the normal. The read answers, plane null, the refusal on plane.x
     // with the four axes off the normal (AxisToken's order) as candidates; the 2D whole.
-    let kernel = FakeKernel::new(2).unwrap();
-    kernel.answer_instead(|op| match op {
-        Op::DescribeAll { shape } => {
-            let mut description = FakeKernel::described(shape)?;
-            for face in &mut description.faces {
-                face.surface = silico_protocol::Surface::Plane {
-                    normal: [0.0, 0.0, 1.0],
-                    location: [0.0, 0.0, 0.0],
-                };
-            }
-            Some(silico_protocol::Reply::DescribedAll(description))
-        }
-        _ => None,
-    });
     let features = vec![
         cube(),
         on("s0000001", &face("b0000001.box.Face6", "-z", false)),
     ];
-    let along = opened_on(kernel, FakeSketches::new(), &features);
+    let along = opened_on(planar_kernel(), FakeSketches::new(), &features);
     let text = along.read_text("s0000001");
     let read: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(read["ok"], true, "{text}");
@@ -483,4 +496,146 @@ fn a_face_sketch_whose_x_lies_along_its_faces_normal_reads_with_the_axes_that_wo
     assert_eq!(along.problems(), [parallel]);
     let flat = opened(&[cube(), on("s0000001", r#""xy""#)]);
     assert_eq!(two_d(&text), two_d(&flat.read_text("s0000001")));
+}
+
+/// The fake kernel describing every face as a plane facing +Z through the origin.
+fn planar_kernel() -> FakeKernel {
+    let kernel = FakeKernel::new(2).unwrap();
+    kernel.answer_instead(|op| match op {
+        Op::DescribeAll { shape } => {
+            let mut description = FakeKernel::described(shape)?;
+            for face in &mut description.faces {
+                face.surface = silico_protocol::Surface::Plane {
+                    normal: [0.0, 0.0, 1.0],
+                    location: [0.0, 0.0, 0.0],
+                };
+            }
+            Some(silico_protocol::Reply::DescribedAll(description))
+        }
+        _ => None,
+    });
+    kernel
+}
+
+/// A solver that solves as sent but for the first unknown (the values before it, the
+/// origin's, are fixed), the first corner's x, put at 1.5 (0.5 from the file's 1, and where
+/// a solve from there leaves it, so the solution settles when loaded again) and left free:
+/// one degree of freedom.
+fn drifting() -> FakeSketches {
+    let sketches = FakeSketches::new();
+    sketches.answer(|system| {
+        let mut solved = FakeSketches::as_sent(system);
+        let first: Unknown = system.unknowns[0];
+        solved.values[first.0 as usize] = 1.5;
+        solved.dofs = 1;
+        solved.free = vec![first];
+        Ok(solved)
+    });
+    sketches
+}
+
+#[test]
+fn a_broken_face_sketchs_2d_is_its_solve_not_its_file_a_moved_free_corner_as_on_xy() {
+    // The solver moves pa000001's x, the first unknown, from 1 to 1.5 and leaves it free:
+    // the read gives the solve, not the file. By hand: pa000001 at (1.5, 1), under-defined
+    // with the lines through it (na000001 and na000004); the other corners and lines fully
+    // defined; the sketch under-defined, 1 left; still one region. Byte for byte the same
+    // sketch's read on xy, solved alike.
+    let broken = opened_on(
+        FakeKernel::new(2).unwrap(),
+        drifting(),
+        &[
+            cube(),
+            on("s0000001", &face("b0000001.box.Face7", "+x", false)),
+        ],
+    );
+    let text = broken.read_text("s0000001");
+    let read: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(read["ok"], true, "{text}");
+    let result = &read["result"];
+    assert_eq!(result["plane"], Value::Null);
+    assert_eq!(result["plane_problem"], face7_broken(), "{text}");
+    assert_eq!(result["state"], "under_defined", "{text}");
+    assert_eq!(result["dofs"], 1);
+    let points: Vec<(f64, f64, &str)> = result["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["x"].as_f64().unwrap(),
+                p["y"].as_f64().unwrap(),
+                p["state"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        points,
+        [
+            (1.5, 1.0, "under_defined"),
+            (5.0, 1.0, "fully_defined"),
+            (5.0, 3.0, "fully_defined"),
+            (1.0, 3.0, "fully_defined"),
+        ]
+    );
+    let lines: Vec<&str> = result["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["state"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "under_defined",
+            "fully_defined",
+            "fully_defined",
+            "under_defined"
+        ]
+    );
+    assert_eq!(
+        result["regions"],
+        json!([{"outer": ["na000001", "na000002", "na000003", "na000004"], "holes": []}])
+    );
+    let flat = opened_on(
+        FakeKernel::new(2).unwrap(),
+        drifting(),
+        &[cube(), on("s0000001", r#""xy""#)],
+    );
+    assert_eq!(two_d(&text), two_d(&flat.read_text("s0000001")));
+}
+
+#[test]
+fn a_face_sketch_placed_whose_solve_was_refused_reads_its_frame_and_the_solves_refusal() {
+    // The face found and planar (+Z through the origin), x +x: placed, the frame by hand
+    // ((0, 0, 0), +X, +Y, +Z: o = n(n·p) = 0). No solver meets it: solve_problem
+    // solve_failed, naming the sketch; plane_problem null, the plane being resolved.
+    let sketches = FakeSketches::new();
+    sketches.answer(|system| {
+        Ok(Solved {
+            status: SolveStatus::Failed,
+            algorithm: None,
+            ..FakeSketches::as_sent(system)
+        })
+    });
+    let placed = opened_on(
+        planar_kernel(),
+        sketches,
+        &[
+            cube(),
+            on("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        ],
+    );
+    let read = placed.read("s0000001");
+    assert_eq!(read["ok"], true, "{read}");
+    let result = &read["result"];
+    assert_eq!(
+        result["plane"],
+        serde_json::from_str::<Value>(XY_FRAME).unwrap(),
+        "{read}"
+    );
+    assert_eq!(result["plane_problem"], Value::Null, "{read}");
+    assert_eq!(result["solve_problem"]["code"], "solve_failed", "{read}");
+    assert_eq!(result["solve_problem"]["feature"], "s0000001", "{read}");
+    assert_eq!(result["state"], "no_solution");
 }
