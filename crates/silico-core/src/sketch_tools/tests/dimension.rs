@@ -3194,7 +3194,8 @@ fn read_with(
     }
     SketchRead {
         sketch: sketch_id(),
-        plane: members.plane,
+        // Every sketch here is on XY (`tests::empty`).
+        plane: Ok(silico_protocol::SketchPlane::Xy),
         members,
         states,
         regions: Vec::<Region>::new(),
