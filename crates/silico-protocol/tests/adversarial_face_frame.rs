@@ -507,7 +507,11 @@ fn a_frames_origin_past_max_length_on_its_axis_is_n_n_dot_p_to_rounding() {
     assert!(offset.abs() > MAX_LENGTH, "{offset}");
     let o = n.map(|c| c * offset);
     let size = libm::sqrt(dot(p, p));
-    assert!(off(frame.origin, o) <= 8.0 * f64::EPSILON * size, "{:?} vs {o:?}", frame.origin);
+    assert!(
+        off(frame.origin, o) <= 8.0 * f64::EPSILON * size,
+        "{:?} vs {o:?}",
+        frame.origin
+    );
     // On the plane: its offset along n is n·p.
     assert!((dot(n, frame.origin) - offset).abs() <= 8.0 * f64::EPSILON * size);
 }
