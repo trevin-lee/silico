@@ -15350,3 +15350,75 @@ fn after_the_over_define_prompts_cancel_redo_is_off_and_its_key_sends_nothing_bu
     }
     assert_eq!(never_waits::waits(), 0);
 }
+
+/// The boxed sketch padded: its rebuild after a drag asks the kernel for the pad.
+const BOXED_PADDED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Box", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}]},
+    {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}
+  ]
+}
+"#;
+
+#[test]
+fn a_released_drags_edit_is_undone_though_the_rebuild_after_it_is_stopped_before_its_read() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("padded.silico", BOXED_PADDED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    let text = text_of(&f, &h);
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    drag_frames(&mut h, 1);
+    // Every kernel request held from here: the drag's end, the sketch worker's, answers;
+    // the rebuild after it, which pads the moved sketch, doesn't.
+    let hold = f.kernel.hold(|_| true);
+    sketch_events(&f, &mut h, &[pointer(Release, 52.0, 32.0)]);
+    step_until(&mut h, "the drag's end answered", |h| {
+        the_drag(h).is_some_and(|d| d.ended() && !d.in_flight())
+    });
+    assert_ne!(text_of(&f, &h), text);
+    // Stop, before the rebuild publishes: the read of the drag's edit never comes.
+    let stop_on = |h: &AppHarness| {
+        h.query_all_by_role_and_label(Role::Button, "Stop")
+            .last()
+            .is_some_and(|stop| !stop.accesskit_node().is_disabled())
+    };
+    step_until(&mut h, "Stop on", stop_on);
+    h.query_all_by_role_and_label(Role::Button, "Stop")
+        .last()
+        .unwrap()
+        .click();
+    step_until(&mut h, "the rebuild stopped, a status of the edit", |h| {
+        rebuild_stopped(h)
+            && h.state().tabs()[0]
+                .transaction()
+                .is_some_and(|t| t.undo == 1)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    // The drag waits still for that read, but its edit has landed: Undo is offered, and
+    // Ctrl+Z sends it.
+    assert!(the_drag(&h).is_some_and(|d| !d.under_way()));
+    assert!(offered(&h, "Undo"));
+    let sent = steps_sent(&h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    assert_eq!(steps_sent(&h), sent + 1);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    hold.release();
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}

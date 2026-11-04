@@ -3768,3 +3768,44 @@ fn a_press_off_the_menu_closes_it_but_none_before_the_release_of_the_click_that_
     ];
     assert!(!pressed_off_menu(&released, menu, 2.0, false));
 }
+
+#[test]
+fn a_drag_is_under_way_from_its_press_until_its_end_answers_but_not_while_it_waits_for_its_read() {
+    let begin = under(rectangle(Vec::new()));
+    let sketch = || silico_core::document::FeatureId::new("s0000001").unwrap();
+    let grab = || silico_core::command::DragGrab::Point(id("pa000003"));
+    let pressed = || {
+        drag::Drag::pressed(
+            sketch(),
+            grab(),
+            begin.clone(),
+            Revision::OPENED,
+            Pos2::ZERO,
+        )
+    };
+    // Held: under way, moved or not.
+    let mut held = pressed();
+    assert!(held.under_way());
+    held.moved = true;
+    assert!(held.under_way());
+    // Released after it moved, its begin still to go: under way (its begin, then its end).
+    held.release(Some([52.0, 32.0]));
+    assert!(held.wants_begin() && held.under_way());
+    // Released without moving, or cancelled before its begin went out: over, not under way.
+    let mut clicked = pressed();
+    clicked.release(Some([50.0, 30.0]));
+    assert!(clicked.over() && !clicked.under_way());
+    let mut cancelled = pressed();
+    cancelled.moved = true;
+    cancelled.cancel();
+    assert!(cancelled.over() && !cancelled.under_way());
+    // Its end answered, the read of its edit still to come: not under way, though not over.
+    let ended = drag::Drag::ended_at(
+        sketch(),
+        grab(),
+        begin.clone(),
+        begin.clone(),
+        Revision::OPENED.next().unwrap(),
+    );
+    assert!(!ended.over() && !ended.under_way());
+}

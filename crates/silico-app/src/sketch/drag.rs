@@ -205,6 +205,13 @@ impl Drag {
         )
     }
 
+    /// Whether it's under way: held, or its begin waiting to go or sent, or its moves or end
+    /// sent and not answered. Not once its end has answered (its edit landed, its last frame
+    /// drawn only till the read of that edit), nor once it's over.
+    pub fn under_way(&self) -> bool {
+        !self.over() && !matches!(self.phase, Phase::Ended { .. })
+    }
+
     /// Whether it's over: nothing more to send or draw. A press cancelled, or released
     /// without having moved, before its begin went out is too.
     pub fn over(&self) -> bool {
