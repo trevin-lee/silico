@@ -5166,8 +5166,11 @@ fn naming_key(key: Key, id: &FeatureId, how: &Naming, inputs: &[NamingKey]) -> N
 /// `outcome`, `planned`'s, as its result's check decides it (`Check`): a built feature
 /// whose solid fails it is failed, in its own words, so what uses it is blocked on it. Read
 /// from the solid's stored summary and history and its base's (`features`, decided before
-/// it), the same whether the solid was made, kept, or read from the cache; a solid that
-/// couldn't be measured can't be checked, and fails with why (`unmeasured`).
+/// it), the same whether the solid was made, kept, or read from the cache. A sweep feature's
+/// solid that couldn't be measured can't be checked, and fails with why (`unmeasured`); an
+/// M2 boolean's is built unchecked for its change, and says why, as before S7's rule reached
+/// M2 booleans. A solid with no measure and no word why is Silico's fault, and fails as one
+/// either way.
 fn checked(
     planned: &Planned,
     outcome: FeatureOutcome,
@@ -5179,7 +5182,7 @@ fn checked(
     };
     // Its base's measures and its own, or why they couldn't be had: a sweep's and a
     // boolean's base is its first input.
-    let measures = || {
+    let measures = || -> Result<_, Unmeasured> {
         let base = planned
             .uses
             .first()
@@ -5192,36 +5195,61 @@ fn checked(
         let base = base.and_then(|(_, built)| measured_of(built));
         match (base, measured_of(built)) {
             (Some(before), Some(after)) => Ok((before, after)),
-            _ => Err(unmeasured
-                .get(key)
-                .or_else(|| base_key.and_then(|k| unmeasured.get(&k)))
-                .cloned()
-                .unwrap_or_else(|| silico_bug("a feature's solid or its base's wasn't measured"))
-                .with_feature(planned.id.as_str())),
+            _ => Err(
+                match unmeasured
+                    .get(key)
+                    .or_else(|| base_key.and_then(|k| unmeasured.get(&k)))
+                {
+                    Some(why) => Unmeasured::Said(why.clone().with_feature(planned.id.as_str())),
+                    None => Unmeasured::Bug(
+                        silico_bug("a feature's solid or its base's wasn't measured")
+                            .with_feature(planned.id.as_str()),
+                    ),
+                },
+            ),
         }
     };
     let decided = match check {
         Check::Boolean { op, base, tool } => {
             let solids = built.history.as_ref().map_or(1, |h| h.result.solids);
             // Its change judged where both solids were measured: an M2 boolean whose solid or
-            // base couldn't be is built, and says why (`unmeasured`), as before S7's rule
-            // reached it.
+            // base couldn't be, and that says why (`unmeasured`), is built, as before S7's
+            // rule reached it; a measure missing for no reason is Silico's fault.
             crate::sweep::check_boolean_solids(&planned.id, *op, base, tool, solids).and_then(
                 |()| match measures() {
                     Ok((before, after)) => {
                         crate::sweep::check_boolean_change(&planned.id, *op, base, &before, &after)
                     }
-                    Err(_) => Ok(()),
+                    Err(Unmeasured::Said(_)) => Ok(()),
+                    Err(Unmeasured::Bug(error)) => Err(error),
                 },
             )
         }
-        Check::Sweep(sweep) => measures().and_then(|(before, after)| {
-            crate::sweep::check_result(&sweep.feature, sweep.kind, &sweep.base, &before, &after)
-        }),
+        Check::Sweep(sweep) => measures()
+            .map_err(Unmeasured::error)
+            .and_then(|(before, after)| {
+                crate::sweep::check_result(&sweep.feature, sweep.kind, &sweep.base, &before, &after)
+            }),
     };
     match decided {
         Ok(()) => outcome,
         Err(error) => FeatureOutcome::Failed(error),
+    }
+}
+
+/// Why a checked feature's measures, or its base's, couldn't be had ([`checked`]).
+enum Unmeasured {
+    /// The measure failed, or was refused, and said so (`unmeasured`).
+    Said(Error),
+    /// No measure and no word why: Silico's fault.
+    Bug(Error),
+}
+
+impl Unmeasured {
+    fn error(self) -> Error {
+        match self {
+            Unmeasured::Said(error) | Unmeasured::Bug(error) => error,
+        }
     }
 }
 
@@ -6841,5 +6869,114 @@ mod tests {
             taken(&solvers).unwrap();
             assert_eq!(starts.load(Ordering::SeqCst), 2, "panics: {panics}");
         }
+    }
+}
+
+#[cfg(test)]
+mod checked_tests {
+    use super::*;
+
+    /// An M2 cut `kkkkkkkk` of feature 0 by feature 1, built, its solid `measured` or not.
+    fn cut(measured: bool) -> (Planned, FeatureOutcome, Vec<(FeatureId, FeatureOutcome)>) {
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let summary = ShapeSummary {
+            volume: 1.0,
+            area: 6.0,
+            center: [0.5; 3],
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            bounds: Some([[0.0; 3], [1.0; 3]]),
+            valid: true,
+        };
+        let solid = |volume: f64, measured: bool| {
+            Built::new(
+                ShapeData::unchecked(silico_protocol::Blob::inline(vec![0])),
+                None,
+                measured.then(|| ShapeSummary {
+                    volume,
+                    ..summary.clone()
+                }),
+            )
+        };
+        let planned = Planned {
+            id: fid("kkkkkkkk"),
+            steps: vec![Key([2; 32])],
+            uses: vec![0, 1],
+            naming: None,
+            naming_key: None,
+            sketch: None,
+            sweeps: None,
+            on_face: OnFace::No,
+            refused: None,
+            check: Some(Check::Boolean {
+                op: BooleanOp::Cut,
+                base: fid("bbbbbbbb"),
+                tool: fid("tttttttt"),
+            }),
+            suppressed: false,
+        };
+        let outcome = FeatureOutcome::Built {
+            key: Key([2; 32]),
+            built: Arc::new(solid(0.5, measured)),
+        };
+        let inputs = vec![
+            (
+                fid("bbbbbbbb"),
+                FeatureOutcome::Built {
+                    key: Key([0; 32]),
+                    built: Arc::new(solid(1.0, true)),
+                },
+            ),
+            (
+                fid("tttttttt"),
+                FeatureOutcome::Built {
+                    key: Key([1; 32]),
+                    built: Arc::new(solid(1.0, true)),
+                },
+            ),
+        ];
+        (planned, outcome, inputs)
+    }
+
+    #[test]
+    fn an_m2_boolean_whose_measure_failed_saying_why_is_built() {
+        let (planned, outcome, inputs) = cut(false);
+        let mut unmeasured = BTreeMap::new();
+        unmeasured.insert(
+            Key([2; 32]),
+            Error::new(ErrorCode::KernelFailed, "the cut couldn't be measured"),
+        );
+        let decided = checked(&planned, outcome, &inputs, &unmeasured);
+        assert!(
+            matches!(decided, FeatureOutcome::Built { .. }),
+            "{decided:?}"
+        );
+    }
+
+    #[test]
+    fn an_m2_boolean_with_no_measure_and_no_word_why_fails_as_silicos_fault() {
+        let (planned, outcome, inputs) = cut(false);
+        let decided = checked(&planned, outcome, &inputs, &BTreeMap::new());
+        let FeatureOutcome::Failed(error) = decided else {
+            panic!("{decided:?}");
+        };
+        assert_eq!(error.code(), ErrorCode::Internal, "{error:?}");
+        assert_eq!(error.feature(), Some("kkkkkkkk"));
+        assert_eq!(
+            error.message(),
+            "a feature's solid or its base's wasn't measured"
+        );
+    }
+
+    #[test]
+    fn an_m2_boolean_measured_is_judged_by_s7s_rule() {
+        // Measured, its volume half its base's: it removes something, and is built.
+        let (planned, outcome, inputs) = cut(true);
+        let decided = checked(&planned, outcome, &inputs, &BTreeMap::new());
+        assert!(
+            matches!(decided, FeatureOutcome::Built { .. }),
+            "{decided:?}"
+        );
     }
 }
