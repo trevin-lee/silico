@@ -1736,7 +1736,7 @@
               },
               {
                 "const": "failed",
-                "description": "Failed on its own: a step the kernel refused, a check its result failed, a sketch\nthat didn't solve or makes no profile, broken references.",
+                "description": "Failed on its own: a step the kernel refused, a check its result failed, a sketch\nthat didn't solve, a pad, pocket, revolve, or groove whose sketch makes no profile,\nbroken references.",
                 "type": "string"
               },
               {

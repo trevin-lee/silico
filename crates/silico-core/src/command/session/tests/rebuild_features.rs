@@ -258,11 +258,15 @@ fn a_cancelled_rebuild_is_stopped_its_built_features_built_and_the_rest_queued()
     // Once its recompute has ended (the held cylinder superseded), its own count says the
     // same, and so does status, for good.
     let counter = f.session().newest.counter().unwrap();
-    let mut seen = crate::recompute::StepCount::default();
-    while !seen.ended {
-        seen = counter.changed_since(&seen);
-    }
-    assert_eq!(seen.features, stopped);
+    let mut seen = 0;
+    let ended = loop {
+        let (count, changes) = counter.changed_since(seen);
+        if count.ended {
+            break count;
+        }
+        seen = changes;
+    };
+    assert_eq!(ended.features, stopped);
     hold.release();
     assert!(f.kernel.wait_idle(WAIT));
     let status = f.sessions.status(&f.id).result.unwrap();
@@ -463,6 +467,195 @@ fn a_fillet_whose_edge_names_nothing_is_failed_and_its_user_blocked_while_the_re
             ("f0000001", Failed),
             ("q0000001", Built),
             ("j0000001", Blocked),
+        ])
+    );
+    all_settled(&done);
+}
+
+/// A waker that counts what it's told.
+fn counting_wakes(f: &Fixture) -> Arc<std::sync::atomic::AtomicUsize> {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&count);
+    f.sessions.on_change(move || {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    });
+    count
+}
+
+fn wakes(count: &std::sync::atomic::AtomicUsize) -> usize {
+    count.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Waits until the client has been woken more than `than` times, for at most [`WAIT`].
+#[track_caller]
+fn woken_past(count: &std::sync::atomic::AtomicUsize, than: usize) {
+    let started = std::time::Instant::now();
+    while wakes(count) <= than {
+        assert!(started.elapsed() < WAIT, "never woken past {than}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// The client's wakes once none is still to come of what came before: the same count
+/// twice, a while apart.
+fn quiet_wakes(count: &std::sync::atomic::AtomicUsize) -> usize {
+    loop {
+        let before = wakes(count);
+        std::thread::sleep(Duration::from_millis(100));
+        if wakes(count) == before {
+            return before;
+        }
+    }
+}
+
+#[test]
+fn a_swept_sketchs_solve_wakes_the_client_as_it_starts_and_as_it_settles_before_any_plan() {
+    // Two squares, each padded: both solved before the plan, which has no steps until
+    // then. Each solve held in turn by the fake's answer. As the first starts, the client is
+    // woken (it's running; no steps yet), though neither `done` nor `steps` moved; let go, it
+    // settles, built, and the client is woken again, still with no steps (the second's solve
+    // holds the plan back). Once woken per change: held, nothing more wakes it.
+    let second_square = SQUARE
+        .replace("s0000001", "s0000002")
+        .replace("pa0", "pb0")
+        .replace("na0", "nb0");
+    let second_pad = PAD
+        .replace("p0000001", "p0000002")
+        .replace("s0000001", "s0000002");
+    let (go_first, first) = mpsc::channel::<()>();
+    let (go_second, second) = mpsc::channel::<()>();
+    let gates = Mutex::new(vec![second, first]);
+    let sketches = crate::fake::FakeSketches::new();
+    sketches.answer(move |system| {
+        let gate = lock(&gates).pop();
+        if let Some(gate) = gate {
+            let _ = gate.recv_timeout(WAIT);
+        }
+        Ok(crate::fake::FakeSketches::as_sent(system))
+    });
+    let f = opened_solving(&doc(&[SQUARE, PAD, &second_square, &second_pad]), &sketches);
+    disk_reaches(&f, Disk::Unchanged);
+    let count = counting_wakes(&f);
+    let base = quiet_wakes(&count);
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false });
+    woken_past(&count, base);
+    let started = progress(&f).unwrap();
+    assert_eq!((started.done, started.steps), (0, 0));
+    assert_eq!(
+        started.features,
+        states(&[
+            ("s0000001", Running),
+            ("p0000001", Queued),
+            ("s0000002", Queued),
+            ("p0000002", Queued),
+        ])
+    );
+    let held = quiet_wakes(&count);
+    assert_eq!(held, base + 1, "woken more than once for one change");
+    go_first.send(()).unwrap();
+    woken_past(&count, held);
+    let settled = progress(&f).unwrap();
+    assert_eq!((settled.done, settled.steps), (0, 0));
+    assert_eq!(
+        settled.features.get(&id("s0000001")),
+        Some(Built),
+        "{settled:?}"
+    );
+    // Its settle and the second's start: twice at most.
+    assert!(quiet_wakes(&count) <= held + 2);
+    go_second.send(()).unwrap();
+    check.wait().result.unwrap();
+    assert_eq!(
+        features(&f).unwrap(),
+        states(&[
+            ("s0000001", Built),
+            ("p0000001", Built),
+            ("s0000002", Built),
+            ("p0000002", Built),
+        ])
+    );
+}
+
+/// Whether `op` measures the fuse of a pad onto the block.
+fn measures_the_pads_fuse(op: &Op) -> bool {
+    match op {
+        Op::Summarize { shape } => {
+            FakeKernel::describe(shape).is_some_and(|made| made.starts_with("fuse("))
+        }
+        _ => false,
+    }
+}
+
+#[test]
+fn a_pad_whose_solid_cant_be_measured_is_failed_as_the_measure_fails_and_the_client_woken() {
+    // The square padded onto the block, and a ball on its own branch, held, keeping the
+    // rebuild running. The pad's fuse is made (the pad built), then its measure held, then
+    // refused: the pad's check can't be made, so it fails with the measure's error (as the
+    // model will say), at once, not when the rebuild ends; and the client is woken for it,
+    // though no step settled.
+    let on_block = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "base": "k7f2qx3m", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+    let f = opened(&doc(&[SQUARE, BLOCK, on_block, BALL]));
+    disk_reaches(&f, Disk::Unchanged);
+    let ball = f.kernel.hold(is_sphere);
+    let held = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let measure = {
+        let held = Arc::clone(&held);
+        f.kernel.hold(move |op| {
+            let picks = measures_the_pads_fuse(op);
+            if picks {
+                held.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            picks
+        })
+    };
+    f.kernel.refuse(|op| {
+        measures_the_pads_fuse(op).then(|| Error::new(ErrorCode::KernelFailed, "Summarize failed"))
+    });
+    let count = counting_wakes(&f);
+    let check = f
+        .sessions
+        .check(&f.id, CheckModel::Current { fresh: false });
+    let started = std::time::Instant::now();
+    while !held.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(started.elapsed() < WAIT, "the pad's measure never started");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let built = &[
+        ("s0000001", Built),
+        ("k7f2qx3m", Built),
+        ("p0000001", Built),
+        ("q0000001", Running),
+    ];
+    until_features(&f, built);
+    let before = quiet_wakes(&count);
+    assert_eq!(features(&f).unwrap(), states(built));
+    measure.release();
+    woken_past(&count, before);
+    assert_eq!(
+        features(&f).unwrap(),
+        states(&[
+            ("s0000001", Built),
+            ("k7f2qx3m", Built),
+            ("p0000001", Failed),
+            ("q0000001", Running),
+        ])
+    );
+    assert_eq!(
+        f.sessions.status(&f.id).result.unwrap().rebuild.state,
+        RebuildState::Running
+    );
+    ball.release();
+    let _ = check.wait();
+    let done = features(&f).unwrap();
+    assert_eq!(
+        done,
+        states(&[
+            ("s0000001", Built),
+            ("k7f2qx3m", Built),
+            ("p0000001", Failed),
+            ("q0000001", Built),
         ])
     );
     all_settled(&done);

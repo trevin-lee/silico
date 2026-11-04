@@ -20,7 +20,9 @@ use silico_core::command::wire::{Layout, ToWire, write};
 use silico_core::command::{Progress, Rebuild, RebuildState, Revision};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{Op, Primitive};
-use silico_core::recompute::{FeatureStates, Recompute, RunOutcome, StepCounter, StepState};
+use silico_core::recompute::{
+    FeatureStates, Recompute, RunOutcome, StepCount, StepCounter, StepState,
+};
 use silico_core::{Error, ErrorCode};
 
 use StepState::{Blocked, Built, Failed, Faulted, Queued, Running};
@@ -41,6 +43,54 @@ fn until(progress: &StepCounter, done: impl Fn(&silico_core::recompute::StepCoun
 
 fn states_of(features: &FeatureStates) -> Vec<StepState> {
     features.iter().map(|(_, state)| state).collect()
+}
+
+/// Whether a feature read `was` in one copy of a count may read `is` in a later one, by
+/// hand from the decision: unsettled (queued, or running: a feature goes back to queued
+/// between its steps) may become anything; built may yet fail its check, fault, or be
+/// blocked; failed, faulted, and blocked are final. Copies skip states between them, so
+/// this is the moves' closure.
+fn may_follow(was: StepState, is: StepState) -> bool {
+    was == is
+        || matches!(was, Queued | Running)
+        || (was == Built && matches!(is, Failed | Faulted | Blocked))
+}
+
+/// Over `copies` of a count, in the order they were taken: no feature goes back
+/// ([`may_follow`]), and nothing reads running in a copy of a count that has ended.
+fn never_back(copies: &[StepCount]) -> Result<(), String> {
+    for pair in copies.windows(2) {
+        let [before, after] = pair else { continue };
+        for ((feature, was), (_, is)) in before.features.iter().zip(after.features.iter()) {
+            if !may_follow(was, is) {
+                return Err(format!("{feature} went from {was:?} to {is:?}"));
+            }
+        }
+    }
+    for copy in copies.iter().filter(|copy| copy.ended) {
+        if let Some((feature, _)) = copy.features.iter().find(|(_, s)| *s == Running) {
+            return Err(format!("{feature} running once its rebuild ended"));
+        }
+    }
+    Ok(())
+}
+
+/// Copies of `progress`'s count, taken as fast as a reader can until it ends, the last
+/// once it has: what `status` reads, read while the rebuild runs.
+fn copied_until_ended(progress: &StepCounter) -> std::thread::JoinHandle<Vec<StepCount>> {
+    let progress = progress.clone();
+    std::thread::spawn(move || {
+        let mut copies = Vec::new();
+        loop {
+            let now = progress.now();
+            let ended = now.ended;
+            copies.push(now);
+            if ended {
+                return copies;
+            }
+            std::thread::yield_now();
+        }
+    })
 }
 
 /// `n` unit boxes at the origin, `b0000000` on: one step, shared by all of them.
@@ -381,11 +431,302 @@ proptest! {
         let engine = Recompute::new(kernel);
         let run = engine.start(checked);
         let progress = run.progress();
+        let copies = copied_until_ended(&progress);
         prop_assert!(matches!(run.wait(), Ok(RunOutcome::Published(_))));
+        let copies = copies.join().unwrap();
+        prop_assert!(copies.last().is_some_and(|last| last.ended));
+        // Every copy read on the way, not only the end (which the model's outcomes set):
+        // nothing went back, and nothing ran once it ended.
+        if let Err(why) = never_back(&copies) {
+            return Err(TestCaseError::fail(why));
+        }
         let now = progress.now();
         let listed: Vec<String> = now.features.iter().map(|(f, _)| f.as_str().to_owned()).collect();
         let ids: Vec<String> = (0..timeline.len()).map(|i| format!("f{i:07}")).collect();
         prop_assert_eq!(listed, ids);
         prop_assert_eq!(states_of(&now.features), expected(&timeline));
     }
+}
+
+/// An engine on the fake kernel and the fake sketch solver.
+fn faked() -> Recompute<FakeKernel> {
+    Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new())
+}
+
+/// A kernel whose submit panics on spheres: a bug under a recompute's step.
+struct PanicsOnSpheres(FakeKernel);
+
+impl silico_core::kernel::Kernel for PanicsOnSpheres {
+    fn identity(&self) -> &str {
+        self.0.identity()
+    }
+
+    fn generation(&self) -> silico_core::kernel::Generation {
+        self.0.generation()
+    }
+
+    fn advance(&self, generation: silico_core::kernel::Generation) {
+        self.0.advance(generation);
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        generation: silico_core::kernel::Generation,
+        request: silico_core::kernel::KernelRequest<T>,
+    ) -> silico_core::pool::Pending<T> {
+        if request.name() == "MakeSphere" {
+            panic!("a bug under a recompute step");
+        }
+        self.0.submit(generation, request)
+    }
+}
+
+const BLOCK: &str = r#"{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#;
+const BALL: &str = r#"{"id": "q0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}"#;
+const DENT: &str = r#"{"id": "m0000001", "type": "cut", "v": 1, "name": "Dent", "base": "k7f2qx3m", "tool": "q0000001"}"#;
+const SQUARE: &str = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "Square", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 10, "y": 0, "construction": false}, {"id": "pa000003", "x": 10, "y": 10, "construction": false}, {"id": "pa000004", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
+const PAD: &str = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+
+#[test]
+fn a_step_that_panics_is_faulted_and_what_uses_it_blocked_not_left_queued() {
+    // The ball's step panics (a bug): the rebuild ends faulted, with the panic's error. The
+    // ball is faulted, the cut that uses it blocked, as for a worker's crash; not left
+    // queued under a faulted rebuild, as though Rebuild could resume them. The block, on a
+    // branch of its own, is built or (stopped before it settled) queued; never running.
+    let engine = Recompute::new(PanicsOnSpheres(FakeKernel::new(2).unwrap()));
+    let run = engine.start(document(&[BLOCK, BALL, DENT]));
+    let progress = run.progress();
+    let error = run.wait_timeout(WAIT).ok().unwrap().unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Internal, "{error}");
+    let ended = progress.now();
+    assert!(ended.ended);
+    let states = states_of(&ended.features);
+    assert!(matches!(states[0], Built | Queued), "{states:?}");
+    assert_eq!(states[1..], [Faulted, Blocked]);
+}
+
+/// A sketch solver with a bug: every solve panics.
+struct SolvePanics;
+
+impl silico_core::sketch::SketchSolver for SolvePanics {
+    fn solve(
+        &mut self,
+        _: silico_protocol::SketchSystem,
+    ) -> Result<silico_protocol::Solved, Error> {
+        panic!("a bug in the solver")
+    }
+}
+
+#[test]
+fn a_sketchs_solve_that_panics_is_faulted_and_what_sweeps_it_blocked() {
+    // Padded, the square is solved before any plan; alone, beside the block's step. Either
+    // way its solve panics (a bug): the rebuild ends faulted; the square is faulted, not
+    // left queued, and the pad that sweeps it blocked; the block, alone, built or queued.
+    let swept = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(SolvePanics);
+    let run = swept.start(document(&[SQUARE, PAD, BLOCK]));
+    let progress = run.progress();
+    let error = run.wait_timeout(WAIT).ok().unwrap().unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Internal, "{error}");
+    assert_eq!(
+        states_of(&progress.now().features),
+        [Faulted, Blocked, Queued]
+    );
+    let beside = Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(SolvePanics);
+    let run = beside.start(document(&[SQUARE, BLOCK]));
+    let progress = run.progress();
+    let error = run.wait_timeout(WAIT).ok().unwrap().unwrap_err();
+    assert_eq!(error.code(), ErrorCode::Internal, "{error}");
+    let states = states_of(&progress.now().features);
+    assert_eq!(states[0], Faulted, "{states:?}");
+    assert!(matches!(states[1], Built | Queued), "{states:?}");
+}
+
+#[test]
+fn a_pad_whose_bases_solid_cant_be_measured_is_failed_while_the_rebuild_runs() {
+    // The square padded onto the block, and a ball on its own branch, held, keeping the
+    // rebuild running. Only the block's measure is refused: the pad's own solid is
+    // measured, its base's isn't, so its check can't be made, and it fails (as the model
+    // will say, with the base's error), while the ball still runs; at the end, the same.
+    let on_block = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "base": "k7f2qx3m", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+    let engine = faked();
+    engine.kernel().refuse(|op| match op {
+        Op::Summarize { shape }
+            if FakeKernel::describe(shape).is_some_and(|made| made.starts_with("box(")) =>
+        {
+            Some(Error::new(
+                ErrorCode::KernelFailed,
+                "the base's Summarize failed",
+            ))
+        }
+        _ => None,
+    });
+    let hold = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
+    let run = engine.start(document(&[SQUARE, BLOCK, on_block, BALL]));
+    let progress = run.progress();
+    until(&progress, |count| {
+        states_of(&count.features) == [Built, Built, Failed, Running]
+    });
+    assert!(!progress.now().ended);
+    hold.release();
+    let Ok(RunOutcome::Published(model)) = run.wait() else {
+        panic!("not published");
+    };
+    let pad = silico_core::document::FeatureId::new("p0000001").unwrap();
+    let Some(silico_core::recompute::FeatureOutcome::Failed(error)) = model.outcome(&pad) else {
+        panic!("{:?}", model.outcome(&pad));
+    };
+    assert!(
+        error.message().contains("the base's Summarize failed"),
+        "{error:?}"
+    );
+    assert_eq!(
+        states_of(&progress.now().features),
+        [Built, Built, Failed, Built]
+    );
+}
+
+#[test]
+fn a_pad_refused_before_any_step_waits_queued_for_its_base_then_fails_or_is_blocked() {
+    // A segment, which makes no profile, padded onto the block: the pad is refused at its
+    // plan, before any step, but the model says blocked if its base doesn't build, failed
+    // if it does. So while the block is held the pad is queued, not failed (it could yet be
+    // blocked); the block built, the pad fails at once; the block refused, the pad is
+    // blocked, never failed on the way. A ball on its own branch, held, keeps the rebuild
+    // running while that's read.
+    let segment = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "Segment", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 10, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
+    let on_block = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "base": "k7f2qx3m", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+    for block_builds in [true, false] {
+        let engine = faked();
+        if !block_builds {
+            engine.kernel().refuse(|op| {
+                matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
+                    .then(|| Error::new(ErrorCode::KernelFailed, "MakeBox failed"))
+            });
+        }
+        let block = engine
+            .kernel()
+            .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { .. })));
+        let ball = engine
+            .kernel()
+            .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
+        let run = engine.start(document(&[segment, BLOCK, on_block, BALL]));
+        let progress = run.progress();
+        let copies = copied_until_ended(&progress);
+        until(&progress, |count| {
+            states_of(&count.features) == [Built, Running, Queued, Running]
+        });
+        block.release();
+        let (pad, want) = if block_builds {
+            (Failed, [Built, Built, Failed, Built])
+        } else {
+            (Blocked, [Built, Failed, Blocked, Built])
+        };
+        until(&progress, |count| {
+            states_of(&count.features) == [Built, want[1], pad, Running]
+        });
+        ball.release();
+        let Ok(RunOutcome::Published(model)) = run.wait() else {
+            panic!("not published");
+        };
+        never_back(&copies.join().unwrap()).unwrap();
+        let id = silico_core::document::FeatureId::new("p0000001").unwrap();
+        let said = model.outcome(&id);
+        if block_builds {
+            assert!(
+                matches!(
+                    said,
+                    Some(silico_core::recompute::FeatureOutcome::Failed(_))
+                ),
+                "{said:?}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    said,
+                    Some(silico_core::recompute::FeatureOutcome::Blocked { .. })
+                ),
+                "{said:?}"
+            );
+        }
+        assert_eq!(states_of(&progress.now().features), want);
+    }
+}
+
+#[test]
+fn a_cut_whose_step_ran_on_after_its_base_failed_its_check_stays_blocked() {
+    // The square padded onto the block, the pad cut by a pin, and a ball on its own branch,
+    // held, keeping the rebuild running. The block's measure is refused, so the pad, once
+    // its own solid is measured, fails its check. The cut's step starts as soon as the
+    // pad's solid is made, before that: held there, then the pad's measure let go, the pad
+    // fails and the cut, running, is blocked; then the cut's step let go, it's made, and
+    // the cut stays blocked (what it's made from failed), never built on the way.
+    let on_block = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "base": "k7f2qx3m", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+    let pin = r#"{"id": "c0000001", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 20}"#;
+    let hole = r#"{"id": "m0000001", "type": "cut", "v": 1, "name": "Hole", "base": "p0000001", "tool": "c0000001"}"#;
+    let made = |op: &Op, prefix: &str| match op {
+        Op::Summarize { shape } => {
+            FakeKernel::describe(shape).is_some_and(|d| d.starts_with(prefix))
+        }
+        _ => false,
+    };
+    // Four workers: the ball and the cut each hold one, and the measures need theirs.
+    let engine = Recompute::new(FakeKernel::new(4).unwrap()).with_sketches(FakeSketches::new());
+    engine.kernel().refuse(move |op| {
+        made(op, "box(").then(|| Error::new(ErrorCode::KernelFailed, "the base's Summarize failed"))
+    });
+    let measure = engine.kernel().hold(move |op| made(op, "fuse("));
+    let cut = engine.kernel().hold(|op| {
+        matches!(
+            op,
+            Op::Boolean {
+                op: silico_core::kernel::BooleanOp::Cut,
+                ..
+            }
+        )
+    });
+    let ball = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
+    let run = engine.start(document(&[SQUARE, BLOCK, on_block, pin, hole, BALL]));
+    let progress = run.progress();
+    let copies = copied_until_ended(&progress);
+    // The pad made, its measure held; the cut's step held; the ball held.
+    until(&progress, |count| {
+        states_of(&count.features) == [Built, Built, Built, Built, Running, Running]
+    });
+    let deadline = std::time::Instant::now() + WAIT;
+    while !engine
+        .kernel()
+        .calls()
+        .iter()
+        .any(|call| made(&call.op, "fuse("))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the pad's measure never started"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    measure.release();
+    until(&progress, |count| {
+        states_of(&count.features) == [Built, Built, Failed, Built, Blocked, Running]
+    });
+    cut.release();
+    // Every step settled but the ball's: the cut's made.
+    until(&progress, |count| {
+        count.steps > 0 && count.done + 1 == count.steps
+    });
+    assert_eq!(
+        states_of(&progress.now().features),
+        [Built, Built, Failed, Built, Blocked, Running]
+    );
+    ball.release();
+    assert!(matches!(run.wait(), Ok(RunOutcome::Published(_))));
+    never_back(&copies.join().unwrap()).unwrap();
+    assert_eq!(
+        states_of(&progress.now().features),
+        [Built, Built, Failed, Built, Blocked, Built]
+    );
 }

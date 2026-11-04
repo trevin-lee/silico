@@ -618,7 +618,8 @@ pub enum StepStateSchema {
     /// Built: its solid made, or kept from before; a sketch, solved.
     Built,
     /// Failed on its own: a step the kernel refused, a check its result failed, a sketch
-    /// that didn't solve or makes no profile, broken references.
+    /// that didn't solve, a pad, pocket, revolve, or groove whose sketch makes no profile,
+    /// broken references.
     Failed,
     /// Not built, since a feature it uses failed, faulted, or was blocked.
     Blocked,

@@ -1008,7 +1008,7 @@ pub struct Run {
 /// reading it never waits on the recompute's work. A diagnostic, not a result (section
 /// 10): which step finishes first depends on scheduling. Clones share the count. Each
 /// change is told to whoever waits for one ([`changed_since`](Self::changed_since)): the
-/// session's watcher of its rebuild, which wakes the client as each step settles.
+/// session's watcher of its rebuild, which wakes the client as the count changes.
 #[derive(Clone, Default)]
 pub struct StepCounter(Arc<(Mutex<Counted>, Condvar)>);
 
@@ -1043,7 +1043,8 @@ pub enum StepState {
     /// Not settled yet: none of its steps running (none started, or one built and the next
     /// not started yet), or the rebuild stopped before it settled; Rebuild resumes it.
     Queued,
-    /// A step it owns is running; a sketch, its solve.
+    /// A step it owns is running; a sketch, its solve (but a sketch on a face, which reads
+    /// queued until the round that places it says what it came to).
     Running,
     /// Its solid made (its last step settled with a result, or kept from before); a sketch,
     /// solved.
@@ -1203,6 +1204,11 @@ struct Counted {
     settled: BTreeSet<Key>,
     /// The steps running, in the order they started.
     running: Vec<Key>,
+    /// How many times the count has changed as the recompute ran: a plan made, a step or a
+    /// solve started or settled, a check refused. Not the end, which its watcher tells once
+    /// it's recorded. What [`StepCounter::changed_since`] waits on, so each change wakes the
+    /// client once, whether or not it moved `done` or `steps`.
+    changes: u64,
 }
 
 impl StepCounter {
@@ -1211,22 +1217,28 @@ impl StepCounter {
         lock(&self.0.0).count.clone()
     }
 
-    /// The count once its steps or those settled differ from `seen`'s, or it has ended:
-    /// waited for, each change being told ([`Condvar`]). Of a count that has ended, at once.
-    pub fn changed_since(&self, seen: &StepCount) -> StepCount {
+    /// The count once it has changed since the change numbered `seen` (0: the recompute's
+    /// start, before anything is solved or planned), or it has ended, and the number of the
+    /// change it's at: waited for, each change being told ([`Condvar`]). Of a count that has
+    /// ended, at once. A change is any feature's state moving, or a plan's: a step's start
+    /// or a sketch's settle wakes a waiter as a step's settle does, with `done` and `steps`
+    /// as they were.
+    pub fn changed_since(&self, seen: u64) -> (StepCount, u64) {
         let (counted, told) = &*self.0;
         let mut counted = lock(counted);
-        while !counted.count.ended
-            && counted.count.done == seen.done
-            && counted.count.steps == seen.steps
-        {
+        while !counted.count.ended && counted.changes == seen {
             counted = told.wait(counted).unwrap_or_else(PoisonError::into_inner);
         }
-        counted.count.clone()
+        (counted.count.clone(), counted.changes)
     }
 
-    /// The count changed: told to whoever waits.
-    fn changed(&self) {
+    /// The count changed as `change` changes it: counted, and told to whoever waits.
+    fn change(&self, change: impl FnOnce(&mut Counted)) {
+        {
+            let mut counted = lock(&self.0.0);
+            change(&mut counted);
+            counted.changes += 1;
+        }
         self.0.1.notify_all();
     }
 
@@ -1265,8 +1277,7 @@ impl StepCounter {
         labels: BTreeMap<Key, String>,
         states: &[StepState],
     ) {
-        {
-            let mut counted = lock(&self.0.0);
+        self.change(|counted| {
             counted.settled.extend(settled);
             for (place, state) in states.iter().enumerate() {
                 counted.force(place, *state);
@@ -1277,13 +1288,12 @@ impl StepCounter {
                 labels: named,
                 rounds,
                 ..
-            } = &mut *counted;
+            } = counted;
             count.steps = count.steps.max(steps);
             count.done = settled.len().min(count.steps);
             *named = labels;
             *rounds += 1;
-        }
-        self.changed();
+        });
     }
 
     /// How many rounds the recompute has planned so far (docs/ports/attacher.md, *In
@@ -1295,12 +1305,13 @@ impl StepCounter {
 
     /// The step `key` of `plan` started: the features that own it running.
     fn started(&self, key: Key, plan: &Plan) {
-        let mut counted = lock(&self.0.0);
-        counted.running.push(key);
-        counted.count.running = counted.labels.get(&key).cloned();
-        for &f in plan.owners.get(&key).into_iter().flatten() {
-            counted.set(f, StepState::Running);
-        }
+        self.change(|counted| {
+            counted.running.push(key);
+            counted.count.running = counted.labels.get(&key).cloned();
+            for &f in plan.owners.get(&key).into_iter().flatten() {
+                counted.set(f, StepState::Running);
+            }
+        });
     }
 
     /// The step `key` of `plan` settled as `outcome` says: run (it was
@@ -1309,83 +1320,56 @@ impl StepCounter {
     /// (and what uses them, blocked), and blocked if it never runs. Superseded, they're left
     /// for the recompute's end ([`ended`](Self::ended)), which leaves what ran queued.
     fn settled(&self, key: Key, outcome: Settled, plan: &Plan) {
-        self.settle(key, outcome, plan);
-        self.changed();
+        self.change(|counted| counted.settle(key, outcome, plan));
     }
 
-    fn settle(&self, key: Key, outcome: Settled, plan: &Plan) {
-        let mut counted = lock(&self.0.0);
-        {
-            let Counted {
-                count,
-                labels,
-                running,
-                settled,
-                ..
-            } = &mut *counted;
-            if settled.insert(key) {
-                count.done = settled.len().min(count.steps);
-            }
-            if outcome != Settled::Unrun {
-                running.retain(|other| *other != key);
-                count.running = running.last().and_then(|last| labels.get(last)).cloned();
-            }
-        }
-        for &f in plan.owners.get(&key).into_iter().flatten() {
-            match outcome {
-                Settled::Made => {
-                    let last = plan.features.get(f).and_then(|p| p.steps.last());
-                    if last == Some(&key) {
-                        counted.set(f, StepState::Built);
-                    } else {
-                        counted.set(f, StepState::Queued);
-                    }
-                }
-                // The recompute is superseded, and ends: its end leaves what ran queued.
-                Settled::Superseded => {}
-                Settled::Failed(state) => {
-                    if counted.set(f, state) {
-                        counted.block_users(f, plan);
-                    }
-                }
-                Settled::Unrun => {
-                    if counted.set(f, StepState::Blocked) {
-                        counted.block_users(f, plan);
-                    }
-                }
-            }
-        }
-    }
-
-    /// The features of `plan` at `refused` failed their result's checks: each failed, and
-    /// what uses it blocked.
-    fn refused(&self, refused: &[usize], plan: &Plan) {
-        if refused.is_empty() {
+    /// The features of `plan` at `failed` failed their result's checks, each as its state
+    /// says (a measure that faulted, faulted): each so, and what uses it blocked.
+    fn refused(&self, failed: &[(usize, StepState)], plan: &Plan) {
+        if failed.is_empty() {
             return;
         }
-        let mut counted = lock(&self.0.0);
-        for &f in refused {
-            if counted.set(f, StepState::Failed) {
-                counted.block_users(f, plan);
+        self.change(|counted| {
+            for &(f, state) in failed {
+                if counted.set(f, state) {
+                    counted.block_users(f, plan);
+                }
             }
-        }
+        });
     }
 
     /// The sketch at `place` in the document started its solve.
     fn sketch_started(&self, place: Option<usize>) {
         if let Some(place) = place {
-            lock(&self.0.0).set(place, StepState::Running);
+            self.change(|counted| {
+                counted.set(place, StepState::Running);
+            });
         }
     }
 
     /// The sketch at `place` in the document settled as `state`: built if it solved, failed
     /// or faulted if not.
     fn sketch_settled(&self, place: Option<usize>, state: StepState) {
-        let Some(place) = place else {
-            return;
-        };
-        lock(&self.0.0).set(place, state);
-        self.changed();
+        if let Some(place) = place {
+            self.change(|counted| {
+                counted.set(place, state);
+            });
+        }
+    }
+
+    /// The solves of the sketches at `places` panicked, a bug: the one solving, faulted,
+    /// and what uses it (as `plan` has it, if one is made) blocked.
+    fn sketches_panicked(&self, places: impl IntoIterator<Item = usize>, plan: Option<&Plan>) {
+        self.change(|counted| {
+            for place in places {
+                if counted.state(place) == Some(StepState::Running)
+                    && counted.set(place, StepState::Faulted)
+                    && let Some(plan) = plan
+                {
+                    counted.block_users(place, plan);
+                }
+            }
+        });
     }
 
     /// The rebuild's model made: each feature's state as its outcome is, whatever the
@@ -1419,11 +1403,79 @@ impl StepCounter {
             count.running = None;
             count.ended = true;
         }
-        self.changed();
+        // Told, not counted: the watcher tells the end once it's recorded.
+        self.0.1.notify_all();
     }
 }
 
 impl Counted {
+    /// The step `key` of `plan` settled as `outcome` says ([`StepCounter::settled`]).
+    fn settle(&mut self, key: Key, outcome: Settled, plan: &Plan) {
+        if self.settled.insert(key) {
+            self.count.done = self.settled.len().min(self.count.steps);
+        }
+        if outcome != Settled::Unrun {
+            self.running.retain(|other| *other != key);
+            self.count.running = self
+                .running
+                .last()
+                .and_then(|last| self.labels.get(last))
+                .cloned();
+        }
+        for &f in plan.owners.get(&key).into_iter().flatten() {
+            match outcome {
+                Settled::Made => {
+                    let last = plan.features.get(f).and_then(|p| p.steps.last());
+                    if last != Some(&key) {
+                        self.set(f, StepState::Queued);
+                    } else if self.set(f, StepState::Built) {
+                        self.decide_refused_users(f, plan);
+                    }
+                }
+                // The recompute is superseded, and ends: its end leaves what ran queued.
+                Settled::Superseded => {}
+                Settled::Failed(state) => {
+                    if self.set(f, state) {
+                        self.block_users(f, plan);
+                    }
+                }
+                Settled::Unrun => {
+                    if self.set(f, StepState::Blocked) {
+                        self.block_users(f, plan);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The feature at `place` built: each of its users the plan refused before any step
+    /// (its sketch's profile, its axis) failed, once all it uses is built, as the model has
+    /// it (blocked if an input didn't build; failed if all did).
+    fn decide_refused_users(&mut self, place: usize, plan: &Plan) {
+        for &user in plan.dependants.get(place).into_iter().flatten() {
+            let Some(planned) = plan.features.get(user) else {
+                continue;
+            };
+            let Some(error) = &planned.refused else {
+                continue;
+            };
+            let built = planned
+                .uses
+                .iter()
+                .chain(&planned.sweeps)
+                .all(|&u| self.state(u) == Some(StepState::Built));
+            if built && self.set(user, StepState::failed(error)) {
+                self.block_users(user, plan);
+            }
+        }
+    }
+
+    /// The state of the feature at `place` in the document, if it's listed.
+    fn state(&self, place: usize) -> Option<StepState> {
+        let slot = self.slots.get(place).copied().flatten()?;
+        self.count.features.states.get(slot).copied()
+    }
+
     /// The feature at `place` in the document moved to `to`, if its state may become that
     /// ([`StepState::may_become`]): whether it moved. A suppressed feature, or one past the
     /// list (a counter that listed no document), isn't listed: nothing moves.
@@ -1460,6 +1512,28 @@ impl Counted {
             }
         }
     }
+}
+
+/// Where the sketch `id` is in `document`, if its solve's start and settle are reported
+/// ([`StepCounter::sketch_started`]): not for a sketch on a face. Its solve comes before its
+/// face is placed, and the model words it by its placement first (a face broken, or one whose
+/// solid didn't build, is its outcome however it solved, as FreeCAD attaches a sketch before
+/// solving it): so it's queued until the round that places it says what it came to, and
+/// never goes back from what its solve said.
+fn reported(document: &Checked, id: &FeatureId) -> Option<usize> {
+    let place = document.place(id)?;
+    match &document.document().features.get(place)?.operation {
+        Operation::Sketch(sketch) if sketch.plane.face().is_some() => None,
+        _ => Some(place),
+    }
+}
+
+/// Features a check refused, each failed ([`StepCounter::refused`]).
+fn failed(refused: Vec<usize>) -> Vec<(usize, StepState)> {
+    refused
+        .into_iter()
+        .map(|f| (f, StepState::Failed))
+        .collect()
 }
 
 /// A recompute's count ended however its thread ends, a panic too, so no one waiting for
@@ -3160,27 +3234,31 @@ impl Plan {
     /// Each feature's state as a round's plan finds it, by place (a suppressed feature's
     /// is never read): from the results `done` holds (kept, read from the cache, or carried
     /// from the rounds before), the steps `doomed` (an input failed), the sketches `solved`
-    /// so far, and the features `refusals` holds. As the model words its outcomes, in
-    /// timeline order: a feature that waits on a face is queued; a sketch is placed, then
-    /// solved; a feature using one that failed, faulted, or was blocked is blocked; one the
-    /// plan or a check refused failed; then by its own steps' results, the first that failed
-    /// failing it, its last one made building it; and otherwise queued.
+    /// so far, the features `refusals` holds, and the solids `unmeasured`. As the model words
+    /// its outcomes, in timeline order: a sketch is placed, then solved (one whose face isn't
+    /// resolved yet is queued); a feature using one that failed, faulted, or was blocked is
+    /// blocked; one that waits on a face queued; one the plan refused failed once all it
+    /// uses is built (queued until then); one a check refused failed; then by its own steps'
+    /// results, the first that failed failing it, its last one made building it (unless its
+    /// check failed for want of a measure); and otherwise queued.
     fn states(
         &self,
         done: &BTreeMap<Key, StepResult>,
         doomed: &BTreeSet<Key>,
         solved: &SketchResults,
         refusals: &Refusals,
+        unmeasured: &BTreeMap<Key, Error>,
     ) -> Vec<StepState> {
         let mut states: Vec<StepState> = Vec::with_capacity(self.features.len());
         for (i, planned) in self.features.iter().enumerate() {
+            let inputs = || planned.uses.iter().chain(&planned.sweeps);
             let unbuilt = |u: &usize| {
                 matches!(
                     states.get(*u),
                     Some(StepState::Failed | StepState::Faulted | StepState::Blocked)
                 )
             };
-            let state = if planned.suppressed || self.waits.contains(&i) {
+            let state = if planned.suppressed {
                 StepState::Queued
             } else if let Some(key) = planned.sketch {
                 match (&planned.on_face, solved.get(&key)) {
@@ -3196,12 +3274,20 @@ impl Plan {
                     }
                     (OnFace::No | OnFace::Placed(Placed::Frame(_)), None) => StepState::Queued,
                 }
-            } else if planned.uses.iter().chain(&planned.sweeps).any(unbuilt) {
+            } else if inputs().any(unbuilt) {
                 StepState::Blocked
+            } else if self.waits.contains(&i) {
+                StepState::Queued
             } else if let Some(error) = &planned.refused {
-                StepState::failed(error)
+                if inputs().all(|u| states.get(*u) == Some(&StepState::Built)) {
+                    StepState::failed(error)
+                } else {
+                    StepState::Queued
+                }
             } else if refusals.refused.contains(&i) {
                 StepState::Failed
+            } else if let Some(error) = self.unmeasured_failure(i, done, unmeasured) {
+                StepState::failed(error)
             } else {
                 let failed = planned.steps.iter().find_map(|key| match done.get(key) {
                     Some(Err(error)) => Some(StepState::failed(error)),
@@ -3217,6 +3303,55 @@ impl Plan {
             states.push(state);
         }
         states
+    }
+
+    /// The features whose checks the measure of `key` decided they fail for want of a
+    /// measure ([`unmeasured_failure`](Self::unmeasured_failure)), each with its state.
+    fn unmeasured_failures(
+        &self,
+        key: &Key,
+        done: &BTreeMap<Key, StepResult>,
+        unmeasured: &BTreeMap<Key, Error>,
+    ) -> Vec<(usize, StepState)> {
+        self.judged_by
+            .get(key)
+            .into_iter()
+            .flatten()
+            .filter_map(|&f| {
+                let error = self.unmeasured_failure(f, done, unmeasured)?;
+                Some((f, StepState::failed(error)))
+            })
+            .collect()
+    }
+
+    /// What the check of the feature at `i` fails with for want of a measure, as the model
+    /// finds it ([`checked`]): a sweep's check, its solid built, and that solid's measure
+    /// refused, or else, its solid measured, its base's. None while a measure it needs is
+    /// still to come, or if none is refused.
+    fn unmeasured_failure<'a>(
+        &self,
+        i: usize,
+        done: &BTreeMap<Key, StepResult>,
+        unmeasured: &'a BTreeMap<Key, Error>,
+    ) -> Option<&'a Error> {
+        let planned = self.features.get(i)?;
+        let Some(Check::Sweep(_)) = &planned.check else {
+            return None;
+        };
+        let key = planned.key()?;
+        let Some(Ok(built)) = done.get(&key) else {
+            return None;
+        };
+        if let Some(error) = unmeasured.get(&key) {
+            return Some(error);
+        }
+        measured_of(built)?;
+        let base = planned
+            .uses
+            .first()
+            .and_then(|&b| self.features.get(b))
+            .and_then(Planned::key)?;
+        unmeasured.get(&base)
     }
 
     /// Adds to `refusals` the features `key`'s result (or measure) refuses, now that `done`
@@ -3950,7 +4085,13 @@ impl<K: Kernel + 'static> Engine<K> {
             .iter()
             .filter(|key| schedule.done.contains_key(key) || doomed.contains(key))
             .copied();
-        let states = plan.states(&schedule.done, &doomed, solutions, &schedule.refusals);
+        let states = plan.states(
+            &schedule.done,
+            &doomed,
+            solutions,
+            &schedule.refusals,
+            &schedule.unmeasured,
+        );
         progress.planned(plan.order.len(), settled, plan.labels(document), &states);
         let schedule = Mutex::new(schedule);
         let changed = Condvar::new();
@@ -3989,6 +4130,10 @@ impl<K: Kernel + 'static> Engine<K> {
                 Ok(Ok(solved)) => Ok(solved),
                 // A panic under a solve is a bug in Silico, as under a step.
                 Ok(Err(panic)) | Err(panic) => {
+                    progress.sketches_panicked(
+                        to_solve.iter().filter_map(|(id, _)| reported(document, id)),
+                        Some(plan),
+                    );
                     Err(Error::new(ErrorCode::Internal, "a sketch's solve panicked")
                         .with_cause(panic_text(panic.as_ref()))
                         .with_suggestion(crate::worker::SILICO_BUG))
@@ -4019,7 +4164,7 @@ impl<K: Kernel + 'static> Engine<K> {
     /// those that solved. None if a newer recompute supersedes this one meanwhile.
     fn solve_swept(
         &self,
-        document: &Checked,
+        document: &Arc<Checked>,
         generation: Generation,
         reads: Reads,
         progress: &StepCounter,
@@ -4060,6 +4205,12 @@ impl<K: Kernel + 'static> Engine<K> {
                 self.solve_sketches(document, &to_solve, generation, progress)
             }))
             .map_err(|panic| {
+                // What sweeps it isn't planned yet: blocked as a plan of the document has it.
+                let plan = Plan::of(document, &BTreeMap::new(), &BTreeMap::new());
+                progress.sketches_panicked(
+                    to_solve.iter().filter_map(|(id, _)| reported(document, id)),
+                    Some(&plan),
+                );
                 Error::new(ErrorCode::Internal, "a sketch's solve panicked")
                     .with_cause(panic_text(panic.as_ref()))
                     .with_suggestion(crate::worker::SILICO_BUG)
@@ -4218,7 +4369,7 @@ impl<K: Kernel + 'static> Engine<K> {
             Err(error) => {
                 let state = StepState::failed(&error);
                 for (id, key) in to_solve {
-                    progress.sketch_settled(document.place(id), state);
+                    progress.sketch_settled(reported(document, id), state);
                     solved.insert(*key, solver_failure(error.clone(), id));
                 }
                 return Some(solved);
@@ -4226,7 +4377,7 @@ impl<K: Kernel + 'static> Engine<K> {
         }
         let solver = lent.solver.as_mut()?;
         for (id, key) in to_solve {
-            let place = document.place(id);
+            let place = reported(document, id);
             let stopper = match solver.stopper() {
                 Ok(stopper) => stopper,
                 // The solver's failure, not the sketch's: not kept.
@@ -4385,6 +4536,9 @@ impl<K: Kernel + 'static> Engine<K> {
             let ran = match outcome {
                 Ok(ran) => ran,
                 Err(panic) => {
+                    // A bug's failure, as a fault's: its features faulted, and what uses them
+                    // blocked, not left queued under a faulted rebuild.
+                    progress.settled(key, Settled::Failed(StepState::Faulted), plan);
                     s.running -= 1;
                     let said = panic
                         .downcast_ref::<&str>()
@@ -4449,7 +4603,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     if made {
                         woken += release(&mut s, key);
                         let Schedule { done, refusals, .. } = &mut *s;
-                        progress.refused(&plan.judge(&key, done, refusals), plan);
+                        progress.refused(&failed(plan.judge(&key, done, refusals)), plan);
                         // A feature's solid is measured once it's made, by a job of its own:
                         // what uses it doesn't wait for that.
                         // This thread takes a job itself next (it has nothing to write: a
@@ -4470,8 +4624,16 @@ impl<K: Kernel + 'static> Engine<K> {
                     s.unmeasured.remove(&key);
                     // The checks this measure decides (its feature's, and those whose base it
                     // is): what only refused features need is no longer started.
-                    let Schedule { done, refusals, .. } = &mut *s;
-                    progress.refused(&plan.judge(&key, done, refusals), plan);
+                    let Schedule {
+                        done,
+                        refusals,
+                        unmeasured,
+                        ..
+                    } = &mut *s;
+                    let mut refused = failed(plan.judge(&key, done, refusals));
+                    // Its base's measure refused, a sweep made from it fails its check.
+                    refused.extend(plan.unmeasured_failures(&key, done, unmeasured));
+                    progress.refused(&refused, plan);
                 }
                 Ran::Measured(Outcome::Done(Err(error))) => {
                     // A solid that couldn't be measured is kept on disk all the same, so the
@@ -4491,6 +4653,12 @@ impl<K: Kernel + 'static> Engine<K> {
                         to_keep = Some(built);
                     }
                     s.unmeasured.insert(key, error);
+                    // The checks that needed it fail now, as the model will say: its own
+                    // sweep's, and those of the sweeps made from it.
+                    progress.refused(
+                        &plan.unmeasured_failures(&key, &s.done, &s.unmeasured),
+                        plan,
+                    );
                 }
             }
             // A job counts as running until its result is written to the cache, so a
@@ -5731,44 +5899,66 @@ mod tests {
 
     #[test]
     fn a_step_counts_change_is_waited_for_and_nothing_else_ends_the_wait() {
-        // `changed_since`: a waiter returns once `steps` or `done` moves, or the count
-        // ends; never while nothing changes (the watcher would spin, waking for nothing).
+        // `changed_since`: a waiter returns once the count changes (a plan, a step's or a
+        // sketch's start or settle, whether or not it moves `done` or `steps`), or it ends;
+        // never while nothing changes (the watcher would spin, waking for nothing): a
+        // refusal of nothing, or a sketch's solve that isn't reported, changes nothing.
         let counter = StepCounter::default();
+        counter.listing(&checked_of(&[
+            r#"{"id": "b0000001", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}"#.to_owned(),
+        ]));
         let plan = empty_plan();
         let (said, answer) = mpsc::channel();
         let waiting = counter.clone();
         let waiter = std::thread::spawn(move || {
-            let mut seen = waiting.now();
-            for _ in 0..3 {
-                seen = waiting.changed_since(&seen);
-                let _ = said.send(seen.clone());
+            let mut seen = 0;
+            for _ in 0..6 {
+                let (count, changes) = waiting.changed_since(seen);
+                let _ = said.send((count, changes));
+                seen = changes;
             }
         });
         let quiet = Duration::from_millis(200);
         let wait = Duration::from_secs(60);
-        assert!(
-            answer.recv_timeout(quiet).is_err(),
-            "returned with nothing changed"
-        );
+        let nothing = |why: &str| {
+            assert!(answer.recv_timeout(quiet).is_err(), "returned with {why}");
+        };
+        nothing("nothing changed");
         counter.planned(2, [], BTreeMap::new(), &[]);
-        let planned = answer.recv_timeout(wait).unwrap();
-        assert_eq!((planned.done, planned.steps, planned.ended), (0, 2, false));
-        assert!(
-            answer.recv_timeout(quiet).is_err(),
-            "returned with nothing changed"
+        let (planned, one) = answer.recv_timeout(wait).unwrap();
+        assert_eq!(
+            (planned.done, planned.steps, planned.ended, one),
+            (0, 2, false, 1)
         );
+        nothing("nothing changed");
+        counter.refused(&[], &plan);
+        counter.sketch_started(None);
+        counter.sketch_settled(None, StepState::Built);
+        nothing("a refusal of nothing, or a solve not reported");
+        // A step's start: neither count moves, but the step running does.
         let key = Key([7; 32]);
         counter.started(key, &plan);
-        assert!(
-            answer.recv_timeout(quiet).is_err(),
-            "a step's start moved neither count"
+        let (started, two) = answer.recv_timeout(wait).unwrap();
+        assert_eq!((started.done, started.steps, two), (0, 2, 2));
+        nothing("nothing changed");
+        // A sketch's settle, with no plan's count moving: the box's state moves.
+        counter.sketch_settled(Some(0), StepState::Failed);
+        let (sketch, three) = answer.recv_timeout(wait).unwrap();
+        assert_eq!((sketch.done, sketch.steps, three), (0, 2, 3));
+        assert_eq!(
+            sketch.features.get(&FeatureId::new("b0000001").unwrap()),
+            Some(StepState::Failed)
         );
         counter.settled(key, Settled::Made, &plan);
-        let settled = answer.recv_timeout(wait).unwrap();
-        assert_eq!((settled.done, settled.steps), (1, 2));
+        let (settled, four) = answer.recv_timeout(wait).unwrap();
+        assert_eq!((settled.done, settled.steps, four), (1, 2, 4));
+        // The end is told, not counted: the watcher tells it once it's recorded.
         counter.ended(true);
-        let ended = answer.recv_timeout(wait).unwrap();
-        assert_eq!((ended.done, ended.steps, ended.ended), (2, 2, true));
+        let (ended, at) = answer.recv_timeout(wait).unwrap();
+        assert_eq!((ended.done, ended.steps, ended.ended, at), (2, 2, true, 4));
+        // Of a count that has ended, at once.
+        let (again, _) = answer.recv_timeout(wait).unwrap();
+        assert!(again.ended);
         waiter.join().unwrap();
     }
 
@@ -5964,14 +6154,55 @@ mod tests {
         (face_walks() - before, progress.rounds(), model)
     }
 
+    /// Whether a feature read `was` in one copy of a count may read `is` in a later one, as
+    /// a rebuild may move it, by hand from the decision: unsettled (queued, or running)
+    /// becomes anything; built may yet fail its check, or fault, or be blocked; failed,
+    /// faulted, and blocked are final. Copies may skip states between them, so this is the
+    /// moves' closure, not each move.
+    fn may_follow(was: StepState, is: StepState) -> bool {
+        use StepState::{Blocked, Built, Failed, Faulted, Queued, Running};
+        was == is
+            || matches!(was, Queued | Running)
+            || (was == Built && matches!(is, Failed | Faulted | Blocked))
+    }
+
+    /// Each feature's states over `copies` of a count, in the order they were taken, never
+    /// go back ([`may_follow`]), and nothing reads running in a copy of a count that has
+    /// ended.
+    #[track_caller]
+    fn never_back(copies: &[StepCount]) {
+        for pair in copies.windows(2) {
+            let [before, after] = pair else { continue };
+            assert_eq!(before.features.len(), after.features.len());
+            for ((feature, was), (_, is)) in before.features.iter().zip(after.features.iter()) {
+                assert!(
+                    may_follow(was, is),
+                    "{feature} went from {was:?} to {is:?}: {copies:#?}"
+                );
+            }
+        }
+        for copy in copies.iter().filter(|copy| copy.ended) {
+            for (feature, state) in copy.features.iter() {
+                assert_ne!(state, StepState::Running, "{feature} running once ended");
+            }
+        }
+    }
+
     #[test]
-    fn a_rebuild_in_rounds_ends_with_each_features_state_its_models_outcome() {
-        // A box, two sketches on its top in turn, each padded onto the last: planned in
-        // rounds, the sketches waiting on their faces. The fake types no face a plane, so the
-        // first sketch's face is broken: failed, as its own problem; its pad, the second
-        // sketch, and its pad blocked on it; the box built. After the last round, nothing is
-        // queued. And a counter told nothing but the model's outcomes says the same: the
-        // states a finished rebuild leaves are its model's.
+    fn a_rebuild_in_rounds_never_takes_a_feature_back_and_ends_with_its_models_outcome() {
+        // A box, two sketches on its top in turn, each padded onto the last, and a third on
+        // its top that nothing sweeps: planned in rounds, the sketches waiting on their faces.
+        // The fake types no face a plane, so the first sketch's face is broken: failed, as its
+        // own problem; its pad, the second sketch, its pad, and the third sketch blocked on
+        // it (their faces' names are found through the first pad's solid); the box built.
+        // After the last round, nothing is queued. And a counter told nothing but the model's
+        // outcomes says the same: the states a finished rebuild leaves are its model's.
+        //
+        // On the way, a copy of the count is taken as each sketch's solve starts and each
+        // kernel request is made (by the fakes' own rules), and as often as a waiter on its
+        // changes is woken: no feature ever goes back in them. Once, the swept sketches
+        // solved before the first plan read running, then built, and the first round's plan
+        // took them back to queued (they wait on their faces), then failed or blocked.
         let mut features = vec![
             r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#
                 .to_owned(),
@@ -5986,12 +6217,47 @@ mod tests {
             features.push(face_sketch(&sketch, "b0000001.box.Face6", n as f64));
             features.push(face_pad(&format!("p{n:07}"), &base, &sketch));
         }
+        features.push(face_sketch("s0000003", "b0000001.box.Face6", 3.0));
         let document = Arc::new(checked_of(&features));
-        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
-            .with_sketches(crate::fake::FakeSketches::new());
-        let generation = lock(&engine.engine.state).generation;
         let progress = StepCounter::default();
         progress.listing(&document);
+        let copies: Arc<Mutex<Vec<StepCount>>> = Arc::default();
+        // Each copy taken with the list held, so the list is in the order they were taken.
+        let copy = {
+            let (copies, progress) = (Arc::clone(&copies), progress.clone());
+            move || {
+                let mut copies = lock(&copies);
+                copies.push(progress.now());
+            }
+        };
+        let kernel = crate::fake::FakeKernel::new(2).unwrap();
+        let on_request = copy.clone();
+        kernel.refuse(move |_| {
+            on_request();
+            None
+        });
+        let sketches = crate::fake::FakeSketches::new();
+        let on_solve = copy.clone();
+        sketches.answer(move |system| {
+            on_solve();
+            Ok(crate::fake::FakeSketches::as_sent(system))
+        });
+        let engine = Recompute::new(kernel).with_sketches(sketches);
+        let generation = lock(&engine.engine.state).generation;
+        let waiter = {
+            let (progress, copy) = (progress.clone(), copy.clone());
+            std::thread::spawn(move || {
+                let mut seen = 0;
+                loop {
+                    let (count, changes) = progress.changed_since(seen);
+                    copy();
+                    if count.ended {
+                        break;
+                    }
+                    seen = changes;
+                }
+            })
+        };
         let RunOutcome::Published(model) = engine
             .engine
             .run(&document, generation, &progress, Reads::Kept)
@@ -5999,9 +6265,13 @@ mod tests {
         else {
             panic!("not published");
         };
+        // As the recompute's own thread ends it.
+        progress.ended(true);
+        waiter.join().unwrap();
+        copy();
         assert!(progress.rounds() > 1, "{} rounds", progress.rounds());
-        use StepState::{Blocked, Built, Failed};
-        let want = [Built, Failed, Blocked, Blocked, Blocked];
+        use StepState::{Blocked, Built, Failed, Queued};
+        let want = [Built, Failed, Blocked, Blocked, Blocked, Blocked];
         let states = |counter: &StepCounter| -> Vec<StepState> {
             counter.now().features.iter().map(|(_, s)| s).collect()
         };
@@ -6010,6 +6280,31 @@ mod tests {
         told.listing(&document);
         told.concluded(&model);
         assert_eq!(states(&told), want);
+        let copies = lock(&copies).clone();
+        // Three solves and the box's step at least, each copied, and the end.
+        assert!(copies.len() >= 5, "{copies:#?}");
+        never_back(&copies);
+        // A sketch on a face is queued until the round that places it says what it came to:
+        // never running, nor built, before then (its solve isn't what it comes to).
+        for copy in &copies {
+            for (feature, state) in copy.features.iter() {
+                if feature.as_str().starts_with('s') {
+                    assert!(
+                        matches!(state, Queued | Failed | Blocked),
+                        "{feature} read {state:?}"
+                    );
+                }
+            }
+        }
+        // The swept sketches' solves came before any plan; then the box's step; each
+        // copied with every sketch queued.
+        let first = FeatureId::new("s0000001").unwrap();
+        assert!(
+            copies
+                .iter()
+                .any(|c| c.steps == 0 && c.features.get(&first) == Some(Queued)),
+            "{copies:#?}"
+        );
     }
 
     #[test]
