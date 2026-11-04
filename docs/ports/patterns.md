@@ -409,7 +409,7 @@ Three feature types, each consuming its `base` (D2) and making one solid. Every 
   - runs **one boolean**: `base` the argument, each copy a separate tool (`SetTools`), as the cut already expands a compound tool (booleans.md, M3.6). Never one compound of copies, which OCCT cuts wrongly when they overlap;
   - returns the result and its history, with `base` as input 0 and copy k as input k. Each copy's elements are numbered as the tool's, so the core names copy k from the tool's map without asking;
   - reports each result solid's faces as one more raw list in `Topology` (`solid_faces`, sorted, validated like the rest). The core needs it to say which instances lie off the base, and nothing else can read it: invariant 2 keeps the decision in the core.
-- **No fuzzy value, no parallel mode, no refine,** as Silico's other booleans (booleans.md, S8). The oracle sets `Refine = False`.
+- **FreeCAD 1.1.3's automatic fuzzy value, no parallel mode, no refine,** as Silico's other booleans (booleans.md, S8): the box is the base's and every copy's, so copies a hair apart, under 1e-6 of it, merge as they do in 1.1.3's LinearPattern. The oracle sets `Refine = False`.
 - **Several originals are one step each, in timeline order** (FreeCAD's per-original loop, main's ordering). A pad's copies are fused, then a later pocket's cut. Each step is keyed and cached like any other (M2.5).
 - **The tool** is the original's sweep step result (the `Prism`, `PrismThroughAll`, or `Revolution` key the original's plan already has), so it's never rebuilt. For `solid`, it's `base`'s result.
 - **The result check** is every operation's (fillet.md): valid where it changed, and whole if its inputs were.
