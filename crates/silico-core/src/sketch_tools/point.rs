@@ -63,7 +63,7 @@ fn place(step: &mut Step<'_, '_, '_>, at: Xy) -> Outcome {
     if !within_reach(placed.at) {
         return Outcome::said(Message::TooFar);
     }
-    let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+    let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
     match builder.point(&placed, false) {
         Ok(_) => Outcome::added(builder.members),
         Err(error) => failed(error),

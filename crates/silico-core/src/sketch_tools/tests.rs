@@ -80,6 +80,8 @@ struct Drive {
     revision: Revision,
     tolerance: f64,
     automatic: bool,
+    /// *For construction*.
+    construction: bool,
     keys: Modifiers,
     ids: Counter,
     /// Each `sketch_add`'s members, described against the sketch it was added to.
@@ -98,6 +100,7 @@ impl Drive {
             revision: Revision::OPENED,
             tolerance: TOLERANCE,
             automatic: true,
+            construction: false,
             keys: Modifiers::default(),
             ids: Counter(0),
             added: Vec::new(),
@@ -115,6 +118,7 @@ impl Drive {
             sketch: &self.sketch,
             tolerance: self.tolerance,
             automatic_relations: self.automatic,
+            construction: self.construction,
         };
         let outcome = self.tool.handle(&context, &mut self.ids, event, self.keys);
         if let Some(members) = &outcome.add {
@@ -1335,6 +1339,706 @@ fn escape_leaves_each_tool_mid_gesture_adding_nothing() {
     }
 }
 
+// --- A press that ends with no release (Event::Cancel) -------------------------------------
+
+/// The pointer clicked at `(x, y)`, as the viewport sends it: a move there, a press, a
+/// release.
+fn clicked(x: f64, y: f64) -> [Event; 3] {
+    [
+        Event::Move([x, y]),
+        Event::Press([x, y]),
+        Event::Release([x, y]),
+    ]
+}
+
+/// A drag from `from` to `to`, as the viewport sends it.
+fn dragged(from: Xy, to: Xy) -> [Event; 4] {
+    [
+        Event::Move(from),
+        Event::Press(from),
+        Event::Move(to),
+        Event::Release(to),
+    ]
+}
+
+/// A press cancelled mid-gesture: the tool, the sketch, the events before it (the last a
+/// move to the press's place, as the viewport sends one), where it's pressed, and the
+/// events after the cancel, the first a release far from everything, whose press the tool
+/// shouldn't have.
+struct Cancelled {
+    kind: ToolKind,
+    sketch: Sketch,
+    before: Vec<Event>,
+    at: Xy,
+    after: Vec<Event>,
+}
+
+impl Drive {
+    fn events(&mut self, events: &[Event]) -> &mut Self {
+        for event in events {
+            self.send(*event);
+        }
+        self
+    }
+}
+
+/// Far from every figure below, and level with or above none of their points: a release
+/// there wakes nothing and lines nothing up.
+const STRAY: Xy = [-35.0, -45.0];
+
+fn cancelled_scenarios() -> Vec<Cancelled> {
+    let then = |first: &[Event], rest: &[&[Event]]| -> Vec<Event> {
+        let mut events = first.to_vec();
+        for part in rest {
+            events.extend_from_slice(part);
+        }
+        events
+    };
+    let stray = [Event::Release(STRAY)];
+    let mut scenarios = Vec::new();
+    // The gesture's first press cancelled: each tool idle again, so the stray release does
+    // nothing and the gesture after it is drawn from its own first press.
+    for kind in [
+        ToolKind::Line,
+        ToolKind::CornerRectangle,
+        ToolKind::CenterRectangle,
+        ToolKind::Circle,
+        ToolKind::Point,
+    ] {
+        scenarios.push(Cancelled {
+            kind,
+            sketch: empty(),
+            before: vec![Event::Move([10.0, 10.0])],
+            at: [10.0, 10.0],
+            after: then(&stray, &[&dragged([50.0, 50.0], [80.0, 62.0])]),
+        });
+    }
+    scenarios.push(Cancelled {
+        kind: ToolKind::CenterpointArc,
+        sketch: empty(),
+        before: vec![Event::Move([10.0, 10.0])],
+        at: [10.0, 10.0],
+        after: then(
+            &stray,
+            &[
+                &dragged([50.0, 50.0], [60.0, 50.0]),
+                &[Event::Move([55.0, 55.0])],
+                &clicked(50.0, 60.0),
+            ],
+        ),
+    });
+    scenarios.push(Cancelled {
+        kind: ToolKind::ThreePointArc,
+        sketch: empty(),
+        before: vec![Event::Move([10.0, 10.0])],
+        at: [10.0, 10.0],
+        after: then(
+            &stray,
+            &[&dragged([50.0, 50.0], [70.0, 50.0]), &clicked(60.0, 55.0)],
+        ),
+    });
+    scenarios.push(Cancelled {
+        kind: ToolKind::TangentArc,
+        sketch: one_line(),
+        before: vec![Event::Move([20.1, 10.1])],
+        at: [20.1, 10.1],
+        after: then(&stray, &[&dragged([20.1, 10.1], [20.0, 20.0])]),
+    });
+    // A later press cancelled: the gesture's first point (or a chain's segment) placed, a
+    // press after it cancelled, then the next click.
+    let later =
+        |kind: ToolKind, sketch: Sketch, first: &[Event], at: Xy, next: &[Event]| Cancelled {
+            kind,
+            sketch,
+            before: then(first, &[&[Event::Move(at)]]),
+            at,
+            after: then(&stray, &[next]),
+        };
+    scenarios.push(later(
+        ToolKind::Line,
+        empty(),
+        &then(&clicked(10.0, 10.0), &[&clicked(40.0, 30.0)]),
+        [70.0, 5.0],
+        &clicked(60.0, 50.0),
+    ));
+    for kind in [
+        ToolKind::CornerRectangle,
+        ToolKind::CenterRectangle,
+        ToolKind::Circle,
+    ] {
+        scenarios.push(later(
+            kind,
+            empty(),
+            &clicked(50.0, 50.0),
+            [70.0, 5.0],
+            &clicked(80.0, 62.0),
+        ));
+    }
+    scenarios.push(later(
+        ToolKind::Point,
+        empty(),
+        &clicked(12.0, 34.0),
+        [70.0, 5.0],
+        &clicked(80.0, 62.0),
+    ));
+    // The centrepoint arc mid-sweep: the centre (50, 50), the start (60, 50), the pointer
+    // at 45°, which the press and its moves swing clockwise; put back, the sweep is +45°
+    // again, and the click at 90° ends a quarter arc counter-clockwise. The stray release,
+    // at 45° (58, 58), doesn't turn it.
+    scenarios.push(Cancelled {
+        kind: ToolKind::CenterpointArc,
+        sketch: empty(),
+        before: then(
+            &clicked(50.0, 50.0),
+            &[&clicked(60.0, 50.0), &[Event::Move([55.0, 55.0])]],
+        ),
+        at: [55.0, 55.0],
+        after: then(&[Event::Release([58.0, 58.0])], &[&clicked(50.0, 60.0)]),
+    });
+    scenarios.push(later(
+        ToolKind::ThreePointArc,
+        empty(),
+        &then(&clicked(50.0, 50.0), &[&clicked(70.0, 50.0)]),
+        [30.0, 80.0],
+        &clicked(60.0, 55.0),
+    ));
+    scenarios.push(later(
+        ToolKind::TangentArc,
+        one_line(),
+        &clicked(20.1, 10.1),
+        [35.0, 30.0],
+        &clicked(20.0, 20.0),
+    ));
+    scenarios
+}
+
+#[test]
+fn a_cancelled_press_is_as_if_it_had_never_happened() {
+    // Each tool, its first press or a later one cancelled, after the press alone and after
+    // the press and moves that take it past the tolerance (a drag, a sweep): the tool makes
+    // exactly what a twin makes that never saw the press, its IDs, what it says, its
+    // preview, and whether it's busy. Without the cancel the press would have changed what
+    // they make (checked below, so the comparison can fail): the stray release would have
+    // ended the press's gesture.
+    for s in cancelled_scenarios() {
+        let moves: [&[Xy]; 2] = [
+            &[],
+            &[
+                [s.at[0] + 20.0, s.at[1] + 7.0],
+                [s.at[0] - 9.0, s.at[1] - 13.0],
+            ],
+        ];
+        for moves in moves {
+            let what = format!("{:?} pressed at {:?}, moved {moves:?}", s.kind, s.at);
+            let mut twin = Drive::new(s.kind, s.sketch.clone());
+            twin.events(&s.before).events(&s.after);
+            assert!(!twin.adds().is_empty(), "{what}: the twin makes something");
+
+            let mut d = Drive::new(s.kind, s.sketch.clone());
+            d.events(&s.before);
+            let (preview, busy, woken) = (
+                d.tool.preview().clone(),
+                d.tool.busy(),
+                d.tool.woken.clone(),
+            );
+            d.send(Event::Press(s.at));
+            for &m in moves {
+                d.send(Event::Move(m));
+            }
+            assert_eq!(d.send(Event::Cancel), Outcome::default(), "{what}");
+            // The gesture and its preview as they were before the press; the press and
+            // moves woke nothing the move before it hadn't.
+            assert_eq!(d.tool.preview(), &preview, "{what}");
+            assert_eq!(d.tool.preview().measures, preview.measures, "{what}");
+            assert_eq!(d.tool.busy(), busy, "{what}");
+            assert_eq!(d.tool.woken, woken, "{what}");
+            d.events(&s.after);
+            assert_eq!(d.adds(), twin.adds(), "{what}");
+            assert_eq!(d.made, twin.made, "{what}");
+            assert_eq!(d.messages, twin.messages, "{what}");
+            assert_eq!(d.tool.preview(), twin.tool.preview(), "{what}");
+            assert_eq!(d.tool.busy(), twin.tool.busy(), "{what}");
+            assert!(!d.left, "{what}");
+
+            let mut kept = Drive::new(s.kind, s.sketch.clone());
+            kept.events(&s.before).events(&[Event::Press(s.at)]);
+            for &m in moves {
+                kept.send(Event::Move(m));
+            }
+            kept.events(&s.after);
+            assert_ne!(
+                (kept.adds(), kept.messages),
+                (twin.adds(), twin.messages),
+                "{what}: the press, not cancelled, changes what's made"
+            );
+        }
+    }
+}
+
+#[test]
+fn what_the_twins_make_is_the_gesture_after_the_cancel() {
+    // The twins above, worked by hand for the line and the circle. The line's first press
+    // cancelled, then the drag (50, 50) to (80, 62): one line, at atan(12/30) = 21.8°, near
+    // no axis. The circle's: centre (50, 50), radius √(30² + 12²) = √1044 = 32.310989...
+    let mut line = Drive::new(ToolKind::Line, empty());
+    line.to(10.0, 10.0)
+        .press(10.0, 10.0)
+        .to(30.0, 17.0)
+        .key(Event::Cancel)
+        .release(STRAY[0], STRAY[1])
+        .drag([50.0, 50.0], [80.0, 62.0]);
+    assert_eq!(
+        line.adds(),
+        [sorted(&[
+            "point (50, 50)",
+            "point (80, 62)",
+            "line (50, 50)-(80, 62)"
+        ])]
+    );
+    let mut circle = Drive::new(ToolKind::Circle, empty());
+    circle
+        .to(10.0, 10.0)
+        .press(10.0, 10.0)
+        .to(30.0, 17.0)
+        .key(Event::Cancel)
+        .release(STRAY[0], STRAY[1])
+        .drag([50.0, 50.0], [80.0, 62.0]);
+    assert_eq!(
+        circle.adds(),
+        [sorted(&["point (50, 50)", "circle (50, 50) r32.310988843"])]
+    );
+    // The centrepoint arc's sweep put back: the quarter from (60, 50) counter-clockwise to
+    // (50, 60) about (50, 50), not the three quarters clockwise the cancelled press swung
+    // it toward.
+    let mut arc = Drive::new(ToolKind::CenterpointArc, empty());
+    arc.click(50.0, 50.0)
+        .click(60.0, 50.0)
+        .to(55.0, 55.0)
+        .press(55.0, 55.0)
+        .to(50.0, 40.0)
+        .to(40.0, 50.0)
+        .key(Event::Cancel)
+        .release(58.0, 58.0)
+        .click(50.0, 60.0);
+    assert_eq!(
+        arc.adds(),
+        [sorted(&[
+            "point (50, 50)",
+            "point (60, 50)",
+            "point (50, 60)",
+            "arc (50, 50) (60, 50)->(50, 60)"
+        ])]
+    );
+}
+
+#[test]
+fn a_cancel_mid_chain_keeps_the_chains_points_and_the_chain() {
+    // Clicks at (10, 10) and (40, 30): the first segment, added. A press at (70, 5),
+    // dragged to (72, 8), cancelled: the chain goes on from (40, 30), whose point is the
+    // one the first segment added; a release with no press adds nothing; the next click,
+    // at (60, 50), adds the segment from (40, 30) (45°, near no axis, and at
+    // acos((30·20 + 20·20)/(36.06·28.28)) = 11.3° to the first, near neither perpendicular
+    // nor parallel).
+    let mut d = Drive::new(ToolKind::Line, empty());
+    d.click(10.0, 10.0).click(40.0, 30.0);
+    d.to(70.0, 5.0)
+        .press(70.0, 5.0)
+        .to(72.0, 8.0)
+        .key(Event::Cancel);
+    assert!(d.tool.busy(), "the chain goes on");
+    assert!(!d.left);
+    d.release(70.0, 5.0);
+    assert_eq!(
+        d.adds().len(),
+        1,
+        "a release whose press was cancelled adds nothing"
+    );
+    d.to(55.0, 70.0);
+    assert_eq!(d.tool.preview().lines, [[[40.0, 30.0], [55.0, 70.0]]]);
+    d.click(60.0, 50.0);
+    assert_eq!(
+        d.adds(),
+        [
+            sorted(&["point (10, 10)", "point (40, 30)", "line (10, 10)-(40, 30)"]),
+            sorted(&["point (60, 50)", "line #(40, 30)-(60, 50)"]),
+        ]
+    );
+    assert_eq!(d.made[1].lines[0].from, d.made[0].lines[0].to);
+}
+
+#[test]
+fn a_cancel_with_no_press_in_progress_does_nothing() {
+    // Before any press, after a click (released), mid-chain, and after a double-click: a
+    // cancel adds nothing, says nothing, and leaves the gesture and preview as they were,
+    // so the next clicks make what they'd make without it.
+    for kind in ToolKind::ALL {
+        let sketch = if kind == ToolKind::TangentArc {
+            one_line()
+        } else {
+            empty()
+        };
+        let points: &[Xy] = if kind == ToolKind::TangentArc {
+            &[[20.1, 10.1], [20.0, 20.0]]
+        } else {
+            &[[10.0, 10.0], [40.0, 25.0], [70.0, 5.0]]
+        };
+        let mut d = Drive::new(kind, sketch.clone());
+        let mut twin = Drive::new(kind, sketch);
+        for &[x, y] in points {
+            for drive in [&mut d, &mut twin] {
+                drive.click(x, y);
+            }
+            let (preview, busy) = (d.tool.preview().clone(), d.tool.busy());
+            assert_eq!(d.send(Event::Cancel), Outcome::default(), "{kind:?}");
+            assert_eq!(d.tool.preview(), &preview, "{kind:?} at {x}, {y}");
+            assert_eq!(d.tool.busy(), busy, "{kind:?} at {x}, {y}");
+        }
+        assert!(!d.adds().is_empty(), "{kind:?}");
+        for drive in [&mut d, &mut twin] {
+            drive.key(Event::DoubleClick(points[points.len() - 1]));
+        }
+        d.key(Event::Cancel);
+        for drive in [&mut d, &mut twin] {
+            drive.click(15.0, 75.0).click(45.0, 85.0).click(5.0, 95.0);
+        }
+        assert_eq!(d.adds(), twin.adds(), "{kind:?}");
+        assert_eq!(d.made, twin.made, "{kind:?}");
+        assert_eq!(d.messages, twin.messages, "{kind:?}");
+        assert!(!d.left, "{kind:?}");
+    }
+    // A press released, then a cancel: nothing to cancel, so the chain the click began
+    // stays (a cancel that put back the state before that press would end it).
+    let mut d = Drive::new(ToolKind::Line, empty());
+    d.click(10.0, 10.0).key(Event::Cancel);
+    assert!(d.tool.busy());
+    d.click(40.0, 30.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (10, 10)",
+            "point (40, 30)",
+            "line (10, 10)-(40, 30)"
+        ])]
+    );
+    // Enter, *End chain*, Esc, or a double-click mid-press ends the chain; a cancel after
+    // it doesn't bring the chain back.
+    for end in [
+        Event::Enter,
+        Event::EndChain,
+        Event::Escape,
+        Event::DoubleClick([40.0, 30.0]),
+    ] {
+        let mut d = Drive::new(ToolKind::Line, empty());
+        d.click(10.0, 10.0)
+            .press(40.0, 30.0)
+            .key(end)
+            .key(Event::Cancel);
+        assert!(!d.tool.busy(), "{end:?}");
+        d.release(40.0, 30.0).click(50.0, 50.0);
+        assert!(d.adds().is_empty(), "{end:?}");
+    }
+    // A cancel, a move, and a cancel again: the press was put back by the first, so the
+    // second has none, and the move's preview stays (the segment from (10, 10) to the
+    // pointer at (55, 70)).
+    let mut d = Drive::new(ToolKind::Line, empty());
+    d.click(10.0, 10.0)
+        .press(40.0, 30.0)
+        .to(45.0, 35.0)
+        .key(Event::Cancel)
+        .to(55.0, 70.0)
+        .key(Event::Cancel);
+    assert_eq!(d.tool.preview().lines, [[[10.0, 10.0], [55.0, 70.0]]]);
+    assert!(d.tool.busy());
+}
+
+#[test]
+fn a_cancel_after_the_add_its_chain_names_was_refused_starts_afresh() {
+    // A chain clicked at (10, 10) and (40, 30) on a read that never catches up: its
+    // segment's add pending, the chain's last point (40, 30) one of its members. A press,
+    // then the core refuses that add, then the press is cancelled: the chain put back names
+    // a point no sketch has, so it ends there, and the next click begins a chain afresh,
+    // adding nothing; the click after it a segment from a new point at (60, 50), not
+    // (40, 30)'s.
+    let sketch = empty();
+    let sketch_id = sketch_id();
+    let context = Context {
+        sketch_id: &sketch_id,
+        revision: Revision::OPENED,
+        sketch: &sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+        construction: false,
+    };
+    let mut ids = Counter(0);
+    let keys = Modifiers::default();
+    let mut tool = SketchTool::new(ToolKind::Line);
+    let mut send = |tool: &mut SketchTool, event| tool.handle(&context, &mut ids, event, keys);
+    let mut click = |tool: &mut SketchTool, at: Xy| {
+        send(tool, Event::Move(at));
+        send(tool, Event::Press(at));
+        send(tool, Event::Release(at))
+    };
+    click(&mut tool, [10.0, 10.0]);
+    let token = click(&mut tool, [40.0, 30.0]).token.unwrap();
+    tool.handle(&context, &mut Counter(100), Event::Press([70.0, 5.0]), keys);
+    tool.refused(token);
+    let out = tool.handle(&context, &mut Counter(100), Event::Cancel, keys);
+    assert_eq!(out, Outcome::default());
+    assert!(!tool.busy());
+    assert_eq!(click(&mut tool, [60.0, 50.0]).add, None);
+    assert!(tool.busy());
+    let segment = click(&mut tool, [90.0, 55.0]).add.unwrap();
+    assert_eq!(segment.points.len(), 2, "{segment:?}");
+    assert_eq!(
+        segment.points[0].x.mm(),
+        60.0,
+        "the segment starts at its own new point"
+    );
+}
+
+#[test]
+fn a_second_press_with_no_release_between_is_cancelled_with_the_first() {
+    // A press at (10, 10) dragged to (30, 17), then another press there with no release
+    // between (the first's release lost), then a cancel: the tool is as it was before the
+    // first press, idle, so a release after it draws no line from (10, 10).
+    for kind in [ToolKind::Line, ToolKind::CornerRectangle, ToolKind::Circle] {
+        let mut d = Drive::new(kind, empty());
+        d.to(10.0, 10.0)
+            .press(10.0, 10.0)
+            .to(30.0, 17.0)
+            .press(30.0, 17.0)
+            .key(Event::Cancel);
+        assert!(!d.tool.busy(), "{kind:?}");
+        d.release(STRAY[0], STRAY[1]);
+        assert!(d.adds().is_empty(), "{kind:?}");
+        assert!(d.messages.is_empty(), "{kind:?}");
+    }
+}
+
+#[test]
+fn the_preview_a_cancel_puts_back_is_construction_as_the_context_now_says() {
+    // A corner rectangle pressed at (10, 10) with *For construction* off, then turned on
+    // before the cancel: the preview put back (the pointer at (10, 10), idle) says
+    // construction, as the next add would be.
+    let mut d = Drive::new(ToolKind::CornerRectangle, empty());
+    d.to(10.0, 10.0).press(10.0, 10.0).to(30.0, 20.0);
+    assert!(!d.tool.preview().construction);
+    d.construction = true;
+    d.key(Event::Cancel);
+    assert!(d.tool.preview().construction);
+    assert_eq!(d.tool.preview().pointer, Some([10.0, 10.0]));
+    assert!(d.tool.preview().lines.is_empty());
+}
+
+#[test]
+fn the_points_a_cancelled_press_woke_stay_woken() {
+    // A point at (30, 10). The pointer, from afar, presses 0.22 mm from it (waking it,
+    // #278's E), moves off, and the press is cancelled. Clicked at (30.3, 50), 0.3 mm off
+    // its vertical, the new point lines up above it: (30, 50) with `vertical_points`. A
+    // tool that never saw the press has nothing woken there: (30.3, 50), alone.
+    let mut s = empty();
+    s.points.push(point("q0000001", 30.0, 10.0));
+    let mut d = Drive::new(ToolKind::Point, s.clone());
+    d.to(80.0, 80.0)
+        .press(30.2, 10.1)
+        .to(80.0, 80.0)
+        .key(Event::Cancel);
+    assert_eq!(d.tool.woken, [id("q0000001")]);
+    d.to(30.3, 50.0).press(30.3, 50.0).release(30.3, 50.0);
+    assert_eq!(
+        d.adds(),
+        [sorted(&[
+            "point (30, 50)",
+            "vertical_points (30, 50) #(30, 10)"
+        ])]
+    );
+    let mut twin = Drive::new(ToolKind::Point, s);
+    twin.to(80.0, 80.0)
+        .to(30.3, 50.0)
+        .press(30.3, 50.0)
+        .release(30.3, 50.0);
+    assert_eq!(twin.adds(), [sorted(&["point (30.3, 50)"])]);
+}
+
+#[test]
+fn a_cancel_after_another_sketchs_read_cancels_nothing() {
+    // A press in one sketch, then a cancel against another: the tool started afresh there
+    // (as at any event), and the press it began in the first is forgotten with the rest.
+    let mut d = Drive::new(ToolKind::Line, empty());
+    d.click(10.0, 10.0).click(40.0, 30.0).press(70.0, 5.0);
+    let other = FeatureId::new("s0000002").unwrap();
+    let context = Context {
+        sketch_id: &other,
+        revision: d.revision,
+        sketch: &d.sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+        construction: false,
+    };
+    let out = d
+        .tool
+        .handle(&context, &mut d.ids, Event::Cancel, Modifiers::default());
+    assert_eq!(out, Outcome::default());
+    assert!(!d.tool.busy(), "afresh in the other sketch");
+    assert!(d.tool.before_press.is_none());
+}
+
+// --- For construction ------------------------------------------------------------------------
+
+#[test]
+fn for_construction_each_tools_curves_are_construction_and_its_points_as_made() {
+    // Each tool's gesture, drawn with *For construction* off and on: the same members, the
+    // same IDs, the same relations, the same points (a centre rectangle's centre the one
+    // construction point either way), and every line, circle, and arc construction only
+    // when it's on. By hand, the curves each adds: the line's chain two lines, a rectangle
+    // four, the circle one, an arc one, the point none.
+    let cases: [(ToolKind, usize, usize, usize, usize); 8] = [
+        // (kind, lines, circles, arcs, construction points)
+        (ToolKind::Line, 2, 0, 0, 0),
+        (ToolKind::CornerRectangle, 4, 0, 0, 0),
+        (ToolKind::CenterRectangle, 4, 0, 0, 1),
+        (ToolKind::Circle, 0, 1, 0, 0),
+        (ToolKind::CenterpointArc, 0, 0, 1, 0),
+        (ToolKind::ThreePointArc, 0, 0, 1, 0),
+        (ToolKind::TangentArc, 0, 0, 1, 0),
+        (ToolKind::Point, 0, 0, 0, 0),
+    ];
+    for (kind, lines, circles, arcs, construction_points) in cases {
+        let run = |construction: bool| {
+            let sketch = if kind == ToolKind::TangentArc {
+                one_line()
+            } else {
+                empty()
+            };
+            let mut d = Drive::new(kind, sketch);
+            d.construction = construction;
+            match kind {
+                ToolKind::Line => {
+                    d.click(10.0, 10.0).click(40.0, 30.0).click(60.0, 5.0);
+                }
+                ToolKind::TangentArc => {
+                    d.drag([20.1, 10.1], [20.0, 20.0]);
+                }
+                ToolKind::CenterpointArc => {
+                    d.click(50.0, 50.0).click(60.0, 50.0).to(55.0, 55.0);
+                    d.click(50.0, 60.0);
+                }
+                ToolKind::ThreePointArc => {
+                    d.click(50.0, 50.0).click(70.0, 50.0).click(60.0, 55.0);
+                }
+                _ => {
+                    d.drag([50.0, 50.0], [80.0, 62.0]);
+                }
+            }
+            // The next gesture under way, for its preview.
+            match kind {
+                ToolKind::TangentArc => d.to(20.0, 20.0).press(20.0, 20.0).to(25.0, 30.0),
+                ToolKind::Point => d.to(5.0, 5.0),
+                _ => d.to(-20.0, -20.0).press(-20.0, -20.0).to(-5.0, -12.0),
+            };
+            d
+        };
+        let off = run(false);
+        let on = run(true);
+        assert!(!off.made.is_empty(), "{kind:?}");
+        assert_eq!(on.made.len(), off.made.len(), "{kind:?}");
+        let curves = |d: &Drive| {
+            let all = |f: fn(&Members) -> usize| d.made.iter().map(f).sum::<usize>();
+            (
+                all(|m| m.lines.len()),
+                all(|m| m.circles.len()),
+                all(|m| m.arcs.len()),
+            )
+        };
+        assert_eq!(curves(&on), (lines, circles, arcs), "{kind:?}");
+        for (made_off, made_on) in off.made.iter().zip(&on.made) {
+            assert_eq!(made_on.points, made_off.points, "{kind:?}");
+            assert_eq!(made_on.constraints, made_off.constraints, "{kind:?}");
+            assert!(made_off.lines.iter().all(|l| !l.construction), "{kind:?}");
+            assert!(made_off.circles.iter().all(|c| !c.construction), "{kind:?}");
+            assert!(made_off.arcs.iter().all(|a| !a.construction), "{kind:?}");
+            assert!(made_on.lines.iter().all(|l| l.construction), "{kind:?}");
+            assert!(made_on.circles.iter().all(|c| c.construction), "{kind:?}");
+            assert!(made_on.arcs.iter().all(|a| a.construction), "{kind:?}");
+            // Nothing else differs.
+            let as_made = |m: &Members| {
+                let mut m = m.clone();
+                m.lines.iter_mut().for_each(|l| l.construction = false);
+                m.circles.iter_mut().for_each(|c| c.construction = false);
+                m.arcs.iter_mut().for_each(|a| a.construction = false);
+                m
+            };
+            assert_eq!(as_made(made_on), *made_off, "{kind:?}");
+        }
+        let points: usize = on
+            .made
+            .iter()
+            .map(|m| m.points.iter().filter(|p| p.construction).count())
+            .sum();
+        assert_eq!(points, construction_points, "{kind:?}");
+        // The preview: the same figure, and construction only when it's on.
+        let (p_off, p_on) = (off.tool.preview(), on.tool.preview());
+        assert!(!p_off.construction, "{kind:?}");
+        assert!(p_on.construction, "{kind:?}");
+        assert_eq!(
+            &Preview {
+                construction: false,
+                ..p_on.clone()
+            },
+            p_off,
+            "{kind:?}"
+        );
+        // The guides are guides either way: an arc's radius or chord under way, from its
+        // press at (-20, -20) to the pointer at (-5, -12), is no line.
+        assert_eq!(p_on.guides, p_off.guides, "{kind:?}");
+        assert_eq!(p_on.measures, p_off.measures, "{kind:?}");
+        // A point measures nothing, nor a 3-point arc's chord; the rest measure their
+        // figure under way.
+        assert_eq!(
+            p_on.measures.is_empty(),
+            matches!(kind, ToolKind::Point | ToolKind::ThreePointArc),
+            "{kind:?}"
+        );
+        match kind {
+            ToolKind::Point => {}
+            ToolKind::CenterpointArc | ToolKind::ThreePointArc => {
+                assert_eq!(p_on.guides, [[[-20.0, -20.0], [-5.0, -12.0]]], "{kind:?}");
+                assert!(p_on.lines.is_empty(), "{kind:?}");
+            }
+            _ => assert!(
+                !(p_on.lines.is_empty() && p_on.circles.is_empty() && p_on.arcs.is_empty()),
+                "{kind:?}: a figure under way"
+            ),
+        }
+    }
+}
+
+#[test]
+fn for_construction_the_preview_of_a_rectangle_under_way_is_construction() {
+    // A corner rectangle pressed at (10, 10) and dragged to (40, 30), *For construction* on:
+    // its four sides drawn, construction; and the add they make, four construction lines
+    // with the rectangle's own horizontals and verticals, its corners points.
+    let mut d = Drive::new(ToolKind::CornerRectangle, empty());
+    d.construction = true;
+    d.to(10.0, 10.0).press(10.0, 10.0).to(40.0, 30.0);
+    let preview = d.tool.preview();
+    assert!(preview.construction);
+    assert_eq!(
+        preview.lines,
+        [
+            [[10.0, 10.0], [40.0, 10.0]],
+            [[40.0, 10.0], [40.0, 30.0]],
+            [[40.0, 30.0], [10.0, 30.0]],
+            [[10.0, 30.0], [10.0, 10.0]],
+        ]
+    );
+    d.release(40.0, 30.0);
+    assert_eq!(d.adds(), [rectangle_10_10_40_30()]);
+    assert_eq!(d.made[0].lines.len(), 4);
+    assert!(d.made[0].lines.iter().all(|l| l.construction));
+    assert!(d.made[0].points.iter().all(|p| !p.construction));
+}
+
 // --- What the pointer shows ---------------------------------------------------------------
 
 #[test]
@@ -1570,6 +2274,7 @@ fn clicks_on_a_stale_read(tool: &mut SketchTool, sketch: &Sketch, at: &[[f64; 2]
         sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut ids = Counter(0);
     let keys = Modifiers::default();
@@ -1651,6 +2356,7 @@ fn a_source_with_no_ids_adds_nothing_and_says_why() {
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SketchTool::new(ToolKind::Line);
     let keys = Modifiers::default();
@@ -1750,6 +2456,7 @@ mod property {
             1 => Just(Event::EndChain),
             1 => Just(Event::Escape),
             1 => Just(Event::Enter),
+            1 => Just(Event::Cancel),
         ];
         (event, any::<bool>(), any::<bool>())
             .prop_map(|(event, shift, ctrl)| (event, Modifiers { shift, ctrl }))
@@ -1773,10 +2480,12 @@ mod property {
             events in prop::collection::vec(event(), 0..48),
             tolerance in prop::sample::select(vec![0.0, 1e-9, 0.5, 5.0, 1e3, f64::NAN, -1.0]),
             automatic in any::<bool>(),
+            construction in any::<bool>(),
         ) {
             let mut d = Drive::new(kind, busy());
             d.tolerance = tolerance;
             d.automatic = automatic;
+            d.construction = construction;
             for (event, keys) in events {
                 d.keys = keys;
                 d.send(event);

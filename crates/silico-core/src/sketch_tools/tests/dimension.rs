@@ -53,6 +53,7 @@ impl Dim {
             sketch: &self.sketch,
             tolerance: self.tolerance,
             automatic_relations: true,
+            construction: false,
         };
         let outcome = self
             .tool
@@ -1594,6 +1595,7 @@ fn a_dimension_placed_before_a_read_shows_it_keeps_its_id_taken() {
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Lowest;
@@ -1622,6 +1624,7 @@ fn another_sketch_starts_the_tool_afresh() {
         sketch: &d.sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     d.tool.handle(
         &context,
@@ -1682,6 +1685,7 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
@@ -2678,6 +2682,7 @@ fn another_sketch_forgets_the_placement() {
         sketch: &d.sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     d.tool.handle(
         &context,
@@ -2773,6 +2778,7 @@ fn settle_takes_a_read_with_no_event() {
         sketch: &d.sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let out = d.tool.settle(&context, &under());
     assert_eq!(out, Outcome::default());
@@ -2786,6 +2792,7 @@ fn settle_takes_a_read_with_no_event() {
         sketch: &newer,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let out = d.tool.settle(&context, &under());
     assert_eq!(out.message, Some(Message::DimensionChanged));
@@ -2846,6 +2853,192 @@ fn level_is_within_a_tenth_of_a_micrometre_not_at_it() {
             .click(60.0, 50.0)
             .escape();
         assert_eq!(d.placed().type_name(), kind, "{dx}");
+    }
+}
+
+// --- A press that ends with no release (DimensionEvent::Cancel) ----------------------------
+
+#[test]
+fn a_cancelled_press_picks_nothing_and_what_is_picked_stays() {
+    // p (10, 10) picked; a press on q (40, 30), alone or moved off it, cancelled: q isn't
+    // picked, by the cancel or by a release after it (whose press was cancelled), p stays
+    // picked, and the pointer is where it was before the press. Then q clicked and the
+    // dimension placed above the box: `distance_x` p to q, 40 − 10 = 30, as a twin that
+    // never saw the press places it.
+    let p = r("p0000001");
+    let q = r("p0000002");
+    let moves: [&[Xy]; 2] = [&[], &[[42.0, 33.0], [60.0, 55.0]]];
+    for moves in moves {
+        let mut d = Dim::new(two_points());
+        d.click(10.0, 10.0).to(40.0, 30.0);
+        let (preview, busy) = (d.tool.preview().clone(), d.tool.busy());
+        d.send(DimensionEvent::Press([40.0, 30.0]));
+        for &m in moves {
+            d.to(m[0], m[1]);
+        }
+        assert_eq!(
+            d.send(DimensionEvent::Cancel),
+            Outcome::default(),
+            "{moves:?}"
+        );
+        assert_eq!(d.tool.preview(), &preview, "{moves:?}");
+        assert_eq!(d.tool.busy(), busy, "{moves:?}");
+        d.send(DimensionEvent::Release([40.0, 30.0]));
+        assert_eq!(d.tool.preview().picks, vec![p.clone()], "{moves:?}");
+        d.click(40.0, 30.0).click(25.0, 45.0).escape();
+
+        let mut twin = Dim::new(two_points());
+        twin.click(10.0, 10.0).to(40.0, 30.0);
+        twin.send(DimensionEvent::Release([40.0, 30.0]));
+        twin.click(40.0, 30.0).click(25.0, 45.0).escape();
+        assert_eq!(
+            twin.placed(),
+            Form::DistanceX {
+                a: p.clone(),
+                b: q.clone(),
+                value: mm("30"),
+                driving: true
+            }
+        );
+        assert_eq!(d.made, twin.made, "{moves:?}");
+        assert_eq!(d.messages, twin.messages, "{moves:?}");
+        assert_eq!(d.tool.preview(), twin.tool.preview(), "{moves:?}");
+        assert!(!d.left);
+
+        // Not cancelled, the release would have picked q.
+        let mut kept = Dim::new(two_points());
+        kept.click(10.0, 10.0).to(40.0, 30.0);
+        kept.send(DimensionEvent::Press([40.0, 30.0]));
+        for &m in moves {
+            kept.to(m[0], m[1]);
+        }
+        kept.send(DimensionEvent::Release([40.0, 30.0]));
+        assert_eq!(kept.tool.preview().picks, vec![p.clone(), q.clone()]);
+    }
+}
+
+#[test]
+fn a_cancel_with_no_press_in_progress_changes_nothing() {
+    // p clicked (its press released), the pointer moved on to (50, 50): a cancel has no
+    // press to put back, so the pointer stays at (50, 50) and p picked.
+    let mut d = Dim::new(two_points());
+    d.click(10.0, 10.0).to(50.0, 50.0);
+    let preview = d.tool.preview().clone();
+    assert_eq!(d.send(DimensionEvent::Cancel), Outcome::default());
+    assert_eq!(d.tool.preview(), &preview);
+    assert_eq!(d.tool.preview().pointer, Some([50.0, 50.0]));
+    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    // The Modify box open and typed in; a press (which the box ignores) cancelled: the box
+    // and its text stay, and Enter places what was typed.
+    d.click(40.0, 30.0).click(25.0, 45.0).typed("12");
+    d.send(DimensionEvent::Press([70.0, 70.0]));
+    assert_eq!(d.send(DimensionEvent::Cancel), Outcome::default());
+    assert_eq!(d.modify().as_deref(), Some("12"));
+    d.enter();
+    assert_eq!(
+        d.placed(),
+        Form::DistanceX {
+            a: r("p0000001"),
+            b: r("p0000002"),
+            value: mm("12"),
+            driving: true
+        }
+    );
+    // Esc mid-press undoes the last pick; a cancel after it puts nothing back.
+    let mut d = Dim::new(two_points());
+    d.click(10.0, 10.0).to(40.0, 30.0);
+    d.send(DimensionEvent::Press([40.0, 30.0]));
+    d.escape();
+    d.send(DimensionEvent::Cancel);
+    assert!(d.tool.preview().picks.is_empty());
+    assert!(!d.tool.busy());
+}
+
+#[test]
+fn a_cancel_puts_back_what_was_before_the_first_press_and_nothing_once_forgotten() {
+    // Two presses on q (40, 30) with no release between (the first's lost), then a cancel:
+    // as before the first, no press is down, so a release after it picks nothing.
+    let mut d = Dim::new(two_points());
+    d.to(70.0, 70.0);
+    d.send(DimensionEvent::Press([40.0, 30.0]));
+    d.send(DimensionEvent::Press([40.0, 30.0]));
+    d.send(DimensionEvent::Cancel);
+    assert_eq!(d.tool.preview().pointer, Some([70.0, 70.0]));
+    d.send(DimensionEvent::Release([40.0, 30.0]));
+    assert!(d.tool.preview().picks.is_empty());
+    assert!(!d.tool.busy());
+    // A press, then everything forgotten (`forget_pending`, as another sketch does): no
+    // press to cancel, so the pointer stays where the press put it.
+    let mut d = Dim::new(two_points());
+    d.to(70.0, 70.0);
+    d.send(DimensionEvent::Press([40.0, 30.0]));
+    d.tool.forget_pending();
+    d.send(DimensionEvent::Cancel);
+    assert_eq!(d.tool.preview().pointer, Some([40.0, 30.0])); // A cancel, a move, and a cancel again: the second has no press to put back, so the
+    // pointer stays where the move put it.
+    let mut d = Dim::new(two_points());
+    d.to(70.0, 70.0);
+    d.send(DimensionEvent::Press([40.0, 30.0]));
+    d.send(DimensionEvent::Cancel);
+    d.to(65.0, 15.0);
+    d.send(DimensionEvent::Cancel);
+    assert_eq!(d.tool.preview().pointer, Some([65.0, 15.0]));
+}
+
+#[test]
+fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
+    // SD7: the add's read flags the dimension, so it's offered. A press on B, cancelled:
+    // the offer stays open and holds the tool, a release after it picks nothing, and once
+    // the app dismisses it the next dimension is placed.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    let k = d.tool.placement().unwrap().constraint;
+    d.states.state = SketchState::OverDefined;
+    d.states
+        .constraints
+        .insert(k.clone(), ConstraintState::Conflicting);
+    d.to(15.0, 15.0);
+    let open = d.tool.open_offer().cloned().unwrap();
+    d.send(DimensionEvent::Press([15.0, 15.0]));
+    d.send(DimensionEvent::Cancel);
+    assert_eq!(d.tool.open_offer(), Some(&open));
+    assert!(d.tool.busy());
+    d.send(DimensionEvent::Release([15.0, 15.0]));
+    assert!(d.tool.preview().picks.is_empty());
+    d.tool.dismiss_offer();
+    d.click(15.0, 15.0).click(30.0, 30.0);
+    assert_eq!(d.modify().as_deref(), Some("14.142136"));
+    // A placement the core hasn't answered: a cancelled press leaves it unsettled, so the
+    // next placing click waits for it.
+    let sketch = corner();
+    let sketch_id = sketch_id();
+    let context = Context {
+        sketch_id: &sketch_id,
+        revision: Revision::OPENED,
+        sketch: &sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+        construction: false,
+    };
+    let mut tool = SmartDimension::new();
+    let mut ids = Counter(0);
+    let mut send = |tool: &mut SmartDimension, event: DimensionEvent| {
+        tool.handle(&context, &under(), &mut ids, event)
+    };
+    for at in [[20.0, 10.0], [20.0, 30.0]] {
+        send(&mut tool, DimensionEvent::Press(at));
+        send(&mut tool, DimensionEvent::Release(at));
+    }
+    assert!(send(&mut tool, DimensionEvent::Escape).add.is_some());
+    send(&mut tool, DimensionEvent::Press([15.0, 15.0]));
+    assert_eq!(send(&mut tool, DimensionEvent::Cancel), Outcome::default());
+    assert!(tool.busy());
+    for at in [[15.0, 15.0], [30.0, 30.0]] {
+        send(&mut tool, DimensionEvent::Press(at));
+        let out = send(&mut tool, DimensionEvent::Release(at));
+        if at == [30.0, 30.0] {
+            assert_eq!(out.message, Some(Message::Solving));
+        }
     }
 }
 
@@ -2924,6 +3117,7 @@ fn a_placement_not_yet_answered_holds_the_next() {
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
@@ -3014,6 +3208,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             sketch: &sketch,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         let mut tool = SmartDimension::new();
         let mut ids = Counter(0);
@@ -3034,6 +3229,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             sketch: &after,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         tool.settle(&context, &states);
         let placement = tool.placement().unwrap();
@@ -3214,6 +3410,7 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
         sketch: &d.sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SmartDimension::new();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
@@ -3509,6 +3706,7 @@ mod property {
             2 => Just(DimensionEvent::Escape),
             2 => Just(DimensionEvent::Enter),
             2 => text().prop_map(DimensionEvent::Typed),
+            1 => Just(DimensionEvent::Cancel),
         ]
     }
 
