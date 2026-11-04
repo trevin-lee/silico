@@ -1629,7 +1629,10 @@ pub fn field_with_rooms<'t>(
 
 #[cfg(test)]
 mod tests {
+    use egui::{Pos2, Rect, pos2, vec2};
+
     use super::*;
+    use crate::modal::tests::{cover, painted};
 
     #[test]
     fn inter_is_the_text_font_and_jetbrains_mono_the_monospace() {
@@ -2301,5 +2304,224 @@ mod tests {
             ),
             ([0, 6], 18, 0)
         );
+    }
+
+    // ---- A key cap's border, as `.kbd` draws it (border 1/1/2/1, radius 3, border-box) ----
+
+    /// The feather egui gives an edge at two pixels a point, a Retina screen's: its one pixel
+    /// (`feathering_size_in_pixels`) over the pixels per point, half a point.
+    const RETINA_FEATHER: f32 = 0.5;
+
+    /// A cover feathered over [`RETINA_FEATHER`] rises from nothing to whole linearly across
+    /// it, so from a tenth to nine tenths over 0.8 of it.
+    const RETINA_BAND: f32 = 0.8 * RETINA_FEATHER;
+
+    /// Along the line from `from` to `to`, read in steps of 1/256 point and between them in a
+    /// line: how far from `from` `mesh`'s cover first reaches each of `levels`.
+    #[track_caller]
+    fn reaches<const N: usize>(
+        mesh: &egui::Mesh,
+        from: Pos2,
+        to: Pos2,
+        levels: [f32; N],
+    ) -> [f32; N] {
+        const STEP: f32 = 1.0 / 256.0;
+        let way = (to - from).normalized();
+        let length = (to - from).length();
+        levels.map(|level| {
+            let mut last = cover(mesh, from);
+            assert!(last < level, "{level} from {from:?}: {last} there already");
+            let mut at = STEP;
+            while at <= length {
+                let now = cover(mesh, from + way * at);
+                if now >= level {
+                    return at - STEP + STEP * (level - last) / (now - last);
+                }
+                last = now;
+                at += STEP;
+            }
+            panic!("the cover never reaches {level} from {from:?} to {to:?}")
+        })
+    }
+
+    /// Where `mesh`'s cover is half, and how far it takes to rise from a tenth to nine tenths,
+    /// from `from` towards `to`.
+    #[track_caller]
+    fn edge(mesh: &egui::Mesh, from: Pos2, to: Pos2) -> (f32, f32) {
+        let [tenth, half, nine] = reaches(mesh, from, to, [0.1, 0.5, 0.9]);
+        (half, nine - tenth)
+    }
+
+    /// Each corner of `rect`, clockwise from the top left, and the way into the box from it.
+    fn corners(rect: Rect) -> [(Pos2, egui::Vec2); 4] {
+        [
+            (rect.left_top(), vec2(1.0, 1.0)),
+            (rect.right_top(), vec2(-1.0, 1.0)),
+            (rect.right_bottom(), vec2(-1.0, -1.0)),
+            (rect.left_bottom(), vec2(1.0, -1.0)),
+        ]
+    }
+
+    /// A border's mesh has no point that isn't a number.
+    #[track_caller]
+    fn finite(mesh: &egui::Mesh, what: &str) {
+        let bad: Vec<Pos2> = mesh
+            .vertices
+            .iter()
+            .map(|vertex| vertex.pos)
+            .filter(|pos| !pos.x.is_finite() || !pos.y.is_finite())
+            .collect();
+        assert!(bad.is_empty(), "{what}'s border has points {bad:?}");
+    }
+
+    /// At two pixels a point, egui feathers an edge over one pixel, so `key_cap_box` fades a
+    /// key cap's border in over half a point ([`RETINA_FEATHER`]), centred on each of its
+    /// edges: half covered on the edge, and from a tenth to nine tenths over 0.4 points
+    /// ([`RETINA_BAND`]). Along the lines through the middle of a box at (20, 20) 24 by 16, on
+    /// the half-point grid as it is: its outer edges on the box, 1 in from each line's start
+    /// 1 outside it; its inner edges 1 in at its top and sides and 2 at its bottom, 7 up from
+    /// its middle, 11 to each side, and 6 down. A feather of a pixel a point, or of the
+    /// pixel's size times the pixels a point, is twice as wide.
+    #[test]
+    fn a_key_caps_border_is_feathered_over_a_pixel_at_two_pixels_a_point() {
+        let rect = Rect::from_min_size(pos2(20.0, 20.0), vec2(24.0, 16.0));
+        let mut h = egui_kittest::Harness::builder()
+            .with_pixels_per_point(2.0)
+            .with_size(vec2(80.0, 60.0))
+            .build_ui(move |ui| key_cap_box(ui, rect, Color32::TRANSPARENT, Color32::WHITE));
+        h.run();
+        let meshes: Vec<egui::Mesh> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                egui::Shape::Mesh(mesh) => Some((*mesh).clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(meshes.len(), 1, "the key cap's border");
+        let mesh = &meshes[0];
+        let middle = pos2(32.0, 28.0);
+        let lines = [
+            (pos2(32.0, 19.0), middle, 1.0),
+            (pos2(45.0, 28.0), middle, 1.0),
+            (pos2(32.0, 37.0), middle, 1.0),
+            (pos2(19.0, 28.0), middle, 1.0),
+            (middle, pos2(32.0, 19.0), 7.0),
+            (middle, pos2(45.0, 28.0), 11.0),
+            (middle, pos2(32.0, 37.0), 6.0),
+            (middle, pos2(19.0, 28.0), 11.0),
+        ];
+        for (from, to, want) in lines {
+            let (half, band) = edge(mesh, from, to);
+            assert!(
+                (half - want).abs() <= 1.0 / 512.0 && (band - RETINA_BAND).abs() <= 1.0 / 512.0,
+                "from {from:?} towards {to:?}: half covered {half} in and feathered over \
+                 {band}, not {want} and {RETINA_BAND}"
+            );
+        }
+    }
+
+    /// A cap narrower or shorter than its corners' two radii: CSS scales `border-radius`
+    /// down until the radii at each side fit it, so a cap 4 across or 4 high has corners of
+    /// 2. Each corner's outer edge is then a circle of 2 about the point 2 in on each axis,
+    /// crossing its diagonal 2 − 2/√2 = 0.586 in on each axis (not a radius of 3's 0.879).
+    /// Its bottom corners' inner radii are 2 − 1 across and 2 − 2, none, down: a square inner
+    /// corner, so the edge above the bottom border is straight, 2 up, half covered there and
+    /// feathered over [`RETINA_BAND`] down the cap's middle, and no point of the border is
+    /// other than a number.
+    #[test]
+    fn a_key_caps_corners_fit_a_cap_narrower_or_shorter_than_them() {
+        let caps = [
+            Rect::from_min_size(pos2(20.0, 20.0), vec2(4.0, 16.0)),
+            Rect::from_min_size(pos2(20.0, 20.0), vec2(16.0, 4.0)),
+        ];
+        let want = 2.0 - std::f32::consts::SQRT_2;
+        for rect in caps {
+            let mesh = key_cap_border(rect, Color32::WHITE, RETINA_FEATHER);
+            finite(&mesh, &format!("{rect:?}"));
+            for (corner, inward) in corners(rect) {
+                let [half] = reaches(&mesh, corner, corner + inward * 1.5, [0.5]);
+                let got = half * std::f32::consts::FRAC_1_SQRT_2;
+                assert!(
+                    (got - want).abs() <= 1.0 / 512.0,
+                    "{rect:?}'s corner at {corner:?}: its outer edge {got} in on its \
+                     diagonal, not {want}"
+                );
+            }
+            let foot = pos2(rect.center().x, rect.bottom() - 2.0);
+            let from = foot - vec2(0.0, 0.5);
+            let (half, band) = edge(&mesh, from, foot + vec2(0.0, 0.5));
+            assert!(
+                (half - 0.5).abs() <= 1.0 / 512.0 && (band - RETINA_BAND).abs() <= 1.0 / 512.0,
+                "{rect:?}'s bottom inner edge: half covered {half} below {from:?} and \
+                 feathered over {band}, not 0.5 and {RETINA_BAND}"
+            );
+        }
+    }
+
+    /// Each outer corner is a quarter circle of 3 about the point 3 in on each axis: it
+    /// leaves its side 3 from the corner along it (its 0°), meets the next side 3 from the
+    /// corner along that (its 90°), and crosses its diagonal 3 − 3/√2 = 0.879 in on each
+    /// axis. The quarter is drawn in eight steps, so a point at each of those three: each is
+    /// half covered exactly there, in the line across the edge through it, not only within
+    /// the steps' chords (a quarter turned by a few degrees moves each by about a hundredth).
+    #[test]
+    fn a_key_caps_outer_corners_are_quarter_circles_where_css_puts_them() {
+        let rect = Rect::from_min_size(pos2(20.0, 20.0), vec2(24.0, 16.0));
+        let mesh = key_cap_border(rect, Color32::WHITE, RETINA_FEATHER);
+        let diagonal = 3.0 - 3.0 * std::f32::consts::FRAC_1_SQRT_2;
+        for (corner, inward) in corners(rect) {
+            let along_x = corner + vec2(inward.x * 3.0, 0.0);
+            let along_y = corner + vec2(0.0, inward.y * 3.0);
+            let ends = [
+                (along_x - vec2(0.0, inward.y), vec2(0.0, inward.y)),
+                (along_y - vec2(inward.x, 0.0), vec2(inward.x, 0.0)),
+            ];
+            for (from, way) in ends {
+                let [half] = reaches(&mesh, from, from + way * 2.0, [0.5]);
+                assert!(
+                    (half - 1.0).abs() <= 1.0 / 1024.0,
+                    "the corner at {corner:?}: its arc's end {half} from {from:?}, not 1"
+                );
+            }
+            let [half] = reaches(&mesh, corner, corner + inward * 1.5, [0.5]);
+            let got = half * std::f32::consts::FRAC_1_SQRT_2;
+            assert!(
+                (got - diagonal).abs() <= 1.0 / 1024.0,
+                "the corner at {corner:?}: its outer edge {got} in on its diagonal, not \
+                 {diagonal}"
+            );
+        }
+    }
+
+    /// Each inner corner is a quarter ellipse about the point 3 in on each axis, its radii the
+    /// outer's 3 less the border's widths: 2 and 2 at the top, 2 across and 1 down at the
+    /// bottom. egui feathers an edge across it, along its normal, so at each of the quarter's
+    /// points, (3 − rx cos φ, 3 − ry sin φ) in from the corner for φ in eighths of a right
+    /// angle, the line along the ellipse's normal there, (cos φ / rx, sin φ / ry) out of the
+    /// cap's inside, is half covered on the ellipse and feathered over [`RETINA_BAND`]. At the
+    /// bottom, where the radii differ, that normal is not the way from the centre: at 22.5°,
+    /// 39.6° from the side rather than 22.5°; a feather along the way from the centre is
+    /// cos 17.1° = 0.956 as wide across the edge, 0.382.
+    #[test]
+    fn a_key_caps_inner_corners_are_feathered_along_their_normals() {
+        let rect = Rect::from_min_size(pos2(20.0, 20.0), vec2(24.0, 16.0));
+        let mesh = key_cap_border(rect, Color32::WHITE, RETINA_FEATHER);
+        for (index, (corner, inward)) in corners(rect).into_iter().enumerate() {
+            let (rx, ry) = if index < 2 { (2.0, 2.0) } else { (2.0, 1.0) };
+            let centre = corner + inward * 3.0;
+            for step in 1..8_u8 {
+                let angle = std::f32::consts::FRAC_PI_2 * f32::from(step) / 8.0;
+                let (cos, sin) = (libm::cosf(angle), libm::sinf(angle));
+                let on = centre - inward * vec2(rx * cos, ry * sin);
+                let normal = (-inward * vec2(cos / rx, sin / ry)).normalized();
+                let (half, band) = edge(&mesh, on - normal * 0.5, on + normal * 0.5);
+                assert!(
+                    (half - 0.5).abs() <= 1.0 / 512.0 && (band - RETINA_BAND).abs() <= 1.0 / 512.0,
+                    "the corner at {corner:?}, {step} eighths round: half covered {half} \
+                     from inside its edge and feathered over {band}, not 0.5 and \
+                     {RETINA_BAND}"
+                );
+            }
+        }
     }
 }

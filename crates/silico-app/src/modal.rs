@@ -645,6 +645,40 @@ pub(crate) mod tests {
         pub strokes: Vec<egui::Stroke>,
     }
 
+    /// `mesh`'s most opaque colour: a border's, its feathers fading it to nothing.
+    pub(crate) fn solid(mesh: &epaint::Mesh) -> Color32 {
+        mesh.vertices
+            .iter()
+            .map(|vertex| vertex.color)
+            .max_by_key(|colour| colour.a())
+            .unwrap_or(Color32::TRANSPARENT)
+    }
+
+    /// How much of `mesh`'s [`solid`] colour covers `at`, from 0 to 1: its alpha there,
+    /// interpolated across the triangle it lies in (the most, where triangles overlap), over
+    /// the solid colour's.
+    pub(crate) fn cover(mesh: &epaint::Mesh, at: Pos2) -> f32 {
+        mesh.indices
+            .chunks_exact(3)
+            .filter_map(|triangle| {
+                let [a, b, c] = [0, 1, 2].map(|k| &mesh.vertices[triangle[k] as usize]);
+                let (ab, ac, ap) = (b.pos - a.pos, c.pos - a.pos, at - a.pos);
+                let area = ab.x * ac.y - ab.y * ac.x;
+                if area.abs() < 1e-9 {
+                    return None;
+                }
+                let u = (ap.x * ac.y - ap.y * ac.x) / area;
+                let v = (ab.x * ap.y - ab.y * ap.x) / area;
+                let inside = u >= -1e-6 && v >= -1e-6 && u + v <= 1.0 + 1e-6;
+                inside.then(|| {
+                    let alpha = |colour: Color32| f32::from(colour.a());
+                    (1.0 - u - v) * alpha(a.color) + u * alpha(b.color) + v * alpha(c.color)
+                })
+            })
+            .fold(0.0, f32::max)
+            / f32::from(solid(mesh).a())
+    }
+
     /// The border painted round the key cap whose box is `rect`, read from its mesh, the one
     /// mesh painted about it: each edge where its cover crosses a half, along the lines
     /// through the box's middle and along each corner's diagonal, read in steps of 1/256
@@ -665,33 +699,6 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(found.len(), 1, "the border round {rect:?}");
         let mesh = &found[0];
-        let solid = mesh
-            .vertices
-            .iter()
-            .map(|vertex| vertex.color)
-            .max_by_key(|colour| colour.a())
-            .unwrap_or(Color32::TRANSPARENT);
-        let cover = |at: Pos2| -> f32 {
-            mesh.indices
-                .chunks_exact(3)
-                .filter_map(|triangle| {
-                    let [a, b, c] = [0, 1, 2].map(|k| &mesh.vertices[triangle[k] as usize]);
-                    let (ab, ac, ap) = (b.pos - a.pos, c.pos - a.pos, at - a.pos);
-                    let area = ab.x * ac.y - ab.y * ac.x;
-                    if area.abs() < 1e-9 {
-                        return None;
-                    }
-                    let u = (ap.x * ac.y - ap.y * ac.x) / area;
-                    let v = (ab.x * ap.y - ab.y * ap.x) / area;
-                    let inside = u >= -1e-6 && v >= -1e-6 && u + v <= 1.0 + 1e-6;
-                    inside.then(|| {
-                        let alpha = |colour: Color32| f32::from(colour.a());
-                        (1.0 - u - v) * alpha(a.color) + u * alpha(b.color) + v * alpha(c.color)
-                    })
-                })
-                .fold(0.0, f32::max)
-                / f32::from(solid.a())
-        };
         // From `from` towards `to`: where the cover first reaches a half, and where it next
         // falls below one, as distances from `from`.
         let crossings = |from: Pos2, to: Pos2| -> (f32, f32) {
@@ -699,10 +706,10 @@ pub(crate) mod tests {
             let way = (to - from).normalized();
             let length = (to - from).length();
             let mut found = Vec::new();
-            let mut last = cover(from);
+            let mut last = cover(mesh, from);
             let mut at = STEP;
             while at <= length && found.len() < 2 {
-                let now = cover(from + way * at);
+                let now = cover(mesh, from + way * at);
                 let crossed = if found.is_empty() {
                     last < 0.5 && now >= 0.5
                 } else {
@@ -739,8 +746,12 @@ pub(crate) mod tests {
             (outer.right_bottom(), Vec2::new(-1.0, -1.0)),
             (outer.left_bottom(), Vec2::new(1.0, -1.0)),
         ];
-        let corners = ways
-            .map(|(corner, inward)| (cover(corner + inward * 0.5), cover(corner + inward * ring)));
+        let corners = ways.map(|(corner, inward)| {
+            (
+                cover(mesh, corner + inward * 0.5),
+                cover(mesh, corner + inward * ring),
+            )
+        });
         // From each corner 4.5 in on each axis, past where its inner edge crosses the
         // diagonal; a distance along the diagonal is √2 times one on each axis.
         let diagonals = ways.map(|(corner, inward)| {
@@ -758,7 +769,7 @@ pub(crate) mod tests {
             .map(|shape| shape.stroke)
             .collect();
         CapBorder {
-            colour: solid,
+            colour: solid(mesh),
             outer,
             widths,
             corners,
