@@ -128,6 +128,12 @@ impl<P: Clients + 'static> Sessions<P> {
         let step = self.step_exporter();
         let turns = self.export_turns();
         self.read_current(session, SessionCommand::Export, move |read| {
+            // A STEP file's header names the document's file; an untitled part's, having
+            // none, the file written.
+            let document = read.path().map_or_else(
+                || request.path.to_string_lossy().into_owned(),
+                str::to_owned,
+            );
             // Its STEP writing stopped with the read, as its meshing is (the read's client),
             // and its wait for a turn to mesh.
             read.exporting_step(&*step, |step| {
@@ -138,7 +144,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         &ExportOn {
                             kernel: read.kernel(),
                             step,
-                            document: read.path(),
+                            document: &document,
                             workspace: rules.workspace.as_ref(),
                             held: &rules.held,
                             turns: &turns,
@@ -159,7 +165,7 @@ pub struct ExportOn<'a, K: Kernel> {
     /// What writes a STEP file: the STEP worker (`step_worker::StepWorkers`), or a test's.
     pub step: &'a dyn crate::step_worker::StepExporter,
     /// The document's path, whose file name a STEP file's header gives, and whose stem
-    /// names its assembly.
+    /// names its assembly (an untitled part's export gives the file it writes).
     pub document: &'a str,
     /// The workspace a file written must be inside, if the sessions have one: a relative
     /// path is relative to its root.

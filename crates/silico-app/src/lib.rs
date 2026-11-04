@@ -4,6 +4,7 @@
 //! window is, with Rerun's look (`theme`), and Inter as its one font.
 
 pub mod app;
+pub mod browse;
 pub mod dialog;
 pub mod export;
 pub mod missing;

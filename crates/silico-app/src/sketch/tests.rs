@@ -16,7 +16,7 @@ use silico_core::document::{
     Sketch, SketchArc, SketchCircle, SketchConstraint, SketchLine, SketchPoint,
 };
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState, SketchStates};
-use silico_core::sketch_tools::{Preview, Relation, Shown as Showing};
+use silico_core::sketch_tools::{MeasureKind, Preview, PreviewMeasure, Relation, Shown as Showing};
 
 use super::draw::{
     Drawn, Flat, GlyphKind, LabelKind, MAX_CURVE_SEGMENTS, Scale, Shown, StrokeKind, View, drawing,
@@ -852,6 +852,11 @@ fn a_tools_preview_draws_its_line_dashed_its_guides_dotted_and_what_the_pointer_
             },
         ],
         guides: vec![[[10.0, 0.0], [10.0, 20.0]]],
+        measures: vec![PreviewMeasure {
+            from: [0.0, 0.0],
+            to: [10.0, 0.0],
+            kind: MeasureKind::Length,
+        }],
         ..Preview::default()
     };
     let drawn = preview(&pv, &view());
@@ -877,7 +882,9 @@ fn a_tools_preview_draws_its_line_dashed_its_guides_dotted_and_what_the_pointer_
         )]
     );
     assert_eq!(
-        strokes(StrokeKind::Preview),
+        strokes(StrokeKind::Preview {
+            construction: false
+        }),
         [(
             vec![pos2(100.0, 500.0), pos2(200.0, 500.0)],
             SKETCH_PREVIEW_STROKE.color
@@ -909,15 +916,87 @@ fn a_tools_preview_draws_its_line_dashed_its_guides_dotted_and_what_the_pointer_
         at: pos2(200.0, 500.0),
         colour: SKETCH_SNAP_STROKE.color
     }));
+    // Its length, 10, beside its segment's middle, (150, 500): 12 points below.
     assert!(drawn.contains(&Drawn::Label {
         of: None,
         kind: LabelKind::Tool,
-        at: pos2(214.0, 512.0),
+        at: pos2(150.0, 512.0),
         text: "10.00 mm".to_owned(),
         colour: SKETCH_DIMENSION_TEXT,
         selected: false,
     }));
     assert!(preview(&Preview::default(), &view()).is_empty());
+}
+
+/// The tool labels of `drawn`: each one's place and text.
+fn tool_labels(drawn: &[Drawn]) -> Vec<(Pos2, String)> {
+    drawn
+        .iter()
+        .filter_map(|d| match d {
+            Drawn::Label {
+                kind: LabelKind::Tool,
+                at,
+                text,
+                ..
+            } => Some((*at, text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_previews_measures_are_labelled_beside_their_segments_and_only_they_are() {
+    let measure = |from, to, kind| PreviewMeasure { from, to, kind };
+    let pv = Preview {
+        pointer: Some([40.0, 20.0]),
+        lines: vec![[[0.0, 0.0], [40.0, 0.0]], [[40.0, 0.0], [40.0, 20.0]]],
+        measures: vec![
+            measure([0.0, 0.0], [40.0, 0.0], MeasureKind::Length),
+            measure([40.0, 0.0], [40.0, 20.0], MeasureKind::Length),
+            measure([0.0, 0.0], [3.0, 4.0], MeasureKind::Radius),
+        ],
+        ..Preview::default()
+    };
+    let labels = tool_labels(&preview(&pv, &view()));
+    // The width's segment, (100, 500) to (500, 500): 12 below its middle, (300, 500). The
+    // height's, (500, 500) up to (500, 300): 12 right of its middle, (500, 400). The
+    // radius's, (100, 500) to (130, 460), 5 long: 12 along (0.8, 0.6) from (115, 480).
+    assert_eq!(labels.len(), 3);
+    assert_eq!(labels[0], (pos2(300.0, 512.0), "40.00 mm".to_owned()));
+    assert_eq!(labels[1], (pos2(512.0, 400.0), "20.00 mm".to_owned()));
+    assert_eq!(labels[2].1, "R 5.00 mm");
+    assert!(near(labels[2].0, pos2(124.6, 487.2)), "{:?}", labels[2].0);
+    // A line under way with no measure has no label.
+    let unmeasured = Preview {
+        measures: Vec::new(),
+        ..pv
+    };
+    assert!(tool_labels(&preview(&unmeasured, &view())).is_empty());
+}
+
+#[test]
+fn a_construction_previews_curves_are_drawn_as_construction() {
+    for construction in [false, true] {
+        let pv = Preview {
+            lines: vec![[[0.0, 0.0], [10.0, 0.0]]],
+            circles: vec![([0.0, 0.0], 5.0)],
+            arcs: vec![silico_core::sketch_tools::PreviewArc {
+                center: [0.0, 0.0],
+                start: [5.0, 0.0],
+                end: [0.0, 5.0],
+            }],
+            construction,
+            ..Preview::default()
+        };
+        let kinds: Vec<StrokeKind> = preview(&pv, &view())
+            .iter()
+            .filter_map(|d| match d {
+                Drawn::Stroke { kind, .. } => Some(*kind),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kinds, [StrokeKind::Preview { construction }; 3]);
+    }
 }
 
 #[test]

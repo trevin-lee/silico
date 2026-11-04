@@ -216,10 +216,11 @@ impl Fixture {
     /// The design's `open` request `text`, run, its path the session's file.
     fn open(&self, text: &str) -> Response<Opened> {
         let request = OpenRequest::read(&parsed(text)).unwrap();
-        assert_eq!(request.path, "bracket.silico");
+        let path = request.path.unwrap();
+        assert_eq!(path, "bracket.silico");
         answer(
             self.sessions
-                .open(self.dir.path().join(&request.path), request.create),
+                .open(self.dir.path().join(&path), request.create),
         )
     }
 
@@ -246,7 +247,7 @@ fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_sc
     assert_eq!(
         request,
         OpenRequest {
-            path: "bracket.silico".to_owned(),
+            path: Some("bracket.silico".to_owned()),
             create: false,
         }
     );
@@ -305,14 +306,14 @@ fn requests_with_their_other_values_are_read_and_written_back() {
         (
             "{\"path\": \"a/b c.silico\", \"create\": true}\n",
             OpenRequest {
-                path: "a/b c.silico".to_owned(),
+                path: Some("a/b c.silico".to_owned()),
                 create: true,
             },
         ),
         (
             "{\"path\": \"\\u00e9.silico\", \"create\": false}\n",
             OpenRequest {
-                path: "\u{e9}.silico".to_owned(),
+                path: Some("\u{e9}.silico".to_owned()),
                 create: false,
             },
         ),
@@ -388,6 +389,82 @@ fn requests_with_their_other_values_are_read_and_written_back() {
 }
 
 #[test]
+fn an_open_with_path_null_is_an_untitled_documents_and_must_create_it() {
+    // Untitled parts (docs/design/m5.0-app.md, open item 30, overturned by Trevin
+    // 2026-11-01): `path` null with `create` true, read and written back as given, and
+    // holding to the widened snapshot. The expected texts by hand, from the design's §2.
+    let text = "{\"path\": null, \"create\": true}\n";
+    let request = OpenRequest::read(&parsed(text)).unwrap();
+    assert_eq!(
+        request,
+        OpenRequest {
+            path: None,
+            create: true,
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(&schema_of("open", "request"), text, "untitled");
+    // With `create` false it opens nothing: refused, naming `path`, in §2's words.
+    let refused = OpenRequest::read(&parsed(r#"{"path": null, "create": false}"#)).unwrap_err();
+    assert_eq!(refused.total(), 1);
+    let e = &refused.errors()[0];
+    assert_eq!(
+        (e.code(), e.message(), e.parameter(), e.suggestion()),
+        (
+            ErrorCode::InvalidInput,
+            "path null opens nothing",
+            Some("path"),
+            Some("give a path to open, or create: true for an untitled document")
+        )
+    );
+    // Neither a string nor null: refused as a field of the wrong type.
+    for (value, shown) in [("3", "3"), ("[]", "an array"), (r#"{"a": 1}"#, "an object")] {
+        let text = format!(r#"{{"path": {value}, "create": true}}"#);
+        assert_eq!(
+            said(&OpenRequest::read(&parsed(&text)).unwrap_err()),
+            [(
+                "path".to_owned(),
+                format!("path must be a string or null, got {shown}")
+            )],
+            "{text}"
+        );
+        fails(&schema_of("open", "request"), &text, &text);
+    }
+    // The result, and its envelope, of an untitled open through the Rust API
+    // (`Sessions::open_untitled`): `path` null in each, every other field present.
+    let f = sessions();
+    let ran = answer(f.sessions.open_untitled());
+    let envelope = response_text(&ran, Layout::OneLine);
+    assert_eq!(
+        envelope,
+        r#"{"ok": true, "session": {"id": "s1", "path": null, "revision": 1, "transaction": false, "reloaded": false}, "model": null, "result": {"path": null, "created": true, "features": 0, "bodies": [], "problems": [], "problems_total": 0}}"#
+    );
+    holds(
+        &schema_of("open", "result"),
+        &written(ran.result.as_ref().unwrap()),
+        "untitled",
+    );
+    holds(
+        &serde_json::from_str(&committed("commands/envelope.json")).unwrap(),
+        &envelope,
+        "an untitled session's envelope",
+    );
+    // `format`'s result, an untitled session's, writing nothing: `path` null.
+    let formatted = answer(f.sessions.format(&s1(), None, false));
+    assert_eq!(
+        one_line(formatted.result.as_ref().unwrap()),
+        r#"{"changed": false, "written": false, "path": null, "refingerprinted": [], "resolved": [], "accepted": [], "problems": [], "problems_total": 0}"#
+    );
+    holds(
+        &schema_of("format", "result"),
+        &written(formatted.result.as_ref().unwrap()),
+        "untitled",
+    );
+    // Nothing on disk: the test's directory holds only the cache's secret, if anything.
+    assert!(!f.path().exists());
+}
+
+#[test]
 fn version_and_open_take_only_their_fields_and_require_each() {
     let refused = |read: fn(&Node) -> Result<(), Problems>, text: &str| {
         said(&read(&parsed(text)).unwrap_err())
@@ -434,10 +511,10 @@ fn version_and_open_take_only_their_fields_and_require_each() {
             )],
         ),
         (
-            text.replace(r#""bracket.silico""#, "null")
+            text.replace(r#""bracket.silico""#, "3")
                 .replace("false", r#""false""#),
             vec![
-                ("path", "path must be a string, got null".to_owned()),
+                ("path", "path must be a string or null, got 3".to_owned()),
                 (
                     "create",
                     r#"create must be true or false, got "false""#.to_owned(),
@@ -736,7 +813,7 @@ fn open_answers_and_refuses_as_the_design_gives_it() {
 fn opens_result_is_written_from_each_of_its_own_values() {
     let opened = Opened {
         session: SessionId::parse("s1").unwrap(),
-        path: "new.silico".to_owned(),
+        path: Some("new.silico".to_owned()),
         created: true,
         features: None,
         bodies: vec![id("a0000001"), id("b0000001")],

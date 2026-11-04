@@ -16,14 +16,18 @@ pub(super) struct Builder<'i> {
     ids: &'i mut dyn NewIds,
     /// The IDs the sketch holds, and those given here.
     taken: BTreeSet<ElementId>,
+    /// Whether each line, circle, and arc is construction (*For construction*); points are
+    /// as each is asked for.
+    construction: bool,
     pub(super) members: Members,
 }
 
 impl<'i> Builder<'i> {
-    pub(super) fn new(ids: &'i mut dyn NewIds, view: &View<'_>) -> Self {
+    pub(super) fn new(ids: &'i mut dyn NewIds, view: &View<'_>, construction: bool) -> Self {
         Builder {
             ids,
             taken: view.ids(),
+            construction,
             members: Members::default(),
         }
     }
@@ -80,7 +84,7 @@ impl<'i> Builder<'i> {
             id: id.clone(),
             from: from.clone(),
             to: to.clone(),
-            construction: false,
+            construction: self.construction,
         });
         Ok(id)
     }
@@ -92,7 +96,7 @@ impl<'i> Builder<'i> {
             id: id.clone(),
             center: center.clone(),
             radius,
-            construction: false,
+            construction: self.construction,
         });
         Ok(id)
     }
@@ -110,7 +114,7 @@ impl<'i> Builder<'i> {
             center: center.clone(),
             start: start.clone(),
             end: end.clone(),
-            construction: false,
+            construction: self.construction,
         });
         Ok(id)
     }

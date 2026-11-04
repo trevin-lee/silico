@@ -12,7 +12,6 @@ use super::{
     Gated, ModelChoice, ModelRead, Problems, Progress, Published, Rebuild, RebuildState, Response,
     Revision, Session, SessionId, SessionInfo, not_open,
 };
-use crate::cache::Cache;
 use crate::document::Checked;
 use crate::kernel::Kernel;
 use crate::recompute::{Model, Reads, Recompute, Run, RunOutcome, StepCounter};
@@ -33,10 +32,10 @@ use crate::{Error, ErrorCode};
 /// session's command stops rather than rebuilding again; and one cancelled (decision 34)
 /// stops the rebuild it waits on and answers `cancelled`, rather than starting it again.
 pub(super) struct Rebuilds<C: Kernel + 'static> {
+    /// Its engine, keeping its steps in the cache beside the session's document
+    /// ([`Recompute::cache`], what `cache_clear` clears): none while the session is untitled,
+    /// until its first save gives it the one beside its file.
     pub(super) engine: Recompute<C>,
-    /// The cache the engine keeps its steps in, beside the session's document: what
-    /// `cache_clear` clears.
-    pub(super) cache: Cache,
     /// The rebuild running, if one is, labelled with the revision its model is of.
     pub(super) running: Option<Label>,
     /// The newest model the session's rebuilds published.
@@ -1117,7 +1116,6 @@ mod tests {
     fn rebuilds(kernel: &FakeKernel, ended: Option<Ended>) -> Rebuilds<FakeClient> {
         Rebuilds {
             engine: Recompute::new(kernel.client()),
-            cache: Cache::unsealed("/nonexistent/.silico-cache"),
             running: None,
             published: None,
             ended,

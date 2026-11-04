@@ -22,7 +22,8 @@ use super::infer::{
     Align, EXACT, Placed, Target, View, counter_clockwise, nearest_of, one_place, tangent_arc,
 };
 use super::{
-    Event, Message, Outcome, Preview, PreviewArc, Relation, Shown, Step, Xy, failed, within_reach,
+    Event, MeasureKind, Message, Outcome, Preview, PreviewArc, PreviewMeasure, Relation, Shown,
+    Step, Xy, failed, within_reach,
 };
 use crate::document::sketch_edit::{Geo, crossings};
 use crate::document::{Direction, ElementId, Form, Reference};
@@ -73,6 +74,16 @@ impl Drawn {
             }
         }
     }
+}
+
+/// The radius the preview measures, from `center` to `on`, the pointer's point on the
+/// circle or arc.
+fn measure_radius(preview: &mut Preview, center: Xy, on: Xy) {
+    preview.measures.push(PreviewMeasure {
+        from: center,
+        to: on,
+        kind: MeasureKind::Radius,
+    });
 }
 
 fn draw_arc(preview: &mut Preview, drawn: &Drawn) {
@@ -325,7 +336,7 @@ impl Centerpoint {
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
         let at = match event {
             Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => at,
-            Event::EndChain | Event::Escape | Event::Enter => return,
+            Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         match &self.state {
             CenterState::Idle => {
@@ -336,7 +347,8 @@ impl Centerpoint {
                 let besides: Vec<&ElementId> = centre.shared().into_iter().collect();
                 let start = placed_at(step, at, &besides);
                 preview.points.push(centre.at);
-                preview.lines.push([centre.at, start.at]);
+                preview.guides.push([centre.at, start.at]);
+                measure_radius(preview, centre.at, start.at);
                 preview.shown.extend(centre.shown());
                 show(preview, &start);
             }
@@ -352,6 +364,7 @@ impl Centerpoint {
                 if let Some(end) = end_on_circle(step, centre, start, at) {
                     let drawn = oriented(centre.at, start.at, end.at, *swept);
                     draw_arc(preview, &drawn);
+                    measure_radius(preview, centre.at, end.at);
                     show(preview, &end);
                 }
             }
@@ -439,7 +452,7 @@ fn finish_centerpoint(
     if !reach(&[&end]) || !drawn.sized() {
         return Outcome::said(Message::TooFar);
     }
-    let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+    let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
     let built = (|| -> Result<(), crate::Error> {
         let c = builder.point(centre, false)?;
         let s = builder.point(start, false)?;
@@ -648,14 +661,14 @@ impl ThreePoint {
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
         let at = match event {
             Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => at,
-            Event::EndChain | Event::Escape | Event::Enter => return,
+            Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         match &self.state {
             ThreeState::Idle => show(preview, &placed_at(step, at, &[])),
             ThreeState::Pressed { start, .. } | ThreeState::Start { start, .. } => {
                 let besides: Vec<&ElementId> = start.shared().into_iter().collect();
                 let end = placed_at(step, at, &besides);
-                preview.lines.push([start.at, end.at]);
+                preview.guides.push([start.at, end.at]);
                 preview.shown.extend(start.shown());
                 show(preview, &end);
             }
@@ -664,8 +677,11 @@ impl ThreePoint {
                 preview.shown.extend(end.shown());
                 preview.pointer = Some(at);
                 match through_three(start.at, end.at, at) {
-                    Some(drawn) => draw_arc(preview, &drawn),
-                    None => preview.lines.push([start.at, end.at]),
+                    Some(drawn) => {
+                        draw_arc(preview, &drawn);
+                        measure_radius(preview, drawn.center, at);
+                    }
+                    None => preview.guides.push([start.at, end.at]),
                 }
             }
         }
@@ -684,7 +700,7 @@ fn finish_three(step: &mut Step<'_, '_, '_>, start: &Placed, end: &Placed, at: X
     if drawn.too_small() {
         return Outcome::said(Message::TooSmall);
     }
-    let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+    let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
     let built = (|| -> Result<(), crate::Error> {
         let c = builder.new_point(drawn.center, false)?;
         let s = builder.point(start, false)?;
@@ -844,7 +860,7 @@ impl Tangent {
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
         let at = match event {
             Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => at,
-            Event::EndChain | Event::Escape | Event::Enter => return,
+            Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         match &self.state {
             TangentState::Idle => {
@@ -859,8 +875,11 @@ impl Tangent {
                     relation: Relation::Tangent(base.curve.clone()),
                 });
                 match tangent_from(base, end.at) {
-                    Some(drawn) => draw_arc(preview, &drawn),
-                    None => preview.lines.push([base.at, end.at]),
+                    Some(drawn) => {
+                        draw_arc(preview, &drawn);
+                        measure_radius(preview, drawn.center, end.at);
+                    }
+                    None => preview.guides.push([base.at, end.at]),
                 }
                 show(preview, &end);
             }
@@ -914,7 +933,7 @@ fn finish_tangent(step: &mut Step<'_, '_, '_>, base: &Base, at: Xy) -> Option<Ou
     if drawn.too_small() {
         return Some(Outcome::said(Message::TooSmall));
     }
-    let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+    let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
     let built = (|| -> Result<(), crate::Error> {
         let c = builder.new_point(drawn.center, false)?;
         let e = builder.point(&end, false)?;
