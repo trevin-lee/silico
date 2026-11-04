@@ -466,6 +466,15 @@ impl<P: Clients + 'static> App<P> {
         }
         self.toolbar(ui, &mut started);
         self.status_bar(ui, &mut started);
+        // Over the status bar, across the window's width, under a docked dialog too; drawn
+        // before the viewport, which highlights the faces of the feature hovered in it.
+        let active = self.active_place();
+        crate::timeline::show(
+            ui,
+            active.and_then(|at| self.tabs.get_mut(at)),
+            &self.sessions,
+            &mut started,
+        );
         self.disk_banner(ui, &mut started);
         self.dialog_panel(ui, &mut started, dialog_key);
         egui::CentralPanel::default().show(ui, |ui| {

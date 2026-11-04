@@ -104,6 +104,8 @@ pub const GRAY_400: Color32 = hex(0x646363);
 pub const GRAY_500: Color32 = hex(0x827f7f);
 /// Gray.550.
 pub const GRAY_550: Color32 = hex(0x939090);
+/// Gray.600.
+pub const GRAY_600: Color32 = hex(0x9f9f9f);
 /// Gray.700.
 pub const GRAY_700: Color32 = hex(0xbfbfbf);
 /// Gray.750.
@@ -729,6 +731,88 @@ pub const BROWSER_EMPTY: Color32 = TEXT_SUBDUED;
 
 /// The space below the last row (`.panel-body`'s `padding-bottom`).
 pub const BROWSER_PADDING_BOTTOM: f32 = 12.0;
+
+// ---- The timeline (`#timeline`, `.tl-*`) ----
+
+/// The pane: [`TIMELINE_HEIGHT`] high on [`BOTTOM_BAR_BG`], under a [`PANEL_BORDER`] line;
+/// its padding at each side, and the gap between its label, its track, and its summary
+/// (`#timeline`'s `padding: 0 8px; gap: 8px`).
+pub const TIMELINE_PADDING: f32 = 8.0;
+pub const TIMELINE_GAP: f32 = 8.0;
+
+/// Its label (`.tl-label`): [`HEADER_SIZE`] capitals, Gray.550, in a column this wide.
+pub const TIMELINE_LABEL_WIDTH: f32 = 68.0;
+pub const TIMELINE_LABEL: Color32 = TEXT_SUBDUED;
+
+/// A feature's item (`.tl-item`): its side, its corners, and the gap between two items
+/// (`.tl-track`'s `gap`); its icon the prototype's large one (`svg.i.lg`).
+pub const TIMELINE_ITEM_SIZE: f32 = TOOLBAR_BUTTON_SIZE;
+pub const TIMELINE_ITEM_CORNER_RADIUS: u8 = SMALL_CORNER_RADIUS;
+pub const TIMELINE_ITEM_GAP: f32 = 2.0;
+
+/// An item's icon at rest (Gray.750), and hovered (`:hover`), Gray.1000 on Gray.300.
+pub const TIMELINE_ITEM_ICON: Color32 = TEXT_DEFAULT;
+pub const TIMELINE_ITEM_HOVER_ICON: Color32 = TEXT_STRONG;
+pub const TIMELINE_ITEM_HOVER_BG: Color32 = WIDGET_BG;
+
+/// A selected item (`.selected`): Blue.900 on Blue.500.
+pub const TIMELINE_ITEM_SELECTED_ICON: Color32 = ON_SELECTION;
+pub const TIMELINE_ITEM_SELECTED_BG: Color32 = SELECTION_BG;
+
+/// A sketch's icon (`.sketch`), Gray.600, whether hovered or selected: styles.css gives it
+/// after both.
+pub const TIMELINE_SKETCH_ICON: Color32 = GRAY_600;
+
+/// A failed feature (`.err`): its icon Red.550 and a line of it along the item's bottom;
+/// a warned one's (`.warn`) the warning's orange. The line's width.
+pub const TIMELINE_ERROR: Color32 = ERROR_TEXT;
+pub const TIMELINE_WARNING: Color32 = WARNING;
+pub const TIMELINE_MARK_LINE_WIDTH: f32 = 2.0;
+
+/// A suppressed item's opacity (`.suppressed`), and its strike: inset from the item's sides,
+/// this wide, turned this far (`::after`'s `left: 5px; right: 5px; height: 1.5px; rotate(-35deg)`).
+pub const TIMELINE_SUPPRESSED_OPACITY: f32 = 0.35;
+pub const TIMELINE_STRIKE_INSET: f32 = 5.0;
+pub const TIMELINE_STRIKE_WIDTH: f32 = 1.5;
+pub const TIMELINE_STRIKE_DEGREES: f32 = -35.0;
+
+/// A queued item's opacity (`.queued`), while a rebuild runs.
+pub const TIMELINE_QUEUED_OPACITY: f32 = 0.45;
+
+/// The running step's spinner (`.building::before`): a ring inset from the item, its top and
+/// right halves drawn in Gray.1000, turning once in this many seconds.
+pub const TIMELINE_SPINNER_INSET: f32 = 2.0;
+pub const TIMELINE_SPINNER_WIDTH: f32 = 2.0;
+pub const TIMELINE_SPINNER: Color32 = GRAY_1000;
+pub const TIMELINE_SPINNER_TURN_SECONDS: f32 = 0.7;
+
+/// A mark at an item's corner (`.badge`): its side, inset from the top right; filled with
+/// the error's Red (`error_fg_color`) or the warning's orange, in a ring of the bar's grey.
+pub const TIMELINE_BADGE_SIZE: f32 = 9.0;
+pub const TIMELINE_BADGE_INSET: f32 = 1.0;
+pub const TIMELINE_BADGE_RING_WIDTH: f32 = 1.5;
+pub const TIMELINE_BADGE_RING: Color32 = BOTTOM_BAR_BG;
+pub const TIMELINE_BADGE_ERROR: Color32 = ERROR_FILL;
+pub const TIMELINE_BADGE_WARNING: Color32 = WARNING;
+
+/// Where a dragged feature would drop (`.drop-before::before`): a Blue.525 line this wide,
+/// this far left of the item it would drop before, short of its top and bottom by this.
+pub const TIMELINE_DROP: Color32 = FOCUS;
+pub const TIMELINE_DROP_WIDTH: f32 = 2.0;
+pub const TIMELINE_DROP_OFFSET: f32 = 2.0;
+pub const TIMELINE_DROP_INSET: f32 = 4.0;
+
+/// An empty timeline's words (`.tl-empty`): [`HEADER_SIZE`], Gray.550, this far in.
+pub const TIMELINE_EMPTY: Color32 = TEXT_SUBDUED;
+pub const TIMELINE_EMPTY_PADDING: f32 = 4.0;
+
+/// The summary at the right (`.tl-right`): [`HEADER_SIZE`], Gray.550; its errors (`.err-text`)
+/// Red.550 with the error's icon, `gap` apart (`.st-item`'s), each part padded this much
+/// at its sides (`.st-item`'s `padding: 0 8px`).
+pub const TIMELINE_SUMMARY: Color32 = TEXT_SUBDUED;
+pub const TIMELINE_SUMMARY_ERRORS: Color32 = ERROR_TEXT;
+pub const TIMELINE_SUMMARY_PADDING: f32 = 8.0;
+pub const TIMELINE_SUMMARY_GAP: f32 = 6.0;
 
 // ---- Key caps (`.kbd`) ----
 
@@ -1545,6 +1629,91 @@ mod tests {
             // `.prefix.under`, `--sk-under` (`--blue-soft`); `.over`, `--sk-over` (`--red`).
             ("SKETCH_UNDER_DEFINED", SKETCH_UNDER_DEFINED, 0x7a95ff),
             ("SKETCH_OVER_DEFINED", SKETCH_OVER_DEFINED, 0xff3865),
+        ] {
+            assert_eq!(color, opaque(hex), "{name}");
+        }
+    }
+
+    /// The timeline's values, typed from styles.css's `#timeline` and `.tl-*` rules, its
+    /// `--timeline-h`, `--r-sm`, and its `--g*`, `--blue*`, `--red*`, and `--orange` colours.
+    #[test]
+    fn the_timelines_tokens_are_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `#timeline`: `height: var(--timeline-h)` (40), `padding: 0 8px; gap: 8px`.
+        assert_eq!(TIMELINE_HEIGHT, 40.0);
+        assert_eq!(TIMELINE_PADDING, 8.0);
+        assert_eq!(TIMELINE_GAP, 8.0);
+        // `.tl-label`: `width: 68px`; `.tl-track`: `gap: 2px`; `.tl-item`: 30 square,
+        // `border-radius: var(--r-sm)` (4).
+        assert_eq!(TIMELINE_LABEL_WIDTH, 68.0);
+        assert_eq!(TIMELINE_ITEM_GAP, 2.0);
+        assert_eq!(TIMELINE_ITEM_SIZE, 30.0);
+        assert_eq!(TIMELINE_ITEM_CORNER_RADIUS, 4);
+        // `.err`/`.warn`: `inset 0 -2px 0`; `.suppressed`: `opacity: .35`, its strike
+        // `left: 5px; right: 5px; height: 1.5px; rotate(-35deg)`; `.queued`: `.45`.
+        assert_eq!(TIMELINE_MARK_LINE_WIDTH, 2.0);
+        assert_eq!(TIMELINE_SUPPRESSED_OPACITY, 0.35);
+        assert_eq!(TIMELINE_STRIKE_INSET, 5.0);
+        assert_eq!(TIMELINE_STRIKE_WIDTH, 1.5);
+        assert_eq!(TIMELINE_STRIKE_DEGREES, -35.0);
+        assert_eq!(TIMELINE_QUEUED_OPACITY, 0.45);
+        // `.building::before`: `inset: 2px; border: 2px`, `spin .7s`.
+        assert_eq!(TIMELINE_SPINNER_INSET, 2.0);
+        assert_eq!(TIMELINE_SPINNER_WIDTH, 2.0);
+        assert_eq!(TIMELINE_SPINNER_TURN_SECONDS, 0.7);
+        // `.badge`: `top: 1px; right: 1px; width: 9px`, ringed `0 0 0 1.5px var(--g150)`.
+        assert_eq!(TIMELINE_BADGE_SIZE, 9.0);
+        assert_eq!(TIMELINE_BADGE_INSET, 1.0);
+        assert_eq!(TIMELINE_BADGE_RING_WIDTH, 1.5);
+        // `.drop-before::before`: `left: -2px; top: 4px; bottom: 4px; width: 2px`.
+        assert_eq!(TIMELINE_DROP_OFFSET, 2.0);
+        assert_eq!(TIMELINE_DROP_INSET, 4.0);
+        assert_eq!(TIMELINE_DROP_WIDTH, 2.0);
+        // `.tl-empty`: `padding-left: 4px`; `.st-item`: `gap: 6px; padding: 0 8px`.
+        assert_eq!(TIMELINE_EMPTY_PADDING, 4.0);
+        assert_eq!(TIMELINE_SUMMARY_PADDING, 8.0);
+        assert_eq!(TIMELINE_SUMMARY_GAP, 6.0);
+        for (name, color, hex) in [
+            // `#timeline`, `--g150`; `.tl-label`, `.tl-empty`, `.tl-right`, `--g550`.
+            ("BOTTOM_BAR_BG", BOTTOM_BAR_BG, 0x171717),
+            ("TIMELINE_LABEL", TIMELINE_LABEL, 0x939090),
+            ("TIMELINE_EMPTY", TIMELINE_EMPTY, 0x939090),
+            ("TIMELINE_SUMMARY", TIMELINE_SUMMARY, 0x939090),
+            // `.tl-item`, `--g750`; `:hover`, `--g1000` on `--g300`; `.selected`,
+            // `--blue-text` on `--blue`; `.sketch`, `--g600`.
+            ("TIMELINE_ITEM_ICON", TIMELINE_ITEM_ICON, 0xcfcfcf),
+            (
+                "TIMELINE_ITEM_HOVER_ICON",
+                TIMELINE_ITEM_HOVER_ICON,
+                0xffffff,
+            ),
+            ("TIMELINE_ITEM_HOVER_BG", TIMELINE_ITEM_HOVER_BG, 0x2c2b2b),
+            (
+                "TIMELINE_ITEM_SELECTED_ICON",
+                TIMELINE_ITEM_SELECTED_ICON,
+                0xf0f2ff,
+            ),
+            (
+                "TIMELINE_ITEM_SELECTED_BG",
+                TIMELINE_ITEM_SELECTED_BG,
+                0x186add,
+            ),
+            ("TIMELINE_SKETCH_ICON", TIMELINE_SKETCH_ICON, 0x9f9f9f),
+            // `.err`, `--red`; `.warn`, `--orange`; `.err-text`, `--red`.
+            ("TIMELINE_ERROR", TIMELINE_ERROR, 0xff3865),
+            ("TIMELINE_WARNING", TIMELINE_WARNING, 0xff7a0c),
+            ("TIMELINE_SUMMARY_ERRORS", TIMELINE_SUMMARY_ERRORS, 0xff3865),
+            // `.building::before`, `--g1000`.
+            ("TIMELINE_SPINNER", TIMELINE_SPINNER, 0xffffff),
+            // `.badge.err`, `--red-fill`; `.badge.warn`, `--orange`; their ring `--g150`.
+            ("TIMELINE_BADGE_ERROR", TIMELINE_BADGE_ERROR, 0xab0116),
+            ("TIMELINE_BADGE_WARNING", TIMELINE_BADGE_WARNING, 0xff7a0c),
+            ("TIMELINE_BADGE_RING", TIMELINE_BADGE_RING, 0x171717),
+            // `.drop-before::before`, `--blue-hi`.
+            ("TIMELINE_DROP", TIMELINE_DROP, 0x4676ff),
         ] {
             assert_eq!(color, opaque(hex), "{name}");
         }
