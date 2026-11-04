@@ -501,3 +501,20 @@ crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace != 
 # touch screen and with drag-to-scroll forced on (`DragScroll::Always`): the track never
 # moved, and the wheel scrolled it. Unreachable.
 crates/silico-app/src/timeline.rs | features | delete field drag from struct egui::scroll_area::ScrollSource expression | #369
+# The banner's least height (#381), its icon's foot (`.b-icon`: 1 under the words' top, 14
+# high), is never what ends it: its title is laid out on lines 16 high and has one at least
+# (egui gives even an empty paragraph its line's height), and its second line is 2 under
+# that, so its words are 18 high at least, past the icon's 15. Each mutant of that sum, at
+# either `+`, leaves it 15 or less (`+ 1 * 14` is the sum itself), so the `max` is the
+# words' in every case.
+crates/silico-app/src/banner.rs | show | replace + with * | #381
+crates/silico-app/src/banner.rs | show | replace + with * | #381
+crates/silico-app/src/banner.rs | show | replace + with - | #381
+crates/silico-app/src/banner.rs | show | replace + with - | #381
+# The banner takes clicks and drags (#381): `Sense::CLICK` and `Sense::DRAG` are egui's
+# bits 0 and 1, apart, so their `^` is their `|`.
+crates/silico-app/src/banner.rs | show | replace | with ^ | #381
+# A modal's border, at each side (#381): `theme::BORDER_WIDTH` is 1, so `2.0 / 1.0` is
+# `2.0 * 1.0`, in the tallest the window allows and in the width inside the border.
+crates/silico-app/src/modal.rs | show | replace * with / | #381
+crates/silico-app/src/modal.rs | show | replace * with / | #381

@@ -305,6 +305,24 @@ mod tests {
 
     /// [`drawn`], over `canvas`, in a window wider than the default's.
     fn drawn_over(tone: Tone, canvas: Rect) -> Harness<'static, Drawn> {
+        let buttons: &[(&str, bool)] = match tone {
+            Tone::Info => &[],
+            _ => &[
+                ("Reload, discard my edits", true),
+                ("Keep my edits…", false),
+            ],
+        };
+        drawn_with(tone, canvas, buttons, tone == Tone::Info)
+    }
+
+    /// The banner of `tone` with `buttons`, and Dismiss if `dismiss`, drawn over `canvas`,
+    /// which takes clicks as the viewport does, in a window wider than the default's.
+    fn drawn_with(
+        tone: Tone,
+        canvas: Rect,
+        buttons: &'static [(&'static str, bool)],
+        dismiss: bool,
+    ) -> Harness<'static, Drawn> {
         let mut h = Harness::builder()
             .with_size(Vec2::new(CANVAS.right() + 40.0, CANVAS.bottom() + 40.0))
             .build_ui_state(
@@ -313,19 +331,12 @@ mod tests {
                     if canvas.clicked() {
                         drawn.under += 1;
                     }
-                    let buttons: &[(&str, bool)] = match tone {
-                        Tone::Info => &[],
-                        _ => &[
-                            ("Reload, discard my edits", true),
-                            ("Keep my edits…", false),
-                        ],
-                    };
                     let banner = Banner {
                         tone,
                         title: TITLE,
                         sub: &SUB,
                         buttons,
-                        dismiss: tone == Tone::Info,
+                        dismiss,
                     };
                     let clicked = show(ui, canvas.rect, &banner);
                     if clicked != Clicked::None {
@@ -619,6 +630,211 @@ mod tests {
                 }
                 assert!(h.state().clicked.is_empty(), "{tone:?} at {width}");
             }
+        }
+    }
+
+    /// What the prototype never shows (its canvas is never narrow), as theme.rs proposes
+    /// it: the least width a banner keeps beside the ViewCube, and the least its words keep
+    /// beside its buttons.
+    const BESIDE_CUBE_MIN: f32 = 320.0;
+    const WORDS_MIN: f32 = 200.0;
+
+    /// A canvas at [`CANVAS`]'s corner, `width` wide.
+    fn canvas_of(width: f32) -> Rect {
+        Rect::from_min_size(CANVAS.min, Vec2::new(width, CANVAS.height()))
+    }
+
+    /// The banner's insides, from its drawn rect: its padding's top, the words' left (after
+    /// the icon and its gap), and the right of its padding.
+    fn insides(banner: Rect) -> (f32, f32, f32) {
+        let inner_top = banner.top() + css::BORDER + css::BANNER_PAD_TOP;
+        let text_left =
+            banner.left() + css::BORDER + css::BANNER_PAD_LEFT + css::ICON + css::BANNER_GAP;
+        let inner_right = banner.right() - css::BORDER - css::BANNER_PAD_RIGHT;
+        (inner_top, text_left, inner_right)
+    }
+
+    /// An action's width (`.btn`: its words and `padding: 0 10px`; `.ab-btn`: 24), its
+    /// words' advance as the font measures them where they're painted.
+    fn action_width(h: &Harness<'_, Drawn>, label: &str) -> f32 {
+        if label == DISMISS {
+            css::AB_BTN_W
+        } else {
+            text_shape(h, label).galley.size().x + 2.0 * css::BTN_PADDING
+        }
+    }
+
+    /// The words wrap at `width`: the title and the second line.
+    #[track_caller]
+    fn words_wrap_at(h: &Harness<'_, Drawn>, width: f32, what: &str) {
+        let title = text_shape(h, TITLE);
+        let sub = text_shape(h, &SUB.map(|(part, _)| part).concat());
+        for (shown, which) in [(&title, "title"), (&sub, "second line")] {
+            assert_eq!(
+                shown.galley.job.wrap.max_width, width,
+                "{what}: the {which}'s wrap"
+            );
+            assert!(shown.galley.size().x <= width, "{what}: the {which}");
+        }
+    }
+
+    /// The actions under the words (`.b-actions` wrapped), in `rows` by label: the first
+    /// row 6 under the words, each next 6 under the last (the actions 22 high), each from
+    /// the words' left, its actions 6 apart; each row holding what fits in the words' room
+    /// as flex-wrap fills it, one at least; and the banner ending under the last, padded.
+    #[track_caller]
+    fn under_the_words(h: &Harness<'_, Drawn>, banner: Rect, rows: &[&[&str]], what: &str) {
+        let (inner_top, text_left, inner_right) = insides(banner);
+        let room = inner_right - text_left;
+        let title = text_shape(h, TITLE);
+        let sub = text_shape(h, &SUB.map(|(part, _)| part).concat());
+        let words = title.galley.size().y + css::BANNER_SUB_TOP + sub.galley.size().y;
+        let mut top = inner_top + words + css::BANNER_ACTIONS_GAP;
+        for (at, row) in rows.iter().enumerate() {
+            let widths: Vec<f32> = row.iter().map(|label| action_width(h, label)).collect();
+            let used =
+                widths.iter().sum::<f32>() + (widths.len() - 1) as f32 * css::BANNER_ACTIONS_GAP;
+            assert!(
+                widths.len() == 1 || used <= room,
+                "{what}: row {at} is {used} wide in {room}"
+            );
+            if let Some(next) = rows.get(at + 1) {
+                let more = used + css::BANNER_ACTIONS_GAP + action_width(h, next[0]);
+                assert!(more > room, "{what}: {} fits in row {at}", next[0]);
+            }
+            let mut left = text_left;
+            for (label, width) in row.iter().zip(&widths) {
+                sized(
+                    widget(h, Role::Button, label),
+                    Rect::from_min_size(Pos2::new(left, top), Vec2::new(*width, css::BTN_H)),
+                    &format!("{what}: {label}"),
+                );
+                left += width + css::BANNER_ACTIONS_GAP;
+            }
+            top += css::BTN_H + css::BANNER_ACTIONS_GAP;
+        }
+        let last = top - css::BANNER_ACTIONS_GAP;
+        assert!(
+            near(banner.bottom(), last + css::BANNER_PAD_BOTTOM + css::BORDER),
+            "{what}: the banner ends at {}, not under its last row at {last}",
+            banner.bottom()
+        );
+    }
+
+    #[test]
+    fn the_banner_keeps_clear_of_the_cube_only_with_320_beside_it() {
+        // The canvas from x 40: the banner from 10 in, to 148 from the canvas's right while
+        // that leaves it 320 wide, or else to 10 from it.
+        for (width, right) in [
+            // 1040 - 148: the prototype's place.
+            (1000.0, 892.0),
+            // 518 - 148: 320 wide beside the cube, exactly.
+            (478.0, 370.0),
+            // 517 - 10: 319 beside it would be too narrow.
+            (477.0, 507.0),
+            // 440 - 10.
+            (400.0, 430.0),
+        ] {
+            for tone in [Tone::Warning, Tone::Info] {
+                let h = drawn_over(tone, canvas_of(width));
+                let banner = banner_rect(&h, tone.colours().0);
+                assert!(near(banner.left(), 50.0), "{tone:?} at {width}: {banner:?}");
+                assert!(
+                    near(banner.right(), right),
+                    "{tone:?} at {width}: {banner:?}, not to {right}"
+                );
+            }
+        }
+        assert!(near(
+            478.0 - css::BANNER_LEFT - css::BANNER_RIGHT,
+            BESIDE_CUBE_MIN
+        ));
+    }
+
+    #[test]
+    fn the_buttons_go_under_the_words_only_where_the_words_would_have_less_than_200() {
+        // Dismiss alone, on a canvas 302 wide: the banner from 50 to 332, its padding's
+        // right at 321, its words from 87 (50, its border, 12, the icon, 10); Dismiss's 24
+        // and its 10 leave the words 321 - 24 - 10 - 87 = 200, so it stays beside them.
+        let h = drawn_over(Tone::Info, canvas_of(302.0));
+        let banner = banner_rect(&h, css::INFO.0);
+        assert!(near(banner.right(), 332.0), "{banner:?}");
+        let (inner_top, text_left, inner_right) = insides(banner);
+        assert!(near(
+            inner_right - css::AB_BTN_W - css::BANNER_GAP - text_left,
+            WORDS_MIN
+        ));
+        sized(
+            widget(&h, Role::Button, DISMISS),
+            Rect::from_min_size(
+                Pos2::new(inner_right - css::AB_BTN_W, inner_top),
+                Vec2::new(css::AB_BTN_W, css::AB_BTN),
+            ),
+            "Dismiss beside 200",
+        );
+        words_wrap_at(&h, WORDS_MIN, "beside 200");
+        // One narrower, 199: Dismiss goes under, and the words take the room to its
+        // padding's right, 320 - 87.
+        let h = drawn_over(Tone::Info, canvas_of(301.0));
+        let banner = banner_rect(&h, css::INFO.0);
+        under_the_words(&h, banner, &[&[DISMISS]], "beside 199");
+        words_wrap_at(&h, 233.0, "beside 199");
+    }
+
+    #[test]
+    fn under_the_words_the_buttons_fill_rows_as_they_fit() {
+        // 300 wide: the banner 280, its words' room 280 - 1 - 10 - 1 - 12 - 14 - 10 = 232,
+        // Reload and Keep my edits too wide for one row.
+        let h = drawn_over(Tone::Warning, canvas_of(300.0));
+        let banner = banner_rect(&h, css::WARN.0);
+        assert!(near(banner.width(), 280.0), "{banner:?}");
+        under_the_words(
+            &h,
+            banner,
+            &[&["Reload, discard my edits"], &["Keep my edits…"]],
+            "at 300",
+        );
+        words_wrap_at(&h, 232.0, "at 300");
+        // 60 wide: no room at all, each alone in its row, the words wrapped at 200.
+        for tone in [Tone::Warning, Tone::Info] {
+            let h = drawn_over(tone, canvas_of(60.0));
+            let banner = banner_rect(&h, tone.colours().0);
+            let rows: &[&[&str]] = match tone {
+                Tone::Info => &[&[DISMISS]],
+                _ => &[&["Reload, discard my edits"], &["Keep my edits…"]],
+            };
+            under_the_words(&h, banner, rows, &format!("{tone:?} at 60"));
+            words_wrap_at(&h, WORDS_MIN, &format!("{tone:?} at 60"));
+        }
+        // Two short buttons and Dismiss, the words' room exactly as wide as the three and
+        // their gaps: one row, Dismiss ending at the padding. A 32nd narrower, Dismiss goes
+        // to a row of its own.
+        const SHORT: [(&str, bool); 2] = [("Reload", true), ("Keep", true)];
+        let measured = drawn_with(Tone::Warning, CANVAS, &SHORT, true);
+        let row = action_width(&measured, "Reload")
+            + css::BANNER_ACTIONS_GAP
+            + action_width(&measured, "Keep")
+            + css::BANNER_ACTIONS_GAP
+            + css::AB_BTN_W;
+        // The canvas: the row, the words' 37 from the banner's left and 11 to its right,
+        // and the banner's 10 at each side.
+        let exact = row + 37.0 + 11.0 + 2.0 * css::BANNER_LEFT;
+        for (width, rows, what) in [
+            (exact, &[&["Reload", "Keep", DISMISS][..]][..], "exactly"),
+            (
+                exact - 1.0 / 32.0,
+                &[&["Reload", "Keep"][..], &[DISMISS][..]][..],
+                "a 32nd short",
+            ),
+        ] {
+            let h = drawn_with(Tone::Warning, canvas_of(width), &SHORT, true);
+            let banner = banner_rect(&h, css::WARN.0);
+            let (_, text_left, inner_right) = insides(banner);
+            if what == "exactly" {
+                assert_eq!(inner_right - text_left, row, "the room");
+            }
+            under_the_words(&h, banner, rows, what);
+            words_wrap_at(&h, WORDS_MIN, what);
         }
     }
 }

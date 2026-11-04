@@ -1035,4 +1035,134 @@ pub(crate) mod tests {
             frame.bottom() - css::BORDER - css::FOOT_BOTTOM
         ));
     }
+
+    /// `.modal .m-head`'s room for its title: the modal's 440, its border at each side, the
+    /// head's padding (16 and 12), and the icon's 14 and its 8 if it has one.
+    const TITLE_ROOM: f32 = 440.0 - 2.0 * 1.0 - 16.0 - 12.0;
+    const TITLE_ROOM_BESIDE_ICON: f32 = TITLE_ROOM - 14.0 - 8.0;
+
+    #[test]
+    fn a_modals_title_wraps_at_the_heads_room_its_icon_centred_on_it() {
+        const LONG: &str = "Save changes to a document with a name long enough that it \
+                            wraps onto a second line before closing?";
+        for (icon, room) in [
+            (Some(Icon::Save), TITLE_ROOM_BESIDE_ICON),
+            (None, TITLE_ROOM),
+        ] {
+            let mut h = Harness::builder().with_size(WINDOW).build_ui(move |ui| {
+                show(ui.ctx(), egui::Id::new("long"), |ui| {
+                    head(ui, icon, LONG);
+                });
+            });
+            theme::apply(&h.ctx);
+            h.run_steps(4);
+            let inside = frame_of(&h).rect.shrink(css::BORDER);
+            let title = text_shape(&h, LONG);
+            assert_eq!(title.galley.job.wrap.max_width, room, "{icon:?}'s wrap");
+            assert!(title.galley.size().x <= room, "{icon:?}");
+            // Two lines, 16 each: the icon's middle on theirs (`align-items: center`).
+            assert_eq!(title.galley.rows.len(), 2, "{icon:?}");
+            assert!(near(title.galley.size().y, 2.0 * css::LH), "{icon:?}");
+            let top = inside.top() + css::HEAD_TOP;
+            let left = inside.left() + css::HEAD_LEFT;
+            let middle = top + css::LH;
+            match icon {
+                Some(_) => {
+                    let icon = Rect::from_min_size(
+                        Pos2::new(left, middle - css::ICON / 2.0),
+                        Vec2::splat(css::ICON),
+                    );
+                    assert_eq!(icon_at(&h, icon), Some(css::G1000), "the icon");
+                    at(
+                        title.pos,
+                        Pos2::new(left + css::ICON + css::HEAD_GAP, top),
+                        "the title",
+                    );
+                }
+                None => at(title.pos, Pos2::new(left, top), "the title"),
+            }
+            assert!(near(
+                inside.bottom(),
+                top + 2.0 * css::LH + css::HEAD_BOTTOM
+            ));
+        }
+    }
+
+    /// `.kbd`: `min-width: 16px; padding: 0 4px`, its 1 px border inside its width
+    /// (`box-sizing: border-box`).
+    const KBD_PADDING: f32 = 4.0;
+    const KBD_MIN_W: f32 = 16.0;
+
+    #[test]
+    fn a_key_cap_is_its_words_padded_and_bordered_16_at_least_and_widens_its_button() {
+        // `.m-foot .btn`s with key caps: `.btn`'s words, its gap, and its cap, centred in it,
+        // 10 at each side, 76 wide at least; the cap's words in its middle.
+        const BUTTONS: [(&str, &str); 3] =
+            [("Drop", "."), ("Cancel", "Esc"), ("Export", "Ctrl+Shift+E")];
+        let mut h = Harness::builder().with_size(WINDOW).build_ui(|ui| {
+            show(ui.ctx(), egui::Id::new("caps"), |ui| {
+                foot(
+                    ui,
+                    [Button::new(BUTTONS[0].0, Kind::Danger).cap(BUTTONS[0].1)],
+                    [
+                        Button::new(BUTTONS[1].0, Kind::Secondary).cap(BUTTONS[1].1),
+                        Button::new(BUTTONS[2].0, Kind::Primary).cap(BUTTONS[2].1),
+                    ],
+                );
+            });
+        });
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        let mut clamped = [false; 2];
+        for (label, key) in BUTTONS {
+            let button = widget(&h, Role::Button, label);
+            let words = text_shape(&h, label);
+            let cap_words = text_shape(&h, key);
+            let advance = cap_words.galley.size().x;
+            let cap = (advance + 2.0 * (KBD_PADDING + css::BORDER)).max(KBD_MIN_W);
+            clamped[usize::from(cap == KBD_MIN_W)] = true;
+            let outline = rects(&h)
+                .into_iter()
+                .find(|shape| {
+                    shape.fill == Color32::TRANSPARENT
+                        && shape.stroke.width == css::BORDER
+                        && button.contains_rect(shape.rect)
+                })
+                .expect("the cap's outline");
+            let content = words.galley.size().x + css::BTN_GAP + cap;
+            let width = (content + 2.0 * css::BTN_PADDING).max(css::FOOT_BTN_MIN_W);
+            assert!(
+                near(button.width(), width),
+                "{label}: {button:?}, not {width} wide"
+            );
+            let left = button.center().x - content / 2.0;
+            // The words in the button's middle (`align-items: center`).
+            at(
+                words.pos + words.galley.size() / 2.0,
+                Pos2::new(left + words.galley.size().x / 2.0, button.center().y),
+                &format!("{label}'s words' middle"),
+            );
+            sized(
+                outline.rect,
+                Rect::from_min_size(
+                    Pos2::new(
+                        left + words.galley.size().x + css::BTN_GAP,
+                        button.center().y - css::KBD_H / 2.0,
+                    ),
+                    Vec2::new(cap, css::KBD_H),
+                ),
+                &format!("{label}'s cap"),
+            );
+            // `text-align: center`: the cap's words in its middle.
+            assert!(
+                near(cap_words.pos.x + advance / 2.0, outline.rect.center().x),
+                "{key}: {:?} in {:?}",
+                cap_words.pos,
+                outline.rect
+            );
+        }
+        // One cap at its least, one wider; Export with its cap wider than 76.
+        assert_eq!(clamped, [true, true], "the caps' widths");
+        assert!(widget(&h, Role::Button, "Export").width() > css::FOOT_BTN_MIN_W + 1.0);
+    }
 }

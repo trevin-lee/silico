@@ -444,4 +444,71 @@ mod tests {
         form.chosen.insert(FeatureId::new("b0000009").unwrap());
         assert_eq!(form.request(&bodies), None);
     }
+
+    #[test]
+    fn the_tolerances_text_stops_short_of_its_unit_as_the_prototypes_field() {
+        use eframe::egui::{Shape, Vec2};
+        use egui::accesskit::Role;
+        use egui_kittest::Harness;
+
+        use crate::modal::tests::{near, text_shape, widget};
+
+        // `.field`: its 1 px border; `.field input { padding: 0 6px }`, then `.field .unit
+        // { padding: 0 6px 0 0 }` at its right: the text stops 6 before the unit, which
+        // stops 6 before the border.
+        const BORDER: f32 = 1.0;
+        const INPUT_PADDING: f32 = 6.0;
+        const UNIT_PADDING: f32 = 6.0;
+        // Longer than the field, so it's clipped where its room ends.
+        const LONG: &str = "0.100000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(800.0, 600.0))
+            .build_ui_state(
+                |ui, form: &mut ExportForm| {
+                    let shown = Shown {
+                        running: false,
+                        replacing: None,
+                        said: None,
+                        browse: None,
+                    };
+                    modal::show(ui.ctx(), egui::Id::new("export"), |ui| {
+                        form.ui(ui, &[], &shown);
+                    });
+                },
+                ExportForm {
+                    tolerance: LONG.to_owned(),
+                    ..form()
+                },
+            );
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        let field = widget(&h, Role::TextInput, "Tolerance");
+        assert!(text_shape(&h, LONG).galley.size().x > field.width());
+        let unit = text_shape(&h, "mm");
+        let unit_width = unit.galley.size().x;
+        assert!(near(
+            unit.pos.x,
+            field.right() - BORDER - UNIT_PADDING - unit_width
+        ));
+        let text_right = field.right() - BORDER - UNIT_PADDING - unit_width - INPUT_PADDING;
+        // Where the typed text is clipped: egui's text area, 1 wider for its cursor, whose
+        // margins are whole points (the unit's room rounded up).
+        let clipped: Vec<f32> = h
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                Shape::Text(shown) if shown.galley.text() == LONG => {
+                    Some(clipped.clip_rect.right() - 1.0)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(clipped.len(), 1, "the tolerance's text");
+        assert!(
+            clipped[0] <= text_right && clipped[0] > text_right - 1.0,
+            "the text's room ends at {}, not {text_right}",
+            clipped[0]
+        );
+    }
 }

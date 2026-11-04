@@ -847,6 +847,101 @@ fn frames_climb_and_status_answers_while_a_disk_comparison_is_held() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The session's disk finding, as the tab last read it.
+fn disk(h: &AppHarness) -> Option<silico_core::disk::Disk> {
+    h.state().tabs()[0]
+        .status
+        .as_ref()
+        .and_then(|status| status.disk)
+}
+
+impl HeldReader {
+    /// Reads held from now: frames stepped until one is waiting, so no comparison ends,
+    /// and the session's finding stands, until [`open`](Self::open). A few frames more, so
+    /// the comparison before it, which ended as it began, has told what it found.
+    fn hold(&self, h: &mut AppHarness) {
+        *self.held.lock().unwrap() = true;
+        self.reading.store(false, Ordering::SeqCst);
+        step_until(h, "a comparison held", |_| {
+            self.reading.load(Ordering::SeqCst)
+        });
+        for _ in 0..5 {
+            step(h);
+        }
+    }
+
+    fn open(&self) {
+        *self.held.lock().unwrap() = false;
+        self.opened.notify_all();
+    }
+}
+
+#[test]
+fn a_reload_the_person_asked_for_waits_for_the_file_as_the_session_holds_it() {
+    use silico_core::disk::Disk;
+    let reader = Arc::new(HeldReader::default());
+    let f = fixture_reading(Some(reader.reader()));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    let named = |name: &str| EXAMPLE.replace(r#""name": "Hole""#, &format!(r#""name": "{name}""#));
+    // An edit held, and the file changed under it.
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| h.state().tabs()[0].transaction);
+    std::fs::write(&path, named("Drill")).unwrap();
+    step_until(&mut h, "the change announced", |h| anywhere(h, changed));
+    // The comparisons held, Reload, discard my edits: the edits rolled back, the tab settled,
+    // and the file still changed on disk as the session last found it. The session's
+    // reload, the person's, is still to come.
+    reader.hold(&mut h);
+    h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+        .click();
+    step_until(&mut h, "rolled back and settled", |h| {
+        let tab = &h.state().tabs()[0];
+        !tab.transaction && !tab.unsettled() && shows(h, "Timeline", "Pin")
+    });
+    for _ in 0..10 {
+        step(&mut h);
+        assert_eq!(disk(&h), Some(Disk::Changed));
+        assert!(shows(&h, "Timeline", "Hole"), "reloaded early");
+    }
+    // The comparison let go: the session reloads, at the person's asking.
+    reader.open();
+    step_until(&mut h, "reloaded", |h| shows(h, "Timeline", "Drill"));
+    never_reloaded(&mut h, "the person's reload, settled before it came");
+    // Again, but the file goes back to what the session holds before it's compared: no
+    // reload comes, and the person's is let go once the session finds the file unchanged.
+    type_name(&mut h, "t");
+    step_until(&mut h, "the edit held again", |h| {
+        h.state().tabs()[0].transaction && shows(h, "Timeline", "tPin")
+    });
+    std::fs::write(&path, named("Bit")).unwrap();
+    step_until(&mut h, "the second change announced", |h| {
+        anywhere(h, changed)
+    });
+    reader.hold(&mut h);
+    h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+        .click();
+    step_until(&mut h, "rolled back and settled again", |h| {
+        let tab = &h.state().tabs()[0];
+        !tab.transaction && !tab.unsettled() && shows(h, "Timeline", "Pin")
+    });
+    std::fs::write(&path, named("Drill")).unwrap();
+    reader.open();
+    step_until(&mut h, "found unchanged", |h| {
+        disk(h) == Some(Disk::Unchanged)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(shows(&h, "Timeline", "Drill"));
+    // So another program's change after it is announced.
+    written_outside(&mut h, &path, "Bore");
+    step_until(&mut h, "the reload announced", |h| anywhere(h, RELOADED));
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn a_wait_on_the_marked_thread_is_counted() {
     // The rule's own check: a wait there, however short, is caught.
