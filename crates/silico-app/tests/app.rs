@@ -8458,6 +8458,64 @@ fn esc_in_sketch_mode_clears_the_selection_and_leaves_the_sketch_open() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// Another client's edit, set on `feature`'s name as `name`, at the session's revision now:
+/// the revision it makes.
+fn other_client_renames(
+    f: &Fixture,
+    h: &AppHarness,
+    feature: &str,
+    name: &str,
+) -> silico_core::command::Revision {
+    let id = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&id).session.unwrap().revision;
+    let value = json::read(format!("{name:?}").as_bytes()).unwrap();
+    let set = f
+        .sessions
+        .set_field(&id, revision, sketch_id(feature), "name".to_owned(), value)
+        .wait();
+    assert!(set.result.is_ok(), "{:?}", set.result);
+    set.session.unwrap().revision
+}
+
+#[test]
+fn another_clients_edit_inside_sketch_mode_is_no_reload_and_cancel_undoes_it_with_the_sketchs() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    // An edit before sketch mode opens, which opens the transaction: Cancel keeps it.
+    select(&mut h, "Plate");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let before = text_of(&f, &h);
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    settled(&mut h);
+    let opened_at = h.state().tabs()[0].sketch_opened_at().unwrap();
+    select_member(&mut h, "na000000", silico_core::document::ElementKind::Line);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    // Another client's edit inside the transaction: the session never reloads inside one,
+    // so it's no reload, and sketch mode still opened where it did.
+    let resets = h.state().tabs()[0].resets;
+    let moved = other_client_renames(&f, &h, "b0000002", "Spacer");
+    step_until(&mut h, "the other client's revision", |h| {
+        h.state().tabs()[0].revision == moved
+    });
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].resets, resets);
+    assert_eq!(h.state().tabs()[0].sketch_opened_at(), Some(opened_at));
+    // Cancel undoes back to where it opened: the delete and the other client's edit go,
+    // the rename before it stays.
+    leave_sketch(&mut h, false);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Undo(Some(opened_at)))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// Four sketches the fake solves as each is made to read (by how many values each sends):
 /// one point, under defined; two points and a distance between them, its constraint in
 /// conflict, over defined; three points, no solution; four points, solved as sent, fully
