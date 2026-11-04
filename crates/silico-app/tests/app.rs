@@ -13094,8 +13094,17 @@ fn the_toolbar_holds_solids_panels_their_buttons_in_the_prototypes_order_and_siz
     let mut on: Vec<&str> = CREATE_ROW[1..].to_vec();
     on.push("CREATE");
     assert_eq!(on_of(&panel("CREATE")), on);
-    for label in ["MODIFY", "INSPECT", "SELECT"] {
+    for label in ["MODIFY", "INSPECT"] {
         assert_eq!(on_of(&panel(label)), [label]);
+    }
+    // SELECT's filters toggle the selection's filter (M5.7), each pressed while its kind is
+    // taken: all three at first.
+    assert_eq!(
+        on_of(&panel("SELECT")),
+        ["Faces", "Edges", "Vertices", "SELECT"]
+    );
+    for label in ["Faces", "Edges", "Vertices"] {
+        assert_eq!(toggled(&panel("SELECT").get_by_label(label)), Some(true));
     }
     // Sizes (`--toolbar-tabs-h: 24px`, `--toolbar-h: 52px`, `.tb-btn` 30 square 1 apart
     // with `.tb-panel`'s 4 above), from the toolbar's top left: DESIGN's top (`.tb-ws`, the
@@ -13185,7 +13194,7 @@ fn each_toolbar_button_names_its_command_and_says_what_it_does_or_that_it_isnt_b
         (
             "SELECT",
             "Edges",
-            vec!["Toggles whether edges can be selected. Not built yet"],
+            vec!["Toggles whether edges can be selected"],
         ),
     ] {
         pointer_away(&mut h);
@@ -13217,19 +13226,19 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         step(h);
         step(h);
     };
-    // interact.js:172: the filters under a heading, all of them, and Clear selection (Esc),
-    // which the app has: off with nothing selected.
+    // interact.js:172: the filters under a heading, all of them, each with its key, and
+    // Clear selection (Esc), which the app has: off with nothing selected.
     open(&mut h, "SELECT");
     let menu = h.get_by_role_and_label(Role::Menu, "SELECT");
     let entries = buttons_of(&menu);
-    assert_eq!(
-        entries[..4],
-        ["Faces", "Edges", "Vertices", "Select all filters"]
-    );
     assert_eq!(entries.len(), 5, "{entries:?}");
+    for (entry, label) in entries.iter().zip(["Faces", "Edges", "Vertices"]) {
+        assert!(entry.starts_with(label), "{entries:?}");
+    }
+    assert_eq!(entries[3], "Select all filters");
     assert!(entries[4].starts_with("Clear selection"), "{entries:?}");
     assert!(menu.query_by_label("SELECTION FILTERS").is_some());
-    assert!(on_of(&menu).is_empty());
+    assert_eq!(on_of(&menu), entries[..4]);
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     // interact.js:170: Create Sketch, the sweeps, and the primitives under a heading.
@@ -13339,6 +13348,7 @@ struct ToolbarStub {
     create_sketch: Option<bool>,
     off: Vec<silico_app::dialog::Kind>,
     selected: bool,
+    filter: silico_app::selection::Filter,
     acts: Vec<silico_app::toolbar::Act>,
 }
 
@@ -13349,6 +13359,7 @@ impl ToolbarStub {
             create_sketch: None,
             off: Vec::new(),
             selected: false,
+            filter: silico_app::selection::Filter::default(),
             acts: Vec::new(),
         }
     }
@@ -13373,6 +13384,7 @@ fn toolbar_with(
                     create_sketch: stub.create_sketch,
                     can_open: &can_open,
                     selected: stub.selected,
+                    filter: stub.filter,
                 };
                 // The whole window, as the app's frame has it, not the harness's panel inside
                 // its margin.
@@ -15966,6 +15978,92 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                     step(&mut h);
                     step(&mut h);
                     assert!(hidden(&h).is_empty());
+                }
+            }
+            Command::FilterFace | Command::FilterEdge | Command::FilterVertex => {
+                // Its key toggles its kind in the filter, the others kept, and back again;
+                // so does SELECT's button, pressed while the kind is taken (M5.0, open item
+                // 24: each a toggle in the set).
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+                let filter = |h: &AppHarness| h.state().tabs()[0].selection().filter;
+                let kinds = |h: &AppHarness| {
+                    let f = filter(h);
+                    (f.faces, f.edges, f.vertices)
+                };
+                let off = match command {
+                    Command::FilterFace => (false, true, true),
+                    Command::FilterEdge => (true, false, true),
+                    _ => (true, true, false),
+                };
+                let pressed = |h: &AppHarness| {
+                    toggled(
+                        &h.get_by_role_and_label(Role::Toolbar, "SELECT")
+                            .get_by_label(entry.label),
+                    )
+                };
+                for chord in keys_of(command) {
+                    assert_eq!(kinds(&h), (true, true, true));
+                    pointer_away(&mut h);
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(kinds(&h), off, "{command:?} by its key");
+                    assert_eq!(pressed(&h), Some(false));
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(kinds(&h), (true, true, true), "and back");
+                    assert_eq!(pressed(&h), Some(true));
+                    h.get_by_role_and_label(Role::Toolbar, "SELECT")
+                        .get_by_label(entry.label)
+                        .click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(kinds(&h), off, "{command:?} by SELECT's button");
+                    h.get_by_role_and_label(Role::Toolbar, "SELECT")
+                        .get_by_label(entry.label)
+                        .click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(kinds(&h), (true, true, true));
+                }
+            }
+            Command::Filters => {
+                // F5: the prototype's toast, over the canvas, and nothing else changed; gone
+                // after its 3.8 seconds.
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+                let time = |h: &AppHarness| h.ctx.input(|input| input.time);
+                // A frame a quarter second, the harness's.
+                let frame = 1.0 / 4.0;
+                for chord in keys_of(command) {
+                    assert_eq!(h.state().toast(), None);
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    let (said, shown) = h.state().toast().unwrap();
+                    assert_eq!(said, silico_app::app::FILTERS_SAID);
+                    assert!(anywhere(&h, silico_app::app::FILTERS_SAID));
+                    assert_eq!(
+                        h.state().tabs()[0].selection().filter,
+                        silico_app::selection::Filter::default()
+                    );
+                    // Up for 3.8 seconds by egui's clock, taken down in the first frame
+                    // after.
+                    let mut frames = 0;
+                    while h.state().toast().is_some() {
+                        assert!(time(&h) - shown < 3.8, "up past its time");
+                        step(&mut h);
+                        frames += 1;
+                        assert!(frames < 100_000, "never taken down");
+                    }
+                    let up = time(&h) - shown;
+                    assert!((3.8..3.8 + frame).contains(&up), "{up}");
+                    step(&mut h);
+                    assert!(!anywhere(&h, silico_app::app::FILTERS_SAID));
                 }
             }
             Command::Ok | Command::Cancel => {
@@ -19063,5 +19161,218 @@ fn a_clicks_answer_that_comes_once_a_new_model_is_published_names_nothing_till_i
     hold.release();
     step_until(&mut h, "the new model's meshes", meshes_current);
     selected_until(&mut h, &["k7f2qx3m.box.Face1"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Box and crossing selection (M5.7; docs/design/m5.0-app.md, section 9's *Box
+// selection*) ----
+
+/// The real box, 40 by 20 by 10 mm from the origin (`meshes_a_real_box`), from the front
+/// (−y), orthographic, 40 mm high about (20, 10, 5), its meshes read for that view.
+fn box_from_the_front(f: &Fixture) -> (AppHarness, Record) {
+    meshes_a_real_box(f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
+        eye: [20.0, -100.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    step_until(&mut h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    (h, record)
+}
+
+/// Where the box's point `(x, z)` (any y) lands on the canvas, in points: by hand, the
+/// canvas's middle is (20, 5), and its height in pixels is 40 mm, so a millimetre is the
+/// height over 40, x right and z up.
+fn on_canvas(h: &AppHarness, x: f64, z: f64) -> eframe::egui::Pos2 {
+    let frame = view(h).frame().unwrap();
+    let [w, height] = frame.size_px.map(f64::from);
+    let mm = height / 40.0;
+    let px = w / 2.0 + (x - 20.0) * mm;
+    let py = height / 2.0 - (z - 5.0) * mm;
+    let ppp = f64::from(frame.pixels_per_point);
+    frame.rect.min + eframe::egui::vec2((px / ppp) as f32, (py / ppp) as f32)
+}
+
+/// A left drag on the canvas from `from` to `to` (points), `held` throughout: the pointer
+/// there first, its hover answered, then the press, four moves a frame apart, and the
+/// release.
+fn box_drag(
+    h: &mut AppHarness,
+    from: eframe::egui::Pos2,
+    to: eframe::egui::Pos2,
+    held: eframe::egui::Modifiers,
+) {
+    box_press(h, from, to, held);
+    box_release(h, to, held);
+}
+
+/// [`box_drag`]'s press and moves, still held.
+fn box_press(
+    h: &mut AppHarness,
+    from: eframe::egui::Pos2,
+    to: eframe::egui::Pos2,
+    held: eframe::egui::Modifiers,
+) {
+    use eframe::egui::{Event, PointerButton};
+    h.event(Event::ModifiersChanged(held));
+    h.hover_at(from);
+    for _ in 0..3 {
+        step(h);
+    }
+    button_event(h, from, PointerButton::Primary, true, held);
+    step(h);
+    for i in 1..=4u8 {
+        h.hover_at(from + (to - from) * f32::from(i) / 4.0);
+        step(h);
+    }
+}
+
+/// [`box_drag`]'s release.
+fn box_release(h: &mut AppHarness, to: eframe::egui::Pos2, held: eframe::egui::Modifiers) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    button_event(h, to, PointerButton::Primary, false, held);
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
+    step(h);
+    step(h);
+}
+
+fn box_edges(numbers: &[u32]) -> Vec<String> {
+    numbers
+        .iter()
+        .map(|n| format!("k7f2qx3m.box.Edge{n}"))
+        .collect()
+}
+
+#[test]
+fn a_box_from_empty_space_takes_the_edges_wholly_inside_and_dragged_back_those_it_crosses() {
+    use eframe::egui::Modifiers;
+    let f = fixture();
+    let (mut h, _record) = box_from_the_front(&f);
+    // Nothing under the pointer (the fake renderer finds nothing): a box. From (−2, −2) to
+    // (42, 2) mm round the box's foot, left to right: a window, so the edges wholly inside,
+    // by hand from `box_mesh`'s order: the front and back feet (1, 5), and the two along y
+    // at the foot's ends (9, 10), each a point here. Not the uprights (2, 4, 6, 8), which
+    // leave it.
+    let low = on_canvas(&h, -2.0, -2.0);
+    let high = on_canvas(&h, 42.0, 2.0);
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    assert_eq!(selected_names(&h), box_edges(&[1, 5, 9, 10]));
+    // The same box, right to left: a crossing, so the uprights it crosses too.
+    let (right_low, left_high) = (on_canvas(&h, 42.0, -2.0), on_canvas(&h, -2.0, 2.0));
+    box_drag(&mut h, right_low, left_high, Modifiers::NONE);
+    assert_eq!(selected_names(&h), box_edges(&[1, 2, 4, 5, 6, 8, 9, 10]));
+    // Shift adds the window round the top (8 to 12 mm up): the top edges (3, 7) and those
+    // along y at its ends (11, 12), after what was selected.
+    let (top_low, top_high) = (on_canvas(&h, -2.0, 8.0), on_canvas(&h, 42.0, 12.0));
+    box_drag(&mut h, top_low, top_high, Modifiers::SHIFT);
+    assert_eq!(
+        selected_names(&h),
+        box_edges(&[1, 2, 4, 5, 6, 8, 9, 10, 3, 7, 11, 12])
+    );
+    // Ctrl inverts inside a window round the right side (38 to 42 mm): its uprights (2, 6)
+    // and the ends along y (10, 11), all selected, so removed; the rest kept.
+    let (side_low, side_high) = (on_canvas(&h, 38.0, -2.0), on_canvas(&h, 42.0, 12.0));
+    box_drag(&mut h, side_low, side_high, Modifiers::COMMAND);
+    assert_eq!(selected_names(&h), box_edges(&[1, 4, 5, 8, 9, 3, 7, 12]));
+    // And again: added back, at the end.
+    box_drag(&mut h, side_low, side_high, Modifiers::COMMAND);
+    assert_eq!(
+        selected_names(&h),
+        box_edges(&[1, 4, 5, 8, 9, 3, 7, 12, 2, 6, 10, 11])
+    );
+    // A plain box round nothing, over the box (15 to 20 mm up), replaces with nothing:
+    // cleared.
+    let (empty_low, empty_high) = (on_canvas(&h, 10.0, 15.0), on_canvas(&h, 30.0, 20.0));
+    box_drag(&mut h, empty_low, empty_high, Modifiers::NONE);
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drag_starting_on_geometry_selects_it_and_boxes_nothing() {
+    use eframe::egui::Modifiers;
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    // Pressed on the front face, Face3 under the press: dragged across the whole box, the
+    // face is selected, and none of the edges a box there would take.
+    let from = on_canvas(&h, 20.0, 5.0);
+    answering(&record, Some((1, Face(3), pixel_at(&h, from))), None);
+    let to = on_canvas(&h, 45.0, -5.0);
+    box_drag(&mut h, from, to, Modifiers::NONE);
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drag_whose_press_the_hover_hasnt_answered_waits_for_it_then_boxes() {
+    use eframe::egui::Modifiers;
+    let f = fixture();
+    let (mut h, record) = box_from_the_front(&f);
+    // The renderer holds its answers: the press's pixel isn't answered through the drag,
+    // so nothing is decided, and its release would select nothing.
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 2.0));
+    record.lock().unwrap().hold = true;
+    box_press(&mut h, low, high, Modifiers::NONE);
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    assert!(selected_names(&h).is_empty());
+    // Answered (nothing under the press): a box, which, let go, takes the window's edges.
+    record.lock().unwrap().hold = false;
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    box_release(&mut h, high, Modifiers::NONE);
+    assert_eq!(selected_names(&h), box_edges(&[1, 5, 9, 10]));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_box_cancelled_by_the_focus_going_selects_nothing() {
+    use eframe::egui::{Event, Modifiers};
+    let f = fixture();
+    let (mut h, _record) = box_from_the_front(&f);
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 2.0));
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    let before = selected_names(&h);
+    assert_eq!(before, box_edges(&[1, 5, 9, 10]));
+    // A crossing dragged, then the window loses the focus: a Cancel, and nothing changes.
+    let (right_low, left_high) = (on_canvas(&h, 42.0, -2.0), on_canvas(&h, -2.0, 12.0));
+    box_press(&mut h, right_low, left_high, Modifiers::NONE);
+    h.event(Event::WindowFocused(false));
+    step(&mut h);
+    h.event(Event::WindowFocused(true));
+    box_release(&mut h, left_high, Modifiers::NONE);
+    assert_eq!(selected_names(&h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_edges_filtered_out_a_box_takes_faces() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _record) = box_from_the_front(&f);
+    // E: edges off. A window round the whole box takes its faces, every one (from the
+    // front, the sides are lines inside it), and no edge.
+    h.key_press(Key::E);
+    step(&mut h);
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 12.0));
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    let faces: Vec<String> = (1..=6).map(|n| format!("k7f2qx3m.box.Face{n}")).collect();
+    assert_eq!(selected_names(&h), faces);
+    // E again: edges on, the filter as it started, and a box takes edges alone.
+    h.key_press(Key::E);
+    step(&mut h);
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    assert_eq!(selected_names(&h), box_edges(&(1..=12).collect::<Vec<_>>()));
     assert_eq!(never_waits::waits(), 0);
 }

@@ -17,8 +17,7 @@
 //!   Ctrl for no relations, and Ctrl+Enter Finish Sketch (whose tooltip names its key in
 //!   `crate::toolbar` until then), between Dialogs and Help as the prototype orders them.
 //! - SEAM: Ctrl+8 Look At, once the app can turn the view square to a face or a sketch.
-//! - SEAM(M5.7): the selection filters (X faces, E edges, V vertices) and Select Other
-//!   (right-click), picking's.
+//! - SEAM(M5.7): Select Other (right-click), picking's part 3.
 //! - SEAM: F2 Rename, Delete, and S Search commands, once they're built.
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Ui};
@@ -50,6 +49,10 @@ pub enum Command {
     Orbit,
     Pan,
     Zoom,
+    FilterFace,
+    FilterEdge,
+    FilterVertex,
+    Filters,
     ClearSelection,
     Hide,
     Ok,
@@ -328,6 +331,44 @@ const CLEAR_SELECTION: Entry = entry(
     &[ESCAPE],
     None,
 );
+/// The selection filters (the prototype's `filterFace`, `filterEdge`, `filterVertex`;
+/// SolidWorks' X, E, and V, docs/ux/solidworks.md §1), each toggling its kind in the set
+/// (M5.0, open item 24), as SELECT's buttons do: exactly the key, freshly pressed, so a key
+/// held down doesn't flicker the filter, and Shift or Alt with it stay free. Outside
+/// sketches only (the group's note): sketch mode's X is Construction.
+const FILTER_FACE: Entry = entry(
+    Command::FilterFace,
+    "Faces",
+    Group::Selection,
+    &[Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::X))],
+    Some("Toggles whether faces can be selected"),
+);
+const FILTER_EDGE: Entry = entry(
+    Command::FilterEdge,
+    "Edges",
+    Group::Selection,
+    &[Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::E))],
+    Some("Toggles whether edges can be selected"),
+);
+/// Vertices aren't picked yet (M5.7's part 3): the filter is kept, and matters once they
+/// are.
+const FILTER_VERTEX: Entry = entry(
+    Command::FilterVertex,
+    "Vertices",
+    Group::Selection,
+    &[Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::V))],
+    Some("Toggles whether vertices can be selected"),
+);
+/// F5, SolidWorks' key for its filter toolbar (docs/ux/solidworks.md §1): there's none here
+/// (DESIGN.md, open question 2), so it says where the filters live, as the prototype's F5
+/// does (interact.js).
+const FILTERS: Entry = entry(
+    Command::Filters,
+    "Selection filters",
+    Group::Selection,
+    &[bare(Key::F5)],
+    Some("Says where they are: the toolbar, under SELECT"),
+);
 const HIDE: Entry = entry(
     Command::Hide,
     "Hide or show",
@@ -346,7 +387,7 @@ const SHORTCUTS: Entry = entry(
 );
 
 /// Every command, in the order the sheet lists each group's.
-pub const REGISTRY: [Entry; 27] = [
+pub const REGISTRY: [Entry; 31] = [
     NEW,
     OPEN,
     SAVE,
@@ -369,6 +410,10 @@ pub const REGISTRY: [Entry; 27] = [
     ORBIT,
     PAN,
     ZOOM,
+    FILTER_FACE,
+    FILTER_EDGE,
+    FILTER_VERTEX,
+    FILTERS,
     CLEAR_SELECTION,
     HIDE,
     OK,
@@ -403,6 +448,10 @@ impl Command {
             Command::Pan => &PAN,
             Command::Zoom => &ZOOM,
             Command::ClearSelection => &CLEAR_SELECTION,
+            Command::FilterFace => &FILTER_FACE,
+            Command::FilterEdge => &FILTER_EDGE,
+            Command::FilterVertex => &FILTER_VERTEX,
+            Command::Filters => &FILTERS,
             Command::Hide => &HIDE,
             Command::Ok => &OK,
             Command::Cancel => &CANCEL,

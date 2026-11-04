@@ -651,6 +651,12 @@ impl View {
         takes
     }
 
+    /// The pick asked for the next frame, if one is (M5.7: the box select's press, which
+    /// asks its own only in place of the hover's).
+    pub fn asking(&self) -> Option<PixelRect> {
+        self.picking
+    }
+
     /// The answer to the last pick asked, once it has come, if it's of the bodies the tab
     /// holds now.
     pub fn picked(&self) -> Option<Picking> {

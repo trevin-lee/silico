@@ -389,6 +389,8 @@ pub struct Tab {
     /// What's selected (M5.7): features of the timeline or the browser, faces and edges of
     /// the canvas, by name; and what the pointer is over.
     selection: crate::selection::Selection,
+    /// The canvas's box selection (M5.7): a left drag, on geometry or empty space.
+    box_select: crate::box_select::BoxSelect,
     /// What the browser's eyes hide: the tab's state, never saved (open item 29).
     pub hidden: std::collections::BTreeSet<Hideable>,
     /// The last refusal a command of the tab's answered, as said to the person, until
@@ -520,6 +522,7 @@ impl Tab {
             reloaded: None,
             reload_asked: false,
             selection: crate::selection::Selection::default(),
+            box_select: crate::box_select::BoxSelect::default(),
             hidden: std::collections::BTreeSet::new(),
             message: None,
             close_refused: false,
@@ -558,13 +561,16 @@ impl Tab {
     /// a drag's move goes out in the frame it happened.
     ///
     /// With no sketch open, the left button and the pointer are the selection's (M5.7):
-    /// a click picks what's under it, the hover what the pointer is over, each read against
-    /// the published model the tab last polled, which asks the session nothing more.
+    /// a click picks what's under it, the hover what the pointer is over, a drag on
+    /// geometry what's under its press, and a drag from empty space a box
+    /// (`crate::box_select`), each read against the published model the tab last polled,
+    /// which asks the session nothing more. The box select comes after the selection, so
+    /// it reads the hover this frame's answer gave.
     /// SEAM(#351): sketch mode claims them first, while a sketch is open
-    /// (`if self.in_sketch() { self.selection.canvas_claimed(); return
-    /// self.sketch.overlay(sessions, painter, frame) }`, a click of the selection's waiting
-    /// let go), its face pick for Create Sketch reading [`selection`](Self::selection)'s
-    /// hover and pick.
+    /// (`if self.in_sketch() { self.selection.canvas_claimed(); self.box_select =
+    /// Default::default(); return self.sketch.overlay(sessions, painter, frame) }`, a click
+    /// of the selection's waiting and a box drawn let go), its face pick for Create Sketch
+    /// reading [`selection`](Self::selection)'s hover and pick.
     pub fn overlay<P: Clients + 'static>(
         &mut self,
         _sessions: &Arc<Sessions<P>>,
@@ -572,6 +578,25 @@ impl Tab {
         frame: &crate::viewport::ViewFrame,
     ) {
         self.selection.overlay(&mut self.view, frame, painter.ctx());
+        // The bodies are of the model the selection is read against: the one published
+        // last, as counted.
+        let current = self.published.is_some()
+            && self.view.bodies_of()
+                == self
+                    .published
+                    .map(|revision| (self.published_models, revision));
+        let hidden = &self.hidden;
+        let shown = |id: &silico_core::document::FeatureId| {
+            !hidden.contains(&Hideable::Feature(id.clone()))
+        };
+        self.box_select.overlay(
+            &mut self.selection,
+            &mut self.view,
+            frame,
+            painter,
+            current,
+            &shown,
+        );
     }
 
     /// What's selected (M5.7), and what the pointer is over in the canvas: one selection,
