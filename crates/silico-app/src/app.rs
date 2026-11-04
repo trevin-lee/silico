@@ -1153,19 +1153,23 @@ impl<P: Clients + 'static> App<P> {
             .pivot(egui::Align2::CENTER_TOP)
             .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar));
         // Pinned at the canvas's top right, under the ViewCube, as the prototype's is.
-        egui::Area::new(egui::Id::new(("sketch_palette", id.to_string())))
+        let palette = egui::Area::new(egui::Id::new(("sketch_palette", id.to_string())))
             .fixed_pos(canvas.right_top() + PALETTE_FROM_CORNER)
             .show(ui.ctx(), |ui| {
                 sketch::bar::palette(ui, &view, &mut mode.settings)
-            });
+            })
+            .response
+            .rect;
         match action {
             BarAction::None => {}
             BarAction::Finish => tab.finish_sketch(sessions, true),
             BarAction::Cancel => tab.finish_sketch(sessions, false),
         }
         *started |= action != BarAction::None;
-        if let Some(asked) = modify.and_then(|view| sketch::dimension::modify_box(ui.ctx(), &view))
-        {
+        // Whole in the canvas, and clear of the palette.
+        if let Some(asked) = modify.and_then(|view| {
+            sketch::dimension::modify_box(ui.ctx(), &view, canvas, palette)
+        }) {
             tab.sketch_modify(sessions, asked);
             *started = true;
         }

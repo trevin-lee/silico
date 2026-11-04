@@ -3597,3 +3597,35 @@ fn a_right_click_opens_the_canvas_menu_there_unless_smart_dimension_takes_it_for
     assert_eq!(mode.menu_at, None);
     assert!(mode.tools.dimension_preview().unwrap().locked);
 }
+
+#[test]
+fn clear_of_the_palette_whatever_the_box_and_wherever_its_text() {
+    use super::dimension::clear_of_palette;
+    use egui::Rect;
+    // A viewport 1000 by 600, the palette 212 wide at its right, past its bottom; boxes of
+    // 200 by 50: worked by hand.
+    let within = Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 600.0));
+    let palette = Rect::from_min_max(pos2(776.0, 118.0), pos2(988.0, 900.0));
+    let size = vec2(200.0, 50.0);
+    // Clear already: where it's wanted.
+    assert_eq!(clear_of_palette(pos2(100.0, 100.0), size, within, palette), pos2(100.0, 100.0));
+    // Over the palette: left of it, 8 from it (776 − 8 − 200).
+    assert_eq!(clear_of_palette(pos2(700.0, 300.0), size, within, palette), pos2(568.0, 300.0));
+    // Its text under the palette's middle: the same.
+    assert_eq!(clear_of_palette(pos2(850.0, 300.0), size, within, palette), pos2(568.0, 300.0));
+    // Past the viewport's left and bottom: inside it, at its edges.
+    assert_eq!(clear_of_palette(pos2(-50.0, 580.0), size, within, palette), pos2(0.0, 550.0));
+    // Past its right, above the palette: inside it, left to 800, and clear above.
+    assert_eq!(clear_of_palette(pos2(900.0, 20.0), size, within, palette), pos2(800.0, 20.0));
+    // Past its right, beside the palette: inside, then left of the palette.
+    assert_eq!(clear_of_palette(pos2(990.0, 200.0), size, within, palette), pos2(568.0, 200.0));
+    // A viewport with no room left of the palette: up above it (118 − 8 − 50).
+    let narrow = Rect::from_min_max(pos2(700.0, 0.0), pos2(1000.0, 600.0));
+    assert_eq!(clear_of_palette(pos2(720.0, 300.0), size, narrow, palette), pos2(720.0, 60.0));
+    // Nor above it: at the viewport's left, as near its place as it can be.
+    let low = Rect::from_min_max(pos2(700.0, 100.0), pos2(1000.0, 600.0));
+    assert_eq!(clear_of_palette(pos2(720.0, 300.0), size, low, palette), pos2(700.0, 300.0));
+    // A box wider than the viewport: at its left.
+    let small = Rect::from_min_max(pos2(0.0, 0.0), pos2(150.0, 600.0));
+    assert_eq!(clear_of_palette(pos2(40.0, 10.0), size, small, palette), pos2(0.0, 10.0));
+}

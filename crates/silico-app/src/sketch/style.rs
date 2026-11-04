@@ -183,6 +183,9 @@ pub const SKETCH_MODIFY_HINT_SIZE: f32 = 10.5;
 /// writes, so nothing typed there is cut, while a paste of a page isn't held.
 pub const MODIFY_CHAR_LIMIT: usize = 256;
 pub const SKETCH_PROMPT_WIDTH: f32 = 440.0;
+/// How far the Modify box keeps from the Sketch Palette when it's moved off it, in points
+/// (the prototype's gap between floating panels).
+pub const SKETCH_PALETTE_CLEARANCE: f32 = 8.0;
 pub const SKETCH_PROMPT_CHOICE_STROKE: Color32 = PANEL_BORDER;
 pub const SKETCH_KEY_BG: Color32 = PANEL_BORDER;
 pub const SKETCH_KEY_STROKE: Color32 = GRAY_350;

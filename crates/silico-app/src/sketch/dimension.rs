@@ -20,7 +20,9 @@
 
 use std::collections::BTreeSet;
 
-use eframe::egui::{self, Color32, CornerRadius, Margin, Pos2, RichText, Stroke, Ui, Vec2};
+use eframe::egui::{
+    self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Stroke, Ui, Vec2,
+};
 use silico_core::command::Revision;
 use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, FeatureId, Form};
@@ -174,13 +176,58 @@ pub struct ModifyView {
 /// field's middle at the text, a little left and up.
 const MODIFY_FROM_TEXT: Vec2 = Vec2::new(-74.0, -15.0);
 
+/// Where a box `size` big, wanted with its top left at `wanted`, stands in the viewport
+/// `within`: whole inside it, and, if it would cover the Sketch Palette `palette`, moved
+/// left of it, or else up above it, [`SKETCH_PALETTE_CLEARANCE`] from it. A box that fits
+/// neither way (a viewport too small for both) stays whole inside the viewport, at its
+/// left, as near its place as it can be.
+pub fn clear_of_palette(wanted: Pos2, size: Vec2, within: Rect, palette: Rect) -> Pos2 {
+    // Inside `within` along one axis: from `low` to `high`, a box `extent` long; one longer
+    // than the room, at `low`.
+    let inside = |at: f32, extent: f32, low: f32, high: f32| at.min(high - extent).max(low);
+    let into = |p: Pos2| {
+        Pos2::new(
+            inside(p.x, size.x, within.left(), within.right()),
+            inside(p.y, size.y, within.top(), within.bottom()),
+        )
+    };
+    let at = into(wanted);
+    let kept = palette.expand(SKETCH_PALETTE_CLEARANCE);
+    if !Rect::from_min_size(at, size).intersects(kept) {
+        return at;
+    }
+    let left = Pos2::new(kept.left() - size.x, at.y);
+    if left.x >= within.left() {
+        return left;
+    }
+    let up = Pos2::new(at.x, kept.top() - size.y);
+    if up.y >= within.top() {
+        return up;
+    }
+    Pos2::new(within.left(), at.y)
+}
+
 /// The Modify box (the prototype's `.modify-box`, "Modify dimension"): the value's field, in
 /// [`field_frame`]'s Modify look, its unit, ✓ and ✕, and under it a hint, or what was said
-/// of the text, in red. A new box takes the keyboard. What it was asked, if anything.
-pub fn modify_box(ctx: &egui::Context, view: &ModifyView) -> Option<ModifyAction> {
+/// of the text, in red; at its dimension's text, the box and its hint whole inside the
+/// viewport `viewport` and clear of the Sketch Palette `palette` ([`clear_of_palette`], by
+/// its size as last drawn). A new box takes the keyboard. What it was asked, if anything.
+pub fn modify_box(
+    ctx: &egui::Context,
+    view: &ModifyView,
+    viewport: Rect,
+    palette: Rect,
+) -> Option<ModifyAction> {
     let mut asked = None;
-    egui::Area::new(egui::Id::new(("sketch_modify", view.opened)))
-        .fixed_pos(view.at + MODIFY_FROM_TEXT)
+    let id = egui::Id::new(("sketch_modify", view.opened));
+    // Its size as last drawn; none before its first (egui's sizing pass, drawn unseen).
+    let size = egui::AreaState::load(ctx, id).and_then(|state| state.size);
+    let wanted = view.at + MODIFY_FROM_TEXT;
+    let at = size.map_or(wanted, |size| {
+        clear_of_palette(wanted, size, viewport, palette)
+    });
+    egui::Area::new(id)
+        .fixed_pos(at)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             *ui.visuals_mut() = super::bar::panel_visuals();
@@ -265,6 +312,10 @@ pub fn modify_box(ctx: &egui::Context, view: &ModifyView) -> Option<ModifyAction
             };
             ui.label(hint.size(SKETCH_MODIFY_HINT_SIZE));
         });
+    // Placed by a size it no longer has (its hint grew, say): placed again next frame.
+    if size.is_some() && egui::AreaState::load(ctx, id).and_then(|state| state.size) != size {
+        ctx.request_repaint();
+    }
     asked
 }
 

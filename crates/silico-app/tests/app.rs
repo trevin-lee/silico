@@ -14713,3 +14713,78 @@ fn a_right_click_on_the_canvas_opens_the_sketch_menu_at_it_and_its_own_release_l
     }
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- M5.11's wiring fixes: the Modify box clear of the palette, Properties after the
+// over-define prompt's Cancel, and the canvas menu at fractional scales ----
+
+/// The Sketch Palette's place on the screen, as last drawn: its area's, the app's
+/// `sketch_palette` of the tab shown.
+fn palette_rect(h: &AppHarness) -> eframe::egui::Rect {
+    let tab = h.state().tabs()[0].id.to_string();
+    let id = eframe::egui::Id::new(("sketch_palette", tab));
+    eframe::egui::AreaState::load(&h.ctx, id).unwrap().rect()
+}
+
+#[test]
+fn a_dimension_whose_text_is_under_the_palette_opens_its_modify_box_whole_in_the_viewport_and_clear_of_the_palette()
+ {
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    hand_camera(&mut h);
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    let palette = palette_rect(&h);
+    let viewport = view(&h).frame().unwrap().rect;
+    // The place, 40 points into the palette, level with the right side's middle (y 20, at
+    // 300 on the screen by the hand camera): the side's length, its text under the palette.
+    let under = eframe::egui::pos2(palette.left() + 40.0, to_screen([0.0, 20.0]).unwrap().y);
+    assert!(palette.contains(under) && viewport.contains(under), "{under:?} {palette:?}");
+    let place = to_sketch(under).unwrap();
+    sketch_events(&f, &mut h, &clicked(50.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(place[0], place[1]));
+    step_until(&mut h, "the Modify box open", |h| {
+        sketch_mode(h).and_then(|mode| mode.modify_view()).is_some()
+    });
+    let shown = sketch_mode(&h).unwrap().modify_view().unwrap();
+    assert!(palette.contains(shown.at), "{:?} {palette:?}", shown.at);
+    // Sized in its first frame, unseen, then placed.
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let dialog = h.get_by_role_and_label(Role::Dialog, "Modify dimension");
+    let area = eframe::egui::Id::new(("sketch_modify", shown.opened));
+    let parts = [
+        (
+            "the box",
+            eframe::egui::AreaState::load(&h.ctx, area).unwrap().rect(),
+        ),
+        ("its field", dialog.get_by_label("Value in millimetres").rect()),
+        ("its ✓", dialog.get_by_role_and_label(Role::Button, "✓").rect()),
+        ("its ✕", dialog.get_by_role_and_label(Role::Button, "✕").rect()),
+        (
+            "its hint",
+            h.get_by_label("A plain number in mm · Enter accepts").rect(),
+        ),
+    ];
+    // egui puts an area's corner on a pixel: within half of one of the viewport.
+    let half = 0.5 / h.ctx.pixels_per_point();
+    for (what, rect) in parts {
+        assert!(!rect.intersects(palette), "{what} {rect:?} under {palette:?}");
+        assert!(
+            rect.right() <= palette.left() - 8.0 + half,
+            "{what} {rect:?} not left of {palette:?}"
+        );
+        assert!(
+            viewport.expand(half).contains_rect(rect),
+            "{what} {rect:?} outside {viewport:?}"
+        );
+    }
+    // Still the dimension's box: its value, and Enter places it.
+    assert_eq!(shown.text, "20");
+    modify(&f, &mut h, ModifyAction::Accept);
+    settled(&mut h);
+    read_with_constraints(&mut h, 5);
+    assert_eq!(never_waits::waits(), 0);
+}
