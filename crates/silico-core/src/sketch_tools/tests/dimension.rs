@@ -3447,8 +3447,8 @@ fn forget_pending_forgets_the_placement_and_what_is_under_way() {
 
 /// The corner with A's `length`, 25, placed as t0000101 (its add revision 2), then its
 /// value edited (`set_field`, revision 3) on revision 2's read, the sketch then in `before`
-/// with `flagged` flagged: the sketch and the edit's placement.
-fn edited(before: SketchState, flagged: &[&str]) -> (Sketch, Placement) {
+/// with `flagged` flagged, its solve `refused` or not: the sketch and the edit's placement.
+fn edited(before: SketchState, flagged: &[&str], refused: bool) -> (Sketch, Placement) {
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let added = d.tool.placement().unwrap();
@@ -3458,14 +3458,18 @@ fn edited(before: SketchState, flagged: &[&str]) -> (Sketch, Placement) {
         read: added.revision,
         before,
         flagged: flagged.iter().map(|k| id(k)).collect(),
-        kind: PlacementKind::Edit,
+        kind: PlacementKind::Edit {
+            before_refused: refused,
+        },
         ..added
     };
     (d.sketch, edit)
 }
 
 /// A read of `members` with each constraint in its state, the sketch in `of`, with `dofs`
-/// freedoms, its solve refused where it has no solution.
+/// freedoms, its solve refused as M3.3 refuses it: `solve_failed` with no solution,
+/// `over_constrained` where a constraint conflicts; an over defined sketch with only
+/// redundant ones (a dimension that agrees) solved.
 fn edit_read(
     members: &Sketch,
     constraints: &[(&str, ConstraintState)],
@@ -3474,9 +3478,16 @@ fn edit_read(
 ) -> SketchRead {
     let mut read = read_with(members.clone(), constraints, of);
     read.states.dofs = dofs;
-    if of == SketchState::NoSolution {
-        read.states.solve_problem = Some(Error::new(ErrorCode::InvalidResult, "no solution"));
-    }
+    let conflict = constraints
+        .iter()
+        .any(|(_, s)| *s == ConstraintState::Conflicting);
+    read.states.solve_problem = if of == SketchState::NoSolution {
+        Some(Error::new(ErrorCode::SolveFailed, "no solution"))
+    } else if conflict {
+        Some(Error::new(ErrorCode::OverConstrained, "conflict"))
+    } else {
+        None
+    };
     read
 }
 
@@ -3493,7 +3504,7 @@ fn an_edit_that_leaves_the_sketch_as_it_was_offers_nothing() {
         (SketchState::UnderDefined, SketchState::UnderDefined, 3),
     ];
     for (before, after, dofs) in cases {
-        let (sketch, edit) = edited(before, &[]);
+        let (sketch, edit) = edited(before, &[], false);
         let read = edit_read(
             &sketch,
             &[("t0000101", ConstraintState::Satisfied)],
@@ -3524,7 +3535,7 @@ fn an_edit_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_c
     // are made against the edit's revision, 3: Cancel undoes the edit.
     let three = Revision::OPENED.next().unwrap().next().unwrap();
     for after in [SketchState::OverDefined, SketchState::NoSolution] {
-        let (sketch, edit) = edited(SketchState::FullyDefined, &[]);
+        let (sketch, edit) = edited(SketchState::FullyDefined, &[], false);
         assert_eq!(edit.revision, three);
         let read = edit_read(
             &sketch,
@@ -3558,19 +3569,89 @@ fn an_edit_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_c
                 to: None
             })
         );
-        // Over defined or unsolvable before the edit, and left so with nothing newly
-        // flagged: not the edit's doing.
-        for before in [SketchState::OverDefined, SketchState::NoSolution] {
-            let (sketch, edit) = edited(before, &[]);
-            let read = edit_read(
-                &sketch,
-                &[("t0000101", ConstraintState::Satisfied)],
-                after,
-                0,
-            );
-            assert_eq!(offer(&read, three, &edit), None, "{before:?} {after:?}");
-        }
     }
+    // Over defined or unsolvable before the edit, k0000009 flagged (redundant where the
+    // sketch solved, conflicting where it was refused), and flagged so after, nothing newly:
+    // over defined by a dimension that agrees (solved) then no solution (refused) is the
+    // edit's doing, offered. A refused solve before (a conflict, no solution), or a solved
+    // one after: not.
+    for (before, before_refused, after, offered) in [
+        (
+            SketchState::OverDefined,
+            false,
+            SketchState::OverDefined,
+            false,
+        ),
+        (
+            SketchState::OverDefined,
+            false,
+            SketchState::NoSolution,
+            true,
+        ),
+        (
+            SketchState::OverDefined,
+            true,
+            SketchState::OverDefined,
+            false,
+        ),
+        (
+            SketchState::OverDefined,
+            true,
+            SketchState::NoSolution,
+            false,
+        ),
+        (
+            SketchState::NoSolution,
+            true,
+            SketchState::OverDefined,
+            false,
+        ),
+        (
+            SketchState::NoSolution,
+            true,
+            SketchState::NoSolution,
+            false,
+        ),
+    ] {
+        let (sketch, edit) = edited(before, &["k0000009"], before_refused);
+        let read = edit_read(
+            &sketch,
+            &[
+                ("t0000101", ConstraintState::Satisfied),
+                ("k0000009", ConstraintState::Redundant),
+            ],
+            after,
+            0,
+        );
+        assert_eq!(
+            offer(&read, three, &edit).is_some(),
+            offered,
+            "{before:?} {before_refused} {after:?}"
+        );
+    }
+    // A redundant t0000101 that agrees (over defined, solved, it flagged), edited to
+    // disagree: over defined still, it flagged still, now conflicting, the solve refused.
+    // Neither the state's word nor the flags are new; the refusal is: offered.
+    let (sketch, edit) = edited(SketchState::OverDefined, &["t0000101"], false);
+    let disagrees = edit_read(
+        &sketch,
+        &[("t0000101", ConstraintState::Conflicting)],
+        SketchState::OverDefined,
+        0,
+    );
+    assert!(disagrees.states.solve_problem.is_some());
+    assert_eq!(
+        offer(&disagrees, three, &edit).map(|o| (o.state, o.sketch_state)),
+        Some((ConstraintState::Conflicting, SketchState::OverDefined))
+    );
+    // Edited to another value that agrees: solved, as before: not.
+    let agrees = edit_read(
+        &sketch,
+        &[("t0000101", ConstraintState::Redundant)],
+        SketchState::OverDefined,
+        0,
+    );
+    assert_eq!(offer(&agrees, three, &edit), None);
 }
 
 #[test]
@@ -3579,7 +3660,7 @@ fn an_edit_that_newly_flags_a_constraint_is_offered() {
     // still under defined at the same 3 freedoms: offered. Over defined before by k0000009,
     // the edit's read flags the dimension too: offered, though the state isn't new; k0000009
     // alone, as before: not.
-    let (sketch, edit) = edited(SketchState::UnderDefined, &[]);
+    let (sketch, edit) = edited(SketchState::UnderDefined, &[], false);
     let read = edit_read(
         &sketch,
         &[
@@ -3592,7 +3673,8 @@ fn an_edit_that_newly_flags_a_constraint_is_offered() {
     let offered = offer(&read, edit.revision, &edit).unwrap();
     assert_eq!(offered.constraint, id("t0000101"));
     assert_eq!(offered.state, ConstraintState::Satisfied);
-    let (sketch, edit) = edited(SketchState::OverDefined, &["k0000009"]);
+    // k0000009 conflicting before: the solve refused.
+    let (sketch, edit) = edited(SketchState::OverDefined, &["k0000009"], true);
     let flags_it = edit_read(
         &sketch,
         &[
@@ -3624,6 +3706,170 @@ fn an_edit_that_newly_flags_a_constraint_is_offered() {
     };
     assert!(offer(&flags_it, between.revision, &between).is_some());
     assert_eq!(offer(&same, between.revision, &between), None);
+    // But an edit's dimension flagged already in the read before: not offered again,
+    // whichever client's change came between.
+    let flagged_before = Placement {
+        flagged: [id("k0000009"), id("t0000101")].into_iter().collect(),
+        ..between
+    };
+    assert_eq!(offer(&flags_it, between.revision, &flagged_before), None);
+    // An add's is judged by its state alone, as before: offered.
+    let added = Placement {
+        kind: PlacementKind::Add { dofs: 0 },
+        ..flagged_before
+    };
+    assert!(offer(&flags_it, between.revision, &added).is_some());
+}
+
+// --- The Modify box's reading, for a placed dimension's edit too ---------------------
+
+/// Each dimension a document holds, with its current value: every length kind at 7 mm,
+/// the angle at 45°.
+fn dimensions() -> Vec<Form> {
+    let v = mm("7");
+    vec![
+        Form::Length {
+            line: r("n0000001"),
+            value: v,
+            driving: true,
+        },
+        Form::Distance {
+            a: r("p0000001"),
+            b: r("p0000002"),
+            value: v,
+            driving: true,
+        },
+        Form::DistanceX {
+            a: r("p0000001"),
+            b: r("p0000002"),
+            value: v,
+            driving: true,
+        },
+        Form::DistanceY {
+            a: r("p0000001"),
+            b: r("p0000002"),
+            value: v,
+            driving: false,
+        },
+        Form::PointLineDistance {
+            point: r("p0000001"),
+            line: r("n0000001"),
+            value: v,
+            side: LineSide::Right,
+            driving: true,
+        },
+        Form::Radius {
+            curve: r("k0000001"),
+            value: v,
+            driving: true,
+        },
+        Form::Diameter {
+            curve: r("k0000001"),
+            value: v,
+            driving: true,
+        },
+        Form::Angle {
+            a: r("n0000001"),
+            b: r("n0000002"),
+            reversed: true,
+            value: deg("45"),
+            driving: true,
+        },
+    ]
+}
+
+/// The refusal's words, for a value refused.
+fn refusal(read: Result<TypedValue, Message>) -> String {
+    match read {
+        Err(Message::ValueRefused(error)) => error.message().to_owned(),
+        other => panic!("not refused as a value: {other:?}"),
+    }
+}
+
+#[test]
+fn an_edit_box_reads_each_dimensions_value_as_the_document_does() {
+    for form in dimensions() {
+        let angle = matches!(form, Form::Angle { .. });
+        // 12.5, read as the form's quantity, whatever its current value, and written for
+        // `set_field` as the document writes it.
+        let read = read_typed(&form, "12.5").unwrap();
+        let want = if angle {
+            TypedValue::Angle(deg("12.5"))
+        } else {
+            TypedValue::Length(mm("12.5"))
+        };
+        assert_eq!(read, want, "{form:?}");
+        assert_eq!(
+            read.node(),
+            json::Node {
+                at: json::At::UNPLACED,
+                value: json::Value::Number("12.5".to_owned()),
+            },
+            "{form:?}"
+        );
+        // An exponent is read exactly and written out plainly: 1.05e1 is 10.5.
+        assert_eq!(
+            read_typed(&form, " 1.05e1 ").unwrap().node().value,
+            json::Value::Number("10.5".to_owned()),
+            "{form:?}"
+        );
+        // Words, JSON's other values, and units are no number.
+        for text in ["abc", "true", "\"5\"", "null", "12.5 mm", ""] {
+            assert_eq!(
+                read_typed(&form, text),
+                Err(Message::NotANumber),
+                "{form:?} {text:?}"
+            );
+        }
+        // Past the quantity's decimals: a length's 6 (nanometres), an angle's 9
+        // (nanodegrees); seven decimals are an angle's to hold.
+        if angle {
+            assert_eq!(
+                read_typed(&form, "0.0000001").unwrap(),
+                TypedValue::Angle(Angle::from_ndeg(100))
+            );
+            assert!(
+                refusal(read_typed(&form, "0.0000000001"))
+                    .contains("0.0000000001 has more than 9 decimals"),
+                "{form:?}"
+            );
+        } else {
+            assert!(
+                refusal(read_typed(&form, "0.0000001"))
+                    .contains("0.0000001 has more than 6 decimals"),
+                "{form:?}"
+            );
+        }
+        // Past what a document holds, i64::MAX units: 9223372036854.775807 mm, or
+        // 9223372036.854775807°. 1e10 is a length's to hold, too large for an angle; 1e13
+        // too large for either.
+        if angle {
+            assert!(refusal(read_typed(&form, "1e10")).contains("1e10 is too large"));
+        } else {
+            assert_eq!(
+                read_typed(&form, "1e10").unwrap(),
+                TypedValue::Length(Length::from_nm(10_000_000_000_000_000))
+            );
+        }
+        assert!(
+            refusal(read_typed(&form, "1e13")).contains("1e13 is too large"),
+            "{form:?}"
+        );
+        // A refused number of 24 characters is repeated to its first 20.
+        assert!(
+            refusal(read_typed(&form, "0.0000000000000000000001"))
+                .starts_with("0.000000000000000000… has more than"),
+            "{form:?}"
+        );
+    }
+}
+
+#[test]
+fn a_form_that_isnt_a_dimension_reads_no_number() {
+    let horizontal = Form::Horizontal {
+        line: r("n0000001"),
+    };
+    assert_eq!(read_typed(&horizontal, "12.5"), Err(Message::NotANumber));
 }
 
 // --- Any events at all -----------------------------------------------------------------
