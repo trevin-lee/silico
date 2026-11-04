@@ -652,8 +652,15 @@ impl Tab {
         // Answered at once, of the session as it is: its revision and transaction are now.
         let mut reloaded = false;
         if let Some(session) = &status.session {
-            // Moved with nothing of the tab's under way: the session's own reload.
-            if self.status.is_some() && session.revision != self.revision && self.quiet() {
+            // Moved with nothing of the tab's under way and no transaction open: the
+            // session's own reload. A session never reloads inside a transaction, so a move
+            // inside one is another client's edit, which a dialog's or sketch mode's Cancel
+            // undoes with its own (it opened where it did).
+            if self.status.is_some()
+                && session.revision != self.revision
+                && !session.transaction
+                && self.quiet()
+            {
                 self.resets += 1;
                 reloaded = true;
             }
