@@ -1466,8 +1466,12 @@ pub fn ray(camera: &Camera, size_px: [u32; 2], pixel: [f64; 2]) -> Option<([f64;
             // The point on the near plane, in the eye's frame: the ray's way from the eye.
             let projection = view_projection(camera.projection, size_px, 0.0);
             let along = into_document(unproject(projection, size_px, pixel, 1.0)?);
+            // Never 0: the near plane's point is `near` along the view (its z, the inverse's
+            // of device depth 1), and the rotation keeps its length.
             let length = dot(along, along).sqrt();
-            (length.is_finite() && length > 0.0).then(|| (camera.eye, along.map(|c| c / length)))
+            length
+                .is_finite()
+                .then(|| (camera.eye, along.map(|c| c / length)))
         }
         Projection::Orthographic { .. } => {
             // Across the view only: x and y don't depend on the depth, or on the far plane.

@@ -681,6 +681,39 @@ mod tests {
         ));
     }
 
+    /// A renderer that fails every frame, saying nothing of backing off: `retry_later` its
+    /// trait's own.
+    struct Failing;
+
+    impl ViewRenderer for Failing {
+        type Failure = String;
+        fn upload(&mut self, _: u32, _: &Arc<Mesh>) -> Result<(), String> {
+            Ok(())
+        }
+        fn forget(&mut self, _: u32) {}
+        fn prepare(&mut self, _: &Frame<'_>) -> Result<wgpu::CommandBuffer, String> {
+            Err("the device was lost".to_owned())
+        }
+        fn composite(&self, _: &mut wgpu::RenderPass<'_>) {}
+        fn take_picking(&mut self) -> Option<Picking> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_renderers_failure_is_said_unless_it_says_to_retry_later() {
+        // A renderer that doesn't say a failure is for the moment: each is a failure, kept
+        // as said, and the pane isn't told the renderer backs off.
+        assert!(!Failing::retry_later(&"backing off".to_owned()));
+        let mut gpu = OnGpu::<Failing>::new();
+        assert!(prepared(Some(&mut Failing), &gpu.shared, &data(&[], &[])).is_empty());
+        assert_eq!(
+            locked(&gpu.shared).failure.as_deref(),
+            Some("the device was lost")
+        );
+        assert!(!gpu.backing_off());
+    }
+
     #[test]
     fn with_no_renderer_installed_the_changes_are_taken_and_the_uploads_refused() {
         let shared = Mutex::new(Shared::default());

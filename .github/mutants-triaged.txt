@@ -513,3 +513,14 @@ crates/silico-protocol/src/render.rs | box_corners | replace == with != | #353
 # and the strip is ended after the loop. Each gives the same strips.
 crates/silico-render/src/render.rs | View::cut_strip | replace > with >= | #353
 crates/silico-render/src/render.rs | View::cut_strip | replace < with > | #353
+# `ray`'s guard on the size and the pixel, `width == 0 || height == 0 || !finite`, is a fast
+# path ahead of what would answer none anyway: with a side of 0 or a pixel not finite, the
+# pixel's device coordinate on that axis, `pixel / side * 2 - 1` (and `1 - ...`), is ±inf or
+# NaN (a finite over 0 is ±inf, 0 over 0 NaN; an infinite or NaN pixel stays so), and the
+# view point is the inverse matrix times it, each of its components a sum with that one
+# times its column's entry (±inf or NaN whether the entry is 0 or not, 0 × inf being NaN),
+# then over w, likewise not finite; `unproject` gives none for a point not finite. So either
+# `||` as `&&` lets a case through to the same none (the tests' sizes of 0 and NaN pixels
+# each alone, a_ray_is_none_for_a_camera_or_size_the_checks_refuse).
+crates/silico-render/src/render.rs | ray | replace || with && | #355
+crates/silico-render/src/render.rs | ray | replace || with && | #355
