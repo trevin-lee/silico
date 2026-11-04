@@ -19273,6 +19273,143 @@ fn a_drag_past_the_window_follows_the_unclamped_cursor_and_one_past_reach_is_sai
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn a_move_cancelled_mid_solve_says_nothing_and_a_move_the_core_then_refuses_ends_the_drag() {
+    use silico_app::sketch::PointerAction::{Move, Press};
+    use silico_core::command::{Cancellable, SessionCommand};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    step_until(&mut h, "the first frame", |h| {
+        the_drag(h).is_some_and(|d| d.frames == 1)
+    });
+    // A move held solving, then cancelled, as an agent's `cancel` of `drag_move` would: it
+    // answers `cancelled`, which the drag takes saying nothing, and stays open.
+    f.sketches.hold();
+    sketch_events(&f, &mut h, &moved(54.0, 34.0));
+    assert!(f.sketches.wait_held(WAIT));
+    let id = h.state().tabs()[0].id;
+    let cancelled = f
+        .sessions
+        .cancel(&id, Cancellable::Command(SessionCommand::DragMove));
+    assert!(cancelled.result.is_ok(), "{:?}", cancelled.result);
+    f.sketches.release();
+    for _ in 0..10 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert!(the_drag(&h).is_some_and(|d| d.frames == 1));
+    // The cancel ended the core's drag: the next cursor's move is refused, naming no
+    // cursor, so the drag is over, its refusal said.
+    sketch_events(&f, &mut h, &moved(58.0, 38.0));
+    step_until(&mut h, "the refusal said", |h| {
+        h.state().tabs()[0].message.is_some()
+    });
+    assert!(the_drag(&h).is_none());
+    settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drags_end_refused_after_another_clients_edit_is_let_go_at_once_not_at_a_read_of_it() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 60.0, 40.0)],
+    );
+    step_until(&mut h, "the frame", |h| {
+        the_drag(h).is_some_and(|d| d.frames >= 1)
+    });
+    // Every solve held, so no read of a newer model can come; then another client moves
+    // the corner pa000001 to (11, 10), which ends the core's drag.
+    f.sketches.hold();
+    let id = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&id).session.unwrap().revision;
+    let theirs = f
+        .sessions
+        .replace_text(
+            &id,
+            revision,
+            BOXED.replace(r#""x": 10, "y": 10"#, r#""x": 11, "y": 10"#),
+        )
+        .wait();
+    assert!(theirs.result.is_ok(), "{:?}", theirs.result);
+    // The release: its end refused, no drag being open, which is said; the drag, which
+    // changed nothing, let go at once, not kept for a read of the revision it answered at.
+    sketch_events(&f, &mut h, &[pointer(Release, 60.0, 40.0)]);
+    step_until(&mut h, "the end's refusal said", |h| {
+        h.state().tabs()[0].message.is_some()
+    });
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    assert!(the_drag(&h).is_none());
+    f.sketches.release();
+    settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drags_edit_after_an_undo_in_sketch_mode_leaves_redo_nothing_of_sketch_modes() {
+    use eframe::egui::{Key, Modifiers};
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    let drag_to = |f: &Fixture, h: &mut AppHarness, to: [f64; 2]| {
+        // Pressed on a read of the session's state, as a drag begins only from one.
+        step_until(h, "the read of the session's revision", |h| {
+            let tab = &h.state().tabs()[0];
+            sketch_mode(h)
+                .and_then(|mode| mode.read.as_ref())
+                .and_then(|read| read.model)
+                == Some(tab.revision)
+        });
+        sketch_events(
+            f,
+            h,
+            &[pointer(Press, 50.0, 30.0), pointer(Move, to[0], to[1])],
+        );
+        step_until(h, "the frame", |h| {
+            the_drag(h).is_some_and(|d| d.frames >= 1)
+        });
+        sketch_events(f, h, &[pointer(Release, to[0], to[1])]);
+        settled(h);
+        step_until(h, "the drag over", |h| the_drag(h).is_none());
+    };
+    let undone = |h: &AppHarness| sketch_mode(h).unwrap().undone;
+    // A drag's edit, undone by Ctrl+Z: one of sketch mode's own edits undone.
+    drag_to(&f, &mut h, [52.0, 32.0]);
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(undone(&h), 1);
+    // A second drag's edit: what was undone is dropped, as any new edit drops it.
+    drag_to(&f, &mut h, [56.0, 36.0]);
+    assert_eq!(undone(&h), 0);
+    // So another client's undo of it is no redo of sketch mode's.
+    let id = h.state().tabs()[0].id;
+    let revision = h.state().tabs()[0].revision;
+    let theirs = f.sessions.undo(&id, revision, None).wait();
+    assert!(theirs.result.is_ok(), "{:?}", theirs.result);
+    let moved = theirs.session.unwrap().revision;
+    step_until(&mut h, "the other client's revision", |h| {
+        h.state().tabs()[0].revision == moved
+    });
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].redoable());
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- #368's review: a drag's end and sketch mode's leaving; the queue behind a drag ----
 
 /// Stepped until the drag has drawn `frames` solved frames.
@@ -21344,5 +21481,47 @@ fn a_released_drags_edit_is_undone_though_the_rebuild_after_it_is_stopped_before
     hold.release();
     settled(&mut h);
     assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_trim_asked_while_the_tab_closes_is_never_queued() {
+    let f = fixture();
+    // The crossed sketch, and a box beside it, whose rebuild the close's save is held behind.
+    let block = r#"    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#;
+    let text = CROSSED.replace("\n  ]\n}", &format!(",\n{block}\n  ]\n}}"));
+    let (mut h, _) = f.opened("crossed.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Cross"));
+    double_click(&mut h, "Browser", "Cross");
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::T);
+    step(&mut h);
+    // A click on na000001 at (30, 0.3) trims it: an edit, so the close asks.
+    sketch_events(&f, &mut h, &clicked(30.0, 0.3));
+    settled(&mut h);
+    read_with_lines(&mut h, 2);
+    // Closing, its save held.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_label("Close crossed.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to crossed.silico before closing?")
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    step(&mut h);
+    assert!(h.state().tabs()[0].closing());
+    // What the tab says, which an edit queued would let go of.
+    h.state_mut().tabs_mut()[0].message = Some("kept".to_owned());
+    let sent = h.state().tabs()[0].sent.clone();
+    // A click on na000002 at (20.3, 5): its trim asked, but the closing tab's queue takes
+    // no edit, so none is queued and what it says stays.
+    sketch_events(&f, &mut h, &clicked(20.3, 5.0));
+    assert_eq!(h.state().tabs()[0].message.as_deref(), Some("kept"));
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    hold.release();
+    check.wait();
     assert_eq!(never_waits::waits(), 0);
 }

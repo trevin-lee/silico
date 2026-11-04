@@ -389,3 +389,81 @@ fn cancelled(problems: &Problems) -> bool {
         .first()
         .is_some_and(|error| error.code() == silico_core::ErrorCode::Cancelled)
 }
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::Pos2;
+    use silico_core::command::{DragFrame, DragGrab, FrameEnd, Revision};
+    use silico_core::document::{Coordinate, FeatureId, OriginPlane, Sketch, SketchCircle};
+
+    use super::Drag;
+    use crate::sketch::tests::{id, point, under};
+
+    fn circle(name: &str, centre: &str) -> SketchCircle {
+        SketchCircle {
+            id: id(name),
+            center: id(centre),
+            radius: Coordinate::new(5.0).unwrap(),
+            construction: false,
+        }
+    }
+
+    #[test]
+    fn a_solved_frames_places_and_radii_are_set_on_their_own_members_alone() {
+        // Two circles of radius 5, about (0, 0) and (20, 0); the second's edge dragged.
+        let sketch = Sketch {
+            plane: OriginPlane::Xy.into(),
+            points: vec![point("pc000001", 0.0, 0.0), point("pc000002", 20.0, 0.0)],
+            lines: Vec::new(),
+            circles: vec![
+                circle("ca000001", "pc000001"),
+                circle("cb000001", "pc000002"),
+            ],
+            arcs: Vec::new(),
+            constraints: Vec::new(),
+        };
+        let mut drag = Drag::pressed(
+            FeatureId::new("s0000001").unwrap(),
+            DragGrab::Edge {
+                curve: id("cb000001"),
+                press: [25.0, 0.0],
+            },
+            under(sketch),
+            Revision::OPENED,
+            Pos2::ZERO,
+        );
+        drag.moved = true;
+        let radius = |drag: &Drag, name: &str| {
+            let shown = drag.shown().unwrap();
+            let circle = shown.members.circles.iter().find(|c| c.id == id(name));
+            circle.unwrap().radius.mm()
+        };
+        let place = |drag: &Drag, name: &str| {
+            let shown = drag.shown().unwrap();
+            let p = shown.members.points.iter().find(|p| p.id == id(name));
+            p.map(|p| [p.x.mm(), p.y.mm()]).unwrap()
+        };
+        // Solved with the second's radius 8 and its centre at (21, 1): those set, the first
+        // circle as it began.
+        drag.took(&DragFrame {
+            to: [28.0, 0.0],
+            frame: FrameEnd::Solved,
+            points: vec![(id("pc000002"), [21.0, 1.0])],
+            radii: vec![(id("cb000001"), 8.0)],
+        });
+        assert_eq!(drag.frames, 1);
+        assert_eq!(radius(&drag, "cb000001"), 8.0);
+        assert_eq!(radius(&drag, "ca000001"), 5.0);
+        assert_eq!(place(&drag, "pc000002"), [21.0, 1.0]);
+        assert_eq!(place(&drag, "pc000001"), [0.0, 0.0]);
+        // A frame that didn't reach its cursor keeps the last.
+        drag.took(&DragFrame {
+            to: [30.0, 0.0],
+            frame: FrameEnd::Failed,
+            points: Vec::new(),
+            radii: vec![(id("cb000001"), 10.0)],
+        });
+        assert_eq!(drag.frames, 1);
+        assert_eq!(radius(&drag, "cb000001"), 8.0);
+    }
+}
