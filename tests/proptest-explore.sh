@@ -3,7 +3,8 @@
 # gate meets the same cases every run (pixi.toml's test task fixes PROPTEST_RNG_SEED), this
 # looks for the cases it never meets (.github/workflows/proptest-explore.yml runs it on idle
 # runners). Each round draws a random u64 for PROPTEST_RNG_SEED, says it, and runs every test
-# but those tests/mutants.sh leaves out for holding to a wall clock or GiBs (its $filter): no
+# but those tests/mutants.sh leaves out for holding to a wall clock or GiBs (its
+# $explore_filter), its slow proptests run alone and given longer: no
 # filter tells a property's tests from the rest, which share their binaries and ignore the
 # seed. Each property takes its own case count each round (not PROPTEST_CASES, which proptest
 # lets override every test's own, so a property that takes 32 costly cases would take the
@@ -33,7 +34,8 @@ set -euo pipefail
 
 # Before the tree's checkout, which cds away from this script's directory.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# The tests mutants leave out ($filter): this sources tests/mutants.sh for it alone.
+# The tests left out ($explore_filter) and the slow proptests ($slow): this sources
+# tests/mutants.sh for them alone.
 # shellcheck source=tests/mutants.sh
 source "$here/mutants.sh"
 
@@ -110,6 +112,12 @@ trap 'rm -f "$nextest_config"' EXIT
   printf '\n[profile.silico-explore]\nfail-fast = false\nretries = 2\n'
   printf 'slow-timeout = { period = "60s", terminate-after = 5 }\n'
   printf '\n[profile.silico-explore.junit]\npath = "%s"\n' "$out/junit.xml"
+  # The slow proptests (tests/mutants.sh's $slow), each alone and given 20 minutes a try.
+  if [ -n "$slow" ]; then
+    printf '\n[[profile.silico-explore.overrides]]\nfilter = "%s"\n' "$slow"
+    printf 'threads-required = "num-test-threads"\n'
+    printf 'slow-timeout = { period = "120s", terminate-after = 10 }\n'
+  fi
 } >"$nextest_config"
 nextest=(cargo nextest run --config-file "$nextest_config" --profile silico-explore)
 junit=$out/junit.xml
@@ -201,7 +209,7 @@ while :; do
   began=$SECONDS
   status=0
   PROPTEST_RNG_SEED=$this within $((end - SECONDS > 1 ? end - SECONDS : 1)) \
-    "${nextest[@]}" --workspace -E "$filter" || status=$?
+    "${nextest[@]}" --workspace -E "$explore_filter" || status=$?
   took=$((SECONDS - began))
   printf '%s\t%s\t%s\t%s\n' "$round" "$this" "$status" "$took" >>"$out/rounds.tsv"
   if [ -f "$junit" ]; then mv "$junit" "$out/round-$round.xml"; fi
