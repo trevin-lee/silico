@@ -1041,7 +1041,8 @@ pub struct StepCount {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepState {
     /// Not settled yet: none of its steps running (none started, or one built and the next
-    /// not started yet), or the rebuild stopped before it settled; Rebuild resumes it.
+    /// not started yet), or its own failure waits on the checks of what it uses, or the
+    /// rebuild stopped before it settled; Rebuild resumes it.
     Queued,
     /// A step it owns is running; a sketch, its solve; a sketch on a face reads queued until
     /// the round that places it, its solve included, then its outcome: its result is the
@@ -1053,7 +1054,10 @@ pub enum StepState {
     /// Its own problem: a step the kernel refused, a check its result failed, a refusal of
     /// its sketch's profile, a sketch that didn't solve, broken references.
     Failed,
-    /// Settled unrun: a feature it uses failed, faulted, or was blocked.
+    /// Settled unrun: a feature it uses failed, faulted, or was blocked. Mid-run, it may
+    /// read blocked while the input it's blocked on still reads built or queued (that
+    /// input's own failure is held until what it uses is firm); it settles to the model's
+    /// outcome, and is never taken back.
     Blocked,
     /// A kernel fault stopped it (a worker that crashed, hung, or couldn't be had, a reply
     /// that couldn't be read, a shortage, a bug); what uses it is blocked.
@@ -6681,6 +6685,91 @@ mod tests {
         assert_eq!(passing.now().features.get(&pad), Some(StepState::Queued));
         passing.judged(&[at(&fuse)], &[], &plan);
         assert_eq!(passing.now().features.get(&pad), Some(StepState::Failed));
+    }
+
+    #[test]
+    fn a_pad_refused_by_its_plan_on_a_fillet_not_yet_built_is_queued_then_blocked() {
+        // Round 3's low: a box, a fillet of one of its edges, and a pad onto the fillet of a
+        // segment, which makes no profile: the pad is refused by its plan, before any step.
+        // The kernel refuses the fillet, so the model says the pad is blocked on it. The
+        // fillet has no check, so once the box is built and firm, nothing but the fillet's
+        // own step is left to decide the pad: a fillet taken as firm before it built would
+        // say the pad's refusal (failed) as soon as the box's step settled, and the fillet's
+        // failure then could never block it. Driven by hand, as the recompute's threads drive
+        // the count: the pad reads queued until the fillet's step settles, then blocked, its
+        // model's outcome; nothing goes back.
+        let features = [
+            r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#.to_owned(),
+            r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "b0000001", "edges": ["b0000001.box.Edge1"], "radius": 1}"#.to_owned(),
+            r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "Segment", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 10, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#.to_owned(),
+            r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "P", "base": "f0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 1, "reversed": false}}"#.to_owned(),
+        ];
+        let document = Arc::new(checked_of(&features));
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+            .with_sketches(crate::fake::FakeSketches::new());
+        engine.kernel().refuse(|op| {
+            matches!(op, silico_protocol::Op::Fillet { .. })
+                .then(|| Error::new(ErrorCode::KernelFailed, "Fillet failed"))
+        });
+        let generation = lock(&engine.engine.state).generation;
+        let RunOutcome::Published(model) = engine
+            .engine
+            .run(&document, generation, &StepCounter::default(), Reads::Kept)
+            .unwrap()
+        else {
+            panic!("not published");
+        };
+        let (boxed, fillet, pad) = (
+            FeatureId::new("b0000001").unwrap(),
+            FeatureId::new("f0000001").unwrap(),
+            FeatureId::new("p0000001").unwrap(),
+        );
+        assert!(
+            matches!(model.outcome(&pad), Some(FeatureOutcome::Blocked { on }) if *on == fillet),
+            "{:?}",
+            model.outcome(&pad)
+        );
+        let first = engine
+            .engine
+            .solve_swept(&document, generation, Reads::Kept, &StepCounter::default())
+            .unwrap()
+            .unwrap();
+        let plan = Plan::of(&document, &first.swept, &BTreeMap::new());
+        let at = |id: &FeatureId| document.place(id).unwrap();
+        let (box_key, fillet_key) = (
+            plan.features[at(&boxed)].key().unwrap(),
+            plan.features[at(&fillet)].key().unwrap(),
+        );
+        assert_eq!(plan.order, [box_key, fillet_key]);
+        let counter = StepCounter::default();
+        counter.listing(&document);
+        let found = plan.states(
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &first.solutions,
+            &Refusals::default(),
+            &BTreeMap::new(),
+        );
+        counter.planned(plan.order.len(), [], plan.labels(&document), &found);
+        let mut copies = vec![counter.now()];
+        counter.started(box_key, &plan);
+        copies.push(counter.now());
+        counter.settled(box_key, Settled::Made, &plan);
+        copies.push(counter.now());
+        // The box built and firm, the fillet's step not yet started: the pad waits on it.
+        assert_eq!(counter.now().features.get(&boxed), Some(StepState::Built));
+        assert_eq!(counter.now().features.get(&fillet), Some(StepState::Queued));
+        assert_eq!(counter.now().features.get(&pad), Some(StepState::Queued));
+        counter.started(fillet_key, &plan);
+        copies.push(counter.now());
+        assert_eq!(counter.now().features.get(&pad), Some(StepState::Queued));
+        counter.settled(fillet_key, Settled::Failed(StepState::Failed), &plan);
+        copies.push(counter.now());
+        assert_eq!(counter.now().features.get(&pad), Some(StepState::Blocked));
+        assert_eq!(counter.now().features.get(&fillet), Some(StepState::Failed));
+        never_back(&copies);
+        let want = StepState::of_outcome(model.outcome(&pad).unwrap());
+        assert_eq!(counter.now().features.get(&pad), want);
     }
 
     #[test]
