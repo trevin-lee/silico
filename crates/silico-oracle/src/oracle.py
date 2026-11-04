@@ -96,7 +96,9 @@ def build(doc, spec):
     if kind in ("fuse", "cut", "common"):
         base = build(doc, a["base"])
         tool = build(doc, a["tool"])
-        return getattr(base, kind)(tool)
+        # FreeCAD 1.1.3's automatic fuzzy value (-1.0), as its PartDesign booleans and
+        # Silico's run: with none given, Python's booleans use none (docs/ports/booleans.md).
+        return getattr(base, kind)([tool], -1.0)
     if kind == "fillet":
         s = build(doc, a["shape"])
         return s.makeFillet(a["radius"], edges(s, a["edges"]))

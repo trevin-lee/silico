@@ -146,7 +146,7 @@ All colours are re_ui 0.38.1 dark-theme values (resolved through `color_table.ro
 | Timeline | `TopBottomPanel::bottom` at 40; a horizontal `ScrollArea` of 30 px icon buttons; marks painted at the icon's corner; the spinner is a painted arc (`ctx.request_repaint` only while a step runs); the rollback bar a thin `Sense::drag` rect; drag-to-reorder via `dnd_drag_source`/`dnd_drop_zone` |
 | Status bar | `TopBottomPanel::bottom` at 24; labels, a 70 px `ProgressBar`, small buttons |
 | Menus | `Response::context_menu` and `menu_button`; Select Other as a context menu whose rows set the hover highlight; Tab/wheel handled by `ctx.input` while it's open |
-| Modals | `egui::Modal` (backdrop `#000000CC`, `modal_backdrop_color`) for New, Save As, Close, over-define, What's Wrong |
+| Modals | `egui::Modal` (backdrop `#000000CC`, `modal_backdrop_color`) for the typed Open and Save As (the native panels' fallbacks), Close, over-define, What's Wrong |
 | Shortcut sheet | `egui::Modal` with a `TextEdit` filter and three `columns` |
 | Command search | An `Area` anchored top centre with a `TextEdit` and a list; arrows/Enter via `ctx.input` |
 | Tooltips | `on_hover_ui` with a title, key caps, one-line description (egui's 0.5 s delay) |

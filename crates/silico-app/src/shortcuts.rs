@@ -189,7 +189,7 @@ const NEW: Entry = entry(
     "New part",
     Group::File,
     &[command(Key::N)],
-    Some("Makes a new part at the path you give"),
+    Some("Opens an untitled part"),
 );
 const OPEN: Entry = entry(
     Command::Open,
