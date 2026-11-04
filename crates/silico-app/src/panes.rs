@@ -170,6 +170,13 @@ impl<P: Clients + 'static> Panes<'_, P> {
             return;
         };
         let mut asked = Asked::default();
+        if tab.selection().scroll_target().is_some() {
+            // A body picked in the canvas: its row shown, its group opened (section 9,
+            // *Browser and canvas*: the browser expands and scrolls to it).
+            for key in ["root", "Bodies"] {
+                Openness::load(ui.ctx(), key).opened(ui.ctx());
+            }
+        }
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -177,15 +184,17 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 tree(ui, tab, &mut asked);
                 ui.add_space(theme::BROWSER_PADDING_BOTTOM);
             });
+        // Scrolled to once, whether its row was there or not.
+        tab.selection_mut().scrolled();
         for what in asked.toggled {
             tab.toggle_shown(what);
         }
         if let Some(id) = asked.selected
-            && tab.selected.as_ref() != Some(&id)
+            && tab.selection().feature() != Some(&id)
         {
             // A sketch chosen here fills an open dialog's selection box (section 9).
             tab.pick(&id);
-            tab.selected = Some(id);
+            tab.selection_mut().select_feature(id);
         }
         if let Some(id) = asked.edit {
             // SEAM(#351): `tab.edit_sketch_or_feature(self.sessions, &id)`, Edit Sketch for a
@@ -196,10 +205,9 @@ impl<P: Clients + 'static> Panes<'_, P> {
     }
 
     /// The property panel (DESIGN.md, *Layout*: one right panel, four jobs): the feature
-    /// dialog, if one is open; else the selected feature's properties; else the document's,
-    /// never an empty state. SEAM(M5.7): a selection of faces, edges, or vertices, picking's,
-    /// is its fourth job (`selectionProps`: each element's measures and stable name), shown
-    /// before a feature's once picking names them.
+    /// dialog, if one is open; else the selection's faces and edges, if it has any
+    /// (`selectionProps`, [`selected_elements`]); else the selected feature's properties;
+    /// else the document's, never an empty state.
     fn properties(&mut self, ui: &mut Ui) {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let Some(tab) = self.tab.as_deref_mut() else {
@@ -222,7 +230,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             tab.close_dialog(self.sessions, false);
         }
         properties::title(ui, None, "Properties", None);
-        let entry: Option<Entry> = tab.selected.as_ref().and_then(|selected| {
+        let entry: Option<Entry> = tab.selection().feature().and_then(|selected| {
             tab.timeline
                 .as_ref()
                 .and_then(|timeline| timeline.features.as_ref())
@@ -232,12 +240,14 @@ impl<P: Clients + 'static> Panes<'_, P> {
         let sessions = self.sessions;
         let name = &mut *self.name;
         let started = &mut *self.started;
+        let elements = tab.selection().elements().next().is_some();
         egui::ScrollArea::vertical()
             .id_salt("properties")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
                 match entry {
+                    _ if elements => selected_elements(ui, tab),
                     Some(entry) => feature(ui, tab, &entry, sessions, name, started),
                     None => document(ui, tab),
                 }
@@ -436,6 +446,78 @@ fn feature<P: Clients + 'static>(
             false,
         )],
     );
+}
+
+/// The selection's faces and edges (`selectionProps`, M5.7), each under its kind: its name
+/// as an agent writes it, and whether a store takes it, Stable; or, Unstable, the refusal
+/// a store gives it, with its suggestion (what a fillet's edges would say); or, Waiting,
+/// why it isn't answered (its feature didn't build, or its body isn't named yet).
+///
+/// SEAM: the prototype's look for it (`selectionProps`: each element's measures, its
+/// surface type, and its feature), which needs an `elements` read of each; and a vertex's
+/// row, once vertices are picked.
+fn selected_elements(ui: &mut Ui, tab: &Tab) {
+    let elements: Vec<_> = tab.selection().elements().collect();
+    let sub = properties::body("Selection", theme::PROPERTY_HEAD_SUB);
+    let title = match elements.len() {
+        1 => "1 element selected".to_owned(),
+        n => format!("{n} elements selected"),
+    };
+    properties::head(ui, Icon::SelFace, &title, sub);
+    // The head is painted, not labelled: the count said again where it reads.
+    properties::text_row(
+        ui,
+        "Selected",
+        properties::body(&title, theme::PROPERTY_VALUE),
+    );
+    for (place, picked) in elements.into_iter().enumerate() {
+        // Each element's rows under an ID of its own: they're keyed alike.
+        ui.push_id(("selected", place), |ui| selected_element(ui, picked));
+    }
+}
+
+/// A selected element's rows ([`selected_elements`]).
+fn selected_element(ui: &mut Ui, picked: &crate::selection::Picked) {
+    use crate::selection::State;
+    let kind = match picked.found().map(silico_core::selection::Selected::kind) {
+        Some(silico_protocol::ElementKind::Face) => "Face",
+        Some(silico_protocol::ElementKind::Edge) => "Edge",
+        Some(silico_protocol::ElementKind::Vertex) => "Vertex",
+        _ => "Element",
+    };
+    properties::section(ui, kind);
+    properties::text_row(
+        ui,
+        "Name",
+        egui::text::LayoutJob::single_section(
+            picked.name.clone(),
+            properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
+        ),
+    );
+    let (state, colour, said) = match &picked.state {
+        State::Found(selected) => match &selected.stored {
+            Ok(_) => ("Stable", theme::SUCCESS, None),
+            Err(refusal) => (
+                "Unstable",
+                theme::WARNING,
+                Some((refusal.message().to_owned(), refusal.suggestion())),
+            ),
+        },
+        State::Waiting { why, .. } => (
+            "Waiting",
+            theme::TEXT_SUBDUED,
+            Some((
+                why.clone().unwrap_or_else(|| {
+                    "Not answered yet: its body's elements aren't named yet".to_owned()
+                }),
+                None,
+            )),
+        ),
+    };
+    properties::text_row(ui, "Stability", properties::body(state, colour));
+    if let Some((message, suggestion)) = said {
+        properties::card(ui, true, &message, suggestion);
+    }
 }
 
 /// The document's problems, as the gate found them: a card each.
@@ -712,7 +794,7 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                             None
                         },
                         name: &each.name,
-                        selected: Some(tab.selected.as_ref() == Some(&each.id)),
+                        selected: Some(tab.selection().marks_body(&each.id)),
                         meta: None,
                         mark: marked.then_some((each.health, text)),
                         // A sketch's own failure reddens its name (`.row.err`); a body's
@@ -724,6 +806,9 @@ fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
                     asked.toggled.push(what);
                 } else if answer.row.clicked() {
                     asked.selected = Some(each.id.clone());
+                }
+                if tab.selection().scroll_target() == Some(&each.id) {
+                    answer.row.scroll_to_me(None);
                 }
                 if sketches && sketch_edit_asked(tab, &answer.row) {
                     asked.edit = Some(each.id.clone());
@@ -746,6 +831,15 @@ impl Openness {
         let state = egui::collapsing_header::CollapsingState::load_with_default_open(ctx, id, true);
         let open = state.is_open();
         Openness { state, open }
+    }
+
+    /// Opened, and kept so.
+    fn opened(mut self, ctx: &egui::Context) {
+        if !self.open {
+            self.open = true;
+            self.state.set_open(true);
+            self.state.store(ctx);
+        }
     }
 
     /// Its caret's state taken from the row: opened or closed, and kept.
@@ -2063,7 +2157,9 @@ mod tests {
         assert_eq!(icon_at(&h, block.glyph), Some(css::G1000));
         // Selected (`.row.selected`): `--blue` across it, its name and icon `--blue-text`;
         // hovered, the same.
-        tab_of(&mut h).selected = Some(fid("c0000001"));
+        tab_of(&mut h)
+            .selection_mut()
+            .select_feature(fid("c0000001"));
         h.remove_cursor();
         h.run_steps(2);
         assert_eq!(fills_at(&h, cut.row), [(css::BLUE, CornerRadius::ZERO)]);
@@ -2727,7 +2823,7 @@ mod property_panel_drawn {
     #[test]
     fn a_features_properties_are_drawn_as_feature_props_with_its_error_card_and_name_field() {
         let mut tab = part();
-        tab.selected = Some(fid("c0000001"));
+        tab.selection_mut().select_feature(fid("c0000001"));
         let h = drawn(tab);
         let mut y = title_and_head(&h, "Hole", "Subtract · c0000001", body(css::FS_SMALL));
         // The line under the title: the type, then the ID in monospace.

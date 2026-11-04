@@ -12,7 +12,8 @@
 //! is out of M5, DESIGN.md flags Onshape's as a proposal), the gear's timeline options (none
 //! exist), a click on the errors opening What's Wrong (not built yet), and the reverse of
 //! the hover linking, a face hovered outlining its feature here (`.hovered-from-canvas`):
-//! SEAM(M5.7), picking's, once it names the face under the pointer and its feature.
+//! SEAM, the outline's look, from `tab.selection().hovered_feature()` (M5.7: the feature
+//! that made what the pointer is over in the canvas).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -380,7 +381,7 @@ fn features<P: Clients + 'static>(
     }
     tab.view.linked = asked.hovered;
     if let Some(id) = asked.selected {
-        tab.selected = Some(id);
+        tab.selection_mut().select_feature(id);
     }
     if let Some((feature, before)) = asked.moved {
         tab.move_feature(sessions, feature, before);
@@ -492,7 +493,7 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
         rects.push(rect);
         let id = egui::Id::new(("timeline-item", entry.id.as_str()));
         let response = ui.interact(rect, id, Sense::click_and_drag());
-        let selected = tab.selected.as_ref() == Some(&entry.id);
+        let selected = tab.selection().has_feature(&entry.id);
         let description = format!("{} · {}", kind_words(entry.kind), step.words());
         response.widget_info(|| {
             WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, &entry.name)
@@ -1401,7 +1402,8 @@ mod tests {
     #[test]
     fn the_items_are_drawn_as_tl_item_in_each_state() {
         let mut tab = tab_of(Some(&features()), 0);
-        tab.selected = Some(FeatureId::new("p0000001").unwrap());
+        tab.selection_mut()
+            .select_feature(FeatureId::new("p0000001").unwrap());
         let mut h = drawn(tab);
         // `:hover`: the block hovered.
         h.input_mut()

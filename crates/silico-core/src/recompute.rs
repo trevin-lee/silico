@@ -580,9 +580,10 @@ impl Model {
 
     /// This model with none of its elements named yet, as it is when it's published and
     /// before the background has named any: so a test can read it as a client that asks
-    /// at once does, with no race against that naming.
-    #[cfg(test)]
-    pub(crate) fn unnamed(&self) -> Model {
+    /// at once does, with no race against that naming (the app's tests read it as its
+    /// selection does a model published a moment ago).
+    #[cfg(any(test, feature = "fake"))]
+    pub fn unnamed(&self) -> Model {
         Model {
             maps: (0..self.features.len()).map(|_| OnceLock::new()).collect(),
             entries: (0..self.features.len()).map(|_| OnceLock::new()).collect(),

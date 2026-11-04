@@ -1551,7 +1551,8 @@ impl<P: Clients + 'static> App<P> {
                     in_sketch: false,
                     create_sketch: None,
                     can_open: &can_open,
-                    selected: shown.is_some_and(|tab| tab.selected.is_some() && !tab.in_dialog()),
+                    selected: shown
+                        .is_some_and(|tab| !tab.selection().is_empty() && !tab.in_dialog()),
                 },
             )
         };
@@ -1563,7 +1564,7 @@ impl<P: Clients + 'static> App<P> {
                 tab.open_dialog(&self.sessions, kind);
                 *started = true;
             }
-            Some(toolbar::Act::ClearSelection) => tab.selected = None,
+            Some(toolbar::Act::ClearSelection) => tab.selection_mut().clear(),
             // Sketch mode (#351) wires these: `CreateSketch(plane)` to
             // `tab.create_sketch(&self.sessions, plane)` and `*started = true`, and
             // `FinishSketch` to `tab.finish_sketch(&self.sessions, true)` (false is Cancel).
