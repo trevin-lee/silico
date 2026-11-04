@@ -46,12 +46,13 @@ use re_renderer::{
 use silico_protocol::vec3::{dot, sub};
 use silico_protocol::{
     Camera, Class, EDGE_BIT, F32_ROUNDING, Frame as CameraFrame, InView, InViewBody,
-    InvalidParameter, MIN_EYE_DISTANCE, Mesh, PRECISION_OF_PIXEL, PixelId, RenderBody, RenderScene,
-    ViewRegion, box_of, check_bodies_in_view, check_render_mesh, corner_sec2, pyramid_slope,
-    reach_of_points,
+    InvalidParameter, MIN_EYE_DISTANCE, Mesh, PRECISION_OF_PIXEL, PixelId, Projection, RenderBody,
+    RenderScene, ViewRegion, box_of, check_bodies_in_view, check_render_mesh, corner_sec2,
+    pyramid_slope, reach_of_points,
 };
 
-/// The background: a flat light grey, sRGB.
+/// A render's background: a flat light grey, sRGB. A frame's is the caller's
+/// ([`Frame::background`]).
 pub const BACKGROUND: [u8; 3] = [230, 233, 237];
 /// Fusion's default appearance (steel, satin), sRGB.
 pub const BODY: [u8; 3] = [170, 175, 182];
@@ -93,6 +94,9 @@ const READBACK_FRAMES: u32 = 100;
 /// How long one wait for the GPU may take: past the 30 s the core gives a render (step 3 of
 /// docs/design/m4.6-render.md), which ends a stuck worker first.
 const GPU_WAIT: Duration = Duration::from_secs(60);
+/// The most frames [`Renderer::prepare`] refuses in a row after the GPU fails one, before it
+/// tries again: about a second at 60 frames a second. The backoff doubles from 1 to this.
+pub const MAX_BACKOFF_FRAMES: u32 = 64;
 
 /// A render: the PNG, and the ID buffer if the scene asked for it.
 pub struct Rendered {
@@ -111,6 +115,12 @@ pub enum RenderFailure {
     Invalid(InvalidParameter),
     /// Anything else: the renderer's own fault.
     Failed(String),
+    /// The GPU failed a recent frame, so this one wasn't tried: [`Renderer::prepare`] backs
+    /// off, refusing `frames` more frames (this one among them) before it uploads and draws
+    /// again. Nothing was drawn or changed. Only frames count the backoff down, so the pane
+    /// must keep asking for them (egui repaints an idle window only when asked): a repaint
+    /// requested for each frame refused so, or the view is never tried again.
+    BackingOff { frames: u32 },
 }
 
 impl std::fmt::Display for RenderFailure {
@@ -119,6 +129,10 @@ impl std::fmt::Display for RenderFailure {
             RenderFailure::OutOfMemory(what) => write!(f, "out of GPU memory: {what}"),
             RenderFailure::Invalid(invalid) => f.write_str(&invalid.message),
             RenderFailure::Failed(what) => f.write_str(what),
+            RenderFailure::BackingOff { frames } => write!(
+                f,
+                "the GPU failed a recent frame: backing off, {frames} frame(s) refused before the next try"
+            ),
         }
     }
 }
@@ -203,6 +217,10 @@ pub struct Frame<'a> {
     /// The pixels to read back for picking, if any: [`Renderer::take_picking`] gives what
     /// they found, a frame or two later.
     pub picking: Option<PixelRect>,
+    /// The colour behind the bodies, sRGB and not premultiplied, as the app's theme gives
+    /// its viewport's (`VIEWPORT_BG`): opaque, its alpha 255, since the frame is composited
+    /// opaque. A render's is its own ([`BACKGROUND`]).
+    pub background: [u8; 4],
 }
 
 /// What a picking rectangle found nearest its centre.
@@ -266,6 +284,52 @@ pub struct Renderer {
     /// The last generation a body's mesh was given: each new mesh takes the next, so a
     /// picking answer knows a body changed since its frame.
     generations: u64,
+    /// How [`Renderer::prepare`] backs off after the GPU fails a frame.
+    backoff: Backoff,
+    /// How many of the next frames fail as the GPU fails one, once built: a stand-in for
+    /// out of memory or a lost device, which lavapipe can't be made to give.
+    #[cfg(test)]
+    fail_frames: u32,
+}
+
+/// [`Renderer::prepare`]'s backoff after the GPU fails a frame: so a failure that would
+/// come again (out of memory, a lost device) isn't met by every later frame uploading every
+/// face again and failing again. After a failure the next `refuse` frames are refused at
+/// once, then one is tried; each failure in a row doubles the frames refused after it, from
+/// 1 to [`MAX_BACKOFF_FRAMES`]. A frame that succeeds ends it; a new mesh uploaded has the
+/// next frame tried, but keeps the doubling, so a failure that persists through edits still
+/// backs off to the most.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Backoff {
+    /// How many more frames are refused.
+    refuse: u32,
+    /// How many the next failure refuses.
+    next: u32,
+}
+
+impl Backoff {
+    const NONE: Backoff = Backoff { refuse: 0, next: 1 };
+
+    /// The next frame tried, the doubling kept: what a new mesh does.
+    fn try_next(&mut self) {
+        self.refuse = 0;
+    }
+
+    /// Another failure: its frames to refuse, and the next failure's doubled.
+    fn failed(&mut self) {
+        self.refuse = self.next;
+        self.next = self.next.saturating_mul(2).min(MAX_BACKOFF_FRAMES);
+    }
+
+    /// Whether this frame is refused, and if it is, how many are refused from it on (it
+    /// among them), counted down by it.
+    fn refuses(&mut self) -> Option<u32> {
+        (self.refuse > 0).then(|| {
+            let left = self.refuse;
+            self.refuse -= 1;
+            left
+        })
+    }
 }
 
 impl Renderer {
@@ -295,6 +359,9 @@ impl Renderer {
             pending: BTreeMap::new(),
             picked: None,
             generations: 0,
+            backoff: Backoff::NONE,
+            #[cfg(test)]
+            fail_frames: 0,
         })
     }
 
@@ -318,7 +385,9 @@ impl Renderer {
     /// [`View::anchor`]). The same mesh again (the same `Arc`, or an equal mesh) changes
     /// nothing; another replaces the body's, so its faces are uploaded again. A mesh that
     /// fails [`check_render_mesh`], or a body numbered 0 (the background's), is refused,
-    /// and the body is as it was.
+    /// and the body is as it was. A new mesh taken has the next frame tried, through a
+    /// backoff ([`Renderer::prepare`]), but keeps its doubling: if that frame fails too,
+    /// the frames refused after it are twice the last.
     pub fn upload(&mut self, body: u32, mesh: &Arc<Mesh>) -> Result<(), RenderFailure> {
         let _span =
             tracing::debug_span!("upload_body", body, faces = mesh.face_triangles.len()).entered();
@@ -339,6 +408,7 @@ impl Renderer {
         let mut uploaded = Uploaded::new(Arc::clone(mesh)).map_err(RenderFailure::Failed)?;
         uploaded.generation = self.next_generation();
         self.bodies.insert(body, uploaded);
+        self.backoff.try_next();
         Ok(())
     }
 
@@ -372,6 +442,14 @@ impl Renderer {
     /// wgpu finds invalid) keeps the bodies but none of their GPU meshes, which the next
     /// frame uploads again, and its picking request is dropped. Either way nothing is
     /// composited until a frame succeeds.
+    ///
+    /// After a frame the GPU failed it backs off, so a failure that would come again isn't
+    /// met by every frame uploading every face again: the next frame is refused at once
+    /// ([`RenderFailure::BackingOff`], before its checks, asking for no picking), then one is
+    /// tried; each failure in a row doubles the frames refused after it, 1, 2, 4, … up to
+    /// [`MAX_BACKOFF_FRAMES`]. A frame that succeeds ends it; a new mesh uploaded has the
+    /// next frame tried, its doubling kept. [`Renderer::forget`] changes nothing of it. The
+    /// pane must keep asking for frames while it backs off ([`RenderFailure::BackingOff`]).
     pub fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, RenderFailure> {
         let _span = tracing::debug_span!(
             "prepare",
@@ -382,6 +460,9 @@ impl Renderer {
         )
         .entered();
         self.view = None;
+        if let Some(frames) = self.backoff.refuses() {
+            return Err(RenderFailure::BackingOff { frames });
+        }
         let (view, lit) = self.check_frame(frame).map_err(RenderFailure::Invalid)?;
         let device = self.ctx.device.clone();
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
@@ -416,7 +497,23 @@ impl Renderer {
             .iter()
             .map(|&b| (b, lit.get(&b).unwrap_or(&plain)))
             .collect();
-        let built = self.build(&view, frame.pixels_per_point, &drawn, picking, None);
+        let [red, green, blue, _] = frame.background;
+        let built = self.build(
+            &view,
+            frame.pixels_per_point,
+            &drawn,
+            picking,
+            None,
+            srgb([red, green, blue]),
+        );
+        #[cfg(test)]
+        let built = match self.fail_frames {
+            0 => built,
+            _ => {
+                self.fail_frames -= 1;
+                Err("a stand-in for the GPU's failure".to_owned())
+            }
+        };
         self.ctx.before_submit();
         // On wgpu's native backends these are answered at once: no wait.
         let invalid = pollster::block_on(validity.pop());
@@ -424,6 +521,7 @@ impl Renderer {
         match scoped(short, invalid, built) {
             Ok((commands, builder)) => {
                 self.view = Some(builder);
+                self.backoff = Backoff::NONE;
                 Ok(commands)
             }
             Err(failure) => {
@@ -435,11 +533,13 @@ impl Renderer {
 
     /// What a frame the GPU failed leaves: its picking request (`request`, its readback's
     /// identifier) dropped, and every body's GPU meshes, which nothing vouches for, to be
-    /// uploaded again when they're next drawn; the bodies themselves kept.
+    /// uploaded again when they're next drawn; the bodies themselves kept; and the next
+    /// frames refused for a while ([`Backoff`]).
     fn failed(&mut self, request: Option<u64>) {
         if let Some(id) = request {
             self.pending.remove(&id);
         }
+        self.backoff.failed();
         for body in self.bodies.values_mut() {
             body.drop_gpu_meshes();
         }
@@ -575,6 +675,15 @@ impl Renderer {
                 numbers.dedup();
             }
         }
+        let [red, green, blue, alpha] = frame.background;
+        if alpha != 255 {
+            return Err(InvalidParameter {
+                parameter: "background",
+                message: format!(
+                    "background [{red}, {green}, {blue}, {alpha}] must be opaque, its alpha 255: the frame is composited opaque"
+                ),
+            });
+        }
         if let Some(rect) = frame.picking
             && !rect.takes()
         {
@@ -706,6 +815,7 @@ impl Renderer {
             &drawn,
             scene.ids.then_some((whole, picking)),
             Some(screenshot),
+            srgb(BACKGROUND),
         );
         self.ctx.before_submit();
         let (commands, _view) = built?;
@@ -717,8 +827,8 @@ impl Renderer {
     /// frame `re_renderer`'s already begun: each face an instance moved into the view, its
     /// mesh uploaded where it has none; each edge a strip placed in the view; highlights
     /// drawn in each body's [`Lit::style`]; the picking rectangle and its readback's identifier, and
-    /// the image's, if asked. The command buffer that draws it into the view's target, and
-    /// the view, to composite.
+    /// the image's, if asked; behind it all, `background`. The command buffer that draws it
+    /// into the view's target, and the view, to composite.
     fn build(
         &mut self,
         view: &View,
@@ -726,6 +836,7 @@ impl Renderer {
         drawn: &[(u32, &Lit)],
         picking: Option<(RectInt, u64)>,
         screenshot: Option<u64>,
+        background: Rgba,
     ) -> Result<(wgpu::CommandBuffer, ViewBuilder), String> {
         let Renderer {
             ctx,
@@ -816,7 +927,7 @@ impl Renderer {
                 .map_err(|e| format!("couldn't schedule the image's readback: {e}"))?;
         }
         let commands = builder
-            .draw(ctx, srgb(BACKGROUND))
+            .draw(ctx, background)
             .map_err(|e| format!("couldn't draw: {e}"))?;
         Ok((commands, builder))
     }
@@ -960,22 +1071,9 @@ impl PendingPick {
     /// inverse of [`View::place`], d = right x + up y + back (z + depth)); none if it isn't
     /// finite.
     fn point_at(&self, pixel: [u32; 2], depth: f32) -> Option<[f64; 3]> {
-        let [width, height] = self.size.map(f64::from);
-        let ndc = glam::DVec3::new(
-            (f64::from(pixel[0]) + 0.5) / width * 2.0 - 1.0,
-            1.0 - (f64::from(pixel[1]) + 0.5) / height * 2.0,
-            f64::from(depth),
-        );
-        let view_from_projection = self
-            .projection
-            .projection_from_view(self.size)
-            .as_dmat4()
-            .inverse();
-        let p = view_from_projection.project_point3(ndc);
-        if !p.is_finite() {
-            return None;
-        }
-        let v = [p.x, p.y, p.z + self.depth];
+        let centre = pixel.map(|c| f64::from(c) + 0.5);
+        let p = unproject(self.projection, self.size, centre, f64::from(depth))?;
+        let v = [p[0], p[1], p[2] + self.depth];
         let f = &self.frame;
         Some(std::array::from_fn(|k| {
             self.origin[k] + f.right[k] * v[0] + f.up[k] * v[1] + f.back[k] * v[2]
@@ -1065,11 +1163,11 @@ impl View {
                     frustum,
                     inside: None,
                     camera: camera.clone(),
-                    projection: ViewProjection::Orthographic {
-                        camera_mode: OrthographicCameraMode::NearPlaneCenter,
-                        vertical_world_size: view_height as f32,
-                        far_plane_distance: (2.0 * (reach + margin)) as f32,
-                    },
+                    projection: view_projection(
+                        Projection::Orthographic { view_height },
+                        [width, height],
+                        (2.0 * (reach + margin)) as f32,
+                    ),
                 }
             }
             InView::Perspective { field_of_view } => {
@@ -1096,11 +1194,11 @@ impl View {
                         &frame,
                         pyramid_slope(tan, height),
                     )),
-                    projection: ViewProjection::Perspective {
-                        vertical_fov: field_of_view.to_radians() as f32,
-                        near_plane_distance: (MIN_EYE_DISTANCE / 2.0) as f32,
-                        aspect_ratio: width as f32 / height as f32,
-                    },
+                    projection: view_projection(
+                        Projection::Perspective { field_of_view },
+                        [width, height],
+                        0.0,
+                    ),
                 }
             }
         }
@@ -1296,6 +1394,147 @@ impl View {
             dot(self.frame.back, d) - self.depth,
         ])
     }
+}
+
+/// The projection a view of `projection` at `size_px` is drawn with, about the fixed camera
+/// (at the origin, looking along −z with +y up): orthographic about its near plane's centre,
+/// `far` behind it (the scene's depth, which a view's x and y don't depend on); or in
+/// perspective from the eye, its near plane half [`MIN_EYE_DISTANCE`] away and nothing far.
+/// One for drawing ([`View::new`]), picking's points ([`PendingPick::point_at`]), and
+/// [`ray`], so they can't disagree.
+fn view_projection(projection: Projection, [width, height]: [u32; 2], far: f32) -> ViewProjection {
+    match projection {
+        Projection::Orthographic { view_height } => ViewProjection::Orthographic {
+            camera_mode: OrthographicCameraMode::NearPlaneCenter,
+            vertical_world_size: view_height as f32,
+            far_plane_distance: far,
+        },
+        Projection::Perspective { field_of_view } => ViewProjection::Perspective {
+            vertical_fov: field_of_view.to_radians() as f32,
+            near_plane_distance: (MIN_EYE_DISTANCE / 2.0) as f32,
+            aspect_ratio: width as f32 / height as f32,
+        },
+    }
+}
+
+/// The point at `pixel` (from the image's top-left, x right and y down, in pixels: a pixel's
+/// centre is half a pixel in) and the normalized device depth `depth`, `size` in pixels,
+/// through `projection`'s matrix as the GPU takes it (its f32 entries), inverted in f64: in
+/// the fixed camera's frame; none if it isn't finite.
+fn unproject(
+    projection: ViewProjection,
+    size: [u32; 2],
+    pixel: [f64; 2],
+    depth: f64,
+) -> Option<[f64; 3]> {
+    let [width, height] = size.map(f64::from);
+    let ndc = glam::DVec3::new(
+        pixel[0] / width * 2.0 - 1.0,
+        1.0 - pixel[1] / height * 2.0,
+        depth,
+    );
+    let view_from_projection = projection.projection_from_view(size).as_dmat4().inverse();
+    let p = view_from_projection.project_point3(ndc);
+    p.is_finite().then_some([p.x, p.y, p.z])
+}
+
+/// The ray through `pixel` of a view from `camera` `size_px` in pixels, in the document's
+/// coordinates, in f64: its origin, and its direction of unit length, into the view. `pixel`
+/// is from the image's top-left, x right and y down, in pixels (a pixel's centre is half a
+/// pixel in, so the image's centre is `size_px / 2`); one outside the image is a ray all the
+/// same. By the projection the renderer draws with ([`view_projection`]), so it passes through
+/// the point a frame's picking finds at that pixel ([`Pick::point`]):
+/// - in perspective, from the eye;
+/// - orthographic, parallel to the view, from the view's plane (through the target, square to
+///   the view). An orthographic view draws everything along its line, in front of that plane
+///   too (its camera is set past the scene), so a pick meets the whole line, not only what's
+///   ahead of its origin.
+///
+/// None for a camera [`Camera::check`] refuses at this size, a size of 0 on a side, a pixel
+/// that isn't finite, or one so far off the image that the ray's origin or direction isn't.
+pub fn ray(camera: &Camera, size_px: [u32; 2], pixel: [f64; 2]) -> Option<([f64; 3], [f64; 3])> {
+    let [width, height] = size_px;
+    if width == 0 || height == 0 || !pixel.iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    let frame = camera.check(width, height).ok()?;
+    let into_document = |[x, y, z]: [f64; 3]| -> [f64; 3] {
+        std::array::from_fn(|k| frame.right[k] * x + frame.up[k] * y + frame.back[k] * z)
+    };
+    match camera.projection {
+        Projection::Perspective { .. } => {
+            // The point on the near plane, in the eye's frame: the ray's way from the eye.
+            let projection = view_projection(camera.projection, size_px, 0.0);
+            let along = into_document(unproject(projection, size_px, pixel, 1.0)?);
+            // Never 0: the near plane's point is `near` along the view (its z, the inverse's
+            // of device depth 1), and the rotation keeps its length.
+            let length = dot(along, along).sqrt();
+            length
+                .is_finite()
+                .then(|| (camera.eye, along.map(|c| c / length)))
+        }
+        Projection::Orthographic { .. } => {
+            // Across the view only: x and y don't depend on the depth, or on the far plane.
+            let projection = view_projection(camera.projection, size_px, 1.0);
+            let [x, y, _] = unproject(projection, size_px, pixel, 0.5)?;
+            let across = into_document([x, y, 0.0]);
+            let origin: [f64; 3] = std::array::from_fn(|k| camera.target[k] + across[k]);
+            // A pixel far enough off the image puts the origin past f64: none.
+            origin
+                .iter()
+                .all(|c| c.is_finite())
+                .then(|| (origin, frame.back.map(|c| -c)))
+        }
+    }
+}
+
+/// Where `world`, a point in the document's coordinates, lands in a view from `camera`
+/// `size_px` in pixels: from the image's top-left, x right and y down, in pixels (a pixel's
+/// centre is half a pixel in), in f64. The inverse of [`ray`]: by the projection the renderer
+/// draws with ([`view_projection`], its f32 matrix taken in f64), so it lands where the
+/// bodies are drawn, and a point on a pixel's ray lands on that pixel. A point off the image
+/// lands off it, all the same.
+///
+/// None, in perspective, for a point nearer the eye along the view than
+/// [`MIN_EYE_DISTANCE`] (behind it among them), where the drawing cuts what it draws (its
+/// pyramid, depth ≥ [`MIN_EYE_DISTANCE`]), so what's drawn over the view and the bodies
+/// agree on what's seen. An orthographic view has no behind: any finite point projects.
+/// None, too, for a camera [`Camera::check`] refuses at this size, a size of 0 on a side, a
+/// point that isn't finite, or one whose pixel isn't.
+pub fn project(camera: &Camera, size_px: [u32; 2], world: [f64; 3]) -> Option<[f64; 2]> {
+    let [width, height] = size_px;
+    if width == 0 || height == 0 || !world.iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    let frame = camera.check(width, height).ok()?;
+    // About the camera's point, as [`View`] draws: the eye in perspective, the target
+    // orthographic (whose depth x and y don't depend on).
+    let (origin, far) = match camera.projection {
+        Projection::Perspective { .. } => (camera.eye, 0.0),
+        Projection::Orthographic { .. } => (camera.target, 1.0),
+    };
+    let d = sub(world, origin);
+    let view = glam::DVec4::new(
+        dot(frame.right, d),
+        dot(frame.up, d),
+        dot(frame.back, d),
+        1.0,
+    );
+    // Its depth as the drawing's pyramid takes it ([`View::eye_frame`]); NaN where the
+    // point is so far that its offsets overflow.
+    let depth = -view.z;
+    if matches!(camera.projection, Projection::Perspective { .. })
+        && (depth.is_nan() || depth < MIN_EYE_DISTANCE)
+    {
+        return None;
+    }
+    let projection = view_projection(camera.projection, size_px, far);
+    let clip = projection.projection_from_view(size_px).as_dmat4() * view;
+    let pixel = [
+        (clip.x / clip.w + 1.0) / 2.0 * f64::from(width),
+        (1.0 - clip.y / clip.w) / 2.0 * f64::from(height),
+    ];
+    pixel.iter().all(|c| c.is_finite()).then_some(pixel)
 }
 
 /// Where a mesh stored about `centre` is drawn, for the camera at `origin` (then `depth`

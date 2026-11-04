@@ -1338,6 +1338,13 @@ impl Drawing {
         }
     }
 
+    /// Whether the renderer refused the last frame backing off ([`Present::backing_off`]).
+    fn backing_off(&mut self) -> bool {
+        self.present
+            .as_mut()
+            .is_some_and(|present| present.backing_off())
+    }
+
     /// The changes that make the renderer hold `bodies` of session `session`'s tab (none for
     /// no tab): a body uploaded when its key or its deflection differs from what was
     /// uploaded for it, or it's another tab's; a body not among them forgotten. So each body
@@ -1507,6 +1514,11 @@ pub fn show<P: Clients + 'static>(
         view.picked = Some(picking);
     }
     drawing.take_refused();
+    if drawing.backing_off() {
+        // The renderer counts its backoff in frames: asked for at once, it lasts a second
+        // at most, not 64 idle frames.
+        ui.ctx().request_repaint();
+    }
     view.navigate(ui, &response, size_px);
     let left = view.left_events(
         &mut drawing.left,

@@ -1713,3 +1713,75 @@ fn a_retry_falling_due_mid_pan_keeps_its_run_growing() {
     );
     assert_eq!(never_waits::waits(), 0);
 }
+
+/// A [`Recorder`] whose renderer says it backs off while `0` is set.
+struct BackingOff(Recorder, Arc<AtomicBool>);
+
+impl Present for BackingOff {
+    fn present(
+        &mut self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        changes: Vec<Change>,
+        frame: Option<FrameData>,
+    ) {
+        self.0.present(painter, rect, changes, frame);
+    }
+    fn picked(&mut self) -> Option<Picking> {
+        self.0.picked()
+    }
+    fn refused(&mut self) -> std::collections::BTreeSet<u32> {
+        self.0.refused()
+    }
+    fn backing_off(&mut self) -> bool {
+        self.1.load(Ordering::SeqCst)
+    }
+}
+
+#[test]
+fn a_renderer_backing_off_has_the_pane_ask_for_each_frame_at_once_until_it_stops() {
+    // A renderer counts its backoff in frames (silico-render's, 1 to 64 of them after the
+    // GPU fails one): an idle pane, asking a frame each idle interval, would show nothing
+    // for 64 of those. While it backs off, each frame asks for the next at once; once it
+    // doesn't, the frames are the idle ones again.
+    let f = fixture();
+    let record = Record::default();
+    let backing_off = Arc::new(AtomicBool::new(false));
+    let present = BackingOff(
+        Recorder(FakeRenderer(Arc::clone(&record))),
+        Arc::clone(&backing_off),
+    );
+    let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0, 800.0))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    let path = f.file("boxes.silico", TWO_BOXES);
+    h.state_mut().open(&path, false);
+    meshes_settled(&mut h, 0);
+    // An idle frame: one asked for at most IDLE_FRAME on (less the time the frames took),
+    // never at once.
+    let idle = |delay: Option<Duration>| {
+        delay.is_some_and(|delay| {
+            delay > Duration::from_millis(100) && delay <= silico_app::app::IDLE_FRAME
+        })
+    };
+    // Settled: egui repaints once more after a frame asked at once, so a few frames.
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(idle(repaint_delay(&h)), "{:?}", repaint_delay(&h));
+    backing_off.store(true, Ordering::SeqCst);
+    for _ in 0..10 {
+        step(&mut h);
+        assert_eq!(repaint_delay(&h), Some(Duration::ZERO));
+    }
+    backing_off.store(false, Ordering::SeqCst);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(idle(repaint_delay(&h)), "{:?}", repaint_delay(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
