@@ -14266,12 +14266,12 @@ fn the_toolbar_holds_solids_panels_their_buttons_in_the_prototypes_order_and_siz
         buttons_of(&panel("SELECT")),
         ["Faces", "Edges", "Vertices", "SELECT"]
     );
-    // On: every dialog (the example has a body, so the cuts and the fillet too) and the
-    // drop-downs; off: Create Sketch, until sketch mode, and what isn't built.
+    // On: every dialog (the example has a body, so the cuts, the fillet, and the chamfer
+    // too) and the drop-downs; off: Create Sketch, until sketch mode, and what isn't built.
     let mut on: Vec<&str> = CREATE_ROW[1..].to_vec();
     on.push("CREATE");
     assert_eq!(on_of(&panel("CREATE")), on);
-    assert_eq!(on_of(&panel("MODIFY")), ["Fillet", "MODIFY"]);
+    assert_eq!(on_of(&panel("MODIFY")), ["Fillet", "Chamfer", "MODIFY"]);
     assert_eq!(on_of(&panel("INSPECT")), ["INSPECT"]);
     // SELECT's filters toggle the selection's filter (M5.7), each pressed while its kind is
     // taken: all three at first.
@@ -14352,11 +14352,7 @@ fn each_toolbar_button_names_its_command_and_says_what_it_does_or_that_it_isnt_b
             vec!["Sketches on an origin plane. Not built yet"],
         ),
         ("MODIFY", "Fillet", vec!["Rounds the selected edges"]),
-        (
-            "MODIFY",
-            "Chamfer",
-            vec!["Bevels the selected edges. Not built yet"],
-        ),
+        ("MODIFY", "Chamfer", vec!["Bevels the selected edges"]),
         ("MODIFY", "Union", vec!["Not built yet"]),
         (
             "INSPECT",
@@ -14452,7 +14448,8 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         h.query_by_role(Role::Dialog).is_none()
     });
     settled(&mut h);
-    // interact.js:171: the edge tools, and the booleans under a heading, the fillet built.
+    // interact.js:171: the edge tools, and the booleans under a heading, the edge tools
+    // built.
     open(&mut h, "MODIFY");
     let menu = h.get_by_role_and_label(Role::Menu, "MODIFY");
     assert_eq!(
@@ -14460,13 +14457,13 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         ["Fillet", "Chamfer", "Union", "Subtract", "Intersect"]
     );
     assert!(menu.query_by_label("COMBINE").is_some());
-    assert_eq!(on_of(&menu), ["Fillet"]);
-    // An entry not built says so after the prototype's line, as its button does.
+    assert_eq!(on_of(&menu), ["Fillet", "Chamfer"]);
+    // An entry not built says so, as its button does (Union has no line of its own).
     h.get_by_role_and_label(Role::Menu, "MODIFY")
-        .get_by_label("Chamfer")
+        .get_by_label("Union")
         .hover();
     step_until(&mut h, "its tooltip", |h| {
-        h.query_by_role_and_label(Role::Label, "Bevels the selected edges. Not built yet")
+        h.query_by_role_and_label(Role::Label, "Not built yet")
             .is_some()
     });
     open(&mut h, "INSPECT");
@@ -21348,4 +21345,49 @@ fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_s
             assert_eq!(never_waits::waits(), 0);
         },
     );
+}
+
+// ---- The chamfer dialog (M5.8) ----
+
+#[test]
+fn a_chamfer_dialog_fed_the_selection_of_an_edge_writes_a_chamfer_of_its_distance() {
+    // The document's chamfer has one size, a distance alike along both faces
+    // (`ChamferSize`): its default, FreeCAD's 1 mm, then a typed one (a 2 before the 1).
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    modify(&mut h, "Chamfer");
+    added(&mut h);
+    settled(&mut h);
+    assert!(dialog(&h).query_by_label("1 edge").is_some());
+    assert!(dialog(&h).query_by_label("k7f2qx3m.box.Edge3").is_some());
+    assert_eq!(input(&h, "Distance").value().as_deref(), Some("1"));
+    assert_eq!(
+        fields_of(&text_of(&f, &h), "Chamfer"),
+        Some(expected(
+            r#"{"type": "chamfer", "name": "Chamfer", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 1}}"#
+        ))
+    );
+    type_into(&mut h, "Distance", "2");
+    settled(&mut h);
+    let id = dialog_feature(&h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    let text = text_of(&f, &h);
+    assert_eq!(
+        fields_of(&text, "Chamfer"),
+        Some(expected(
+            r#"{"type": "chamfer", "name": "Chamfer", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 21}}"#
+        ))
+    );
+    assert!(text.contains(&format!(r#""id": "{id}""#)));
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [Sent::Begin, Sent::Add, Sent::Edit("size".to_owned())]
+    );
+    assert_eq!(never_waits::waits(), 0);
 }

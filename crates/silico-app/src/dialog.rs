@@ -42,11 +42,12 @@ pub enum Kind {
     Revolve,
     Groove,
     Fillet,
+    Chamfer,
 }
 
 impl Kind {
     /// Every kind: the primitives, the sweeps, then the dressings of a body's edges.
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 11] = [
         Kind::Box,
         Kind::Cylinder,
         Kind::Sphere,
@@ -57,6 +58,7 @@ impl Kind {
         Kind::Revolve,
         Kind::Groove,
         Kind::Fillet,
+        Kind::Chamfer,
     ];
 
     /// The feature's `type`, as the document writes it.
@@ -72,6 +74,7 @@ impl Kind {
             Kind::Revolve => "revolve",
             Kind::Groove => "groove",
             Kind::Fillet => "fillet",
+            Kind::Chamfer => "chamfer",
         }
     }
 
@@ -88,6 +91,7 @@ impl Kind {
             Kind::Revolve => "Revolve",
             Kind::Groove => "Groove",
             Kind::Fillet => "Fillet",
+            Kind::Chamfer => "Chamfer",
         }
     }
 
@@ -113,7 +117,7 @@ impl Kind {
 
     /// Whether it dresses a body's edges (MODIFY's), which it then must have.
     pub fn dresses(self) -> bool {
-        matches!(self, Kind::Fillet)
+        matches!(self, Kind::Fillet | Kind::Chamfer)
     }
 }
 
@@ -137,6 +141,8 @@ pub enum Part {
     /// A list of elements' names, by its field (a fillet's `edges`), and with it the body
     /// they're of, the feature's `base`.
     Names(&'static str),
+    /// A number of a chamfer's `size`, by its field.
+    SizeNumber(&'static str),
 }
 
 impl Part {
@@ -150,6 +156,7 @@ impl Part {
             Part::Axis => "axis",
             Part::ExtentType | Part::ExtentNumber(_) | Part::Reversed => "extent",
             Part::Names(field) => field,
+            Part::SizeNumber(_) => "size",
         }
     }
 }
@@ -402,6 +409,18 @@ impl Dialog {
                 },
                 length("Radius", Part::Number("radius"), "1"),
             ],
+            // Its edges, as a fillet's, and its size, as the document's chamfer takes it:
+            // `{"distance": d}`, alike along both faces (`ChamferSize`; the protocol's two
+            // uneven forms need a reference face the document doesn't name yet). FreeCAD's
+            // PartDesign Chamfer's size, 1 mm (FeatureChamfer.cpp).
+            Kind::Chamfer => vec![
+                Input {
+                    label: "Edges",
+                    part: Part::Names("edges"),
+                    value: Value::Names(Names::new(ElementKind::Edge, "chamfer")),
+                },
+                length("Distance", Part::SizeNumber("distance"), "1"),
+            ],
             Kind::Revolve | Kind::Groove => vec![
                 sketch_input,
                 Input {
@@ -455,6 +474,9 @@ impl Dialog {
                 Part::ExtentNumber(field) => extent.and_then(|extent| member(extent, field)),
                 Part::Reversed => extent.and_then(|extent| member(extent, "reversed")),
                 Part::Names(field) => member(node, field),
+                Part::SizeNumber(field) => {
+                    member(node, "size").and_then(|size| member(size, field))
+                }
             };
             let Some(found) = found else {
                 // A value the form hasn't (`length2` of a one-sided pad): left at its default.
@@ -547,6 +569,8 @@ impl Dialog {
         let mut position_ok = true;
         let mut extent: Vec<(&'static str, String)> = Vec::new();
         let mut extent_ok = true;
+        let mut size: Vec<(&'static str, String)> = Vec::new();
+        let mut size_ok = true;
         for input in &self.inputs {
             if !self.shown(input) {
                 continue;
@@ -583,6 +607,10 @@ impl Dialog {
                     Some(text) => extent.push(("reversed", text)),
                     None => extent_ok = false,
                 },
+                Part::SizeNumber(field) => match text {
+                    Some(text) => size.push((field, text)),
+                    None => size_ok = false,
+                },
             }
         }
         let has = |part: fn(&Part) -> bool| self.inputs.iter().any(|input| part(&input.part));
@@ -594,6 +622,16 @@ impl Dialog {
             fields.insert(
                 "extent",
                 extent_ok.then(|| format!("{{{}}}", members.join(", "))),
+            );
+        }
+        if has(|part| matches!(part, Part::SizeNumber(_))) {
+            let members: Vec<String> = size
+                .iter()
+                .map(|(field, text)| format!("{}: {text}", quoted(field)))
+                .collect();
+            fields.insert(
+                "size",
+                size_ok.then(|| format!("{{{}}}", members.join(", "))),
             );
         }
         if has(|part| matches!(part, Part::Position(_))) {
@@ -1498,6 +1536,43 @@ mod tests {
                 .unwrap()
             )
         );
+    }
+
+    #[test]
+    fn a_chamfers_dialog_writes_its_distance_as_its_size_and_loads_it_back() {
+        let mut chamfer = Dialog::new(Kind::Chamfer, None, 1);
+        chamfer.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m"));
+        let members = chamfer.add().unwrap();
+        let node = feature_node(Kind::Chamfer, &members, None).unwrap();
+        let written = br#"{"type": "chamfer", "name": "Chamfer", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 1}}"#;
+        assert_eq!(
+            json::Plain::of(&node),
+            json::Plain::of(&json::read(written).unwrap())
+        );
+        // Read back: its distance in its input, nothing to send.
+        let read = json::read(
+            br#"{"id": "c0000001", "type": "chamfer", "v": 1, "name": "Bevel", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 0.5}}"#,
+        )
+        .unwrap();
+        let id = FeatureId::new("c0000001").unwrap();
+        let mut loaded = Dialog::load(Kind::Chamfer, id.clone(), &read, 2).unwrap();
+        assert_eq!(loaded.inputs[1].value, Value::Length("0.5".to_owned()));
+        assert!(loaded.changes().is_empty());
+        // A distance typed is an edit of `size` whole.
+        loaded.inputs[1].value = Value::Length("2".to_owned());
+        let changes = loaded.changes();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].0, "size");
+        assert_eq!(
+            json::Plain::of(&changes[0].1),
+            json::Plain::of(&json::read(br#"{"distance": 2}"#).unwrap())
+        );
+        // A size it doesn't read: not a chamfer it loads.
+        let uneven = json::read(
+            br#"{"type": "chamfer", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": "a"}}"#,
+        )
+        .unwrap();
+        assert!(Dialog::load(Kind::Chamfer, id, &uneven, 3).is_none());
     }
 
     #[test]

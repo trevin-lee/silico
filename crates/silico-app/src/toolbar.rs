@@ -213,7 +213,7 @@ const CHAMFER: Command = command(
     "Chamfer",
     Icon::Chamfer,
     Some("Bevels the selected edges"),
-    Does::NotBuilt,
+    Does::Dialog(Kind::Chamfer),
 );
 const UNION: Command = command("Union", Icon::Union, None, Does::NotBuilt);
 const SUBTRACT: Command = command("Subtract", Icon::Subtract, None, Does::NotBuilt);
@@ -1551,7 +1551,14 @@ mod tests {
         // whose dialog can't open, and what isn't built. SELECT's filters, each on (every
         // kind taken, as the filter starts), are `.tb-btn.toggle-on`: white on Gray.250, a
         // 2 point blue line inside its foot (`box-shadow: inset 0 -2px 0 var(--blue)`).
-        let on = ["Create Sketch", "Pad", "Revolve", "Groove", "Fillet"];
+        let on = [
+            "Create Sketch",
+            "Pad",
+            "Revolve",
+            "Groove",
+            "Fillet",
+            "Chamfer",
+        ];
         let toggles = ["Faces", "Edges", "Vertices"];
         let icon = |rect: Rect| Rect::from_center_size(rect.center(), Vec2::splat(css::ICON_LG));
         for (label, rect) in laid.iter().flat_map(|panel| panel.buttons.iter()) {
