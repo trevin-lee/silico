@@ -18901,6 +18901,124 @@ fn a_drag_past_the_window_follows_the_unclamped_cursor_and_one_past_reach_is_sai
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn a_move_cancelled_mid_solve_says_nothing_and_a_move_the_core_then_refuses_ends_the_drag() {
+    use silico_app::sketch::PointerAction::{Move, Press};
+    use silico_core::command::{Cancellable, SessionCommand};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 52.0, 32.0)],
+    );
+    step_until(&mut h, "the first frame", |h| {
+        the_drag(h).is_some_and(|d| d.frames == 1)
+    });
+    // A move held solving, then cancelled, as an agent's `cancel` of `drag_move` would: it
+    // answers `cancelled`, which the drag takes saying nothing, and stays open.
+    f.sketches.hold();
+    sketch_events(&f, &mut h, &moved(54.0, 34.0));
+    assert!(f.sketches.wait_held(WAIT));
+    let id = h.state().tabs()[0].id;
+    let cancelled = f
+        .sessions
+        .cancel(&id, Cancellable::Command(SessionCommand::DragMove));
+    assert!(cancelled.result.is_ok(), "{:?}", cancelled.result);
+    f.sketches.release();
+    for _ in 0..10 {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert!(the_drag(&h).is_some_and(|d| d.frames == 1));
+    // The cancel ended the core's drag: the next cursor's move is refused, naming no
+    // cursor, so the drag is over, its refusal said.
+    sketch_events(&f, &mut h, &moved(58.0, 38.0));
+    step_until(&mut h, "the refusal said", |h| {
+        h.state().tabs()[0].message.is_some()
+    });
+    assert!(the_drag(&h).is_none());
+    settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drag_ended_with_no_change_is_let_go_at_its_answer_not_at_a_read() {
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    let text = text_of(&f, &h);
+    sketch_events(
+        &f,
+        &mut h,
+        &[
+            pointer(silico_app::sketch::PointerAction::Press, 50.0, 30.0),
+            pointer(silico_app::sketch::PointerAction::Move, 60.0, 40.0),
+        ],
+    );
+    step_until(&mut h, "the frame", |h| {
+        the_drag(h).is_some_and(|d| d.frames >= 1)
+    });
+    // Esc, every solve held, so no read of a new model can come: its end, from the begin
+    // state, changes nothing, and the drag is let go as it answers.
+    f.sketches.hold();
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    step_until(&mut h, "the drag let go", |h| the_drag(h).is_none());
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    f.sketches.release();
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drags_edit_after_an_undo_in_sketch_mode_leaves_redo_nothing_of_sketch_modes() {
+    use eframe::egui::{Key, Modifiers};
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    let drag_to = |f: &Fixture, h: &mut AppHarness, to: [f64; 2]| {
+        sketch_events(
+            f,
+            h,
+            &[pointer(Press, 50.0, 30.0), pointer(Move, to[0], to[1])],
+        );
+        step_until(h, "the frame", |h| {
+            the_drag(h).is_some_and(|d| d.frames >= 1)
+        });
+        sketch_events(f, h, &[pointer(Release, to[0], to[1])]);
+        settled(h);
+        step_until(h, "the drag over", |h| the_drag(h).is_none());
+    };
+    let undone = |h: &AppHarness| sketch_mode(h).unwrap().undone;
+    // A drag's edit, undone by Ctrl+Z: one of sketch mode's own edits undone.
+    drag_to(&f, &mut h, [52.0, 32.0]);
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(undone(&h), 1);
+    // A second drag's edit: what was undone is dropped, as any new edit drops it.
+    drag_to(&f, &mut h, [56.0, 36.0]);
+    assert_eq!(undone(&h), 0);
+    // So another client's undo of it is no redo of sketch mode's.
+    let id = h.state().tabs()[0].id;
+    let revision = h.state().tabs()[0].revision;
+    let theirs = f.sessions.undo(&id, revision, None).wait();
+    assert!(theirs.result.is_ok(), "{:?}", theirs.result);
+    let moved = theirs.session.unwrap().revision;
+    step_until(&mut h, "the other client's revision", |h| {
+        h.state().tabs()[0].revision == moved
+    });
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].redoable());
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- #368's review: a drag's end and sketch mode's leaving; the queue behind a drag ----
 
 /// Stepped until the drag has drawn `frames` solved frames.

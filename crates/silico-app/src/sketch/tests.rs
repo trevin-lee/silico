@@ -3573,6 +3573,833 @@ fn a_frames_left_events_and_right_clicks_come_out_in_seq_order_in_points_unclamp
     assert!(frame_events(&[], &[], 2.0, pos2(0.0, 0.0)).is_empty());
 }
 
+// ---- #368's surviving mutants: each behaviour a mutant left untested, pinned ----
+
+/// The prototype's field tokens (DESIGN.md's *Tokens*, `.field` and `.modify-box input`):
+/// Gray.200 #212121, a dialog's field; Gray.250 #272626, hovered; Gray.150 #171717, the
+/// Modify box's; its border Gray.350 #525151; focused, the focus blue #4676ff; invalid,
+/// Red.550 #ff3865.
+#[test]
+fn a_fields_frame_takes_the_prototypes_fill_and_border_for_its_kind_hover_focus_and_validity() {
+    use egui::Color32;
+    let gray_200 = Color32::from_rgb(0x21, 0x21, 0x21);
+    let gray_250 = Color32::from_rgb(0x27, 0x26, 0x26);
+    let gray_150 = Color32::from_rgb(0x17, 0x17, 0x17);
+    let gray_350 = Color32::from_rgb(0x52, 0x51, 0x51);
+    let focus = Color32::from_rgb(0x46, 0x76, 0xff);
+    let red = Color32::from_rgb(0xff, 0x38, 0x65);
+    let look = |kind, hovered, focused, invalid| {
+        let frame = field_frame(kind, hovered, focused, invalid);
+        (frame.fill, frame.stroke.color)
+    };
+    let none = Color32::TRANSPARENT;
+    // A dialog's field: lighter only hovered and not focused; no border at rest.
+    assert_eq!(
+        look(FieldKind::Dialog, false, false, false),
+        (gray_200, none)
+    );
+    assert_eq!(
+        look(FieldKind::Dialog, true, false, false),
+        (gray_250, none)
+    );
+    assert_eq!(
+        look(FieldKind::Dialog, true, true, false),
+        (gray_200, focus)
+    );
+    assert_eq!(
+        look(FieldKind::Dialog, false, true, false),
+        (gray_200, focus)
+    );
+    // The Modify box's: its own fill and border, hovered or not.
+    assert_eq!(
+        look(FieldKind::Modify, false, false, false),
+        (gray_150, gray_350)
+    );
+    assert_eq!(
+        look(FieldKind::Modify, true, false, false),
+        (gray_150, gray_350)
+    );
+    assert_eq!(
+        look(FieldKind::Modify, false, true, false),
+        (gray_150, focus)
+    );
+    // Invalid wins over focus.
+    assert_eq!(look(FieldKind::Modify, false, true, true), (gray_150, red));
+    assert_eq!(look(FieldKind::Dialog, true, true, true), (gray_200, red));
+    assert_eq!(
+        field_frame(FieldKind::Dialog, false, false, false)
+            .stroke
+            .width,
+        1.0
+    );
+}
+
+/// The palette's words, as drawn.
+fn palette_words(view: &bar::PaletteView) -> Vec<String> {
+    let mut settings = bar::Settings::default();
+    texts_on_light(|ui| bar::palette(ui, view, &mut settings))
+        .into_iter()
+        .map(|(words, _)| words)
+        .collect()
+}
+
+#[test]
+fn the_palette_says_how_smart_dimension_is_used_and_with_no_tool_or_drag_the_tools_keys() {
+    let mut mode = mode_at(under(rectangle(Vec::new())));
+    // No tool and no drag: the keys that choose one, and how to drag; never "Dragging".
+    let words = palette_words(&mode.palette_view(Revision::OPENED, None));
+    assert!(
+        words.iter().any(|w| w.starts_with("None. Line L")),
+        "{words:?}"
+    );
+    assert!(!words.iter().any(|w| w == "Dragging"), "{words:?}");
+    // A drag that has moved: "Dragging", and not the keys.
+    let mut drag = drag::Drag::pressed(
+        sketch_feature(),
+        DragGrab::Point(id("pa000003")),
+        under(rectangle(Vec::new())),
+        Revision::OPENED,
+        Pos2::ZERO,
+    );
+    drag.moved = true;
+    let words = palette_words(&mode.palette_view(Revision::OPENED, Some(&drag)));
+    assert!(words.iter().any(|w| w == "Dragging"), "{words:?}");
+    assert!(
+        !words.iter().any(|w| w.starts_with("None. Line L")),
+        "{words:?}"
+    );
+    // Smart Dimension: its name and how it's used, its right-click lock among it (SD1).
+    mode.tools.choose(Some(tools::Choice::Dimension));
+    let words = palette_words(&mode.palette_view(Revision::OPENED, None));
+    assert!(words.iter().any(|w| w == "Smart Dimension"), "{words:?}");
+    assert!(
+        words
+            .iter()
+            .any(|w| w.starts_with("Click a line") && w.contains("Right-click locks its kind")),
+        "{words:?}"
+    );
+}
+
+fn sketch_feature() -> FeatureId {
+    FeatureId::new("s0000001").unwrap()
+}
+
+/// A drag of the corner pa000003, pressed on the rectangle's read.
+fn corner_drag() -> drag::Drag {
+    drag::Drag::pressed(
+        sketch_feature(),
+        DragGrab::Point(id("pa000003")),
+        under(rectangle(Vec::new())),
+        Revision::OPENED,
+        Pos2::ZERO,
+    )
+}
+
+#[test]
+fn a_drag_pressed_has_sent_nothing_and_isnt_open_ended_or_shown_until_it_moves() {
+    let drag = corner_drag();
+    assert!(!drag.begun_sent());
+    assert!(!drag.open());
+    assert!(!drag.ended());
+    assert!(drag.shown().is_none());
+    assert!(drag.held() && !drag.over());
+    // One ended, its last frame shown until the read of its edit: ended, not open.
+    let read = under(rectangle(Vec::new()));
+    let ended = drag::Drag::ended_at(
+        sketch_feature(),
+        DragGrab::Point(id("pa000003")),
+        read.clone(),
+        read,
+        Revision::OPENED.next().unwrap(),
+    );
+    assert!(ended.ended());
+    assert!(!ended.open());
+    assert!(ended.begun_sent());
+    assert!(ended.shown().is_some());
+}
+
+#[test]
+fn a_cursor_that_isnt_a_place_is_never_taken_so_a_release_off_the_plane_cancels() {
+    // Moved, then given cursors with one coordinate not a number: none taken, so the
+    // release off the plane has no cursor to end at, and the drag, never begun, is over.
+    for cursor in [[1.0, f64::NAN], [f64::NAN, 1.0], [f64::INFINITY, 2.0]] {
+        let mut drag = corner_drag();
+        drag.moved = true;
+        drag.cursor(cursor);
+        drag.release(None);
+        assert!(!drag.held());
+        assert!(drag.over(), "{cursor:?}");
+        assert!(!drag.wants_begin(), "{cursor:?}");
+    }
+    // A cursor that is one, then the release off the plane: ended there, so its begin is
+    // still wanted, and it isn't over.
+    let mut drag = corner_drag();
+    drag.moved = true;
+    drag.cursor([45.0, 25.0]);
+    drag.release(None);
+    assert!(drag.wants_begin());
+    assert!(!drag.over());
+}
+
+#[test]
+fn the_palette_says_dragging_only_for_a_drag_that_has_moved_and_isnt_over() {
+    let mode = mode_at(under(rectangle(Vec::new())));
+    let dragging = |drag: &drag::Drag| mode.palette_view(Revision::OPENED, Some(drag)).dragging;
+    let mut drag = corner_drag();
+    // Pressed, not moved: a click so far.
+    assert!(!dragging(&drag));
+    drag.moved = true;
+    assert!(dragging(&drag));
+    // Cancelled before its begin went out: over.
+    drag.cancel();
+    assert!(drag.over());
+    assert!(!dragging(&drag));
+    assert!(!mode.palette_view(Revision::OPENED, None).dragging);
+}
+
+/// The rectangle with the bottom's length, 40, as ka000001, and the right side's, 20, as
+/// ka000002, read over defined with ka000002 in conflict.
+fn two_lengths_over() -> SketchRead {
+    read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            length("ka000002", "na000002", "20", true),
+        ]),
+        SketchState::OverDefined,
+        MemberState::UnderDefined,
+        &[("ka000002", ConstraintState::Conflicting)],
+    )
+}
+
+/// The right side's length edited at revision 1, its edit made revision 2: what an edit's
+/// [`Edited`](dimension::Edited) holds, made on an under-defined read with nothing flagged.
+fn edited_right() -> dimension::Edited {
+    let one = Revision::OPENED.next().unwrap();
+    dimension::Edited {
+        sketch: sketch_feature(),
+        constraint: id("ka000002"),
+        read: one,
+        before: SketchState::UnderDefined,
+        flagged: Default::default(),
+        before_refused: false,
+        made: one.next(),
+    }
+}
+
+#[test]
+fn an_edits_judgement_is_the_offer_on_the_read_of_the_revision_it_made_and_none_after() {
+    let edited = edited_right();
+    let read = two_lengths_over();
+    let one = Revision::OPENED.next().unwrap();
+    let two = one.next().unwrap();
+    let three = two.next().unwrap();
+    // An older read: no judgement yet.
+    assert_eq!(edited.judged(&read, one), None);
+    // The read of the revision it made, newly flagging it: offered.
+    let offered = edited.judged(&read, two).unwrap().unwrap();
+    assert_eq!(offered.constraint, id("ka000002"));
+    // A read past it: the moment past, judged with no offer, though that read flags it too.
+    assert_eq!(edited.judged(&read, three), Some(None));
+}
+
+#[test]
+fn the_over_define_prompt_shows_the_value_of_its_own_dimension() {
+    let read = two_lengths_over();
+    let two = Revision::OPENED.next().unwrap().next().unwrap();
+    let offered = edited_right().judged(&read, two).unwrap().unwrap();
+    let mut mode = mode_at(read);
+    mode.edit_offer = Some((offered, two));
+    let view = mode.offer_view("Sketch1").unwrap();
+    // The right side's 20, not the bottom's 40, which comes first.
+    assert_eq!(view.value.as_deref(), Some("20 mm"));
+    assert_eq!(view.flagged, ["ka000002"]);
+}
+
+#[test]
+fn an_angles_value_opens_its_box_in_degrees() {
+    let angle = Form::Angle {
+        a: element("na000001"),
+        b: element("na000002"),
+        reversed: false,
+        value: Angle::parse("30").unwrap(),
+        driving: true,
+    };
+    assert_eq!(dimension::value_of(&angle), Some(("30".to_owned(), "°")));
+    let length = Form::Radius {
+        curve: element("ca000001"),
+        value: mm("2.5"),
+        driving: true,
+    };
+    assert_eq!(dimension::value_of(&length), Some(("2.5".to_owned(), "mm")));
+}
+
+/// A placed dimension's Modify box, `waiting` or not, opened as number 7 at (300, 200).
+fn modify_harness(
+    waiting: bool,
+) -> (
+    egui_kittest::Harness<'static>,
+    std::rc::Rc<std::cell::RefCell<Vec<dimension::ModifyAction>>>,
+) {
+    let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = std::rc::Rc::clone(&asked);
+    let view = dimension::ModifyView {
+        text: "40".to_owned(),
+        unit: "mm",
+        at: pos2(300.0, 200.0),
+        opened: 7,
+        said: None,
+        waiting,
+        placing: false,
+    };
+    let harness = egui_kittest::Harness::new_ui(move |ui| {
+        if let Some(action) = dimension::modify_box(ui.ctx(), &view) {
+            seen.borrow_mut().push(action);
+        }
+    });
+    (harness, asked)
+}
+
+#[test]
+fn the_modify_box_stands_left_and_up_of_its_text_as_the_prototype_puts_it() {
+    let (mut h, _) = modify_harness(false);
+    h.run();
+    // The prototype's `.modify-box`: its corner 74 points left and 15 up of the text.
+    let rect = h
+        .ctx
+        .memory(|m| m.area_rect(egui::Id::new(("sketch_modify", 7u64))))
+        .unwrap();
+    assert_eq!(rect.min, pos2(226.0, 185.0));
+}
+
+#[test]
+fn the_modify_boxs_accept_waits_on_the_core_and_its_hint_says_so() {
+    use egui_kittest::kittest::{NodeT, Queryable};
+    for waiting in [false, true] {
+        let (mut h, _) = modify_harness(waiting);
+        h.run();
+        assert_eq!(
+            h.get_by_label("✓").accesskit_node().is_disabled(),
+            waiting,
+            "{waiting}"
+        );
+        assert_eq!(h.query_by_label("Applying…").is_some(), waiting);
+        assert_eq!(
+            h.query_by_label("A plain number in mm · Enter accepts")
+                .is_some(),
+            !waiting
+        );
+    }
+}
+
+#[test]
+fn leaving_the_modify_boxs_field_by_esc_accepts_nothing_and_enter_accepts() {
+    use dimension::ModifyAction;
+    let field = egui::Id::new(("sketch_modify_field", 7u64));
+    // Esc: the field let go, nothing asked.
+    let (mut h, asked) = modify_harness(false);
+    h.run();
+    assert!(h.ctx.memory(|m| m.has_focus(field)));
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.ctx.memory(|m| m.has_focus(field)));
+    assert!(
+        !asked.borrow().contains(&ModifyAction::Accept),
+        "{:?}",
+        asked.borrow()
+    );
+    // Enter: accepted.
+    let (mut h, asked) = modify_harness(false);
+    h.run();
+    assert!(h.ctx.memory(|m| m.has_focus(field)));
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(
+        asked.borrow().contains(&ModifyAction::Accept),
+        "{:?}",
+        asked.borrow()
+    );
+}
+
+/// The rectangle with the bottom's length, 40, as ka000001, and the right side's, 20, as
+/// ka000002, under defined.
+fn two_lengths() -> SketchRead {
+    under(rectangle(vec![
+        length("ka000001", "na000001", "40", true),
+        length("ka000002", "na000002", "20", true),
+    ]))
+}
+
+/// The box of the dimension `constraint`, open with `text`, `sent` or not.
+fn edit_box(constraint: &str, text: &str, sent: bool) -> EditBox {
+    EditBox {
+        constraint: id(constraint),
+        text: text.to_owned(),
+        unit: "mm",
+        at: [20.0, -2.6],
+        opened: 1,
+        sent,
+        said: None,
+    }
+}
+
+#[test]
+fn a_new_read_that_still_holds_an_open_boxs_dimension_keeps_the_box() {
+    let mut mode = mode_at(two_lengths());
+    mode.edit_box = Some(edit_box("ka000002", "25", false));
+    mode.took(Read {
+        model: Revision::OPENED.next(),
+        result: Ok(two_lengths()),
+    });
+    assert_eq!(mode.edit_box, Some(edit_box("ka000002", "25", false)));
+    // One without it closes it.
+    mode.took(Read {
+        model: Revision::OPENED.next(),
+        result: Ok(under(rectangle(vec![length(
+            "ka000001", "na000001", "40", true,
+        )]))),
+    });
+    assert_eq!(mode.edit_box, None);
+}
+
+#[test]
+fn a_box_whose_text_was_sent_takes_no_typing_and_sends_nothing_again() {
+    use dimension::ModifyAction;
+    let mut mode = mode_at(two_lengths());
+    mode.edit_box = Some(edit_box("ka000002", "25", true));
+    mode.modify(ModifyAction::Typed("30".to_owned()));
+    assert_eq!(mode.edit_box, Some(edit_box("ka000002", "25", true)));
+    mode.modify(ModifyAction::Accept);
+    assert!(mode.take_asks().is_empty());
+    assert!(mode.edited.is_none());
+}
+
+/// Where the read's drawing put the dimension `name`'s value.
+fn label_at(mode: &SketchMode, name: &str) -> Pos2 {
+    mode.last_drawn()
+        .iter()
+        .find_map(|d| match d {
+            Drawn::Label {
+                of: Some(of), at, ..
+            } if of.as_str() == name => Some(*at),
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn double_click(at: Pos2) -> Vec<PointerEvent> {
+    let mut clicks = press(at, false).to_vec();
+    clicks.extend(press(at, false));
+    clicks.push(event(PointerAction::DoubleClick, at, false));
+    clicks
+}
+
+#[test]
+fn a_double_click_while_a_boxs_text_awaits_its_answer_opens_no_other() {
+    let mut mode = mode_at(two_lengths());
+    let mut dragged: Option<drag::Drag> = None;
+    frame_of(&mut mode, &mut dragged, &[]);
+    let other = label_at(&mode, "ka000001");
+    // The right side's box, its text sent: a double-click on the bottom's opens nothing.
+    mode.edit_box = Some(edit_box("ka000002", "25", true));
+    frame_of(&mut mode, &mut dragged, &double_click(other));
+    assert_eq!(mode.edit_box, Some(edit_box("ka000002", "25", true)));
+    // Not sent: the bottom's opens in its place, with its value.
+    mode.edit_box = Some(edit_box("ka000002", "25", false));
+    frame_of(&mut mode, &mut dragged, &double_click(other));
+    let opened = mode.edit_box.as_ref().unwrap();
+    assert_eq!(
+        (opened.constraint.as_str(), opened.text.as_str()),
+        ("ka000001", "40")
+    );
+}
+
+#[test]
+fn a_cancel_leaves_a_released_drag_awaiting_its_edits_read() {
+    let read = under(rectangle(Vec::new()));
+    let mut mode = mode_at(read.clone());
+    let mut dragged = Some(drag::Drag::ended_at(
+        sketch_feature(),
+        DragGrab::Point(id("pa000003")),
+        read.clone(),
+        read,
+        Revision::OPENED.next().unwrap().next().unwrap(),
+    ));
+    frame_of(
+        &mut mode,
+        &mut dragged,
+        &[event(PointerAction::Cancel, at_mm(10.0, 10.0), false)],
+    );
+    assert!(dragged.is_some());
+    assert!(dragged.as_ref().unwrap().ended());
+}
+
+#[test]
+fn a_drags_frame_is_drawn_without_the_profiles_fill() {
+    let mut read = under(rectangle(Vec::new()));
+    read.regions = vec![Region {
+        outer: ["na000001", "na000002", "na000003", "na000004"]
+            .iter()
+            .map(|n| id(n))
+            .collect(),
+        holes: Vec::new(),
+    }];
+    let fills = |mode: &SketchMode| {
+        mode.last_drawn()
+            .iter()
+            .filter(|d| matches!(d, Drawn::Fill { .. }))
+            .count()
+    };
+    let mut mode = mode_at(read.clone());
+    let mut dragged: Option<drag::Drag> = None;
+    frame_of(&mut mode, &mut dragged, &[]);
+    assert_eq!(fills(&mode), 1);
+    // The drag's last frame drawn in the read's place: no fill, the read's being of where
+    // it began.
+    let mut moved = read.clone();
+    if let Some(p) = moved
+        .members
+        .points
+        .iter_mut()
+        .find(|p| p.id == id("pa000003"))
+    {
+        p.x = Coordinate::new(45.0).unwrap();
+    }
+    dragged = Some(drag::Drag::ended_at(
+        sketch_feature(),
+        DragGrab::Point(id("pa000003")),
+        read,
+        moved,
+        Revision::OPENED.next().unwrap().next().unwrap(),
+    ));
+    frame_of(&mut mode, &mut dragged, &[]);
+    assert!(dragged.is_some());
+    assert_eq!(fills(&mode), 0);
+}
+
+#[test]
+fn a_press_past_an_arcs_end_goes_to_the_nearer_end_and_an_even_one_to_its_start() {
+    let d = |degrees: f64| direction(degrees.to_radians()).map(|c| c * 10.0);
+    // An arc of 30° about the origin, radius 10, from 0°: a press at 170°, 140° past its
+    // end and 190° before its start, goes to its end, (10 cos 30°, 10 sin 30°).
+    let short = draw::Curve::Round {
+        centre: [0.0, 0.0],
+        radius: 10.0,
+        start: 0.0,
+        sweep: 30f64.to_radians(),
+    };
+    let on = on_curve(short, d(170.0)).unwrap();
+    let end = d(30.0);
+    assert!(
+        (on[0] - end[0]).abs() < 1e-12 && (on[1] - end[1]).abs() < 1e-12,
+        "{on:?}"
+    );
+    // At 350°, 10° before its start: its start.
+    let on = on_curve(short, d(350.0)).unwrap();
+    assert!(
+        (on[0] - 10.0).abs() < 1e-12 && on[1].abs() < 1e-12,
+        "{on:?}"
+    );
+    // A half arc from 0° to 180°: a press at 270°, as far past its end as before its start
+    // (exactly, in floating point: 3π/2 − π = 2π − 3π/2), goes to its start.
+    let half = draw::Curve::Round {
+        centre: [0.0, 0.0],
+        radius: 10.0,
+        start: 0.0,
+        sweep: PI,
+    };
+    let on = on_curve(half, [0.0, -10.0]).unwrap();
+    assert!(
+        (on[0] - 10.0).abs() < 1e-12 && on[1].abs() < 1e-12,
+        "{on:?}"
+    );
+    // Its start out of reach of a number, though its y is one: no place.
+    let huge = draw::Curve::Round {
+        centre: [1e308, 0.0],
+        radius: 1e308,
+        start: 0.0,
+        sweep: 0.5,
+    };
+    assert_eq!(on_curve(huge, [1e308, -1e300]), None);
+}
+
+/// A slanted line, 30 by 40, from pa000001 (0, 0) to pa000002 (30, 40), with pa000003
+/// (40, 0) beside it: the sketch's middle (20, 20), right of the line's.
+fn slanted() -> SketchRead {
+    let mut sketch = rectangle(Vec::new());
+    sketch.points = vec![
+        point("pa000001", 0.0, 0.0),
+        point("pa000002", 30.0, 40.0),
+        point("pa000003", 40.0, 0.0),
+    ];
+    sketch.lines = vec![line("na000001", "pa000001", "pa000002")];
+    under(sketch)
+}
+
+fn close(a: [f64; 2], b: [f64; 2]) -> bool {
+    (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9
+}
+
+#[test]
+fn a_slanted_lines_length_stands_off_square_to_it_away_from_the_middle() {
+    let read = slanted();
+    let geometry = draw::Geometry::of(&read);
+    let length = Form::Length {
+        line: element("na000001"),
+        value: mm("50"),
+        driving: true,
+    };
+    // Along (0.6, 0.8), square to it (−0.8, 0.6), which points away from the middle (20, 20)
+    // of the line's (15, 20): 2.6 mm out, from (−2.08, 1.56) to (27.92, 41.56).
+    let shape = draw::measure(&length, &geometry, HAND, None).unwrap();
+    assert!(close(shape.lines[2][0], [-2.08, 1.56]), "{:?}", shape.lines);
+    assert!(
+        close(shape.lines[2][1], [27.92, 41.56]),
+        "{:?}",
+        shape.lines
+    );
+    // Through a place on the line itself: on the line, its extension lines out along the
+    // normal (−0, 1) of the bottom of the rectangle, from 0.4 mm to 0.5 mm.
+    let read = under(rectangle(Vec::new()));
+    let geometry = draw::Geometry::of(&read);
+    let bottom = Form::Length {
+        line: element("na000001"),
+        value: mm("40"),
+        driving: true,
+    };
+    let shape = draw::measure(&bottom, &geometry, HAND, Some([20.0, 0.0])).unwrap();
+    assert!(close(shape.lines[0][0], [0.0, 0.4]), "{:?}", shape.lines);
+    assert!(close(shape.lines[0][1], [0.0, 0.5]), "{:?}", shape.lines);
+}
+
+#[test]
+fn a_horizontal_distance_stands_above_or_below_by_where_it_is_and_the_pointer() {
+    let read = under(rectangle(Vec::new()));
+    let geometry = draw::Geometry::of(&read);
+    let across = |a: &str, b: &str| Form::DistanceX {
+        a: element(a),
+        b: element(b),
+        value: mm("40"),
+        driving: true,
+    };
+    // The top's corners, above the middle (y = 10): 2.6 mm above them, at y = 22.6.
+    let top = draw::measure(&across("pa000003", "pa000004"), &geometry, HAND, None).unwrap();
+    assert!(close(top.lines[2][0], [40.0, 22.6]), "{:?}", top.lines);
+    assert!(close(top.lines[2][1], [0.0, 22.6]), "{:?}", top.lines);
+    // The bottom's, below it: 2.6 mm below them, at y = −2.6.
+    let bottom = draw::measure(&across("pa000001", "pa000002"), &geometry, HAND, None).unwrap();
+    assert!(close(bottom.lines[2][0], [0.0, -2.6]), "{:?}", bottom.lines);
+    assert!(
+        close(bottom.lines[2][1], [40.0, -2.6]),
+        "{:?}",
+        bottom.lines
+    );
+    // Through (30, 26), above the corners' middle (y = 10): the extension line from the
+    // corner (0, 0) up, from 0.4 to 26.5.
+    let through = draw::measure(
+        &across("pa000001", "pa000003"),
+        &geometry,
+        HAND,
+        Some([30.0, 26.0]),
+    )
+    .unwrap();
+    assert!(
+        close(through.lines[0][0], [0.0, 0.4]),
+        "{:?}",
+        through.lines
+    );
+    assert!(
+        close(through.lines[0][1], [0.0, 26.5]),
+        "{:?}",
+        through.lines
+    );
+}
+
+#[test]
+fn a_point_to_line_distance_runs_from_the_point_to_its_foot() {
+    let read = under(rectangle(Vec::new()));
+    let geometry = draw::Geometry::of(&read);
+    let off = |p: &str| Form::PointLineDistance {
+        point: element(p),
+        line: element("na000001"),
+        value: mm("20"),
+        side: silico_core::document::LineSide::Left,
+        driving: true,
+    };
+    // The corner (40, 20) to the bottom: down to (40, 0), its value halfway.
+    let shape = draw::measure(&off("pa000003"), &geometry, HAND, None).unwrap();
+    assert_eq!(shape.lines, vec![vec![[40.0, 20.0], [40.0, 0.0]]]);
+    assert_eq!(shape.text_at, [40.0, 10.0]);
+    assert_eq!(
+        shape.arrows,
+        vec![([40.0, 20.0], [0.0, -1.0]), ([40.0, 0.0], [0.0, 1.0])]
+    );
+    // A point on the line itself: no direction to it, so its arrows point down, then up.
+    let on = draw::measure(&off("pa000002"), &geometry, HAND, None).unwrap();
+    assert_eq!(on.arrows[0], ([40.0, 0.0], [0.0, -1.0]));
+}
+
+/// A quarter arc aa000001 about pa000001 (0, 0), radius 10, from pa000002 (10, 0) to
+/// pa000003 (0, 10); and a circle ca000001 of radius 5 about pc000001 (30, 0). The sketch's
+/// middle: (15, 5).
+fn rounds() -> SketchRead {
+    let mut sketch = rectangle(Vec::new());
+    sketch.points = vec![
+        point("pa000001", 0.0, 0.0),
+        point("pa000002", 10.0, 0.0),
+        point("pa000003", 0.0, 10.0),
+        point("pc000001", 30.0, 0.0),
+    ];
+    sketch.lines = Vec::new();
+    sketch.arcs = vec![arc("aa000001", "pa000001", "pa000002", "pa000003")];
+    sketch.circles = vec![SketchCircle {
+        id: id("ca000001"),
+        center: id("pc000001"),
+        radius: Coordinate::new(5.0).unwrap(),
+        construction: false,
+    }];
+    under(sketch)
+}
+
+#[test]
+fn a_radius_stands_out_through_an_arcs_middle_or_away_from_the_sketchs_and_to_the_pointer() {
+    let read = rounds();
+    let geometry = draw::Geometry::of(&read);
+    let radius = |curve: &str| Form::Radius {
+        curve: element(curve),
+        value: mm("10"),
+        driving: true,
+    };
+    // The arc's: out through its middle, 45°, 2.6 mm past its rim: 12.6 (cos 45°, sin 45°).
+    let shape = draw::measure(&radius("aa000001"), &geometry, HAND, None).unwrap();
+    let out = 12.6 * std::f64::consts::FRAC_1_SQRT_2;
+    assert!(close(shape.text_at, [out, out]), "{:?}", shape.text_at);
+    assert_eq!(shape.text, "R10");
+    assert!(close(shape.lines[0][0], [0.0, 0.0]) && close(shape.lines[0][1], [out, out]));
+    // The circle's: away from the sketch's middle (15, 5), along (15, −5)/√250, 7.6 mm out.
+    let shape = draw::measure(&radius("ca000001"), &geometry, HAND, None).unwrap();
+    let n = 250f64.sqrt();
+    let beyond = [30.0 + 7.6 * 15.0 / n, -7.6 * 5.0 / n];
+    assert!(close(shape.text_at, beyond), "{:?}", shape.text_at);
+    // Through the pointer: out to it, its text there.
+    let shape = draw::measure(&radius("aa000001"), &geometry, HAND, Some([20.0, 20.0])).unwrap();
+    assert_eq!(shape.text_at, [20.0, 20.0]);
+    assert!(close(shape.lines[0][1], [20.0, 20.0]));
+}
+
+#[test]
+fn an_angles_arc_reaches_the_pointer_or_stands_off_and_its_arrows_point_out_of_it() {
+    let read = under(rectangle(Vec::new()));
+    let geometry = draw::Geometry::of(&read);
+    // From the bottom (+x) to the right side (+y), meeting at (40, 0): 90°.
+    let angle = Form::Angle {
+        a: element("na000001"),
+        b: element("na000002"),
+        reversed: false,
+        value: Angle::parse("90").unwrap(),
+        driving: true,
+    };
+    // Through (45, 0), 5 mm from the corner: its arc of radius 5, from (45, 0).
+    let shape = draw::measure(&angle, &geometry, HAND, Some([45.0, 0.0])).unwrap();
+    assert!(
+        close(shape.lines[0][0], [45.0, 0.0]),
+        "{:?}",
+        shape.lines[0][0]
+    );
+    // Through the corner itself: no radius there, so 2.6 mm, from (42.6, 0).
+    let shape = draw::measure(&angle, &geometry, HAND, Some([40.0, 0.0])).unwrap();
+    assert!(
+        close(shape.lines[0][0], [42.6, 0.0]),
+        "{:?}",
+        shape.lines[0][0]
+    );
+    // Its arrows along its tangent, out of it: at its start (−sin 0, cos 0) = (0, 1); at its
+    // end, the tangent (−1, 0) turned back, (1, 0).
+    let [(_, first), (_, last)] = shape.arrows.as_slice() else {
+        panic!("{:?}", shape.arrows);
+    };
+    assert!(close(*first, [0.0, 1.0]), "{first:?}");
+    assert!(close(*last, [1.0, 0.0]), "{last:?}");
+}
+
+#[test]
+fn smart_dimension_draws_an_axis_picked_as_a_stretch_of_it_either_side_of_the_origin() {
+    use silico_core::sketch_tools::DimensionPreview;
+    let read = under(rectangle(Vec::new()));
+    // Four dimension offsets (104 points, 10.4 mm) each way: the x axis from (−10.4, 0) to
+    // (10.4, 0), at (−4, 500) and (204, 500); the y axis from (100, 604) to (100, 396).
+    for (axis, ends) in [
+        (Reference::XAxis, [pos2(-4.0, 500.0), pos2(204.0, 500.0)]),
+        (Reference::YAxis, [pos2(100.0, 604.0), pos2(100.0, 396.0)]),
+    ] {
+        let preview = DimensionPreview {
+            pointer: None,
+            picks: vec![axis],
+            hover: None,
+            dimension: None,
+            locked: false,
+            unavailable: None,
+            modify: None,
+        };
+        let drawn = draw::dimension_preview(&preview, &read, &view(), None);
+        let strokes: Vec<&Vec<Pos2>> = drawn
+            .iter()
+            .filter_map(|d| match d {
+                Drawn::Stroke {
+                    of: None,
+                    points,
+                    selected: true,
+                    colour,
+                    ..
+                } if *colour == FOCUS => Some(points),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(strokes.len(), 1, "{drawn:?}");
+        assert!(
+            near(strokes[0][0], ends[0]) && near(*strokes[0].last().unwrap(), ends[1]),
+            "{:?}",
+            strokes[0]
+        );
+    }
+}
+
+#[test]
+fn a_drags_ghost_takes_a_circle_whose_radius_or_centre_moved_and_not_one_that_stayed() {
+    let circle = |name: &str, centre: &str| SketchCircle {
+        id: id(name),
+        center: id(centre),
+        radius: Coordinate::new(5.0).unwrap(),
+        construction: false,
+    };
+    let mut sketch = rectangle(Vec::new());
+    sketch.points = vec![
+        point("pc000001", 10.0, 10.0),
+        point("pc000002", 30.0, 10.0),
+        point("pc000003", 50.0, 10.0),
+    ];
+    sketch.lines = Vec::new();
+    sketch.circles = vec![
+        circle("ca000001", "pc000001"),
+        circle("cb000001", "pc000002"),
+        circle("cc000001", "pc000003"),
+    ];
+    let begin = under(sketch);
+    let mut now = begin.clone();
+    // ca000001 grown to 7, about where it was; cb000001's centre moved 2 mm right; cc000001
+    // untouched.
+    now.members.circles[0].radius = Coordinate::new(7.0).unwrap();
+    now.members.points[1].x = Coordinate::new(32.0).unwrap();
+    let ghosted = draw::ghost(&drawn(&begin), &begin, &now);
+    let mut members: Vec<&str> = ghosted
+        .iter()
+        .filter_map(|d| d.of())
+        .map(|id| id.as_str())
+        .collect();
+    members.sort_unstable();
+    members.dedup();
+    assert_eq!(members, ["ca000001", "cb000001", "pc000002"]);
+}
+
 #[test]
 fn a_right_click_opens_the_canvas_menu_there_unless_smart_dimension_takes_it_for_its_lock() {
     let at = at_mm(20.0, 10.0);

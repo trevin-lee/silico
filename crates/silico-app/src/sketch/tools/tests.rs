@@ -1741,6 +1741,53 @@ fn a_cancelled_press_keeps_smart_dimensions_picks_and_leaves_no_press_held() {
 }
 
 #[test]
+fn a_refused_dimension_add_frees_smart_dimension_for_the_next() {
+    use crate::sketch::dimension::ModifyAction;
+    let mut desk = Desk::new(Choice::Dimension, boxed());
+    desk.holding = true;
+    // The right side's length placed: its add sent, unanswered, holds the tool.
+    desk.frame(&click(40.0, 10.0));
+    desk.frame(&click(55.0, 10.0));
+    desk.mode.modify(ModifyAction::Accept);
+    desk.take();
+    let [(token, _)] = desk.held.as_slice() else {
+        panic!("{:?}", desk.held);
+    };
+    let token = *token;
+    assert!(desk.mode.tools.busy());
+    // Refused: forgotten, the tool free, and the next placement opens its box.
+    desk.mode.tools.refused(token);
+    assert!(!desk.mode.tools.busy());
+    desk.frame(&click(20.0, 20.0));
+    desk.frame(&click(20.0, 30.0));
+    assert_eq!(modify_text(&desk).as_deref(), Some("40"));
+}
+
+#[test]
+fn smart_dimensions_boxes_count_down_from_the_top_and_a_reload_closes_the_one_open() {
+    let mut desk = Desk::new(Choice::Dimension, boxed());
+    // The first box opened is u64::MAX − 1, apart from placed dimensions' boxes, which count
+    // up from 1.
+    desk.frame(&click(40.0, 10.0));
+    desk.frame(&click(55.0, 10.0));
+    assert_eq!(modify_text(&desk).as_deref(), Some("20"));
+    assert_eq!(desk.mode.modify_view().unwrap().opened, u64::MAX - 1);
+    // The session gone back to its file (a reload): the box closed, nothing under way, and
+    // with the reload's read, none drawn.
+    desk.mode.tools.forget_pending();
+    assert_eq!(desk.mode.tools.modify_at(), None);
+    assert!(!desk.mode.tools.busy());
+    desk.publish();
+    assert!(modify_text(&desk).is_none());
+    assert!(desk.adds.is_empty());
+    // The next is u64::MAX − 2.
+    desk.frame(&click(20.0, 20.0));
+    desk.frame(&click(20.0, 30.0));
+    assert_eq!(modify_text(&desk).as_deref(), Some("40"));
+    assert_eq!(desk.mode.modify_view().unwrap().opened, u64::MAX - 2);
+}
+
+#[test]
 fn both_modify_boxes_read_the_same_text_the_same_way() {
     use crate::sketch::dimension::{ModifyAction, edit_value};
     // Each text typed in Smart Dimension's box, placing the right side's length, and given
