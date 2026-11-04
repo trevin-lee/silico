@@ -29,6 +29,7 @@ use silico_core::sketch_tools::{
 };
 
 use super::style::*;
+use crate::icons::{self, Icon};
 
 /// What sketch mode asks of the core besides its tools' requests, in the order it asks: a
 /// placed dimension's value (`set_field` of its `value`), its text as the core's reader read
@@ -285,8 +286,7 @@ pub fn modify_box(
                             asked = Some(ModifyAction::Accept);
                         }
                         ui.label(RichText::new(view.unit).color(TEXT_SUBDUED));
-                        if ui
-                            .add_enabled(!view.waiting, egui::Button::new("✓"))
+                        if icon_button(ui, Icon::Check, "Accept", !view.waiting)
                             .on_hover_text("Accept (Enter)")
                             .clicked()
                         {
@@ -297,7 +297,10 @@ pub fn modify_box(
                         } else {
                             "Cancel: the value stays (Esc)"
                         };
-                        if ui.button("✕").on_hover_text(skip).clicked() {
+                        if icon_button(ui, Icon::Close, "Cancel", true)
+                            .on_hover_text(skip)
+                            .clicked()
+                        {
                             asked = Some(ModifyAction::Skip);
                         }
                     });
@@ -315,6 +318,18 @@ pub fn modify_box(
         ctx.request_repaint();
     }
     asked
+}
+
+/// One of the Modify box's buttons (the prototype's `.ab-btn`, [`MODIFY_BUTTON_SIZE`]
+/// square): `icon`, from the app's set, named `name` for the accessibility tree, as the
+/// prototype's `aria-label`.
+fn icon_button(ui: &mut Ui, icon: Icon, name: &str, enabled: bool) -> egui::Response {
+    let button = egui::Button::image(icons::icon(icon))
+        .fill(Color32::TRANSPARENT)
+        .min_size(Vec2::splat(MODIFY_BUTTON_SIZE));
+    let response = ui.add_enabled(enabled, button);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+    response
 }
 
 /// A unit's words.

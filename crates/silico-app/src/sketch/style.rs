@@ -179,6 +179,8 @@ pub const FIELD_BG_HOVERED: Color32 = hex(0x272626);
 pub const MODIFY_FIELD_BG: Color32 = hex(0x171717);
 pub const MODIFY_FIELD_STROKE: Color32 = GRAY_350;
 pub const SKETCH_MODIFY_HINT_SIZE: f32 = 10.5;
+/// The Modify box's ✓ and ✕ buttons' side (the prototype's `.ab-btn`, `--btn`).
+pub const MODIFY_BUTTON_SIZE: f32 = 22.0;
 /// The most characters the Modify box's field takes: far past any number a document
 /// writes, so nothing typed there is cut, while a paste of a page isn't held.
 pub const MODIFY_CHAR_LIMIT: usize = 256;

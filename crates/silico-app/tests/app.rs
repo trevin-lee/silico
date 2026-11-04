@@ -14737,6 +14737,9 @@ fn a_dimension_whose_text_is_under_the_palette_opens_its_modify_box_whole_in_the
     let f = fixture();
     counting(&f);
     let mut h = boxed(&f);
+    // The app's fonts and icons, so text and icons have their sizes.
+    silico_app::theme::apply(&h.ctx);
+    step(&mut h);
     hand_camera(&mut h);
     h.key_press(eframe::egui::Key::D);
     step(&mut h);
@@ -14774,11 +14777,11 @@ fn a_dimension_whose_text_is_under_the_palette_opens_its_modify_box_whole_in_the
         ),
         (
             "its ✓",
-            dialog.get_by_role_and_label(Role::Button, "✓").rect(),
+            dialog.get_by_role_and_label(Role::Button, "Accept").rect(),
         ),
         (
             "its ✕",
-            dialog.get_by_role_and_label(Role::Button, "✕").rect(),
+            dialog.get_by_role_and_label(Role::Button, "Cancel").rect(),
         ),
         (
             "its hint",
@@ -14977,4 +14980,63 @@ fn at_one_and_a_quarter_and_one_and_a_half_pixels_a_point_the_sketch_menu_stays_
         assert_eq!(sketch_mode(&h).unwrap().menu_at, None, "{ppp}");
         assert_eq!(never_waits::waits(), 0);
     }
+}
+
+// ---- M5.11's wiring, the prototype's look: the Modify box's icons, the over-define
+// prompt's head, rows, and keys, and the Sketch Palette inside the viewport ----
+
+/// The text of every text shape the last frame painted.
+fn painted_texts(h: &AppHarness) -> Vec<String> {
+    painted(h)
+        .iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_modify_boxs_buttons_are_its_icons_named_accept_and_cancel_with_no_glyph_drawn() {
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    // The app's fonts and icons, so text and icons have their sizes.
+    silico_app::theme::apply(&h.ctx);
+    step(&mut h);
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(50.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(60.0, 20.0));
+    step_until(&mut h, "the Modify box drawn", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Modify dimension")
+            .is_some()
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let dialog = h.get_by_role_and_label(Role::Dialog, "Modify dimension");
+    // Its two buttons by their names, as the prototype's `aria-label`s, each 22 square.
+    for name in ["Accept", "Cancel"] {
+        let button = dialog.get_by_role_and_label(Role::Button, name).rect();
+        assert!(
+            (button.width() - 22.0).abs() < 1e-3 && (button.height() - 22.0).abs() < 1e-3,
+            "{name} {button:?}"
+        );
+    }
+    // Drawn as icons: no ✓, ✕, or a font's stand-in for one, among the frame's text.
+    let texts = painted_texts(&h);
+    for glyph in ["✓", "✕", "?"] {
+        assert!(!texts.iter().any(|t| t == glyph), "{glyph} in {texts:?}");
+    }
+    assert!(texts.iter().any(|t| t == "20"), "{texts:?}");
+    // Cancel skips: the measured value placed, the box closed.
+    dialog.get_by_role_and_label(Role::Button, "Cancel").click();
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "the box closed", |h| {
+        sketch_mode(h).and_then(|mode| mode.modify_view()).is_none()
+    });
+    read_with_constraints(&mut h, 5);
+    assert_eq!(never_waits::waits(), 0);
 }
