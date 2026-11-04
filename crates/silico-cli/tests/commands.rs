@@ -611,6 +611,32 @@ fn git_diff_through_textconv_shows_a_one_value_edit_as_one_line() {
 }
 
 #[test]
+fn git_diff_through_textconv_shows_a_fingerprint_whose_centre_alone_moved() {
+    // A re-record after a mirror swap changes a fingerprint's centre and nothing else: the
+    // diff driver shows it, on that feature's line, naming the centre.
+    let fingerprinted = |center: &str| {
+        EXAMPLE.replace(
+            r#""height": 10}"#,
+            &format!(
+                r#""height": 10, "fingerprint": {{"volume": 8000, "area": 2800, "center": {center}, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}}}"#
+            ),
+        )
+    };
+    let scratch = Scratch::new("textconv-center");
+    let dir = repository(&scratch, &fingerprinted("[20, 10, 5]"));
+    std::fs::write(dir.join("part.silico"), fingerprinted("[-20, 10, 5]")).unwrap();
+    let line = |center: &str| {
+        format!(
+            r#"k7f2qx3m "Block" box length 40, width 20, height 10, at (0, 0, 0) | volume 8000, area 2800, center {center}, box (0, 0, 0) to (40, 20, 10), 6 faces, 12 edges, 8 vertices"#
+        )
+    };
+    assert_eq!(
+        changed(&dir),
+        (vec![line("(20, 10, 5)")], vec![line("(-20, 10, 5)")])
+    );
+}
+
+#[test]
 fn git_diff_through_textconv_shows_a_file_that_isnt_a_document_as_it_is() {
     // A merge's conflict markers: not a document, so shown as written, not refused.
     let scratch = Scratch::new("textconv-raw");

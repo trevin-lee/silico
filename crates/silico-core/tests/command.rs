@@ -27,13 +27,14 @@ m3tq8v0z "Hole" cut base k7f2qx3m, tool a91cw0de
 bodies m3tq8v0z
 "#;
 
-/// The example's three fingerprints, as the outline writes them.
-const BLOCK: &str =
-    "volume 8000, area 2800, box (0, 0, 0) to (40, 20, 10), 6 faces, 12 edges, 8 vertices";
-const PIN: &str = "volume 235.619449, area 227.765467, box (17.5, 7.5, -1) to (22.5, 12.5, 11), 3 faces, 3 edges, 2 vertices";
+/// The example's three fingerprints, as the outline writes them: each centre (20, 10, 5),
+/// the block's middle, the pin's on its axis halfway up, and the hole's the block's less a
+/// share of the pin's, both there (fingerprint.rs).
+const BLOCK: &str = "volume 8000, area 2800, center (20, 10, 5), box (0, 0, 0) to (40, 20, 10), 6 faces, 12 edges, 8 vertices";
+const PIN: &str = "volume 235.619449, area 227.765467, center (20, 10, 5), box (17.5, 7.5, -1) to (22.5, 12.5, 11), 3 faces, 3 edges, 2 vertices";
 // The fake's cut: the block less the share of the pin inside its box, 8000 − 62.5π, its
 // area 2800 + (10/12) 72.5π (fingerprint.rs).
-const HOLE: &str = "volume 7803.650459, area 2989.804556, box (0, 0, -1) to (40, 20, 11), 9 faces, 15 edges, 10 vertices";
+const HOLE: &str = "volume 7803.650459, area 2989.804556, center (20, 10, 5), box (0, 0, -1) to (40, 20, 11), 9 faces, 15 edges, 10 vertices";
 
 fn formatted(text: &str) -> Formatted {
     format_bytes(&engine(), text.as_bytes()).unwrap().unwrap()
@@ -376,8 +377,8 @@ fn a_document_that_doesnt_pass_the_gate_isnt_formatted() {
 #[test]
 fn an_outline_says_every_kind_of_feature_with_its_own_values() {
     // Written by hand from the document: each primitive's values by the names the file
-    // gives them, in the file's order, and a fingerprint with no box (a solid with nothing
-    // in it).
+    // gives them, in the file's order, and a fingerprint with no centre and no box (a solid
+    // with nothing in it).
     let text = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": [
     {"id": "00000000", "type": "sphere", "v": 1, "name": "S", "position": [1, 2, 3], "radius": 0.000001},
     {"id": "11111111", "type": "cone", "v": 1, "name": "C", "position": [0, 0, 0], "radius1": 5, "radius2": 0, "height": 7.25},
@@ -390,7 +391,7 @@ fn an_outline_says_every_kind_of_feature_with_its_own_values() {
 11111111 "C" cone radius1 5, radius2 0, height 7.25, at (0, 0, 0)
 22222222 "T" torus radius1 10, radius2 2, at (-0.5, 0, 0)
 33333333 "F" fuse base 00000000, tool 11111111
-44444444 "M" common base 33333333, tool 22222222 | volume 0, area 0, no box, 0 faces, 0 edges, 0 vertices
+44444444 "M" common base 33333333, tool 22222222 | volume 0, area 0, no center, no box, 0 faces, 0 edges, 0 vertices
 bodies 44444444
 "#
     );
