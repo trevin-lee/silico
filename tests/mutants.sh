@@ -68,8 +68,9 @@ render_scale=(
 # silico-render's proptests too slow for a loaded shard (each minutes alone): with them in a
 # shard's unmutated baseline it passes the test limit and the shard tests nothing. Left out
 # of mutants only: tests/proptest-explore.sh runs them, alone and given longer, so they keep
-# getting fresh seeds, and the gate runs them at its fixed one. Their mutants are covered by
-# the render tests that stay.
+# getting fresh seeds, and the gate runs them at its fixed one. Beside each entry, say what it
+# alone tests (as the lists above do), so a render survivor there is checked against it,
+# unloaded, before it's a finding.
 slow_proptests=()
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
 tests_of() {
