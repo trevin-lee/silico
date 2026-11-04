@@ -5,7 +5,7 @@
     "description": "`commit`'s request: end the session's transaction, saving its document to its own\nfile, or, given a path, to the file there (Save As), which the session then holds.",
     "properties": {
       "path": {
-        "description": "null to save to the session's own file. A path (relative to the workspace's root\nunder `silico serve`) to save to that file instead, written even if nothing changed:\nit must end in .silico, can't be the session's own file or one another session\nholds, and the session holds it from then on, letting its old file go.",
+        "description": "null to save to the session's own file. A path (relative to the workspace's root\nunder `silico serve`) to save to that file instead, written even if nothing changed:\nit must end in .silico, can't be the session's own file or one another session\nholds, and the session holds it from then on, letting its old file go. An untitled\nsession (opened with `path` null) has no file of its own: its commit must give a\npath, its first save, after which it holds that file as if it had been opened there.",
         "type": [
           "string",
           "null"

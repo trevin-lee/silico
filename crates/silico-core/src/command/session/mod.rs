@@ -105,7 +105,7 @@ mod waking;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 
 use super::edit::{self, FeatureIds};
 use super::logs::{LogBuffer, LogQuery, Logs};
@@ -132,11 +132,11 @@ pub use rebuilds::{TryAgainBy, fault_suggestion};
 pub(super) use rebuilds::{kept_fault, retried};
 use registry::{
     Book, CacheOpener, Opening, Registry, Release, Started, claim, holder, moved, reclaim, reserve,
-    serve, start, unreserve,
+    serve, start, unreserve, watch_saved,
 };
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
-use transaction::{Claim, Held, Open, Reload, Rereads, SaveTo, transaction_open};
+use transaction::{Claim, Held, Open, Reload, Rereads, SaveTo, transaction_open, untitled_cache};
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
@@ -201,8 +201,10 @@ struct Session<C: Kernel + 'static> {
     /// Its logs: the events of its commands' spans, as `read_logs` reads them.
     logs: Arc<LogBuffer>,
     /// Whether its file changed on disk ([`Sessions::disk`]): told what the session reads
-    /// and writes of it, by its reloads and its saves.
-    disk: DiskWatch,
+    /// and writes of it, by its reloads and its saves. Set once, when the session has a
+    /// file: as it opens one, or, opened untitled, at its first save
+    /// ([`registry::watch_saved`]).
+    disk: OnceLock<DiskWatch>,
     /// Its own reload of its file, found changed on disk (A3): whether one is queued, and
     /// the bytes a reload last refused, so the same refusal isn't queued at each comparison.
     /// Taken before the disk watch's lock (whether a comparison is still current is asked
@@ -331,7 +333,7 @@ impl<C: Kernel + 'static> Session<C> {
     fn info_of(&self, held: &Held, reloaded: bool) -> SessionInfo {
         SessionInfo {
             id: self.id,
-            path: held.path.clone(),
+            path: held.file.as_ref().map(|file| file.path.clone()),
             revision: held.revision,
             transaction: held.transaction.is_some(),
             reloaded,
@@ -434,7 +436,11 @@ impl<C: Kernel + 'static> Session<C> {
     fn reload_wanted(&self, found: &[u8], claims: u64, counter: u64) -> bool {
         {
             let held = self.held.read();
-            if held.transaction.is_some() || held.part_written.is_some() {
+            let part_written = held
+                .file
+                .as_ref()
+                .is_some_and(|file| file.part_written.is_some());
+            if held.transaction.is_some() || part_written {
                 return false;
             }
         }
@@ -443,7 +449,7 @@ impl<C: Kernel + 'static> Session<C> {
         // bytes) is dropped, never reported (the design's section 4): checked under the
         // reloads' lock, as a reload moves the watch on before it clears `queued` there, so
         // a comparison found current here either finds `queued` still set or is current.
-        if !self.disk.current(counter)
+        if !self.disk.get().is_some_and(|disk| disk.current(counter))
             || reloads.queued
             || reloads
                 .refused
@@ -472,9 +478,12 @@ impl<C: Kernel + 'static> Session<C> {
             Ok(Reload::Reloaded) => (true, None),
             Ok(Reload::AsHeld) => {
                 let held = self.held.read();
-                if held.part_written.is_none() {
+                if let Some(file) = &held.file
+                    && file.part_written.is_none()
+                    && let Some(disk) = self.disk.get()
+                {
                     // The file as the session holds it: the finding was stale.
-                    self.disk.held(Arc::clone(&held.bytes));
+                    disk.held(Arc::clone(&held.bytes));
                 }
                 (true, None)
             }
@@ -855,6 +864,26 @@ impl<P: Clients + 'static> Sessions<P> {
                 ));
             }
         };
+        self.open_as(Some(path), create)
+    }
+
+    /// Opens a new, empty document as a session with no file (an untitled part; `open` with
+    /// `path` null and `create` true): its text the bytes `open` with `create` would have
+    /// written, on a thread of its own, as [`open`](Self::open) opens one. It claims no
+    /// file, watches none on disk, and keeps no rebuild cache. What reads its file finds
+    /// nothing to read (no command reloads it, `status.disk` stays none), and what would
+    /// write it is refused, saying to give a path: `commit` with none, an edit or `format`
+    /// writing outside a transaction, `cache_clear`. Inside a transaction everything else
+    /// is as in any session. Its first save is a Save As ([`save_as`](Self::save_as)), after
+    /// which it holds that file, its disk watch, and the rebuild cache beside it, as a
+    /// session opened on the file does. Refused as `open` is, but for what's of a file.
+    pub fn open_untitled(&self) -> Running<Opened> {
+        self.open_as(None, true)
+    }
+
+    /// [`open`](Self::open) of `path`, UTF-8; or, with none, of no file
+    /// ([`open_untitled`](Self::open_untitled)).
+    fn open_as(&self, path: Option<String>, create: bool) -> Running<Opened> {
         let mut book = lock(&self.registry.book);
         if book.stopping {
             return Running::answered(refused(closing()));
@@ -903,7 +932,7 @@ impl<P: Clients + 'static> Sessions<P> {
                 let started = {
                     let _caller = caller.enter();
                     let _span = command_span(&opening_logs, id, "open", None).entered();
-                    start(registry, id, &path, create, &stop, &reply, jobs)
+                    start(registry, id, path.as_deref(), create, &stop, &reply, jobs)
                 };
                 if let Some(Started { session, jobs }) = started {
                     serve(&session, &jobs);
@@ -964,11 +993,12 @@ impl<P: Clients + 'static> Sessions<P> {
     /// last comparison's finding, none before one has ended, and the next comparison
     /// started off the caller's thread if one is due ([`DiskWatch::finding`]). Answered on
     /// the caller's thread, never waiting on the file or on the session's commands. It
-    /// reloads nothing: the next command does, as it always has (decision 2). Refused,
-    /// naming `session`, if it isn't open.
+    /// reloads nothing: the next command does, as it always has (decision 2). None, always,
+    /// for an untitled session, which has no file to compare. Refused, naming `session`, if
+    /// it isn't open.
     pub fn disk(&self, session: &SessionId) -> Result<Option<Disk>, Error> {
         let found = find_in(&self.registry, session).ok_or_else(|| not_open(*session))?;
-        Ok(found.disk.finding())
+        Ok(found.disk.get().and_then(DiskWatch::finding))
     }
 
     /// `session`'s logs (M4.7): the events `query` asks for, from what its buffer keeps,
@@ -1128,7 +1158,12 @@ impl<P: Clients + 'static> Sessions<P> {
                 Err(unbuilt) => return Err(unbuilt.problems()),
             };
             *model = Some(current.read.clone());
-            let path = session.held.read().path.clone();
+            let path = session
+                .held
+                .read()
+                .file
+                .as_ref()
+                .map(|file| file.path.clone());
             read(Read {
                 path,
                 model: &current.model,
@@ -1182,6 +1217,8 @@ impl<P: Clients + 'static> Sessions<P> {
     /// refused, `invalid_input` naming no parameter, its cause the link; one inside then is
     /// cleared, whatever it was as the session opened, through the handle
     /// the clear opened, so a link put on its way during the clear redirects nothing.
+    /// Refused, `invalid_input` naming `session`, removing nothing, for an untitled session,
+    /// which keeps no cache: it has no file for one to be beside.
     pub fn cache_clear(&self, session: &SessionId) -> Running<CacheCleared> {
         self.queued_with(
             session,
@@ -1194,8 +1231,16 @@ impl<P: Clients + 'static> Sessions<P> {
                 // check, as it opens the directory (decision 26: where a path resolves):
                 // nothing is removed through one that leads out then, and the clear is
                 // refused, saying so, never answered as an empty cache's.
-                let cache = lock(&session.rebuilds).cache.clone();
-                let path = session.held.read().path.clone();
+                let cache = lock(&session.rebuilds).engine.cache().cloned();
+                let path = session
+                    .held
+                    .read()
+                    .file
+                    .as_ref()
+                    .map(|file| file.path.clone());
+                let (Some(cache), Some(path)) = (cache, path) else {
+                    return Err(Problems::from(untitled_cache(session.id)));
+                };
                 let workspace = session.workspace.as_ref();
                 let directory = shown_cache_directory(workspace, &path, cache.directory());
                 stop.settle()?;
@@ -1440,7 +1485,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// or a file there without `replace`; and for the session's own file, one another
     /// session holds or is opening, or a path that isn't UTF-8 (a response couldn't name
     /// it exactly). Its rebuild cache stays the directory's it opened in until it's opened
-    /// again.
+    /// again. An untitled session's first save is this, written to a path no file is at, or
+    /// one `replace` allows: there's no own file to refuse. It then holds the file as a
+    /// session opened on it does, with its disk watch, and the rebuild cache beside it.
     pub fn save_as(
         &self,
         session: &SessionId,
@@ -1499,9 +1546,15 @@ impl<P: Clients + 'static> Sessions<P> {
                     reserve: &reserve,
                     unreserve: &unreserve,
                 };
-                session.commit_as(stop, &to, model, &|resolved| {
+                let committed = session.commit_as(stop, &to, model, &|resolved| {
                     moved(&registry, id, resolved);
-                })
+                })?;
+                // An untitled session's first save: from now on, its file watched on disk and
+                // its steps kept in the cache beside it, as if it had been opened there.
+                if let Some(registry) = registry.upgrade() {
+                    watch_saved(&registry, session);
+                }
+                Ok(committed)
             },
         )
     }
@@ -2127,7 +2180,12 @@ fn start_published<C: Kernel + 'static, T: Send + 'static>(
                 || Some(session.info(false)),
                 || {
                     let (info, published) = session.published_now();
-                    let path = session.held.read().path.clone();
+                    let path = session
+                        .held
+                        .read()
+                        .file
+                        .as_ref()
+                        .map(|file| file.path.clone());
                     published_answer(
                         info,
                         published,
@@ -2180,7 +2238,7 @@ fn status_in<P: Clients + 'static>(
         return refused(not_open(*session));
     };
     // First, alone: the watch's lock is taken last of the session's; the drag's, alone.
-    let disk = found.disk.finding();
+    let disk = found.disk.get().and_then(DiskWatch::finding);
     let drag = found.drag_open();
     let reads = found.reads_running();
     let running = found.running().and_then(|ticket| ticket.running());

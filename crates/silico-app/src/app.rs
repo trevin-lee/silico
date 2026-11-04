@@ -287,6 +287,15 @@ impl<P: Clients + 'static> App<P> {
         self.dialog_panel(ui, &mut started, dialog_key);
         egui::CentralPanel::default().show(ui, |ui| {
             let active = self.active_place();
+            let shown = active.and_then(|at| self.tabs.get(at)).map(|tab| tab.id);
+            // A left drag held in a tab no longer shown ends there, before the pane draws.
+            crate::viewport::end_unshown(
+                ui.ctx(),
+                &self.sessions,
+                &mut self.drawing,
+                shown,
+                &mut self.tabs,
+            );
             let App {
                 tree,
                 tabs,

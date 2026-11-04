@@ -2,7 +2,7 @@
 
 A document's bodies written as a STEP file (ISO 10303-21) that other CAD systems read as solids: each body a product named by its feature, in millimetres, its bytes the same in every run and on every checked platform. This is M4.8's `format: "step"` (docs/design/m4.1-command-api.md, the `export` entry and decision 6: "its header written from the document so its bytes are deterministic"). It sits beside the 3MF export (docs/ports/mesh-export.md) and shares its command, its path rules, and its `left_out`.
 
-**Built (M4.8, `format: "step"`):** `silico_protocol::step_encoded` (every string, as *Strings* says), `Op::ExportStep` and the STEP worker (`silico-step-worker`, in silico-kernel: the recipe below, OCCT built with `TKDESTEP`, linked into that worker alone), and the `export` command's STEP path (`silico_core::command::export`): each body a product, its id the feature's ID and its name the feature's, under an assembly named by the document's stem if there are two or more, the header's file name the document's. As Fable decided the contract (2026-10-26): `tolerance` is `null` for STEP and a length for 3MF, each mismatch refused naming it; a STEP object's `triangles`, `vertices`, and `volume` are `null`. The worker reports each part's faces left out (INTERNAL and EXTERNAL), anything else the writer's check list failed to transfer, and the faces and face bounds the parts have against those the file holds; the core refuses a failure or a count that differs (`invalid_result`, naming the feature and the elements), never a file with geometry missing. The writer's warnings, which say what it corrected, are logged.
+**Built (M4.8, `format: "step"`):** `silico_protocol::step_encoded` (every string, as *Strings* says), `Op::ExportStep` and the STEP worker (`silico-step-worker`, in silico-kernel: the recipe below, OCCT built with `TKDESTEP`, linked into that worker alone), and the `export` command's STEP path (`silico_core::command::export`): each body a product, its id the feature's ID and its name the feature's, under an assembly named by the document's stem if there are two or more, the header's file name the document's (an untitled part's, having no document file, the exported file's name and stem). As Fable decided the contract (2026-10-26): `tolerance` is `null` for STEP and a length for 3MF, each mismatch refused naming it; a STEP object's `triangles`, `vertices`, and `volume` are `null`. The worker reports each part's faces left out (INTERNAL and EXTERNAL), anything else the writer's check list failed to transfer, and the faces and face bounds the parts have against those the file holds; the core refuses a failure or a count that differs (`invalid_result`, naming the feature and the elements), never a file with geometry missing. The writer's warnings, which say what it corrected, are logged.
 
 The study before it, and its experiments, follow. The probes ran outside the repository; each, and what it showed, is listed under *Experiments*.
 
@@ -198,6 +198,8 @@ So Silico encodes every string itself, in Rust where it's testable without OCCT,
 | pcurves | **on** (`WriteSurfaceCurMode = true`), as built | Recommended off at first: FreeCAD's default since `70c18c8017` (which gives no reason), files 40 to 60% smaller, and the study's read-backs (a box, fillets, a B-spline pad) closer without them (4e-16 against 3e-14). Built, the oracle's whole case set read back through FreeCAD showed the other side: without pcurves the reader rebuilds them, and two spheres fused read back 1.1e-6 off in volume (a sphere common a box 4e-10); with them, 4.5e-11 and exact to 1e-10. Exactness over size: on. | off |
 | Uncertainty | OCCT's `Average` (each part's mean tolerance) | FreeCAD's; deterministic, the shape's own tolerances | the same |
 
+*As built (untitled parts, 2026-11-01):* an untitled part has no document file, so its export's header file name and assembly stem are the exported file's own (`out.step` and `out` for an export to `out.step`), encoded alike.
+
 ## Round trips through FreeCAD 1.1.3
 
 Each file read back with `Part.read` (`TopoShape::importStep`) and `Import.insert` (ImportOCAF2, for names) in `freecadcmd`, against the original B-rep read by FreeCAD (`roundtrip.py`, `rt/roundtrip.txt`, `rt2/`, `rt3/`, `rt4/`):
@@ -293,7 +295,7 @@ Refused:
 
 ## Where Silico differs from FreeCAD on purpose
 
-- The header is fixed by the document, not by the clock and preferences.
+- The header is fixed by the document, not by the clock and preferences (an untitled part's by the exported file's name, having no document file).
 - Product ids are feature IDs; FreeCAD writes the label twice.
 - Names keep every character, encoded; FreeCAD writes raw UTF-8 and leaves the file name out because of it.
 - INTERNAL faces are reported; FreeCAD drops them silently (both drop them).

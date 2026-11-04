@@ -177,7 +177,7 @@ fn format_inside_a_transaction_accepts_drift_into_its_state_and_writes_no_file_u
     let formatted = response.result.unwrap();
     assert!(formatted.changed);
     assert!(!formatted.written);
-    assert_eq!(formatted.path, path.to_str().unwrap());
+    assert_eq!(formatted.path.as_deref(), path.to_str());
     assert_eq!(formatted.accepted, [id("k7f2qx3m")]);
     assert_eq!(formatted.refingerprinted, [id("k7f2qx3m"), id("b0000001")]);
     assert!(formatted.problems.is_empty(), "{:?}", formatted.problems);
@@ -330,7 +330,7 @@ fn format_writes_every_fingerprint_but_the_drift_it_doesnt_accept() {
     assert_eq!(response.session.as_ref().unwrap().revision.number(), 2);
     let formatted = response.result.unwrap();
     assert!(formatted.changed && formatted.written);
-    assert_eq!(formatted.path, path);
+    assert_eq!(formatted.path.as_deref(), path.to_str());
     assert_eq!(formatted.refingerprinted, [id("b0000001")]);
     assert!(formatted.accepted.is_empty());
     let drift = &formatted.problems.errors()[0];

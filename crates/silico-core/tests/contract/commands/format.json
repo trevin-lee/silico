@@ -169,8 +169,11 @@
         "type": "boolean"
       },
       "path": {
-        "description": "The document's path, as `open` was given it.",
-        "type": "string"
+        "description": "The document's path, as `open` was given it: null while the session is untitled.",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "problems": {
         "description": "What format couldn't fix, the first 100: failed features, which keep their\nfingerprints, and drift it didn't accept.",

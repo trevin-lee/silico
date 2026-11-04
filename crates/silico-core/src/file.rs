@@ -1529,7 +1529,15 @@ fn output_target(
             &format!("give a path ending in {ends}"),
         ));
     }
-    let name = path.file_name().ok_or_else(|| {
+    // A path ending in `/` or `/.` names a directory, as `open(2)` reads it, though
+    // `Path::file_name` skips the slash and the `.` (`part.silico/` would write
+    // `part.silico`, and a session's Save As then hold the path with its slash).
+    let directory = {
+        use std::os::unix::ffi::OsStrExt as _;
+        let bytes = given.as_os_str().as_bytes();
+        bytes.ends_with(b"/") || bytes.ends_with(b"/.")
+    };
+    let name = path.file_name().filter(|_| !directory).ok_or_else(|| {
         refuse(
             "has no file name".to_owned(),
             "give the path of a file to write",
