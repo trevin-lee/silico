@@ -22,7 +22,7 @@ use crate::viewport::ViewFrame;
 #[derive(Debug, Clone)]
 pub enum Screen {
     /// Through the viewport's camera.
-    Camera(Placed),
+    Camera(Box<Placed>),
     /// Fitted into the viewport, with no frame in 3D behind it: a face sketch whose face
     /// broke (#347).
     Flat(Flat),
@@ -41,7 +41,7 @@ impl Screen {
                 frame.rect.left_top(),
                 *plane,
             )
-            .map(Screen::Camera),
+            .map(|placed| Screen::Camera(Box::new(placed))),
             Err(_) => Some(Screen::Flat(Flat::fit(frame.rect, read))),
         }
     }
@@ -177,7 +177,11 @@ impl Placed {
         if !finite(at) {
             return None;
         }
-        let (o, x, y) = (self.plane.origin(), self.plane.x_axis(), self.plane.y_axis());
+        let (o, x, y) = (
+            self.plane.origin(),
+            self.plane.x_axis(),
+            self.plane.y_axis(),
+        );
         let p: [f64; 3] = std::array::from_fn(|k| o[k] + at[0] * x[k] + at[1] * y[k]);
         let size = self.size_px.map(f64::from);
         match self.forward {

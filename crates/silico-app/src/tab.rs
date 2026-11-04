@@ -25,8 +25,8 @@ use silico_core::timeline::{Entry, Health};
 use crate::dialog::{Dialog, Kind, feature_node, quoted};
 use crate::sketch::dimension::{Ask, ModifyAction};
 use crate::sketch::drag::{Drag, News};
-use crate::sketch::tools::{Choice, Request};
 use crate::sketch::screen::Screen;
+use crate::sketch::tools::{Choice, Request};
 use crate::sketch::{self, Deletion, FrameInput, Prefixes, SketchMode};
 
 /// What's said when an over-defining dimension's choice is refused as a `conflict`: the

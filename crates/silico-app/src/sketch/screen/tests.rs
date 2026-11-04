@@ -73,7 +73,10 @@ fn by_hand(got: [f64; 2], expected: [f64; 2]) {
 #[track_caller]
 fn at_point(got: Option<Pos2>, expected: Pos2) {
     let got = got.unwrap();
-    assert!((got - expected).length() < 1e-3, "{got:?} against {expected:?}");
+    assert!(
+        (got - expected).length() < 1e-3,
+        "{got:?} against {expected:?}"
+    );
 }
 
 #[test]
@@ -179,12 +182,7 @@ fn on_the_screen_a_place_comes_back_to_the_f32_of_its_point() {
 #[test]
 fn a_view_edge_on_to_the_plane_meets_it_nowhere_along_its_middle() {
     // Looking along +y at XY, orthographic: every ray runs along the plane.
-    let edge_on = camera(
-        ORTHOGRAPHIC,
-        [0.0, -100.0, 0.0],
-        [0.0; 3],
-        [0.0, 0.0, 1.0],
-    );
+    let edge_on = camera(ORTHOGRAPHIC, [0.0, -100.0, 0.0], [0.0; 3], [0.0, 0.0, 1.0]);
     let p = placed(&edge_on, [400, 200], 2.0, SketchPlane::Xy);
     for pixel in [[200.0, 100.0], [0.0, 0.0], [399.0, 13.0]] {
         assert_eq!(p.on_plane(pixel), None, "{pixel:?}");
@@ -199,7 +197,7 @@ fn a_view_edge_on_to_the_plane_meets_it_nowhere_along_its_middle() {
         assert_eq!(p.on_plane(pixel), None, "{pixel:?}");
     }
     // A screen with no ray at its middle has no scale for the tools there.
-    let screen = Screen::Camera(placed(&edge_on, [400, 200], 2.0, SketchPlane::Xy));
+    let screen = Screen::Camera(Box::new(placed(&edge_on, [400, 200], 2.0, SketchPlane::Xy)));
     let to_plane = |at| screen.to_plane(at);
     assert_eq!(crate::sketch::scale_at(&to_plane, pos2(140.0, 80.0)), None);
 }
@@ -238,13 +236,20 @@ fn a_pointer_off_the_viewport_still_meets_the_plane_where_its_ray_does() {
     by_hand(p.on_plane([-500.0, 3200.0]).unwrap(), [-350.0, -1550.0]);
     // And off the screen's points too, unclamped: (-1000, 2000) is 2,080 pixels left of the
     // image's left and 3,940 below its top.
-    by_hand(p.to_plane(pos2(-1000.0, 2000.0)).unwrap(), [-1140.0, -1920.0]);
+    by_hand(
+        p.to_plane(pos2(-1000.0, 2000.0)).unwrap(),
+        [-1140.0, -1920.0],
+    );
 }
 
 #[test]
 fn nan_and_infinite_places_and_pixels_give_none() {
     let p = placed(&down(PERSPECTIVE), [400, 200], 2.0, SketchPlane::Xy);
-    for at in [[f64::NAN, 0.0], [0.0, f64::INFINITY], [f64::NEG_INFINITY, 1.0]] {
+    for at in [
+        [f64::NAN, 0.0],
+        [0.0, f64::INFINITY],
+        [f64::NEG_INFINITY, 1.0],
+    ] {
         assert_eq!(p.pixel_of(at), None, "{at:?}");
         assert_eq!(p.project(at), None, "{at:?}");
     }
@@ -272,7 +277,12 @@ fn a_camera_or_scale_the_renderer_refuses_places_nothing() {
     assert!(Placed::new(&on_target, [400, 200], 2.0, ORIGIN, plane).is_none());
     let up_along = camera(PERSPECTIVE, [0.0, 0.0, 100.0], [0.0; 3], [0.0, 0.0, 1.0]);
     assert!(Placed::new(&up_along, [400, 200], 2.0, ORIGIN, plane).is_none());
-    let nan_eye = camera(PERSPECTIVE, [f64::NAN, 0.0, 100.0], [0.0; 3], [0.0, 1.0, 0.0]);
+    let nan_eye = camera(
+        PERSPECTIVE,
+        [f64::NAN, 0.0, 100.0],
+        [0.0; 3],
+        [0.0, 1.0, 0.0],
+    );
     assert!(Placed::new(&nan_eye, [400, 200], 2.0, ORIGIN, plane).is_none());
 }
 

@@ -14417,7 +14417,10 @@ fn a_rectangle_dragged_through_the_panes_left_events_at_two_pixels_a_point_is_fo
             .collect();
         assert_eq!(drawn.len(), 1, "{drawn:?}");
         let expected = top_screen(&h, corner);
-        assert!((drawn[0] - expected).length() < 1e-2, "{drawn:?} {expected:?}");
+        assert!(
+            (drawn[0] - expected).length() < 1e-2,
+            "{drawn:?} {expected:?}"
+        );
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -14457,7 +14460,10 @@ fn a_dimension_placed_through_the_pane_picks_the_side_clicked_and_opens_its_modi
     let lengths = lengths(&sketch);
     assert_eq!(lengths.len(), 1, "{lengths:?}");
     let (_, line, value, driving) = &lengths[0];
-    assert_eq!((line.as_str(), value.as_str(), *driving), ("na000002", "20", true));
+    assert_eq!(
+        (line.as_str(), value.as_str(), *driving),
+        ("na000002", "20", true)
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -14512,7 +14518,7 @@ fn a_corner_dragged_through_the_pane_follows_the_cursor_and_ends_in_one_edit_the
 
 #[test]
 fn a_drag_held_when_its_tab_is_hidden_ends_from_its_begin_and_its_corner_is_where_it_was_on_return()
- {
+{
     let f = fixture();
     counting(&f);
     let (mut h, seen) = f.overlaid(BOXED);
@@ -14542,7 +14548,11 @@ fn a_drag_held_when_its_tab_is_hidden_ends_from_its_begin_and_its_corner_is_wher
         .filter(|e| e.session == first)
         .map(|e| e.event.kind)
         .collect();
-    assert_eq!(cancels, [silico_app::viewport::LeftKind::Cancel], "{events:?}");
+    assert_eq!(
+        cancels,
+        [silico_app::viewport::LeftKind::Cancel],
+        "{events:?}"
+    );
     step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
     assert_eq!(drag_sends(&h, "drag_end"), 1);
     // Let go and moved in the second tab: nothing of the first's.
@@ -14691,7 +14701,10 @@ fn a_right_click_on_the_canvas_opens_the_sketch_menu_at_it_and_its_own_release_l
             .get_by_role_and_label(Role::Button, "End chain")
             .rect();
         let off = item.min - at;
-        assert!((0.0..24.0).contains(&off.x) && (0.0..24.0).contains(&off.y), "{item:?} {at:?}");
+        assert!(
+            (0.0..24.0).contains(&off.x) && (0.0..24.0).contains(&off.y),
+            "{item:?} {at:?}"
+        );
         // A left click away closes it, and is the canvas's click too.
         pane_click(&mut h, [60.0, 35.0]);
         step(&mut h);
