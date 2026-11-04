@@ -18,6 +18,8 @@ use crate::{Error, ErrorCode};
 /// it isn't read again.
 pub(super) struct HeldText {
     pub(super) revision: Revision,
+    /// Whether `revision` is the session's revision now.
+    pub(super) current: bool,
     pub(super) text: Arc<Vec<u8>>,
     pub(super) gated: Option<Arc<Gated>>,
 }
@@ -45,6 +47,7 @@ impl Held {
     ) -> Result<HeldText, Error> {
         let current = || HeldText {
             revision: self.revision,
+            current: true,
             text: Arc::clone(&self.text),
             gated: Some(Arc::clone(&self.gated)),
         };
@@ -60,6 +63,7 @@ impl Held {
             let (text, gated) = open.begun.held();
             return Ok(HeldText {
                 revision: asked,
+                current: false,
                 text,
                 gated: Some(gated),
             });
@@ -69,6 +73,7 @@ impl Held {
         {
             return Ok(HeldText {
                 revision: asked,
+                current: false,
                 text: Arc::clone(text),
                 gated: None,
             });
@@ -113,6 +118,47 @@ fn not_held(id: SessionId, asked: Revision, held: &[Revision], parameter: &str) 
         "give {parameter} a revision the session holds, or null for the document now"
     ))
     .with_candidates(numbers)
+}
+
+/// The refusal of `held`'s text as text: it isn't UTF-8, the first `valid` bytes are. For
+/// the session's revision now, the file is to be mended; for an older one, the file was,
+/// so the refusal names `revision`, whose text can't be given as text.
+fn not_utf8(held: &HeldText, valid: usize) -> Error {
+    if held.current {
+        return Error::new(
+            ErrorCode::InvalidInput,
+            format!(
+                "the document's text isn't UTF-8 (at byte {valid}), so it can't be given as text"
+            ),
+        )
+        .with_suggestion("mend the file: a document is UTF-8 text");
+    }
+    let n = held.revision.number();
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("revision {n}'s text isn't UTF-8 (at byte {valid}), so it can't be given as text"),
+    )
+    .with_parameter("revision")
+    .with_cause(format!(
+        "revision {n}'s text is the bytes the session held then, and they aren't UTF-8"
+    ))
+    .with_suggestion(
+        "give revision null for the document now, or another revision the session holds",
+    )
+}
+
+/// The refusal of feature `id`, which revision `revision`'s document, not the session's
+/// now, hasn't: naming `feature`, and pointing to the document now.
+fn no_feature_at(revision: Revision, id: &FeatureId) -> Error {
+    let n = revision.number();
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("revision {n}'s document has no feature {id}"),
+    )
+    .with_parameter("feature")
+    .with_suggestion(format!(
+        "name a feature revision {n}'s document has, or give revision null for the document now"
+    ))
 }
 
 /// The document `held` holds, read; or the refusal of a text that doesn't read as one,
@@ -176,8 +222,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// `text`'s work: the text the session holds at `revision` (`None` for its revision
     /// now), or, given a `feature`, that feature's canonical text as that revision's
     /// document has it ([`document::write_feature`]). Refused for a revision not held
-    /// (naming `revision`), a text that isn't UTF-8, and, for a feature, a text that doesn't
-    /// read as a document or hasn't one feature of that ID.
+    /// (naming `revision`), a text that isn't UTF-8 (naming `revision` too, for one not the
+    /// session's now), and, for a feature, a text that doesn't read as a document or hasn't
+    /// one feature of that ID (saying which revision's, for one not the session's now).
     pub(super) fn text(
         &self,
         feature: Option<FeatureId>,
@@ -185,21 +232,15 @@ impl<C: Kernel + 'static> Session<C> {
     ) -> Result<String, Problems> {
         let held = self.text_at(revision, "revision")?;
         match feature {
-            None => String::from_utf8(held.text.to_vec()).map_err(|e| {
-                Problems::from(
-                    Error::new(
-                        ErrorCode::InvalidInput,
-                        format!(
-                            "the document's text isn't UTF-8 (at byte {}), so it can't be given as text",
-                            e.utf8_error().valid_up_to()
-                        ),
-                    )
-                    .with_suggestion("mend the file: a document is UTF-8 text"),
-                )
-            }),
+            None => String::from_utf8(held.text.to_vec())
+                .map_err(|e| Problems::from(not_utf8(&held, e.utf8_error().valid_up_to()))),
             Some(id) => {
                 // The gate's finding where the session keeps it; the text read again where
-                // it doesn't (the one a reload replaced).
+                // it doesn't (the one a reload replaced), on each call: the session keeps
+                // only those bytes, not a document read from them, so each `text` of one of
+                // its features reads them again. No client needs that text a feature at a
+                // time: the whole text always fits one answer (`MAX_RESPONSE_LEN` is more
+                // than twice `MAX_DOCUMENT_LEN`), so `text` with no `feature` gives it once.
                 let read;
                 let document = match &held.gated {
                     Some(gated) => gated.document().map_err(Clone::clone)?,
@@ -208,6 +249,9 @@ impl<C: Kernel + 'static> Session<C> {
                         &read
                     }
                 };
+                if !held.current && !document.features.iter().any(|f| f.id == id) {
+                    return Err(Problems::from(no_feature_at(held.revision, &id)));
+                }
                 Ok(document::write_feature(document.feature(&id)?)?)
             }
         }

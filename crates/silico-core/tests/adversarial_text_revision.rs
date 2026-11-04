@@ -252,8 +252,24 @@ fn every_revision_the_reader_cant_take_is_refused_naming_revision() {
     let twice = f.called(&format!(
         r#"{{"session": "{s}", "feature": null, "revision": 1, "revision": 1}}"#
     ));
-    let (code, _, _) = refused(&twice);
+    // The reader refuses it before any field is read, so it names no parameter: its message
+    // says where. By hand: `{"session": "` is 13 characters, then the session's ID, then
+    // `", "feature": null, "revision": 1, ` is 35, so the second key starts at the column
+    // after those, 51 for `s1`.
+    let (code, _, message) = refused(&twice);
     assert_eq!(code, "invalid_input");
+    assert!(twice["errors"][0]["parameter"].is_null(), "{twice}");
+    let column = 13 + s.to_string().len() + 35 + 1;
+    assert_eq!(
+        message,
+        format!(
+            "the request isn't valid JSON: the key \"revision\" is written twice in one object, at line 1, column {column}"
+        )
+    );
+    assert_eq!(
+        twice["errors"][0]["suggestion"],
+        "fix the request there: a request is strict JSON (RFC 8259), each key given once"
+    );
     // `u64::MAX` reads, and isn't held: refused naming it, the one held its candidate.
     let most = f.called(&format!(
         r#"{{"session": "{s}", "feature": null, "revision": 18446744073709551615}}"#
@@ -299,8 +315,9 @@ fn a_replaced_text_that_isnt_a_document_is_given_whole_and_its_feature_refused_a
 fn a_replaced_text_that_isnt_utf8_is_refused_as_text_and_the_session_answers_after() {
     let f = fixture();
     let s = f.open(b"{\"silico\": 1, \xff}");
+    // While it's the session's revision, named or not: the file is to be mended.
     let now = f.text(&s, None, None);
-    let (code, message, parameter, _) = refusal(&now);
+    let (code, message, parameter, suggestion) = refusal(&now);
     assert_eq!(code, ErrorCode::InvalidInput);
     // By hand: `{"silico": 1, ` is 14 bytes, so the 0xff is at byte 14.
     assert_eq!(
@@ -308,13 +325,61 @@ fn a_replaced_text_that_isnt_utf8_is_refused_as_text_and_the_session_answers_aft
         "the document's text isn't UTF-8 (at byte 14), so it can't be given as text"
     );
     assert_eq!(parameter, None);
+    assert_eq!(
+        suggestion.as_deref(),
+        Some("mend the file: a document is UTF-8 text")
+    );
+    assert_eq!(refusal(&f.text(&s, None, Some(1))), refusal(&now));
+    // Mended outside and reloaded: the file was mended, so the refusal of revision 1 names
+    // `revision`, whose text can't be given as text, and points to the document now.
     let mended = boxes(1, 1, None);
     f.write(mended.as_bytes());
     let replaced = f.text(&s, None, Some(1));
     assert!(replaced.session.as_ref().unwrap().reloaded);
-    assert_eq!(refusal(&replaced), refusal(&now));
+    old_revision_not_utf8(&replaced, 1, 14);
     assert_eq!(f.text(&s, None, None).result.unwrap().text, mended);
     assert_eq!(f.text(&s, None, Some(2)).result.unwrap().text, mended);
+}
+
+/// The refusal of revision `n`, not the session's now, whose text isn't UTF-8 from byte
+/// `at`: naming `revision`, with the document now as the way on.
+#[track_caller]
+fn old_revision_not_utf8(response: &Response<TextAnswer>, n: u64, at: usize) {
+    let (code, message, parameter, suggestion) = refusal(response);
+    assert_eq!(code, ErrorCode::InvalidInput);
+    assert_eq!(
+        message,
+        format!("revision {n}'s text isn't UTF-8 (at byte {at}), so it can't be given as text")
+    );
+    assert_eq!(parameter.as_deref(), Some("revision"));
+    assert_eq!(
+        suggestion.as_deref(),
+        Some("give revision null for the document now, or another revision the session holds")
+    );
+    let error = &response.result.as_ref().unwrap_err().errors()[0];
+    assert_eq!(
+        error.cause(),
+        Some(
+            format!(
+                "revision {n}'s text is the bytes the session held then, and they aren't UTF-8"
+            )
+            .as_str()
+        )
+    );
+}
+
+#[test]
+fn a_base_that_isnt_utf8_is_refused_naming_revision_once_replaced() {
+    let f = fixture();
+    // By hand: `not ` is 4 bytes, so the 0xfe is at byte 4.
+    let s = f.open(b"not \xfe utf-8");
+    answer(f.sessions.begin(&s)).result.unwrap();
+    let mended = boxes(1, 1, None);
+    let replaced = answer(f.sessions.replace_text(&s, rev(1), mended.clone()));
+    assert_eq!(replaced.session.unwrap().revision, rev(2));
+    // The base, `begin`'s bytes, isn't the session's revision now: refused naming it.
+    old_revision_not_utf8(&f.text(&s, None, Some(1)), 1, 4);
+    assert_eq!(f.text(&s, None, None).result.unwrap().text, mended);
 }
 
 #[test]

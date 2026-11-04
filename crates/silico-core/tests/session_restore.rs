@@ -439,6 +439,28 @@ fn inside_a_transaction_its_base_gives_begins_text() {
     let now = rolled.session.unwrap().revision;
     assert_eq!(f.text_of(&s, None, Some(now.number())), one_line);
     not_held(&f.text(&s, None, Some(1)), 1, &[&now.number().to_string()]);
+    // Begun again, edited, and committed: the base, held while the transaction was open,
+    // isn't after its commit, which leaves the session at a revision past it.
+    answer(f.sessions.begin(&s)).result.unwrap();
+    let base = now;
+    let edited = answer(f.sessions.set_field(
+        &s,
+        base,
+        id("k7f2qx3m"),
+        "height".to_owned(),
+        json::read(b"12").unwrap(),
+    ));
+    assert_eq!(edited.session.unwrap().revision.number(), base.number() + 1);
+    assert_eq!(f.text_of(&s, None, Some(base.number())), one_line);
+    let committed = answer(f.sessions.commit(&s));
+    committed.result.unwrap();
+    let after = committed.session.unwrap().revision;
+    assert!(after > base, "{after:?} {base:?}");
+    not_held(
+        &f.text(&s, None, Some(base.number())),
+        base.number(),
+        &[&after.number().to_string()],
+    );
 }
 
 #[test]
@@ -455,8 +477,30 @@ fn a_feature_the_revision_hasnt_is_refused_naming_feature() {
     f.write(&with_pin);
     f.reloads(&s, Revision::OPENED);
     assert_eq!(f.text_of(&s, Some("a91cw0de"), None), pin);
-    let (code, message, parameter, _) = refusal(&f.text(&s, Some("a91cw0de"), Some(1)));
+    // Not in revision 1's document: the refusal says the revision is why, and where the
+    // feature is.
+    let (code, message, parameter, suggestion) = refusal(&f.text(&s, Some("a91cw0de"), Some(1)));
     assert_eq!(code, ErrorCode::InvalidInput);
-    assert_eq!(message, "the document has no feature a91cw0de");
+    assert_eq!(message, "revision 1's document has no feature a91cw0de");
     assert_eq!(parameter.as_deref(), Some("feature"));
+    assert_eq!(
+        suggestion.as_deref(),
+        Some(
+            "name a feature revision 1's document has, or give revision null for the document now"
+        )
+    );
+    // Not in the document now, its revision named or not: the document's refusal, as
+    // `text` gives it with no revision.
+    let now = f.revision(&s).number();
+    for revision in [None, Some(now)] {
+        let (code, message, parameter, suggestion) =
+            refusal(&f.text(&s, Some("b0000000"), revision));
+        assert_eq!(code, ErrorCode::InvalidInput);
+        assert_eq!(message, "the document has no feature b0000000");
+        assert_eq!(parameter.as_deref(), Some("feature"));
+        assert_eq!(
+            suggestion.as_deref(),
+            Some("name a feature by its ID, as the document's outline lists them")
+        );
+    }
 }
