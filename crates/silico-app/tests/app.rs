@@ -13795,3 +13795,612 @@ fn the_browsers_rows_are_filled_as_the_prototype_fills_them_and_its_mark_is_red_
         },
     );
 }
+
+// ---- The timeline (DESIGN.md, *The idea in one line*; styles.css's `.tl-*`) ----
+
+/// A plate, a triangle sketched on XY, a pad of the triangle on the plate, and a pocket of
+/// it in the pad: one chain, each feature built from the one before it (the pad from the
+/// plate and the sketch, the pocket from the pad and the sketch).
+const LADDER: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "r0000002", "type": "pad", "v": 1, "name": "Raised", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 3, "reversed": false}},
+    {"id": "q0000003", "type": "pocket", "v": 1, "name": "Cut", "base": "r0000002", "sketch": "s0000001", "extent": {"type": "one_side", "length": 1, "reversed": false}}
+  ]
+}
+"#;
+
+/// The timeline pane.
+fn timeline(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+}
+
+/// What the timeline's item `name` says of its feature: its type and its state.
+fn item_state(h: &AppHarness, name: &str) -> Option<String> {
+    timeline(h)
+        .query_by_label(name)
+        .and_then(|node| node.accesskit_node().description())
+}
+
+/// The timeline's items' names, in order.
+fn items(h: &AppHarness) -> Vec<String> {
+    labels(h, "Timeline", Role::Button)
+}
+
+/// The kernel refuses the pocket's cut.
+fn refuses_the_cut(f: &Fixture) {
+    f.kernel.refuse(|op| {
+        matches!(
+            op,
+            Op::Boolean {
+                op: silico_protocol::BooleanOp::Cut,
+                ..
+            }
+        )
+        .then(|| Error::new(ErrorCode::KernelFailed, "the cut came apart"))
+    });
+}
+
+/// The plate's height set to 12 through the tab, as the property panel sets a field: every
+/// step after the plate's runs again.
+fn plate_raised(h: &mut AppHarness, f: &Fixture) {
+    let value = json::read(b"12").unwrap();
+    let edit = silico_app::tab::Edit {
+        feature: silico_core::document::FeatureId::new("b0000001").unwrap(),
+        field: "height".to_owned(),
+        value,
+    };
+    let _marked = never_waits::marked();
+    h.state_mut().tabs_mut()[0].edit(&f.sessions, edit);
+}
+
+/// LADDER opened, its pocket refused, and its plate raised with the pad's fuse held: the
+/// rebuild runs the pad's step, and holds it.
+fn ladder_rebuilding(f: &Fixture, h: &mut AppHarness) -> Hold {
+    step_until(h, "the pocket's failure", |h| {
+        item_state(h, "Cut").as_deref() == Some("Pocket · Error")
+    });
+    let hold = f.kernel.hold(|op| {
+        matches!(
+            op,
+            Op::Boolean {
+                op: silico_protocol::BooleanOp::Fuse,
+                ..
+            }
+        )
+    });
+    plate_raised(h, f);
+    step_until(h, "the pad's step running", |h| {
+        item_state(h, "Raised").as_deref() == Some("Pad · Rebuilding")
+    });
+    hold
+}
+
+#[test]
+fn the_timeline_lists_each_feature_in_order_and_shows_the_rebuild_running_along_it() {
+    let f = fixture();
+    refuses_the_cut(&f);
+    let (mut h, _) = f.opened("ladder.silico", LADDER);
+    let hold = ladder_rebuilding(&f, &mut h);
+    assert_eq!(items(&h), ["Plate", "Triangle", "Raised", "Cut"]);
+    // The pad's step runs: the plate and the triangle are its inputs, so built before it
+    // started; the pocket, built from the pad, waits. No mark while it runs.
+    assert_eq!(item_state(&h, "Plate").as_deref(), Some("Box · Built"));
+    assert_eq!(
+        item_state(&h, "Triangle").as_deref(),
+        Some("Sketch · Built")
+    );
+    assert_eq!(item_state(&h, "Cut").as_deref(), Some("Pocket · Queued"));
+    assert!(timeline(&h).query_by_label("error").is_none());
+    // A frame at once, for the spinner, while a step runs.
+    step(&mut h);
+    let delay = h
+        .output()
+        .viewport_output
+        .get(&eframe::egui::ViewportId::ROOT)
+        .map(|viewport| viewport.repaint_delay);
+    assert_eq!(delay, Some(Duration::ZERO));
+    // Released: the rebuild ends with the pocket failed again, red and marked, and the rest
+    // as their health is (the plate's and the pad's fingerprints aren't stored: warned).
+    hold.release();
+    step_until(&mut h, "the rebuild's end", |h| {
+        item_state(h, "Raised").is_some_and(|state| state != "Pad · Rebuilding")
+            && item_state(h, "Cut").as_deref() == Some("Pocket · Error")
+            && h.state().tabs()[0].timeline.as_ref().unwrap().revision
+                == h.state().tabs()[0]
+                    .status
+                    .as_ref()
+                    .unwrap()
+                    .rebuild
+                    .revision
+    });
+    for name in ["Plate", "Triangle", "Raised"] {
+        let state = item_state(&h, name).unwrap();
+        assert!(
+            state.ends_with("Healthy") || state.ends_with("Warning"),
+            "{name}: {state}"
+        );
+    }
+    assert_eq!(
+        showing(&h, "Timeline", "error").as_deref(),
+        Some("error"),
+        "the pocket's mark"
+    );
+    assert!(shows(&h, "Timeline", "1 error · 4 features"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_timelines_summary_counts_the_features_and_says_errors_only_when_there_are_some() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    assert!(shows(&h, "Timeline", "3 features"));
+    assert!(timeline(&h).query_by_label_contains("error").is_none());
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, Op::Boolean { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "the cut came apart"))
+    });
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "the cut's failure", |h| {
+        shows(h, "Timeline", "1 error · 3 features")
+    });
+    // Empty: its words, and no feature counted wrongly.
+    let empty = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": []}"#;
+    let (mut h, _) = f.opened("empty.silico", empty);
+    step_until(&mut h, "its words", |h| {
+        shows(
+            h,
+            "Timeline",
+            "Features appear here, in order, as you add them.",
+        )
+    });
+    assert!(shows(&h, "Timeline", "0 features"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The timeline's item `name` dragged to `to`, a frame at each step of the way, the left
+/// button held from its centre.
+fn drag_item(h: &mut AppHarness, name: &str, to: eframe::egui::Pos2) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let from = timeline(h).get_by_label(name).rect().center();
+    h.input_mut().events.push(Event::PointerMoved(from));
+    step(h);
+    h.input_mut().events.push(Event::PointerButton {
+        pos: from,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::default(),
+    });
+    step(h);
+    for t in [0.25, 0.5, 0.75, 1.0] {
+        h.input_mut()
+            .events
+            .push(Event::PointerMoved(from + (to - from) * t));
+        step(h);
+    }
+    h.input_mut().events.push(Event::PointerButton {
+        pos: to,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::default(),
+    });
+    step(h);
+}
+
+#[test]
+fn a_feature_dragged_along_the_timeline_moves_there_and_a_refused_move_is_said() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // The pin, dropped left of the block's centre: before it, as `move_feature` puts it.
+    let block = timeline(&h).get_by_label("Block").rect();
+    drag_item(
+        &mut h,
+        "Pin",
+        block.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    step_until(&mut h, "the pin moved", |h| {
+        items(h) == ["Pin", "Block", "Hole"]
+    });
+    let id = |id: &str| silico_core::document::FeatureId::new(id).unwrap();
+    assert!(
+        h.state().tabs()[0]
+            .sent
+            .contains(&Sent::Move(id("a91cw0de"), Some(id("k7f2qx3m"))))
+    );
+    // In the session's transaction, as an edit is: the file is as it was.
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert!(anywhere(&h, "example.silico *"));
+    // The hole before the pin, its tool: what the core refuses, said in the status bar,
+    // the timeline as it was. The refusal's words are the core's own, from a session of
+    // its own.
+    let copy = f
+        .sessions
+        .open(f.file("copy.silico", EXAMPLE), false)
+        .wait()
+        .session
+        .unwrap();
+    let refused = f
+        .sessions
+        .move_feature(
+            &copy.id,
+            copy.revision,
+            id("m3tq8v0z"),
+            Some(id("a91cw0de")),
+        )
+        .wait()
+        .result
+        .unwrap_err();
+    let said = silico_app::tab::said(&refused);
+    let pin = timeline(&h).get_by_label("Pin").rect();
+    drag_item(
+        &mut h,
+        "Hole",
+        pin.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    step_until(&mut h, "the refusal said", |h| anywhere(h, &said));
+    assert_eq!(items(&h), ["Pin", "Block", "Hole"]);
+    // A drop where it is sends nothing.
+    let sent = h.state().tabs()[0].sent.len();
+    let block = timeline(&h).get_by_label("Block").rect();
+    drag_item(
+        &mut h,
+        "Block",
+        block.center() + eframe::egui::vec2(4.0, 0.0),
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_move_asked_while_a_dialog_is_open_is_refused_and_said() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    double_click(&mut h, "Timeline", "Pin");
+    step_until(&mut h, "its dialog", dialog_open);
+    let sent = h.state().tabs()[0].sent.len();
+    let block = timeline(&h).get_by_label("Block").rect();
+    drag_item(
+        &mut h,
+        "Hole",
+        block.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    step(&mut h);
+    // Said in the status bar (its label, and its text, each a node).
+    assert!(
+        h.query_all_by_label("Close the dialog before moving a feature")
+            .next()
+            .is_some()
+    );
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert_eq!(items(&h), ["Block", "Pin", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn hovering_a_timeline_item_highlights_the_faces_its_feature_made() {
+    let f = fixture();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Large"));
+    let number = |feature: &str| {
+        view(&h)
+            .bodies()
+            .iter()
+            .find(|(_, body)| body.feature.as_str() == feature)
+            .map(|(number, _)| *number)
+            .unwrap()
+    };
+    let large = number("a91cw0de");
+    let last = |record: &Record| {
+        record
+            .lock()
+            .unwrap()
+            .frames
+            .last()
+            .unwrap()
+            .highlights
+            .clone()
+    };
+    assert!(last(&record).is_empty());
+    // Hovered: each of the large box's six faces (a box makes six, every one its own), and
+    // none of the small box's.
+    let item = timeline(&h).get_by_label("Large").rect().center();
+    h.hover_at(item);
+    step(&mut h);
+    step(&mut h);
+    let faces: Vec<_> = (1..=6)
+        .map(|n| (large, silico_app::renderer::Element::Face(n)))
+        .collect();
+    assert_eq!(last(&record), faces);
+    // The pointer off it: nothing highlighted.
+    h.hover_at(item + eframe::egui::vec2(0.0, -200.0));
+    step(&mut h);
+    step(&mut h);
+    assert!(last(&record).is_empty());
+    // A hidden body's faces aren't highlighted: it isn't drawn.
+    browser(&h).get_by_label("Hide Large").click();
+    step(&mut h);
+    h.hover_at(item);
+    step(&mut h);
+    step(&mut h);
+    assert!(last(&record).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_timeline_draws_a_selected_item_blue_and_a_failed_one_red_on_lavapipe() {
+    on_lavapipe(
+        "the_timeline_draws_a_selected_item_blue_and_a_failed_one_red_on_lavapipe",
+        || {
+            // The fake's own meshes, a triangle a face: the bodies here aren't boxes.
+            let f = fixture();
+            refuses_the_cut(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_pixels_per_point(2.0)
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            let path = f.file("ladder.silico", LADDER);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            step_until(&mut h, "the pocket's failure", |h| {
+                item_state(h, "Cut").as_deref() == Some("Pocket · Error")
+            });
+            select(&mut h, "Plate");
+            // The pointer away from the timeline, so no item is hovered.
+            h.hover_at(eframe::egui::pos2(640.0, 300.0));
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            // The selected item (`.tl-item.selected`): Blue.500, `#186add`, inside its
+            // left edge, clear of a focus ring's point, and of its icon.
+            let plate = timeline(&h).get_by_label("Plate").rect();
+            assert_eq!(plate.size(), eframe::egui::vec2(30.0, 30.0));
+            let inside = eframe::egui::pos2(plate.left() + 2.5, plate.center().y);
+            assert_eq!(pixel(inside), [0x18, 0x6a, 0xdd, 0xff], "{plate:?}");
+            // The failed item (`.tl-item.err`): its bottom line Red.550, `#ff3865`
+            // (`inset 0 -2px 0 var(--red)`), a point above its bottom; its mark
+            // (`.badge.err`) `--red-fill`, `#ab0116`, at its centre, 1 in from the item's
+            // top right; and the bar's Gray.150 (`#timeline`) beside the item.
+            let cut = timeline(&h).get_by_label("Cut").rect();
+            let line = eframe::egui::pos2(cut.center().x, cut.bottom() - 1.0);
+            assert_eq!(pixel(line), [0xff, 0x38, 0x65, 0xff], "{cut:?}");
+            let badge = eframe::egui::pos2(cut.right() - 1.0 - 4.5, cut.top() + 1.0 + 4.5);
+            assert_eq!(pixel(badge), [0xab, 0x01, 0x16, 0xff], "{cut:?}");
+            let bar = eframe::egui::pos2(cut.right() + 30.0, cut.center().y);
+            assert_eq!(pixel(bar), [0x17, 0x17, 0x17, 0xff]);
+            // Its icon is Red.550 too: within a step of rounding where a stroke covers a
+            // whole pixel.
+            let red = [0xff, 0x38, 0x65];
+            let near = |rgba: [u8; 4]| (0..3).all(|c| rgba[c].abs_diff(red[c]) <= 3);
+            let icon =
+                eframe::egui::Rect::from_center_size(cut.center(), eframe::egui::vec2(20.0, 20.0));
+            let (x0, y0) = ((icon.left() * ppp) as u32, (icon.top() * ppp) as u32);
+            let (x1, y1) = ((icon.right() * ppp) as u32, (icon.bottom() * ppp) as u32);
+            let found = (y0..y1).any(|y| (x0..x1).any(|x| near(image.get_pixel(x, y).0)));
+            assert!(found, "no {red:x?} in the icon at {icon:?}");
+            // A rebuild running: the pad's step spins, a ring in Gray.1000 (`.building`'s
+            // `border-top-color: var(--g1000)`), which its icon (Gray.750) never is.
+            let hold = ladder_rebuilding(&f, &mut h);
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let raised = timeline(&h).get_by_label("Raised").rect();
+            let (x0, y0) = ((raised.left() * ppp) as u32, (raised.top() * ppp) as u32);
+            let (x1, y1) = (
+                (raised.right() * ppp) as u32,
+                (raised.bottom() * ppp) as u32,
+            );
+            let white = (y0..y1).any(|y| (x0..x1).any(|x| image.get_pixel(x, y).0 == [0xff; 4]));
+            assert!(white, "no spinner in {raised:?}");
+            hold.release();
+        },
+    );
+}
+
+/// LADDER open, every feature settled.
+fn ladder_opened(f: &Fixture) -> AppHarness {
+    let (mut h, _) = f.opened("ladder.silico", LADDER);
+    step_until(&mut h, "its features settled", |h| {
+        items(h) == ["Plate", "Triangle", "Raised", "Cut"]
+            && item_state(h, "Cut").is_some_and(|state| {
+                state.starts_with("Pocket · ") && !state.ends_with("Not built")
+            })
+    });
+    h
+}
+
+#[test]
+fn after_a_move_nothing_is_shown_built_that_the_rebuild_running_may_not_have_built() {
+    // The pocket dragged before the pad: `move_feature` rewires it onto the plate, and the
+    // pad onto it. Its cut held, the pocket's step runs; the pad, after it now, isn't built.
+    let f = fixture();
+    let mut h = ladder_opened(&f);
+    let listed = h.state().tabs()[0].timeline.clone().unwrap();
+    let hold = f.kernel.hold(|op| {
+        matches!(
+            op,
+            Op::Boolean {
+                op: silico_protocol::BooleanOp::Cut,
+                ..
+            }
+        )
+    });
+    let raised = timeline(&h).get_by_label("Raised").rect();
+    drag_item(
+        &mut h,
+        "Cut",
+        raised.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    // The new order shows while the rebuild is held: the timeline is read of the revision
+    // the move made, beside its rebuild.
+    step_until(&mut h, "the pocket's step running in the new order", |h| {
+        items(h) == ["Plate", "Triangle", "Cut", "Raised"]
+            && item_state(h, "Cut").as_deref() == Some("Pocket · Rebuilding")
+    });
+    // Its inputs in the new order, the plate and the triangle, are built; the pad is not.
+    assert_eq!(item_state(&h, "Plate").as_deref(), Some("Box · Built"));
+    assert_eq!(
+        item_state(&h, "Triangle").as_deref(),
+        Some("Sketch · Built")
+    );
+    assert_eq!(item_state(&h, "Raised").as_deref(), Some("Pad · Queued"));
+    // The frames between the move's answer and its timeline's read: the tab still lists the
+    // revision before the move, where the pocket's inputs were the pad and the triangle.
+    // The rebuild is another revision's, so nothing is shown built, the pad least of all.
+    let rebuilding = h.state().tabs()[0]
+        .status
+        .as_ref()
+        .unwrap()
+        .rebuild
+        .revision;
+    assert_ne!(listed.revision, rebuilding);
+    h.state_mut().tabs_mut()[0].timeline = Some(listed);
+    step(&mut h);
+    assert_eq!(items(&h), ["Plate", "Triangle", "Raised", "Cut"]);
+    assert_eq!(
+        item_state(&h, "Cut").as_deref(),
+        Some("Pocket · Rebuilding")
+    );
+    for name in ["Plate", "Triangle", "Raised"] {
+        let state = item_state(&h, name).unwrap();
+        assert!(state.ends_with("Queued"), "{name}: {state}");
+    }
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn hovering_a_timeline_item_highlights_the_faces_named_as_its_features_not_its_bodys() {
+    // One body, the pocket's, made by the chain: hovering the plate highlights the faces
+    // named from the plate's (`b0000001.…`), the pad's those named from the pad's
+    // (`r0000002.…`), each by its name's text, never the body's other faces.
+    let f = fixture();
+    let (mut h, record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    let (number, names): (u32, Vec<String>) = {
+        let bodies = view(&h).bodies();
+        assert_eq!(bodies.len(), 1, "one body");
+        let (number, body) = bodies.iter().next().unwrap();
+        assert_eq!(body.feature.as_str(), "q0000003");
+        (
+            *number,
+            body.faces
+                .iter()
+                .map(|face| face.name.to_string())
+                .collect(),
+        )
+    };
+    let named = |prefix: &str| -> Vec<(u32, silico_app::renderer::Element)> {
+        names
+            .iter()
+            .zip(1u32..)
+            .filter(|(name, _)| name.starts_with(prefix))
+            .map(|(_, n)| (number, silico_app::renderer::Element::Face(n)))
+            .collect()
+    };
+    let plates = named("b0000001.");
+    let pads = named("r0000002.");
+    assert!(!plates.is_empty() && !pads.is_empty(), "{names:?}");
+    assert!(plates.len() + pads.len() < names.len(), "{names:?}");
+    let last = |record: &Record| {
+        record
+            .lock()
+            .unwrap()
+            .frames
+            .last()
+            .unwrap()
+            .highlights
+            .clone()
+    };
+    for (name, want) in [("Plate", &plates), ("Raised", &pads)] {
+        h.hover_at(timeline(&h).get_by_label(name).rect().center());
+        step(&mut h);
+        step(&mut h);
+        assert_eq!(&last(&record), want, "{name}: {names:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_move_is_undone_by_ctrl_z_and_the_file_is_never_touched() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let block = timeline(&h).get_by_label("Block").rect();
+    drag_item(
+        &mut h,
+        "Pin",
+        block.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    step_until(&mut h, "the pin moved", |h| {
+        items(h) == ["Pin", "Block", "Hole"] && anywhere(h, "example.silico *")
+    });
+    step_until(&mut h, "Undo offered", |h| offered(h, "Undo"));
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step_until(&mut h, "the move undone", |h| {
+        items(h) == ["Block", "Pin", "Hole"] && !anywhere(h, "example.silico *")
+    });
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_close_while_a_move_waits_before_its_transaction_opens_asks_first() {
+    // The session's queue held: the move, and the `begin` sent for it, wait behind it, so
+    // no transaction is open yet and the document hasn't changed. The move is still the
+    // person's edit: Close asks, as it does for an edit.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let block = timeline(&h).get_by_label("Block").rect();
+    drag_item(
+        &mut h,
+        "Pin",
+        block.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    step(&mut h);
+    assert!(h.state().tabs()[0].unsaved());
+    h.get_by_label("Close example.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the move shown", |h| {
+        items(h) == ["Pin", "Block", "Hole"]
+    });
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}

@@ -490,3 +490,14 @@ crates/silico-app/src/browse.rs | Native::on | replace && with || | #363
 crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace <impl Browse for Native>::browse -> Option<Answer> with None | #363
 crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace && with || | #363
 crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace != with == | #363
+# The timeline's track (#369) turns off egui's drag-to-scroll, which egui's default turns on
+# only on a touch screen, and only for a press its hit test gives the track's background.
+# The track scrolls only once its items overflow it, and then every point of it is within
+# 4.5 points of an item (`.tl-item`, 30 high in the 39-high track, 2 apart), inside egui's
+# 5-point `interact_radius`: egui 0.36's hit test (hit_test.rs, `hit_test_on_close`) gives a
+# press there to the item, which senses click and drag, "a smaller thing on a big
+# background", never to the background. A drag from an item, from over the items' top
+# margin, and from between two items, of 40 items, was checked with the field deleted on a
+# touch screen and with drag-to-scroll forced on (`DragScroll::Always`): the track never
+# moved, and the wheel scrolled it. Unreachable.
+crates/silico-app/src/timeline.rs | features | delete field drag from struct egui::scroll_area::ScrollSource expression | #369

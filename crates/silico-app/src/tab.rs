@@ -10,8 +10,8 @@ use silico_core::ErrorCode;
 use silico_core::command::export::{Export, Exported};
 use silico_core::command::{
     Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, FieldSet, ModelChoice,
-    Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId, Sessions, Status,
-    Stepped, TextAnswer, TimelineAnswer,
+    Moved, Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId, Sessions,
+    Status, Stepped, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
@@ -59,6 +59,12 @@ enum Queued {
     },
     Step {
         undo: bool,
+    },
+    /// A feature dragged along the timeline (`move_feature`): `feature`, before `before`, or
+    /// to the end for none.
+    Move {
+        feature: FeatureId,
+        before: Option<FeatureId>,
     },
     /// A dialog's new feature (`add_feature`), of `kind`, of the dialog numbered `serial`:
     /// the members its dialog gave ([`Dialog::add`]), and, for a sweep, the body it builds
@@ -118,6 +124,8 @@ pub enum Sent {
     Begin,
     Add,
     Edit(String),
+    /// `move_feature`, of the feature, before the feature (none: to the end).
+    Move(FeatureId, Option<FeatureId>),
     Undo(Option<Revision>),
     Redo(Option<Revision>),
     Commit,
@@ -171,6 +179,7 @@ impl Edits {
                 | Queued::SaveAs { .. }
                 | Queued::Revert { .. }
                 | Queued::Step { .. }
+                | Queued::Move { .. }
                 | Queued::Add { .. }
                 | Queued::Opened
                 | Queued::Load { .. }
@@ -193,6 +202,11 @@ enum Under {
         then_close: bool,
     },
     Step(Running<Stepped>),
+    /// A move along the timeline, as it was sent.
+    Move {
+        sending: Sending,
+        running: Running<Moved>,
+    },
     /// A Save As, the path it was given, which the tab asks to replace if a file is
     /// there, and whether the tab began the transaction it commits (rolled back if it's
     /// refused, so no empty transaction stays open).
@@ -568,13 +582,32 @@ impl Tab {
                 .is_some_and(|transaction| transaction.redo > 0)
     }
 
-    /// Whether it holds unsaved edits: the document changed, an edit under way, or a
-    /// transaction open with anything of the tab's still to answer (an undo or a redo
-    /// queued or running among them). Only a tab with
+    /// Whether it holds unsaved edits: the document changed, an edit, a move, or an add under
+    /// way, or a transaction open with anything of the tab's still to answer (an undo or a
+    /// redo queued or running among them). Only a tab with
     /// none of these is closed without asking (rolled back first if a transaction is open).
     pub fn unsaved(&self) -> bool {
-        // A `begin` under way goes with the edit it was sent for (`edits.idle` is false).
-        self.changed() || !self.edits.idle() || (self.transaction && !self.quiet())
+        // A `begin` under way goes with the edit it was sent for (`edits.idle` is false), or
+        // with the move or the add it was sent for (`changing`).
+        self.changed()
+            || !self.edits.idle()
+            || self.changing()
+            || (self.transaction && !self.quiet())
+    }
+
+    /// Whether a move or a dialog's add is queued or running: each changes the document,
+    /// and may be under way before the transaction its `begin` opens is.
+    fn changing(&self) -> bool {
+        self.edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::Move { .. } | Queued::Add { .. }))
+            || self.under.iter().any(|under| {
+                matches!(
+                    under,
+                    Under::Move { .. } | Under::Add { .. } | Under::Base { .. }
+                )
+            })
     }
 
     /// Save As (`commit` with a path, docs/design/m5.0-app.md §4): once everything asked
@@ -853,6 +886,18 @@ impl Tab {
                     running,
                 }),
             },
+            Under::Move { sending, running } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    // A refusal said in the status bar, the timeline as it was.
+                    if let Err(problems) = response.result {
+                        self.message = Some(said(&problems));
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Move { sending, running }),
+            },
             Under::Base {
                 serial,
                 kind,
@@ -1079,6 +1124,16 @@ impl Tab {
                         running: sessions.add_feature(&self.id, self.revision, None, feature),
                     });
                 }
+                Queued::Move { feature, before } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::Move(feature.clone(), before.clone()));
+                    let sending = self.sending();
+                    self.under.push(Under::Move {
+                        sending,
+                        running: sessions.move_feature(&self.id, self.revision, feature, before),
+                    });
+                }
                 Queued::Opened => {
                     self.dialog_base = Some(self.revision);
                     self.dialog_began = !self.transaction && !self.beginning;
@@ -1210,6 +1265,7 @@ impl Tab {
                         | Under::SaveAs { .. }
                         | Under::Rollback { .. }
                         | Under::Step(_)
+                        | Under::Move { .. }
                         | Under::Add { .. }
                         | Under::Base { .. }
                 )
@@ -1271,6 +1327,29 @@ impl Tab {
     pub fn edit<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, edit: Edit) {
         self.message = None;
         self.edits.push(edit);
+        self.advance(sessions);
+    }
+
+    /// `feature` moved along the timeline before `before`, or to the end for none
+    /// (`move_feature`), as an edit is: inside the tab's transaction, begun first if none is
+    /// open, and sent once everything asked before it has answered. Never while a dialog is
+    /// open (its Cancel undoes to where it opened) or the tab closes: then it's said why, and
+    /// nothing is sent. A refusal is said in the status bar.
+    pub fn move_feature<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        feature: FeatureId,
+        before: Option<FeatureId>,
+    ) {
+        if self.in_dialog() {
+            self.message = Some("Close the dialog before moving a feature".to_owned());
+            return;
+        }
+        if self.closing() {
+            return;
+        }
+        self.message = None;
+        self.edits.queue.push_back(Queued::Move { feature, before });
         self.advance(sessions);
     }
 

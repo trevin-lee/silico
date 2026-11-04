@@ -1,8 +1,9 @@
 //! The window's panes, docked with `egui_tiles` as Fusion lays them out (docs/design/m5.0-
 //! app.md, section 8; docs/ux/fusion.md, *The window*): the browser at the canvas's left,
-//! the canvas (the viewport, `crate::viewport`), the property panel at its right,
-//! and the timeline across the bottom. Each pane is labelled for the accessibility tree
-//! (`egui_tiles` labels none), which is how the app's tests find it (decision 7).
+//! the canvas (the viewport, `crate::viewport`), and the property panel at its right; the
+//! timeline across the bottom is a panel of its own, a fixed 40 high (`crate::timeline`).
+//! Each pane is labelled for the accessibility tree (`egui_tiles` labels none), which is
+//! how the app's tests find it (decision 7).
 
 use std::sync::Arc;
 
@@ -56,7 +57,6 @@ pub enum Pane {
     Browser,
     Viewport,
     Properties,
-    Timeline,
 }
 
 impl Pane {
@@ -66,29 +66,22 @@ impl Pane {
             Pane::Browser => "Browser",
             Pane::Viewport => "Viewport",
             Pane::Properties => "Properties",
-            Pane::Timeline => "Timeline",
         }
     }
 }
 
-/// Fusion's layout: the browser, the canvas, and the property panel side by side, over the
-/// timeline across the window's bottom.
+/// Fusion's layout: the browser, the canvas, and the property panel side by side (the
+/// timeline, a panel of its own, is under them: `crate::timeline`).
 pub fn layout() -> Tree<Pane> {
     let mut tiles = Tiles::default();
     let browser = tiles.insert_pane(Pane::Browser);
     let viewport = tiles.insert_pane(Pane::Viewport);
     let properties = tiles.insert_pane(Pane::Properties);
-    let timeline = tiles.insert_pane(Pane::Timeline);
-    let top = tiles.insert_horizontal_tile(vec![browser, viewport, properties]);
-    if let Some(Tile::Container(egui_tiles::Container::Linear(linear))) = tiles.get_mut(top) {
+    let root = tiles.insert_horizontal_tile(vec![browser, viewport, properties]);
+    if let Some(Tile::Container(egui_tiles::Container::Linear(linear))) = tiles.get_mut(root) {
         linear.shares.set_share(browser, 1.0);
         linear.shares.set_share(viewport, 3.0);
         linear.shares.set_share(properties, 1.0);
-    }
-    let root = tiles.insert_vertical_tile(vec![top, timeline]);
-    if let Some(Tile::Container(egui_tiles::Container::Linear(linear))) = tiles.get_mut(root) {
-        linear.shares.set_share(top, 5.0);
-        linear.shares.set_share(timeline, 1.0);
     }
     Tree::new("silico-window", root, tiles)
 }
@@ -128,7 +121,6 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
             .show(ui, |ui| match pane {
                 Pane::Browser | Pane::Viewport => {}
                 Pane::Properties => self.properties(ui),
-                Pane::Timeline => self.timeline(ui),
             });
         UiResponse::None
     }
@@ -151,7 +143,7 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
 
 /// What a pane with no timeline yet says: that it's building, or that its rebuild was
 /// stopped (the status bar's Rebuild, or Ctrl+B, starts it again).
-fn building(tab: &Tab) -> &'static str {
+pub(crate) fn building(tab: &Tab) -> &'static str {
     if tab.rebuild_stopped() {
         "Rebuild stopped"
     } else {
@@ -196,62 +188,6 @@ impl<P: Clients + 'static> Panes<'_, P> {
         if let Some(id) = asked.edit {
             // SEAM(#351): `tab.edit_sketch_or_feature(self.sessions, &id)`, Edit Sketch for a
             // sketch; until then a sketch has no dialog, and this opens none.
-            tab.edit_feature(self.sessions, &id);
-            *self.started = true;
-        }
-    }
-
-    /// The timeline (section 8, *The timeline*): the features in order, left to right, each
-    /// with its health's mark and its text; suppressed and unknown ones dimmed. A double-click
-    /// on one, or Edit Feature in its context menu, opens its dialog (section 9), if a
-    /// dialog edits its type.
-    fn timeline(&mut self, ui: &mut Ui) {
-        let Some(tab) = self.tab.as_deref_mut() else {
-            return;
-        };
-        let Some(timeline) = &tab.timeline else {
-            ui.weak(building(tab));
-            return;
-        };
-        let Some(entries) = &timeline.features else {
-            ui.weak("The document doesn't read as a document: its problems are in Properties");
-            return;
-        };
-        let mut selected = tab.selected.clone();
-        let mut edit = None;
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for entry in entries {
-                    let text = match entry.health {
-                        Health::Suppressed | Health::Unknown => RichText::new(&entry.name).weak(),
-                        _ => RichText::new(&entry.name),
-                    };
-                    let chosen = selected.as_ref() == Some(&entry.id);
-                    let response = ui.selectable_label(chosen, text);
-                    if response.clicked() {
-                        selected = Some(entry.id.clone());
-                    }
-                    let editable = crate::dialog::Kind::of(entry.kind).is_some();
-                    if response.double_clicked() {
-                        edit = Some(entry.id.clone());
-                    }
-                    response.context_menu(|ui| {
-                        if ui
-                            .add_enabled(editable, egui::Button::new("Edit Feature"))
-                            .clicked()
-                        {
-                            edit = Some(entry.id.clone());
-                            ui.close();
-                        }
-                    });
-                    let said = tab.said.get(entry.id.as_str());
-                    mark(ui, entry.health, said.map(|said| said.message.as_str()));
-                    ui.separator();
-                }
-            });
-        });
-        tab.selected = selected;
-        if let Some(id) = edit {
             tab.edit_feature(self.sessions, &id);
             *self.started = true;
         }
@@ -354,46 +290,6 @@ impl<P: Clients + 'static> Panes<'_, P> {
 /// A feature's name as the document reads a string (`set_field`'s value).
 fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxError> {
     silico_core::document::json::read(crate::dialog::quoted(name).as_bytes())
-}
-
-/// A feature's health mark (section 9, *Error marks*): an error's or a warning's icon of
-/// the app's own, in `theme`'s colour, with its text for the accessibility tree and as its
-/// hover text; none for a healthy, suppressed, or unknown feature.
-fn mark(ui: &mut Ui, health: Health, text: Option<&str>) {
-    let (word, colour) = match health {
-        Health::Error => ("error", ui.visuals().error_fg_color),
-        Health::Warning => ("warning", ui.visuals().warn_fg_color),
-        Health::Healthy | Health::Suppressed | Health::Unknown => return,
-    };
-    let said = match text {
-        Some(text) => format!("{word}: {text}"),
-        None => word.to_owned(),
-    };
-    let side = theme::LIST_ITEM_HEIGHT - 8.0;
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
-    let painter = ui.painter();
-    match health {
-        // An error: a filled circle with a bar; a warning: a filled triangle with a bar.
-        Health::Error => {
-            painter.circle_filled(rect.center(), side / 2.0, colour);
-        }
-        _ => {
-            let points = vec![
-                egui::pos2(rect.center().x, rect.top()),
-                egui::pos2(rect.right(), rect.bottom()),
-                egui::pos2(rect.left(), rect.bottom()),
-            ];
-            painter.add(egui::Shape::convex_polygon(
-                points,
-                colour,
-                egui::Stroke::NONE,
-            ));
-        }
-    }
-    let bar = egui::Rect::from_center_size(rect.center(), Vec2::new(2.0, side * 0.45));
-    painter.rect_filled(bar, 0.0, Color32::WHITE);
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
-    response.on_hover_text(said);
 }
 
 /// What the browser's rows asked for this frame, done once they're drawn: eyes clicked, a
@@ -904,7 +800,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
     let mut right = rect.right() - theme::BROWSER_ROW_PADDING_RIGHT;
     if let Some((health, text)) = line.mark {
         let at = place(right - icons::ICON_SIZE, icons::ICON_SIZE);
-        browser_mark(ui, id.with("mark"), at, health, text);
+        health_mark(ui, id.with("mark"), at, health, text, MarkLook::Glyph);
         right -= icons::ICON_SIZE + gap;
     }
     if let Some(meta) = line.meta {
@@ -946,20 +842,60 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
     }
 }
 
-/// A row's health mark (`.r-err`, `.r-warn`; section 9, *Error marks*): the error's icon in
-/// the error's red, or the warning's in its orange, at `rect`, with its text for the
-/// accessibility tree and as its hover text; none for any other health.
-fn browser_mark(ui: &mut Ui, id: egui::Id, rect: egui::Rect, health: Health, text: Option<&str>) {
-    let (word, glyph, colour) = match health {
-        Health::Error => ("error", Icon::Error, theme::ERROR_TEXT),
-        Health::Warning => ("warning", Icon::Warn, theme::WARNING),
+/// How a health mark is drawn: the browser's, the error's or the warning's icon at a row's
+/// right (`.r-err`, `.r-warn`); or the timeline's, a dot at an item's corner (`.badge.err`,
+/// `.badge.warn`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MarkLook {
+    Glyph,
+    Badge,
+}
+
+/// A feature's health mark (section 9, *Error marks*), the browser's and the timeline's
+/// alike: drawn at `rect` as `look` has it, in the error's colours or the warning's, with
+/// its text (`error: …`, or the word alone until the text is read) for the accessibility
+/// tree and as its hover text; none for any other health.
+pub(crate) fn health_mark(
+    ui: &mut Ui,
+    id: egui::Id,
+    rect: egui::Rect,
+    health: Health,
+    text: Option<&str>,
+    look: MarkLook,
+) {
+    let (word, glyph, colour, fill) = match health {
+        Health::Error => (
+            "error",
+            Icon::Error,
+            theme::ERROR_TEXT,
+            theme::TIMELINE_BADGE_ERROR,
+        ),
+        Health::Warning => (
+            "warning",
+            Icon::Warn,
+            theme::WARNING,
+            theme::TIMELINE_BADGE_WARNING,
+        ),
         Health::Healthy | Health::Suppressed | Health::Unknown => return,
     };
     let said = match text {
         Some(text) => format!("{word}: {text}"),
         None => word.to_owned(),
     };
-    glyph.image(IconSize::Small).tint(colour).paint_at(ui, rect);
+    match look {
+        MarkLook::Glyph => glyph.image(IconSize::Small).tint(colour).paint_at(ui, rect),
+        MarkLook::Badge => {
+            // Its ring outside it (`box-shadow: 0 0 0 1.5px`), then the dot.
+            let radius = rect.width().min(rect.height()) / 2.0;
+            let painter = ui.painter();
+            painter.circle_filled(
+                rect.center(),
+                radius + theme::TIMELINE_BADGE_RING_WIDTH,
+                theme::TIMELINE_BADGE_RING,
+            );
+            painter.circle_filled(rect.center(), radius, fill);
+        }
+    }
     let response = ui.interact(rect, id, Sense::hover());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
     response.on_hover_text(said);
