@@ -3226,9 +3226,21 @@ fn expected(json_text: &str) -> Vec<(String, Plain)> {
     sorted_fields(fields)
 }
 
-/// Stepped until nothing of the tab's is under way and its last answer's revision is read.
+/// Stepped until nothing of the tab's is under way and its last answer's revision is read:
+/// its edits, its steps, a dialog's add, and the timeline read at that revision
+/// (`applying`), which answers a frame or more after them.
 fn settled(h: &mut AppHarness) {
     step_until(h, "everything answered", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.edits.idle() && !tab.applying() && tab.dialog.as_ref().is_none_or(|d| !d.adding)
+    });
+}
+
+/// Stepped until the tab's edits, steps, and a dialog's add have answered, the timeline at
+/// their revision not waited for: for a test holding the rebuild, whose timeline read
+/// waits for the release, so `settled` would never come.
+fn answered_while_held(h: &mut AppHarness) {
+    step_until(h, "everything but the held timeline answered", |h| {
         let tab = &h.state().tabs()[0];
         tab.edits.idle() && !tab.unsettled() && tab.dialog.as_ref().is_none_or(|d| !d.adding)
     });
@@ -4547,7 +4559,7 @@ fn esc_after_typing_coalesced_behind_a_held_preview_stays_stopped() {
     // Two keystrokes, one a frame: the preview's read asked while an edit is in flight
     // runs at the revision that edit comes to.
     type_into(&mut h, "Length", "12");
-    settled(&mut h);
+    answered_while_held(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
     });
@@ -4606,7 +4618,7 @@ fn a_sweeps_body_is_the_documents_tip_even_where_the_model_has_none_there() {
     // OK'd with its preview held (unbuilt): the next sweep's tip is the pocket.
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-    settled(&mut h);
+    answered_while_held(&mut h);
     assert!(
         h.state().tabs()[0]
             .timeline
@@ -4621,7 +4633,7 @@ fn a_sweeps_body_is_the_documents_tip_even_where_the_model_has_none_there() {
     step(&mut h);
     create(&mut h, "Pad");
     added(&mut h);
-    settled(&mut h);
+    answered_while_held(&mut h);
     hold.release();
     let text = text_of(&f, &h);
     let pocket = fields_of(&text, "Pocket").unwrap();
