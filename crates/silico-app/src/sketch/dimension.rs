@@ -4,11 +4,10 @@
 //! dimension over-defines are the core's (`sketch_tools::SmartDimension`, #345, and its
 //! [`offer`]); here is only what's drawn of them and what's sent.
 //!
-//! - **The Modify box** takes what's typed raw and whole, never trimmed: Smart Dimension's as
-//!   `DimensionEvent::Typed`, which the core reads; a placed dimension's read here, whole, by
-//!   the core's JSON reader (`json::read`) into the `set_field` value, whose field the core
-//!   then reads as the document reads a value (SD9). A refusal is said in the box. (#370
-//!   gives both boxes the core's one reading, `read_typed`.)
+//! - **The Modify box** takes what's typed raw and whole, never trimmed, and both boxes read
+//!   it the same way, by the core's `read_typed` (SD9): Smart Dimension's inside the core, as
+//!   `DimensionEvent::Typed`; a placed dimension's here ([`edit_value`]), into its
+//!   `set_field` value. A refusal is said in the box, with nothing sent.
 //! - **The prompt** offers SolidWorks' three choices for a dimension that over-defines,
 //!   placed or edited: Driven (`set_field` of its `driving` to false), Leave (nothing), and
 //!   Cancel (`undo`), each made against the revision its add or edit made, through the tab's
@@ -25,7 +24,9 @@ use eframe::egui::{self, Color32, CornerRadius, Margin, Pos2, RichText, Stroke, 
 use silico_core::command::Revision;
 use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, FeatureId, Form};
-use silico_core::sketch_tools::{Offer, OfferChoice, OfferRequest, Placement, offer};
+use silico_core::sketch_tools::{
+    Offer, OfferChoice, OfferRequest, Placement, PlacementKind, offer, read_typed,
+};
 
 use super::style::*;
 
@@ -65,20 +66,15 @@ pub struct Edited {
     pub read: Revision,
     pub before: silico_core::sketch_states::SketchState,
     pub flagged: BTreeSet<ElementId>,
-    pub dofs: i32,
-    /// Whether the read it was made on had its solve refused: kept with the edit for
-    /// #370's `PlacementKind::Edit { before_refused }`.
+    /// Whether the read it was made on had its solve refused (`PlacementKind::Edit`'s).
     pub before_refused: bool,
     pub made: Option<Revision>,
 }
 
 impl Edited {
-    /// Of `constraint`, of the sketch `read` read at the revision `model`. Its degrees of
-    /// freedom are given as `i32::MAX`, past any a read has: [`offer`]'s dependent add (one
-    /// that leaves the freedoms where they were) is an add's rule, since a driving dimension
-    /// added adds an equation; an edit of a value adds none, and leaves them where they were
-    /// always. So an edit offers only where it flags a constraint the read before didn't, or
-    /// takes the sketch to over defined or no solution, as the rest of [`offer`] has it.
+    /// Of `constraint`, of the sketch `read` read at the revision `model`: the read's state,
+    /// the constraints it flags, and whether its solve was refused, which the core's
+    /// [`offer`] judges an edit by (`PlacementKind::Edit`).
     pub fn of(read: &SketchRead, model: Revision, constraint: ElementId) -> Self {
         Edited {
             sketch: read.sketch.clone(),
@@ -92,9 +88,6 @@ impl Edited {
                 .filter(|(_, state)| state.flagged())
                 .map(|(id, _)| id.clone())
                 .collect(),
-            // The one place of this workaround: once #370 is on main, `Placement.kind` is
-            // `PlacementKind::Edit { before_refused }`, from the field below, replacing it.
-            dofs: i32::MAX,
             before_refused: read.states.solve_problem.is_some(),
             made: None,
         }
@@ -118,10 +111,21 @@ impl Edited {
             read: self.read,
             before: self.before,
             flagged: self.flagged.clone(),
-            dofs: self.dofs,
+            kind: PlacementKind::Edit {
+                before_refused: self.before_refused,
+            },
         };
         Some(offer(read, made, &placement))
     }
+}
+
+/// What a placed dimension's Modify box sends of `text`, typed for the dimension of form
+/// `form`: the `set_field` value of its `value`, as the core's `read_typed` reads it (as
+/// Smart Dimension's own box reads its text), or what it says of the text, refused.
+pub fn edit_value(form: &Form, text: &str) -> Result<silico_core::document::json::Node, String> {
+    read_typed(form, text)
+        .map(|typed| typed.node())
+        .map_err(|message| message.text())
 }
 
 /// A dimension's value as the document writes it, and its unit: the Modify box's text when

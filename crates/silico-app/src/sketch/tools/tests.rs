@@ -1739,3 +1739,58 @@ fn a_cancelled_press_keeps_smart_dimensions_picks_and_leaves_no_press_held() {
     desk.frame(&click(55.0, 10.0));
     assert_eq!(modify_text(&desk).as_deref(), Some("20"));
 }
+
+#[test]
+fn both_modify_boxes_read_the_same_text_the_same_way() {
+    use crate::sketch::dimension::{ModifyAction, edit_value};
+    // Each text typed in Smart Dimension's box, placing the right side's length, and given
+    // to a placed length's box: the same value placed and sent, or the same words said.
+    for text in [
+        "25",
+        " 25 ",
+        "1e1",
+        "25.000001",
+        "1.2345678",
+        "25mm",
+        "abc",
+        "true",
+        "null",
+        "\"25\"",
+        "",
+        "0",
+        "-3",
+        "1e7",
+    ] {
+        let mut desk = Desk::new(Choice::Dimension, boxed());
+        desk.frame(&click(40.0, 10.0));
+        desk.frame(&click(55.0, 10.0));
+        let measured = desk
+            .mode
+            .tools
+            .dimension_preview()
+            .and_then(|p| p.dimension.clone())
+            .unwrap();
+        desk.mode.modify(ModifyAction::Typed(text.to_owned()));
+        desk.holding = true;
+        desk.mode.modify(ModifyAction::Accept);
+        desk.take();
+        let placed = match desk.held.as_slice() {
+            [(_, members)] => match &members.constraints[0].form {
+                Form::Length { value, .. } => Ok(value.to_string()),
+                other => panic!("{other:?}"),
+            },
+            [] => Err(desk.said().unwrap_or_default().to_owned()),
+            other => panic!("{other:?}"),
+        };
+        let sent = edit_value(&measured, text).map(|node| match node.value {
+            silico_core::document::json::Value::Number(number) => number,
+            other => panic!("{other:?}"),
+        });
+        // The gate's range (above 0, within reach) is the add's or the edit's to meet: a
+        // value Smart Dimension's own check refuses there is still one the edit sends.
+        match (&placed, &sent) {
+            (Err(_), Ok(_)) if ["0", "-3", "1e7"].contains(&text) => {}
+            _ => assert_eq!(placed, sent, "{text:?}"),
+        }
+    }
+}

@@ -3360,7 +3360,8 @@ fn a_cancel_ends_a_drag_from_its_begin_and_one_that_never_moved_is_let_go() {
 }
 
 #[test]
-fn a_double_click_on_a_dimension_opens_its_box_with_its_value_whose_text_is_asked_as_read() {
+fn a_double_click_on_a_dimension_opens_its_box_with_its_value_whose_text_is_asked_as_the_core_reads_it()
+ {
     use dimension::{Ask, ModifyAction};
     use silico_core::document::json::Value;
     let read = under(rectangle(vec![length("ka000001", "na000001", "40", true)]));
@@ -3387,12 +3388,27 @@ fn a_double_click_on_a_dimension_opens_its_box_with_its_value_whose_text_is_aske
     assert_eq!(edit.constraint, id("ka000001"));
     let view = mode.modify_view().unwrap();
     assert!(!view.placing && !view.waiting);
-    // "25mm": the core's reader reads no JSON of it; said, nothing asked.
-    mode.modify(ModifyAction::Typed("25mm".to_owned()));
+    // Not a number, as the core's `read_typed` reads text (SD9): units, a word, JSON's true,
+    // null, a string. Each said, nothing asked.
+    let not_a_number = silico_core::sketch_tools::Message::NotANumber.text();
+    for text in ["25mm", "abc", "true", "null", "\"25\"", ""] {
+        mode.modify(ModifyAction::Typed(text.to_owned()));
+        mode.modify(ModifyAction::Accept);
+        assert!(mode.take_asks().is_empty(), "{text}");
+        assert_eq!(
+            mode.edit_box.as_ref().unwrap().said.as_deref(),
+            Some(not_a_number.as_str()),
+            "{text}"
+        );
+    }
+    // A number the document can't hold: seven decimals of a millimetre, refused, repeating it.
+    mode.modify(ModifyAction::Typed("1.2345678".to_owned()));
     mode.modify(ModifyAction::Accept);
     assert!(mode.take_asks().is_empty());
-    assert!(mode.edit_box.as_ref().unwrap().said.is_some());
-    // " 1e1 ": asked whole, as the reader reads it: the number's own text, "1e1".
+    let said = mode.edit_box.as_ref().unwrap().said.clone().unwrap();
+    assert!(said.starts_with("1.2345678 "), "{said}");
+    assert_ne!(said, not_a_number);
+    // " 1e1 ": asked whole, as the core reads it: 10, as the document writes it.
     mode.modify(ModifyAction::Typed(" 1e1 ".to_owned()));
     assert!(mode.edit_box.as_ref().unwrap().said.is_none());
     mode.modify(ModifyAction::Accept);
@@ -3403,7 +3419,7 @@ fn a_double_click_on_a_dimension_opens_its_box_with_its_value_whose_text_is_aske
             },
         ] => {
             assert_eq!(*constraint, id("ka000001"));
-            assert_eq!(value.value, Value::Number("1e1".to_owned()));
+            assert_eq!(value.value, Value::Number("10".to_owned()));
         }
         other => panic!("{other:?}"),
     }

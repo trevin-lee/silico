@@ -12997,7 +12997,8 @@ const BOXED_LENGTH: &str = r#"{
 "#;
 
 /// As [`counting`], but a length of 99 mm repeats the others (redundant), which leaves the
-/// sketch's constraints agreeing, so a drag may begin.
+/// sketch's constraints agreeing, so a drag may begin; and one of 98 mm disagrees with them
+/// (in conflict).
 fn counting_redundant_99(f: &Fixture) {
     use silico_protocol::{Solved, SolverConstraint, Tag};
     f.sketches.answer(|system| {
@@ -13020,9 +13021,22 @@ fn counting_redundant_99(f: &Fixture) {
                 _ => None,
             })
             .collect();
+        let conflicting: Vec<Tag> = system
+            .constraints
+            .iter()
+            .filter_map(|c| match c {
+                SolverConstraint::Distance { tag, value, .. }
+                    if system.values.get(value.0 as usize) == Some(&98.0) =>
+                {
+                    Some(*tag)
+                }
+                _ => None,
+            })
+            .collect();
         Ok(Solved {
             dofs,
             redundant,
+            conflicting,
             free: if dofs > 0 {
                 system.unknowns.clone()
             } else {
@@ -13265,5 +13279,133 @@ fn a_line_dragged_by_its_edge_moves_whole_and_a_circles_edge_passes_the_cores_pr
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(drag_sends(&h, "drag_end"), 1);
     assert_eq!(status_drag(&f, &h), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The boxed sketch with its bottom's length, ka000005, opened in sketch mode on `f`.
+fn boxed_length(f: &Fixture) -> AppHarness {
+    let (mut h, _) = f.opened("boxed.silico", BOXED_LENGTH);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    h
+}
+
+/// The bottom's length, ka000005, double-clicked and set to `text`: stepped until its
+/// edit has answered.
+fn edit_length(f: &Fixture, h: &mut AppHarness, text: &str) {
+    use silico_app::sketch::dimension::ModifyAction;
+    sketch_events(f, h, &[]);
+    let at = label_of_dimension(h, "ka000005");
+    sketch_events(f, h, &double_clicked_at(at));
+    assert!(sketch_mode(h).unwrap().edit_box.is_some());
+    modify(f, h, ModifyAction::Typed(text.to_owned()));
+    modify(f, h, ModifyAction::Accept);
+    settled(h);
+}
+
+#[test]
+fn a_dimension_edited_to_0_is_sent_and_the_gates_refusal_said_in_its_box() {
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed_length(&f);
+    let text = text_of(&f, &h);
+    edit_length(&f, &mut h, "0");
+    // Sent, as the core reads the text (a number it holds); refused by the gate, its words
+    // in the box, which stays open, and the text as it was.
+    assert!(
+        h.state().tabs()[0]
+            .sent
+            .contains(&Sent::Edit("constraints.ka000005.value".to_owned()))
+    );
+    let edit = sketch_mode(&h).unwrap().edit_box.clone().unwrap();
+    let said = edit.said.unwrap();
+    assert_eq!(Some(said.clone()), h.state().tabs()[0].message);
+    assert!(!edit.sent);
+    assert_eq!(text_of(&f, &h), text);
+    assert!(prompt(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// As [`counting`], but the bottom's length repeats the others while it's 40, the bottom's
+/// length as drawn (redundant, agreeing, so the solve stands), and disagrees with them at 98
+/// (in conflict, the solve refused).
+fn counting_redundant_40(f: &Fixture) {
+    use silico_protocol::{Solved, SolverConstraint, Tag};
+    f.sketches.answer(|system| {
+        let sent = FakeSketches::as_sent(system);
+        let equations = system
+            .constraints
+            .iter()
+            .filter(|c| c.tag().is_some())
+            .count();
+        let dofs = system.unknowns.len() as i32 - equations as i32;
+        let valued = |v: f64| -> Vec<Tag> {
+            system
+                .constraints
+                .iter()
+                .filter_map(|c| match c {
+                    SolverConstraint::Distance { tag, value, .. }
+                        if system.values.get(value.0 as usize) == Some(&v) =>
+                    {
+                        Some(*tag)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        Ok(Solved {
+            dofs,
+            redundant: valued(40.0),
+            conflicting: valued(98.0),
+            free: if dofs > 0 {
+                system.unknowns.clone()
+            } else {
+                Vec::new()
+            },
+            ..sent
+        })
+    });
+}
+
+#[test]
+fn an_edit_taking_a_solved_sketch_to_a_refused_solve_offers_though_it_flags_nothing_new() {
+    use silico_core::sketch_states::ConstraintState;
+    let f = fixture();
+    counting_redundant_40(&f);
+    let mut h = boxed_length(&f);
+    let length = silico_core::document::ElementId::new("ka000005").unwrap();
+    // As opened: the bottom's 40 repeats the others, agreeing; the solve stands.
+    let read = sketch_mode(&h).unwrap().drawable().unwrap().clone();
+    assert_eq!(
+        read.states.constraints.get(&length),
+        Some(&ConstraintState::Redundant)
+    );
+    assert!(read.states.solve_problem.is_none());
+    let state = read.states.state;
+    // 98: the same constraint flagged, now in conflict, the solve refused: none newly
+    // flagged, the sketch in the state it was, yet offered, for the solve it lost.
+    edit_length(&f, &mut h, "98");
+    step_until(&mut h, "the read of the edit", |h| {
+        sketch_mode(h)
+            .and_then(|m| m.drawable())
+            .is_some_and(|r| r.states.solve_problem.is_some())
+    });
+    let read = sketch_mode(&h).unwrap().drawable().unwrap().clone();
+    assert_eq!(
+        read.states.constraints.get(&length),
+        Some(&ConstraintState::Conflicting)
+    );
+    assert_eq!(read.states.state, state);
+    step_until(&mut h, "the offer", |h| prompt(h).is_some());
+    assert_eq!(
+        sketch_mode(&h)
+            .unwrap()
+            .offer()
+            .map(|o| o.constraint.clone()),
+        Some(length)
+    );
     assert_eq!(never_waits::waits(), 0);
 }

@@ -955,9 +955,9 @@ impl SketchMode {
     }
 
     /// The Modify box open was asked `action`. A placed dimension's: its text kept as
-    /// typed; accepted, read by the core's own reader, whole (SD9), and asked as a
-    /// `set_field` of its value, its judgement to come on the read of the revision it makes
-    /// (one the reader refuses said in the box, nothing sent); skipped, closed. Smart
+    /// typed; accepted, read whole by the core's `read_typed`, as Smart Dimension's box is
+    /// (SD9), and asked as a `set_field` of its value, its judgement to come on the read of
+    /// the revision it makes (a refusal said in the box, nothing sent); skipped, closed. Smart
     /// Dimension's: given to it (`Typed`, `Enter`, or `Escape`, which places the measured
     /// value, SD2).
     pub fn modify(&mut self, action: ModifyAction) {
@@ -978,9 +978,16 @@ impl SketchMode {
                     ) else {
                         return;
                     };
-                    // The one place the edit box reads its text; once #370 is on main, the
-                    // core's `read_typed(&form, text)?.node()`, as Smart Dimension's box reads.
-                    match silico_core::document::json::read(edit.text.as_bytes()) {
+                    let Some(form) = read
+                        .members
+                        .constraints
+                        .iter()
+                        .find(|c| c.id == edit.constraint)
+                        .map(|c| &c.form)
+                    else {
+                        return;
+                    };
+                    match dimension::edit_value(form, &edit.text) {
                         Ok(value) => {
                             edit.sent = true;
                             self.edited = Some(Edited::of(read, model, edit.constraint.clone()));
@@ -990,12 +997,7 @@ impl SketchMode {
                                 value,
                             });
                         }
-                        Err(refused) => {
-                            edit.said = Some(format!(
-                                "{} (type a plain number, as the document writes one)",
-                                refused.message
-                            ));
-                        }
+                        Err(said) => edit.said = Some(said),
                     }
                 }
             }
