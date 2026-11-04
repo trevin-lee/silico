@@ -449,14 +449,12 @@ pub(crate) fn key_caps_spaced(ui: &Ui, right: Pos2, caps: &[String], primary: bo
             Pos2::new(x - width, right.y - theme::KEY_CAP_HEIGHT / 2.0),
             Pos2::new(x, right.y + theme::KEY_CAP_HEIGHT / 2.0),
         );
-        painter.rect(
-            rect,
-            theme::KEY_CAP_CORNER_RADIUS,
-            fill,
-            Stroke::new(theme::KEY_CAP_BORDER, stroke),
-            StrokeKind::Inside,
+        theme::key_cap_box(ui, rect, fill, stroke);
+        painter.galley(
+            theme::key_cap_text_centre(rect) - galley.size() / 2.0,
+            galley,
+            text,
         );
-        painter.galley(rect.center() - galley.size() / 2.0, galley, text);
         x = rect.left() - gap;
     }
 }
@@ -872,12 +870,14 @@ mod tests {
         pub const ACTION_HEIGHT: f32 = 34.0;
         pub const ACTION_PADDING: f32 = 10.0;
         /// `.keys { gap: 2px }`; `.kbd`: `min-width: 16px; padding: 0 4px; height: 16px;
-        /// border-radius: 3px; border: 1px; font-size: 10.5px` (`border-box`, `*`'s).
+        /// line-height: 16px; border-radius: 3px; border: 1px; border-bottom-width: 2px;
+        /// font-size: 10.5px` (`border-box`, `*`'s).
         pub const KEYS_GAP: f32 = 2.0;
         pub const KBD_MIN_WIDTH: f32 = 16.0;
         pub const KBD_PADDING: f32 = 4.0;
         pub const KBD_BORDER: f32 = 1.0;
         pub const KBD_HEIGHT: f32 = 16.0;
+        pub const KBD_LINE_HEIGHT: f32 = 16.0;
         pub const KBD_RADIUS: u8 = 3;
         pub const KBD_SIZE: f32 = 10.5;
         /// `.st-side-note`: `margin-top: 28px; padding-top: 16px; border-top: 1px solid
@@ -1264,7 +1264,8 @@ mod tests {
             assert_eq!(colour(&named, 0), ink);
             // Its caps, Ctrl and the key, the last 10 from the right, 2 apart: each 16 high
             // on the action's middle, its text's width with 4 of padding and 1 of border at
-            // each side (16 at least), its text centred, 10.5 points.
+            // each side (16 at least), its border 1 and 2 at its bottom, its text centred
+            // across and on its 16 line under its top border, 10.5 points.
             let mut end = rect.right() - css::ACTION_PADDING;
             for cap in [key, "Ctrl"] {
                 let shown = texts(&h, cap)
@@ -1286,13 +1287,20 @@ mod tests {
                     })
                     .unwrap_or_else(|| panic!("{label}'s {cap} cap at {want:?}"));
                 assert_eq!(drawn.fill, cap_fill, "{label}'s {cap}");
-                assert_eq!(
-                    drawn.stroke,
-                    Stroke::new(css::KBD_BORDER, cap_border),
-                    "{label}'s {cap}"
+                crate::modal::tests::kbd_border(
+                    &crate::modal::tests::cap_border(&h, want),
+                    want,
+                    cap_border,
+                    &format!("{label}'s {cap}"),
                 );
-                assert_eq!(drawn.stroke_kind, StrokeKind::Inside);
-                at(shown.pos, want.center() - size / 2.0, cap);
+                at(
+                    shown.pos,
+                    Pos2::new(
+                        want.center().x,
+                        want.top() + css::KBD_BORDER + css::KBD_LINE_HEIGHT / 2.0,
+                    ) - size / 2.0,
+                    cap,
+                );
                 assert_eq!(
                     format(&shown, 0).font_id,
                     FontId::proportional(css::KBD_SIZE)

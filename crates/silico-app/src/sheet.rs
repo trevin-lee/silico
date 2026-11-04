@@ -565,7 +565,7 @@ mod tests {
                 near(shape.rect.top(), top)
                     && near(shape.rect.height(), css::KBD_H)
                     && within.contains_rect(shape.rect)
-                    && shape.stroke.width > 0.0
+                    && shape.corner_radius == CornerRadius::same(css::KBD_R)
             })
             .collect();
         found.sort_by(|a, b| a.rect.left().total_cmp(&b.rect.left()));
@@ -745,9 +745,12 @@ mod tests {
             }
             for cap in &drawn {
                 assert!(cap.rect.width() >= css::KBD_MIN_W);
-                assert_eq!(
-                    (cap.fill, cap.stroke.color, cap.corner_radius),
-                    (css::G250, css::G350, CornerRadius::same(css::KBD_R))
+                assert_eq!(cap.fill, css::G250);
+                modal::tests::kbd_border(
+                    &modal::tests::cap_border(&h, cap.rect),
+                    cap.rect,
+                    css::G350,
+                    name,
                 );
             }
             for cap in caps.iter() {
@@ -1000,7 +1003,10 @@ mod tests {
     fn row_names<S>(h: &Harness<'_, S>) -> Vec<(TextShape, f32)> {
         let caps: Vec<Rect> = rects(h)
             .into_iter()
-            .filter(|shape| near(shape.rect.height(), css::KBD_H) && shape.stroke.width > 0.0)
+            .filter(|shape| {
+                near(shape.rect.height(), css::KBD_H)
+                    && shape.corner_radius == CornerRadius::same(css::KBD_R)
+            })
             .map(|shape| shape.rect)
             .collect();
         painted(h)

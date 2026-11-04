@@ -491,7 +491,7 @@ mod tests {
         pub const X: f32 = 16.0;
         pub const X_RADIUS: u8 = 3;
         /// `.tt-title`'s `gap: 8px`; `.tt-desc`'s `margin-top: 2px`; `.kbd`: `height: 16px;
-        /// border-radius: 3px`; `.keys`' `gap: 2px`.
+        /// border-radius: 3px`, Gray.350 1 round and 2 at its bottom; `.keys`' `gap: 2px`.
         pub const TT_TITLE_GAP: f32 = 8.0;
         pub const TT_DESC_MARGIN: f32 = 2.0;
         pub const KBD_HEIGHT: f32 = 16.0;
@@ -1074,6 +1074,12 @@ mod tests {
         for cap in &caps {
             assert!(near(cap.height(), css::KBD_HEIGHT), "{cap:?}");
             assert!(near(cap.center().y, title_middle), "{cap:?}");
+            crate::modal::tests::kbd_border(
+                &crate::modal::tests::cap_border(&h, *cap),
+                *cap,
+                css::G350,
+                "the tooltip's cap",
+            );
         }
         // Each 2 beyond the one before it (`.keys`' `gap`).
         for pair in caps.windows(2) {

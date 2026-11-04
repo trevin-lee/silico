@@ -704,7 +704,8 @@ mod tests {
         pub const PROGRESS_R: u8 = 2;
         /// `.state-dot`: 8 by 8, round.
         pub const DOT: f32 = 8.0;
-        /// `.kbd`: `min-width: 16px; height: 16px; border-radius: 3px`, Gray.250 on Gray.350.
+        /// `.kbd`: `min-width: 16px; height: 16px; border-radius: 3px`, Gray.250 on Gray.350,
+        /// its border 1 and 2 at its bottom (`border-bottom-width: 2px`).
         pub const KBD_H: f32 = 16.0;
         pub const KBD_MIN_W: f32 = 16.0;
         pub const KBD_R: u8 = 3;
@@ -1012,8 +1013,14 @@ mod tests {
             shortcuts.right() - css::ITEM_PADDING
         ));
         assert_eq!(
-            (caps[0].fill, caps[0].stroke.color, caps[0].corner_radius),
-            (css::G250, css::G350, CornerRadius::same(css::KBD_R))
+            (caps[0].fill, caps[0].corner_radius),
+            (css::G250, CornerRadius::same(css::KBD_R))
+        );
+        crate::modal::tests::kbd_border(
+            &crate::modal::tests::cap_border(&h, caps[0].rect),
+            caps[0].rect,
+            css::G350,
+            "the ? cap",
         );
         let sep = shortcuts.left() - css::GAP - css::BORDER;
         separator_at(&h, sep, 0.0);

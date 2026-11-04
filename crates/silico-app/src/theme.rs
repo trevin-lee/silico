@@ -204,6 +204,125 @@ pub fn focus_ring(
     }
 }
 
+/// A key cap's box (`.kbd`) in `rect`: `fill` under its border in `border`,
+/// [`KEY_CAP_BORDER`] at its top and sides and [`KEY_CAP_BORDER_BOTTOM`] at its bottom, its
+/// outer corners [`KEY_CAP_CORNER_RADIUS`] round, as CSS draws a `border-radius` with sides of
+/// two widths. The border is one mesh, so a translucent one (`.btn .kbd`'s) is laid once
+/// everywhere, and its outer edge is on the pixel grid, as egui's rectangles' are.
+pub fn key_cap_box(ui: &egui::Ui, rect: egui::Rect, fill: Color32, border: Color32) {
+    use egui::emath::GuiRounding as _;
+    let painter = ui.painter();
+    painter.rect_filled(rect, KEY_CAP_CORNER_RADIUS, fill);
+    let pixels = ui.ctx().pixels_per_point();
+    let feather = ui.ctx().tessellation_options(|options| {
+        if options.feathering {
+            options.feathering_size_in_pixels / pixels
+        } else {
+            0.0
+        }
+    });
+    painter.add(key_cap_border(
+        rect.round_to_pixels(pixels),
+        border,
+        feather,
+    ));
+}
+
+/// Where a key cap's words' middle goes in its box `rect`: across, its middle
+/// (`text-align: center`, its side borders alike); down, its line's middle, its line starting
+/// under its top border.
+pub fn key_cap_text_centre(rect: egui::Rect) -> egui::Pos2 {
+    egui::pos2(
+        rect.center().x,
+        rect.top() + KEY_CAP_BORDER + KEY_CAP_LINE_HEIGHT / 2.0,
+    )
+}
+
+/// The ring `.kbd`'s border makes round `rect`, in `colour`, faded to nothing over `feather`
+/// across each of its edges. Each outer corner is a quarter circle of the cap's radius; each
+/// inner one, as CSS has it, a quarter ellipse whose radii are the outer's less the border's
+/// widths at it (none if that's less than nothing), about the same centre while the radius is
+/// wider than the border.
+fn key_cap_border(rect: egui::Rect, colour: Color32, feather: f32) -> egui::Mesh {
+    use egui::{Pos2, vec2};
+    use std::f32::consts::{FRAC_PI_2, PI};
+    /// Each quarter's segments.
+    const STEPS: u16 = 8;
+    let mut mesh = egui::Mesh::default();
+    if !rect.is_positive() {
+        return mesh;
+    }
+    let radius = f32::from(KEY_CAP_CORNER_RADIUS)
+        .min(rect.width() / 2.0)
+        .min(rect.height() / 2.0);
+    // Each side's feather at most as wide as the thinnest side, so no edge's crosses another's.
+    let half = feather.clamp(0.0, KEY_CAP_BORDER.min(KEY_CAP_BORDER_BOTTOM)) / 2.0;
+    // Each corner clockwise from the top left: its point, the way into the cap from it, the
+    // border's widths across it (its side's) and down it (its top's or bottom's), and the angle
+    // its quarter starts at (y down).
+    let corners: [(Pos2, egui::Vec2, f32, f32, f32); 4] = [
+        (
+            rect.left_top(),
+            vec2(1.0, 1.0),
+            KEY_CAP_BORDER,
+            KEY_CAP_BORDER,
+            PI,
+        ),
+        (
+            rect.right_top(),
+            vec2(-1.0, 1.0),
+            KEY_CAP_BORDER,
+            KEY_CAP_BORDER,
+            1.5 * PI,
+        ),
+        (
+            rect.right_bottom(),
+            vec2(-1.0, -1.0),
+            KEY_CAP_BORDER,
+            KEY_CAP_BORDER_BOTTOM,
+            0.0,
+        ),
+        (
+            rect.left_bottom(),
+            vec2(1.0, -1.0),
+            KEY_CAP_BORDER,
+            KEY_CAP_BORDER_BOTTOM,
+            FRAC_PI_2,
+        ),
+    ];
+    for (corner, inward, across, down, start) in corners {
+        let outer_centre = corner + inward * radius;
+        let (rx, ry) = ((radius - across).max(0.0), (radius - down).max(0.0));
+        let inner_centre = corner + inward * vec2(across + rx, down + ry);
+        for step in 0..=STEPS {
+            let angle = start + FRAC_PI_2 * f32::from(step) / f32::from(STEPS);
+            let way = vec2(libm::cosf(angle), libm::sinf(angle));
+            let outer = outer_centre + way * radius;
+            let inner = inner_centre + way * vec2(rx, ry);
+            // The inner edge's normal, out of the cap's inside: the ellipse's gradient.
+            let normal = if rx > 0.0 && ry > 0.0 {
+                vec2(way.x / rx, way.y / ry).normalized()
+            } else {
+                way
+            };
+            mesh.colored_vertex(outer + way * half, Color32::TRANSPARENT);
+            mesh.colored_vertex(outer - way * half, colour);
+            mesh.colored_vertex(inner + normal * half, colour);
+            mesh.colored_vertex(inner - normal * half, Color32::TRANSPARENT);
+        }
+    }
+    // Each point's four to the next's: the outer feather, the border, the inner feather.
+    let points = 4 * (u32::from(STEPS) + 1);
+    for point in 0..points {
+        let (this, next) = (4 * point, 4 * ((point + 1) % points));
+        for band in 0..3 {
+            mesh.add_triangle(this + band, this + band + 1, next + band);
+            mesh.add_triangle(this + band + 1, next + band + 1, next + band);
+        }
+    }
+    mesh
+}
+
 // ---- States ----
 
 /// An error's badges and marks, filled (`error_fg_color`, `#ab0116`).
@@ -841,11 +960,17 @@ pub const KEY_CAP_ON_PRIMARY_TEXT: Color32 = hex(0x444444);
 /// A key cap's text size.
 pub const KEY_CAP_TEXT_SIZE: f32 = 10.5;
 
-/// A key cap's least width, its padding at each side of its text, and its outline's width,
-/// inside its width as `.kbd`'s `border-box` has it.
+/// A key cap's least width, its padding at each side of its text, and its border's width at
+/// its top and sides, inside its width and height as `.kbd`'s `border-box` has them.
 pub const KEY_CAP_MIN_WIDTH: f32 = 16.0;
 pub const KEY_CAP_PADDING: f32 = 4.0;
 pub const KEY_CAP_BORDER: f32 = 1.0;
+/// A key cap's border at its bottom (`.kbd { border-bottom-width: 2px }`), in every key cap,
+/// a button's (`.btn .kbd`) too.
+pub const KEY_CAP_BORDER_BOTTOM: f32 = 2.0;
+/// A key cap's line (`.kbd { line-height: 16px }`), from under its top border: its words sit
+/// in its middle, a top border's width below the cap's.
+pub const KEY_CAP_LINE_HEIGHT: f32 = 16.0;
 
 /// A key cap's corners, and the space between two caps of one shortcut (`.keys`).
 pub const KEY_CAP_CORNER_RADIUS: u8 = 3;
@@ -1062,6 +1187,9 @@ pub const SECONDARY_BUTTON_HOVER_TEXT: Color32 = TEXT_STRONG;
 /// (`.btn .kbd`: `opacity: .55`, its border and text the button's).
 pub const BUTTON_GAP: f32 = 6.0;
 pub const BUTTON_KEY_CAP_OPACITY: f32 = 0.55;
+/// A button's key cap's margin at its left (`.btn .kbd { margin-left: 2px }`): the cap is
+/// [`BUTTON_GAP`] and this after the button's words.
+pub const BUTTON_KEY_CAP_MARGIN: f32 = 2.0;
 /// A button's padding at its sides (`.btn { padding: 0 10px }`), and its height
 /// (`.btn { height: 22px }`, [`BUTTON_HEIGHT`]) where nothing sets another.
 pub const BUTTON_PADDING: f32 = 10.0;
