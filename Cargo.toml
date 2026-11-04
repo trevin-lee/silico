@@ -81,6 +81,9 @@ lyon_tessellation = "1.0.23"
 # used, zenity if it isn't there), never GTK. Its async API only, so the UI thread never
 # waits on one. Wayland's window identifiers off: no dialog is given a parent window.
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+# The platform's folder for an app's own data (the app's list of recent documents), the
+# version Rerun already brings.
+directories = "6.0"
 glam = "0.30"
 macaw = "0.30"
 pollster = "0.4"
