@@ -70,15 +70,17 @@ fn outcome_word(model: &Model, feature: &str) -> String {
 const CUBE_INSIDE: &str = r#"{"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Cube", "position": [4, 4, 4], "length": 2, "width": 2, "height": 2}"#;
 
 #[test]
-fn a_common_made_a_cut_of_its_operands_swapped_never_takes_the_cubes_edge_for_the_voids() {
-    // Found by break-it (round 2's R2B1, swapped), closed by N9. The common of a small cube
-    // and the block around it is the cube, every element the common's own, `I`: its Edge1
+fn a_common_made_a_cut_never_takes_the_cubes_edge_for_the_voids() {
+    // Found by break-it (round 2's R2B1), closed by N9. The common of the block and the
+    // small cube inside it is the cube, every element the common's own, `I`: its Edge1
     // (along z at x = y = 4, 2 long), kept whole, is `cccccccc.common.Edge(I
     // bbbbbbbb.box.Edge1)`, convex, a fillet takes material away. The block cut by the cube
-    // (the common made a cut, base and tool swapped) leaves a cubic void whose edge there is
-    // the cut's own, `cccccccc.cut.Edge(I ...)`, concave: the common's name breaks, the cut's
-    // its candidate, and by it the fillet adds what the other took. The cube's own name
-    // finds neither.
+    // (the common made a cut) leaves a cubic void whose edge there is the cut's own,
+    // `cccccccc.cut.Edge(I ...)`, concave: the common's name breaks, the cut's its
+    // candidate, and by it the fillet adds what the other took. The cube's own name finds
+    // neither. (The common was of the cube and the block, base and tool swapped, until M2
+    // booleans took S7's rule: a common whose tool holds all of its base removes nothing
+    // from it, and is refused.)
     let engine = engine();
     let r = 0.2;
     let straight = (1.0 - PI / 4.0) * r * r * 2.0;
@@ -88,8 +90,8 @@ fn a_common_made_a_cut_of_its_operands_swapped_never_takes_the_cubes_edge_for_th
             BLOCK,
             CUBE_INSIDE,
             "common",
-            "bbbbbbbb",
             "aaaaaaaa",
+            "bbbbbbbb",
             edge,
             r,
         )

@@ -1129,6 +1129,8 @@ enum Expected {
     /// before the verdict lands.
     Refused {
         shape: ShapeData,
+        /// Words its refusal says (`refusal`).
+        said: &'static str,
     },
     Failed(ErrorCode),
     Blocked(usize),
@@ -1182,11 +1184,12 @@ impl Reference {
         result
     }
 
-    /// Whether `op`'s `result` changes `base`, by S7's rule, worked from the reference
-    /// kernel's own measures: a fuse adds more than 1e-9 of the base's volume to it, a cut or
-    /// common takes that much from it, the base's volume above 0 and the result's at least
-    /// 0 (design S7; docs/ports/booleans.md).
-    fn changes(&self, op: BooleanOp, base: &ShapeData, result: &ShapeData) -> bool {
+    /// Why `op`'s `result` is refused for its change to `base`, by S7's rule, worked from the
+    /// reference kernel's own measures, if it is (words its refusal says): a volume no solid
+    /// has (the base's at or below 0, the result's below 0), or a fuse that adds no more than
+    /// 1e-9 of the base's volume to it, a cut or common that takes no more than that (design
+    /// S7; docs/ports/booleans.md).
+    fn refusal(&self, op: BooleanOp, base: &ShapeData, result: &ShapeData) -> Option<&'static str> {
         let volume = |shape: &ShapeData| {
             self.kernel
                 .submit(Generation(0), KernelRequest::summarize(shape))
@@ -1198,13 +1201,13 @@ impl Reference {
         };
         let (before, after) = (volume(base), volume(result));
         if !(before.is_finite() && before > 0.0 && after.is_finite() && after >= 0.0) {
-            return false;
+            return Some("which no solid has");
         }
         let change = match op {
             BooleanOp::Fuse => after - before,
             _ => before - after,
         };
-        change > 1e-9 * before
+        (change <= 1e-9 * before).then_some("nothing")
     }
 
     /// Each feature's outcome, and every step the document has, with whether it runs and
@@ -1290,7 +1293,7 @@ impl Reference {
                     // only before a verdict, `maybe`).
                     let made = |u: usize| match &outcomes[u] {
                         Expected::Built { shape, .. } => Some((shape.clone(), false)),
-                        Expected::Refused { shape } => Some((shape.clone(), true)),
+                        Expected::Refused { shape, .. } => Some((shape.clone(), true)),
                         Expected::Blocked(_) => maybe.get(&u).map(|s| (s.clone(), true)),
                         Expected::Failed(_) => None,
                     };
@@ -1314,16 +1317,13 @@ impl Reference {
                                     maybe.insert(outcomes.len(), shape);
                                     Expected::Blocked(on)
                                 }
-                                (Ok(shape), None) => {
-                                    if self.changes(op, &a, &shape) {
-                                        Expected::Built {
-                                            step: identity.clone(),
-                                            shape,
-                                        }
-                                    } else {
-                                        Expected::Refused { shape }
-                                    }
-                                }
+                                (Ok(shape), None) => match self.refusal(op, &a, &shape) {
+                                    None => Expected::Built {
+                                        step: identity.clone(),
+                                        shape,
+                                    },
+                                    Some(said) => Expected::Refused { shape, said },
+                                },
                                 (Err(c), Some(on)) => {
                                     code = Some(c);
                                     Expected::Blocked(on)
@@ -1376,11 +1376,11 @@ fn check_model(model: &Model, kinds: &[Kind], expected: &[Expected]) -> Result<(
                 let named = fid(i);
                 prop_assert_eq!(e.feature(), Some(named.as_str()));
             }
-            (FeatureOutcome::Failed(e), Expected::Refused { .. }) => {
+            (FeatureOutcome::Failed(e), Expected::Refused { said, .. }) => {
                 prop_assert_eq!(e.code(), ErrorCode::KernelFailed, "feature {}", i);
                 let named = fid(i);
                 prop_assert_eq!(e.feature(), Some(named.as_str()));
-                prop_assert!(e.message().contains("nothing"), "feature {}: {:?}", i, e);
+                prop_assert!(e.message().contains(*said), "feature {}: {:?}", i, e);
             }
             (FeatureOutcome::Blocked { on }, Expected::Blocked(root)) => {
                 prop_assert_eq!(on, &id(&fid(*root)), "feature {}", i);

@@ -310,7 +310,7 @@ impl FakeKernel {
     /// one whose result is its base, lets it through.
     pub fn resized(shape: &ShapeData, change: f64) -> Option<ShapeData> {
         let volume = Symbolic::read(shape).ok()?.summary().volume + change;
-        if !(volume > 0.0) {
+        if volume.is_nan() || volume <= 0.0 {
             return None;
         }
         let resized = Primitive::Box {

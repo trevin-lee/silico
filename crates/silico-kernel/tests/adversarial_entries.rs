@@ -240,7 +240,7 @@ fn every_chamfer_face_of_a_box_takes_f1s_default_from_its_normal_as_written() {
     assert_eq!(normals.len(), 12, "{seen:?}");
 }
 
-/// Booleans of boxes coincident, sharing a face, cut by one sharing a side, slotted, and
+/// Booleans of boxes coincident but for one face, sharing a face, cut by one sharing a side, slotted, and
 /// overlapping, each a document whose last feature is the boolean: layouts that might give
 /// an element an alias or a duplicate (`~n`), though none does on OCCT's histories (see
 /// the test below; core's tests/adversarial_entries.rs makes an unstable name on the fake,
@@ -254,10 +254,12 @@ fn layouts() -> Vec<(&'static str, Vec<String>)> {
     };
     vec![
         (
-            "coincident boxes fused",
+            // Coincident but for the tool's top, 1 mm higher, so the fuse adds to its base
+            // (S7's rule refuses one that adds nothing): every other face shared.
+            "coincident boxes, the tool a millimetre taller, fused",
             vec![
                 box_doc("aaaaaaaa", [0.0; 3], unit),
-                box_doc("bbbbbbbb", [0.0, 0.0, 0.0], [10.0, 10.0, 10.0]),
+                box_doc("bbbbbbbb", [0.0, 0.0, 0.0], [10.0, 10.0, 11.0]),
                 op("rrrrrrrr", "fuse", "aaaaaaaa", "bbbbbbbb"),
             ],
         ),
