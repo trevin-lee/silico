@@ -349,8 +349,10 @@ jobs:
           # Now a bug the seed meets fails the baseline and stops the run, and one it doesn't
           # meet fails no mutant either. Saved failures stay on: the committed
           # .proptest-regressions files are replayed for each mutant, and a case saved during
-          # the run comes from the seed's own cases. The gate keeps random seeds.
-          export PROPTEST_RNG_SEED=20261021
+          # the run comes from the seed's own cases. The seed, PROPTEST_RNG_SEED=20261021, is
+          # pixi.toml's mutants task's, the gate's too (its test task's), and a task's env wins
+          # over a caller's, so it isn't set here. New seeds are explored apart, on idle runners
+          # (proptest-explore.yml).
           args+=(--jobserver-tasks "$share")
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
           status=0

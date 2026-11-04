@@ -16,17 +16,6 @@
 # Run through pixi:  pixi run mutants -- --in-diff /tmp/change.diff -p silico-core --output /tmp
 set -euo pipefail
 
-# shellcheck source=tests/committed-tree.sh
-source "$(dirname "${BASH_SOURCE[0]}")/committed-tree.sh"
-
-pixi run occt
-pixi install -e oracle
-# cargo-mutants' baseline builds and tests only the mutated packages, and their tests start
-# other packages' workers (silico-oracle's start the kernel's): build the whole workspace's
-# tests first, as the gate and each mutant build them, since the build may start cold
-# (committed-tree.sh).
-cargo nextest run --workspace --no-run
-echo "mutants: testing $commit"
 # Without the tests that hold to a wall clock: on a machine the shards saturate they fail
 # the unmutated baseline, and a failing baseline stops cargo-mutants before it tests any
 # mutant. A filter, not a nextest profile, so trees older than this script take it too
@@ -84,6 +73,22 @@ tests_of() {
   echo "package($package) & ($tests)"
 }
 filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}") | $(tests_of silico-render "${render_scale[@]}"))"
+
+# tests/proptest-explore.sh leaves out the same tests, for the same reason: it sources this
+# file for $filter alone, and returns here, before the tree's checkout.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
+
+# shellcheck source=tests/committed-tree.sh
+source "$(dirname "${BASH_SOURCE[0]}")/committed-tree.sh"
+
+pixi run occt
+pixi install -e oracle
+# cargo-mutants' baseline builds and tests only the mutated packages, and their tests start
+# other packages' workers (silico-oracle's start the kernel's): build the whole workspace's
+# tests first, as the gate and each mutant build them, since the build may start cold
+# (committed-tree.sh).
+cargo nextest run --workspace --no-run
+echo "mutants: testing $commit"
 # Each test given 5 minutes a try, not the 2 its slow-timeout gives (.config/nextest.toml):
 # the shards run niced, and while gates build and test at full priority a niced test that
 # takes 20 s alone can take minutes. Ended at 2, under retries no longer than a burst of

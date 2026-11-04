@@ -61,7 +61,14 @@ install-oracle = { cmd = "pixi install -e oracle", description = "Install the Fr
 install-viewer = { cmd = "pixi install -e viewer", description = "Install the Rerun viewer" }
 view = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker && cargo run -p silico-view -- --viewer .pixi/envs/viewer/bin/rerun", depends-on = ["occt", "install-viewer"], description = "Show the kernel's parts (a box, fillets, the primitives) in the Rerun viewer" }
 planegcs-verify = { cmd = "bash third_party/planegcs/scripts/verify.sh", description = "Prove third_party/planegcs is FreeCAD 1.1.3's PlaneGCS with exactly its patch series" }
-test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "install-oracle", "shim-test", "test-guards", "test-cache", "planegcs-verify"] }
+# One seed for every property test (proptest's PROPTEST_RNG_SEED), so every gate meets the
+# same cases, and a property can't fail a pull request that didn't touch it with cases no gate
+# met before. The same as mutants' (below), so a green gate means a green mutants baseline. It overrides the seed a test's config fixes in `proptest!` (proptest
+# lets the variable win; only a TestRunner made directly with a seed keeps its own), and a
+# task's env overrides the caller's (pixi 0.81): to try another seed, run
+# `PROPTEST_RNG_SEED=S pixi run cargo nextest run ...`. New seeds are explored on idle runners
+# (.github/workflows/proptest-explore.yml, `pixi run proptest-explore`).
+test = { cmd = "cargo nextest run --workspace", depends-on = ["occt", "install-oracle", "shim-test", "test-guards", "test-cache", "planegcs-verify"], env = { PROPTEST_RNG_SEED = "20261021" } }
 oracle = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker --bin silico-step-worker && cargo build -p silico-sketch --bin silico-sketch-worker && cargo run -p silico-oracle -- run tests/oracle", depends-on = ["occt", "install-oracle"], description = "Compare every case in tests/oracle with FreeCAD" }
 oracle-sweep = { cmd = "cargo build -p silico-kernel --bin silico-kernel-worker && cargo run -p silico-oracle -- sweep --count 500", depends-on = ["occt", "install-oracle"], description = "Compare 500 generated cases with FreeCAD (pass --seed S to vary them)" }
 oracle-sketch-edit-sweep = { cmd = "cargo build -p silico-sketch --bin silico-sketch-worker && cargo run -p silico-oracle -- sketch-edit-sweep --count 500", depends-on = ["occt", "install-oracle"], description = "Compare 500 generated sketch edits with FreeCAD's (pass --seed S to vary them)" }
@@ -69,7 +76,10 @@ oracle-sketch-extend-sweep = { cmd = "cargo build -p silico-sketch --bin silico-
 corpus = { cmd = "bash tests/corpus/run.sh", depends-on = ["occt", "install-oracle"], description = "Download real parts (NIST's STEP files) once, and compare them with FreeCAD" }
 # Every check on the committed tree; must pass before a merge.
 gate = { cmd = "bash tests/gate.sh", description = "Run every check on the committed tree" }
-mutants = { cmd = "bash tests/mutants.sh", description = "Mutation testing on the committed tree, in the gate's worktree (pass cargo mutants arguments, absolute paths)" }
+# The test task's seed: each mutant meets the cases the baseline met, the gate's (.github/workflows/mutants.yml).
+mutants = { cmd = "bash tests/mutants.sh", description = "Mutation testing on the committed tree, in the gate's worktree (pass cargo mutants arguments, absolute paths)", env = { PROPTEST_RNG_SEED = "20261021" } }
+# No seed of its own: it draws a new one for each round, or takes one as its second argument.
+proptest-explore = { cmd = "bash tests/proptest-explore.sh", description = "Run the workspace's tests on the committed tree with new proptest seeds, in rounds (pass an absolute output directory, and a seed to repeat one)" }
 lint = { cmd = "cargo fmt --check && cargo fmt --check --manifest-path third_party/occt/libm-shim/Cargo.toml && cargo clippy --workspace --all-targets -- -D warnings && CARGO_TARGET_DIR=target/libm-shim cargo clippy --manifest-path third_party/occt/libm-shim/Cargo.toml --release --all-targets -- -D warnings", depends-on = ["occt"] }
 
 # FreeCAD, for oracle tests: the FreeCAD Silico references, on the same OCCT release as

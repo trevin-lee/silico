@@ -1,4 +1,5 @@
-# Sourced by tests/gate.sh and tests/mutants.sh: checks out the committed tree (HEAD, or
+# Sourced by tests/gate.sh, tests/mutants.sh, and tests/proptest-explore.sh: checks out the
+# committed tree (HEAD, or
 # the commit SILICO_TREE_COMMIT names, so a script can test commits older than itself) into
 # a worktree in the user cache, one per checkout, reused between runs and cleaned of
 # everything untracked except build caches (target/, target-mutants/, target-filler/ and .pixi/), so runs
