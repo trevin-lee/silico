@@ -646,12 +646,13 @@ impl Tab {
 
     /// What the tab's mode draws over the viewport's bodies, and acts on, each frame the
     /// tab is shown (sketch mode, M5.7's selection): it acts on `frame.left`, the left
-    /// button's events on the canvas, and draws with `painter`, the pane's own layer,
-    /// clipped to the viewport, over the bodies and under the ViewCube and the navigation
-    /// bar. The end of a drag in a tab no longer shown comes here too, its painter drawing
-    /// nothing. A mode sends its commands from here through `sessions`, on the tab's own
-    /// queue and its `Running` handles, polled with `try_take`, never waiting: a drag's move
-    /// goes out in the frame it happened. No mode draws or acts yet.
+    /// button's events on the canvas, and `frame.secondary`, the right button's clicks
+    /// there (opening its own menu, if it has one), and draws with `painter`, the pane's
+    /// own layer, clipped to the viewport, over the bodies and under the ViewCube and the
+    /// navigation bar. The end of a drag in a tab no longer shown comes here too, its
+    /// painter drawing nothing. A mode sends its commands from here through `sessions`, on
+    /// the tab's own queue and its `Running` handles, polled with `try_take`, never waiting:
+    /// a drag's move goes out in the frame it happened. No mode draws or acts yet.
     pub fn overlay<P: Clients + 'static>(
         &mut self,
         _sessions: &Arc<Sessions<P>>,
