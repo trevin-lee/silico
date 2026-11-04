@@ -766,6 +766,43 @@ fn an_untitled_parts_step_header_and_assembly_are_named_from_the_file_written() 
 }
 
 #[test]
+fn a_file_sessions_step_header_and_assembly_are_named_from_its_document_not_the_export() {
+    // The half the untitled test above can't pin (#354's mutants): a session with a file
+    // names STEP's header from the document's file name, `bracket.silico`, and the assembly
+    // from its stem, `bracket`, wherever the export is written (docs/ports/step-export.md).
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let (kernel, sessions, _) = sessions_on(&root, |_| {});
+    let sessions = sessions.exporting_step(std::sync::Arc::clone(&kernel));
+    let document = root.join("bracket.silico");
+    std::fs::write(&document, EXAMPLE).unwrap();
+    let open = envelope(&call(
+        &sessions,
+        "open",
+        &format!(
+            r#"{{"path": {}, "create": false}}"#,
+            serde_json::to_string(document.to_str().unwrap()).unwrap()
+        ),
+    ));
+    assert_eq!(open["ok"], true, "{open}");
+    let s = open["session"]["id"].as_str().unwrap().to_owned();
+    let to = root.join("out.step");
+    let exported = envelope(&call(
+        &sessions,
+        "export",
+        &format!(
+            r#"{{"session": "{s}", "format": "step", "path": {}, "replace": false, "features": ["m3tq8v0z", "k7f2qx3m"], "tolerance": null}}"#,
+            serde_json::to_string(to.to_str().unwrap()).unwrap()
+        ),
+    ));
+    assert_eq!(exported["ok"], true, "{exported}");
+    let text = std::fs::read_to_string(&to).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[1], "FILE_NAME('bracket.silico')", "{text}");
+    assert_eq!(lines[2], "ASSEMBLY('bracket')", "{text}");
+}
+
+#[test]
 fn a_drag_is_refused_as_it_begins_in_an_untitled_session_outside_a_transaction() {
     // Its end would be an edit saved as it's made, which the session has no file for:
     // refused at `drag_begin`, before any sketch worker is started (the review of #354).
