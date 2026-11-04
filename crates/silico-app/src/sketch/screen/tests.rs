@@ -230,6 +230,36 @@ fn in_perspective_a_place_behind_the_eye_has_no_pixel_and_a_ray_meets_nothing_be
 }
 
 #[test]
+fn in_perspective_a_place_straight_behind_the_eye_projects_nowhere_though_its_mirror_ahead_is_the_centre()
+ {
+    // Eye 100 above XY looking down: a face frame 50 above the eye, its origin straight
+    // behind it along the view, where dividing by the depth alone would put it on the
+    // image's centre, as it does its mirror 50 below the eye.
+    let frame = |z| {
+        SketchPlane::Face(FaceFrame {
+            origin: [0.0, 0.0, z],
+            x: [1.0, 0.0, 0.0],
+            y: [0.0, 1.0, 0.0],
+        })
+    };
+    let behind = placed(&down(PERSPECTIVE), [400, 200], 2.0, frame(150.0));
+    let ahead = placed(&down(PERSPECTIVE), [400, 200], 2.0, frame(50.0));
+    by_hand(ahead.pixel_of([0.0, 0.0]).unwrap(), [200.0, 100.0]);
+    at_point(ahead.project([0.0, 0.0]), pos2(140.0, 80.0));
+    assert_eq!(behind.pixel_of([0.0, 0.0]), None);
+    assert_eq!(behind.project([0.0, 0.0]), None);
+    let screen = Screen::Camera(Box::new(behind));
+    assert_eq!(screen.project([0.0, 0.0]), None);
+    assert_eq!(screen.project([3.0, -4.0]), None);
+    // A hair in front of the eye, nearer than the renderer draws (1e-6): nowhere either;
+    // a millimetre in front: the centre.
+    let hair = placed(&down(PERSPECTIVE), [400, 200], 2.0, frame(100.0 - 1e-7));
+    assert_eq!(hair.pixel_of([0.0, 0.0]), None);
+    let near = placed(&down(PERSPECTIVE), [400, 200], 2.0, frame(99.0));
+    by_hand(near.pixel_of([0.0, 0.0]).unwrap(), [200.0, 100.0]);
+}
+
+#[test]
 fn a_pointer_off_the_viewport_still_meets_the_plane_where_its_ray_does() {
     let p = placed(&down(ORTHOGRAPHIC), [400, 200], 2.0, SketchPlane::Xy);
     // 500 pixels left of the image and 3,000 below: 250 mm left, 1,500 down, of its edge.
