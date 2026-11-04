@@ -578,3 +578,13 @@ crates/silico-app/src/modal.rs | show_sized | replace * with / | #382
 # side's, and no side is wider than the top or bottom (1 against 1 and 2), so ry > 0 makes
 # rx > 0: every cap's normal is the same.
 crates/silico-app/src/theme.rs | key_cap_border | replace > with >= | #392
+# diff (#390): `top_level_order`'s test that each side has a member the other hasn't only
+# spares `union`'s clone and write. Where it fails, one side's members include the other's,
+# each side in the writer's order, so `merged` gives the larger side's order, which sorting
+# by the writer's order leaves as it is: the same changes, in the same order, either way.
+crates/silico-core/src/document/diff.rs | top_level_order | delete ! | #390
+crates/silico-core/src/document/diff.rs | top_level_order | replace && with || | #390
+# diff's written length (#390): a name the change before shares is the same string, so its
+# length measured again is the length kept; the guard only spares measuring a megabyte
+# name once for each of thousands of changes.
+crates/silico-core/src/command/wire/reads.rs | written_length | replace match guard std::sync::Arc::ptr_eq(name, &c.name) with false | #390

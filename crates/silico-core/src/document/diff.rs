@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::json::{self, MAX_DOCUMENT_LEN, Node, Plain, Value};
-use super::{Document, ElementKind, Feature, FeatureId, Operation, write};
+use super::{Document, Feature, FeatureId, Operation, write};
 use crate::{Error, ErrorCode};
 
 /// One change between two documents: a feature's place in the timeline, or one of its fields.
@@ -287,9 +287,9 @@ fn unreadable(feature: &Feature, error: &Error) -> Error {
 }
 
 /// Where a walk is: at a feature's root (`sketch` saying whether either side is a sketch,
-/// whose member lists are keyed by ID, and `order` the writer's order of its members where
-/// neither side's says it, [`top_level_order`]), in one of a sketch's member lists, or
-/// anywhere else.
+/// whose arrays there are its member lists, keyed by ID, and `order` the writer's order of
+/// its members where neither side's says it, [`top_level_order`]), in one of a sketch's
+/// member lists, or anywhere else.
 #[derive(Clone, Copy)]
 enum Within<'o> {
     Feature {
@@ -323,23 +323,19 @@ fn walk(
         (Some(Value::Object(am)), Some(Value::Object(bm))) => {
             let a_keys: Vec<&str> = am.iter().map(|m| m.key.as_str()).collect();
             let b_keys: Vec<&str> = bm.iter().map(|m| m.key.as_str()).collect();
-            let keys = match within {
-                Within::Feature {
-                    order: Some(order), ..
-                } if a_keys.iter().chain(&b_keys).all(|key| order.contains(key)) => order
-                    .iter()
-                    .copied()
-                    .filter(|key| a_keys.contains(key) || b_keys.contains(key))
-                    .collect(),
-                _ => merged(&a_keys, &b_keys),
-            };
+            let mut keys = merged(&a_keys, &b_keys);
+            if let Within::Feature {
+                order: Some(order), ..
+            } = within
+            {
+                // The order holds every member either side has ([`union`]); a key it
+                // hadn't would come first, never be left out.
+                keys.sort_by_key(|key| order.iter().position(|o| o == key));
+            }
             for key in keys {
+                // Every array at a sketch's root is one of its member lists.
                 let inner = match within {
-                    Within::Feature { sketch: true, .. }
-                        if ElementKind::ALL.iter().any(|kind| kind.list() == key) =>
-                    {
-                        Within::Members
-                    }
+                    Within::Feature { sketch: true, .. } => Within::Members,
                     _ => Within::Other,
                 };
                 walk(found, &child(key), value(am, key), value(bm, key), inner);
@@ -376,7 +372,6 @@ fn walk(
                 }
             }
         },
-        (None, None) => {}
         _ => found.push((path.to_owned(), plain(a), plain(b))),
     }
 }
@@ -418,7 +413,6 @@ fn member_keys(items: &[Node]) -> Vec<(String, usize)> {
 /// where the two disagree (two features of different types under one ID), `b`'s order
 /// wins, and each key of `a`'s is placed as soon as `b`'s order allows.
 fn merged<K: Ord + Clone>(a: &[K], b: &[K]) -> Vec<K> {
-    let in_a: BTreeSet<&K> = a.iter().collect();
     let in_b: BTreeSet<&K> = b.iter().collect();
     let mut done: BTreeSet<&K> = BTreeSet::new();
     let mut out = Vec::with_capacity(a.len().max(b.len()));
@@ -434,9 +428,9 @@ fn merged<K: Ord + Clone>(a: &[K], b: &[K]) -> Vec<K> {
             (None, None) => break,
             (Some(x), None) => x,
             (None, Some(y)) => y,
-            (Some(x), Some(y)) if x == y => x,
+            // `a`'s next key, if `b` hasn't it; else `b`'s next, which is `a`'s too where
+            // the two agree.
             (Some(x), Some(_)) if !in_b.contains(x) => x,
-            (Some(_), Some(y)) if !in_a.contains(y) => y,
             (Some(_), Some(y)) => y,
         };
         done.insert(next);
@@ -498,6 +492,15 @@ mod tests {
         assert_eq!(merged(&a, &b), ["id", "name", "note", "length", "base"]);
         // Disagreeing orders: each key once, b's order first.
         assert_eq!(merged(&["x", "y"], &["y", "x"]), ["y", "x"]);
+        // Interleaved, by hand: k1 both; a1 only a's, before both's k2; b1 only b's, at
+        // the same point as a2, a's own, so a's first; then k3 both, and b2 after it.
+        assert_eq!(
+            merged(
+                &["k1", "a1", "k2", "a2", "k3"],
+                &["k1", "k2", "b1", "k3", "b2"]
+            ),
+            ["k1", "a1", "k2", "a2", "b1", "k3", "b2"]
+        );
         assert_eq!(merged::<&str>(&[], &[]), [] as [&str; 0]);
         assert_eq!(merged(&["a"], &[]), ["a"]);
     }

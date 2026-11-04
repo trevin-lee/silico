@@ -1,7 +1,8 @@
 //! Hostile inputs for `diff` (break-it): documents at the size limits (50,000 features, a
 //! side of just under 16 MiB, a side past it), sides that aren't documents (not JSON, not
 //! UTF-8, a byte-order mark, JSON of another shape), documents the gate refuses but that
-//! read (an ID two features share, a feature whose type changed under its ID), a name of a
+//! read (an ID two features share, an ID a sketch's points share, a feature whose type
+//! changed under its ID), a name of a
 //! megabyte on a feature with thousands of changes, requests wrong in every way the reader
 //! can be, and a diff cancelled. Expected values: counted and placed by hand, the reader's
 //! own message where the refusal quotes it, and the rule that every answer is a result or a
@@ -419,6 +420,43 @@ fn an_id_two_features_share_pairs_first_with_first_and_second_with_second() {
         .result
         .unwrap();
     assert_eq!(result.changes.len(), 1);
+}
+
+#[test]
+fn an_id_three_points_share_pairs_first_with_first_second_with_second_third_with_third() {
+    // A sketch whose three points share one ID: the writer keeps their order (it sorts a
+    // list by ID, stably), so each is paired with the one at its own count on the other
+    // side.
+    let sketch = |xs: &[u32]| {
+        let points: Vec<String> = xs
+            .iter()
+            .map(|x| format!(r#"{{"id": "pa000001", "x": {x}, "y": 0, "construction": false}}"#))
+            .collect();
+        let text = header(&format!(
+            r#"{{"id": "s0000001", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{}], "lines": [], "circles": [], "arcs": [], "constraints": []}}"#,
+            points.join(", ")
+        ));
+        document::read(text.as_bytes()).unwrap()
+    };
+    let change = |field: &str, before: &str, after: &str| {
+        format!(
+            r#"{{"feature": "s0000001", "name": "S", "field": "{field}", "before": {before}, "after": {after}}}"#
+        )
+    };
+    // The second moved: the second's x, 2 to 9, and nothing of the first or the third.
+    assert_eq!(
+        lines(&document::diff(&sketch(&[1, 2, 3]), &sketch(&[1, 9, 3])).unwrap()),
+        [change("points.pa000001.x", "2", "9")]
+    );
+    // The third gone: the third, whole, to nothing; the first and second untouched.
+    assert_eq!(
+        lines(&document::diff(&sketch(&[1, 2, 3]), &sketch(&[1, 2])).unwrap()),
+        [change(
+            "points.pa000001",
+            r#"{"id": "pa000001", "x": 3, "y": 0, "construction": false}"#,
+            "null"
+        )]
+    );
 }
 
 #[test]
