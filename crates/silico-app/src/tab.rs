@@ -250,6 +250,15 @@ pub struct Row {
     pub marked_by: Option<FeatureId>,
 }
 
+/// What a browser row's eye hides: one of the origin's rows, by its name, or a body or a
+/// sketch, by its feature's ID (so a rename keeps it hidden, and two features of one name
+/// are hidden apart).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Hideable {
+    Origin(&'static str),
+    Feature(FeatureId),
+}
+
 /// The browser's rows, worked out once for each timeline read, never each frame.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Browser {
@@ -329,9 +338,8 @@ pub struct Tab {
     pub disk_choice: DiskChoice,
     /// The feature selected in the timeline or the browser.
     pub selected: Option<FeatureId>,
-    /// The browser's hidden rows, by their names: the tab's state, never saved (open item
-    /// 29).
-    pub hidden: std::collections::BTreeSet<String>,
+    /// What the browser's eyes hide: the tab's state, never saved (open item 29).
+    pub hidden: std::collections::BTreeSet<Hideable>,
     /// The last refusal a command of the tab's answered, as said to the person, until
     /// their next action (an edit, a save, a revert, a step).
     pub message: Option<String>,
@@ -1745,6 +1753,35 @@ impl Tab {
     /// Whether the timeline lists a sketch of ID `id`.
     fn is_sketch(&self, id: &FeatureId) -> bool {
         self.browser.sketches.iter().any(|row| &row.id == id)
+    }
+
+    /// Whether `what`'s row shows (its eye open).
+    pub fn shown(&self, what: &Hideable) -> bool {
+        !self.hidden.contains(what)
+    }
+
+    /// `what` hidden if it shows, shown if it's hidden: its eye clicked.
+    pub fn toggle_shown(&mut self, what: Hideable) {
+        if !self.hidden.remove(&what) {
+            self.hidden.insert(what);
+        }
+    }
+
+    /// H (DESIGN.md, *Keyboard*: Fusion's V, moved to H): the selected feature hidden or
+    /// shown, if the browser lists it (a body or a sketch); nothing otherwise.
+    pub fn toggle_selected_shown(&mut self) {
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        let listed = self
+            .browser
+            .bodies
+            .iter()
+            .chain(&self.browser.sketches)
+            .any(|row| row.id == id);
+        if listed {
+            self.toggle_shown(Hideable::Feature(id));
+        }
     }
 
     /// Whether a dialog of `kind` can open: none open or loading, the tab not closing, the

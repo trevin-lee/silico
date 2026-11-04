@@ -679,6 +679,57 @@ pub const TOOLBAR_FINISH_BG: Color32 = SELECTION_BG;
 pub const TOOLBAR_FINISH_TEXT: Color32 = TEXT_STRONG;
 pub const TOOLBAR_FINISH_HOVER_BG: Color32 = hex(0x2a78e8);
 
+// ---- The browser (`#browser`, `.panel-title`, `.row`, `.tree-empty`) ----
+
+/// The pane's title (`.panel-title`): its padding at the left (`--pad`), in
+/// [`HEADER_SIZE`] capitals, [`TEXT_STRONG`], on a [`TITLE_BAR_HEIGHT`] row.
+pub const BROWSER_TITLE_PADDING: f32 = VIEW_PADDING as f32;
+
+/// A row's padding at its left before its depth's indents (`6 + depth * 18`), at its right,
+/// and the gap between its parts (`.row`).
+pub const BROWSER_ROW_PADDING_LEFT: f32 = 6.0;
+pub const BROWSER_ROW_PADDING_RIGHT: f32 = 6.0;
+pub const BROWSER_ROW_GAP: f32 = 4.0;
+
+/// A row's fill hovered (`.row:hover`, Gray.250), and selected (`.row.selected`, Blue.500),
+/// where its name, its icon, and its meta are [`ON_SELECTION`].
+pub const BROWSER_ROW_HOVER_BG: Color32 = HOVER_BG;
+pub const BROWSER_ROW_SELECTED_BG: Color32 = SELECTION_BG;
+
+/// A row's caret (`.row .caret`): its place's side, its chevron's, and its colour (Gray.700).
+pub const BROWSER_CARET_SIDE: f32 = 14.0;
+pub const BROWSER_CARET_ICON: f32 = 10.0;
+pub const BROWSER_CARET: Color32 = GRAY_700;
+
+/// A row's eye (`.row .eye`): its place's side and corners; its colour shown (Gray.550) and
+/// hidden (`.eye.off`, Gray.400); and hovered (`.eye:hover`), Gray.1000 on Gray.350.
+pub const BROWSER_EYE_SIDE: f32 = 18.0;
+pub const BROWSER_EYE_CORNER_RADIUS: u8 = 3;
+pub const BROWSER_EYE: Color32 = TEXT_SUBDUED;
+pub const BROWSER_EYE_OFF: Color32 = TEXT_DISABLED;
+pub const BROWSER_EYE_HOVER: Color32 = GRAY_1000;
+pub const BROWSER_EYE_HOVER_BG: Color32 = GRAY_350;
+
+/// What a hidden row's name and icon are drawn at (`.row.hidden-obj`'s `opacity: .45`).
+pub const BROWSER_HIDDEN_OPACITY: f32 = 0.45;
+
+/// A row's meta (`.r-meta`): [`HEADER_SIZE`], Gray.550.
+pub const BROWSER_META: Color32 = TEXT_SUBDUED;
+
+/// A sketch's prefix (`.row .prefix`): [`MONOSPACE_SIZE`], Gray.550; under defined
+/// [`SKETCH_UNDER_DEFINED`], over defined [`SKETCH_OVER_DEFINED`].
+pub const BROWSER_PREFIX: Color32 = TEXT_SUBDUED;
+
+/// An empty group's words (`.tree-empty`): their padding at the left (`--pad` and 36), top,
+/// and bottom, in [`HEADER_SIZE`] text, Gray.550.
+pub const BROWSER_EMPTY_PADDING_LEFT: i8 = VIEW_PADDING + 36;
+pub const BROWSER_EMPTY_PADDING_TOP: i8 = 2;
+pub const BROWSER_EMPTY_PADDING_BOTTOM: i8 = 6;
+pub const BROWSER_EMPTY: Color32 = TEXT_SUBDUED;
+
+/// The space below the last row (`.panel-body`'s `padding-bottom`).
+pub const BROWSER_PADDING_BOTTOM: f32 = 12.0;
+
 // ---- Key caps (`.kbd`) ----
 
 /// A key cap's fill (Gray.250).
@@ -1433,6 +1484,67 @@ mod tests {
             ("TOOLBAR_FINISH_BG", TOOLBAR_FINISH_BG, 0x186add),
             ("TOOLBAR_FINISH_TEXT", TOOLBAR_FINISH_TEXT, 0xffffff),
             ("TOOLBAR_FINISH_HOVER_BG", TOOLBAR_FINISH_HOVER_BG, 0x2a78e8),
+        ] {
+            assert_eq!(color, opaque(hex), "{name}");
+        }
+    }
+
+    /// The browser's values, typed from styles.css's `.panel-title`, `.row`, `.tree-empty`,
+    /// and `.panel-body`, and its `--g*` greys, `--blue*`, and `--sk-*`.
+    #[test]
+    fn the_browsers_tokens_are_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `.panel-title`: `padding: 0 6px 0 var(--pad)`, `--pad: 12px`.
+        assert_eq!(BROWSER_TITLE_PADDING, 12.0);
+        // `.row`: `gap: 4px; padding-right: 6px`, `padding-left: 6 + depth * 18`.
+        assert_eq!(BROWSER_ROW_PADDING_LEFT, 6.0);
+        assert_eq!(BROWSER_ROW_PADDING_RIGHT, 6.0);
+        assert_eq!(BROWSER_ROW_GAP, 4.0);
+        assert_eq!(TREE_INDENT, 18.0);
+        assert_eq!(LIST_ITEM_HEIGHT, 24.0);
+        // `.row .caret`: 14 square, its `svg` 10; `.row .eye`: 18 square, `border-radius:
+        // 3px`.
+        assert_eq!(BROWSER_CARET_SIDE, 14.0);
+        assert_eq!(BROWSER_CARET_ICON, 10.0);
+        assert_eq!(BROWSER_EYE_SIDE, 18.0);
+        assert_eq!(BROWSER_EYE_CORNER_RADIUS, 3);
+        // `.row.hidden-obj .r-name, .row.hidden-obj .r-icon { opacity: .45 }`.
+        assert_eq!(BROWSER_HIDDEN_OPACITY, 0.45);
+        // `.tree-empty`: `padding: 2px 12px 6px calc(var(--pad) + 36px)`; `.panel-body`:
+        // `padding-bottom: 12px`.
+        assert_eq!(BROWSER_EMPTY_PADDING_LEFT, 48);
+        assert_eq!(BROWSER_EMPTY_PADDING_TOP, 2);
+        assert_eq!(BROWSER_EMPTY_PADDING_BOTTOM, 6);
+        assert_eq!(BROWSER_PADDING_BOTTOM, 12.0);
+        for (name, color, hex) in [
+            // `.row`, `--g700`; `:hover`, `--g800` on `--g250`; `.selected`, `--blue-text`
+            // on `--blue`.
+            ("TEXT_ROW", TEXT_ROW, 0xbfbfbf),
+            ("TEXT_ROW_HOVER", TEXT_ROW_HOVER, 0xe0dfdf),
+            ("BROWSER_ROW_HOVER_BG", BROWSER_ROW_HOVER_BG, 0x272626),
+            ("BROWSER_ROW_SELECTED_BG", BROWSER_ROW_SELECTED_BG, 0x186add),
+            ("ON_SELECTION", ON_SELECTION, 0xf0f2ff),
+            // `.row .caret`, `--g700`; `.r-icon`, `--g500`.
+            ("BROWSER_CARET", BROWSER_CARET, 0xbfbfbf),
+            ("ROW_ICON", ROW_ICON, 0x827f7f),
+            // `.row .eye`, `--g550`; `.off`, `--g400`; `:hover`, `--g1000` on `--g350`.
+            ("BROWSER_EYE", BROWSER_EYE, 0x939090),
+            ("BROWSER_EYE_OFF", BROWSER_EYE_OFF, 0x646363),
+            ("BROWSER_EYE_HOVER", BROWSER_EYE_HOVER, 0xffffff),
+            ("BROWSER_EYE_HOVER_BG", BROWSER_EYE_HOVER_BG, 0x525151),
+            // `.r-meta`, `.prefix`, and `.tree-empty`, `--g550`.
+            ("BROWSER_META", BROWSER_META, 0x939090),
+            ("BROWSER_PREFIX", BROWSER_PREFIX, 0x939090),
+            ("BROWSER_EMPTY", BROWSER_EMPTY, 0x939090),
+            // `.r-err` and `.row.err .r-name`, `--red`; `.r-warn`, `--orange`.
+            ("ERROR_TEXT", ERROR_TEXT, 0xff3865),
+            ("WARNING", WARNING, 0xff7a0c),
+            // `.prefix.under`, `--sk-under` (`--blue-soft`); `.over`, `--sk-over` (`--red`).
+            ("SKETCH_UNDER_DEFINED", SKETCH_UNDER_DEFINED, 0x7a95ff),
+            ("SKETCH_OVER_DEFINED", SKETCH_OVER_DEFINED, 0xff3865),
         ] {
             assert_eq!(color, opaque(hex), "{name}");
         }
