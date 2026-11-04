@@ -975,7 +975,8 @@ impl Tab {
                 .filter(|entry| entry.problems > 0 || entry.warnings > 0)
                 .map(|entry| entry.id.as_str())
                 .collect();
-            self.said.retain(|feature, _| still.contains(feature.as_str()));
+            self.said
+                .retain(|feature, _| still.contains(feature.as_str()));
         }
         if timeline.problems == 0 {
             self.document_problems.clear();

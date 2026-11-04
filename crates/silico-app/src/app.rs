@@ -1167,9 +1167,9 @@ impl<P: Clients + 'static> App<P> {
         }
         *started |= action != BarAction::None;
         // Whole in the canvas, and clear of the palette.
-        if let Some(asked) = modify.and_then(|view| {
-            sketch::dimension::modify_box(ui.ctx(), &view, canvas, palette)
-        }) {
+        if let Some(asked) =
+            modify.and_then(|view| sketch::dimension::modify_box(ui.ctx(), &view, canvas, palette))
+        {
             tab.sketch_modify(sessions, asked);
             *started = true;
         }
@@ -1202,9 +1202,8 @@ impl<P: Clients + 'static> App<P> {
                 sketch::bar::MenuAction::Cancel => tab.finish_sketch(sessions, false),
             }
             let menu_rect = shown.response.rect;
-            let away = ui.input(|i| {
-                sketch::bar::pressed_off_menu(&i.events, menu_rect, ppp, opening)
-            });
+            let away =
+                ui.input(|i| sketch::bar::pressed_off_menu(&i.events, menu_rect, ppp, opening));
             if (asked != sketch::bar::MenuAction::None || away)
                 && let Some(mode) = tab.sketch.as_mut()
             {

@@ -14745,7 +14745,10 @@ fn a_dimension_whose_text_is_under_the_palette_opens_its_modify_box_whole_in_the
     // The place, 40 points into the palette, level with the right side's middle (y 20, at
     // 300 on the screen by the hand camera): the side's length, its text under the palette.
     let under = eframe::egui::pos2(palette.left() + 40.0, to_screen([0.0, 20.0]).unwrap().y);
-    assert!(palette.contains(under) && viewport.contains(under), "{under:?} {palette:?}");
+    assert!(
+        palette.contains(under) && viewport.contains(under),
+        "{under:?} {palette:?}"
+    );
     let place = to_sketch(under).unwrap();
     sketch_events(&f, &mut h, &clicked(50.0, 20.0));
     sketch_events(&f, &mut h, &clicked(place[0], place[1]));
@@ -14765,18 +14768,31 @@ fn a_dimension_whose_text_is_under_the_palette_opens_its_modify_box_whole_in_the
             "the box",
             eframe::egui::AreaState::load(&h.ctx, area).unwrap().rect(),
         ),
-        ("its field", dialog.get_by_label("Value in millimetres").rect()),
-        ("its ✓", dialog.get_by_role_and_label(Role::Button, "✓").rect()),
-        ("its ✕", dialog.get_by_role_and_label(Role::Button, "✕").rect()),
+        (
+            "its field",
+            dialog.get_by_label("Value in millimetres").rect(),
+        ),
+        (
+            "its ✓",
+            dialog.get_by_role_and_label(Role::Button, "✓").rect(),
+        ),
+        (
+            "its ✕",
+            dialog.get_by_role_and_label(Role::Button, "✕").rect(),
+        ),
         (
             "its hint",
-            h.get_by_label("A plain number in mm · Enter accepts").rect(),
+            h.get_by_label("A plain number in mm · Enter accepts")
+                .rect(),
         ),
     ];
     // egui puts an area's corner on a pixel: within half of one of the viewport.
     let half = 0.5 / h.ctx.pixels_per_point();
     for (what, rect) in parts {
-        assert!(!rect.intersects(palette), "{what} {rect:?} under {palette:?}");
+        assert!(
+            !rect.intersects(palette),
+            "{what} {rect:?} under {palette:?}"
+        );
         assert!(
             rect.right() <= palette.left() - 8.0 + half,
             "{what} {rect:?} not left of {palette:?}"
@@ -14819,7 +14835,7 @@ fn marks(h: &AppHarness, id: &str) -> Option<(u64, u64)> {
 
 #[test]
 fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_says_not_the_conflict()
- {
+{
     use silico_app::sketch::dimension::ModifyAction;
     let f = fixture();
     counting(&f);
@@ -14934,10 +14950,14 @@ fn at_one_and_a_quarter_and_one_and_a_half_pixels_a_point_the_sketch_menu_stays_
             [751.0, 601.0]
         };
         let tab = h.state().tabs()[0].id.to_string();
-        let menu = eframe::egui::AreaState::load(&h.ctx, eframe::egui::Id::new(("sketch_menu", tab)))
-            .unwrap()
-            .rect();
-        assert!((menu.left() - x / ppp).abs() <= 1.0 / 32.0, "{ppp} {menu:?}");
+        let menu =
+            eframe::egui::AreaState::load(&h.ctx, eframe::egui::Id::new(("sketch_menu", tab)))
+                .unwrap()
+                .rect();
+        assert!(
+            (menu.left() - x / ppp).abs() <= 1.0 / 32.0,
+            "{ppp} {menu:?}"
+        );
         assert!((menu.top() - y / ppp).abs() <= 1.0 / 32.0, "{ppp} {menu:?}");
         // A hundredth of a pixel into its left edge's pixel, and into its top edge's: on it.
         for press in [

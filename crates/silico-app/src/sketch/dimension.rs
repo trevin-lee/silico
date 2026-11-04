@@ -20,9 +20,7 @@
 
 use std::collections::BTreeSet;
 
-use eframe::egui::{
-    self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Stroke, Ui, Vec2,
-};
+use eframe::egui::{self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Stroke, Ui, Vec2};
 use silico_core::command::Revision;
 use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, FeatureId, Form};

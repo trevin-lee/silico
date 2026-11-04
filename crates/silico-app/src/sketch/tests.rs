@@ -3608,26 +3608,53 @@ fn clear_of_the_palette_whatever_the_box_and_wherever_its_text() {
     let palette = Rect::from_min_max(pos2(776.0, 118.0), pos2(988.0, 900.0));
     let size = vec2(200.0, 50.0);
     // Clear already: where it's wanted.
-    assert_eq!(clear_of_palette(pos2(100.0, 100.0), size, within, palette), pos2(100.0, 100.0));
+    assert_eq!(
+        clear_of_palette(pos2(100.0, 100.0), size, within, palette),
+        pos2(100.0, 100.0)
+    );
     // Over the palette: left of it, 8 from it (776 − 8 − 200).
-    assert_eq!(clear_of_palette(pos2(700.0, 300.0), size, within, palette), pos2(568.0, 300.0));
+    assert_eq!(
+        clear_of_palette(pos2(700.0, 300.0), size, within, palette),
+        pos2(568.0, 300.0)
+    );
     // Its text under the palette's middle: the same.
-    assert_eq!(clear_of_palette(pos2(850.0, 300.0), size, within, palette), pos2(568.0, 300.0));
+    assert_eq!(
+        clear_of_palette(pos2(850.0, 300.0), size, within, palette),
+        pos2(568.0, 300.0)
+    );
     // Past the viewport's left and bottom: inside it, at its edges.
-    assert_eq!(clear_of_palette(pos2(-50.0, 580.0), size, within, palette), pos2(0.0, 550.0));
+    assert_eq!(
+        clear_of_palette(pos2(-50.0, 580.0), size, within, palette),
+        pos2(0.0, 550.0)
+    );
     // Past its right, above the palette: inside it, left to 800, and clear above.
-    assert_eq!(clear_of_palette(pos2(900.0, 20.0), size, within, palette), pos2(800.0, 20.0));
+    assert_eq!(
+        clear_of_palette(pos2(900.0, 20.0), size, within, palette),
+        pos2(800.0, 20.0)
+    );
     // Past its right, beside the palette: inside, then left of the palette.
-    assert_eq!(clear_of_palette(pos2(990.0, 200.0), size, within, palette), pos2(568.0, 200.0));
+    assert_eq!(
+        clear_of_palette(pos2(990.0, 200.0), size, within, palette),
+        pos2(568.0, 200.0)
+    );
     // A viewport with no room left of the palette: up above it (118 − 8 − 50).
     let narrow = Rect::from_min_max(pos2(700.0, 0.0), pos2(1000.0, 600.0));
-    assert_eq!(clear_of_palette(pos2(720.0, 300.0), size, narrow, palette), pos2(720.0, 60.0));
+    assert_eq!(
+        clear_of_palette(pos2(720.0, 300.0), size, narrow, palette),
+        pos2(720.0, 60.0)
+    );
     // Nor above it: at the viewport's left, as near its place as it can be.
     let low = Rect::from_min_max(pos2(700.0, 100.0), pos2(1000.0, 600.0));
-    assert_eq!(clear_of_palette(pos2(720.0, 300.0), size, low, palette), pos2(700.0, 300.0));
+    assert_eq!(
+        clear_of_palette(pos2(720.0, 300.0), size, low, palette),
+        pos2(700.0, 300.0)
+    );
     // A box wider than the viewport: at its left.
     let small = Rect::from_min_max(pos2(0.0, 0.0), pos2(150.0, 600.0));
-    assert_eq!(clear_of_palette(pos2(40.0, 10.0), size, small, palette), pos2(0.0, 10.0));
+    assert_eq!(
+        clear_of_palette(pos2(40.0, 10.0), size, small, palette),
+        pos2(0.0, 10.0)
+    );
 }
 
 #[test]
@@ -3635,10 +3662,16 @@ fn the_canvas_menus_corner_is_its_clicks_pixels_at_fractional_scales() {
     use super::bar::menu_corner;
     // 100.5 points: 125.625 pixels at 1.25, the 125th's corner at 100; 150.75 at 1.5, the
     // 150th's at 100. 50.3: 62.875 at 1.25, the 62nd's at 49.6; 75.45 at 1.5, at 50.
-    assert_eq!(menu_corner(pos2(100.5, 50.3), 1.25), pos2(100.0, 62.0 / 1.25));
+    assert_eq!(
+        menu_corner(pos2(100.5, 50.3), 1.25),
+        pos2(100.0, 62.0 / 1.25)
+    );
     assert_eq!(menu_corner(pos2(100.5, 50.3), 1.5), pos2(100.0, 50.0));
     // On a pixel's corner already: there.
-    assert_eq!(menu_corner(pos2(100.8, 40.0), 1.25), pos2(126.0 / 1.25, 40.0));
+    assert_eq!(
+        menu_corner(pos2(100.8, 40.0), 1.25),
+        pos2(126.0 / 1.25, 40.0)
+    );
 }
 
 #[test]
@@ -3704,9 +3737,16 @@ fn a_press_off_the_menu_closes_it_but_the_right_press_of_the_click_that_opens_it
     after.push(button(pos2(120.0, 60.0), left, true));
     assert!(!pressed_off_menu(&after, menu, 2.0, true));
     // A left press before the click's release counts: only the right press is the click's.
-    let left_first = [button(pos2(90.0, 40.0), left, true), click[0].clone(), click[2].clone()];
+    let left_first = [
+        button(pos2(90.0, 40.0), left, true),
+        click[0].clone(),
+        click[2].clone(),
+    ];
     assert!(pressed_off_menu(&left_first, menu, 2.0, true));
     // Releases and moves alone close nothing.
-    let released = [button(pos2(10.0, 10.0), left, false), Event::PointerMoved(pos2(0.0, 0.0))];
+    let released = [
+        button(pos2(10.0, 10.0), left, false),
+        Event::PointerMoved(pos2(0.0, 0.0)),
+    ];
     assert!(!pressed_off_menu(&released, menu, 2.0, false));
 }
