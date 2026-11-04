@@ -102,11 +102,13 @@ fn main() -> ExitCode {
 /// The `silico` beside this executable, its links resolved (where the workers are found,
 /// and where a build puts it), for Copy MCP config; else `silico`, for the client's `PATH`.
 fn silico_beside() -> String {
+    silico_in(std::env::current_exe().and_then(std::fs::canonicalize).ok())
+}
+
+/// The `silico` in the folder of `exe`, if it's a file there; else `silico`.
+fn silico_in(exe: Option<std::path::PathBuf>) -> String {
     let name = format!("silico{}", std::env::consts::EXE_SUFFIX);
-    std::env::current_exe()
-        .and_then(std::fs::canonicalize)
-        .ok()
-        .and_then(|exe| exe.parent().map(|folder| folder.join(&name)))
+    exe.and_then(|exe| exe.parent().map(|folder| folder.join(&name)))
         .filter(|silico| silico.is_file())
         .and_then(|silico| silico.into_os_string().into_string().ok())
         .unwrap_or_else(|| "silico".to_owned())
@@ -120,5 +122,36 @@ fn options() -> eframe::NativeOptions {
             .with_title("Silico")
             .with_inner_size([1280.0, 800.0]),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_mcp_configs_command_is_the_silico_beside_the_app_else_silico() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir
+            .path()
+            .join(format!("silico-app{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&app, b"").unwrap();
+        // Nothing beside it, a folder of that name, or no executable known: the client's PATH's.
+        assert_eq!(silico_in(Some(app.clone())), "silico");
+        assert_eq!(silico_in(None), "silico");
+        let silico = dir
+            .path()
+            .join(format!("silico{}", std::env::consts::EXE_SUFFIX));
+        std::fs::create_dir(&silico).unwrap();
+        assert_eq!(silico_in(Some(app.clone())), "silico");
+        std::fs::remove_dir(&silico).unwrap();
+        // A file beside it: that file, by its path.
+        std::fs::write(&silico, b"").unwrap();
+        assert_eq!(silico_in(Some(app)).as_str(), silico.to_str().unwrap());
+        // This test's own executable, in cargo's deps folder, has none beside it (cargo names
+        // each binary there with a hash).
+        let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        assert!(!exe.with_file_name(silico.file_name().unwrap()).exists());
+        assert_eq!(silico_beside(), "silico");
     }
 }

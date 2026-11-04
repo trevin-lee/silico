@@ -11447,3 +11447,61 @@ fn the_start_page_draws_in_the_themes_colours_on_lavapipe() {
         },
     );
 }
+
+/// The lines of app.rs that asked for the frame before last's next frame (egui's causes,
+/// each where `request_repaint` was called).
+fn asked_from_app(h: &AppHarness) -> std::collections::BTreeSet<u32> {
+    h.ctx
+        .repaint_causes()
+        .iter()
+        .filter(|cause| cause.file.ends_with("src/app.rs"))
+        .map(|cause| cause.line)
+        .collect()
+}
+
+#[test]
+fn a_recent_documents_click_that_starts_an_open_asks_for_the_next_frame_itself() {
+    // Every session the process may hold already open: the recent document's open is
+    // refused at once, as it's asked, so no waker asks for the frame that takes the refusal;
+    // the frame whose click started the open asks for it, beyond the idle frame it asks for
+    // each time.
+    let f = fixture();
+    let listed = f.file("listed.silico", EXAMPLE);
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{}\n", listed.to_str().unwrap()),
+    )
+    .unwrap();
+    for n in 0..silico_core::command::MAX_SESSIONS {
+        let path = f.dir.path().join(format!("held{n}.silico"));
+        f.sessions.open(&path, true).wait().session.unwrap();
+    }
+    let mut h = f.remembering();
+    step_until(&mut h, "listed", |h| recent_names(h) == ["listed.silico"]);
+    quiet_wakes(&mut h);
+    idle(&mut h);
+    step(&mut h);
+    step(&mut h);
+    let idle_frame = asked_from_app(&h);
+    assert!(!idle_frame.is_empty());
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "listed.silico")
+        .click();
+    let woken = h.state().wakes();
+    // The click's frame, the open started and refused; then the next, which takes it.
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(h.state().wakes(), woken);
+    let clicked = asked_from_app(&h);
+    assert!(
+        clicked.iter().any(|line| !idle_frame.contains(line)),
+        "{clicked:?} against the idle frame's {idle_frame:?}"
+    );
+    let said = format!("{} sessions are open", silico_core::command::MAX_SESSIONS);
+    step_until(&mut h, "the refusal said", |h| {
+        h.state().message().is_some_and(|m| m.contains(&said))
+    });
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}

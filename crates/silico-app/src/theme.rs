@@ -537,13 +537,15 @@ pub const KEY_CAP_ON_PRIMARY_TEXT: Color32 = hex(0x444444);
 /// A key cap's text size.
 pub const KEY_CAP_TEXT_SIZE: f32 = 10.5;
 
-/// A key cap's least width, and its padding at each side of its text.
+/// A key cap's least width, its padding at each side of its text, and its outline's width,
+/// inside its width as `.kbd`'s `border-box` has it.
 pub const KEY_CAP_MIN_WIDTH: f32 = 16.0;
 pub const KEY_CAP_PADDING: f32 = 4.0;
+pub const KEY_CAP_BORDER: f32 = 1.0;
 
-/// A key cap's corners, and the space between two caps of one shortcut.
+/// A key cap's corners, and the space between two caps of one shortcut (`.keys`).
 pub const KEY_CAP_CORNER_RADIUS: u8 = 3;
-pub const KEY_CAP_GAP: f32 = 3.0;
+pub const KEY_CAP_GAP: f32 = 2.0;
 
 // ---- The status bar's marks ----
 

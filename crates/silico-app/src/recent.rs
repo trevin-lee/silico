@@ -117,14 +117,19 @@ impl Recents {
             },
             Err(e) => {
                 tracing::warn!("the list of recent documents can't be kept: {e}");
-                Recents {
-                    list: Vec::new(),
-                    read: true,
-                    asks: None,
-                    told: None,
-                    wake,
-                }
+                Self::unkept()
             }
+        }
+    }
+
+    /// A list that isn't kept, its thread not started: read, and empty.
+    pub(crate) fn unkept() -> Self {
+        Recents {
+            list: Vec::new(),
+            read: true,
+            asks: None,
+            told: None,
+            wake: Wake::default(),
         }
     }
 
@@ -649,6 +654,79 @@ mod tests {
         }
         polled_until(&mut recents, Recents::is_read);
         assert_eq!(recents.list()[0].path, "/a/one.silico");
+    }
+
+    #[test]
+    fn ten_of_the_longest_paths_are_read_whole_and_a_file_of_exactly_64_kib_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(FILE_NAME);
+        // Ten paths of 4096 bytes: 26 + 10 · 4097 = 40,996 bytes, under 64 KiB (65,536).
+        let longest: Vec<String> = (0..10)
+            .map(|n| format!("/{n}{}", "a".repeat(4094)))
+            .collect();
+        let lines: Vec<&str> = longest.iter().map(String::as_str).collect();
+        let whole = text(&lines);
+        assert_eq!(whole.len(), 40_996);
+        std::fs::write(&file, &whole).unwrap();
+        assert_eq!(read_capped(&file).unwrap(), whole.as_bytes());
+        assert_eq!(parse(&read_capped(&file).unwrap()), longest);
+        // Exactly 65,536 bytes, its last line unbroken: all of it read, that line included.
+        let mut exact = String::from("silico recent-documents 1\n/a/0.silico\n/");
+        exact.push_str(&"b".repeat(65_536 - exact.len()));
+        assert_eq!(exact.len(), 65_536);
+        std::fs::write(&file, &exact).unwrap();
+        assert_eq!(read_capped(&file).unwrap(), exact.as_bytes());
+        // One byte more: the line the cap cuts is dropped.
+        exact.push('b');
+        std::fs::write(&file, &exact).unwrap();
+        assert_eq!(
+            read_capped(&file).unwrap(),
+            b"silico recent-documents 1\n/a/0.silico\n"
+        );
+    }
+
+    #[test]
+    fn a_list_holds_only_the_paths_in_it_and_one_not_kept_says_so() {
+        let read: Read = Box::new(|_| Some(text(&["/a/one.silico", "/b/two.silico"]).into_bytes()));
+        let dir = tempfile::tempdir().unwrap();
+        let mut recents = Recents::reading(dir.path().join(FILE_NAME), read);
+        polled_until(&mut recents, Recents::is_read);
+        assert!(recents.is_kept());
+        assert!(recents.holds("/a/one.silico"));
+        assert!(recents.holds("/b/two.silico"));
+        for other in ["/a/three.silico", "/a/one", "one.silico", ""] {
+            assert!(!recents.holds(other), "{other}");
+        }
+        let unkept = Recents::unkept();
+        assert!(!unkept.is_kept());
+        assert!(unkept.is_read());
+        assert!(unkept.list().is_empty());
+        assert!(!unkept.holds("/a/one.silico"));
+    }
+
+    #[test]
+    fn the_list_is_kept_in_the_platforms_app_data_folder() {
+        // directories' folders, as recent.rs's documentation gives them.
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        let folder = if cfg!(target_os = "macos") {
+            home.join("Library")
+                .join("Application Support")
+                .join("Silico")
+        } else if cfg!(target_os = "linux") {
+            std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .filter(|data| data.is_absolute())
+                .unwrap_or_else(|| home.join(".local").join("share"))
+                .join("silico")
+        } else {
+            return;
+        };
+        assert_eq!(
+            Recents::default_file(),
+            Some(folder.join("recent-documents"))
+        );
     }
 
     #[test]
