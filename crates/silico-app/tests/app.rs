@@ -8519,6 +8519,11 @@ impl Fixture {
     /// The app with `text` open, at two physical pixels a point, its viewport marked and its
     /// tab watched, every overlay's call kept.
     fn overlaid(&self, text: &str) -> (AppHarness, Overlays) {
+        self.overlaid_at(text, 2.0)
+    }
+
+    /// [`overlaid`](Self::overlaid), at `pixels_per_point`.
+    fn overlaid_at(&self, text: &str, pixels_per_point: f32) -> (AppHarness, Overlays) {
         let path = self.file("example.silico", text);
         let seen = Overlays::default();
         let app =
@@ -8527,7 +8532,7 @@ impl Fixture {
             let _marked = never_waits::marked();
             Harness::builder()
                 .with_size((1280.0, 800.0))
-                .with_pixels_per_point(2.0)
+                .with_pixels_per_point(pixels_per_point)
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
@@ -14861,4 +14866,95 @@ fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_say
     assert_eq!(showing(&h, "Properties", "conflict"), None);
     assert!(!h.state().tabs()[0].said.contains_key("s0000001"));
     assert_eq!(never_waits::waits(), 0);
+}
+
+/// The right button pressed at `from` and let go at `to` in one frame.
+fn right_click_moved(h: &mut AppHarness, from: eframe::egui::Pos2, to: eframe::egui::Pos2) {
+    let right = eframe::egui::PointerButton::Secondary;
+    let none = eframe::egui::Modifiers::NONE;
+    h.hover_at(from);
+    button_event(h, from, right, true, none);
+    h.event(eframe::egui::Event::PointerMoved(to));
+    button_event(h, to, right, false, none);
+    step(h);
+}
+
+/// The left button pressed and let go at `at`, a frame apart.
+fn left_click_at(h: &mut AppHarness, at: eframe::egui::Pos2) {
+    let left = eframe::egui::PointerButton::Primary;
+    let none = eframe::egui::Modifiers::NONE;
+    h.hover_at(at);
+    button_event(h, at, left, true, none);
+    step(h);
+    button_event(h, at, left, false, none);
+    step(h);
+}
+
+#[test]
+fn at_one_and_a_quarter_and_one_and_a_half_pixels_a_point_the_sketch_menu_stays_open_for_its_own_press_and_one_on_its_edge_pixel()
+ {
+    use eframe::egui::pos2;
+    for ppp in [1.25_f32, 1.5] {
+        let f = fixture();
+        let (mut h, _) = f.overlaid_at(EXAMPLE, ppp);
+        assert_eq!(h.ctx.pixels_per_point(), ppp);
+        step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+        create_sketch(&mut h, "XY plane");
+        sketch_read(&mut h);
+        // Pressed at (500.5, 400.5) and let go 3 points right and down, in one frame (a
+        // slow frame's click): the press, before the menu's corner, opened it, and leaves
+        // it open.
+        let (from, to) = (pos2(500.5, 400.5), pos2(503.5, 403.5));
+        right_click_moved(&mut h, from, to);
+        let opened = sketch_mode(&h).unwrap().menu_at.unwrap();
+        assert!((opened - to).length() < 1e-3, "{ppp} {opened:?}");
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        assert!(sketch_menu(&h).is_some(), "{ppp}");
+        left_click_at(&mut h, pos2(400.0, 300.0));
+        assert!(sketch_menu(&h).is_none(), "{ppp}");
+        // Opened at (501, 401), a frame apart: its corner is the click's pixel's, which
+        // egui's 1/32-point rounding moves off the pixel's edge in points (at 1.25, past the
+        // press; at 1.5, before it). Pixels worked by hand: 626 and 501 at 1.25, 751 and
+        // 601 at 1.5.
+        let at = pos2(501.0, 401.0);
+        let right = eframe::egui::PointerButton::Secondary;
+        let none = eframe::egui::Modifiers::NONE;
+        h.hover_at(at);
+        button_event(&h, at, right, true, none);
+        step(&mut h);
+        button_event(&h, at, right, false, none);
+        step(&mut h);
+        step(&mut h);
+        assert!(sketch_menu(&h).is_some(), "{ppp}");
+        let [x, y]: [f32; 2] = if ppp == 1.25 {
+            [626.0, 501.0]
+        } else {
+            [751.0, 601.0]
+        };
+        let tab = h.state().tabs()[0].id.to_string();
+        let menu = eframe::egui::AreaState::load(&h.ctx, eframe::egui::Id::new(("sketch_menu", tab)))
+            .unwrap()
+            .rect();
+        assert!((menu.left() - x / ppp).abs() <= 1.0 / 32.0, "{ppp} {menu:?}");
+        assert!((menu.top() - y / ppp).abs() <= 1.0 / 32.0, "{ppp} {menu:?}");
+        // A hundredth of a pixel into its left edge's pixel, and into its top edge's: on it.
+        for press in [
+            pos2((x + 0.01) / ppp, menu.center().y),
+            pos2(menu.center().x, (y + 0.01) / ppp),
+        ] {
+            left_click_at(&mut h, press);
+            step(&mut h);
+            assert!(sketch_menu(&h).is_some(), "{ppp} {press:?} {menu:?}");
+            assert!(sketch_mode(&h).unwrap().menu_at.is_some(), "{ppp}");
+        }
+        // A hundredth of a pixel before its left edge's pixel: off it, and it closes.
+        let press = pos2((x - 0.01) / ppp, menu.center().y);
+        left_click_at(&mut h, press);
+        step(&mut h);
+        assert!(sketch_menu(&h).is_none(), "{ppp} {press:?} {menu:?}");
+        assert_eq!(sketch_mode(&h).unwrap().menu_at, None, "{ppp}");
+        assert_eq!(never_waits::waits(), 0);
+    }
 }

@@ -3629,3 +3629,84 @@ fn clear_of_the_palette_whatever_the_box_and_wherever_its_text() {
     let small = Rect::from_min_max(pos2(0.0, 0.0), pos2(150.0, 600.0));
     assert_eq!(clear_of_palette(pos2(40.0, 10.0), size, small, palette), pos2(0.0, 10.0));
 }
+
+#[test]
+fn the_canvas_menus_corner_is_its_clicks_pixels_at_fractional_scales() {
+    use super::bar::menu_corner;
+    // 100.5 points: 125.625 pixels at 1.25, the 125th's corner at 100; 150.75 at 1.5, the
+    // 150th's at 100. 50.3: 62.875 at 1.25, the 62nd's at 49.6; 75.45 at 1.5, at 50.
+    assert_eq!(menu_corner(pos2(100.5, 50.3), 1.25), pos2(100.0, 62.0 / 1.25));
+    assert_eq!(menu_corner(pos2(100.5, 50.3), 1.5), pos2(100.0, 50.0));
+    // On a pixel's corner already: there.
+    assert_eq!(menu_corner(pos2(100.8, 40.0), 1.25), pos2(126.0 / 1.25, 40.0));
+}
+
+#[test]
+fn a_press_is_on_the_menu_by_the_pixel_it_is_in_among_the_pixels_the_menu_covers() {
+    use super::bar::on_menu;
+    use egui::Rect;
+    // At 1.25: a menu from 100.8125 (egui's 1/32-point rounding of the 126th pixel's
+    // corner, 100.8) to 180.8125 across, its pixels the 126th to the 225th; from 49.6 to
+    // 120 down, the 62nd to the 149th.
+    let menu = Rect::from_min_max(pos2(100.8125, 49.6), pos2(180.8125, 120.0));
+    // In the 126th pixel, though before the rect's edge in points: on it.
+    assert!(on_menu(pos2(100.801, 60.0), menu, 1.25));
+    assert!(!menu.contains(pos2(100.801, 60.0)));
+    // In the 125th: off it.
+    assert!(!on_menu(pos2(100.79, 60.0), menu, 1.25));
+    // The 225th, its last: on; the 226th: off.
+    assert!(on_menu(pos2(180.79, 60.0), menu, 1.25));
+    assert!(!on_menu(pos2(180.81, 60.0), menu, 1.25));
+    // Down: the 62nd and 149th on, the 61st and 150th off.
+    assert!(on_menu(pos2(120.0, 49.61), menu, 1.25));
+    assert!(on_menu(pos2(120.0, 119.99), menu, 1.25));
+    assert!(!on_menu(pos2(120.0, 49.59), menu, 1.25));
+    assert!(!on_menu(pos2(120.0, 120.01), menu, 1.25));
+    // At 1.5, 751's corner, 500.6667, rounds to 500.65625: a press at 500.66, in the
+    // 750th pixel, is off it, though after the rect's edge in points.
+    let menu = Rect::from_min_max(pos2(500.65625, 400.0), pos2(600.0, 500.0));
+    assert!(menu.contains(pos2(500.66, 450.0)));
+    assert!(!on_menu(pos2(500.66, 450.0), menu, 1.5));
+    assert!(on_menu(pos2(500.67, 450.0), menu, 1.5));
+}
+
+#[test]
+fn a_press_off_the_menu_closes_it_but_the_right_press_of_the_click_that_opens_it() {
+    use super::bar::pressed_off_menu;
+    use egui::{Event, Modifiers, PointerButton, Rect};
+    let button = |at: Pos2, button, pressed| Event::PointerButton {
+        pos: at,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    let right = PointerButton::Secondary;
+    let left = PointerButton::Primary;
+    let menu = Rect::from_min_max(pos2(100.0, 50.0), pos2(180.0, 120.0));
+    // A click pressed 3 points up and left of where it let go, the menu at the release.
+    let click = [
+        button(pos2(97.0, 47.0), right, true),
+        Event::PointerMoved(pos2(100.0, 50.0)),
+        button(pos2(100.0, 50.0), right, false),
+    ];
+    // In the frame it opens: its own press closes nothing.
+    assert!(!pressed_off_menu(&click, menu, 2.0, true));
+    // Open since a frame before: the same press is off it.
+    assert!(pressed_off_menu(&click, menu, 2.0, false));
+    // Any press after the click's release counts, a right one too, off it; on it, none.
+    let mut after = click.to_vec();
+    after.push(button(pos2(90.0, 40.0), left, true));
+    assert!(pressed_off_menu(&after, menu, 2.0, true));
+    let mut after = click.to_vec();
+    after.push(button(pos2(300.0, 300.0), right, true));
+    assert!(pressed_off_menu(&after, menu, 2.0, true));
+    let mut after = click.to_vec();
+    after.push(button(pos2(120.0, 60.0), left, true));
+    assert!(!pressed_off_menu(&after, menu, 2.0, true));
+    // A left press before the click's release counts: only the right press is the click's.
+    let left_first = [button(pos2(90.0, 40.0), left, true), click[0].clone(), click[2].clone()];
+    assert!(pressed_off_menu(&left_first, menu, 2.0, true));
+    // Releases and moves alone close nothing.
+    let released = [button(pos2(10.0, 10.0), left, false), Event::PointerMoved(pos2(0.0, 0.0))];
+    assert!(!pressed_off_menu(&released, menu, 2.0, false));
+}

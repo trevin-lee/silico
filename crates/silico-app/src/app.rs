@@ -1178,8 +1178,12 @@ impl<P: Clients + 'static> App<P> {
         // click, there or off the canvas).
         if let Some((at, busy)) = menu {
             let mut asked = sketch::bar::MenuAction::None;
-            let shown = egui::Area::new(egui::Id::new(("sketch_menu", id.to_string())))
-                .fixed_pos(at)
+            let ppp = ui.ctx().pixels_per_point();
+            let area = egui::Id::new(("sketch_menu", id.to_string()));
+            let layer = egui::LayerId::new(egui::Order::Foreground, area);
+            let opening = !ui.ctx().memory(|m| m.areas().visible_last_frame(&layer));
+            let shown = egui::Area::new(area)
+                .fixed_pos(sketch::bar::menu_corner(at, ppp))
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
                     *ui.visuals_mut() = sketch::bar::panel_visuals();
@@ -1199,10 +1203,7 @@ impl<P: Clients + 'static> App<P> {
             }
             let menu_rect = shown.response.rect;
             let away = ui.input(|i| {
-                i.pointer.any_pressed()
-                    && i.pointer
-                        .press_origin()
-                        .is_some_and(|origin| !menu_rect.contains(origin))
+                sketch::bar::pressed_off_menu(&i.events, menu_rect, ppp, opening)
             });
             if (asked != sketch::bar::MenuAction::None || away)
                 && let Some(mode) = tab.sketch.as_mut()

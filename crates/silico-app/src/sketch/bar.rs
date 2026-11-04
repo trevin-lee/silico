@@ -5,7 +5,9 @@
 //! out by a small function of its own, given what it shows and giving back what was asked,
 //! apart from sketch mode's state and actions.
 
-use eframe::egui::{self, Color32, CornerRadius, Margin, RichText, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{
+    self, Color32, CornerRadius, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2,
+};
 use silico_core::sketch_tools::ToolKind;
 
 use super::style::*;
@@ -384,6 +386,61 @@ pub fn canvas_menu(ui: &mut Ui, busy: bool) -> MenuAction {
         ui.close();
     }
     action
+}
+
+/// Where the canvas menu opened by a right-click at `at` stands: the top left of the
+/// physical pixel the click is in, at `pixels_per_point`, so the menu's first pixel is the
+/// click's (egui would round a corner between pixels to the nearer, which may be past it).
+pub fn menu_corner(at: Pos2, pixels_per_point: f32) -> Pos2 {
+    let pixel = |c: f32| (c * pixels_per_point).floor() / pixels_per_point;
+    Pos2::new(pixel(at.x), pixel(at.y))
+}
+
+/// Whether a press at `at` is on the menu `menu`, both in physical pixels at
+/// `pixels_per_point`: the pixel the press is in, among those the menu covers (from the
+/// pixel its edge rounds to, as egui draws an area, to the one before its far edge's).
+pub fn on_menu(at: Pos2, menu: Rect, pixels_per_point: f32) -> bool {
+    let pixel = |c: f32| (c * pixels_per_point).floor();
+    let edge = |c: f32| (c * pixels_per_point).round();
+    let across = |c: f32, low: f32, high: f32| (edge(low)..edge(high)).contains(&pixel(c));
+    across(at.x, menu.left(), menu.right()) && across(at.y, menu.top(), menu.bottom())
+}
+
+/// Whether this frame's `events` press a button off the menu `menu` ([`on_menu`]), which
+/// closes it. In the frame the menu opens (`opening`), a right press before the last right
+/// release is the click that opened it, wherever in its click distance it was pressed, and
+/// closes nothing.
+pub fn pressed_off_menu(
+    events: &[egui::Event],
+    menu: Rect,
+    pixels_per_point: f32,
+    opening: bool,
+) -> bool {
+    use egui::{Event, PointerButton};
+    let released = events.iter().rposition(|event| {
+        matches!(
+            event,
+            Event::PointerButton {
+                button: PointerButton::Secondary,
+                pressed: false,
+                ..
+            }
+        )
+    });
+    events.iter().enumerate().any(|(place, event)| match event {
+        Event::PointerButton {
+            pos,
+            button,
+            pressed: true,
+            ..
+        } => {
+            let opened_it = opening
+                && *button == PointerButton::Secondary
+                && released.is_some_and(|released| place < released);
+            !opened_it && !on_menu(*pos, menu, pixels_per_point)
+        }
+        _ => false,
+    })
 }
 
 /// The palette's Status: the state, with its dot, a word on it, the read's refusal, and the
