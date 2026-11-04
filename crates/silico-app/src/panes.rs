@@ -166,6 +166,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
     /// saved), its icon, its name, its meta at its right, and its mark, from the rows the
     /// tab worked out as its timeline was read ([`crate::tab::browser`]).
     fn browser(&mut self, ui: &mut Ui) {
+        // `.panel-body` straight under `.panel-title`, as each row under the last.
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
         title(ui, "BROWSER");
         let Some(tab) = self.tab.as_deref_mut() else {
             padded(ui, |ui| {
@@ -671,7 +673,8 @@ fn padded(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
         .show(ui, add);
 }
 
-/// An empty group's words (`.tree-empty`).
+/// An empty group's words (`.tree-empty`), each line as high as the body's
+/// ([`theme::BODY_LINE_HEIGHT`]: `.tree-empty` sets its size, not its line's height).
 fn empty_words(ui: &mut Ui, words: &str) {
     egui::Frame::new()
         .inner_margin(egui::Margin {
@@ -684,6 +687,7 @@ fn empty_words(ui: &mut Ui, words: &str) {
             ui.label(
                 RichText::new(words)
                     .size(theme::HEADER_SIZE)
+                    .line_height(Some(theme::BODY_LINE_HEIGHT))
                     .color(theme::BROWSER_EMPTY),
             );
         });
@@ -1124,6 +1128,869 @@ mod tests {
         ] {
             let node = name_value(name).unwrap();
             assert_eq!(node.value.as_str(), Some(name), "{name:?}");
+        }
+    }
+
+    // ---- The browser as drawn, against the prototype ----
+    //
+    // Each value below is typed from the approved prototype's stylesheet
+    // (docs/design/m5-ui/styles.css: `:root`'s tokens, `#browser`, `.panel-title`,
+    // `.panel-body`, `.row` and its parts, `.tree-empty`) and js/app.js's `row` and
+    // `renderBrowser`, never from theme.rs, and compared with what the pane painted: each
+    // rectangle, icon, and text from egui's shapes, and each widget's bounds from the
+    // accessibility tree.
+
+    use eframe::egui::epaint::{RectShape, TextShape};
+    use eframe::egui::text::TextFormat;
+    use eframe::egui::{CornerRadius, FontFamily, FontId, Pos2, Rect, Shape, TextureId};
+    use egui::accesskit::Role;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    use silico_core::command::Problems;
+    use silico_core::fake::FakeKernel;
+
+    use crate::tab::{Browser, Row, Said};
+
+    /// The prototype's tokens and geometry.
+    mod css {
+        use eframe::egui::Color32;
+
+        // `:root`'s greys and colours.
+        pub const G250: Color32 = Color32::from_rgb(0x27, 0x26, 0x26);
+        pub const G350: Color32 = Color32::from_rgb(0x52, 0x51, 0x51);
+        pub const G400: Color32 = Color32::from_rgb(0x64, 0x63, 0x63);
+        pub const G500: Color32 = Color32::from_rgb(0x82, 0x7f, 0x7f);
+        pub const G550: Color32 = Color32::from_rgb(0x93, 0x90, 0x90);
+        pub const G700: Color32 = Color32::from_rgb(0xbf, 0xbf, 0xbf);
+        pub const G800: Color32 = Color32::from_rgb(0xe0, 0xdf, 0xdf);
+        pub const G1000: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
+        /// `--blue`, `--blue-text`, and `--blue-soft` (`--sk-under`).
+        pub const BLUE: Color32 = Color32::from_rgb(0x18, 0x6a, 0xdd);
+        pub const BLUE_TEXT: Color32 = Color32::from_rgb(0xf0, 0xf2, 0xff);
+        pub const BLUE_SOFT: Color32 = Color32::from_rgb(0x7a, 0x95, 0xff);
+        /// `--red` (`.r-err`, `.row.err .r-name`) and `--orange` (`.r-warn`).
+        pub const RED: Color32 = Color32::from_rgb(0xff, 0x38, 0x65);
+        pub const ORANGE: Color32 = Color32::from_rgb(0xff, 0x7a, 0x0c);
+
+        /// `--fs`, `--lh` (the body's `font: var(--fs)/var(--lh)`, inherited), `--fs-small`,
+        /// `--icon`, and `.row .prefix`'s `font-size: 11px`.
+        pub const FS: f32 = 12.0;
+        pub const LH: f32 = 16.0;
+        pub const FS_SMALL: f32 = 11.0;
+        pub const ICON: f32 = 14.0;
+        pub const PREFIX: f32 = 11.0;
+        /// `--browser-w`, and `#browser`'s `border-right: 1px` within it (`border-box`).
+        pub const BROWSER_W: f32 = 248.0;
+        pub const BORDER: f32 = 1.0;
+        /// `.panel-title`: `height: var(--title-h)`, `padding-left: var(--pad)`,
+        /// `letter-spacing: .5px`.
+        pub const TITLE_H: f32 = 24.0;
+        pub const PAD: f32 = 12.0;
+        pub const CAPITALS_SPACING: f32 = 0.5;
+        /// `.row`: `height: var(--row-h)`, `gap: 4px`, `padding-right: 6px`; app.js's `row`:
+        /// `padding-left: 6 + depth * 18` (`--indent`).
+        pub const ROW_H: f32 = 24.0;
+        pub const ROW_GAP: f32 = 4.0;
+        pub const ROW_PADDING_RIGHT: f32 = 6.0;
+        pub const ROW_PADDING_LEFT: f32 = 6.0;
+        pub const INDENT: f32 = 18.0;
+        /// `.row .caret`: 14 square; its `svg` 10 square, `rotate(90deg)` while `.open`.
+        pub const CARET: f32 = 14.0;
+        pub const CARET_SVG: f32 = 10.0;
+        /// `.row .eye`: 18 square, `border-radius: 3px`.
+        pub const EYE: f32 = 18.0;
+        pub const EYE_RADIUS: u8 = 3;
+        /// `.row.hidden-obj .r-name, .row.hidden-obj .r-icon { opacity: .45 }`: an alpha of
+        /// 255 × .45 = 114.75, 115.
+        pub const HIDDEN_ALPHA: u8 = 115;
+        /// `.tree-empty`: `padding: 2px 12px 6px calc(var(--pad) + 36px)`.
+        pub const EMPTY_TOP: f32 = 2.0;
+        pub const EMPTY_RIGHT: f32 = 12.0;
+        pub const EMPTY_BOTTOM: f32 = 6.0;
+        pub const EMPTY_LEFT: f32 = 12.0 + 36.0;
+    }
+
+    /// The pane's top left in the harness's window (away from the origin, so a sum with its
+    /// corner never reads as a product), its width (`#browser`'s, less its border), and its
+    /// height.
+    const PANE: Pos2 = Pos2::new(40.0, 30.0);
+    const W: f32 = css::BROWSER_W - css::BORDER;
+    const HEIGHT: f32 = 640.0;
+
+    type Fake = Arc<silico_core::fake::FakeKernel>;
+
+    /// What the browser is drawn from.
+    struct Shown {
+        tab: Option<Tab>,
+        sessions: Arc<Sessions<Fake>>,
+        name: Option<NameField>,
+        started: bool,
+        drawing: crate::viewport::Drawing,
+    }
+
+    fn fid(id: &str) -> FeatureId {
+        FeatureId::new(id).unwrap()
+    }
+
+    /// A browser row: `id`, named `name`, marked with `health` by itself if it's marked.
+    fn listed(id: &str, name: &str, health: Health) -> Row {
+        Row {
+            id: fid(id),
+            name: name.to_owned(),
+            health,
+            marked_by: matches!(health, Health::Error | Health::Warning).then(|| fid(id)),
+        }
+    }
+
+    /// The tab of `/models/Part.silico`, the gate taking it, its timeline `features` with
+    /// `problems`, and the browser's rows `bodies` and `sketches`.
+    fn part(features: &[Entry], problems: u64, bodies: Vec<Row>, sketches: Vec<Row>) -> Tab {
+        let none = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::Internal,
+            "unused",
+        ));
+        let mut tab = Tab::opened(
+            SessionId::parse("s1").unwrap(),
+            "/models/Part.silico".to_owned(),
+            &none,
+        );
+        tab.document_problems.clear();
+        let mut answer = timeline(features, &[]);
+        answer.problems = problems;
+        tab.timeline = Some(answer);
+        tab.browser = Browser { bodies, sketches };
+        tab
+    }
+
+    /// The bodies Block, Cut (failed: "The cut removes nothing"), and Shell (warned), and
+    /// the sketches Profile and Bad (failed).
+    fn modelled() -> Tab {
+        let features = [
+            entry("b0000001", "box", &[], Health::Healthy),
+            entry("c0000001", "cut", &["b0000001"], Health::Error),
+            entry("s0000001", "box", &[], Health::Warning),
+            entry("p0000001", "sketch", &[], Health::Healthy),
+            entry("b0000002", "sketch", &[], Health::Error),
+        ];
+        let mut tab = part(
+            &features,
+            0,
+            vec![
+                listed("b0000001", "Block", Health::Healthy),
+                listed("c0000001", "Cut", Health::Error),
+                listed("s0000001", "Shell", Health::Warning),
+            ],
+            vec![
+                listed("p0000001", "Profile", Health::Healthy),
+                listed("b0000002", "Bad", Health::Error),
+            ],
+        );
+        tab.said.insert(
+            "c0000001".to_owned(),
+            Said {
+                message: "The cut removes nothing".to_owned(),
+                suggestion: None,
+            },
+        );
+        tab
+    }
+
+    /// The browser pane, at [`PANE`], drawn from `tab` in the app's theme.
+    fn drawn(tab: Tab) -> Harness<'static, Shown> {
+        let shown = Shown {
+            tab: Some(tab),
+            sessions: Arc::new(Sessions::with_cache_opener(
+                Arc::new(FakeKernel::new(1).unwrap()),
+                |dir| silico_core::cache::Cache::unsealed(dir),
+            )),
+            name: None,
+            started: false,
+            drawing: crate::viewport::Drawing::default(),
+        };
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(PANE.x + W + 40.0, PANE.y + HEIGHT + 40.0))
+            .build_ui_state(
+                |ui, shown: &mut Shown| {
+                    let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
+                    ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
+                        Panes {
+                            tab: shown.tab.as_mut(),
+                            sessions: &shown.sessions,
+                            name: &mut shown.name,
+                            started: &mut shown.started,
+                            drawing: &mut shown.drawing,
+                        }
+                        .browser(ui);
+                    });
+                },
+                shown,
+            );
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        h
+    }
+
+    fn tab_of<'a>(h: &'a mut Harness<'_, Shown>) -> &'a mut Tab {
+        h.state_mut().tab.as_mut().unwrap()
+    }
+
+    /// Every shape the last frame painted, nested ones flattened.
+    fn painted<S>(h: &Harness<'_, S>) -> Vec<Shape> {
+        fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
+            match shape {
+                Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+                shape => out.push(shape.clone()),
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &h.output().shapes {
+            flatten(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    fn rects<S>(h: &Harness<'_, S>) -> Vec<RectShape> {
+        painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn texts<S>(h: &Harness<'_, S>) -> Vec<TextShape> {
+        painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Text(shown) => Some(shown),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The one text `text` painted within `within`.
+    #[track_caller]
+    fn text_in<S>(h: &Harness<'_, S>, text: &str, within: Rect) -> TextShape {
+        let mut found: Vec<TextShape> = texts(h)
+            .into_iter()
+            .filter(|shown| shown.galley.text() == text && within.contains(shown.pos))
+            .collect();
+        assert_eq!(found.len(), 1, "{text:?} painted {} times", found.len());
+        found.remove(0)
+    }
+
+    /// A text's colour as painted: its override, else its first section's, else the shape's
+    /// own for a placeholder.
+    fn colour(shown: &TextShape) -> Color32 {
+        let format = shown.galley.job.sections[0].format.color;
+        shown
+            .override_text_color
+            .unwrap_or(if format == Color32::PLACEHOLDER {
+                shown.fallback_color
+            } else {
+                format
+            })
+    }
+
+    fn format(shown: &TextShape) -> &TextFormat {
+        &shown.galley.job.sections[0].format
+    }
+
+    /// The tint of the icon painted at `rect` (a rectangle filled with its texture), to half
+    /// a point: egui puts an image on the pixel grid.
+    fn icon_at<S>(h: &Harness<'_, S>, rect: Rect) -> Option<Color32> {
+        rects(h)
+            .into_iter()
+            .find(|shape| {
+                shape.brush.is_some()
+                    && (shape.rect.min - rect.min).abs().max_elem() <= 0.5
+                    && (shape.rect.max - rect.max).abs().max_elem() <= 0.5
+            })
+            .map(|shape| shape.fill)
+    }
+
+    /// The icon painted turned over `rect` (a mesh with its texture): its tint, and where its
+    /// image's top left corner went.
+    fn turned_at<S>(h: &Harness<'_, S>, rect: Rect) -> Option<(Color32, Pos2)> {
+        painted(h).into_iter().find_map(|shape| match shape {
+            Shape::Mesh(mesh) if mesh.texture_id != TextureId::default() => {
+                let corners: Vec<Pos2> = mesh.vertices.iter().map(|vertex| vertex.pos).collect();
+                let bounds = Rect::from_points(&corners);
+                let corner = mesh
+                    .vertices
+                    .iter()
+                    .find(|vertex| vertex.uv == Pos2::ZERO)?;
+                near_rect(bounds, rect).then_some((corner.color, corner.pos))
+            }
+            _ => None,
+        })
+    }
+
+    /// The fills painted over the whole of `rect` (none but transparent ones), and their
+    /// corners.
+    fn fills_at<S>(h: &Harness<'_, S>, rect: Rect) -> Vec<(Color32, CornerRadius)> {
+        rects(h)
+            .into_iter()
+            .filter(|shape| {
+                shape.brush.is_none()
+                    && shape.fill != Color32::TRANSPARENT
+                    && near_rect(shape.rect, rect)
+            })
+            .map(|shape| (shape.fill, shape.corner_radius))
+            .collect()
+    }
+
+    /// Within egui's rounding of a widget's place, a 32nd of a point.
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() <= egui::emath::GUI_ROUNDING
+    }
+
+    fn near_pos(a: Pos2, b: Pos2) -> bool {
+        near(a.x, b.x) && near(a.y, b.y)
+    }
+
+    fn near_rect(a: Rect, b: Rect) -> bool {
+        near_pos(a.min, b.min) && near_pos(a.max, b.max)
+    }
+
+    #[track_caller]
+    fn at(got: Pos2, want: Pos2, what: &str) {
+        assert!(near_pos(got, want), "{what}: {got:?}, not {want:?}");
+    }
+
+    #[track_caller]
+    fn sized(got: Rect, want: Rect, what: &str) {
+        assert!(near_rect(got, want), "{what}: {got:?}, not {want:?}");
+    }
+
+    fn widget<S>(h: &Harness<'_, S>, role: Role, label: &str) -> Rect {
+        h.get_by_role_and_label(role, label).rect()
+    }
+
+    /// Whether a widget labelled `label` stands over `rect`.
+    fn labelled_at<S>(h: &Harness<'_, S>, label: &str, rect: Rect) -> bool {
+        // A group's node, labelled as a row may be, has no bounds.
+        h.query_all_by_label(label).any(|node| {
+            node.accesskit_node().bounding_box().is_some() && near_rect(node.rect(), rect)
+        })
+    }
+
+    fn has<S>(h: &Harness<'_, S>, label: &str) -> bool {
+        h.query_by_label(label).is_some()
+    }
+
+    /// A row's parts as `.row` lays them out, `top` below the pane's and `depth` deep: its
+    /// box; its caret's box and chevron; its eye's box and glyph; its icon; where its name
+    /// starts with no prefix; and where its padding at the right starts.
+    struct Parts {
+        row: Rect,
+        caret: Rect,
+        chevron: Rect,
+        eye: Rect,
+        glyph: Rect,
+        icon: Rect,
+        name: f32,
+        end: f32,
+    }
+
+    fn parts(top: f32, depth: u8) -> Parts {
+        let row = Rect::from_min_size(PANE + Vec2::new(0.0, top), Vec2::new(W, css::ROW_H));
+        let middle = row.center().y;
+        let square = |left: f32, side: f32| {
+            Rect::from_min_size(Pos2::new(left, middle - side / 2.0), Vec2::splat(side))
+        };
+        let caret = square(
+            row.left() + css::ROW_PADDING_LEFT + f32::from(depth) * css::INDENT,
+            css::CARET,
+        );
+        let eye = square(caret.right() + css::ROW_GAP, css::EYE);
+        let icon = square(eye.right() + css::ROW_GAP, css::ICON);
+        Parts {
+            row,
+            caret,
+            chevron: Rect::from_center_size(caret.center(), Vec2::splat(css::CARET_SVG)),
+            eye,
+            glyph: Rect::from_center_size(eye.center(), Vec2::splat(css::ICON)),
+            icon,
+            name: icon.right() + css::ROW_GAP,
+            end: row.right() - css::ROW_PADDING_RIGHT,
+        }
+    }
+
+    /// The mark's place at a row's right (`.r-err`, `.r-warn`: an icon, 14 square).
+    fn mark_of(parts: &Parts) -> Rect {
+        Rect::from_min_size(
+            Pos2::new(
+                parts.end - css::ICON,
+                parts.row.center().y - css::ICON / 2.0,
+            ),
+            Vec2::splat(css::ICON),
+        )
+    }
+
+    /// The name `name` on the row `parts`, from `left`, its line's middle the row's,
+    /// `--fs`, in `ink`, cut short at `right`.
+    #[track_caller]
+    fn named<S>(
+        h: &Harness<'_, S>,
+        name: &str,
+        parts: &Parts,
+        left: f32,
+        ink: Color32,
+        right: f32,
+    ) {
+        let shown = text_in(h, name, parts.row);
+        let size = shown.galley.size();
+        at(
+            shown.pos,
+            Pos2::new(left, parts.row.center().y - size.y / 2.0),
+            name,
+        );
+        assert_eq!(
+            format(&shown).font_id,
+            FontId::proportional(css::FS),
+            "{name}"
+        );
+        assert_eq!(colour(&shown), ink, "{name}'s ink");
+        // egui rounds a wrap's width to the point as it lays the text out.
+        assert!(
+            (shown.galley.job.wrap.max_width - (right - left)).abs() <= 0.5,
+            "{name} cut at {}, not {}",
+            shown.galley.job.wrap.max_width,
+            right - left
+        );
+    }
+
+    /// The meta `meta` on the row `parts`, ending at `right`: `--fs-small`, in `ink`.
+    #[track_caller]
+    fn meta_at<S>(h: &Harness<'_, S>, meta: &str, parts: &Parts, right: f32, ink: Color32) -> Rect {
+        let shown = text_in(h, meta, parts.row);
+        let size = shown.galley.size();
+        at(
+            shown.pos,
+            Pos2::new(right - size.x, parts.row.center().y - size.y / 2.0),
+            meta,
+        );
+        assert_eq!(format(&shown).font_id, FontId::proportional(css::FS_SMALL));
+        assert_eq!(colour(&shown), ink, "{meta}'s ink");
+        Rect::from_min_size(shown.pos, size)
+    }
+
+    /// The caret on `parts`' row, labelled `label`: a button over its box, its chevron 10
+    /// square at its centre in Gray.700, turned a quarter clockwise while `open`.
+    #[track_caller]
+    fn caret_drawn<S>(h: &Harness<'_, S>, parts: &Parts, label: &str, open: bool) {
+        sized(widget(h, Role::Button, label), parts.caret, label);
+        let corner = if open {
+            Pos2::new(parts.chevron.right(), parts.chevron.top())
+        } else {
+            parts.chevron.min
+        };
+        let drawn = turned_at(h, parts.chevron);
+        assert!(
+            drawn.is_some_and(|(tint, at)| tint == css::G700 && near_pos(at, corner)),
+            "{label}'s chevron: {drawn:?}, not Gray.700 with its corner at {corner:?}"
+        );
+    }
+
+    #[test]
+    fn the_title_is_drawn_as_panel_title_over_the_panel_body() {
+        let h = drawn(part(&[], 0, Vec::new(), Vec::new()));
+        // `.panel-title`: `--pad` in, its line's middle the 24-high row's, 11 points in
+        // capitals .5 apart, white.
+        let bar = Rect::from_min_size(PANE, Vec2::new(W, css::TITLE_H));
+        let title = text_in(&h, "BROWSER", bar);
+        let size = title.galley.size();
+        at(
+            title.pos,
+            Pos2::new(PANE.x + css::PAD, bar.center().y - size.y / 2.0),
+            "the title",
+        );
+        assert_eq!(format(&title).font_id, FontId::proportional(css::FS_SMALL));
+        assert_eq!(format(&title).extra_letter_spacing, css::CAPITALS_SPACING);
+        assert_eq!(colour(&title), css::G1000);
+        // `.panel-body` straight under it: the document's row its first, at 24.
+        sized(
+            widget(&h, Role::Label, "Part"),
+            parts(css::TITLE_H, 0).row,
+            "the document's row",
+        );
+    }
+
+    #[test]
+    fn the_documents_row_is_drawn_as_the_prototypes_root_row() {
+        let features = [
+            entry("b0000001", "box", &[], Health::Healthy),
+            entry("s0000001", "box", &[], Health::Warning),
+        ];
+        let mut h = drawn(part(&features, 0, Vec::new(), Vec::new()));
+        let root = parts(css::TITLE_H, 0);
+        // Depth 0: the caret, open; no eye; the document's icon; its name, the file's
+        // without `.silico`, to the padding; nothing at its right, the gate taking it, no
+        // feature failed (a warning marks nothing), and saved.
+        sized(widget(&h, Role::Label, "Part"), root.row, "the row");
+        caret_drawn(&h, &root, "Collapse Part", true);
+        assert_eq!(icon_at(&h, root.glyph), None, "its eye");
+        assert!(!has(&h, "Hide Part") && !has(&h, "Show Part"));
+        assert_eq!(icon_at(&h, root.icon), Some(css::G500), "its icon");
+        named(&h, "Part", &root, root.name, css::G700, root.end);
+        assert_eq!(icon_at(&h, mark_of(&root)), None, "its mark");
+        assert!(!has(&h, "error"));
+        // Unsaved: `unsaved` at its right, 11 points, Gray.550; its name cut 4 before it.
+        let tab = tab_of(&mut h);
+        tab.transaction = true;
+        tab.revision = tab.revision.next().unwrap();
+        h.run_steps(2);
+        let meta = meta_at(&h, "unsaved", &root, root.end, css::G550);
+        named(
+            &h,
+            "Part",
+            &root,
+            root.name,
+            css::G700,
+            meta.left() - css::ROW_GAP,
+        );
+        // The gate's problems mark it: the error's icon in `--red` at its right, said with
+        // the document's first problem; `unsaved` 4 before the mark, the name 4 before that.
+        let tab = tab_of(&mut h);
+        tab.timeline.as_mut().unwrap().problems = 1;
+        tab.document_problems.push(Said {
+            message: "Two features share the ID block".to_owned(),
+            suggestion: None,
+        });
+        h.run_steps(2);
+        let mark = mark_of(&root);
+        assert_eq!(icon_at(&h, mark), Some(css::RED), "its mark");
+        sized(
+            widget(&h, Role::Label, "error: Two features share the ID block"),
+            mark,
+            "its mark",
+        );
+        let meta = meta_at(&h, "unsaved", &root, mark.left() - css::ROW_GAP, css::G550);
+        named(
+            &h,
+            "Part",
+            &root,
+            root.name,
+            css::G700,
+            meta.left() - css::ROW_GAP,
+        );
+        // A feature failed marks it too, the gate taking the document.
+        let tab = tab_of(&mut h);
+        tab.document_problems.clear();
+        tab.timeline = Some(timeline(
+            &[
+                entry("b0000001", "box", &[], Health::Error),
+                entry("s0000001", "box", &[], Health::Warning),
+            ],
+            &[],
+        ));
+        h.run_steps(2);
+        assert_eq!(icon_at(&h, mark), Some(css::RED), "a failed feature's mark");
+        sized(widget(&h, Role::Label, "error"), mark, "its mark");
+        // Folded: its caret turned back, nothing under it.
+        h.get_by_label("Collapse Part").click();
+        h.run_steps(2);
+        caret_drawn(&h, &root, "Expand Part", false);
+        assert!(!has(&h, "Origin"));
+    }
+
+    #[test]
+    fn the_group_headers_are_drawn_as_the_prototypes_folder_rows_with_their_carets() {
+        let features = [entry("b0000001", "box", &[], Health::Healthy)];
+        let mut h = drawn(part(
+            &features,
+            0,
+            vec![listed("b0000001", "Block", Health::Healthy)],
+            Vec::new(),
+        ));
+        // Depth 1, each 24 below the last row above it: Origin under the document, its
+        // seven rows under it; Bodies, its one row; Sketches, with none, `0` at its right.
+        let down = |n: f32| css::TITLE_H + n * css::ROW_H;
+        for (name, top, meta) in [
+            ("Origin", down(1.0), None),
+            ("Bodies", down(9.0), None),
+            ("Sketches", down(11.0), Some("0")),
+        ] {
+            let header = parts(top, 1);
+            assert!(labelled_at(&h, name, header.row), "{name}'s row");
+            caret_drawn(&h, &header, &format!("Collapse {name}"), true);
+            assert_eq!(icon_at(&h, header.glyph), None, "{name}'s eye");
+            assert_eq!(icon_at(&h, header.icon), Some(css::G500), "{name}'s icon");
+            let right = match meta {
+                Some(meta) => {
+                    meta_at(&h, meta, &header, header.end, css::G550).left() - css::ROW_GAP
+                }
+                None => header.end,
+            };
+            named(&h, name, &header, header.name, css::G700, right);
+        }
+        assert!(!has(&h, "Hide Bodies") && !has(&h, "Hide Sketches"));
+        // Origin folded: its caret turned back, Bodies straight under it.
+        h.get_by_label("Collapse Origin").click();
+        h.run_steps(2);
+        caret_drawn(&h, &parts(down(1.0), 1), "Expand Origin", false);
+        sized(
+            widget(&h, Role::Label, "Bodies"),
+            parts(down(2.0), 1).row,
+            "Bodies",
+        );
+        assert!(!has(&h, "Hide XY"));
+    }
+
+    /// A row expected: its name, its top below the pane's, its name's ink, and its mark's
+    /// tint and what it says, if it has one.
+    type Expected<'a> = (&'a str, f32, Color32, Option<(Color32, &'a str)>);
+
+    #[test]
+    fn the_rows_are_drawn_as_the_prototypes_rows_with_their_eyes_icons_names_and_marks() {
+        let h = drawn(modelled());
+        let down = |n: f32| css::TITLE_H + n * css::ROW_H;
+        // Depth 2, no caret: the eye, open, Gray.550; the icon, Gray.500; the name, Gray.700,
+        // a failed sketch's `--red`, cut 4 before its mark, if it has one: `--red` for an
+        // error, `--orange` for a warning, said with what's said of its feature.
+        let origin = ["Origin", "X", "Y", "Z", "XY", "XZ", "YZ"];
+        let mut rows: Vec<Expected<'_>> = origin
+            .iter()
+            .enumerate()
+            .map(|(n, name)| (*name, down(2.0 + n as f32), css::G700, None))
+            .collect();
+        rows.extend([
+            ("Block", down(10.0), css::G700, None),
+            (
+                "Cut",
+                down(11.0),
+                css::G700,
+                Some((css::RED, "error: The cut removes nothing")),
+            ),
+            (
+                "Shell",
+                down(12.0),
+                css::G700,
+                Some((css::ORANGE, "warning")),
+            ),
+            ("Profile", down(14.0), css::G700, None),
+            ("Bad", down(15.0), css::RED, Some((css::RED, "error"))),
+        ]);
+        for (name, top, ink, mark) in rows {
+            let laid = parts(top, 2);
+            assert!(
+                labelled_at(&h, name, laid.row),
+                "{name}'s row at {:?}",
+                laid.row
+            );
+            assert_eq!(turned_at(&h, laid.chevron), None, "{name}'s caret");
+            let eye = format!("Hide {name}");
+            assert!(labelled_at(&h, &eye, laid.eye), "{eye} at {:?}", laid.eye);
+            assert_eq!(icon_at(&h, laid.glyph), Some(css::G550), "{name}'s eye");
+            assert_eq!(icon_at(&h, laid.icon), Some(css::G500), "{name}'s icon");
+            let right = match mark {
+                Some((tint, said)) => {
+                    let at = mark_of(&laid);
+                    assert_eq!(icon_at(&h, at), Some(tint), "{name}'s mark");
+                    assert!(labelled_at(&h, said, at), "{said} at {at:?}");
+                    at.left() - css::ROW_GAP
+                }
+                None => {
+                    assert_eq!(icon_at(&h, mark_of(&laid)), None, "{name}'s mark");
+                    laid.end
+                }
+            };
+            named(&h, name, &laid, laid.name, ink, right);
+        }
+        // No sketch has a prefix yet (#351), and no row asked for Edit Sketch.
+        assert!(
+            texts(&h)
+                .iter()
+                .all(|shown| format(shown).font_id.family != FontFamily::Monospace),
+            "a prefix"
+        );
+        assert!(!h.state().started, "an edit asked");
+
+        // A sketch's prefix (`.row .prefix`), as a row with one draws it: 4 after the icon,
+        // 11 points of the monospace font, its state's colour on a selected row too; the
+        // name 4 after it; the meta `--blue-text` on a selected row.
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(PANE.x + W + 40.0, PANE.y + 100.0))
+            .build_ui(|ui| {
+                let pane = Rect::from_min_size(PANE, Vec2::new(W, css::ROW_H));
+                ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
+                    row(
+                        ui,
+                        &Line {
+                            id: egui::Id::new("prefixed"),
+                            depth: 2,
+                            caret: None,
+                            eye: Some(true),
+                            icon: Icon::Sketch,
+                            prefix: Some("(–)"),
+                            name: "Profile",
+                            selected: Some(true),
+                            meta: Some("XY"),
+                            mark: Some((Health::Warning, None)),
+                            failed: false,
+                        },
+                    );
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        let laid = parts(0.0, 2);
+        assert_eq!(icon_at(&h, laid.icon), Some(css::BLUE_TEXT), "the icon");
+        let prefix = text_in(&h, "(–)", laid.row);
+        let size = prefix.galley.size();
+        at(
+            prefix.pos,
+            Pos2::new(laid.name, laid.row.center().y - size.y / 2.0),
+            "the prefix",
+        );
+        assert_eq!(format(&prefix).font_id, FontId::monospace(css::PREFIX));
+        assert_eq!(colour(&prefix), css::BLUE_SOFT);
+        let mark = mark_of(&laid);
+        assert_eq!(icon_at(&h, mark), Some(css::ORANGE), "the mark");
+        let meta = meta_at(&h, "XY", &laid, mark.left() - css::ROW_GAP, css::BLUE_TEXT);
+        named(
+            &h,
+            "Profile",
+            &laid,
+            laid.name + size.x + css::ROW_GAP,
+            css::BLUE_TEXT,
+            meta.left() - css::ROW_GAP,
+        );
+    }
+
+    #[test]
+    fn a_row_hovered_or_selected_is_filled_as_row_hover_and_row_selected_and_an_eye_as_eye_hover() {
+        let mut h = drawn(modelled());
+        let down = |n: f32| css::TITLE_H + n * css::ROW_H;
+        let block = parts(down(10.0), 2);
+        let cut = parts(down(11.0), 2);
+        // At rest: no fill.
+        h.remove_cursor();
+        h.run_steps(2);
+        assert!(fills_at(&h, block.row).is_empty());
+        // Hovered (`.row:hover`): Gray.250 across it, square; its name Gray.800, its icon
+        // Gray.500 still.
+        h.get_by_label("Block").hover();
+        h.run_steps(2);
+        assert_eq!(fills_at(&h, block.row), [(css::G250, CornerRadius::ZERO)]);
+        assert_eq!(colour(&text_in(&h, "Block", block.row)), css::G800);
+        assert_eq!(icon_at(&h, block.icon), Some(css::G500));
+        // Its eye hovered (`.eye:hover`): Gray.350 behind it, 3 round, its glyph white.
+        h.get_by_label("Hide Block").hover();
+        h.run_steps(2);
+        assert_eq!(
+            fills_at(&h, block.eye),
+            [(css::G350, CornerRadius::same(css::EYE_RADIUS))]
+        );
+        assert_eq!(icon_at(&h, block.glyph), Some(css::G1000));
+        // Selected (`.row.selected`): `--blue` across it, its name and icon `--blue-text`;
+        // hovered, the same.
+        tab_of(&mut h).selected = Some(fid("c0000001"));
+        h.remove_cursor();
+        h.run_steps(2);
+        assert_eq!(fills_at(&h, cut.row), [(css::BLUE, CornerRadius::ZERO)]);
+        assert_eq!(colour(&text_in(&h, "Cut", cut.row)), css::BLUE_TEXT);
+        assert_eq!(icon_at(&h, cut.icon), Some(css::BLUE_TEXT));
+        assert!(fills_at(&h, block.row).is_empty());
+        h.get_by_label("Cut").hover();
+        h.run_steps(2);
+        assert_eq!(fills_at(&h, cut.row), [(css::BLUE, CornerRadius::ZERO)]);
+        assert_eq!(colour(&text_in(&h, "Cut", cut.row)), css::BLUE_TEXT);
+    }
+
+    #[test]
+    fn a_hidden_rows_name_and_icon_are_dimmed_as_hidden_obj_from_the_frame_its_eye_is_clicked() {
+        let mut tab = modelled();
+        tab.hidden
+            .insert(crate::tab::Hideable::Feature(fid("b0000001")));
+        let mut h = drawn(tab);
+        h.remove_cursor();
+        h.run_steps(2);
+        let down = |n: f32| css::TITLE_H + n * css::ROW_H;
+        let dim = |colour: Color32| {
+            let [r, g, b, _] = colour.to_array();
+            Color32::from_rgba_unmultiplied(r, g, b, css::HIDDEN_ALPHA)
+        };
+        // Hidden (`.hidden-obj`, `.eye.off`): its eye closed, Gray.400; its name and icon at
+        // .45; nothing else of the row's dimmed.
+        let block = parts(down(10.0), 2);
+        assert!(has(&h, "Show Block") && !has(&h, "Hide Block"));
+        assert_eq!(icon_at(&h, block.glyph), Some(css::G400));
+        assert_eq!(icon_at(&h, block.icon), Some(dim(css::G500)));
+        named(&h, "Block", &block, block.name, dim(css::G700), block.end);
+        // Its eye clicked: dimmed in the frame of the click, hovered as it is.
+        let shell = parts(down(12.0), 2);
+        h.get_by_label("Hide Shell").click();
+        h.step();
+        assert!(has(&h, "Show Shell") && !has(&h, "Hide Shell"));
+        assert_eq!(icon_at(&h, shell.icon), Some(dim(css::G500)));
+        assert_eq!(
+            colour(&text_in(&h, "Shell", shell.row)),
+            dim(css::G800),
+            "the name hovered and hidden"
+        );
+        h.run_steps(2);
+        assert!(!tab_of(&mut h).shown(&crate::tab::Hideable::Feature(fid("s0000001"))));
+        assert!(has(&h, "Show Shell"));
+    }
+
+    #[test]
+    fn an_empty_groups_words_are_drawn_as_tree_empty_saying_what_makes_its_first_row() {
+        let features = [entry("p0000001", "sketch", &[], Health::Healthy)];
+        let problem = || Said {
+            message: "The pad's sketch is open".to_owned(),
+            suggestion: None,
+        };
+        let down = |n: f32| css::TITLE_H + n * css::ROW_H;
+        let none_yet = "None yet. A pad or a primitive makes one.";
+        for (features, problem, bodies) in [
+            (&[][..], None, none_yet),
+            (&[][..], Some(problem()), none_yet),
+            (&features[..], None, "No body: nothing builds one yet"),
+            (
+                &features[..],
+                Some(problem()),
+                "No body: The pad's sketch is open",
+            ),
+        ] {
+            let mut tab = part(features, 0, Vec::new(), Vec::new());
+            tab.document_problems.extend(problem);
+            let h = drawn(tab);
+            // Under Bodies' header: 2 down and `--pad` + 36 in, 11 points, Gray.550, wrapped
+            // 12 before the pane's edge, on a 16-high line; Sketches' header 6 below it.
+            let header = parts(down(9.0), 1).row;
+            let mut top = header.bottom();
+            for (words, next) in [
+                (bodies, "Sketches"),
+                ("None yet. Create Sketch starts one.", ""),
+            ] {
+                let area = Rect::from_min_size(Pos2::new(PANE.x, top), Vec2::new(W, css::ROW_H));
+                let shown = text_in(&h, words, area);
+                at(
+                    shown.pos,
+                    Pos2::new(PANE.x + css::EMPTY_LEFT, top + css::EMPTY_TOP),
+                    words,
+                );
+                assert_eq!(format(&shown).font_id, FontId::proportional(css::FS_SMALL));
+                assert_eq!(colour(&shown), css::G550, "{words}");
+                let wrap = shown.galley.job.wrap.max_width;
+                let width = W - css::EMPTY_LEFT - css::EMPTY_RIGHT;
+                assert!(near(wrap, width), "{words} wrapped at {wrap}, not {width}");
+                let lines = shown.galley.rows.len() as f32;
+                let high = shown.galley.size().y;
+                assert!(
+                    near(high, lines * css::LH),
+                    "{words}: {lines} lines {high} high, not 16 each"
+                );
+                top += css::EMPTY_TOP + lines * css::LH + css::EMPTY_BOTTOM;
+                if !next.is_empty() {
+                    let at = parts(top - PANE.y, 1).row;
+                    sized(widget(&h, Role::Label, next), at, next);
+                    top = at.bottom();
+                }
+            }
         }
     }
 }
