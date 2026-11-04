@@ -6,6 +6,11 @@
 //! and the buttons' key caps name their keys from it, and the app's key handling
 //! (`App::keys`) takes its keys from it, so none can differ from another.
 //!
+//! Orbit, Pan, and Zoom (`Chord::Pointer`) are descriptive only: the viewport takes those
+//! gestures itself (`crate::viewport`'s navigation, its Shift and middle button and wheel
+//! written there), and nothing here matches them; the sheet lists them as the prototype
+//! does.
+//!
 //! Only what the app does today is here. Left out, each a seam:
 //! - SEAM(#351): sketch mode adds its group, `Sketch` (*while a sketch is open*): L line,
 //!   R rectangle, C circle, A arc, P point, T trim, D Smart Dimension, X construction, hold
@@ -108,7 +113,8 @@ pub enum Chord {
     /// A key with exactly its modifiers (so Shift+H and Alt+H stay free for other
     /// commands), freshly pressed, never the system's repeat of one held down.
     Exact(KeyboardShortcut),
-    /// The pointer's gesture, with its modifiers held: the viewport takes it, not the keys.
+    /// The pointer's gesture, with its modifiers held: descriptive only, for the sheet. The
+    /// viewport takes the gesture itself; [`take`] never matches it.
     Pointer(Modifiers, &'static str),
 }
 
@@ -418,14 +424,6 @@ impl Command {
         }
     }
 
-    /// The keyboard shortcut shown for it, if its shown chord is a key's (a tooltip's).
-    pub fn shortcut(self, ctx: &egui::Context) -> Option<KeyboardShortcut> {
-        match self.shown(ctx)? {
-            Chord::Key(shortcut) | Chord::Exact(shortcut) => Some(shortcut),
-            Chord::Pointer(..) => None,
-        }
-    }
-
     /// The caps of its shown chord, as the platform names them: none if it has none.
     pub fn caps(self, ctx: &egui::Context) -> Vec<String> {
         self.shown(ctx)
@@ -596,8 +594,9 @@ mod tests {
 
     #[test]
     fn the_standard_views_are_solidworks_numbers_and_f6_fits() {
-        // docs/ux/solidworks.md and DESIGN.md, *Keyboard*: Ctrl+1 to Ctrl+7 front, back,
-        // left, right, top, bottom, isometric.
+        // docs/design/m5-ui/DESIGN.md, *Keyboard* ("⌘1–⌘7 standard views (SolidWorks'
+        // numbering)"), and js/app.js's `CMD`: Ctrl+1 to Ctrl+7 front, back, left, right,
+        // top, bottom, isometric.
         for (command, digit) in [
             (Command::Front, Key::Num1),
             (Command::Back, Key::Num2),
@@ -639,12 +638,8 @@ mod tests {
         assert_eq!(Command::Zoom.caps(&nix), ["Wheel"]);
         assert_eq!(Command::Front.keys_text(&mac), "⌘1");
         assert_eq!(Command::Front.keys_text(&nix), "Ctrl+1");
-        // A pointer's gesture is no keyboard shortcut.
-        assert_eq!(Command::Pan.shortcut(&nix), None);
-        assert_eq!(
-            Command::Redo.shortcut(&nix),
-            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::Y))
-        );
+        assert_eq!(Command::Redo.shown(&nix), Some(command(Key::Y)));
+        assert_eq!(Command::Redo.shown(&mac), Some(key(SHIFT_COMMAND, Key::Z)));
     }
 
     #[test]

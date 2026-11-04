@@ -1132,10 +1132,9 @@ pub const MODAL_BUTTON_MIN_WIDTH: f32 = 76.0;
 pub const SHEET_WIDTH: f32 = 920.0;
 pub const SHEET_WINDOW_MARGIN: f32 = 40.0;
 /// Its filter (the head's `.field`, `width: 220px; height: 24px`), its icon at its left and
-/// its text 6 after it (`.field input { padding: 0 6px }`).
+/// its text after it as a field's padding puts it (`.field input { padding: 0 6px }`).
 pub const SHEET_FILTER_WIDTH: f32 = 220.0;
 pub const SHEET_FILTER_HEIGHT: f32 = 24.0;
-pub const SHEET_FILTER_TEXT_GAP: f32 = 6.0;
 /// Its columns (`.cols { columns: 3 260px; column-gap: 28px }`): three, each 260 wide at
 /// least, 28 apart.
 pub const SHEET_COLUMNS: usize = 3;

@@ -13400,7 +13400,8 @@ fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
     });
     let texts = texts(&h);
     assert!(texts.iter().any(|text| text == command), "{texts:?}");
-    assert!(texts.iter().any(|text| text == "Enter"), "{texts:?}");
+    // Enter as the prototype's KEYNAME names it, as the registry's caps do.
+    assert!(texts.iter().any(|text| text == "↵"), "{texts:?}");
     // A label's drop-down lists its row's commands, CONSTRAINTS' among them.
     let label = |h: &ToolbarHarness| {
         h.get_by_role_and_label(Role::Toolbar, "CONSTRAINTS")
@@ -15275,8 +15276,9 @@ fn ctrl_1_to_7_are_solidworks_standard_views_and_each_is_the_view_cubes() {
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     let d = 1.0 / 3f64.sqrt();
-    // docs/ux/solidworks.md: Ctrl+1 front, 2 back, 3 left, 4 right, 5 top, 6 bottom, 7
-    // isometric; each the direction from the target to the eye, Z up, by hand.
+    // docs/design/m5-ui/DESIGN.md, *Keyboard*, and js/app.js's `CMD` (SolidWorks'
+    // numbering): Ctrl+1 front, 2 back, 3 left, 4 right, 5 top, 6 bottom, 7 isometric;
+    // each the direction from the target to the eye, Z up, by hand.
     for (digit, cube, toward) in [
         (Key::Num1, "Front", [0.0, -1.0, 0.0]),
         (Key::Num2, "Back", [0.0, 1.0, 0.0]),
@@ -15455,12 +15457,17 @@ fn ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it() {
             && status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
     });
     assert!(h.state().tabs()[0].message.is_none());
+    let calls = f.kernel.calls().len();
     hold.release();
     for _ in 0..10 {
         step(&mut h);
     }
     assert!(f.kernel.wait_idle(WAIT));
-    assert_eq!(boxes(&f), 3, "nothing built after the stop");
+    assert_eq!(
+        f.kernel.calls().len(),
+        calls,
+        "nothing asked of the kernel after the stop"
+    );
     assert_eq!(h.state().tabs()[0].rebuilds_all, 2);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -15469,7 +15476,7 @@ fn ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it() {
 fn ctrl_shift_b_does_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
-    step_until(&mut h, "rebuilt", |h| status_said(h, "Rebuilt").is_some());
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let boxes = |f: &Fixture| {
         f.kernel
             .calls()
@@ -15477,34 +15484,50 @@ fn ctrl_shift_b_does_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
             .filter(|call| is_box(&call.op))
             .count()
     };
-    select(&mut h, "Pin");
-    name_field(&h).focus();
+    // A rebuild stopped, so a Ctrl+B would rebuild: a Box dialog's preview, held at its
+    // new box, stopped by Esc, the dialog left open.
+    let hold = f.kernel.hold(is_box);
+    create(&mut h, "Box");
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    hold.release();
+    assert!(dialog_open(&h));
+    assert!(h.state().tabs()[0].can_rebuild());
+    let built = boxes(&f);
+    // Typing in one of its fields: neither everything rebuilt nor a Rebuild, which egui
+    // would match Ctrl+Shift+B as (its Shift aside).
+    dialog(&h)
+        .query_all_by_role(Role::TextInput)
+        .next()
+        .unwrap()
+        .focus();
     step(&mut h);
-    // Typing: neither everything rebuilt nor a Rebuild (egui would match it as Ctrl+B).
+    assert!(h.ctx.text_edit_focused());
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
     for _ in 0..5 {
         step(&mut h);
     }
-    assert_eq!(
-        (
-            h.state().tabs()[0].rebuilds_all,
-            h.state().tabs()[0].rebuilds
-        ),
-        (0, 0)
-    );
-    assert_eq!(boxes(&f), 1);
-    // A modal open (New's).
+    let tab = &h.state().tabs()[0];
+    assert_eq!((tab.rebuilds_all, tab.rebuilds), (0, 0));
+    assert!(rebuild_stopped(&h), "still stopped");
+    assert_eq!(boxes(&f), built);
+    // The dialog cancelled; a modal open (New's), off its field.
     h.key_press(Key::Escape);
-    step(&mut h);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
     h.key_press_modifiers(Modifiers::COMMAND, Key::N);
     step_until(&mut h, "New's dialog", |h| anywhere(h, "New document"));
     off_fields(&mut h, "New document");
+    let built = boxes(&f);
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
     for _ in 0..5 {
         step(&mut h);
     }
     assert_eq!(h.state().tabs()[0].rebuilds_all, 0);
-    assert_eq!(boxes(&f), 1);
+    assert_eq!(boxes(&f), built);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -15893,5 +15916,55 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
         }
         pointer_away(&mut h);
     }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A block alone: its box is its body.
+const ONE_BLOCK: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
+  ]
+}
+"#;
+
+#[test]
+fn ctrl_shift_b_after_a_kept_fault_shows_the_model_it_built() {
+    // The box's first build crashes its worker: a kernel fault, which the revision keeps as
+    // its outcome (decision 32) and its model publishes, with no body.
+    let f = fixture();
+    let crashed = Arc::new(AtomicBool::new(false));
+    let once = Arc::clone(&crashed);
+    f.kernel.refuse(move |op| {
+        (is_box(op) && !once.swap(true, Ordering::SeqCst))
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+    });
+    let (mut h, _record) = f.drawn("block.silico", ONE_BLOCK);
+    step_until(&mut h, "faulted", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .and_then(|tab| tab.status.as_ref())
+            .is_some_and(|status| {
+                status.rebuild.state == silico_core::command::RebuildState::Faulted
+            })
+    });
+    meshes_settled(&mut h);
+    assert!(crashed.load(Ordering::SeqCst));
+    assert!(
+        view(&h).bodies().is_empty(),
+        "the fault's model has no body"
+    );
+    let revision = h.state().tabs()[0].published;
+    // Ctrl+Shift+B tries the box again: a new model of the same revision, its block a
+    // body, which the view reads.
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
+    let block = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
+    step_until(&mut h, "the block in the view", |h| {
+        view(h).bodies().values().any(|body| body.feature == block)
+    });
+    assert_eq!(h.state().tabs()[0].published, revision, "the same revision");
     assert_eq!(never_waits::waits(), 0);
 }

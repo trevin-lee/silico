@@ -290,6 +290,9 @@ struct LeftHeld {
 #[derive(Debug, Clone, PartialEq)]
 struct Asked {
     revision: Revision,
+    /// The tab's count of the models it has seen published when it was asked
+    /// ([`View::published_is`]): a model published again at the same revision is another.
+    model: u64,
     camera: Camera,
     size: [u32; 2],
 }
@@ -392,6 +395,11 @@ pub struct View {
     /// A view a shortcut asked for (F6, Home, Ctrl+1 to Ctrl+7: `crate::shortcuts`), given
     /// at the pane's next navigation, which knows the canvas's size.
     asked: Option<ViewAsk>,
+    /// The tab's count of published models, as the tab last told it, and as it was when the
+    /// bodies held were asked for: a model published again at the same revision (a fresh
+    /// check's, Ctrl+Shift+B) makes them stale, as a new revision does.
+    published: u64,
+    read_published: u64,
 }
 
 /// A view a shortcut asks of the tab's viewport.
@@ -431,6 +439,8 @@ impl Default for View {
             picked: None,
             frame: None,
             asked: None,
+            published: 0,
+            read_published: 0,
         }
     }
 }
@@ -502,6 +512,12 @@ impl View {
     /// The camera.
     pub fn camera(&self) -> &Camera {
         &self.camera
+    }
+
+    /// The tab's count of the models it has seen published (`Tab::published_models`):
+    /// once it moves, the bodies read of the model before are stale, whatever its revision.
+    pub fn published_is(&mut self, models: u64) {
+        self.published = models;
     }
 
     /// `ask`ed of the view by a shortcut: given at the pane's next navigation, in place of
@@ -618,6 +634,7 @@ impl View {
                         .model
                         .map_or(asked.revision, |model| model.revision),
                 );
+                self.read_published = asked.model;
                 self.answered = Some(asked);
                 self.take_bodies(read.bodies);
             }
@@ -755,6 +772,7 @@ impl View {
         }
         let asked = Asked {
             revision: published?,
+            model: self.published,
             camera: self.camera.clone(),
             size,
         };
@@ -776,7 +794,7 @@ impl View {
         if self.answered.as_ref() == Some(&asked) {
             return None;
         }
-        let stale = self.model != Some(asked.revision);
+        let stale = self.model != Some(asked.revision) || self.read_published != asked.model;
         let outside = settled && outside_serves(&self.camera, size[1], self.bodies.values());
         (stale || outside).then_some(asked)
     }
@@ -1501,6 +1519,7 @@ pub fn show<P: Clients + 'static>(
         // A frame after this one, to see the view settled.
         ui.ctx().request_repaint();
     }
+    view.published_is(tab.published_models);
     match view.wanted(tab.published, size, settled, now) {
         Some(asked) => view.start(sessions, &tab.id, asked),
         // A retry due with no read wanted of the view at rest ends its run: a later refusal
@@ -2043,6 +2062,39 @@ mod tests {
     }
 
     #[test]
+    fn a_model_published_again_at_the_same_revision_is_read_again_once() {
+        let held = [(1, body(0.03125, [0.03125, 0.0625], CUT))];
+        let mut view = view_with(&held, 3);
+        let answered = || Response {
+            session: None,
+            model: None,
+            result: Ok(MeshesRead {
+                camera: AnsweredCamera::of(&front(80.0)).unwrap(),
+                bodies: Vec::new(),
+                coarser: "height",
+            }),
+        };
+        assert_eq!(view.wanted(revision(3), [1000, 1000], true, now()), None);
+        // Another model of revision 3 (a fresh check's): wanted, settled or not.
+        view.published_is(1);
+        let asked = view
+            .wanted(revision(3), [1000, 1000], false, now())
+            .unwrap();
+        assert_eq!((asked.revision, asked.model), (revision(3).unwrap(), 1));
+        // Answered: read, not wanted again.
+        view.took(asked, false, answered(), now());
+        assert_eq!(view.wanted(revision(3), [1000, 1000], true, now()), None);
+        // A read asked of one model, answering after another was published: stale, and
+        // read again.
+        view.published_is(2);
+        let asked = view.wanted(revision(3), [1000, 1000], true, now()).unwrap();
+        view.published_is(3);
+        view.took(asked, false, answered(), now());
+        let again = view.wanted(revision(3), [1000, 1000], true, now()).unwrap();
+        assert_eq!(again.model, 3);
+    }
+
+    #[test]
     fn a_refused_read_is_not_asked_again_until_the_view_differs_and_settles() {
         let held = [(1, body(0.03125, [0.03125, 0.0625], CUT))];
         let mut view = view_with(&held, 3);
@@ -2246,6 +2298,7 @@ mod tests {
     fn asked(view: &View, published: u64) -> Asked {
         Asked {
             revision: Revision::from_number(published).unwrap(),
+            model: view.published,
             camera: view.camera.clone(),
             size: [1000, 1000],
         }

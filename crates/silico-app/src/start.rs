@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use eframe::egui::text::{LayoutJob, TextFormat, TextWrapping};
 use eframe::egui::{
-    self, Align2, Color32, FontFamily, FontId, Key, Modifiers, Pos2, Rect, Response, RichText,
-    Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
+    self, Align2, Color32, FontFamily, FontId, Modifiers, Pos2, Rect, Response, RichText, Sense,
+    Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
 };
 
 use crate::icons::{Icon, IconSize};
@@ -372,14 +372,6 @@ fn action(ui: &mut Ui, icon: Icon, command: Command, primary: bool) -> Response 
         primary,
     );
     response
-}
-
-/// A cap for each of `modifiers`, Command (Ctrl off macOS) first, then Shift, then `key`'s,
-/// as the platform names them (the prototype's `kbd`, in its `Mod Shift` order).
-pub(crate) fn caps(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> Vec<String> {
-    let mut caps = modifier_caps(ctx, modifiers);
-    caps.push(key.symbol_or_name().to_owned());
-    caps
 }
 
 /// A cap for each of `modifiers`, Command (Ctrl off macOS) first, then Shift, as the

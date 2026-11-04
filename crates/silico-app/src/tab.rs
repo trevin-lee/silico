@@ -309,6 +309,11 @@ pub struct Tab {
     status_revision: Revision,
     /// The revision of the newest model published, if there's one.
     pub published: Option<Revision>,
+    /// The newest model published, as last seen (held weakly: only to tell it from
+    /// another, which a fresh check publishes at the same revision), and one more each time
+    /// it was another: what the viewport tells a model its meshes are stale by.
+    published_model: Option<std::sync::Weak<silico_core::recompute::Model>>,
+    pub published_models: u64,
     /// The newest `timeline`, and the browser's rows worked out from it.
     pub timeline: Option<TimelineAnswer>,
     pub browser: Browser,
@@ -459,6 +464,8 @@ impl Tab {
             status: None,
             status_revision: Revision::OPENED,
             published: None,
+            published_model: None,
+            published_models: 0,
             timeline: None,
             browser: Browser::default(),
             timeline_read: None,
@@ -720,6 +727,22 @@ impl Tab {
             self.reloaded_under_dialog(sessions);
         }
         let published = sessions.published(&self.id);
+        let model = published
+            .result
+            .as_ref()
+            .ok()
+            .map(|published| Arc::downgrade(&published.model));
+        // Another model than the last seen, though maybe of the same revision (a fresh
+        // check's): counted, so the viewport reads its meshes again.
+        let same = match (&self.published_model, &model) {
+            (Some(seen), Some(now)) => seen.ptr_eq(now),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.published_models = self.published_models.wrapping_add(1);
+            self.published_model = model;
+        }
         self.published = published.result.ok().map(|published| published.revision);
         if self.published.is_some() {
             self.nothing_published = false;

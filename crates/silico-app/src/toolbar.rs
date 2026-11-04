@@ -850,7 +850,10 @@ fn finish(ui: &mut Ui, row: Rect) -> Response {
     bar::tooltip(
         response,
         label,
-        Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter)),
+        Some(crate::shortcuts::Chord::Key(KeyboardShortcut::new(
+            Modifiers::COMMAND,
+            Key::Enter,
+        ))),
         Some("Keeps your changes and rebuilds"),
     )
 }

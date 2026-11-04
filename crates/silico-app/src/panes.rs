@@ -1001,7 +1001,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
             crate::bar::tooltip(
                 eye,
                 word,
-                crate::shortcuts::Command::Hide.shortcut(ui.ctx()),
+                crate::shortcuts::Command::Hide.shown(ui.ctx()),
                 None,
             ),
             shown,

@@ -1113,7 +1113,7 @@ impl<P: Clients + 'static> App<P> {
             .filter(|_| unsaved)
             .map(|tab| format!("Writes your edits to {}", tab.name()));
         let save = bar::button(ui, Icon::Save, None, Command::Save.label(), unsaved, None);
-        let shortcut = Command::Save.shortcut(ui.ctx());
+        let shortcut = Command::Save.shown(ui.ctx());
         if bar::tooltip(save, Command::Save.label(), shortcut, said.as_deref()).clicked()
             && let Some(tab) = tab
         {
@@ -1133,7 +1133,7 @@ impl<P: Clients + 'static> App<P> {
         ] {
             let word = command.label();
             let button = bar::button(ui, icon, None, word, enabled, None);
-            if bar::tooltip(button, word, command.shortcut(ui.ctx()), None).clicked()
+            if bar::tooltip(button, word, command.shown(ui.ctx()), None).clicked()
                 && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at))
             {
                 tab.step(&self.sessions, undo);
