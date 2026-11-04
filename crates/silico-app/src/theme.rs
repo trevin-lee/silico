@@ -104,6 +104,8 @@ pub const GRAY_400: Color32 = hex(0x646363);
 pub const GRAY_500: Color32 = hex(0x827f7f);
 /// Gray.550.
 pub const GRAY_550: Color32 = hex(0x939090);
+/// Gray.600.
+pub const GRAY_600: Color32 = hex(0x9f9f9f);
 /// Gray.700.
 pub const GRAY_700: Color32 = hex(0xbfbfbf);
 /// Gray.750.
@@ -136,8 +138,10 @@ pub const MODIFY_FIELD_BG: Color32 = GRAY_150;
 /// A hovered row's background (`list_item_hovered_bg`, Gray.250).
 pub const HOVER_BG: Color32 = GRAY_250;
 /// The 1 px border between panels, and separators (`widget_noninteractive_bg_stroke`,
-/// Gray.250).
+/// Gray.250), [`BORDER_WIDTH`] wide.
 pub const PANEL_BORDER: Color32 = GRAY_250;
+/// A border's and a separator's width (`border: 1px`).
+pub const BORDER_WIDTH: f32 = 1.0;
 /// A button's background at rest, and a toolbar button's hovered
 /// (`widget_inactive_bg_fill`, Gray.300).
 pub const WIDGET_BG: Color32 = GRAY_300;
@@ -184,6 +188,21 @@ pub const FOCUS_WIDTH: f32 = 1.0;
 pub const FOCUS_HALO: Color32 = with_alpha(FOCUS, 64);
 /// The halo's width.
 pub const FOCUS_HALO_WIDTH: f32 = 2.0;
+
+/// The focus ring round `rect`, with `corner_radius`, on its outline's `kind` side, if
+/// `response` has the keyboard's focus.
+pub fn focus_ring(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    rect: egui::Rect,
+    corner_radius: u8,
+    kind: egui::StrokeKind,
+) {
+    if response.has_focus() {
+        ui.painter()
+            .rect_stroke(rect, corner_radius, Stroke::new(FOCUS_WIDTH, FOCUS), kind);
+    }
+}
 
 // ---- States ----
 
@@ -517,6 +536,291 @@ pub const GHOST_BUTTON_PADDING: f32 = 6.0;
 /// A ghost button's fill, hovered (`.btn-ghost:hover`, Gray.300).
 pub const GHOST_BUTTON_HOVER_BG: Color32 = WIDGET_BG;
 
+// ---- The application bar (`#appbar`, `.ab-*`, `.doc-tab`) ----
+
+/// The room macOS's window buttons take at the bar's left, where the title bar is the app
+/// bar (`.traffic`: 12 of padding, three 12 point lights 8 apart, and 14 of padding).
+pub const TRAFFIC_LIGHTS_WIDTH: f32 = 12.0 + 3.0 * 12.0 + 2.0 * 8.0 + 14.0;
+
+/// The bar's padding at its right (`#appbar`), and at its left where no window buttons are.
+pub const APP_BAR_PADDING: f32 = 8.0;
+
+/// The space between the bar's items (`#appbar`'s `gap`).
+pub const APP_BAR_ITEM_SPACING: f32 = 2.0;
+
+/// The bar's border below it (`#appbar`'s `border-bottom`, Gray.250).
+pub const APP_BAR_BORDER: Color32 = PANEL_BORDER;
+
+/// A bar button's height and least width (`.ab-btn`, `--btn`: `large_button_size`).
+pub const APP_BAR_BUTTON_SIZE: f32 = 22.0;
+
+/// A bar button's padding at its sides, and the gap between its icon and its text.
+pub const APP_BAR_BUTTON_PADDING: f32 = 5.0;
+pub const APP_BAR_BUTTON_GAP: f32 = 4.0;
+
+/// A bar button hovered (`.ab-btn:hover`, Gray.300), and on, as Home is on the start page
+/// (`.ab-btn.on`, Gray.250); each draws its icon and text [`TEXT_STRONG`]. At rest a bar
+/// button has no fill and is [`TEXT_DEFAULT`]; disabled, [`TEXT_DISABLED`].
+pub const APP_BAR_BUTTON_HOVER_BG: Color32 = WIDGET_BG;
+pub const APP_BAR_BUTTON_ON_BG: Color32 = HOVER_BG;
+
+/// The separator between the bar's buttons and the documents' tabs (`.ab-sep`): its height,
+/// its colour, and its margin at each side.
+pub const APP_BAR_SEPARATOR_HEIGHT: f32 = 16.0;
+pub const APP_BAR_SEPARATOR: Color32 = PANEL_BORDER;
+pub const APP_BAR_SEPARATOR_MARGIN: f32 = 6.0;
+
+/// A document's tab (`.doc-tab`): its padding at its left and right, the gap between its
+/// parts, and its widest, borders and all; a longer name ends in an ellipsis.
+pub const DOC_TAB_PADDING_LEFT: f32 = 10.0;
+pub const DOC_TAB_PADDING_RIGHT: f32 = 6.0;
+pub const DOC_TAB_GAP: f32 = 6.0;
+pub const DOC_TAB_MAX_WIDTH: f32 = 220.0;
+
+/// A tab's 1 point borders, at its right and, the first's, at its left (Gray.250).
+pub const DOC_TAB_BORDER: Color32 = PANEL_BORDER;
+
+/// A tab's name at rest (Gray.550), hovered (`.doc-tab:hover`, Gray.800 on Gray.150), and
+/// the shown document's (`.doc-tab.active`, white on Gray.200, its fill covering the bar's
+/// border below it).
+pub const DOC_TAB_TEXT: Color32 = TEXT_SUBDUED;
+pub const DOC_TAB_HOVER_TEXT: Color32 = GRAY_800;
+pub const DOC_TAB_HOVER_BG: Color32 = GRAY_150;
+pub const DOC_TAB_ACTIVE_TEXT: Color32 = TEXT_STRONG;
+pub const DOC_TAB_ACTIVE_BG: Color32 = GRAY_200;
+
+/// The asterisk of a document with unsaved edits (`.doc-tab .dirty`, white).
+pub const DOC_TAB_DIRTY: Color32 = TEXT_STRONG;
+
+/// A tab's close button (`.doc-tab .x`), shown while the tab is hovered or shown: its side,
+/// its corners, its icon (Gray.550), and its fill and icon hovered (Gray.350, white).
+pub const DOC_TAB_CLOSE_SIZE: f32 = 16.0;
+pub const DOC_TAB_CLOSE_CORNER_RADIUS: u8 = 3;
+pub const DOC_TAB_CLOSE: Color32 = TEXT_SUBDUED;
+pub const DOC_TAB_CLOSE_HOVER_BG: Color32 = GRAY_350;
+pub const DOC_TAB_CLOSE_HOVER: Color32 = TEXT_STRONG;
+
+/// The gap between a tooltip's title and its shortcut's key caps (`.tt-title`), and the
+/// space above its description (`.tt-desc`, [`HEADER_SIZE`] text, [`TEXT_SUBDUED`]).
+pub const TOOLTIP_TITLE_GAP: f32 = 8.0;
+pub const TOOLTIP_DESCRIPTION_GAP: f32 = 2.0;
+
+// ---- The toolbar (`#toolbar`, `.tb-*`, `.btn-finish`) ----
+
+/// The toolbar's fill (`#toolbar`, Gray.100) and its border below it (Gray.250).
+pub const TOOLBAR_BG: Color32 = PANEL_BG;
+pub const TOOLBAR_BORDER: Color32 = PANEL_BORDER;
+
+/// The border below the toolbar's tabs, and at each panel's right (`.tb-tabs`, `.tb-panel`,
+/// Gray.200).
+pub const TOOLBAR_DIVIDER: Color32 = GRAY_200;
+
+/// The tabs' row (`.tb-tabs`): its padding at its left, and the gap between its items.
+pub const TOOLBAR_TABS_PADDING: f32 = 8.0;
+pub const TOOLBAR_TABS_GAP: f32 = 2.0;
+
+/// The workspace's name, DESIGN (`.tb-ws`): its padding at its left, right, and bottom,
+/// where its text sits; its margin after its border (Gray.250); its text (Gray.550).
+pub const TOOLBAR_WORKSPACE_PADDING_LEFT: f32 = 4.0;
+pub const TOOLBAR_WORKSPACE_PADDING_RIGHT: f32 = 10.0;
+pub const TOOLBAR_WORKSPACE_PADDING_BOTTOM: f32 = 5.0;
+pub const TOOLBAR_WORKSPACE_MARGIN: f32 = 6.0;
+pub const TOOLBAR_WORKSPACE_BORDER: Color32 = PANEL_BORDER;
+pub const TOOLBAR_WORKSPACE_TEXT: Color32 = TEXT_SUBDUED;
+
+/// A tab (`.tb-tab`): its height, its padding at its sides, and its top corners; its text
+/// (Gray.550), hovered (Gray.800); the shown tab's (`.active`, white on Gray.200); and the
+/// contextual tab's, SKETCH (`.ctx`, Blue.900 on Blue.500).
+pub const TOOLBAR_TAB_HEIGHT: f32 = 22.0;
+pub const TOOLBAR_TAB_PADDING: f32 = 10.0;
+pub const TOOLBAR_TAB_CORNER_RADIUS: u8 = SMALL_CORNER_RADIUS;
+pub const TOOLBAR_TAB_TEXT: Color32 = TEXT_SUBDUED;
+pub const TOOLBAR_TAB_HOVER_TEXT: Color32 = GRAY_800;
+pub const TOOLBAR_TAB_ACTIVE_TEXT: Color32 = TEXT_STRONG;
+pub const TOOLBAR_TAB_ACTIVE_BG: Color32 = GRAY_200;
+pub const TOOLBAR_TAB_CONTEXT_TEXT: Color32 = ON_SELECTION;
+pub const TOOLBAR_TAB_CONTEXT_BG: Color32 = SELECTION_BG;
+
+/// The panels' row (`.tb-panels`): its padding at its sides; and a panel's (`.tb-panel`) at
+/// its top and sides; the gap between its buttons (`.tb-row`).
+pub const TOOLBAR_PANELS_PADDING: f32 = 6.0;
+pub const TOOLBAR_PANEL_PADDING_TOP: f32 = 4.0;
+pub const TOOLBAR_PANEL_PADDING_SIDE: f32 = 6.0;
+pub const TOOLBAR_BUTTON_GAP: f32 = 1.0;
+
+/// A toolbar button (`.tb-btn`): its corners; its icon at rest (Gray.750); hovered, white
+/// on Gray.300; off, Gray.400.
+pub const TOOLBAR_BUTTON_CORNER_RADIUS: u8 = SMALL_CORNER_RADIUS;
+pub const TOOLBAR_BUTTON_ICON: Color32 = TEXT_DEFAULT;
+pub const TOOLBAR_BUTTON_HOVER_BG: Color32 = WIDGET_BG;
+pub const TOOLBAR_BUTTON_HOVER_ICON: Color32 = TEXT_STRONG;
+pub const TOOLBAR_BUTTON_DISABLED_ICON: Color32 = TEXT_DISABLED;
+
+/// A panel's label and its drop-down (`.tb-label`): its text's size and line; its padding
+/// over and under, and at its sides; the gap before its arrow, and the arrow's side; its
+/// corners; its margin above; its text (Gray.550), and hovered, white on Gray.250.
+pub const TOOLBAR_LABEL_SIZE: f32 = 10.0;
+pub const TOOLBAR_LABEL_LINE_HEIGHT: f32 = 14.0;
+pub const TOOLBAR_LABEL_PADDING: Margin = Margin::symmetric(4, 1);
+pub const TOOLBAR_LABEL_GAP: f32 = 2.0;
+pub const TOOLBAR_LABEL_ARROW_SIZE: f32 = 8.0;
+pub const TOOLBAR_LABEL_CORNER_RADIUS: u8 = 3;
+pub const TOOLBAR_LABEL_MARGIN_TOP: f32 = 1.0;
+pub const TOOLBAR_LABEL_TEXT: Color32 = TEXT_SUBDUED;
+pub const TOOLBAR_LABEL_HOVER_TEXT: Color32 = TEXT_STRONG;
+pub const TOOLBAR_LABEL_HOVER_BG: Color32 = HOVER_BG;
+
+/// Finish Sketch at the panels' right end (`.tb-finish`, `.btn-finish`): the room at its
+/// right; its height (a toolbar button's), its padding at its sides, and the gap after its
+/// icon; its fill (Blue.500) and its text (white); its fill hovered (the prototype's
+/// `#2a78e8`).
+pub const TOOLBAR_FINISH_MARGIN: f32 = 8.0;
+pub const TOOLBAR_FINISH_PADDING: f32 = 12.0;
+pub const TOOLBAR_FINISH_GAP: f32 = 6.0;
+pub const TOOLBAR_FINISH_BG: Color32 = SELECTION_BG;
+pub const TOOLBAR_FINISH_TEXT: Color32 = TEXT_STRONG;
+pub const TOOLBAR_FINISH_HOVER_BG: Color32 = hex(0x2a78e8);
+
+// ---- The browser (`#browser`, `.panel-title`, `.row`, `.tree-empty`) ----
+
+/// A side panel's title (`.panel-title`, the browser's and the property panel's): its
+/// padding at the left (`--pad`) and at the right, and the gap between its parts (`padding:
+/// 0 6px 0 var(--pad); gap: 6px`), in [`HEADER_SIZE`] capitals, [`TEXT_STRONG`], on a
+/// [`TITLE_BAR_HEIGHT`] row; its buttons (`.panel-title .ab-btn`) 20 square.
+pub const BROWSER_TITLE_PADDING: f32 = VIEW_PADDING as f32;
+pub const PANEL_TITLE_PADDING_RIGHT: f32 = 6.0;
+pub const PANEL_TITLE_GAP: f32 = 6.0;
+pub const PANEL_TITLE_BUTTON_SIZE: f32 = 20.0;
+
+/// A row's padding at its left before its depth's indents (`6 + depth * 18`), at its right,
+/// and the gap between its parts (`.row`).
+pub const BROWSER_ROW_PADDING_LEFT: f32 = 6.0;
+pub const BROWSER_ROW_PADDING_RIGHT: f32 = 6.0;
+pub const BROWSER_ROW_GAP: f32 = 4.0;
+
+/// A row's fill hovered (`.row:hover`, Gray.250), and selected (`.row.selected`, Blue.500),
+/// where its name, its icon, and its meta are [`ON_SELECTION`].
+pub const BROWSER_ROW_HOVER_BG: Color32 = HOVER_BG;
+pub const BROWSER_ROW_SELECTED_BG: Color32 = SELECTION_BG;
+
+/// A row's caret (`.row .caret`): its place's side, its chevron's, and its colour (Gray.700).
+pub const BROWSER_CARET_SIDE: f32 = 14.0;
+pub const BROWSER_CARET_ICON: f32 = 10.0;
+pub const BROWSER_CARET: Color32 = GRAY_700;
+
+/// A row's eye (`.row .eye`): its place's side and corners; its colour shown (Gray.550) and
+/// hidden (`.eye.off`, Gray.400); and hovered (`.eye:hover`), Gray.1000 on Gray.350.
+pub const BROWSER_EYE_SIDE: f32 = 18.0;
+pub const BROWSER_EYE_CORNER_RADIUS: u8 = 3;
+pub const BROWSER_EYE: Color32 = TEXT_SUBDUED;
+pub const BROWSER_EYE_OFF: Color32 = TEXT_DISABLED;
+pub const BROWSER_EYE_HOVER: Color32 = GRAY_1000;
+pub const BROWSER_EYE_HOVER_BG: Color32 = GRAY_350;
+
+/// What a hidden row's name and icon are drawn at (`.row.hidden-obj`'s `opacity: .45`).
+pub const BROWSER_HIDDEN_OPACITY: f32 = 0.45;
+
+/// A row's meta (`.r-meta`): [`HEADER_SIZE`], Gray.550.
+pub const BROWSER_META: Color32 = TEXT_SUBDUED;
+
+/// A sketch's prefix (`.row .prefix`): [`MONOSPACE_SIZE`], Gray.550; under defined
+/// [`SKETCH_UNDER_DEFINED`], over defined [`SKETCH_OVER_DEFINED`].
+pub const BROWSER_PREFIX: Color32 = TEXT_SUBDUED;
+
+/// An empty group's words (`.tree-empty`): their padding at the left (`--pad` and 36), top,
+/// and bottom, in [`HEADER_SIZE`] text, Gray.550.
+pub const BROWSER_EMPTY_PADDING_LEFT: i8 = VIEW_PADDING + 36;
+pub const BROWSER_EMPTY_PADDING_TOP: i8 = 2;
+pub const BROWSER_EMPTY_PADDING_BOTTOM: i8 = 6;
+pub const BROWSER_EMPTY: Color32 = TEXT_SUBDUED;
+
+/// The space below the last row (`.panel-body`'s `padding-bottom`).
+pub const BROWSER_PADDING_BOTTOM: f32 = 12.0;
+
+// ---- The timeline (`#timeline`, `.tl-*`) ----
+
+/// The pane: [`TIMELINE_HEIGHT`] high on [`BOTTOM_BAR_BG`], under a [`PANEL_BORDER`] line;
+/// its padding at each side, and the gap between its label, its track, and its summary
+/// (`#timeline`'s `padding: 0 8px; gap: 8px`).
+pub const TIMELINE_PADDING: f32 = 8.0;
+pub const TIMELINE_GAP: f32 = 8.0;
+
+/// Its label (`.tl-label`): [`HEADER_SIZE`] capitals, Gray.550, in a column this wide.
+pub const TIMELINE_LABEL_WIDTH: f32 = 68.0;
+pub const TIMELINE_LABEL: Color32 = TEXT_SUBDUED;
+
+/// A feature's item (`.tl-item`): its side, its corners, and the gap between two items
+/// (`.tl-track`'s `gap`); its icon the prototype's large one (`svg.i.lg`).
+pub const TIMELINE_ITEM_SIZE: f32 = TOOLBAR_BUTTON_SIZE;
+pub const TIMELINE_ITEM_CORNER_RADIUS: u8 = SMALL_CORNER_RADIUS;
+pub const TIMELINE_ITEM_GAP: f32 = 2.0;
+
+/// An item's icon at rest (Gray.750), and hovered (`:hover`), Gray.1000 on Gray.300.
+pub const TIMELINE_ITEM_ICON: Color32 = TEXT_DEFAULT;
+pub const TIMELINE_ITEM_HOVER_ICON: Color32 = TEXT_STRONG;
+pub const TIMELINE_ITEM_HOVER_BG: Color32 = WIDGET_BG;
+
+/// A selected item (`.selected`): Blue.900 on Blue.500.
+pub const TIMELINE_ITEM_SELECTED_ICON: Color32 = ON_SELECTION;
+pub const TIMELINE_ITEM_SELECTED_BG: Color32 = SELECTION_BG;
+
+/// A sketch's icon (`.sketch`), Gray.600, whether hovered or selected: styles.css gives it
+/// after both.
+pub const TIMELINE_SKETCH_ICON: Color32 = GRAY_600;
+
+/// A failed feature (`.err`): its icon Red.550 and a line of it along the item's bottom;
+/// a warned one's (`.warn`) the warning's orange. The line's width.
+pub const TIMELINE_ERROR: Color32 = ERROR_TEXT;
+pub const TIMELINE_WARNING: Color32 = WARNING;
+pub const TIMELINE_MARK_LINE_WIDTH: f32 = 2.0;
+
+/// A suppressed item's opacity (`.suppressed`), and its strike: inset from the item's sides,
+/// this wide, turned this far (`::after`'s `left: 5px; right: 5px; height: 1.5px; rotate(-35deg)`).
+pub const TIMELINE_SUPPRESSED_OPACITY: f32 = 0.35;
+pub const TIMELINE_STRIKE_INSET: f32 = 5.0;
+pub const TIMELINE_STRIKE_WIDTH: f32 = 1.5;
+pub const TIMELINE_STRIKE_DEGREES: f32 = -35.0;
+
+/// A queued item's opacity (`.queued`), while a rebuild runs.
+pub const TIMELINE_QUEUED_OPACITY: f32 = 0.45;
+
+/// The running step's spinner (`.building::before`): a ring inset from the item, its top and
+/// right halves drawn in Gray.1000, turning once in this many seconds.
+pub const TIMELINE_SPINNER_INSET: f32 = 2.0;
+pub const TIMELINE_SPINNER_WIDTH: f32 = 2.0;
+pub const TIMELINE_SPINNER: Color32 = GRAY_1000;
+pub const TIMELINE_SPINNER_TURN_SECONDS: f32 = 0.7;
+
+/// A mark at an item's corner (`.badge`): its side, inset from the top right; filled with
+/// the error's Red (`error_fg_color`) or the warning's orange, in a ring of the bar's grey.
+pub const TIMELINE_BADGE_SIZE: f32 = 9.0;
+pub const TIMELINE_BADGE_INSET: f32 = 1.0;
+pub const TIMELINE_BADGE_RING_WIDTH: f32 = 1.5;
+pub const TIMELINE_BADGE_RING: Color32 = BOTTOM_BAR_BG;
+pub const TIMELINE_BADGE_ERROR: Color32 = ERROR_FILL;
+pub const TIMELINE_BADGE_WARNING: Color32 = WARNING;
+
+/// Where a dragged feature would drop (`.drop-before::before`): a Blue.525 line this wide,
+/// this far left of the item it would drop before, short of its top and bottom by this.
+pub const TIMELINE_DROP: Color32 = FOCUS;
+pub const TIMELINE_DROP_WIDTH: f32 = 2.0;
+pub const TIMELINE_DROP_OFFSET: f32 = 2.0;
+pub const TIMELINE_DROP_INSET: f32 = 4.0;
+
+/// An empty timeline's words (`.tl-empty`): [`HEADER_SIZE`], Gray.550, this far in.
+pub const TIMELINE_EMPTY: Color32 = TEXT_SUBDUED;
+pub const TIMELINE_EMPTY_PADDING: f32 = 4.0;
+
+/// The summary at the right (`.tl-right`): [`HEADER_SIZE`], Gray.550; its errors (`.err-text`)
+/// Red.550 with the error's icon, `gap` apart (`.st-item`'s), each part padded this much
+/// at its sides (`.st-item`'s `padding: 0 8px`).
+pub const TIMELINE_SUMMARY: Color32 = TEXT_SUBDUED;
+pub const TIMELINE_SUMMARY_ERRORS: Color32 = ERROR_TEXT;
+pub const TIMELINE_SUMMARY_PADDING: f32 = 8.0;
+/// The space between the summary's parts (`.tl-right`'s `gap: 2px`).
+pub const TIMELINE_SUMMARY_SPACING: f32 = 2.0;
+pub const TIMELINE_SUMMARY_GAP: f32 = 6.0;
+
 // ---- Key caps (`.kbd`) ----
 
 /// A key cap's fill (Gray.250).
@@ -554,6 +858,210 @@ pub const STATE_DOT_SIZE: f32 = 8.0;
 
 /// The spinner beside work under way (`.spinner`): its side.
 pub const SPINNER_SIZE: f32 = 11.0;
+
+/// The spinner's ring (`.spinner`: `border: 1.5px solid` Gray.350), and its turning quarter
+/// (`border-top-color` Gray.1000), once round every [`SPINNER_TURN_SECONDS`] (`spin .7s`).
+pub const SPINNER_WIDTH: f32 = 1.5;
+pub const SPINNER_TRACK: Color32 = GRAY_350;
+pub const SPINNER_HEAD: Color32 = GRAY_1000;
+pub const SPINNER_TURN_SECONDS: f32 = 0.7;
+
+// ---- The status bar (`#status`, `.st-item`, `.st-sep`, `.st-btn`, `.progress`) ----
+
+/// The bar's fill, its border above it, and its text (`#status`: Gray.150, a 1 px Gray.250
+/// border on top, `--fs-small` in Gray.550).
+pub const STATUS_BAR_BG: Color32 = BOTTOM_BAR_BG;
+pub const STATUS_BAR_BORDER: Color32 = PANEL_BORDER;
+pub const STATUS_TEXT: Color32 = TEXT_SUBDUED;
+
+/// The bar's padding at its left and right, and the gap between its parts (`#status`:
+/// `padding: 0 6px 0 8px; gap: 2px`).
+pub const STATUS_BAR_PADDING_LEFT: f32 = 8.0;
+pub const STATUS_BAR_PADDING_RIGHT: f32 = 6.0;
+pub const STATUS_BAR_GAP: f32 = 2.0;
+
+/// An item (`.st-item`): its height, its padding at each side, and the gap between its
+/// mark and its words; hovered, as a button, its fill and its text.
+pub const STATUS_ITEM_HEIGHT: f32 = 20.0;
+pub const STATUS_ITEM_PADDING: f32 = 8.0;
+pub const STATUS_ITEM_GAP: f32 = 6.0;
+pub const STATUS_ITEM_HOVER_BG: Color32 = WIDGET_BG;
+pub const STATUS_ITEM_HOVER_TEXT: Color32 = TEXT_STRONG;
+
+/// A separator (`.st-sep`: 1 by 12, Gray.250), and the margin at each side of the one after
+/// Stop and Rebuild (`margin: 0 6px`).
+pub const STATUS_SEPARATOR: Color32 = PANEL_BORDER;
+pub const STATUS_SEPARATOR_HEIGHT: f32 = 12.0;
+pub const STATUS_SEPARATOR_MARGIN: f32 = 6.0;
+
+/// A button (`.st-btn`): its height, padding at each side, and the gap after its icon; its
+/// fill and text at rest, hovered, and off.
+pub const STATUS_BUTTON_HEIGHT: f32 = 18.0;
+pub const STATUS_BUTTON_PADDING: f32 = 7.0;
+pub const STATUS_BUTTON_GAP: f32 = 5.0;
+pub const STATUS_BUTTON_BG: Color32 = WIDGET_BG;
+pub const STATUS_BUTTON_TEXT: Color32 = GRAY_800;
+pub const STATUS_BUTTON_HOVER_BG: Color32 = WIDGET_HOVER_BG;
+pub const STATUS_BUTTON_HOVER_TEXT: Color32 = GRAY_1000;
+pub const STATUS_BUTTON_DISABLED_TEXT: Color32 = TEXT_DISABLED;
+
+/// Stop, while it's on (`.st-btn.stop`): its fill and text, and hovered.
+pub const STATUS_STOP_BG: Color32 = DANGER_BUTTON_BG;
+pub const STATUS_STOP_TEXT: Color32 = DANGER_BUTTON_TEXT;
+pub const STATUS_STOP_HOVER_BG: Color32 = hex(0x800027);
+pub const STATUS_STOP_HOVER_TEXT: Color32 = GRAY_1000;
+
+/// The rebuild's progress (`.progress`: 70 by 4, corners 2, Gray.300; its bar Gray.800).
+pub const STATUS_PROGRESS_WIDTH: f32 = 70.0;
+pub const STATUS_PROGRESS_HEIGHT: f32 = 4.0;
+pub const STATUS_PROGRESS_CORNER_RADIUS: u8 = 2;
+pub const STATUS_PROGRESS_BG: Color32 = WIDGET_BG;
+pub const STATUS_PROGRESS_FILL: Color32 = GRAY_800;
+
+// ---- The property panel (`.prop-head`, `.section`, `.prop`, `.hint-block`, `.err-card`) ----
+
+/// The head (`.prop-head`): its padding above and below (`--pad` at its sides), the gap
+/// between its icon and its words; its icon's box (28 square, `--r-sm`, Gray.200) and the
+/// icon's colour (Gray.800); its title (13, white) and the line under it (`--fs-small`,
+/// Gray.550).
+pub const PROPERTY_HEAD_PADDING_TOP: f32 = 6.0;
+pub const PROPERTY_HEAD_PADDING_BOTTOM: f32 = 8.0;
+pub const PROPERTY_HEAD_GAP: f32 = 8.0;
+pub const PROPERTY_HEAD_ICON_SIDE: f32 = 28.0;
+pub const PROPERTY_HEAD_ICON_BG: Color32 = GRAY_200;
+pub const PROPERTY_HEAD_ICON: Color32 = GRAY_800;
+pub const PROPERTY_HEAD_TITLE: Color32 = TEXT_STRONG;
+pub const PROPERTY_HEAD_SUB: Color32 = TEXT_SUBDUED;
+
+/// A section's header (`.section`): its padding above and below, its text (10.5, capitals,
+/// Gray.550), and the rule after it (1 high, Gray.200, 6 after the text).
+pub const PROPERTY_SECTION_PADDING_TOP: f32 = 6.0;
+pub const PROPERTY_SECTION_PADDING_BOTTOM: f32 = 2.0;
+pub const PROPERTY_SECTION_SIZE: f32 = 10.5;
+pub const PROPERTY_SECTION_TEXT: Color32 = TEXT_SUBDUED;
+pub const PROPERTY_SECTION_GAP: f32 = 6.0;
+pub const PROPERTY_SECTION_RULE: Color32 = GRAY_200;
+
+/// A property's row (`.prop`): at least a list item high, its key's column 96 wide, 8 to
+/// its value; its key Gray.550, its value Gray.800.
+pub const PROPERTY_ROW_HEIGHT: f32 = LIST_ITEM_HEIGHT;
+pub const PROPERTY_KEY_WIDTH: f32 = 96.0;
+pub const PROPERTY_ROW_GAP: f32 = 8.0;
+pub const PROPERTY_KEY: Color32 = TEXT_SUBDUED;
+pub const PROPERTY_VALUE: Color32 = GRAY_800;
+
+/// A hint (`.hint-block`): 8 above and below it, `--pad` at its sides; padded 8 by 10,
+/// corners `--r`, Gray.150; its text `--fs-small` in Gray.550, its emphasis Gray.800.
+pub const HINT_MARGIN: f32 = 8.0;
+pub const HINT_PADDING: Margin = Margin::symmetric(10, 8);
+pub const HINT_BG: Color32 = GRAY_150;
+pub const HINT_TEXT: Color32 = TEXT_SUBDUED;
+pub const HINT_STRONG: Color32 = GRAY_800;
+
+/// An error card (`.err-card`): 8 above and below it, `--pad` at its sides, corners `--r`;
+/// its fill, its 1 px border, its head's text and icon (`.ec-head`), and its accent
+/// (`.ec-fix::before`'s arrow); its words are white (`.ec-head .t`, `.ec-fix`).
+pub const ERROR_CARD_MARGIN: f32 = 8.0;
+pub const ERROR_CARD_BG: Color32 = ALERT_ERROR_BG;
+pub const ERROR_CARD_BORDER: Color32 = DANGER_BUTTON_BG;
+pub const ERROR_CARD_HEAD: Color32 = DANGER_BUTTON_TEXT;
+pub const ERROR_CARD_ACCENT: Color32 = hex(0xff99a6);
+/// A warning's card (`.err-card.warn`): its fill, border, and head.
+pub const WARNING_CARD_BG: Color32 = ALERT_WARNING_BG;
+pub const WARNING_CARD_BORDER: Color32 = hex(0x5c3a08);
+pub const WARNING_CARD_HEAD: Color32 = ALERT_WARNING_TEXT;
+/// The head's padding (`8px 10px 4px`) and the gap after its icon; the body's padding
+/// (`0 10px 8px 32px`), and the space under its suggestion (`.ec-fix { margin-bottom: 8px;
+/// gap: 6px }`).
+pub const ERROR_CARD_HEAD_PADDING: Margin = Margin {
+    left: 10,
+    right: 10,
+    top: 8,
+    bottom: 4,
+};
+pub const ERROR_CARD_GAP: f32 = 8.0;
+pub const ERROR_CARD_BODY_PADDING: Margin = Margin {
+    left: 32,
+    right: 10,
+    top: 0,
+    bottom: 8,
+};
+pub const ERROR_CARD_FIX_GAP: f32 = 6.0;
+pub const ERROR_CARD_FIX_MARGIN: f32 = 8.0;
+
+// ---- The docked dialog (`.selbox`, `.chip`, `.seg`, `.dlg-footer`, `.btn-secondary`) ----
+
+/// A selection box (`.selbox`): at least a field high, padded 6 at its left and 4 at its
+/// right, 6 between its parts, a 2 px border at its left; its fill (Gray.200), and while
+/// it's the active box its border Blue.500 and its fill Blue.500 at 18%.
+pub const SELECTION_BOX_PADDING_LEFT: f32 = 6.0;
+pub const SELECTION_BOX_PADDING_RIGHT: f32 = 4.0;
+pub const SELECTION_BOX_BORDER: f32 = 2.0;
+pub const SELECTION_BOX_BG: Color32 = FIELD_BG;
+pub const SELECTION_BOX_ACTIVE_BORDER: Color32 = SELECTION_BG;
+pub const SELECTION_BOX_ACTIVE_BG: Color32 = with_alpha(SELECTION_BG, 46);
+
+/// What a selection box holds (`.selbox .chip`): 16 high, padded 5, 4 after its icon,
+/// corners 3, Gray.300, its text `--fs-small` in Gray.800.
+pub const CHIP_HEIGHT: f32 = 16.0;
+pub const CHIP_PADDING: f32 = 5.0;
+pub const CHIP_GAP: f32 = 4.0;
+pub const CHIP_CORNER_RADIUS: u8 = 3;
+pub const CHIP_BG: Color32 = WIDGET_BG;
+pub const CHIP_TEXT: Color32 = GRAY_800;
+
+/// A choice of a few (`.seg`): its fill (Gray.200), padding and gap 1; each choice 20 high,
+/// corners 3, its text Gray.550 (white hovered), the one chosen Gray.350 with white text.
+pub const SEGMENTED_BG: Color32 = FIELD_BG;
+pub const SEGMENTED_PADDING: f32 = 1.0;
+pub const SEGMENTED_HEIGHT: f32 = 20.0;
+pub const SEGMENTED_CORNER_RADIUS: u8 = 3;
+pub const SEGMENTED_TEXT: Color32 = TEXT_SUBDUED;
+pub const SEGMENTED_HOVER_TEXT: Color32 = TEXT_STRONG;
+pub const SEGMENTED_ON_BG: Color32 = GRAY_350;
+pub const SEGMENTED_ON_TEXT: Color32 = TEXT_STRONG;
+
+/// A choice of several as a drop-down (`.field.select`), where its words don't fit `.seg`:
+/// a field's fill and corners, padded 6 at each side, its words Gray.800, its arrow 10
+/// square in Gray.550. A choice stays `.seg` only while each of its words fits its share
+/// with [`SEGMENTED_ROOM`] at each side (a proposal: `.seg` sets none, its words centred).
+pub const SELECT_PADDING: f32 = 6.0;
+pub const SELECT_TEXT: Color32 = GRAY_800;
+pub const SELECT_ARROW: Color32 = TEXT_SUBDUED;
+pub const SELECT_ARROW_SIZE: f32 = 10.0;
+pub const SEGMENTED_ROOM: f32 = 4.0;
+
+/// The preview's line in a dialog (`.dlg-status`): 8 above it, `--pad` at its sides; padded
+/// 6 by 8, corners `--r-sm`, Gray.150; its words `--fs-small` Gray.550, Gray.750 while it
+/// runs (`.running`), red with errors; 6 between its parts.
+pub const DIALOG_STATUS_MARGIN: f32 = 8.0;
+pub const DIALOG_STATUS_PADDING: Margin = Margin::symmetric(8, 6);
+pub const DIALOG_STATUS_BG: Color32 = GRAY_150;
+pub const DIALOG_STATUS_TEXT: Color32 = TEXT_SUBDUED;
+pub const DIALOG_STATUS_RUNNING_TEXT: Color32 = TEXT_DEFAULT;
+pub const DIALOG_STATUS_GAP: f32 = 6.0;
+
+/// A field's unit inside it (`.field .unit`): Gray.550, 6 from the field's right.
+pub const FIELD_UNIT: Color32 = TEXT_SUBDUED;
+pub const FIELD_UNIT_PADDING: f32 = 6.0;
+
+/// The dialog's footer (`.dlg-footer`): padded 8 by `--pad`, 6 between its buttons, a 1 px
+/// Gray.250 border above it, on the panel's fill; each button 26 high, sharing its width.
+pub const DIALOG_FOOTER_PADDING: f32 = 8.0;
+pub const DIALOG_FOOTER_GAP: f32 = 6.0;
+pub const DIALOG_FOOTER_BORDER: Color32 = PANEL_BORDER;
+pub const DIALOG_BUTTON_HEIGHT: f32 = 26.0;
+
+/// A secondary button (`.btn-secondary`): Cancel. Its fill and text, and hovered.
+pub const SECONDARY_BUTTON_BG: Color32 = WIDGET_BG;
+pub const SECONDARY_BUTTON_TEXT: Color32 = TEXT_DEFAULT;
+pub const SECONDARY_BUTTON_HOVER_BG: Color32 = WIDGET_HOVER_BG;
+pub const SECONDARY_BUTTON_HOVER_TEXT: Color32 = TEXT_STRONG;
+
+/// The gap between a button's words and its key cap (`.btn { gap: 6px }`), the cap at 55%
+/// (`.btn .kbd`: `opacity: .55`, its border and text the button's).
+pub const BUTTON_GAP: f32 = 6.0;
+pub const BUTTON_KEY_CAP_OPACITY: f32 = 0.55;
 
 // ---- The start page (`.st-*`, `.recent-row`) ----
 
@@ -594,8 +1102,7 @@ pub const START_NOTE_PADDING: f32 = 16.0;
 pub const START_NOTE_LINE_HEIGHT: f32 = 17.0;
 pub const START_COPY_GAP: f32 = 10.0;
 
-/// A section header's (RECENT) extra space between letters, and the space below it.
-pub const START_HEADER_LETTER_SPACING: f32 = 0.5;
+/// The space below a section header (RECENT).
 pub const START_HEADER_GAP: f32 = 8.0;
 
 /// A recent document's row: its height, its padding left and right, the gap between its
@@ -621,6 +1128,10 @@ pub const BODY_SIZE: f32 = 12.0;
 pub const BODY_LINE_HEIGHT: f32 = 16.0;
 /// Section headers, uppercase, and small text.
 pub const HEADER_SIZE: f32 = 11.0;
+/// The extra space between letters set in capitals (`text-transform: uppercase;
+/// letter-spacing: .5px`): the start page's section headers, and the toolbar's workspace,
+/// tabs, and panels' labels and drop-downs' headings.
+pub const CAPITALS_LETTER_SPACING: f32 = 0.5;
 /// Titles.
 pub const TITLE_SIZE: f32 = 13.0;
 /// IDs and element names, in [`MONOSPACE_FONT`].
@@ -741,10 +1252,12 @@ pub fn style(mut base: egui::Style) -> egui::Style {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldKind {
     /// A dialog's field (`.field`): [`FIELD_BG`], unoutlined at rest, [`FIELD_HOVER_BG`]
-    /// hovered.
+    /// hovered. For a field on a panel ([`PANEL_BG`]): on a floating surface, whose fill is
+    /// [`FIELD_BG`] too, it would show nothing at rest.
     Dialog,
     /// The Modify box's value (`.modify-box input`): [`MODIFY_FIELD_BG`], outlined in
-    /// [`STROKE_STRONG`] at rest, hovered or not.
+    /// [`STROKE_STRONG`] at rest, hovered or not. The prototype's field on a floating
+    /// surface ([`FLOATING_BG`], as the Modify box is), so a modal's fields too.
     Modify,
 }
 
@@ -774,6 +1287,48 @@ pub fn field_frame(kind: FieldKind, hovered: bool, focused: bool, invalid: bool)
         .corner_radius(CornerRadius::same(SMALL_CORNER_RADIUS))
         .inner_margin(Margin::symmetric(6, 2))
         .shadow(Shadow::NONE)
+}
+
+/// `edit` as the prototype draws a field of `kind`: in [`field_frame`]'s frame, hovered
+/// while the pointer is over it (where it was last drawn) and it's on, focused while it has
+/// the keyboard, and `invalid` as the caller says; its text [`TEXT_STRONG`], or
+/// [`ERROR_TEXT`] when invalid. Its ID is made from `id_salt` in `ui`, as
+/// `TextEdit::id_salt`'s is. egui's own frame for a text field can't be this: its fill is
+/// one colour in every state, and its outline at rest is a button's, which has none.
+pub fn field<'t>(
+    ui: &egui::Ui,
+    edit: egui::TextEdit<'t>,
+    id_salt: impl egui::AsIdSalt,
+    kind: FieldKind,
+    invalid: bool,
+) -> egui::TextEdit<'t> {
+    field_with_room(ui, edit, id_salt, kind, invalid, 0.0)
+}
+
+/// [`field`], with `room` more points inside its frame at its right, past its text: where
+/// its unit goes (`.field .unit`), which the caller paints there.
+pub fn field_with_room<'t>(
+    ui: &egui::Ui,
+    edit: egui::TextEdit<'t>,
+    id_salt: impl egui::AsIdSalt,
+    kind: FieldKind,
+    invalid: bool,
+    room: f32,
+) -> egui::TextEdit<'t> {
+    let id = ui.make_persistent_id(id_salt);
+    let hovered = ui
+        .ctx()
+        .read_response(id)
+        .is_some_and(|drawn| drawn.enabled() && ui.rect_contains_pointer(drawn.rect));
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    let mut frame = field_frame(kind, hovered, focused, invalid);
+    frame.inner_margin.right = frame
+        .inner_margin
+        .right
+        .saturating_add(room.ceil().clamp(0.0, f32::from(i8::MAX)) as i8);
+    edit.id(id)
+        .frame(frame)
+        .text_color(if invalid { ERROR_TEXT } else { TEXT_STRONG })
 }
 
 #[cfg(test)]
@@ -1084,6 +1639,314 @@ mod tests {
             ("VIEWPORT_BG", VIEWPORT_BG, [0, 0, 0, 0xff]),
         ] {
             assert_eq!(color, rgba, "{name}");
+        }
+    }
+
+    /// The app bar's and its tabs' values, typed from styles.css's `#appbar`, `.traffic`,
+    /// `.ab-btn`, `.ab-sep`, `.doc-tab`, and `.tooltip`, and its `--g*` greys.
+    #[test]
+    fn the_app_bars_tokens_are_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `.traffic`: `padding: 0 14px 0 12px`, three spans of 12, `gap: 8px`.
+        assert_eq!(TRAFFIC_LIGHTS_WIDTH, 78.0);
+        // `#appbar`: `padding-right: 8px; gap: 2px`, `--top-bar-h: 30px`.
+        assert_eq!(APP_BAR_PADDING, 8.0);
+        assert_eq!(APP_BAR_ITEM_SPACING, 2.0);
+        assert_eq!(TOP_BAR_HEIGHT, 30.0);
+        // `.ab-btn`: `height` and `min-width` `--btn` (22), `padding: 0 5px`, `gap: 4px`.
+        assert_eq!(APP_BAR_BUTTON_SIZE, 22.0);
+        assert_eq!(APP_BAR_BUTTON_PADDING, 5.0);
+        assert_eq!(APP_BAR_BUTTON_GAP, 4.0);
+        // `#appbar`'s `border-bottom`, `.ab-sep`'s `width`, and `.doc-tab`'s borders: 1px.
+        assert_eq!(BORDER_WIDTH, 1.0);
+        // `.ab-sep`: `height: 16px; margin: 0 6px`.
+        assert_eq!(APP_BAR_SEPARATOR_HEIGHT, 16.0);
+        assert_eq!(APP_BAR_SEPARATOR_MARGIN, 6.0);
+        // `.doc-tab`: `padding: 0 6px 0 10px; gap: 6px; max-width: 220px`; `.x` 16 square
+        // with corners 3.
+        assert_eq!(DOC_TAB_PADDING_LEFT, 10.0);
+        assert_eq!(DOC_TAB_PADDING_RIGHT, 6.0);
+        assert_eq!(DOC_TAB_GAP, 6.0);
+        assert_eq!(DOC_TAB_MAX_WIDTH, 220.0);
+        assert_eq!(DOC_TAB_CLOSE_SIZE, 16.0);
+        assert_eq!(DOC_TAB_CLOSE_CORNER_RADIUS, 3);
+        // `.tooltip .tt-title`'s `gap: 8px`, `.tt-desc`'s `margin-top: 2px`.
+        assert_eq!(TOOLTIP_TITLE_GAP, 8.0);
+        assert_eq!(TOOLTIP_DESCRIPTION_GAP, 2.0);
+        for (name, color, hex) in [
+            // `#appbar`'s `border-bottom` and `.ab-sep`, `--g250`.
+            ("APP_BAR_BORDER", APP_BAR_BORDER, 0x272626),
+            ("APP_BAR_SEPARATOR", APP_BAR_SEPARATOR, 0x272626),
+            // `.ab-btn:hover`, `--g300`; `.ab-btn.on`, `--g250`.
+            ("APP_BAR_BUTTON_HOVER_BG", APP_BAR_BUTTON_HOVER_BG, 0x2c2b2b),
+            ("APP_BAR_BUTTON_ON_BG", APP_BAR_BUTTON_ON_BG, 0x272626),
+            // `.doc-tab`, `--g550` in `--g250` borders; `:hover`, `--g800` on `--g150`;
+            // `.active`, `--g1000` on `--g200`; `.dirty`, `--g1000`.
+            ("DOC_TAB_TEXT", DOC_TAB_TEXT, 0x939090),
+            ("DOC_TAB_BORDER", DOC_TAB_BORDER, 0x272626),
+            ("DOC_TAB_HOVER_TEXT", DOC_TAB_HOVER_TEXT, 0xe0dfdf),
+            ("DOC_TAB_HOVER_BG", DOC_TAB_HOVER_BG, 0x171717),
+            ("DOC_TAB_ACTIVE_TEXT", DOC_TAB_ACTIVE_TEXT, 0xffffff),
+            ("DOC_TAB_ACTIVE_BG", DOC_TAB_ACTIVE_BG, 0x212121),
+            ("DOC_TAB_DIRTY", DOC_TAB_DIRTY, 0xffffff),
+            // `.doc-tab .x`, `--g550`; `.x:hover`, `--g1000` on `--g350`.
+            ("DOC_TAB_CLOSE", DOC_TAB_CLOSE, 0x939090),
+            ("DOC_TAB_CLOSE_HOVER", DOC_TAB_CLOSE_HOVER, 0xffffff),
+            ("DOC_TAB_CLOSE_HOVER_BG", DOC_TAB_CLOSE_HOVER_BG, 0x525151),
+        ] {
+            assert_eq!(color, opaque(hex), "{name}");
+        }
+    }
+
+    /// The toolbar's values, typed from styles.css's `#toolbar`, `.tb-*`, and
+    /// `.btn-finish`, its `--toolbar-*` sizes, and its `--g*` greys and `--blue*`.
+    #[test]
+    fn the_toolbars_tokens_are_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `--toolbar-tabs-h: 24px; --toolbar-h: 52px`.
+        assert_eq!(TOOLBAR_TABS_HEIGHT, 24.0);
+        assert_eq!(TOOLBAR_PANELS_HEIGHT, 52.0);
+        // `.tb-tabs`: `padding-left: 8px; gap: 2px`.
+        assert_eq!(TOOLBAR_TABS_PADDING, 8.0);
+        assert_eq!(TOOLBAR_TABS_GAP, 2.0);
+        // `.tb-ws`: `padding: 0 10px 5px 4px; margin-right: 6px`.
+        assert_eq!(TOOLBAR_WORKSPACE_PADDING_LEFT, 4.0);
+        assert_eq!(TOOLBAR_WORKSPACE_PADDING_RIGHT, 10.0);
+        assert_eq!(TOOLBAR_WORKSPACE_PADDING_BOTTOM, 5.0);
+        assert_eq!(TOOLBAR_WORKSPACE_MARGIN, 6.0);
+        // `.tb-tab`: `padding: 0 10px; height: 22px`, `--r-sm` at its top; `letter-spacing:
+        // .5px` there, on `.tb-ws`, `.tb-label`, `.menu .mh`, and `.st-h`.
+        assert_eq!(TOOLBAR_TAB_HEIGHT, 22.0);
+        assert_eq!(TOOLBAR_TAB_PADDING, 10.0);
+        assert_eq!(TOOLBAR_TAB_CORNER_RADIUS, 4);
+        assert_eq!(CAPITALS_LETTER_SPACING, 0.5);
+        // `.tb-panels`: `padding: 0 6px`; `.tb-panel`: `padding: 4px 6px 0`; `.tb-row`:
+        // `gap: 1px`.
+        assert_eq!(TOOLBAR_PANELS_PADDING, 6.0);
+        assert_eq!(TOOLBAR_PANEL_PADDING_TOP, 4.0);
+        assert_eq!(TOOLBAR_PANEL_PADDING_SIDE, 6.0);
+        assert_eq!(TOOLBAR_BUTTON_GAP, 1.0);
+        // `.tb-btn`: 30 square, `--r-sm`.
+        assert_eq!(TOOLBAR_BUTTON_SIZE, 30.0);
+        assert_eq!(TOOLBAR_BUTTON_CORNER_RADIUS, 4);
+        // `.tb-label`: `font-size: 10px; line-height: 14px; gap: 2px; padding: 1px 4px;
+        // border-radius: 3px; margin-top: 1px`, its `svg` 8 square.
+        assert_eq!(TOOLBAR_LABEL_SIZE, 10.0);
+        assert_eq!(TOOLBAR_LABEL_LINE_HEIGHT, 14.0);
+        assert_eq!(TOOLBAR_LABEL_GAP, 2.0);
+        assert_eq!(TOOLBAR_LABEL_PADDING, Margin::symmetric(4, 1));
+        assert_eq!(TOOLBAR_LABEL_CORNER_RADIUS, 3);
+        assert_eq!(TOOLBAR_LABEL_MARGIN_TOP, 1.0);
+        assert_eq!(TOOLBAR_LABEL_ARROW_SIZE, 8.0);
+        // `.tb-finish`: `padding: 0 8px`; `.btn-finish`: `padding: 0 12px; gap: 6px`.
+        assert_eq!(TOOLBAR_FINISH_MARGIN, 8.0);
+        assert_eq!(TOOLBAR_FINISH_PADDING, 12.0);
+        assert_eq!(TOOLBAR_FINISH_GAP, 6.0);
+        for (name, color, hex) in [
+            // `#toolbar`: `--g100`, its `border-bottom` `--g250`; `.tb-tabs`' and
+            // `.tb-panel`'s borders, `--g200`; `.tb-ws`, `--g550` by a `--g250` border.
+            ("TOOLBAR_BG", TOOLBAR_BG, 0x0d0d0d),
+            ("TOOLBAR_BORDER", TOOLBAR_BORDER, 0x272626),
+            ("TOOLBAR_DIVIDER", TOOLBAR_DIVIDER, 0x212121),
+            ("TOOLBAR_WORKSPACE_TEXT", TOOLBAR_WORKSPACE_TEXT, 0x939090),
+            (
+                "TOOLBAR_WORKSPACE_BORDER",
+                TOOLBAR_WORKSPACE_BORDER,
+                0x272626,
+            ),
+            // `.tb-tab`, `--g550`; `:hover`, `--g800`; `.active`, `--g1000` on `--g200`;
+            // `.ctx`, `--blue-text` on `--blue`.
+            ("TOOLBAR_TAB_TEXT", TOOLBAR_TAB_TEXT, 0x939090),
+            ("TOOLBAR_TAB_HOVER_TEXT", TOOLBAR_TAB_HOVER_TEXT, 0xe0dfdf),
+            ("TOOLBAR_TAB_ACTIVE_TEXT", TOOLBAR_TAB_ACTIVE_TEXT, 0xffffff),
+            ("TOOLBAR_TAB_ACTIVE_BG", TOOLBAR_TAB_ACTIVE_BG, 0x212121),
+            (
+                "TOOLBAR_TAB_CONTEXT_TEXT",
+                TOOLBAR_TAB_CONTEXT_TEXT,
+                0xf0f2ff,
+            ),
+            ("TOOLBAR_TAB_CONTEXT_BG", TOOLBAR_TAB_CONTEXT_BG, 0x186add),
+            // `.tb-btn`, `--g750`; `:hover`, `--g1000` on `--g300`; `:disabled`, `--g400`.
+            ("TOOLBAR_BUTTON_ICON", TOOLBAR_BUTTON_ICON, 0xcfcfcf),
+            ("TOOLBAR_BUTTON_HOVER_BG", TOOLBAR_BUTTON_HOVER_BG, 0x2c2b2b),
+            (
+                "TOOLBAR_BUTTON_HOVER_ICON",
+                TOOLBAR_BUTTON_HOVER_ICON,
+                0xffffff,
+            ),
+            (
+                "TOOLBAR_BUTTON_DISABLED_ICON",
+                TOOLBAR_BUTTON_DISABLED_ICON,
+                0x646363,
+            ),
+            // `.tb-label`, `--g550`; `:hover`, `--g1000` on `--g250`.
+            ("TOOLBAR_LABEL_TEXT", TOOLBAR_LABEL_TEXT, 0x939090),
+            (
+                "TOOLBAR_LABEL_HOVER_TEXT",
+                TOOLBAR_LABEL_HOVER_TEXT,
+                0xffffff,
+            ),
+            ("TOOLBAR_LABEL_HOVER_BG", TOOLBAR_LABEL_HOVER_BG, 0x272626),
+            // `.btn-finish`: `--g1000` on `--blue`; `:hover`, `#2a78e8`.
+            ("TOOLBAR_FINISH_BG", TOOLBAR_FINISH_BG, 0x186add),
+            ("TOOLBAR_FINISH_TEXT", TOOLBAR_FINISH_TEXT, 0xffffff),
+            ("TOOLBAR_FINISH_HOVER_BG", TOOLBAR_FINISH_HOVER_BG, 0x2a78e8),
+        ] {
+            assert_eq!(color, opaque(hex), "{name}");
+        }
+    }
+
+    /// The browser's values, typed from styles.css's `.panel-title`, `.row`, `.tree-empty`,
+    /// and `.panel-body`, and its `--g*` greys, `--blue*`, and `--sk-*`.
+    #[test]
+    fn the_browsers_tokens_are_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `.panel-title`: `padding: 0 6px 0 var(--pad)`, `--pad: 12px`.
+        assert_eq!(BROWSER_TITLE_PADDING, 12.0);
+        // `.row`: `gap: 4px; padding-right: 6px`, `padding-left: 6 + depth * 18`.
+        assert_eq!(BROWSER_ROW_PADDING_LEFT, 6.0);
+        assert_eq!(BROWSER_ROW_PADDING_RIGHT, 6.0);
+        assert_eq!(BROWSER_ROW_GAP, 4.0);
+        assert_eq!(TREE_INDENT, 18.0);
+        assert_eq!(LIST_ITEM_HEIGHT, 24.0);
+        // `.row .caret`: 14 square, its `svg` 10; `.row .eye`: 18 square, `border-radius:
+        // 3px`.
+        assert_eq!(BROWSER_CARET_SIDE, 14.0);
+        assert_eq!(BROWSER_CARET_ICON, 10.0);
+        assert_eq!(BROWSER_EYE_SIDE, 18.0);
+        assert_eq!(BROWSER_EYE_CORNER_RADIUS, 3);
+        // `.row.hidden-obj .r-name, .row.hidden-obj .r-icon { opacity: .45 }`.
+        assert_eq!(BROWSER_HIDDEN_OPACITY, 0.45);
+        // `.tree-empty`: `padding: 2px 12px 6px calc(var(--pad) + 36px)`; `.panel-body`:
+        // `padding-bottom: 12px`.
+        assert_eq!(BROWSER_EMPTY_PADDING_LEFT, 48);
+        assert_eq!(BROWSER_EMPTY_PADDING_TOP, 2);
+        assert_eq!(BROWSER_EMPTY_PADDING_BOTTOM, 6);
+        assert_eq!(BROWSER_PADDING_BOTTOM, 12.0);
+        for (name, color, hex) in [
+            // `.row`, `--g700`; `:hover`, `--g800` on `--g250`; `.selected`, `--blue-text`
+            // on `--blue`.
+            ("TEXT_ROW", TEXT_ROW, 0xbfbfbf),
+            ("TEXT_ROW_HOVER", TEXT_ROW_HOVER, 0xe0dfdf),
+            ("BROWSER_ROW_HOVER_BG", BROWSER_ROW_HOVER_BG, 0x272626),
+            ("BROWSER_ROW_SELECTED_BG", BROWSER_ROW_SELECTED_BG, 0x186add),
+            ("ON_SELECTION", ON_SELECTION, 0xf0f2ff),
+            // `.row .caret`, `--g700`; `.r-icon`, `--g500`.
+            ("BROWSER_CARET", BROWSER_CARET, 0xbfbfbf),
+            ("ROW_ICON", ROW_ICON, 0x827f7f),
+            // `.row .eye`, `--g550`; `.off`, `--g400`; `:hover`, `--g1000` on `--g350`.
+            ("BROWSER_EYE", BROWSER_EYE, 0x939090),
+            ("BROWSER_EYE_OFF", BROWSER_EYE_OFF, 0x646363),
+            ("BROWSER_EYE_HOVER", BROWSER_EYE_HOVER, 0xffffff),
+            ("BROWSER_EYE_HOVER_BG", BROWSER_EYE_HOVER_BG, 0x525151),
+            // `.r-meta`, `.prefix`, and `.tree-empty`, `--g550`.
+            ("BROWSER_META", BROWSER_META, 0x939090),
+            ("BROWSER_PREFIX", BROWSER_PREFIX, 0x939090),
+            ("BROWSER_EMPTY", BROWSER_EMPTY, 0x939090),
+            // `.r-err` and `.row.err .r-name`, `--red`; `.r-warn`, `--orange`.
+            ("ERROR_TEXT", ERROR_TEXT, 0xff3865),
+            ("WARNING", WARNING, 0xff7a0c),
+            // `.prefix.under`, `--sk-under` (`--blue-soft`); `.over`, `--sk-over` (`--red`).
+            ("SKETCH_UNDER_DEFINED", SKETCH_UNDER_DEFINED, 0x7a95ff),
+            ("SKETCH_OVER_DEFINED", SKETCH_OVER_DEFINED, 0xff3865),
+        ] {
+            assert_eq!(color, opaque(hex), "{name}");
+        }
+    }
+
+    /// The timeline's values, typed from styles.css's `#timeline` and `.tl-*` rules, its
+    /// `--timeline-h`, `--r-sm`, and its `--g*`, `--blue*`, `--red*`, and `--orange` colours.
+    #[test]
+    fn the_timelines_tokens_are_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `#timeline`: `height: var(--timeline-h)` (40), `padding: 0 8px; gap: 8px`.
+        assert_eq!(TIMELINE_HEIGHT, 40.0);
+        assert_eq!(TIMELINE_PADDING, 8.0);
+        assert_eq!(TIMELINE_GAP, 8.0);
+        // `.tl-label`: `width: 68px`; `.tl-track`: `gap: 2px`; `.tl-item`: 30 square,
+        // `border-radius: var(--r-sm)` (4).
+        assert_eq!(TIMELINE_LABEL_WIDTH, 68.0);
+        assert_eq!(TIMELINE_ITEM_GAP, 2.0);
+        assert_eq!(TIMELINE_ITEM_SIZE, 30.0);
+        assert_eq!(TIMELINE_ITEM_CORNER_RADIUS, 4);
+        // `.err`/`.warn`: `inset 0 -2px 0`; `.suppressed`: `opacity: .35`, its strike
+        // `left: 5px; right: 5px; height: 1.5px; rotate(-35deg)`; `.queued`: `.45`.
+        assert_eq!(TIMELINE_MARK_LINE_WIDTH, 2.0);
+        assert_eq!(TIMELINE_SUPPRESSED_OPACITY, 0.35);
+        assert_eq!(TIMELINE_STRIKE_INSET, 5.0);
+        assert_eq!(TIMELINE_STRIKE_WIDTH, 1.5);
+        assert_eq!(TIMELINE_STRIKE_DEGREES, -35.0);
+        assert_eq!(TIMELINE_QUEUED_OPACITY, 0.45);
+        // `.building::before`: `inset: 2px; border: 2px`, `spin .7s`.
+        assert_eq!(TIMELINE_SPINNER_INSET, 2.0);
+        assert_eq!(TIMELINE_SPINNER_WIDTH, 2.0);
+        assert_eq!(TIMELINE_SPINNER_TURN_SECONDS, 0.7);
+        // `.badge`: `top: 1px; right: 1px; width: 9px`, ringed `0 0 0 1.5px var(--g150)`.
+        assert_eq!(TIMELINE_BADGE_SIZE, 9.0);
+        assert_eq!(TIMELINE_BADGE_INSET, 1.0);
+        assert_eq!(TIMELINE_BADGE_RING_WIDTH, 1.5);
+        // `.drop-before::before`: `left: -2px; top: 4px; bottom: 4px; width: 2px`.
+        assert_eq!(TIMELINE_DROP_OFFSET, 2.0);
+        assert_eq!(TIMELINE_DROP_INSET, 4.0);
+        assert_eq!(TIMELINE_DROP_WIDTH, 2.0);
+        // `.tl-empty`: `padding-left: 4px`; `.st-item`: `gap: 6px; padding: 0 8px`.
+        assert_eq!(TIMELINE_EMPTY_PADDING, 4.0);
+        assert_eq!(TIMELINE_SUMMARY_PADDING, 8.0);
+        assert_eq!(TIMELINE_SUMMARY_GAP, 6.0);
+        // `.tl-right`: `gap: 2px`.
+        assert_eq!(TIMELINE_SUMMARY_SPACING, 2.0);
+        for (name, color, hex) in [
+            // `#timeline`, `--g150`; `.tl-label`, `.tl-empty`, `.tl-right`, `--g550`.
+            ("BOTTOM_BAR_BG", BOTTOM_BAR_BG, 0x171717),
+            ("TIMELINE_LABEL", TIMELINE_LABEL, 0x939090),
+            ("TIMELINE_EMPTY", TIMELINE_EMPTY, 0x939090),
+            ("TIMELINE_SUMMARY", TIMELINE_SUMMARY, 0x939090),
+            // `.tl-item`, `--g750`; `:hover`, `--g1000` on `--g300`; `.selected`,
+            // `--blue-text` on `--blue`; `.sketch`, `--g600`.
+            ("TIMELINE_ITEM_ICON", TIMELINE_ITEM_ICON, 0xcfcfcf),
+            (
+                "TIMELINE_ITEM_HOVER_ICON",
+                TIMELINE_ITEM_HOVER_ICON,
+                0xffffff,
+            ),
+            ("TIMELINE_ITEM_HOVER_BG", TIMELINE_ITEM_HOVER_BG, 0x2c2b2b),
+            (
+                "TIMELINE_ITEM_SELECTED_ICON",
+                TIMELINE_ITEM_SELECTED_ICON,
+                0xf0f2ff,
+            ),
+            (
+                "TIMELINE_ITEM_SELECTED_BG",
+                TIMELINE_ITEM_SELECTED_BG,
+                0x186add,
+            ),
+            ("TIMELINE_SKETCH_ICON", TIMELINE_SKETCH_ICON, 0x9f9f9f),
+            // `.err`, `--red`; `.warn`, `--orange`; `.err-text`, `--red`.
+            ("TIMELINE_ERROR", TIMELINE_ERROR, 0xff3865),
+            ("TIMELINE_WARNING", TIMELINE_WARNING, 0xff7a0c),
+            ("TIMELINE_SUMMARY_ERRORS", TIMELINE_SUMMARY_ERRORS, 0xff3865),
+            // `.building::before`, `--g1000`.
+            ("TIMELINE_SPINNER", TIMELINE_SPINNER, 0xffffff),
+            // `.badge.err`, `--red-fill`; `.badge.warn`, `--orange`; their ring `--g150`.
+            ("TIMELINE_BADGE_ERROR", TIMELINE_BADGE_ERROR, 0xab0116),
+            ("TIMELINE_BADGE_WARNING", TIMELINE_BADGE_WARNING, 0xff7a0c),
+            ("TIMELINE_BADGE_RING", TIMELINE_BADGE_RING, 0x171717),
+            // `.drop-before::before`, `--blue-hi`.
+            ("TIMELINE_DROP", TIMELINE_DROP, 0x4676ff),
+        ] {
+            assert_eq!(color, opaque(hex), "{name}");
         }
     }
 

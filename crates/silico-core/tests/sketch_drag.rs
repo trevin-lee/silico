@@ -297,7 +297,7 @@ fn constraints_in_conflict_refuse_the_drag_naming_them_by_id() {
     assert_eq!(e.code(), ErrorCode::OverConstrained);
     assert_eq!(
         e.message(),
-        "the sketch's constraints conflict: these 2 can't all hold"
+        "the sketch's constraints conflict: the ones named can't all hold"
     );
     assert_eq!(e.elements(), ["ka000009", "ka00000c"]);
     assert_eq!(e.feature(), Some("s0000001"));
