@@ -53,6 +53,7 @@ impl Dim {
             sketch: &self.sketch,
             tolerance: self.tolerance,
             automatic_relations: true,
+            construction: false,
         };
         let outcome = self
             .tool
@@ -1594,6 +1595,7 @@ fn a_dimension_placed_before_a_read_shows_it_keeps_its_id_taken() {
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Lowest;
@@ -1622,6 +1624,7 @@ fn another_sketch_starts_the_tool_afresh() {
         sketch: &d.sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     d.tool.handle(
         &context,
@@ -1682,6 +1685,7 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
@@ -2678,6 +2682,7 @@ fn another_sketch_forgets_the_placement() {
         sketch: &d.sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     d.tool.handle(
         &context,
@@ -2773,6 +2778,7 @@ fn settle_takes_a_read_with_no_event() {
         sketch: &d.sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let out = d.tool.settle(&context, &under());
     assert_eq!(out, Outcome::default());
@@ -2786,6 +2792,7 @@ fn settle_takes_a_read_with_no_event() {
         sketch: &newer,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let out = d.tool.settle(&context, &under());
     assert_eq!(out.message, Some(Message::DimensionChanged));
@@ -2849,6 +2856,192 @@ fn level_is_within_a_tenth_of_a_micrometre_not_at_it() {
     }
 }
 
+// --- A press that ends with no release (DimensionEvent::Cancel) ----------------------------
+
+#[test]
+fn a_cancelled_press_picks_nothing_and_what_is_picked_stays() {
+    // p (10, 10) picked; a press on q (40, 30), alone or moved off it, cancelled: q isn't
+    // picked, by the cancel or by a release after it (whose press was cancelled), p stays
+    // picked, and the pointer is where it was before the press. Then q clicked and the
+    // dimension placed above the box: `distance_x` p to q, 40 − 10 = 30, as a twin that
+    // never saw the press places it.
+    let p = r("p0000001");
+    let q = r("p0000002");
+    let moves: [&[Xy]; 2] = [&[], &[[42.0, 33.0], [60.0, 55.0]]];
+    for moves in moves {
+        let mut d = Dim::new(two_points());
+        d.click(10.0, 10.0).to(40.0, 30.0);
+        let (preview, busy) = (d.tool.preview().clone(), d.tool.busy());
+        d.send(DimensionEvent::Press([40.0, 30.0]));
+        for &m in moves {
+            d.to(m[0], m[1]);
+        }
+        assert_eq!(
+            d.send(DimensionEvent::Cancel),
+            Outcome::default(),
+            "{moves:?}"
+        );
+        assert_eq!(d.tool.preview(), &preview, "{moves:?}");
+        assert_eq!(d.tool.busy(), busy, "{moves:?}");
+        d.send(DimensionEvent::Release([40.0, 30.0]));
+        assert_eq!(d.tool.preview().picks, vec![p.clone()], "{moves:?}");
+        d.click(40.0, 30.0).click(25.0, 45.0).escape();
+
+        let mut twin = Dim::new(two_points());
+        twin.click(10.0, 10.0).to(40.0, 30.0);
+        twin.send(DimensionEvent::Release([40.0, 30.0]));
+        twin.click(40.0, 30.0).click(25.0, 45.0).escape();
+        assert_eq!(
+            twin.placed(),
+            Form::DistanceX {
+                a: p.clone(),
+                b: q.clone(),
+                value: mm("30"),
+                driving: true
+            }
+        );
+        assert_eq!(d.made, twin.made, "{moves:?}");
+        assert_eq!(d.messages, twin.messages, "{moves:?}");
+        assert_eq!(d.tool.preview(), twin.tool.preview(), "{moves:?}");
+        assert!(!d.left);
+
+        // Not cancelled, the release would have picked q.
+        let mut kept = Dim::new(two_points());
+        kept.click(10.0, 10.0).to(40.0, 30.0);
+        kept.send(DimensionEvent::Press([40.0, 30.0]));
+        for &m in moves {
+            kept.to(m[0], m[1]);
+        }
+        kept.send(DimensionEvent::Release([40.0, 30.0]));
+        assert_eq!(kept.tool.preview().picks, vec![p.clone(), q.clone()]);
+    }
+}
+
+#[test]
+fn a_cancel_with_no_press_in_progress_changes_nothing() {
+    // p clicked (its press released), the pointer moved on to (50, 50): a cancel has no
+    // press to put back, so the pointer stays at (50, 50) and p picked.
+    let mut d = Dim::new(two_points());
+    d.click(10.0, 10.0).to(50.0, 50.0);
+    let preview = d.tool.preview().clone();
+    assert_eq!(d.send(DimensionEvent::Cancel), Outcome::default());
+    assert_eq!(d.tool.preview(), &preview);
+    assert_eq!(d.tool.preview().pointer, Some([50.0, 50.0]));
+    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    // The Modify box open and typed in; a press (which the box ignores) cancelled: the box
+    // and its text stay, and Enter places what was typed.
+    d.click(40.0, 30.0).click(25.0, 45.0).typed("12");
+    d.send(DimensionEvent::Press([70.0, 70.0]));
+    assert_eq!(d.send(DimensionEvent::Cancel), Outcome::default());
+    assert_eq!(d.modify().as_deref(), Some("12"));
+    d.enter();
+    assert_eq!(
+        d.placed(),
+        Form::DistanceX {
+            a: r("p0000001"),
+            b: r("p0000002"),
+            value: mm("12"),
+            driving: true
+        }
+    );
+    // Esc mid-press undoes the last pick; a cancel after it puts nothing back.
+    let mut d = Dim::new(two_points());
+    d.click(10.0, 10.0).to(40.0, 30.0);
+    d.send(DimensionEvent::Press([40.0, 30.0]));
+    d.escape();
+    d.send(DimensionEvent::Cancel);
+    assert!(d.tool.preview().picks.is_empty());
+    assert!(!d.tool.busy());
+}
+
+#[test]
+fn a_cancel_puts_back_what_was_before_the_first_press_and_nothing_once_forgotten() {
+    // Two presses on q (40, 30) with no release between (the first's lost), then a cancel:
+    // as before the first, no press is down, so a release after it picks nothing.
+    let mut d = Dim::new(two_points());
+    d.to(70.0, 70.0);
+    d.send(DimensionEvent::Press([40.0, 30.0]));
+    d.send(DimensionEvent::Press([40.0, 30.0]));
+    d.send(DimensionEvent::Cancel);
+    assert_eq!(d.tool.preview().pointer, Some([70.0, 70.0]));
+    d.send(DimensionEvent::Release([40.0, 30.0]));
+    assert!(d.tool.preview().picks.is_empty());
+    assert!(!d.tool.busy());
+    // A press, then everything forgotten (`forget_pending`, as another sketch does): no
+    // press to cancel, so the pointer stays where the press put it.
+    let mut d = Dim::new(two_points());
+    d.to(70.0, 70.0);
+    d.send(DimensionEvent::Press([40.0, 30.0]));
+    d.tool.forget_pending();
+    d.send(DimensionEvent::Cancel);
+    assert_eq!(d.tool.preview().pointer, Some([40.0, 30.0])); // A cancel, a move, and a cancel again: the second has no press to put back, so the
+    // pointer stays where the move put it.
+    let mut d = Dim::new(two_points());
+    d.to(70.0, 70.0);
+    d.send(DimensionEvent::Press([40.0, 30.0]));
+    d.send(DimensionEvent::Cancel);
+    d.to(65.0, 15.0);
+    d.send(DimensionEvent::Cancel);
+    assert_eq!(d.tool.preview().pointer, Some([65.0, 15.0]));
+}
+
+#[test]
+fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
+    // SD7: the add's read flags the dimension, so it's offered. A press on B, cancelled:
+    // the offer stays open and holds the tool, a release after it picks nothing, and once
+    // the app dismisses it the next dimension is placed.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).escape();
+    let k = d.tool.placement().unwrap().constraint;
+    d.states.state = SketchState::OverDefined;
+    d.states
+        .constraints
+        .insert(k.clone(), ConstraintState::Conflicting);
+    d.to(15.0, 15.0);
+    let open = d.tool.open_offer().cloned().unwrap();
+    d.send(DimensionEvent::Press([15.0, 15.0]));
+    d.send(DimensionEvent::Cancel);
+    assert_eq!(d.tool.open_offer(), Some(&open));
+    assert!(d.tool.busy());
+    d.send(DimensionEvent::Release([15.0, 15.0]));
+    assert!(d.tool.preview().picks.is_empty());
+    d.tool.dismiss_offer();
+    d.click(15.0, 15.0).click(30.0, 30.0);
+    assert_eq!(d.modify().as_deref(), Some("14.142136"));
+    // A placement the core hasn't answered: a cancelled press leaves it unsettled, so the
+    // next placing click waits for it.
+    let sketch = corner();
+    let sketch_id = sketch_id();
+    let context = Context {
+        sketch_id: &sketch_id,
+        revision: Revision::OPENED,
+        sketch: &sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+        construction: false,
+    };
+    let mut tool = SmartDimension::new();
+    let mut ids = Counter(0);
+    let mut send = |tool: &mut SmartDimension, event: DimensionEvent| {
+        tool.handle(&context, &under(), &mut ids, event)
+    };
+    for at in [[20.0, 10.0], [20.0, 30.0]] {
+        send(&mut tool, DimensionEvent::Press(at));
+        send(&mut tool, DimensionEvent::Release(at));
+    }
+    assert!(send(&mut tool, DimensionEvent::Escape).add.is_some());
+    send(&mut tool, DimensionEvent::Press([15.0, 15.0]));
+    assert_eq!(send(&mut tool, DimensionEvent::Cancel), Outcome::default());
+    assert!(tool.busy());
+    for at in [[15.0, 15.0], [30.0, 30.0]] {
+        send(&mut tool, DimensionEvent::Press(at));
+        let out = send(&mut tool, DimensionEvent::Release(at));
+        if at == [30.0, 30.0] {
+            assert_eq!(out.message, Some(Message::Solving));
+        }
+    }
+}
+
 // --- Review #345, round 3 --------------------------------------------------------------
 
 #[test]
@@ -2860,7 +3053,7 @@ fn a_dimension_that_leaves_a_solved_sketchs_freedoms_where_they_were_is_offered(
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
-    assert_eq!(placement.dofs, 1000);
+    assert_eq!(placement.kind, PlacementKind::Add { dofs: 1000 });
     let made = placement.revision;
     let read = |dofs: i32, refused: bool| {
         let mut read = read_of(
@@ -2924,6 +3117,7 @@ fn a_placement_not_yet_answered_holds_the_next() {
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter(0);
@@ -3014,6 +3208,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             sketch: &sketch,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         let mut tool = SmartDimension::new();
         let mut ids = Counter(0);
@@ -3034,6 +3229,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             sketch: &after,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         tool.settle(&context, &states);
         let placement = tool.placement().unwrap();
@@ -3214,6 +3410,7 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
         sketch: &d.sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SmartDimension::new();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
@@ -3235,7 +3432,7 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
             read: Revision::OPENED,
             before: SketchState::UnderDefined,
             flagged: BTreeSet::new(),
-            dofs: 0,
+            kind: PlacementKind::Add { dofs: 0 },
         })
     );
     tool.refused(token);
@@ -3443,6 +3640,435 @@ fn forget_pending_forgets_the_placement_and_what_is_under_way() {
     assert!(d.tool.preview().picks.is_empty());
 }
 
+// --- SD7: an edit of a dimension's value -----------------------------------------------
+
+/// The corner with A's `length`, 25, placed as t0000101 (its add revision 2), then its
+/// value edited (`set_field`, revision 3) on revision 2's read, the sketch then in `before`
+/// with `flagged` flagged, its solve `refused` or not: the sketch and the edit's placement.
+fn edited(before: SketchState, flagged: &[&str], refused: bool) -> (Sketch, Placement) {
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
+    let added = d.tool.placement().unwrap();
+    assert_eq!(added.constraint, id("t0000101"));
+    let edit = Placement {
+        revision: added.revision.next().unwrap(),
+        read: added.revision,
+        before,
+        flagged: flagged.iter().map(|k| id(k)).collect(),
+        kind: PlacementKind::Edit {
+            before_refused: refused,
+        },
+        ..added
+    };
+    (d.sketch, edit)
+}
+
+/// A read of `members` with each constraint in its state, the sketch in `of`, with `dofs`
+/// freedoms, its solve refused as M3.3 refuses it: `solve_failed` with no solution,
+/// `over_constrained` where a constraint conflicts; an over defined sketch with only
+/// redundant ones (a dimension that agrees) solved.
+fn edit_read(
+    members: &Sketch,
+    constraints: &[(&str, ConstraintState)],
+    of: SketchState,
+    dofs: i32,
+) -> SketchRead {
+    let mut read = read_with(members.clone(), constraints, of);
+    read.states.dofs = dofs;
+    let conflict = constraints
+        .iter()
+        .any(|(_, s)| *s == ConstraintState::Conflicting);
+    read.states.solve_problem = if of == SketchState::NoSolution {
+        Some(Error::new(ErrorCode::SolveFailed, "no solution"))
+    } else if conflict {
+        Some(Error::new(ErrorCode::OverConstrained, "conflict"))
+    } else {
+        None
+    };
+    read
+}
+
+#[test]
+fn an_edit_that_leaves_the_sketch_as_it_was_offers_nothing() {
+    // A fully defined sketch (0 freedoms), its dimension's value changed: the edit's read is
+    // fully defined, 0 freedoms, nothing flagged. An add would be dependent there (freedoms
+    // not lowered: offered); an edit adds no equation, so nothing is offered. Likewise an
+    // under defined sketch left at 3 freedoms, and a value that frees one (degenerate
+    // geometry, 1 freedom from 0): freedoms are never an edit's measure.
+    let cases = [
+        (SketchState::FullyDefined, SketchState::FullyDefined, 0),
+        (SketchState::FullyDefined, SketchState::FullyDefined, 1),
+        (SketchState::UnderDefined, SketchState::UnderDefined, 3),
+    ];
+    for (before, after, dofs) in cases {
+        let (sketch, edit) = edited(before, &[], false);
+        let read = edit_read(
+            &sketch,
+            &[("t0000101", ConstraintState::Satisfied)],
+            after,
+            dofs,
+        );
+        assert_eq!(
+            offer(&read, edit.revision, &edit),
+            None,
+            "{before:?} {dofs}"
+        );
+        // The same read after an add on a read with those freedoms: dependent, offered.
+        let add = Placement {
+            kind: PlacementKind::Add { dofs },
+            ..edit.clone()
+        };
+        assert!(
+            offer(&read, edit.revision, &add).is_some(),
+            "{before:?} {dofs}"
+        );
+    }
+}
+
+#[test]
+fn an_edit_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_cancel() {
+    // Fully defined, nothing flagged; the edit's read over defined, or with no solution (its
+    // solve refused), nothing flagged either, so only the state offers it. Driven and Cancel
+    // are made against the edit's revision, 3: Cancel undoes the edit.
+    let three = Revision::OPENED.next().unwrap().next().unwrap();
+    for after in [SketchState::OverDefined, SketchState::NoSolution] {
+        let (sketch, edit) = edited(SketchState::FullyDefined, &[], false);
+        assert_eq!(edit.revision, three);
+        let read = edit_read(
+            &sketch,
+            &[("t0000101", ConstraintState::Satisfied)],
+            after,
+            0,
+        );
+        let offered = offer(&read, three, &edit).unwrap();
+        assert_eq!(offered.constraint, id("t0000101"), "{after:?}");
+        assert_eq!(offered.state, ConstraintState::Satisfied, "{after:?}");
+        assert_eq!(offered.sketch_state, after);
+        assert_eq!(
+            offered.request(OfferChoice::Driven),
+            Some(OfferRequest::SetField {
+                revision: three,
+                feature: sketch_id(),
+                field: "constraints.t0000101.driving".to_owned(),
+                value: json::read(b"false")
+                    .map(|mut n| {
+                        json::unplace(&mut n);
+                        n
+                    })
+                    .unwrap(),
+            })
+        );
+        assert_eq!(offered.request(OfferChoice::Leave), None);
+        assert_eq!(
+            offered.request(OfferChoice::Cancel),
+            Some(OfferRequest::Undo {
+                revision: three,
+                to: None
+            })
+        );
+    }
+    // Over defined or unsolvable before the edit, k0000009 flagged (redundant where the
+    // sketch solved, conflicting where it was refused), and flagged so after, nothing newly:
+    // over defined by a dimension that agrees (solved) then no solution (refused) is the
+    // edit's doing, offered. A refused solve before (a conflict, no solution), or a solved
+    // one after: not.
+    for (before, before_refused, after, offered) in [
+        (
+            SketchState::OverDefined,
+            false,
+            SketchState::OverDefined,
+            false,
+        ),
+        (
+            SketchState::OverDefined,
+            false,
+            SketchState::NoSolution,
+            true,
+        ),
+        (
+            SketchState::OverDefined,
+            true,
+            SketchState::OverDefined,
+            false,
+        ),
+        (
+            SketchState::OverDefined,
+            true,
+            SketchState::NoSolution,
+            false,
+        ),
+        (
+            SketchState::NoSolution,
+            true,
+            SketchState::OverDefined,
+            false,
+        ),
+        (
+            SketchState::NoSolution,
+            true,
+            SketchState::NoSolution,
+            false,
+        ),
+    ] {
+        let (sketch, edit) = edited(before, &["k0000009"], before_refused);
+        let read = edit_read(
+            &sketch,
+            &[
+                ("t0000101", ConstraintState::Satisfied),
+                ("k0000009", ConstraintState::Redundant),
+            ],
+            after,
+            0,
+        );
+        assert_eq!(
+            offer(&read, three, &edit).is_some(),
+            offered,
+            "{before:?} {before_refused} {after:?}"
+        );
+    }
+    // A redundant t0000101 that agrees (over defined, solved, it flagged), edited to
+    // disagree: over defined still, it flagged still, now conflicting, the solve refused.
+    // Neither the state's word nor the flags are new; the refusal is: offered.
+    let (sketch, edit) = edited(SketchState::OverDefined, &["t0000101"], false);
+    let disagrees = edit_read(
+        &sketch,
+        &[("t0000101", ConstraintState::Conflicting)],
+        SketchState::OverDefined,
+        0,
+    );
+    assert!(disagrees.states.solve_problem.is_some());
+    assert_eq!(
+        offer(&disagrees, three, &edit).map(|o| (o.state, o.sketch_state)),
+        Some((ConstraintState::Conflicting, SketchState::OverDefined))
+    );
+    // Edited to another value that agrees: solved, as before: not.
+    let agrees = edit_read(
+        &sketch,
+        &[("t0000101", ConstraintState::Redundant)],
+        SketchState::OverDefined,
+        0,
+    );
+    assert_eq!(offer(&agrees, three, &edit), None);
+}
+
+#[test]
+fn an_edit_that_newly_flags_a_constraint_is_offered() {
+    // Under defined, nothing flagged; the edit's read flags a relation redundant, the sketch
+    // still under defined at the same 3 freedoms: offered. Over defined before by k0000009,
+    // the edit's read flags the dimension too: offered, though the state isn't new; k0000009
+    // alone, as before: not.
+    let (sketch, edit) = edited(SketchState::UnderDefined, &[], false);
+    let read = edit_read(
+        &sketch,
+        &[
+            ("t0000101", ConstraintState::Satisfied),
+            ("k0000009", ConstraintState::Redundant),
+        ],
+        SketchState::UnderDefined,
+        3,
+    );
+    let offered = offer(&read, edit.revision, &edit).unwrap();
+    assert_eq!(offered.constraint, id("t0000101"));
+    assert_eq!(offered.state, ConstraintState::Satisfied);
+    // k0000009 conflicting before: the solve refused.
+    let (sketch, edit) = edited(SketchState::OverDefined, &["k0000009"], true);
+    let flags_it = edit_read(
+        &sketch,
+        &[
+            ("t0000101", ConstraintState::Conflicting),
+            ("k0000009", ConstraintState::Conflicting),
+        ],
+        SketchState::OverDefined,
+        0,
+    );
+    assert_eq!(
+        offer(&flags_it, edit.revision, &edit).map(|o| o.state),
+        Some(ConstraintState::Conflicting)
+    );
+    let same = edit_read(
+        &sketch,
+        &[
+            ("t0000101", ConstraintState::Satisfied),
+            ("k0000009", ConstraintState::Conflicting),
+        ],
+        SketchState::OverDefined,
+        0,
+    );
+    assert_eq!(offer(&same, edit.revision, &edit), None);
+    // With another change between the edit's read and the edit, the edit is judged by its
+    // dimension's own state, as an add is: flagged, offered; satisfied, not.
+    let between = Placement {
+        revision: edit.revision.next().unwrap(),
+        ..edit
+    };
+    assert!(offer(&flags_it, between.revision, &between).is_some());
+    assert_eq!(offer(&same, between.revision, &between), None);
+    // But an edit's dimension flagged already in the read before: not offered again,
+    // whichever client's change came between.
+    let flagged_before = Placement {
+        flagged: [id("k0000009"), id("t0000101")].into_iter().collect(),
+        ..between
+    };
+    assert_eq!(offer(&flags_it, between.revision, &flagged_before), None);
+    // An add's is judged by its state alone, as before: offered.
+    let added = Placement {
+        kind: PlacementKind::Add { dofs: 0 },
+        ..flagged_before
+    };
+    assert!(offer(&flags_it, between.revision, &added).is_some());
+}
+
+// --- The Modify box's reading, for a placed dimension's edit too ---------------------
+
+/// Each dimension a document holds, with its current value: every length kind at 7 mm,
+/// the angle at 45°.
+fn dimensions() -> Vec<Form> {
+    let v = mm("7");
+    vec![
+        Form::Length {
+            line: r("n0000001"),
+            value: v,
+            driving: true,
+        },
+        Form::Distance {
+            a: r("p0000001"),
+            b: r("p0000002"),
+            value: v,
+            driving: true,
+        },
+        Form::DistanceX {
+            a: r("p0000001"),
+            b: r("p0000002"),
+            value: v,
+            driving: true,
+        },
+        Form::DistanceY {
+            a: r("p0000001"),
+            b: r("p0000002"),
+            value: v,
+            driving: false,
+        },
+        Form::PointLineDistance {
+            point: r("p0000001"),
+            line: r("n0000001"),
+            value: v,
+            side: LineSide::Right,
+            driving: true,
+        },
+        Form::Radius {
+            curve: r("k0000001"),
+            value: v,
+            driving: true,
+        },
+        Form::Diameter {
+            curve: r("k0000001"),
+            value: v,
+            driving: true,
+        },
+        Form::Angle {
+            a: r("n0000001"),
+            b: r("n0000002"),
+            reversed: true,
+            value: deg("45"),
+            driving: true,
+        },
+    ]
+}
+
+/// The refusal's words, for a value refused.
+fn refusal(read: Result<TypedValue, Message>) -> String {
+    match read {
+        Err(Message::ValueRefused(error)) => error.message().to_owned(),
+        other => panic!("not refused as a value: {other:?}"),
+    }
+}
+
+#[test]
+fn an_edit_box_reads_each_dimensions_value_as_the_document_does() {
+    for form in dimensions() {
+        let angle = matches!(form, Form::Angle { .. });
+        // 12.5, read as the form's quantity, whatever its current value, and written for
+        // `set_field` as the document writes it.
+        let read = read_typed(&form, "12.5").unwrap();
+        let want = if angle {
+            TypedValue::Angle(deg("12.5"))
+        } else {
+            TypedValue::Length(mm("12.5"))
+        };
+        assert_eq!(read, want, "{form:?}");
+        assert_eq!(
+            read.node(),
+            json::Node {
+                at: json::At::UNPLACED,
+                value: json::Value::Number("12.5".to_owned()),
+            },
+            "{form:?}"
+        );
+        // An exponent is read exactly and written out plainly: 1.05e1 is 10.5.
+        assert_eq!(
+            read_typed(&form, " 1.05e1 ").unwrap().node().value,
+            json::Value::Number("10.5".to_owned()),
+            "{form:?}"
+        );
+        // Words, JSON's other values, and units are no number.
+        for text in ["abc", "true", "\"5\"", "null", "12.5 mm", ""] {
+            assert_eq!(
+                read_typed(&form, text),
+                Err(Message::NotANumber),
+                "{form:?} {text:?}"
+            );
+        }
+        // Past the quantity's decimals: a length's 6 (nanometres), an angle's 9
+        // (nanodegrees); seven decimals are an angle's to hold.
+        if angle {
+            assert_eq!(
+                read_typed(&form, "0.0000001").unwrap(),
+                TypedValue::Angle(Angle::from_ndeg(100))
+            );
+            assert!(
+                refusal(read_typed(&form, "0.0000000001"))
+                    .contains("0.0000000001 has more than 9 decimals"),
+                "{form:?}"
+            );
+        } else {
+            assert!(
+                refusal(read_typed(&form, "0.0000001"))
+                    .contains("0.0000001 has more than 6 decimals"),
+                "{form:?}"
+            );
+        }
+        // Past what a document holds, i64::MAX units: 9223372036854.775807 mm, or
+        // 9223372036.854775807°. 1e10 is a length's to hold, too large for an angle; 1e13
+        // too large for either.
+        if angle {
+            assert!(refusal(read_typed(&form, "1e10")).contains("1e10 is too large"));
+        } else {
+            assert_eq!(
+                read_typed(&form, "1e10").unwrap(),
+                TypedValue::Length(Length::from_nm(10_000_000_000_000_000))
+            );
+        }
+        assert!(
+            refusal(read_typed(&form, "1e13")).contains("1e13 is too large"),
+            "{form:?}"
+        );
+        // A refused number of 24 characters is repeated to its first 20.
+        assert!(
+            refusal(read_typed(&form, "0.0000000000000000000001"))
+                .starts_with("0.000000000000000000… has more than"),
+            "{form:?}"
+        );
+    }
+}
+
+#[test]
+fn a_form_that_isnt_a_dimension_reads_no_number() {
+    let horizontal = Form::Horizontal {
+        line: r("n0000001"),
+    };
+    assert_eq!(read_typed(&horizontal, "12.5"), Err(Message::NotANumber));
+}
+
 // --- Any events at all -----------------------------------------------------------------
 
 mod property {
@@ -3509,6 +4135,7 @@ mod property {
             2 => Just(DimensionEvent::Escape),
             2 => Just(DimensionEvent::Enter),
             2 => text().prop_map(DimensionEvent::Typed),
+            1 => Just(DimensionEvent::Cancel),
         ]
     }
 

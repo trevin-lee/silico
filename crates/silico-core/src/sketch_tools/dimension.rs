@@ -44,7 +44,8 @@
 //! - **The Modify box** opens on placing, holding the measured value rounded to the
 //!   nanometre (or nanodegree), as the document writes it. It takes plain numbers only, read
 //!   as the document reads a value (SD9): a JSON number, at most the quantity's decimals, no
-//!   units, arithmetic, or expressions. Enter places the dimension, `driving: true`, with the
+//!   units, arithmetic, or expressions ([`read_typed`], which the app's box for editing a
+//!   placed dimension reads with too). Enter places the dimension, `driving: true`, with the
 //!   value typed (SD2); one the reader or the gate refuses is said, and the box stays open.
 //!   Esc skips the box: the dimension is placed with the measured value, rounded by the core
 //!   (SD2); if the gate refuses that, nothing is placed, and the box closes saying why. While
@@ -62,6 +63,14 @@
 //!   read has come with no offer, or, with one ([`open_offer`](SmartDimension::open_offer)),
 //!   until it's released (see `open_offer`). The app gives the tool each read
 //!   ([`settle`](SmartDimension::settle)), so it settles without a pointer event.
+//!   A dimension's value edited (`set_field`, M5.0 section 9: a dimension "placed or edited"
+//!   that over-defines is applied and offered the three) is judged by [`offer`] too, as a
+//!   [`PlacementKind::Edit`]: an edit adds no equation, so the freedoms say nothing of it,
+//!   and only a newly flagged constraint, a newly over defined or unsolvable sketch, or a
+//!   solved sketch's solve newly refused offers it. SolidWorks' help gives the prompt only
+//!   "when you add an over defining dimension", and says nothing of a value changed to
+//!   over-define (docs/study/smart-dimension.md, §8); Silico applies the edit (SD7) and
+//!   offers the same three.
 //!
 //! Adds are tracked as the sketch tools' are ([`super::SketchTool`]): each with a token the
 //! viewport answers with the revision it made, or its refusal.
@@ -112,6 +121,17 @@ pub enum DimensionEvent {
     Enter,
     /// The Modify box's text, whole, as it now reads.
     Typed(String),
+    /// The press in progress ended without a release (focus lost, a navigation tool taking
+    /// the drag, the tab hidden): dropped as if it had never happened, by
+    /// [`Event::Cancel`](super::Event::Cancel)'s rule. What the press changed goes back to
+    /// what it was before it (that a press is down, and where the pointer was): the picks,
+    /// the lock, and the Modify box, which a press doesn't change, stay. The press in
+    /// progress is the first since the last event that wasn't a press or a move. Otherwise
+    /// it's what [`settle`](SmartDimension::settle) is: the read is taken, as with every
+    /// event, so the last placement's offer (SD7) and whether it's settled are what that
+    /// read makes them. It adds nothing, and leaves nothing (`left` false). With no press in
+    /// progress, it changes nothing a read doesn't.
+    Cancel,
 }
 
 /// What the viewport draws for Smart Dimension.
@@ -134,21 +154,36 @@ pub struct DimensionPreview {
     pub modify: Option<String>,
 }
 
-/// A dimension Smart Dimension placed, once the core answered its add: the sketch, the
-/// constraint's ID, the revision the add made, and, of the read it was placed on, its
+/// A dimension placed, or its value edited, once the core answered the change: the sketch,
+/// the constraint's ID, the revision the change made, and, of the read it was made on, its
 /// revision, the sketch's state and the constraints it flagged (conflicting, redundant, or
-/// partially redundant), and its degrees of freedom.
+/// partially redundant), and which change it was, with what [`offer`] judges it by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
     pub sketch: FeatureId,
     pub constraint: ElementId,
     pub revision: Revision,
-    /// The revision of the read it was placed on.
+    /// The revision of the read it was made on.
     pub read: Revision,
     pub before: SketchState,
     pub flagged: BTreeSet<ElementId>,
-    /// The read's degrees of freedom.
-    pub dofs: i32,
+    pub kind: PlacementKind,
+}
+
+/// Which change a [`Placement`] is, which decides whether [`offer`] counts freedoms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlacementKind {
+    /// The dimension added (`sketch_add`, as Smart Dimension places it), on a read with
+    /// `dofs` degrees of freedom. A driving dimension adds an equation, so a solved add that
+    /// leaves the freedoms where they were (or higher) is dependent, and offered.
+    Add { dofs: i32 },
+    /// The dimension's value edited (`set_field` of its `value`), on a read whose solve was
+    /// refused or not (`before_refused`: its `solve_problem` there). An edit adds no
+    /// equation, so the freedoms say nothing of it: it's offered only where it flags a
+    /// constraint the read before didn't, takes the sketch to over defined or no solution,
+    /// or takes a solved sketch to a refused solve that's either (a redundant dimension that
+    /// agreed edited to disagree, flagged before and after).
+    Edit { before_refused: bool },
 }
 
 /// Smart Dimension, between events. Not `Clone`, as a sketch tool isn't.
@@ -162,6 +197,16 @@ pub struct SmartDimension {
     modify: Option<Modify>,
     placed: Option<Placed>,
     preview: DimensionPreview,
+    /// What the press in progress changed, as it was before it, for
+    /// [`DimensionEvent::Cancel`] to put back: none with no press in progress.
+    before_press: Option<BeforePress>,
+}
+
+/// Smart Dimension before a press: whether a press was down, and where the pointer was.
+#[derive(Debug, Clone, Copy)]
+struct BeforePress {
+    pressed: bool,
+    pointer: Option<Xy>,
 }
 
 /// The Modify box, open.
@@ -212,7 +257,7 @@ impl Placed {
             read: self.read,
             before: self.before,
             flagged: self.flagged.clone(),
-            dofs: self.dofs,
+            kind: PlacementKind::Add { dofs: self.dofs },
         })
     }
 }
@@ -396,6 +441,7 @@ impl SmartDimension {
             modify: None,
             placed: None,
             preview: DimensionPreview::default(),
+            before_press: None,
         }
     }
 
@@ -468,12 +514,13 @@ impl SmartDimension {
         self.placed.as_ref()?.placement(self.adds.sketch()?)
     }
 
-    /// The tool afresh: nothing picked, no box, no lock.
+    /// The tool afresh: nothing picked, no box, no lock, no press to cancel.
     fn restart(&mut self) {
         self.picks.clear();
         self.lock = None;
         self.pressed = false;
         self.modify = None;
+        self.before_press = None;
     }
 
     /// `event` against `context`, whose read gives the sketch the states `states`: what it
@@ -556,6 +603,36 @@ impl SmartDimension {
             infer: true,
             woken: &[],
         };
+        let event = match event {
+            Some(DimensionEvent::Cancel) => {
+                if let Some(before) = self.before_press.take() {
+                    self.pressed = before.pressed;
+                    self.pointer = before.pointer;
+                }
+                // The rest is the read's, as `settle` takes it.
+                None
+            }
+            Some(DimensionEvent::Press(_)) => {
+                if self.before_press.is_none() {
+                    self.before_press = Some(BeforePress {
+                        pressed: self.pressed,
+                        pointer: self.pointer,
+                    });
+                }
+                event
+            }
+            Some(DimensionEvent::Move(_)) | None => event,
+            Some(
+                DimensionEvent::Release(_)
+                | DimensionEvent::RightClick(_)
+                | DimensionEvent::Escape
+                | DimensionEvent::Enter
+                | DimensionEvent::Typed(_),
+            ) => {
+                self.before_press = None;
+                event
+            }
+        };
         if let Some(
             DimensionEvent::Press(at)
             | DimensionEvent::Move(at)
@@ -605,6 +682,8 @@ impl SmartDimension {
                     Outcome::left()
                 }
             },
+            // Taken above, as no event.
+            DimensionEvent::Cancel => Outcome::default(),
             _ if self.modify.is_some() => Outcome::default(),
             DimensionEvent::Press(_) => {
                 self.pressed = true;
@@ -727,7 +806,7 @@ impl SmartDimension {
         read: Revision,
         states: &SketchStates,
     ) -> Result<Outcome, Message> {
-        let mut builder = Builder::new(ids, view);
+        let mut builder = Builder::new(ids, view, false);
         builder.constraint(form).map_err(Message::NoId)?;
         let members = builder.members;
         let Some(constraint) = members.constraints.first() else {
@@ -1224,10 +1303,39 @@ fn rounded(mm: f64) -> Result<Length, NotOffered> {
     Length::rounded(mm).ok_or(Some(Message::TooFar))
 }
 
-/// `measured` with the value the Modify box's `text` gives it, read as the document reads a
-/// value (SD9): one JSON number, at most the quantity's decimals, in range of what it holds.
-/// A refused number is repeated to its first [`SHOWN`] characters.
-fn typed(measured: &Form, text: &str) -> Result<Form, Message> {
+/// A dimension's value as a Modify box reads it ([`read_typed`]): a length in millimetres
+/// or an angle in degrees, as the dimension's form holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypedValue {
+    Length(Length),
+    Angle(Angle),
+}
+
+impl TypedValue {
+    /// The value as the document writes it, as `set_field` of a dimension's `value` takes
+    /// it: its number, unplaced.
+    pub fn node(self) -> Node {
+        let number = match self {
+            TypedValue::Length(value) => value.to_string(),
+            TypedValue::Angle(value) => value.to_string(),
+        };
+        Node {
+            at: At::UNPLACED,
+            value: Value::Number(number),
+        }
+    }
+}
+
+/// What a Modify box's `text` gives `dimension`, the dimension it's for: the one Smart
+/// Dimension measured, or a placed one, as the document holds it, being edited. Read as the
+/// document reads a value (SD9): one JSON number, whitespace about it allowed, at most the
+/// quantity's decimals (6 for millimetres, 9 for degrees), in range of what a document
+/// holds; anything else that's JSON (a string, `true`, `null`), or isn't, is
+/// [`Message::NotANumber`], as is any text for a form that isn't a dimension. A number
+/// refused is [`Message::ValueRefused`], repeated to its first [`SHOWN`] characters. The
+/// range the dimension itself allows (a length above 0, an angle within a turn) is the
+/// gate's, which the add or the `set_field` meets.
+pub fn read_typed(dimension: &Form, text: &str) -> Result<TypedValue, Message> {
     let node = json::read(text.as_bytes()).map_err(|_| Message::NotANumber)?;
     let Value::Number(number) = node.value else {
         return Err(Message::NotANumber);
@@ -1244,21 +1352,39 @@ fn typed(measured: &Form, text: &str) -> Result<Form, Message> {
             )),
         )
     };
+    match dimension {
+        Form::Angle { .. } => Angle::parse(&number)
+            .map(TypedValue::Angle)
+            .map_err(|e| refused(e, "degrees, to 9 decimals")),
+        Form::Length { .. }
+        | Form::Distance { .. }
+        | Form::DistanceX { .. }
+        | Form::DistanceY { .. }
+        | Form::PointLineDistance { .. }
+        | Form::Radius { .. }
+        | Form::Diameter { .. } => Length::parse(&number)
+            .map(TypedValue::Length)
+            .map_err(|e| refused(e, "millimetres, to 6 decimals")),
+        _ => Err(Message::NotANumber),
+    }
+}
+
+/// `measured` with the value the Modify box's `text` gives it ([`read_typed`]).
+fn typed(measured: &Form, text: &str) -> Result<Form, Message> {
+    let typed = read_typed(measured, text)?;
     let mut form = measured.clone();
-    match &mut form {
-        Form::Angle { value, .. } => {
-            *value = Angle::parse(&number).map_err(|e| refused(e, "degrees, to 9 decimals"))?;
-        }
-        Form::Length { value, .. }
-        | Form::Distance { value, .. }
-        | Form::DistanceX { value, .. }
-        | Form::DistanceY { value, .. }
-        | Form::PointLineDistance { value, .. }
-        | Form::Radius { value, .. }
-        | Form::Diameter { value, .. } => {
-            *value =
-                Length::parse(&number).map_err(|e| refused(e, "millimetres, to 6 decimals"))?;
-        }
+    match (&mut form, typed) {
+        (Form::Angle { value, .. }, TypedValue::Angle(typed)) => *value = typed,
+        (
+            Form::Length { value, .. }
+            | Form::Distance { value, .. }
+            | Form::DistanceX { value, .. }
+            | Form::DistanceY { value, .. }
+            | Form::PointLineDistance { value, .. }
+            | Form::Radius { value, .. }
+            | Form::Diameter { value, .. },
+            TypedValue::Length(typed),
+        ) => *value = typed,
         _ => return Err(Message::NotANumber),
     }
     Ok(form)
@@ -1271,7 +1397,7 @@ pub enum OfferChoice {
     Driven,
     /// Leave it driving: nothing is sent.
     Leave,
-    /// Cancel: `undo` of its add.
+    /// Cancel: `undo` of its add, or of its edit.
     Cancel,
 }
 
@@ -1293,15 +1419,15 @@ pub enum OfferRequest {
         field: String,
         value: Node,
     },
-    /// `undo` of one step: the add.
+    /// `undo` of one step: the add, or the edit.
     Undo {
         revision: Revision,
         to: Option<Revision>,
     },
 }
 
-/// The offer SD7 makes for a dimension placed that over-defines the sketch: the dimension,
-/// its state in the read, the sketch's state, and what each choice sends.
+/// The offer SD7 makes for a dimension placed, or edited, that over-defines the sketch: the
+/// dimension, its state in the read, the sketch's state, and what each choice sends.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Offer {
     pub constraint: ElementId,
@@ -1348,29 +1474,38 @@ fn flagged(states: &SketchStates) -> BTreeSet<ElementId> {
 }
 
 /// The offer for `placement`, given `read`, the `sketch` read of the model at `revision`:
-/// only for a read of the model the add made (an older one doesn't hold it, and a newer one
-/// is past the moment), of its sketch, where the dimension is there and still driving, and
-/// the add (SD7):
-/// - flagged a constraint the read it was placed on didn't (any, not only itself: which of
+/// only for a read of the model the add (or the edit) made (an older one doesn't hold it,
+/// and a newer one is past the moment), of its sketch, where the dimension is there and
+/// still driving, and the change (SD7):
+/// - flagged a constraint the read it was made on didn't (any, not only itself: which of
 ///   a group PlaneGCS flags follows the IDs' order);
-/// - or, the sketch solved, left its degrees of freedom where they were, or higher: a
-///   driving dimension adds an equation, so one that doesn't lower the rank is dependent,
-///   whatever PlaneGCS's greedy contest flagged (a constraint flagged already can cover the
-///   new group: four of one horizontal distance flag no more than three);
+/// - or, an add ([`PlacementKind::Add`]), the sketch solved, left its degrees of freedom
+///   where they were, or higher: a driving dimension adds an equation, so one that doesn't
+///   lower the rank is dependent, whatever PlaneGCS's greedy contest flagged (a constraint
+///   flagged already can cover the new group: four of one horizontal distance flag no more
+///   than three). Never an edit ([`PlacementKind::Edit`]): a value changed adds no
+///   equation, so on a solved sketch it leaves the freedoms where they were, over-defining
+///   or not, and they say nothing of it;
 /// - or took the sketch to over defined or no solution from a state that was neither (a
-///   refused solve, whose degrees of freedom say nothing of the add).
+///   refused solve, whose degrees of freedom say nothing of the change);
+/// - or, an edit, took the sketch from a solve that wasn't refused to one over defined or
+///   with no solution that is: over defined covers a redundant dimension that agrees
+///   (solved), a conflict (refused), and no solution, so an edit moving from the first to
+///   either of the others is new though the state's word may not be, nor its flags.
 ///
 /// So a sketch already over defined, left so, offers each dimension that adds to it, as
 /// SolidWorks prompts for each.
 ///
-/// Those compare the read the dimension was placed on with the add's, so they hold only
-/// where the add is the one change between them: its revision the next after that read's.
+/// Those compare the read the dimension was placed (or edited) on with the change's, so they
+/// hold only where the change is the one between them: its revision the next after that
+/// read's.
 /// Where another came between (another client's edit, an agent's, landing first), its
 /// flags, freedoms, and state would be taken for the dimension's (an added line raising the
 /// freedoms, an added constraint lowering them), so the dimension is judged by its own state
-/// alone: offered if it's flagged (conflicting, redundant, or partially redundant). The
-/// tool places nothing while its last offer is unsettled, so its own adds never come
-/// between.
+/// alone: offered if it's flagged (conflicting, redundant, or partially redundant), and, an
+/// edit, if it wasn't flagged in the read before (a dimension over-defining already isn't
+/// offered again for another client's timing). The tool places nothing while its last
+/// offer is unsettled, so its own adds never come between.
 ///
 /// One case is taken for the dimension's doing that isn't: a value typed that makes the
 /// geometry degenerate (circles tangent through a point, for one) can newly flag a relation
@@ -1408,11 +1543,25 @@ fn offer_of(
         let newly_flagged = flagged(states)
             .iter()
             .any(|id| !placement.flagged.contains(id));
-        let dependent = states.solve_problem.is_none() && states.dofs >= placement.dofs;
+        let dependent = match placement.kind {
+            PlacementKind::Add { dofs } => states.solve_problem.is_none() && states.dofs >= dofs,
+            PlacementKind::Edit { .. } => false,
+        };
         let newly_prompted = prompted(sketch_state) && !prompted(placement.before);
-        newly_flagged || dependent || newly_prompted
+        let newly_refused = match placement.kind {
+            PlacementKind::Add { .. } => false,
+            PlacementKind::Edit { before_refused } => {
+                prompted(sketch_state) && states.solve_problem.is_some() && !before_refused
+            }
+        };
+        newly_flagged || dependent || newly_prompted || newly_refused
     } else {
-        state.flagged()
+        match placement.kind {
+            PlacementKind::Add { .. } => state.flagged(),
+            PlacementKind::Edit { .. } => {
+                state.flagged() && !placement.flagged.contains(&placement.constraint)
+            }
+        }
     };
     (driving && over_defines).then(|| Offer {
         constraint: placement.constraint.clone(),

@@ -343,6 +343,14 @@ crates/silico-app/src/main.rs | options | delete field renderer from struct efra
 crates/silico-app/src/main.rs | options | delete field viewport from struct eframe::NativeOptions expression | #298
 crates/silico-app/src/app.rs | <impl eframe::App for App<P>>::ui | replace <impl eframe::App for App<P>>::ui with () | #298
 crates/silico-app/src/missing.rs | <impl eframe::App for Missing>::ui | replace <impl eframe::App for Missing>::ui with () | #298
+# The app bar as macOS's title bar (#361): `TITLE_BAR_IS_APP_BAR` is false off macOS, where
+# CI runs these, so `inset` never reads full screen and `move_window` returns before its
+# body (its other `delete !`, of that return's test, sends commands, and is killed there).
+# On macOS bar.rs's tests kill each: the inset full screen or not, and the window's drag,
+# zoom, and unzoom.
+crates/silico-app/src/bar.rs | inset | delete ! | #361
+crates/silico-app/src/bar.rs | move_window | replace move_window with () | #361
+crates/silico-app/src/bar.rs | move_window | delete ! | #361
 # `keys`' answer only asks egui for the next frame at once, which egui asks for itself
 # after any input event (each key press is one), so no frame comes later for it (#298).
 crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
@@ -455,3 +463,17 @@ crates/silico-app/src/viewport.rs | View::zoom | replace && with || | #341
 crates/silico-core/src/views.rs | fit_along | replace == with != | #341
 crates/silico-core/src/views.rs | fit_along | replace == with != | #341
 crates/silico-core/src/views.rs | fit_along | replace == with != | #341
+# The frame's left and right events numbered together (#371). `sequenced` puts a right click
+# first when its place is less than the next left event's: `r < l` as `r <= l` differs only
+# for a right click and a left event of one place. A place is 0 (a Cancel a navigation tool
+# forces: a left event) or i + 1 for the frame's i-th egui event, and one egui event is one
+# button's: a PointerButton event makes a left event or a right click, never both, and
+# WindowFocused(false) makes a left Cancel and only ends a right press, making no click. So
+# no two of one place come from both lists, and either comparison gives the same order.
+# (This mutant went untested in #371's own run, whose shard 0 baseline failed; #376's run
+# on main tested it and found it equivalent.)
+crates/silico-app/src/viewport.rs | sequenced | replace < with <= | #376
+# The toolbar (#362): a panel's row is its buttons and the gaps between them, each gap
+# `.tb-row`'s 1px (`TOOLBAR_BUTTON_GAP`). The gaps' count times 1 and divided by 1 are the
+# same width, bit for bit, so nothing drawn tells them apart; any other gap's would.
+crates/silico-app/src/toolbar.rs | panel | replace * with / | #362

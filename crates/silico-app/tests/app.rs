@@ -17,6 +17,8 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
 use silico_app::app::IDLE_FRAME;
+use silico_app::recent::Recents;
+use silico_app::start::Warm;
 use silico_app::tab::Sent;
 use silico_core::cache::Cache;
 use silico_core::command::{CheckAnswer, CheckModel, ModelChoice, Running, Sessions};
@@ -199,6 +201,19 @@ fn anywhere(h: &AppHarness, label: &str) -> bool {
     h.query_by_label(label).is_some()
 }
 
+/// The one button labelled `label` that isn't the start page's: the File menu's Open…,
+/// while the start page shows its own.
+fn button_off_start<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
+    let mut found = h
+        .query_all_by_role_and_label(Role::Button, label)
+        .filter(|node| !in_pane(node, "Start"));
+    let node = found
+        .next()
+        .unwrap_or_else(|| panic!("no {label} off the start page"));
+    assert!(found.next().is_none(), "two {label}s off the start page");
+    node
+}
+
 /// The feature `name` selected on the timeline, its properties shown.
 fn select(h: &mut AppHarness, name: &str) {
     h.get_by_role_and_label(Role::Pane, "Timeline")
@@ -238,7 +253,12 @@ fn is_box(op: &Op) -> bool {
 #[test]
 fn every_pane_has_its_label() {
     let f = fixture();
-    let h = f.app();
+    // With no document, the start page alone; with one, the panes.
+    let mut h = f.app();
+    step(&mut h);
+    assert!(h.query_by_role_and_label(Role::Pane, "Start").is_some());
+    let (h, _) = f.opened("example.silico", EXAMPLE);
+    assert!(h.query_by_role_and_label(Role::Pane, "Start").is_none());
     for pane in ["Browser", "Viewport", "Properties", "Timeline"] {
         assert!(
             h.query_by_role_and_label(Role::Pane, pane).is_some(),
@@ -364,12 +384,7 @@ fn a_document_the_gate_refuses_opens_with_its_problems_shown() {
         assert!(features.contains(&name.to_owned()), "{name}: {features:?}");
     }
     // No feature can be made in it: only `replace_text` mends it.
-    assert!(
-        h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Box")
-            .accesskit_node()
-            .is_disabled()
-    );
+    assert!(create_off(&mut h, "Box"));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1185,7 +1200,7 @@ fn new_through_its_dialog_makes_the_file_and_open_cancelled_opens_nothing() {
     let mut h = f.app();
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Open…").click();
+    button_off_start(&h, "Open…").click();
     step_until(&mut h, "the dialog", |h| anywhere(h, "Open document"));
     h.get_by_role_and_label(Role::Button, "Cancel")
         .click_accesskit();
@@ -1724,12 +1739,7 @@ fn the_name_field_is_off_while_its_tab_closes() {
     assert!(h.state().tabs()[0].closing(), "not closing");
     assert!(name_field(&h).accesskit_node().is_disabled());
     // Nor can a dialog open: what it sent would come after the close.
-    assert!(
-        h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Box")
-            .accesskit_node()
-            .is_disabled()
-    );
+    assert!(create_off(&mut h, "Box"));
     let before = name_field(&h).value();
     name_field(&h).type_text("z");
     step(&mut h);
@@ -2442,7 +2452,7 @@ fn open_with_no_path_opens_nothing_and_keeps_asking() {
     step(&mut h);
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Open…").click();
+    button_off_start(&h, "Open…").click();
     step_until(&mut h, "the question", |h| anywhere(h, "Open document"));
     h.get_by_role_and_label(Role::Button, "Open")
         .click_accesskit();
@@ -3065,14 +3075,63 @@ fn dialog_open(h: &AppHarness) -> bool {
     h.query_by_role(Role::Dialog).is_some()
 }
 
-/// The dialog of `kind` opened from the toolbar's CREATE.
+/// The primitives, which the toolbar keeps in CREATE's drop-down alone (app.js:394,
+/// interact.js:170).
+const PRIMITIVES: [&str; 5] = ["Box", "Cylinder", "Sphere", "Cone", "Torus"];
+
+/// The dialog of `kind` opened from the toolbar's CREATE: a sweep from its row, a
+/// primitive from its drop-down.
 fn create(h: &mut AppHarness, kind: &str) {
-    h.get_by_role_and_label(Role::Toolbar, "CREATE")
-        .get_by_label(kind)
-        .click();
+    if PRIMITIVES.contains(&kind) {
+        open_create_menu(h);
+        h.get_by_role_and_label(Role::Menu, "CREATE")
+            .get_by_label(kind)
+            .click();
+    } else {
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label(kind)
+            .click();
+    }
     step_until(h, "the dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, kind).is_some()
     });
+}
+
+/// CREATE's drop-down opened by a click on its label (`.tb-label`), laid out (egui lays a
+/// new popup out unseen in its first frame).
+fn open_create_menu(h: &mut AppHarness) {
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_role_and_label(Role::Button, "CREATE")
+        .click();
+    step_until(h, "CREATE's drop-down", |h| {
+        h.query_by_role_and_label(Role::Menu, "CREATE").is_some()
+    });
+    step(h);
+}
+
+/// Whether CREATE's `kind` is off: a sweep in its row; a primitive in its drop-down, which
+/// this opens and closes again by a second click on its label.
+fn create_off(h: &mut AppHarness, kind: &str) -> bool {
+    if !PRIMITIVES.contains(&kind) {
+        return h
+            .get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label(kind)
+            .accesskit_node()
+            .is_disabled();
+    }
+    open_create_menu(h);
+    let off = h
+        .get_by_role_and_label(Role::Menu, "CREATE")
+        .get_by_label(kind)
+        .accesskit_node()
+        .is_disabled();
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_role_and_label(Role::Button, "CREATE")
+        .click();
+    step_until(h, "CREATE's drop-down closed", |h| {
+        h.query_by_role_and_label(Role::Menu, "CREATE").is_none()
+    });
+    off
 }
 
 /// The dialog's input labelled `label`.
@@ -3561,6 +3620,329 @@ fn esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_dialog_second() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// On this thread, outside any frame, until `done` holds, within [`WAIT`]: a session's or
+/// the kernel's state, which no frame moves.
+#[track_caller]
+fn until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + WAIT;
+    while !done() {
+        assert!(Instant::now() < deadline, "never {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The box a dialog's defaults make, 10 mm wide: narrower than the example's block.
+fn is_new_box(op: &Op) -> bool {
+    matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx < 20.0)
+}
+
+#[test]
+fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queue() {
+    // The preview's `timeline` read queued behind another command that waits on the same
+    // rebuild (a check of the current model), so it isn't the rebuild's waiter yet when Esc
+    // stops it. The next command that needs the model starts a stopped rebuild again
+    // (decision 34): run after the stop, the read would, undoing it. The stop holds: the
+    // read answers `cancelled`, the tab reads the published model, and the new box is asked
+    // of the kernel once.
+    use silico_core::command::{RebuildState, RunningCommand, SessionCommand};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    let id = h.state().tabs()[0].id;
+    let box_hold = f.kernel.hold(is_new_box);
+    // The queue held behind a fresh check whose pin the fake holds: the dialog's begin and
+    // add are queued behind it.
+    let pin_hold = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Cylinder { .. })));
+    let fresh = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    create(&mut h, "Box");
+    step_until(&mut h, "its add sent", |h| {
+        h.state().tabs()[0].sent.contains(&Sent::Add)
+    });
+    // No frame from here until the check below is queued: the app takes no answer, so the
+    // preview's read can only be sent after it.
+    pin_hold.release();
+    assert!(fresh.wait_timeout(WAIT).ok().unwrap().result.is_ok());
+    // Queued behind the add: it needs the new revision's model, whose rebuild it starts and
+    // the fake holds at the new box.
+    let waiting = f.sessions.check(&id, CheckModel::Current { fresh: false });
+    assert!(f.kernel.wait_running(1, WAIT));
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    // Sent with the add's answer taken, its read waits in the queue behind the check.
+    let added = h.state().tabs()[0].revision;
+    assert_eq!(
+        f.sessions.status(&id).result.unwrap().running,
+        Some(RunningCommand::Command(SessionCommand::Check))
+    );
+    h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    // The check, the rebuild's waiter, answers `cancelled` with it.
+    let answered = waiting.wait_timeout(WAIT).ok().unwrap();
+    assert_eq!(
+        answered.result.unwrap_err().errors()[0].code(),
+        ErrorCode::Cancelled
+    );
+    let new_boxes = || {
+        f.kernel
+            .asked()
+            .iter()
+            .filter(|call| is_new_box(&call.op))
+            .count()
+    };
+    // Then the read, run (it starts the rebuild again, asking for the new box) or answered
+    // `cancelled` (the tab then reads the published model, of the add's revision).
+    step_until(&mut h, "the preview's read run or answered", |h| {
+        new_boxes() > 1
+            || h.state().tabs()[0]
+                .timeline
+                .as_ref()
+                .is_some_and(|timeline| timeline.revision == added)
+    });
+    assert_eq!(new_boxes(), 1, "the stopped rebuild started again");
+    let tab = &h.state().tabs()[0];
+    assert!(tab.status.as_ref().is_some_and(|status| {
+        status.rebuild.revision == added && status.rebuild.state == RebuildState::Stopped
+    }));
+    assert!(!tab.preview_rebuilding());
+    assert!(dialog_open(&h));
+    assert_eq!(tab.message, None);
+    // The next Esc is the dialog's Cancel.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(new_boxes(), 1);
+    box_hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_waits_in_the_queue() {
+    // A check of the current model (the tab's while its timeline names no model, a marked
+    // feature selected) queued behind the preview's read, the rebuild's waiter. Run after
+    // the stop, it would start the rebuild again (decision 34). The stop holds: the check
+    // answers `cancelled`, none of the current model is asked again while the rebuild is
+    // stopped, and the new box is asked of the kernel once.
+    use silico_core::command::{RebuildState, RunningCommand, SessionCommand};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    let id = h.state().tabs()[0].id;
+    let hold = f.kernel.hold(is_new_box);
+    create(&mut h, "Box");
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    let added = h.state().tabs()[0].revision;
+    until("the preview's read waiting", || {
+        f.sessions.status(&id).result.is_ok_and(|status| {
+            status.running == Some(RunningCommand::Command(SessionCommand::Timeline))
+        })
+    });
+    // Its timeline as one naming no model gives it, a marked feature selected: the next
+    // frame sends a check of the current model, queued behind the read.
+    {
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        assert!(!tab.checking());
+        let timeline = tab.timeline.as_mut().unwrap();
+        timeline.model = None;
+        let marked = timeline
+            .features
+            .iter()
+            .flatten()
+            .find(|entry| entry.problems > 0 || entry.warnings > 0)
+            .map(|entry| entry.id.clone());
+        assert!(marked.is_some(), "no feature of the example is marked");
+        tab.selected = marked;
+    }
+    step_until(&mut h, "the check sent", |h| h.state().tabs()[0].checking());
+    // Queued: the read still waits on the rebuild, which the fake holds at the new box. The
+    // stop cancels the check, sent later, before the read: the read, cancelled, stops the
+    // rebuild and answers, and its session runs the check next, which, cancelled second,
+    // could start the rebuild again first (the tab's unit test
+    // `the_stop_cancels_the_tabs_read_sent_later_first_so_neither_starts_the_rebuild_again`
+    // forces that).
+    assert_eq!(
+        f.sessions.status(&id).result.unwrap().running,
+        Some(RunningCommand::Command(SessionCommand::Timeline))
+    );
+    h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    let new_boxes = || {
+        f.kernel
+            .asked()
+            .iter()
+            .filter(|call| is_new_box(&call.op))
+            .count()
+    };
+    // Then the check, run (it starts the rebuild again, asking for the new box) or answered
+    // `cancelled`, and the tab's timeline read again, of the published model.
+    step_until(&mut h, "the check run or answered", |h| {
+        let tab = &h.state().tabs()[0];
+        new_boxes() > 1
+            || (!tab.checking()
+                && tab
+                    .timeline
+                    .as_ref()
+                    .is_some_and(|timeline| timeline.revision == added))
+    });
+    assert_eq!(new_boxes(), 1, "the stopped rebuild started again");
+    let tab = &h.state().tabs()[0];
+    assert!(tab.status.as_ref().is_some_and(|status| {
+        status.rebuild.revision == added && status.rebuild.state == RebuildState::Stopped
+    }));
+    assert!(!tab.preview_rebuilding());
+    assert!(dialog_open(&h));
+    assert_eq!(tab.message, None);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(new_boxes(), 1);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_edit_and_an_esc_in_one_frame_supersede_the_preview_then_cancel_the_dialog() {
+    // A keystroke and Esc in one pass of the frame, the preview rebuilding, as the frame
+    // takes them: the dialog's changes sent (`dialog_changed`), then its key
+    // (`dialog_escape`), on the `status` the pass's poll read. The edit supersedes the
+    // preview's read, which stops its rebuild (of a revision the edit makes old). That stop
+    // is the edit's: the Esc has no preview of its own to stop, and is the dialog's Cancel,
+    // never eaten as a second stop. (Driven on the tab: a keystroke and Esc given to one
+    // harness step reach the Esc's key with `status` already at the edit's revision, the
+    // edit sent in an earlier pass of the step, so the two never meet in one pass there.)
+    use silico_app::dialog::Value;
+    use silico_core::command::{RunningCommand, SessionCommand};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    let id = h.state().tabs()[0].id;
+    let hold = f.kernel.hold(is_new_box);
+    create(&mut h, "Box");
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    until("the preview's read waiting", || {
+        f.sessions.status(&id).result.is_ok_and(|status| {
+            status.running == Some(RunningCommand::Command(SessionCommand::Timeline))
+        })
+    });
+    let tab = &mut h.state_mut().tabs_mut()[0];
+    tab.message = Some("an earlier refusal".to_owned());
+    // "3" typed before the width's 10.
+    let dialog = tab.dialog.as_mut().unwrap();
+    let width = dialog
+        .inputs
+        .iter_mut()
+        .find(|input| input.label == "Width")
+        .unwrap();
+    width.value = Value::Length("310".to_owned());
+    assert!(tab.dialog_changed(&f.sessions));
+    assert!(
+        tab.sent
+            .iter()
+            .any(|sent| matches!(sent, Sent::Edit(field) if field == "width")),
+        "{:?}",
+        tab.sent
+    );
+    // The pass's `status`, read before the edit, still says the preview rebuilds.
+    assert!(tab.preview_rebuilding());
+    assert!(
+        tab.dialog_escape(&f.sessions),
+        "the Esc was taken as a stop"
+    );
+    tab.close_dialog(&f.sessions, false);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_in_a_dialog_whose_preview_was_built_since_status_said_it_rebuilt_is_its_cancel() {
+    // `status`, read at the frame's start, says the preview rebuilds; its rebuild publishes
+    // before Esc's stop reaches it. The stop finds nothing to stop: the Esc is the dialog's
+    // Cancel, never eaten, and nothing is said.
+    use silico_core::command::RebuildState;
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let id = h.state().tabs()[0].id;
+    let hold = f.kernel.hold(is_new_box);
+    create(&mut h, "Box");
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    // Built, with no frame since: the tab's `status` still says it rebuilds.
+    hold.release();
+    until("the preview built", || {
+        f.sessions
+            .status(&id)
+            .result
+            .is_ok_and(|status| status.rebuild.state == RebuildState::Done)
+    });
+    let tab = &mut h.state_mut().tabs_mut()[0];
+    assert!(tab.preview_rebuilding());
+    tab.message = Some("an earlier refusal".to_owned());
+    assert!(tab.dialog_escape(&f.sessions));
+    assert_eq!(tab.message.as_deref(), Some("an earlier refusal"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_whose_previews_read_stopped_the_rebuild_first_stops_it_leaving_the_dialog_open() {
+    // The preview's read, cancelled by Esc's stop, wakes and stops the rebuild it waits on
+    // before the cancel naming the rebuild reaches it, which is then refused: the rebuild
+    // stopped all the same, so Esc stopped it, the dialog left open, the earlier refusal
+    // let go.
+    use silico_core::command::{Cancellable, RebuildState, RunningCommand, SessionCommand};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let id = h.state().tabs()[0].id;
+    let hold = f.kernel.hold(is_new_box);
+    create(&mut h, "Box");
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    until("the preview's read waiting", || {
+        f.sessions.status(&id).result.is_ok_and(|status| {
+            status.running == Some(RunningCommand::Command(SessionCommand::Timeline))
+        })
+    });
+    // Its read cancelled (the ticket its handle shares), which stops the rebuild, with no
+    // frame since: the tab's `status` still says it rebuilds.
+    f.sessions
+        .cancel(&id, Cancellable::Command(SessionCommand::Timeline))
+        .result
+        .unwrap();
+    until("the rebuild stopped by its read", || {
+        f.sessions
+            .status(&id)
+            .result
+            .is_ok_and(|status| status.rebuild.state == RebuildState::Stopped)
+    });
+    let tab = &mut h.state_mut().tabs_mut()[0];
+    assert!(tab.preview_rebuilding());
+    tab.message = Some("an earlier refusal".to_owned());
+    assert!(!tab.dialog_escape(&f.sessions));
+    assert_eq!(tab.message, None);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() {
     let f = fixture();
@@ -3600,12 +3982,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     });
     settled(&mut h);
     // One dialog at a time: CREATE's tools off.
-    assert!(
-        h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Box")
-            .accesskit_node()
-            .is_disabled()
-    );
+    assert!(create_off(&mut h, "Box"));
     // Undo and redo are the dialog's Cancel's while it's open: off.
     let sent = h.state().tabs()[0].sent.clone();
     assert!(
@@ -3617,6 +3994,16 @@ fn enter_is_ok_and_esc_is_cancel() {
     step(&mut h);
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].sent, sent);
+    // Its preview built, as `status` says: with it still rebuilding, Esc would stop it,
+    // leaving the dialog open (esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_
+    // dialog_second).
+    step_until(&mut h, "the preview built", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.status.as_ref().is_some_and(|status| {
+            status.rebuild.revision == tab.revision
+                && status.rebuild.state == silico_core::command::RebuildState::Done
+        })
+    });
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
@@ -3779,15 +4166,13 @@ fn the_cutting_sweeps_are_off_with_no_body_to_cut() {
         .join("\n");
     let (mut h, _) = f.opened("sketch.silico", &only_sketch);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
-    let create = h.get_by_role_and_label(Role::Toolbar, "CREATE");
-    let off = |kind: &str| create.get_by_label(kind).accesskit_node().is_disabled();
     for kind in ["Pocket", "Groove"] {
-        assert!(off(kind), "{kind}");
+        assert!(create_off(&mut h, kind), "{kind}");
     }
     for kind in [
         "Box", "Cylinder", "Sphere", "Cone", "Torus", "Pad", "Revolve",
     ] {
-        assert!(!off(kind), "{kind}");
+        assert!(!create_off(&mut h, kind), "{kind}");
     }
     assert_eq!(never_waits::waits(), 0);
 }
@@ -3904,12 +4289,7 @@ fn esc_while_edit_feature_reads_the_feature_opens_no_dialog() {
     // Reading it, one dialog at a time: CREATE's tools off (drawn before the timeline
     // took the double-click, so from the next frame).
     step(&mut h);
-    assert!(
-        h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Box")
-            .accesskit_node()
-            .is_disabled()
-    );
+    assert!(create_off(&mut h, "Box"));
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     hold.release();
@@ -7333,7 +7713,9 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
         assert!((corner.up[k] - expected).abs() < 1e-12);
     }
     // Home: from (1, −1, 1)/√3 again.
-    h.get_by_label("Home").click();
+    h.get_by_role_and_label(Role::Pane, "Viewport")
+        .get_by_label("Home")
+        .click();
     step(&mut h);
     let home = view(&h).camera().clone();
     looks_from(&home, [third, -third, third]);
@@ -7355,7 +7737,9 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
     );
     // Its menu: Perspective, at 30°, the eye as far back as shows Home's height at the
     // target; Home then keeps the perspective.
-    h.get_by_label("Home").click();
+    h.get_by_role_and_label(Role::Pane, "Viewport")
+        .get_by_label("Home")
+        .click();
     step(&mut h);
     let height = ortho_height(view(&h).camera());
     h.get_by_label("Orbit the view").click_secondary();
@@ -7432,7 +7816,13 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     // From (1, −1, 1) onto the cut's box's centre, z up: the view's right is (1, 1, 0)/√2
     // and its up (−1, 1, 2)/√6, so the cube's point (x, y, z), its faces at ±1, is drawn
     // at ((x + y)/√2, −(−x + y + 2z)/√6) · s from the cube's centre, y down, s half its
-    // edge, 0.28 of its 96-point side. The front, right, and top face the view, each at
+    // edge, 0.28 of its 92-point side (the prototype's `CUBE`): 0.28 · 92 = 25.76, so
+    // s/√2 = 18.215, s/√6 = 10.516, s·√2 = 36.430, 2s/√6 = 21.033, and 4s/√6 = 42.066
+    // (the front's label at (−18.215, 10.516) from the centre, the right's at (18.215,
+    // 10.516), the top's at (0, −21.033); the top front left corner at (−36.430, −21.033),
+    // the top back right at (36.430, −21.033), the bottom front right at (0, 42.066), the
+    // top back left at (0, −42.066), and the bottom front left and back right at
+    // (∓36.430, 21.033)). The front, right, and top face the view, each at
     // 1/√3 (over a quarter, so each is labelled where its centre is drawn), shaded 0.6 of
     // the fill edge-on rising to all of it square-on: 0.6 + 0.4/√3. The corners facing it
     // more than a tenth, 1 or 1/3, are clickable at theirs: the top front right (at the
@@ -7449,7 +7839,7 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     step(&mut h);
     step(&mut h);
     let cube = silico_app::viewport::view_cube_rect(the_viewport(&h));
-    let s = 0.28 * 96.0;
+    let s = 0.28 * 92.0;
     let (r2, r6) = (2f32.sqrt(), 6f32.sqrt());
     let at = |x: f32, y: f32| cube.center() + eframe::egui::vec2(x, y) * s;
     // The cube's corners as drawn: (1, −1, 1) at the centre; (−1, −1, 1), (1, 1, 1),
@@ -7597,15 +7987,17 @@ fn the_view_cubes_menu_marks_the_projection_the_view_has() {
 
 #[test]
 fn the_navigation_bar_floats_its_margin_above_the_canvass_bottom_centre() {
-    // 220 by 26 points about the canvas's middle, its bottom 8 points above the canvas's:
-    // its middle 8 + 13 = 21 points up. Its tools sit in a row along that middle.
+    // 220 by 32 points (the prototype's `.nav-bar`: a 24-point button, 3 of padding and a
+    // 1 border above and below, 24 + 2·3 + 2·1 = 32) about the canvas's middle, its bottom
+    // 12 points (`bottom: 12px`) above the canvas's: its middle 12 + 32/2 = 28 points up.
+    // Its tools sit in a row along that middle.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     let canvas = the_viewport(&h);
     let bar = eframe::egui::Rect::from_center_size(
-        eframe::egui::pos2(canvas.center().x, canvas.bottom() - 21.0),
-        eframe::egui::vec2(220.0, 26.0),
+        eframe::egui::pos2(canvas.center().x, canvas.bottom() - 28.0),
+        eframe::egui::vec2(220.0, 32.0),
     );
     for word in ["Orbit", "Pan", "Zoom", "Fit"] {
         let tool = h
@@ -7757,26 +8149,33 @@ fn a_camera_moved_before_the_first_read_answers_isnt_taken_back_by_homes_fit() {
 
 #[test]
 fn a_perspective_view_reads_each_body_at_its_nearest_points_half_pixel() {
-    // From (25, −500, 25) onto (25, 25, 25) at 30°: both cubes' nearest faces are at y = 0,
-    // 500 mm deep, so each half pixel is 500 · tan 15° / H. The small cube is meshed at its
-    // power of two below; the large one's floor, 0.1732, is coarser than that level, so
-    // it's meshed at its floor, serving [0, 0.25).
+    // From (25, −d, 25) onto (25, 25, 25) at 30°: both cubes' nearest faces are at y = 0,
+    // d deep, so each half pixel is d · tan 15° / H, for the frame's H. With d set so that's
+    // 0.24, the small cube is meshed at the power of two below, 0.125; the large one's
+    // floor, 0.1732, is coarser than that level, so it's meshed at its floor, serving
+    // [0, 0.25). The target is 25 deeper, past 0.25: a body read at the target's depth
+    // would be meshed a level coarser.
     let f = fixture();
     let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES);
     meshes_settled(&mut h);
+    let height = f64::from(view(&h).frame().unwrap().size_px[1]);
+    let tan = libm::tan(15f64.to_radians());
+    let depth = 0.24 * height / tan;
+    assert!(
+        (depth + 25.0) * tan / height >= 0.25,
+        "the frame, {height} high, puts the target's half pixel under 0.25"
+    );
     view_mut(&mut h).set_camera(silico_protocol::Camera {
         projection: silico_protocol::Projection::Perspective {
             field_of_view: 30.0,
         },
-        eye: [25.0, -500.0, 25.0],
+        eye: [25.0, -depth, 25.0],
         target: [25.0; 3],
         up: [0.0, 0.0, 1.0],
     });
     meshes_settled(&mut h);
-    let height = f64::from(view(&h).frame().unwrap().size_px[1]);
-    let half = 500.0 * libm::tan(15f64.to_radians()) / height;
-    let level = libm::exp2(libm::floor(libm::log2(half)));
-    assert!(level < 0.1732 && 2.0 * level > half);
+    assert_eq!(f64::from(view(&h).frame().unwrap().size_px[1]), height);
+    let level = 0.125;
     let small = &view(&h).bodies()[&1];
     assert_eq!((small.level, small.serves), (level, [level, 2.0 * level]));
     let large = &view(&h).bodies()[&2];
@@ -8097,12 +8496,10 @@ fn a_viewport_with_no_renderer_says_why_in_its_pane() {
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
     step(&mut h);
-    assert!(shows(
-        &h,
-        "Viewport",
-        "The viewport can't draw: no adapter was found"
-    ));
-    // With a document open too.
+    // With no document, the start page shows, and no viewport.
+    assert!(h.query_by_role_and_label(Role::Pane, "Viewport").is_none());
+    assert!(h.query_by_role_and_label(Role::Pane, "Start").is_some());
+    // With a document open, its viewport says why it draws nothing.
     let path = f.file("example.silico", EXAMPLE);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the tab", |h| !h.state().tabs().is_empty());
@@ -8895,4 +9292,3634 @@ fn a_left_press_in_the_navigation_bars_padding_or_during_a_middle_pan_is_not_han
     }
     assert_eq!(kinds(&left_taken(&seen)), [Press, Release]);
     assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Native file dialogs: Browse… beside each path field ----
+//
+// The platform's own dialog (rfd's, `browse::Native`) needs a window server and a person, so
+// it can't run headless: these drive a stand-in through the same `Browse` trait, which
+// records what each dialog was asked and answers when the test says, from a thread of its
+// own, as the platform's completion does.
+
+use silico_app::browse::{self as browse_mod, Ask, Browse, Pick};
+
+/// The stand-in's state: what each dialog was asked, the answer the test gave (`None` until
+/// it does), the waker of the last poll, and how many polls there were.
+#[derive(Default)]
+struct Dialogs {
+    asked: Vec<Ask>,
+    answer: Option<Option<PathBuf>>,
+    waker: Option<std::task::Waker>,
+    polls: u64,
+}
+
+#[derive(Clone, Default)]
+struct FakeBrowser(Arc<Mutex<Dialogs>>);
+
+impl Browse for FakeBrowser {
+    fn browse(&mut self, ask: &Ask) -> browse_mod::Answer {
+        let mut dialogs = self.0.lock().unwrap();
+        dialogs.asked.push(ask.clone());
+        dialogs.answer = None;
+        Box::pin(FakeAnswer(Arc::clone(&self.0)))
+    }
+}
+
+struct FakeAnswer(Arc<Mutex<Dialogs>>);
+
+impl std::future::Future for FakeAnswer {
+    type Output = Option<PathBuf>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<PathBuf>> {
+        let mut dialogs = self.0.lock().unwrap();
+        dialogs.polls += 1;
+        match dialogs.answer.take() {
+            Some(answer) => std::task::Poll::Ready(answer),
+            None => {
+                dialogs.waker = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+impl FakeBrowser {
+    /// The dialog open answers `answer` (`None`: cancelled), its waker woken on a thread of
+    /// its own.
+    fn answer(&self, answer: Option<&Path>) {
+        let waker = {
+            let mut dialogs = self.0.lock().unwrap();
+            dialogs.answer = Some(answer.map(Path::to_path_buf));
+            dialogs.waker.take()
+        };
+        std::thread::spawn(move || {
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
+    fn asked(&self) -> Vec<Ask> {
+        self.0.lock().unwrap().asked.clone()
+    }
+
+    fn polls(&self) -> u64 {
+        self.0.lock().unwrap().polls
+    }
+}
+
+impl Fixture {
+    /// The app on these sessions with `browser` opening its file dialogs, nothing open.
+    fn app_browsing(&self, browser: &FakeBrowser) -> AppHarness {
+        let app = App::new(Arc::clone(&self.sessions)).browsing(Box::new(browser.clone()));
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0, 800.0))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    }
+
+    /// [`opened`](Self::opened), with `browser` opening its file dialogs.
+    fn opened_browsing(
+        &self,
+        browser: &FakeBrowser,
+        name: &str,
+        text: &str,
+    ) -> (AppHarness, PathBuf) {
+        let path = self.file(name, text);
+        let mut h = self.app_browsing(browser);
+        h.state_mut().open(path.to_str().unwrap(), false);
+        step_until(&mut h, "the timeline read", |h| {
+            h.state()
+                .tabs()
+                .first()
+                .is_some_and(|tab| tab.timeline.is_some())
+        });
+        (h, path)
+    }
+}
+
+/// File > `item`, its dialog (headed `heading`) open.
+fn file_menu(h: &mut AppHarness, item: &str, heading: &str) {
+    h.get_by_label("File").click();
+    step(h);
+    step(h);
+    button_off_start(h, item).click();
+    step_until(h, heading, |h| h.query_by_label_contains(heading).is_some());
+}
+
+/// The dialog's Browse… button.
+fn browse_button(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::Button, "Browse…")
+}
+
+/// Browse… clicked, and the native dialog open on its question.
+fn browse(h: &mut AppHarness, browser: &FakeBrowser) {
+    let asked = browser.asked().len();
+    browse_button(h).click_accesskit();
+    step_until(h, "the native dialog asked", |_| {
+        browser.asked().len() > asked
+    });
+}
+
+/// Requests for a frame at once, counted as egui is asked for them.
+fn count_repaints(h: &AppHarness) -> Arc<std::sync::atomic::AtomicU64> {
+    let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counted = Arc::clone(&count);
+    h.ctx.set_request_repaint_callback(move |info| {
+        if info.delay == Duration::ZERO {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+    count
+}
+
+/// The value of the dialog's Path field.
+fn path_value(h: &AppHarness) -> String {
+    h.get_by_role_and_label(Role::TextInput, "Path")
+        .value()
+        .unwrap()
+}
+
+#[test]
+fn with_no_native_dialogs_no_browse_button_is_shown() {
+    let f = fixture();
+    let mut h = f.app();
+    file_menu(&mut h, "Open…", "Open document");
+    assert!(h.query_by_role_and_label(Role::Button, "Browse…").is_none());
+}
+
+#[test]
+fn opens_browse_asks_for_a_silico_file_frames_climb_while_it_is_open_and_its_pick_opens() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    file_menu(&mut h, "Open…", "Open document");
+    // A path typed first, which the pick's open takes as a typed one's would.
+    h.get_by_role(Role::TextInput).focus();
+    step(&mut h);
+    h.get_by_role(Role::TextInput).type_text("typed.silico");
+    step(&mut h);
+    browse(&mut h, &browser);
+    // Polled in the frame it opened (rfd's portal starts its dialog on the first poll).
+    assert_eq!(browser.polls(), 1);
+    // Nothing open, no folder picked before: the platform's own start.
+    assert_eq!(
+        browser.asked(),
+        [Ask {
+            pick: Pick::Open,
+            title: "Open document".to_owned(),
+            filters: vec![browse_mod::DOCUMENTS],
+            folder: None,
+            file_name: None,
+        }]
+    );
+    assert_eq!(browse_mod::DOCUMENTS.extensions, ["silico"]);
+    // While it's open: frames climb, each polling it, never waiting; Browse… is off, so no
+    // second dialog opens over it.
+    let (frames, polls) = (h.state().frames(), browser.polls());
+    for _ in 0..50 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().frames(), frames + 50);
+    assert!(browser.polls() >= polls + 50, "{}", browser.polls());
+    assert!(browse_button(&h).accesskit_node().is_disabled());
+    browse_button(&h).click_accesskit();
+    step(&mut h);
+    assert_eq!(browser.asked().len(), 1);
+    assert!(h.state().tabs().is_empty());
+    // Its answer, from another thread, asks egui for a frame at once: none asked for until
+    // then (the click's own frames settled), so the one asked for is the answer's.
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let path = f.file("picked.silico", EXAMPLE);
+    let repaints = count_repaints(&h);
+    browser.answer(Some(&path));
+    assert!(repaints.load(Ordering::SeqCst) >= 1);
+    step_until(&mut h, "its tab", |h| anywhere(h, "picked.silico"));
+    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    assert!(!anywhere(&h, "Open document"));
+    // Open again: its field emptied, and the shown document's folder is where it starts.
+    file_menu(&mut h, "Open…", "Open document");
+    assert_eq!(path_value(&h), "");
+    browse(&mut h, &browser);
+    assert_eq!(browser.asked()[1].folder.as_deref(), Some(f.dir.path()));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_cancelled_browse_changes_nothing() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let (mut h, path) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
+    // Open, a path typed first: cancelled, the field holds what was typed and nothing opens.
+    file_menu(&mut h, "Open…", "Open document");
+    h.get_by_role(Role::TextInput).focus();
+    step(&mut h);
+    h.get_by_role(Role::TextInput).type_text("typed.silico");
+    step(&mut h);
+    browse(&mut h, &browser);
+    browser.answer(None);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(path_value(&h), "typed.silico");
+    assert!(anywhere(&h, "Open document"));
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(h.state().message(), None);
+    // Browse… is on again.
+    assert!(!browse_button(&h).accesskit_node().is_disabled());
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, "Open document"));
+    // Save As: cancelled, its field stays empty and nothing is saved.
+    file_menu(&mut h, "Save As…", "Save example.silico as");
+    browse(&mut h, &browser);
+    browser.answer(None);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(path_value(&h), "");
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| {
+        !anywhere(h, "Save example.silico as")
+    });
+    // Export: cancelled, its path is the one it had.
+    open_export(&mut h);
+    let before = path_value(&h);
+    browse(&mut h, &browser);
+    browser.answer(None);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(path_value(&h), before);
+    assert!(h.state().tabs()[0].exports.is_empty());
+    // Each started in the document's folder, the cancels before picking none
+    // (`a_cancel_picks_no_folder` shows that with no document open).
+    assert!(
+        browser
+            .asked()
+            .iter()
+            .all(|ask| ask.folder.as_deref() == Some(f.dir.path()))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The right button's clicks handed on ----
+
+/// A right click as a tab's overlay was given it: the serial its call took, the frame's
+/// session, the click, and egui's time at the call.
+#[derive(Debug, Clone, Copy)]
+struct SecondarySeen {
+    serial: Option<u64>,
+    session: silico_core::command::SessionId,
+    click: silico_app::viewport::SecondaryClick,
+    time: f64,
+}
+
+/// Every right click the overlays were given, in order, the calls kept (for
+/// [`left_taken`], which clears them).
+fn secondary_seen(seen: &Overlays) -> Vec<SecondarySeen> {
+    let seen = seen.lock().unwrap();
+    seen.frames
+        .iter()
+        .flat_map(|(serial, frame, time)| {
+            frame.secondary.iter().map(move |click| SecondarySeen {
+                serial: *serial,
+                session: frame.session,
+                click: *click,
+                time: *time,
+            })
+        })
+        .collect()
+}
+
+/// Every right click the overlays were given, in order, and the calls cleared.
+fn secondary_taken(seen: &Overlays) -> Vec<SecondarySeen> {
+    let clicks = secondary_seen(seen);
+    seen.lock().unwrap().frames.clear();
+    clicks
+}
+
+/// A right press at `from` and its release at `to`, the pointer moved there between,
+/// `held` the whole time, each event a frame of its own; then frames enough for them all.
+fn right_click(
+    h: &mut AppHarness,
+    from: eframe::egui::Pos2,
+    to: eframe::egui::Pos2,
+    held: eframe::egui::Modifiers,
+) {
+    let right = eframe::egui::PointerButton::Secondary;
+    h.event(eframe::egui::Event::ModifiersChanged(held));
+    h.hover_at(from);
+    button_event(h, from, right, true, held);
+    h.hover_at(to);
+    button_event(h, to, right, false, held);
+    h.event(eframe::egui::Event::ModifiersChanged(
+        eframe::egui::Modifiers::NONE,
+    ));
+    for _ in 0..3 {
+        step(h);
+    }
+}
+
+#[test]
+fn a_right_click_on_the_canvas_is_handed_on_once_where_it_was_let_go_with_its_modifiers() {
+    use eframe::egui::{Modifiers, vec2};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    assert_eq!(h.ctx.pixels_per_point(), 2.0);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    secondary_taken(&seen);
+    // Shift without Ctrl: one click, at physical pixels from the viewport's top left, of
+    // the frame it came in, at egui's time then, given the tab's session.
+    right_click(&mut h, at, at, Modifiers::SHIFT);
+    let clicks = secondary_seen(&seen);
+    // The left button's stream is given nothing of it.
+    let left = left_taken(&seen);
+    assert!(left.is_empty(), "{left:?}");
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    let seen_click = clicks[0];
+    assert_eq!(seen_click.click.at_px, at_px(rect, at));
+    assert!(seen_click.click.shift && !seen_click.click.ctrl);
+    assert_eq!(Some(seen_click.click.frame), seen_click.serial);
+    assert_eq!(seen_click.click.time, seen_click.time);
+    assert_eq!(seen_click.session, h.state().tabs()[0].id);
+    // Handed on once: the frame the view keeps holds none of it.
+    assert!(view(&h).frame().unwrap().secondary.is_empty());
+    // Ctrl (Cmd on macOS) without Shift.
+    right_click(&mut h, at, at, Modifiers::COMMAND);
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert!(clicks[0].click.ctrl && !clicks[0].click.shift);
+    // Let go 5 points from its press, 10 physical pixels (egui's click distance is 6
+    // points): a click, where it was let go.
+    let near = at + vec2(5.0, 0.0);
+    right_click(&mut h, at, near, Modifiers::NONE);
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(clicks[0].click.at_px, at_px(rect, near));
+    assert_eq!(clicks[0].click.at_px[0] - at_px(rect, at)[0], 10.0);
+    assert!(!clicks[0].click.shift && !clicks[0].click.ctrl);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_drag_is_no_click_nor_is_a_right_click_while_the_pane_navigates() {
+    use eframe::egui::{Modifiers, PointerButton, vec2};
+    use silico_app::viewport::Navigation;
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let on = at + vec2(30.0, 0.0);
+    let none = Modifiers::NONE;
+    let right = PointerButton::Secondary;
+    secondary_taken(&seen);
+    // A right drag of 7 points, past egui's click distance, and its release: no click.
+    let camera = view(&h).camera().clone();
+    right_click(&mut h, at, at + vec2(7.0, 0.0), none);
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    // Nor does it navigate: no navigation takes the right button.
+    assert_eq!(view(&h).camera(), &camera);
+    // A right click, not moved, while the middle button pans: the pan's, none.
+    h.hover_at(at);
+    button_event(&h, at, PointerButton::Middle, true, none);
+    h.hover_at(on);
+    button_event(&h, on, right, true, none);
+    button_event(&h, on, right, false, none);
+    button_event(&h, on, PointerButton::Middle, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_ne!(view(&h).camera(), &camera, "the middle button didn't pan");
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    // And while the Orbit tool's left drag orbits: none.
+    view_mut(&mut h).tool = Some(Navigation::Orbit);
+    step(&mut h);
+    let camera = view(&h).camera().clone();
+    secondary_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, PointerButton::Primary, true, none);
+    h.hover_at(on);
+    button_event(&h, on, right, true, none);
+    button_event(&h, on, right, false, none);
+    button_event(&h, on, PointerButton::Primary, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_ne!(view(&h).camera(), &camera, "the tool didn't orbit");
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    // The tool still chosen, a right click with nothing dragging is handed on: a tool
+    // takes the left drag alone.
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    secondary_taken(&seen);
+    right_click(&mut h, on, on, none);
+    assert_eq!(secondary_taken(&seen).len(), 1);
+    // And with no tool, the same right click well after: handed on, so none above was
+    // missing for want of events.
+    view_mut(&mut h).tool = None;
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    secondary_taken(&seen);
+    right_click(&mut h, on, on, none);
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(clicks[0].click.at_px, at_px(rect, on));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_click_on_the_view_cube_or_the_navigation_bar_is_theirs_not_the_canvass() {
+    use eframe::egui::{Modifiers, Pos2, vec2};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let none = Modifiers::NONE;
+    secondary_taken(&seen);
+    // On the cube's Front face: its menu opens, and nothing is handed on.
+    let front = h
+        .get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Front")
+        .rect();
+    assert!(rect.contains(front.center()));
+    right_click(&mut h, front.center(), front.center(), none);
+    assert!(
+        h.query_by_role_and_label(Role::RadioButton, "Perspective")
+            .is_some(),
+        "the cube's menu didn't open"
+    );
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    // Closed by its own choice, the projection the view has.
+    h.get_by_role_and_label(Role::RadioButton, "Orthographic")
+        .click();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(
+        h.query_by_role_and_label(Role::RadioButton, "Perspective")
+            .is_none(),
+        "the cube's menu didn't close"
+    );
+    // On the bar's Orbit, and in its padding left of Orbit (6 points each side): none.
+    let orbit = h
+        .get_by_role_and_label(Role::Toolbar, "Navigation bar")
+        .get_by_label("Orbit")
+        .rect();
+    let padding = Pos2::new(orbit.left() - 3.0, orbit.center().y);
+    assert!(rect.contains(padding));
+    secondary_taken(&seen);
+    right_click(&mut h, orbit.center(), orbit.center(), none);
+    right_click(&mut h, padding, padding, none);
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    assert_eq!(view(&h).tool, None);
+    // And the same click on the canvas, well after: handed on, so none above was missing
+    // for want of events.
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    secondary_taken(&seen);
+    let at = rect.center() - vec2(100.0, 0.0);
+    right_click(&mut h, at, at, none);
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn several_right_clicks_in_one_frame_are_handed_on_in_their_order() {
+    use eframe::egui::{Event, Modifiers, PointerButton, vec2};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let (a, b, c) = (at, at + vec2(40.0, 0.0), at + vec2(40.0, 30.0));
+    let (d, dragged) = (at - vec2(40.0, 0.0), at - vec2(20.0, 0.0));
+    let right = |pos, pressed, modifiers| Event::PointerButton {
+        pos,
+        button: PointerButton::Secondary,
+        pressed,
+        modifiers,
+    };
+    let none = Modifiers::NONE;
+    secondary_taken(&seen);
+    // Three clicks, the second with Shift and the third with Ctrl, and a right drag of 20
+    // points between the first two, all in one frame.
+    h.input_mut().events.extend([
+        Event::PointerMoved(a),
+        right(a, true, none),
+        right(a, false, none),
+        Event::PointerMoved(d),
+        right(d, true, none),
+        Event::PointerMoved(dragged),
+        right(dragged, false, none),
+        Event::PointerMoved(b),
+        right(b, true, Modifiers::SHIFT),
+        right(b, false, Modifiers::SHIFT),
+        Event::PointerMoved(c),
+        right(c, true, Modifiers::COMMAND),
+        right(c, false, Modifiers::COMMAND),
+    ]);
+    step(&mut h);
+    let clicks = secondary_taken(&seen);
+    let places: Vec<[f32; 2]> = clicks.iter().map(|seen| seen.click.at_px).collect();
+    assert_eq!(places, [a, b, c].map(|p| at_px(rect, p)), "{clicks:?}");
+    let keys: Vec<(bool, bool)> = clicks
+        .iter()
+        .map(|seen| (seen.click.shift, seen.click.ctrl))
+        .collect();
+    assert_eq!(keys, [(false, false), (true, false), (false, true)]);
+    // Each of that one frame and its one time.
+    for seen in &clicks {
+        assert_eq!(Some(seen.click.frame), seen.serial, "{seen:?}");
+        assert_eq!(seen.click.time, seen.time, "{seen:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn right_clicks_leave_the_left_buttons_stream_as_it_was() {
+    use eframe::egui::{Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{self, DoubleClick, Move, Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let p = rect.center() - vec2(100.0, 0.0);
+    let q = p + vec2(40.0, 0.0);
+    let r = p + vec2(0.0, 40.0);
+    let to = r + vec2(10.0, 5.0);
+    let none = Modifiers::NONE;
+    let (left, right) = (PointerButton::Primary, PointerButton::Secondary);
+    let click = |h: &AppHarness, at, button| {
+        button_event(h, at, button, true, none);
+        button_event(h, at, button, false, none);
+    };
+    // The same left clicks and drag, with a right click a frame before each or none, every
+    // event a frame of its own; the left button's events given, and the right clicks.
+    type Given = Vec<(LeftKind, [f32; 2], bool, bool)>;
+    let run = |h: &mut AppHarness, with_right: bool| -> (Given, usize) {
+        for _ in 0..60 {
+            step(h);
+        }
+        left_taken(&seen);
+        // A left click a frame after a right one (egui, counting every button's clicks
+        // together, calls it a double-click).
+        h.hover_at(p);
+        if with_right {
+            click(h, p, right);
+        }
+        click(h, p, left);
+        // A second past (egui's double-click delay is 0.3 s, and a triple's 0.6), a left
+        // double-click a frame after a right click (to egui, a double and a triple).
+        for _ in 0..60 {
+            step(h);
+        }
+        h.hover_at(q);
+        if with_right {
+            click(h, q, right);
+        }
+        click(h, q, left);
+        click(h, q, left);
+        for _ in 0..60 {
+            step(h);
+        }
+        // A right click in the middle of a left drag.
+        h.hover_at(r);
+        button_event(h, r, left, true, none);
+        if with_right {
+            click(h, r, right);
+        }
+        h.hover_at(to);
+        button_event(h, to, left, false, none);
+        for _ in 0..3 {
+            step(h);
+        }
+        let clicks = secondary_seen(&seen).len();
+        let given = left_taken(&seen)
+            .iter()
+            .map(|seen| {
+                let e = seen.event;
+                (e.kind, e.at_px, e.shift, e.ctrl)
+            })
+            .collect();
+        (given, clicks)
+    };
+    let (alone, no_clicks) = run(&mut h, false);
+    let (with_right, clicks) = run(&mut h, true);
+    assert_eq!(no_clicks, 0);
+    assert_eq!(clicks, 3, "the right clicks weren't handed on");
+    let kinds: Vec<LeftKind> = alone.iter().map(|given| given.0).collect();
+    assert_eq!(
+        kinds,
+        [
+            Press,
+            Release,
+            Press,
+            Release,
+            Press,
+            Release,
+            DoubleClick,
+            Press,
+            Move,
+            Release
+        ]
+    );
+    assert_eq!(alone[6].1, at_px(rect, q));
+    assert_eq!(with_right, alone);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_as_browse_fills_the_path_and_save_and_replace_go_on_as_typed() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let (mut h, old) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
+    file_menu(&mut h, "Save As…", "Save example.silico as");
+    browse(&mut h, &browser);
+    assert_eq!(
+        browser.asked(),
+        [Ask {
+            pick: Pick::Save,
+            title: "Save example.silico as".to_owned(),
+            filters: vec![browse_mod::DOCUMENTS],
+            folder: Some(f.dir.path().to_path_buf()),
+            file_name: Some("example.silico".to_owned()),
+        }]
+    );
+    let frames = h.state().frames();
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().frames(), frames + 20);
+    // Picked: the field holds it, and nothing is saved until Save.
+    let copy = f.dir.path().join("copy.silico");
+    browser.answer(Some(&copy));
+    step_until(&mut h, "the field filled", |h| {
+        path_value(h) == copy.to_str().unwrap()
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert!(!copy.exists());
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "the tab of the new file", |h| {
+        h.state().tabs()[0].path == copy.to_str().unwrap()
+    });
+    assert!(copy.is_file());
+    assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
+    // A file already there, picked: asked about as when typed, and Cancel writes nothing.
+    let there = f.file("there.silico", "an older copy");
+    step_until(&mut h, "saved", |h| !anywhere(h, "copy.silico *"));
+    file_menu(&mut h, "Save As…", "Save copy.silico as");
+    browse(&mut h, &browser);
+    // Now the new file's folder and name.
+    assert_eq!(browser.asked()[1].file_name.as_deref(), Some("copy.silico"));
+    browser.answer(Some(&there));
+    step_until(&mut h, "the field filled", |h| {
+        path_value(h) == there.to_str().unwrap()
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    let asked = format!("{} already exists. Replace it?", there.to_str().unwrap());
+    step_until(&mut h, "the question", |h| anywhere(h, &asked));
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the question gone", |h| !anywhere(h, &asked));
+    assert_eq!(std::fs::read_to_string(&there).unwrap(), "an older copy");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn exports_browse_asks_its_formats_fills_the_path_and_the_format_follows_it() {
+    use silico_core::command::export::{Export, ExportFormat};
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let (mut h, _) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    open_export(&mut h);
+    browse(&mut h, &browser);
+    // 3MF chosen: its filter first.
+    assert_eq!(
+        browser.asked(),
+        [Ask {
+            pick: Pick::Save,
+            title: "Export example.silico".to_owned(),
+            filters: vec![
+                browse_mod::Filter {
+                    name: "3MF",
+                    extensions: &["3mf"]
+                },
+                browse_mod::Filter {
+                    name: "STEP",
+                    extensions: &["step", "stp"]
+                },
+            ],
+            folder: Some(f.dir.path().to_path_buf()),
+            file_name: Some("example.3mf".to_owned()),
+        }]
+    );
+    let frames = h.state().frames();
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().frames(), frames + 20);
+    // A STEP name picked while 3MF is chosen: the field holds it, and STEP is chosen (no
+    // tolerance asked), nothing exported until Export.
+    let out = f.dir.path().join("sub").join("out.stp");
+    std::fs::create_dir(f.dir.path().join("sub")).unwrap();
+    browser.answer(Some(&out));
+    step_until(&mut h, "the field filled", |h| {
+        path_value(h) == out.to_str().unwrap()
+    });
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, "Tolerance")
+            .is_none()
+    );
+    assert!(h.state().tabs()[0].exports.is_empty());
+    press(&mut h, "Export");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert_eq!(
+        h.state().tabs()[0].exports,
+        [Export {
+            format: ExportFormat::Step,
+            path: out.clone(),
+            replace: false,
+            features: None,
+        }]
+    );
+    assert!(out.is_file());
+    // STEP chosen, browsing again: STEP's filter first.
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    browse(&mut h, &browser);
+    // The document's folder, not the folder last picked in (`sub`).
+    assert_eq!(browser.asked()[1].folder.as_deref(), Some(f.dir.path()));
+    assert_eq!(browser.asked()[1].filters[0].name, "STEP");
+    assert_eq!(
+        browser.asked()[1].file_name.as_deref(),
+        Some("example.step")
+    );
+    // A 3MF name picked: 3MF chosen again, its tolerance asked.
+    let mesh = f.dir.path().join("out.3MF");
+    browser.answer(Some(&mesh));
+    step_until(&mut h, "the field filled", |h| {
+        path_value(h) == mesh.to_str().unwrap()
+    });
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, "Tolerance")
+            .is_some()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn news_browse_asks_where_to_save_and_starts_in_the_last_folder_picked() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    file_menu(&mut h, "New…", "New document");
+    browse(&mut h, &browser);
+    assert_eq!(
+        browser.asked(),
+        [Ask {
+            pick: Pick::Save,
+            title: "New document".to_owned(),
+            filters: vec![browse_mod::DOCUMENTS],
+            folder: None,
+            file_name: None,
+        }]
+    );
+    let sub = f.dir.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let made = sub.join("new.silico");
+    browser.answer(Some(&made));
+    step_until(&mut h, "the field filled", |h| {
+        path_value(h) == made.to_str().unwrap()
+    });
+    // Filled, not made: Create makes it.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!made.exists());
+    assert!(h.state().tabs().is_empty());
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, "New document"));
+    // No document open: the next starts in the folder last picked in.
+    file_menu(&mut h, "Open…", "Open document");
+    browse(&mut h, &browser);
+    assert_eq!(browser.asked()[1].folder.as_deref(), Some(sub.as_path()));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_pick_answering_after_its_dialog_closed_changes_nothing() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    file_menu(&mut h, "Open…", "Open document");
+    browse(&mut h, &browser);
+    // The app's dialog cancelled while the native one is open.
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, "Open document"));
+    let path = f.file("late.silico", EXAMPLE);
+    browser.answer(Some(&path));
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs().is_empty());
+    // Nor does it go to the next question asked: a new Open's field is as it was.
+    file_menu(&mut h, "Open…", "Open document");
+    assert_eq!(path_value(&h), "");
+    assert!(!browse_button(&h).accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_opens_pick_answering_while_save_as_is_asked_neither_opens_nor_fills_it() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let (mut h, path) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
+    // Open, a path typed, browsing; then cancelled, its native dialog still open.
+    file_menu(&mut h, "Open…", "Open document");
+    h.get_by_role(Role::TextInput).focus();
+    step(&mut h);
+    h.get_by_role(Role::TextInput).type_text("typed.silico");
+    step(&mut h);
+    browse(&mut h, &browser);
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, "Open document"));
+    // Save As asked, and only then Open's pick answers.
+    file_menu(&mut h, "Save As…", "Save example.silico as");
+    let late = f.file("late.silico", EXAMPLE);
+    browser.answer(Some(&late));
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    assert!(anywhere(&h, "Save example.silico as"));
+    assert_eq!(path_value(&h), "");
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    assert!(!browse_button(&h).accesskit_node().is_disabled());
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| {
+        !anywhere(h, "Save example.silico as")
+    });
+    // Open's field holds what was typed in it, and nothing more was opened.
+    file_menu(&mut h, "Open…", "Open document");
+    assert_eq!(path_value(&h), "typed.silico");
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_exports_pick_answering_while_new_is_asked_neither_fills_it_nor_exports() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let (mut h, _) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    open_export(&mut h);
+    let before = path_value(&h);
+    browse(&mut h, &browser);
+    press(&mut h, "Cancel");
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    // New asked, and only then Export's pick answers, a STEP name.
+    file_menu(&mut h, "New…", "New document");
+    let late = f.dir.path().join("late.step");
+    browser.answer(Some(&late));
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, "New document"));
+    assert_eq!(path_value(&h), "");
+    assert!(!browse_button(&h).accesskit_node().is_disabled());
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(h.state().tabs()[0].exports.is_empty());
+    assert!(!late.exists());
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, "New document"));
+    // Export again: its path and format as they began, 3MF's tolerance asked.
+    open_export(&mut h);
+    assert_eq!(path_value(&h), before);
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, "Tolerance")
+            .is_some()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_exports_pick_answering_while_its_export_runs_changes_neither_path_nor_format() {
+    use silico_core::command::export::{Export, ExportFormat};
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let (mut h, path) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let hold = f.kernel.hold(is_step);
+    open_export(&mut h);
+    press(&mut h, "STEP");
+    let before = path_value(&h);
+    // Browsing, and Export pressed meanwhile: the export runs, held.
+    browse(&mut h, &browser);
+    press(&mut h, "Export");
+    assert!(f.kernel.wait_running(1, WAIT));
+    step_until(&mut h, "running", |h| anywhere(h, "Exporting…"));
+    // A 3MF name picked now: neither the path nor the format follows it.
+    let picked = f.dir.path().join("picked.3mf");
+    browser.answer(Some(&picked));
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, "Exporting…"));
+    assert_eq!(path_value(&h), before);
+    assert!(
+        h.query_by_role_and_label(Role::TextInput, "Tolerance")
+            .is_none()
+    );
+    hold.release();
+    step_until(&mut h, "the dialog closed", |h| !exporting_dialog(h));
+    assert_eq!(
+        h.state().tabs()[0].exports,
+        [Export {
+            format: ExportFormat::Step,
+            path: path.with_extension("step"),
+            replace: false,
+            features: None,
+        }]
+    );
+    assert!(!picked.exists());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_cancel_picks_no_folder() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    file_menu(&mut h, "Open…", "Open document");
+    browse(&mut h, &browser);
+    browser.answer(None);
+    step_until(&mut h, "Browse… on again", |h| {
+        !browse_button(h).accesskit_node().is_disabled()
+    });
+    // No document open and nothing picked: the platform's own start again.
+    browse(&mut h, &browser);
+    assert_eq!(browser.asked().len(), 2);
+    assert_eq!(browser.asked()[1].folder, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn browse_while_a_dialog_is_open_is_off_and_says_why_when_hovered() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    file_menu(&mut h, "Open…", "Open document");
+    let why = "A file dialog is already open";
+    // On: hovered, it says nothing.
+    browse_button(&h).hover();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!anywhere(&h, why));
+    browse(&mut h, &browser);
+    // Drawn off from the frame after the one it opened in.
+    step(&mut h);
+    assert!(browse_button(&h).accesskit_node().is_disabled());
+    browse_button(&h).hover();
+    step_until(&mut h, "why it's off", |h| anywhere(h, why));
+    // Answered: on again, and saying nothing.
+    browser.answer(None);
+    step_until(&mut h, "Browse… on again", |h| {
+        !browse_button(h).accesskit_node().is_disabled()
+    });
+    browse_button(&h).hover();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!anywhere(&h, why));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pick_whose_path_isnt_utf8_is_said_and_neither_opens_nor_fills() {
+    use std::os::unix::ffi::OsStrExt;
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    file_menu(&mut h, "Open…", "Open document");
+    browse(&mut h, &browser);
+    let mut bytes = f.dir.path().as_os_str().as_bytes().to_vec();
+    bytes.extend_from_slice(b"/\xff.silico");
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(&bytes));
+    browser.answer(Some(&path));
+    step_until(&mut h, "said", |h| h.state().message().is_some());
+    assert_eq!(
+        h.state().message(),
+        Some(format!("{} can't be used: its path isn't UTF-8", path.display()).as_str())
+    );
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs().is_empty());
+    assert!(anywhere(&h, "Open document"));
+    assert_eq!(path_value(&h), "");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_opens_pick_refused_at_once_asks_for_the_frame_that_says_so() {
+    // Every session the process may hold already open: the pick's open is refused at once,
+    // as it's asked, so no waker asks for the frame that takes the refusal; the frame that
+    // took the pick asks for it.
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    for n in 0..silico_core::command::MAX_SESSIONS {
+        let path = f.dir.path().join(format!("held{n}.silico"));
+        f.sessions.open(&path, true).wait().session.unwrap();
+    }
+    file_menu(&mut h, "Open…", "Open document");
+    browse(&mut h, &browser);
+    quiet_wakes(&mut h);
+    idle(&mut h);
+    let path = f.file("picked.silico", EXAMPLE);
+    browser.answer(Some(&path));
+    let woken = h.state().wakes();
+    // The frame the answer's waker asked for (egui gives each such request two frames): it
+    // takes the pick, the dialog closes, and the open is refused, not yet taken.
+    step(&mut h);
+    assert!(!anywhere(&h, "Open document"));
+    assert_eq!(h.state().message(), None);
+    // Asked for at once by the frame before, nothing having woken it: the refusal said.
+    step(&mut h);
+    assert!(asked_at_once(&h));
+    assert_eq!(h.state().wakes(), woken);
+    let said = format!("{} sessions are open", silico_core::command::MAX_SESSIONS);
+    assert!(
+        h.state().message().is_some_and(|m| m.contains(&said)),
+        "{:?}",
+        h.state().message()
+    );
+    // And then nothing more at once.
+    step(&mut h);
+    assert!(!asked_at_once(&h));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe() {
+    on_lavapipe(
+        "the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            // As main.rs does, once at startup.
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            let path = f.file("box.silico", A_BOX);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            select(&mut h, "Block");
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            // The browser's empty space, left of the viewport and above the timeline: the
+            // panels' Gray.100 (DESIGN.md, *Tokens*).
+            let viewport = the_viewport(&h);
+            let browser = viewport.left_bottom() + eframe::egui::vec2(-20.0, -20.0);
+            assert_eq!(pixel(browser), [0x0d, 0x0d, 0x0d, 0xff]);
+            // The selected feature's timeline entry: Blue.500 (styles.css, `.tl-item.selected`)
+            // at its left edge, inside its fill, clear of a focus ring's 1 point, and short
+            // of its text.
+            let entry = h
+                .get_by_role_and_label(Role::Pane, "Timeline")
+                .get_by_label("Block")
+                .rect();
+            let inside = eframe::egui::pos2(entry.left() + 2.5, entry.center().y);
+            assert_eq!(pixel(inside), [0x18, 0x6a, 0xdd, 0xff], "{entry:?}");
+        },
+    );
+}
+
+#[test]
+fn a_right_press_in_one_tab_let_go_in_another_is_no_click_in_either() {
+    use eframe::egui::{Modifiers, PointerButton, vec2};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let (first, second) = two_tabs_first_shown(&f, &mut h, &seen);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let right = PointerButton::Secondary;
+    let none = Modifiers::NONE;
+    secondary_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, right, true, none);
+    step(&mut h);
+    // The second tab chosen with no button (through the accessibility tree), and the
+    // release there, well within egui's click duration.
+    let frames = h.state().frames();
+    h.get_by_role_and_label(Role::Button, "other.silico")
+        .click_accesskit();
+    step_until(&mut h, "the second shown", |h| {
+        left_shown(h) == Some(second)
+    });
+    step(&mut h);
+    assert!(h.state().frames() - frames < 20, "too slow to be a click");
+    button_event(&h, at, right, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    // Both tabs were shown and watched while it was held.
+    let shown: Vec<_> = seen
+        .lock()
+        .unwrap()
+        .frames
+        .iter()
+        .map(|(_, frame, _)| frame.session)
+        .collect();
+    assert!(
+        shown.contains(&first) && shown.contains(&second),
+        "{shown:?}"
+    );
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    // A click of its own, in the tab shown: handed on to it.
+    right_click(&mut h, at, at, none);
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(clicks[0].session, second);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_press_is_no_click_once_another_button_goes_between_the_focus_goes_or_it_strays() {
+    use eframe::egui::{Event, Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let none = Modifiers::NONE;
+    let (left, right) = (PointerButton::Primary, PointerButton::Secondary);
+    let rest = |h: &mut AppHarness| {
+        for _ in 0..60 {
+            step(h);
+        }
+    };
+    left_taken(&seen);
+    // A left press and release between the right press and its release: no right click,
+    // and the left click is handed on.
+    h.hover_at(at);
+    button_event(&h, at, right, true, none);
+    button_event(&h, at, left, true, none);
+    button_event(&h, at, left, false, none);
+    button_event(&h, at, right, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let clicks = secondary_seen(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    let lefts = left_taken(&seen);
+    assert_eq!(kinds(&lefts), [Press, Release]);
+    assert!(lefts.iter().all(|seen| seen.event.at_px == at_px(rect, at)));
+    rest(&mut h);
+    // The window's focus going between them: none.
+    left_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, right, true, none);
+    h.event(Event::WindowFocused(false));
+    button_event(&h, at, right, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    h.event(Event::WindowFocused(true));
+    rest(&mut h);
+    // Gone 10 points away and back to the press before the release: none.
+    secondary_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, right, true, none);
+    h.hover_at(at + vec2(10.0, 0.0));
+    h.hover_at(at);
+    button_event(&h, at, right, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    rest(&mut h);
+    // The same press and release with none of them: a click, so none above was missing
+    // for want of events.
+    secondary_taken(&seen);
+    right_click(&mut h, at, at, none);
+    assert_eq!(secondary_taken(&seen).len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The start page (docs/design/m5-ui/DESIGN.md, *Start page or blank canvas?*) ----
+
+impl Fixture {
+    /// The app on these sessions as `make` makes it, in a harness, with nothing open.
+    fn app_made(&self, make: impl FnOnce(App<Fake>) -> App<Fake>) -> AppHarness {
+        let app = make(App::new(Arc::clone(&self.sessions)));
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0, 800.0))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    }
+
+    /// Where these tests keep the list of recent documents: in a folder not yet made.
+    fn recents_file(&self) -> PathBuf {
+        self.dir.path().join("app-data").join("recent-documents")
+    }
+
+    /// The app keeping its recent documents in [`recents_file`](Self::recents_file), the
+    /// list read.
+    fn remembering(&self) -> AppHarness {
+        let file = self.recents_file();
+        let mut h = self.app_made(|app| app.remembering(Recents::at(file)));
+        recents_read(&mut h);
+        h
+    }
+}
+
+/// Frames stepped until the app has heard the list of recent documents read.
+fn recents_read(h: &mut AppHarness) {
+    step_until(h, "the recent documents read", |h| {
+        h.state().recents().is_some_and(Recents::is_read)
+    });
+}
+
+/// Whether `node` is inside the pane labelled `pane`.
+fn in_pane(node: &egui_kittest::Node<'_>, pane: &str) -> bool {
+    let mut at = node.parent();
+    while let Some(node) = at {
+        let shown = node.accesskit_node();
+        if shown.role() == Role::Pane && shown.label().as_deref() == Some(pane) {
+            return true;
+        }
+        at = node.parent();
+    }
+    false
+}
+
+/// Whether `node` is shown selected (toggled on).
+fn toggled(node: &egui_kittest::Node<'_>) -> Option<bool> {
+    node.accesskit_node()
+        .toggled()
+        .map(|toggled| toggled == eframe::egui::accesskit::Toggled::True)
+}
+
+/// The start page.
+fn start_page(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::Pane, "Start")
+}
+
+/// Whether the start page is shown.
+fn start_shown(h: &AppHarness) -> bool {
+    h.query_by_role_and_label(Role::Pane, "Start").is_some()
+}
+
+/// The app bar's Home (the viewport's view cube has a Home of its own).
+fn home_button(h: &AppHarness) -> egui_kittest::Node<'_> {
+    let mut found = h
+        .query_all_by_role_and_label(Role::Button, "Home")
+        .filter(|node| !in_pane(node, "Viewport"));
+    let home = found.next().expect("the app bar's Home");
+    assert!(found.next().is_none(), "two Homes outside the viewport");
+    home
+}
+
+/// The start page's Recent, each document's name in order, and each one's description.
+fn recent_rows(h: &AppHarness) -> Vec<(String, String)> {
+    start_page(h)
+        .get_by_role_and_label(Role::List, "Recent")
+        .query_all_by_role(Role::Button)
+        .map(|node| {
+            let node = node.accesskit_node();
+            (
+                node.label().unwrap_or_default(),
+                node.description().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// The start page's Recent, each document's name in order.
+fn recent_names(h: &AppHarness) -> Vec<String> {
+    recent_rows(h).into_iter().map(|(name, _)| name).collect()
+}
+
+/// `path` opened, its tab waited for.
+fn open_and_wait(h: &mut AppHarness, path: &Path) {
+    let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(h, "its tab", |h| {
+        h.state().tabs().iter().any(|tab| tab.name() == name)
+    });
+}
+
+/// The text the frame just stepped copied, if it copied any.
+fn copied(h: &AppHarness) -> Option<String> {
+    h.output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            eframe::egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+}
+
+#[test]
+fn with_no_document_the_start_page_shows_new_open_recent_and_copy_mcp_config() {
+    let f = fixture();
+    let mut h = f.remembering();
+    let start = start_page(&h);
+    for button in ["New part", "Open…", "Copy MCP config"] {
+        assert!(
+            start
+                .query_by_role_and_label(Role::Button, button)
+                .is_some(),
+            "{button}"
+        );
+    }
+    assert!(
+        start
+            .query_by_role_and_label(Role::List, "Recent")
+            .is_some()
+    );
+    assert!(
+        start
+            .query_by_label("Recent".to_uppercase().as_str())
+            .is_some()
+    );
+    assert!(
+        start
+            .query_by_label("No recent documents yet: each you open or make is listed here.")
+            .is_some()
+    );
+    // Nothing else between the bars: no panes, no toolbar.
+    for pane in ["Browser", "Viewport", "Properties", "Timeline"] {
+        assert!(
+            h.query_by_role_and_label(Role::Pane, pane).is_none(),
+            "{pane}"
+        );
+    }
+    assert!(h.query_by_role_and_label(Role::Toolbar, "CREATE").is_none());
+    // Home is the page shown.
+    assert_eq!(toggled(&home_button(&h)), Some(true));
+    // New part asks where the new document goes, as File > New… does.
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "New part")
+        .click();
+    step_until(&mut h, "New's dialog", |h| anywhere(h, "New document"));
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "it gone", |h| !anywhere(h, "New document"));
+    assert!(h.state().tabs().is_empty());
+    assert!(start_shown(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_frames_left_events_and_right_clicks_are_numbered_in_their_order_together() {
+    use eframe::egui::{Event, Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{DoubleClick, Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let a = rect.center() - vec2(100.0, 0.0);
+    let b = a + vec2(40.0, 0.0);
+    let button = |pos, button, pressed| Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    let (left, right) = (PointerButton::Primary, PointerButton::Secondary);
+    for _ in 0..60 {
+        step(&mut h);
+    }
+    left_taken(&seen);
+    // In one frame: a left click, a right click, and a second left click, the double.
+    h.input_mut().events.extend([
+        Event::PointerMoved(a),
+        button(a, left, true),
+        button(a, left, false),
+        Event::PointerMoved(b),
+        button(b, right, true),
+        button(b, right, false),
+        Event::PointerMoved(a),
+        button(a, left, true),
+        button(a, left, false),
+    ]);
+    step(&mut h);
+    let clicks = secondary_seen(&seen);
+    let lefts = left_taken(&seen);
+    assert_eq!(kinds(&lefts), [Press, Release, Press, Release, DoubleClick]);
+    let left_seqs: Vec<u32> = lefts.iter().map(|seen| seen.event.seq).collect();
+    assert_eq!(left_seqs, [0, 1, 3, 4, 5]);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(clicks[0].click.seq, 2);
+    assert_eq!(clicks[0].click.at_px, at_px(rect, b));
+    // All of one frame.
+    assert!(
+        lefts
+            .iter()
+            .all(|seen| seen.event.frame == clicks[0].click.frame)
+    );
+    // The next frame's are numbered from 0 again.
+    h.hover_at(b);
+    button_event(&h, b, right, true, Modifiers::NONE);
+    button_event(&h, b, right, false, Modifiers::NONE);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(clicks[0].click.seq, 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_pages_open_asks_as_file_open_does_and_its_browse_opens_the_pick() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let path = f.file("example.silico", EXAMPLE);
+    let mut h = f.app_browsing(&browser);
+    step(&mut h);
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "Open…")
+        .click();
+    step_until(&mut h, "Open's dialog", |h| anywhere(h, "Open document"));
+    browse(&mut h, &browser);
+    assert_eq!(browser.asked()[0].pick, Pick::Open);
+    browser.answer(Some(&path));
+    step_until(&mut h, "its tab", |h| !h.state().tabs().is_empty());
+    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    step_until(&mut h, "the start page left", |h| !start_shown(h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn command_n_and_command_o_ask_for_new_and_open_from_the_start_page() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    for (key, heading) in [
+        (eframe::egui::Key::N, "New document"),
+        (eframe::egui::Key::O, "Open document"),
+    ] {
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+        step_until(&mut h, heading, |h| anywhere(h, heading));
+        h.key_press(eframe::egui::Key::Escape);
+        step_until(&mut h, "it gone", |h| !anywhere(h, heading));
+    }
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn opening_a_document_leaves_the_start_page_and_home_returns_to_it() {
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let mut h = f.app();
+    step(&mut h);
+    assert!(start_shown(&h));
+    open_and_wait(&mut h, &path);
+    step(&mut h);
+    assert!(!start_shown(&h));
+    assert!(h.query_by_role_and_label(Role::Pane, "Browser").is_some());
+    assert_eq!(toggled(&home_button(&h)), Some(false));
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "example.silico")),
+        Some(true)
+    );
+    // Home: the start page, over the open document, which stays open.
+    home_button(&h).click();
+    step(&mut h);
+    step(&mut h);
+    assert!(start_shown(&h));
+    assert!(h.query_by_role_and_label(Role::Pane, "Browser").is_none());
+    assert_eq!(toggled(&home_button(&h)), Some(true));
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "example.silico")),
+        Some(false)
+    );
+    assert_eq!(h.state().tabs().len(), 1);
+    // Its tab: the document again.
+    h.get_by_role_and_label(Role::Button, "example.silico")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert!(!start_shown(&h));
+    assert!(h.query_by_role_and_label(Role::Pane, "Browser").is_some());
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "example.silico")),
+        Some(true)
+    );
+    // Home again, then another document opened: it's shown, and the start page left.
+    home_button(&h).click();
+    step(&mut h);
+    step(&mut h);
+    assert!(start_shown(&h));
+    let other = f.file("other.silico", EXAMPLE);
+    open_and_wait(&mut h, &other);
+    step(&mut h);
+    assert!(!start_shown(&h));
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "other.silico")),
+        Some(true)
+    );
+    // The last tab closed: the start page, with no Home pressed.
+    for name in ["other.silico", "example.silico"] {
+        h.get_by_label(&format!("Close {name}")).click();
+        step_until(&mut h, "the tab closed", |h| {
+            h.state().tabs().iter().all(|tab| tab.name() != name)
+        });
+    }
+    step(&mut h);
+    assert!(start_shown(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn recent_lists_the_last_opened_newest_first_each_once_and_a_new_app_reads_them() {
+    let f = fixture();
+    let one = f.file("one.silico", EXAMPLE);
+    let two = f.file("two.silico", EXAMPLE);
+    let mut h = f.remembering();
+    open_and_wait(&mut h, &one);
+    open_and_wait(&mut h, &two);
+    // One closed and opened again: first now, and listed once.
+    h.get_by_label("Close one.silico").click();
+    step_until(&mut h, "one closed", |h| h.state().tabs().len() == 1);
+    open_and_wait(&mut h, &one);
+    home_button(&h).click();
+    step_until(&mut h, "Recent, one first", |h| {
+        start_shown(h) && recent_names(h) == ["one.silico", "two.silico"]
+    });
+    let (one, two) = (one.to_str().unwrap(), two.to_str().unwrap());
+    assert_eq!(
+        recent_rows(&h),
+        [
+            ("one.silico".to_owned(), one.to_owned()),
+            ("two.silico".to_owned(), two.to_owned())
+        ]
+    );
+    // The file, as recent.rs's form has it: a header, then a path a line, newest first.
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!("silico recent-documents 1\n{one}\n{two}\n")
+    );
+    // A recent document already open: its tab shown, not opened again.
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "two.silico")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert!(!start_shown(&h));
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "two.silico")),
+        Some(true)
+    );
+    assert_eq!(h.state().tabs().len(), 2);
+    assert_eq!(h.state().message(), None);
+    for name in ["one.silico", "two.silico"] {
+        h.get_by_label(&format!("Close {name}")).click();
+        step_until(&mut h, "the tab closed", |h| {
+            h.state().tabs().iter().all(|tab| tab.name() != name)
+        });
+    }
+    // Another app on the same file lists the same.
+    let mut again = f.remembering();
+    step(&mut again);
+    assert_eq!(recent_names(&again), ["one.silico", "two.silico"]);
+    // A recent document clicked opens it.
+    start_page(&again)
+        .get_by_role_and_label(Role::Button, "two.silico")
+        .click();
+    step_until(&mut again, "two's tab", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .any(|tab| tab.name() == "two.silico")
+    });
+    assert_eq!(again.state().tabs()[0].path, two);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_recent_document_no_longer_there_is_said_and_dropped_from_the_list() {
+    let f = fixture();
+    let kept = f.file("kept.silico", EXAMPLE);
+    let gone = f.dir.path().join("gone.silico");
+    let (kept_at, gone_at) = (kept.to_str().unwrap(), gone.to_str().unwrap());
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{gone_at}\n{kept_at}\n"),
+    )
+    .unwrap();
+    let mut h = f.remembering();
+    // Nothing at gone's path when the list was looked through: marked so, once looked.
+    let want = [
+        ("gone.silico".to_owned(), format!("{gone_at}, not found")),
+        ("kept.silico".to_owned(), kept_at.to_owned()),
+    ];
+    step_until(&mut h, "gone marked", |h| recent_rows(h) == want);
+    let folder = f.dir.path().display().to_string();
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "gone.silico")
+        .click();
+    let said =
+        format!("gone.silico isn't in {folder} any more, so it's no longer listed in Recent");
+    step_until(&mut h, "gone said and dropped", |h| {
+        h.state().message() == Some(said.as_str()) && recent_names(h) == ["kept.silico"]
+    });
+    assert!(anywhere(&h, &said));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!("silico recent-documents 1\n{kept_at}\n")
+    );
+    // Kept goes from disk after the list was read: its open is refused, and it's dropped.
+    std::fs::remove_file(&kept).unwrap();
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "kept.silico")
+        .click();
+    let said =
+        format!("kept.silico isn't in {folder} any more, so it's no longer listed in Recent");
+    step_until(&mut h, "kept said and dropped", |h| {
+        h.state().message() == Some(said.as_str()) && recent_names(h).is_empty()
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        "silico recent-documents 1\n"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_recent_document_refused_for_another_reason_stays_listed() {
+    let f = fixture();
+    // A folder: there, but no document, so its open is refused.
+    let broken = f.dir.path().join("broken.silico");
+    std::fs::create_dir(&broken).unwrap();
+    let at = broken.to_str().unwrap().to_owned();
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{at}\n"),
+    )
+    .unwrap();
+    let mut h = f.remembering();
+    step(&mut h);
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "broken.silico")
+        .click();
+    step_until(&mut h, "the refusal said", |h| {
+        h.state().message().is_some()
+    });
+    assert!(!h.state().message().unwrap().contains("Recent"));
+    // Another document opened after it: once that's listed, the list's thread has taken
+    // the refusal's check too, asked before it.
+    let other = f.file("other.silico", EXAMPLE);
+    let other_at = other.to_str().unwrap().to_owned();
+    open_and_wait(&mut h, &other);
+    let listed = |h: &AppHarness| -> Vec<String> {
+        h.state()
+            .recents()
+            .unwrap()
+            .list()
+            .iter()
+            .map(|recent| recent.path.clone())
+            .collect()
+    };
+    step_until(&mut h, "other listed", |h| {
+        listed(h).first() == Some(&other_at)
+    });
+    assert_eq!(listed(&h), [other_at.clone(), at.clone()]);
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!("silico recent-documents 1\n{other_at}\n{at}\n")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_corrupt_recents_file_lists_nothing_and_the_next_open_replaces_it() {
+    let f = fixture();
+    let listed = f.file("listed.silico", EXAMPLE);
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    // Its paths are real, but its header isn't the form's.
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent 1\n{}\n", listed.to_str().unwrap()),
+    )
+    .unwrap();
+    let mut h = f.remembering();
+    step(&mut h);
+    assert!(recent_names(&h).is_empty());
+    assert!(
+        start_page(&h)
+            .query_by_label("No recent documents yet: each you open or make is listed here.")
+            .is_some()
+    );
+    let opened = f.file("opened.silico", EXAMPLE);
+    open_and_wait(&mut h, &opened);
+    home_button(&h).click();
+    step_until(&mut h, "Recent", |h| {
+        start_shown(h) && recent_names(h) == ["opened.silico"]
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!("silico recent-documents 1\n{}\n", opened.to_str().unwrap())
+    );
+    // Bytes that aren't text: nothing either.
+    std::fs::write(f.recents_file(), b"silico recent-documents 1\n\xff\n").unwrap();
+    let mut again = f.remembering();
+    step(&mut again);
+    assert!(recent_names(&again).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_recents_file_is_read_off_the_ui_thread_and_an_open_meanwhile_comes_first() {
+    let f = fixture();
+    let listed = f.file("listed.silico", EXAMPLE);
+    let opened = f.file("opened.silico", EXAMPLE);
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{}\n", listed.to_str().unwrap()),
+    )
+    .unwrap();
+    // The read held until released, saying which thread it ran on.
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let reader = Arc::new(Mutex::new(None));
+    let read_on = Arc::clone(&reader);
+    let read: silico_app::recent::Read = Box::new(move |file| {
+        *read_on.lock().unwrap() = Some(std::thread::current().id());
+        released.recv_timeout(WAIT).ok()?;
+        std::fs::read(file).ok()
+    });
+    let file = f.recents_file();
+    let mut h = f.app_made(|app| app.remembering(Recents::reading(file, read)));
+    let frames = h.state().frames();
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(h.state().frames() >= frames + 20);
+    step_until(&mut h, "the read started", |_| {
+        reader.lock().unwrap().is_some()
+    });
+    assert_ne!(*reader.lock().unwrap(), Some(std::thread::current().id()));
+    assert!(
+        start_page(&h)
+            .query_by_label("Reading the list of recent documents…")
+            .is_some()
+    );
+    // An open while it's held: the window goes on, and the open waits for the list.
+    open_and_wait(&mut h, &opened);
+    home_button(&h).click();
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(start_shown(&h));
+    assert!(!h.state().recents().unwrap().is_read());
+    release.send(()).unwrap();
+    step_until(&mut h, "both listed", |h| {
+        recent_names(h) == ["opened.silico", "listed.silico"]
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn copy_mcp_config_copies_the_config_docs_mcp_md_gives() {
+    let f = fixture();
+    let mut h = f.app_made(|app| {
+        app.serving_with("/opt/silico/bin/silico".to_owned())
+            .documents_folder(None)
+    });
+    step(&mut h);
+    // No folder to name: the note beside the button says to add one.
+    assert!(anywhere(&h, silico_app::start::NO_WORKSPACE_NOTE));
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "Copy MCP config")
+        .click();
+    step(&mut h);
+    // docs/mcp.md's form, written out by hand: no folder known, so no workspace.
+    assert_eq!(
+        copied(&h).as_deref(),
+        Some(
+            r#"{
+  "mcpServers": {
+    "silico": {
+      "command": "/opt/silico/bin/silico",
+      "args": ["serve"]
+    }
+  }
+}
+"#
+        )
+    );
+    step(&mut h);
+    assert_eq!(copied(&h), None);
+    // A document open: its folder is the workspace, and the note goes.
+    let path = f.file("example.silico", EXAMPLE);
+    open_and_wait(&mut h, &path);
+    home_button(&h).click();
+    step_until(&mut h, "the start page", start_shown);
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "Copy MCP config")
+        .click();
+    step(&mut h);
+    let folder = f.dir.path().to_str().unwrap();
+    assert_eq!(
+        copied(&h),
+        Some(format!(
+            r#"{{
+  "mcpServers": {{
+    "silico": {{
+      "command": "/opt/silico/bin/silico",
+      "args": ["serve", "--workspace", "{folder}"]
+    }}
+  }}
+}}
+"#
+        ))
+    );
+    assert!(!anywhere(&h, silico_app::start::NO_WORKSPACE_NOTE));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The MCP config Copy MCP config copies for a server of `folder`, as docs/mcp.md gives it,
+/// written out by hand.
+fn config_serving(folder: &str) -> String {
+    format!(
+        r#"{{
+  "mcpServers": {{
+    "silico": {{
+      "command": "/opt/silico/bin/silico",
+      "args": ["serve", "--workspace", "{folder}"]
+    }}
+  }}
+}}
+"#
+    )
+}
+
+/// Copy MCP config clicked on the start page, and what it copied.
+fn copy_config(h: &mut AppHarness) -> Option<String> {
+    start_page(h)
+        .get_by_role_and_label(Role::Button, "Copy MCP config")
+        .click();
+    step(h);
+    copied(h)
+}
+
+#[test]
+fn with_no_document_copy_mcp_config_serves_the_newest_recent_ones_folder_then_documents() {
+    let f = fixture();
+    // The newest listed is gone, with its folder; the next is in a folder of its own.
+    let gone = f.dir.path().join("gone").join("a.silico");
+    let models = f.dir.path().join("models");
+    std::fs::create_dir(&models).unwrap();
+    let kept = models.join("b.silico");
+    std::fs::write(&kept, EXAMPLE).unwrap();
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!(
+            "silico recent-documents 1\n{}\n{}\n",
+            gone.to_str().unwrap(),
+            kept.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+    let documents = f.dir.path().join("Documents");
+    let file = f.recents_file();
+    let mut h = f.app_made(|app| {
+        app.serving_with("/opt/silico/bin/silico".to_owned())
+            .documents_folder(Some(documents.clone()))
+            .remembering(Recents::at(file))
+    });
+    step_until(&mut h, "gone marked missing", |h| {
+        h.state()
+            .recents()
+            .is_some_and(|recents| recents.list().first().is_some_and(|recent| recent.missing))
+    });
+    assert_eq!(
+        copy_config(&mut h),
+        Some(config_serving(models.to_str().unwrap()))
+    );
+    assert!(!anywhere(&h, silico_app::start::NO_WORKSPACE_NOTE));
+    // With no recent document left that will do: the Documents folder.
+    let mut bare = f.app_made(|app| {
+        app.serving_with("/opt/silico/bin/silico".to_owned())
+            .documents_folder(Some(documents.clone()))
+    });
+    step(&mut bare);
+    assert_eq!(
+        copy_config(&mut bare),
+        Some(config_serving(documents.to_str().unwrap()))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_no_list_kept_recent_says_so() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    assert!(
+        start_page(&h)
+            .query_by_label(silico_app::start::NOT_KEPT)
+            .is_some()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_home_a_documents_shortcuts_act_on_nothing_and_esc_and_ctrl_w_return_to_it() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle()
+            && h.state().tabs()[0].undoable()
+            && anywhere(h, "example.silico *")
+    });
+    let id = h.state().tabs()[0].id;
+    let held = |f: &Fixture| f.sessions.text(&id, None).wait().result.unwrap().text;
+    let before = held(&f);
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
+    // Undo, Redo, Save, Rebuild: none reaches the document hidden.
+    for key in [
+        eframe::egui::Key::Z,
+        eframe::egui::Key::Y,
+        eframe::egui::Key::S,
+        eframe::egui::Key::B,
+    ] {
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+        step(&mut h);
+    }
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(start_shown(&h));
+    assert_eq!(held(&f), before);
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    // Esc leaves Home for the document; so does Ctrl+W, which closes nothing.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::W);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(!anywhere(
+        &h,
+        "Save changes to example.silico before closing?"
+    ));
+    assert_eq!(held(&f), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_document_saved_as_another_file_is_listed_first_in_recent() {
+    let f = fixture();
+    let old = f.file("example.silico", EXAMPLE);
+    let mut h = f.remembering();
+    open_and_wait(&mut h, &old);
+    let copy = f.dir.path().join("copy.silico");
+    save_as(&mut h, &copy);
+    step_until(&mut h, "the tab of the new file", |h| {
+        h.state().tabs()[0].path == copy.to_str().unwrap()
+    });
+    home_button(&h).click();
+    step_until(&mut h, "Recent, the copy first", |h| {
+        start_shown(h) && recent_names(h) == ["copy.silico", "example.silico"]
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!(
+            "silico recent-documents 1\n{}\n{}\n",
+            copy.to_str().unwrap(),
+            old.to_str().unwrap()
+        )
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_warm_start_says_it_is_starting_then_ready() {
+    let f = fixture();
+    let warm = Warm::new();
+    let warming = warm.clone();
+    let mut h = f.app_made(|app| app.warming(warming));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let starting = "Starting the kernel and sketch solver…";
+    let ready = "Kernel and sketch solver ready";
+    assert!(anywhere(&h, starting));
+    assert!(!anywhere(&h, ready));
+    // Ready, told off the UI thread (which asks for a frame: start.rs's own test).
+    std::thread::spawn(move || warm.ready()).join().unwrap();
+    step(&mut h);
+    assert!(anywhere(&h, ready));
+    assert!(!anywhere(&h, starting));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_warm_start_that_started_nothing_says_the_first_rebuild_starts_them() {
+    let f = fixture();
+    let warm = Warm::new();
+    let mut h = f.app_made(|app| app.warming(warm.clone()));
+    step(&mut h);
+    warm.cold();
+    step(&mut h);
+    assert!(anywhere(
+        &h,
+        "The kernel and sketch solver start with the first rebuild"
+    ));
+    assert!(!anywhere(&h, "Kernel and sketch solver ready"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_page_draws_in_the_themes_colours_on_lavapipe() {
+    on_lavapipe(
+        "the_start_page_draws_in_the_themes_colours_on_lavapipe",
+        || {
+            let f = fixture();
+            let listed = f.file("bracket.silico", EXAMPLE);
+            std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+            std::fs::write(
+                f.recents_file(),
+                format!(
+                    "silico recent-documents 1\n{}\n{}\n",
+                    listed.to_str().unwrap(),
+                    f.dir.path().join("vise-jaw.silico").to_str().unwrap()
+                ),
+            )
+            .unwrap();
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let warm = Warm::new();
+            let app = App::new(Arc::clone(&f.sessions))
+                .presenting(Box::new(present))
+                .remembering(Recents::at(f.recents_file()))
+                .warming(warm.clone());
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            recents_read(&mut h);
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            // The page's own background, below its columns and above the status bar: the
+            // panels' Gray.100.
+            let below = eframe::egui::pos2(640.0, 700.0);
+            assert_eq!(pixel(below), [0x0d, 0x0d, 0x0d, 0xff]);
+            // New part, the primary action: button_primary's Gray.800, inside its fill and
+            // short of its icon.
+            let new = start_page(&h)
+                .get_by_role_and_label(Role::Button, "New part")
+                .rect();
+            let inside = eframe::egui::pos2(new.left() + 4.0, new.center().y);
+            assert_eq!(pixel(inside), [0xe0, 0xdf, 0xdf, 0xff], "{new:?}");
+            // A recent document's thumbnail: Gray.0 inside its Gray.250 border.
+            let row = start_page(&h)
+                .get_by_role_and_label(Role::Button, "bracket.silico")
+                .rect();
+            let thumb = eframe::egui::pos2(row.left() + 6.0 + 4.0, row.center().y - 12.0);
+            assert_eq!(pixel(thumb), [0x00, 0x00, 0x00, 0xff], "{row:?}");
+            // Home, on: Gray.250 behind its icon (`.ab-btn.on`), not the selection's blue.
+            let home = home_button(&h).rect();
+            let edge = eframe::egui::pos2(home.left() + 2.0, home.center().y);
+            assert_eq!(pixel(edge), [0x27, 0x26, 0x26, 0xff], "{home:?}");
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}
+
+/// The lines of app.rs that asked for the frame before last's next frame (egui's causes,
+/// each where `request_repaint` was called).
+fn asked_from_app(h: &AppHarness) -> std::collections::BTreeSet<u32> {
+    h.ctx
+        .repaint_causes()
+        .iter()
+        .filter(|cause| cause.file.ends_with("src/app.rs"))
+        .map(|cause| cause.line)
+        .collect()
+}
+
+#[test]
+fn a_recent_documents_click_that_starts_an_open_asks_for_the_next_frame_itself() {
+    // Every session the process may hold already open: the recent document's open is
+    // refused at once, as it's asked, so no waker asks for the frame that takes the refusal;
+    // the frame whose click started the open asks for it, beyond the idle frame it asks for
+    // each time.
+    let f = fixture();
+    let listed = f.file("listed.silico", EXAMPLE);
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{}\n", listed.to_str().unwrap()),
+    )
+    .unwrap();
+    for n in 0..silico_core::command::MAX_SESSIONS {
+        let path = f.dir.path().join(format!("held{n}.silico"));
+        f.sessions.open(&path, true).wait().session.unwrap();
+    }
+    let mut h = f.remembering();
+    step_until(&mut h, "listed", |h| recent_names(h) == ["listed.silico"]);
+    quiet_wakes(&mut h);
+    idle(&mut h);
+    step(&mut h);
+    step(&mut h);
+    let idle_frame = asked_from_app(&h);
+    assert!(!idle_frame.is_empty());
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "listed.silico")
+        .click();
+    let woken = h.state().wakes();
+    // The click's frame, the open started and refused; then the next, which takes it.
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(h.state().wakes(), woken);
+    let clicked = asked_from_app(&h);
+    assert!(
+        clicked.iter().any(|line| !idle_frame.contains(line)),
+        "{clicked:?} against the idle frame's {idle_frame:?}"
+    );
+    let said = format!("{} sessions are open", silico_core::command::MAX_SESSIONS);
+    step_until(&mut h, "the refusal said", |h| {
+        h.state().message().is_some_and(|m| m.contains(&said))
+    });
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The app bar (docs/design/m5-ui/DESIGN.md, *Layout*; styles.css's `.ab-*`, `.doc-tab`) ----
+
+impl Fixture {
+    /// The app drawn in the theme (its fonts and icons, as main.rs applies them), with
+    /// `names` open, each the example, the last shown.
+    fn themed_with(&self, names: &[&str]) -> AppHarness {
+        let mut h = self.app();
+        silico_app::theme::apply(&h.ctx);
+        for name in names {
+            let path = self.file(name, EXAMPLE);
+            open_and_wait(&mut h, &path);
+        }
+        step(&mut h);
+        step(&mut h);
+        h
+    }
+}
+
+/// The app bar's button labelled `label` (a tab's, or its close button's).
+fn bar_button<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
+    h.get_by_role_and_label(Role::Button, label)
+}
+
+/// Every shape the last frame painted wholly inside `rect`.
+fn painted_in(h: &AppHarness, rect: eframe::egui::Rect) -> Vec<eframe::egui::Shape> {
+    painted(h)
+        .into_iter()
+        .filter(|shape| {
+            let bounds = shape.visual_bounding_rect();
+            bounds.is_positive() && rect.expand(0.5).contains_rect(bounds)
+        })
+        .collect()
+}
+
+/// Whether a tab's close button `label` is drawn: its icon, or anything, inside it.
+fn close_drawn(h: &AppHarness, label: &str) -> bool {
+    !painted_in(h, bar_button(h, label).rect()).is_empty()
+}
+
+/// The texts painted inside `rect`, each with its colour.
+fn texts_in(h: &AppHarness, rect: eframe::egui::Rect) -> Vec<(String, eframe::egui::Color32)> {
+    painted_in(h, rect)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) => {
+                let color = text
+                    .override_text_color
+                    .or_else(|| text.galley.job.sections.first().map(|s| s.format.color))
+                    .unwrap_or(text.fallback_color);
+                Some((text.galley.text().to_owned(), color))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The pointer away from the app bar, over the viewport, a frame drawn.
+fn pointer_away(h: &mut AppHarness) {
+    h.hover_at(eframe::egui::pos2(640.0, 400.0));
+    step(h);
+    step(h);
+}
+
+#[test]
+fn the_app_bar_holds_home_file_save_undo_and_redo_then_the_tabs_as_the_prototype_sizes_them() {
+    let f = fixture();
+    // No document: Home on, File offered, nothing to save, undo, or redo.
+    let h = f.themed_with(&[]);
+    let buttons: Vec<String> = h
+        .query_all_by_role(Role::Button)
+        .filter_map(|node| node.accesskit_node().label())
+        .take(5)
+        .collect();
+    assert_eq!(buttons, ["Home", "File", "Save", "Undo", "Redo"]);
+    assert_eq!(toggled(&home_button(&h)), Some(true));
+    assert!(!bar_button(&h, "File").accesskit_node().is_disabled());
+    for off in ["Save", "Undo", "Redo"] {
+        assert!(bar_button(&h, off).accesskit_node().is_disabled(), "{off}");
+    }
+    // Two documents: their tabs after Redo, in the order opened, the last shown.
+    let h = f.themed_with(&["example.silico", "other.silico"]);
+    let buttons: Vec<String> = h
+        .query_all_by_role(Role::Button)
+        .filter_map(|node| node.accesskit_node().label())
+        .take(9)
+        .collect();
+    assert_eq!(
+        buttons,
+        [
+            "Home",
+            "File",
+            "Save",
+            "Undo",
+            "Redo",
+            "example.silico",
+            "Close example.silico",
+            "other.silico",
+            "Close other.silico"
+        ]
+    );
+    assert_eq!(toggled(&home_button(&h)), Some(false));
+    assert_eq!(toggled(&bar_button(&h, "other.silico")), Some(true));
+    assert_eq!(toggled(&bar_button(&h, "example.silico")), Some(false));
+    // `.ab-btn`: 22 high; an icon alone, 14, in 5 of padding at each side; 2 apart
+    // (`#appbar`'s `gap`).
+    let rect = |label: &str| match label {
+        "Home" => home_button(&h).rect(),
+        _ => bar_button(&h, label).rect(),
+    };
+    for icon in ["Home", "Save", "Undo", "Redo"] {
+        assert_eq!(rect(icon).size(), eframe::egui::vec2(24.0, 22.0), "{icon}");
+    }
+    assert_eq!(rect("File").height(), 22.0);
+    for (left, right) in [
+        ("Home", "File"),
+        ("File", "Save"),
+        ("Save", "Undo"),
+        ("Undo", "Redo"),
+    ] {
+        assert_eq!(
+            rect(right).left() - rect(left).right(),
+            2.0,
+            "{left} {right}"
+        );
+    }
+    // `.ab-sep`, 1 wide with 6 at each side, 2 from Redo and from the first tab; each tab
+    // the bar's 30 less its 1 point border, the buttons centred on it.
+    let first = rect("example.silico");
+    // egui places widgets on a grid of 1/16 point; File's text width isn't on it.
+    let near = |a: f32, b: f32| (a - b).abs() <= 1.0 / 16.0;
+    let gap = first.left() - rect("Redo").right();
+    assert!(near(gap, 2.0 + 6.0 + 1.0 + 6.0 + 2.0), "{gap}");
+    assert_eq!(first.height(), 29.0);
+    assert_eq!(rect("Home").center().y, first.center().y);
+    // `.x`: 16 square, centred, 6 of padding and the 1 point border after it; the next tab
+    // starts there.
+    for (tab, close, next) in [
+        (
+            "example.silico",
+            "Close example.silico",
+            Some("other.silico"),
+        ),
+        ("other.silico", "Close other.silico", None),
+    ] {
+        let x = rect(close);
+        assert_eq!(x.size(), eframe::egui::vec2(16.0, 16.0), "{close}");
+        assert_eq!(x.center().y, rect(tab).center().y, "{close}");
+        if let Some(next) = next {
+            assert_eq!(rect(next).left() - x.right(), 6.0 + 1.0, "{close}");
+        }
+    }
+    // `.doc-tab:first-child`'s `border-left`, 1 of Gray.250: the first tab's alone.
+    let gray_250 = eframe::egui::Color32::from_rgb(0x27, 0x26, 0x26);
+    let left_border = |tab: &str| {
+        let x = rect(tab).left() + 0.5;
+        painted(&h).iter().any(|shape| {
+            matches!(shape, eframe::egui::Shape::LineSegment { points, stroke }
+                if *stroke == eframe::egui::Stroke::new(1.0, gray_250)
+                    && points.iter().all(|point| (point.x - x).abs() < 1e-3))
+        })
+    };
+    assert!(left_border("example.silico"));
+    assert!(!left_border("other.silico"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The texts the tooltip titled `title` draws in its title's row, after the title, left to
+/// right: its key caps.
+fn tooltip_caps(h: &AppHarness, title: &str) -> Vec<String> {
+    let row = h.get_by_role_and_label(Role::Label, title).rect();
+    let mut caps: Vec<(f32, String)> = painted(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) => {
+                let at = eframe::egui::Shape::Text(text.clone()).visual_bounding_rect();
+                (at.left() >= row.right() && row.y_range().contains(at.center().y))
+                    .then(|| (at.left(), text.galley.text().to_owned()))
+            }
+            _ => None,
+        })
+        .collect();
+    caps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    caps.into_iter().map(|(_, cap)| cap).collect()
+}
+
+#[test]
+fn save_undo_and_redo_name_their_shortcuts_in_their_tooltips() {
+    use eframe::egui::os::OperatingSystem;
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    // styles.css's `.tooltip`: the title, then the shortcut's key caps, app.js's `CMD`
+    // keys as its `KEYNAME` writes them: Mod is ⌘ on macOS and Ctrl elsewhere, Shift ⇧
+    // on macOS; Redo is Mod Shift Z on macOS and Mod Y elsewhere.
+    for (os, expected) in [
+        (
+            OperatingSystem::Windows,
+            [
+                ("Save", vec!["Ctrl", "S"]),
+                ("Undo", vec!["Ctrl", "Z"]),
+                ("Redo", vec!["Ctrl", "Y"]),
+            ],
+        ),
+        (
+            OperatingSystem::Mac,
+            [
+                ("Save", vec!["⌘", "S"]),
+                ("Undo", vec!["⌘", "Z"]),
+                ("Redo", vec!["⌘", "⇧", "Z"]),
+            ],
+        ),
+    ] {
+        h.ctx.set_os(os);
+        for (button, caps) in expected {
+            pointer_away(&mut h);
+            assert!(h.query_by_role_and_label(Role::Label, button).is_none());
+            bar_button(&h, button).hover();
+            step_until(&mut h, "its tooltip", |h| {
+                h.query_by_role_and_label(Role::Label, button).is_some()
+            });
+            // Drawn from the frame after it's laid out (egui sizes a new popup unseen).
+            step(&mut h);
+            assert_eq!(tooltip_caps(&h, button), caps, "{os:?} {button}");
+        }
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn tab_first_focuses_home() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    pointer_away(&mut h);
+    h.key_press(eframe::egui::Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    assert!(home_button(&h).accesskit_node().is_focused());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_home_save_undo_and_redo_are_off_and_on_again_back_on_the_document() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    // Two edits, the second undone: something to save, to undo, and to redo. (Drawn in
+    // the theme's fonts, the field's cursor starts at the name's end.)
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the first edit", |h| {
+        h.state().tabs()[0].edits.idle() && offered(h, "Undo")
+    });
+    select(&mut h, "Hole");
+    type_name(&mut h, "y");
+    step_until(&mut h, "the second edit", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "Holey")
+    });
+    step_until(&mut h, "Undo offered", |h| offered(h, "Undo"));
+    bar_button(&h, "Undo").click();
+    step_until(&mut h, "the second undone", |h| {
+        shows(h, "Timeline", "Hole") && offered(h, "Redo")
+    });
+    step_until(&mut h, "all three offered", |h| {
+        ["Save", "Undo", "Redo"].iter().all(|word| offered(h, word))
+    });
+    // Home: the document hidden, none of them acts on it.
+    home_button(&h).click();
+    step(&mut h);
+    step(&mut h);
+    assert!(start_shown(&h));
+    for word in ["Save", "Undo", "Redo"] {
+        assert!(!offered(&h, word), "{word}");
+    }
+    // Its tab: each offered again.
+    bar_button(&h, "example.silico *").click();
+    step(&mut h);
+    step(&mut h);
+    for word in ["Save", "Undo", "Redo"] {
+        assert!(offered(&h, word), "{word}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn shift_command_z_redoes_and_command_z_undoes() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the edit", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].undoable()
+    });
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step_until(&mut h, "undone", |h| {
+        shows(h, "Timeline", "Pin") && h.state().tabs()[0].redoable()
+    });
+    // DESIGN.md, *Keyboard*: ⇧⌘Z is Redo, beside Ctrl+Y.
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    step_until(&mut h, "redone", |h| {
+        shows(h, "Timeline", "xPin") && !h.state().tabs()[0].redoable()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tabs_close_button_is_drawn_while_the_tab_is_hovered_or_shown() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico", "other.silico"]);
+    // At rest: the shown tab's only (`.doc-tab.active .x`).
+    pointer_away(&mut h);
+    assert!(close_drawn(&h, "Close other.silico"));
+    assert!(!close_drawn(&h, "Close example.silico"));
+    // Hovered: the other's too (`.doc-tab:hover .x`), in Gray.550 on no fill.
+    bar_button(&h, "example.silico").hover();
+    step(&mut h);
+    step(&mut h);
+    assert!(close_drawn(&h, "Close example.silico"));
+    assert!(close_drawn(&h, "Close other.silico"));
+    let x = bar_button(&h, "Close example.silico").rect();
+    let gray_350 = eframe::egui::Color32::from_rgb(0x52, 0x51, 0x51);
+    let filled = |h: &AppHarness| {
+        painted_in(h, x)
+            .iter()
+            .any(|shape| matches!(shape, eframe::egui::Shape::Rect(rect) if rect.fill == gray_350))
+    };
+    assert!(!filled(&h));
+    // The close button itself hovered: Gray.350 behind it (`.x:hover`).
+    bar_button(&h, "Close example.silico").hover();
+    step(&mut h);
+    step(&mut h);
+    assert!(filled(&h));
+    // Home: no tab is shown, so with the pointer away neither is drawn.
+    home_button(&h).click();
+    step(&mut h);
+    pointer_away(&mut h);
+    assert!(start_shown(&h));
+    assert!(!close_drawn(&h, "Close other.silico"));
+    assert!(!close_drawn(&h, "Close example.silico"));
+    // The tab focused by the keyboard: its close button drawn, as hovered.
+    bar_button(&h, "example.silico").focus();
+    step(&mut h);
+    step(&mut h);
+    assert!(close_drawn(&h, "Close example.silico"));
+    assert!(!close_drawn(&h, "Close other.silico"));
+    // Undrawn, it's still there and closes its tab, as `.x` at `opacity: 0` does.
+    bar_button(&h, "Close example.silico").click_accesskit();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().len() == 1);
+    assert_eq!(h.state().tabs()[0].name(), "other.silico");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A left click at `at`.
+fn click_at(h: &mut AppHarness, at: eframe::egui::Pos2) {
+    h.hover_at(at);
+    for pressed in [true, false] {
+        h.event(eframe::egui::Event::PointerButton {
+            pos: at,
+            button: eframe::egui::PointerButton::Primary,
+            pressed,
+            modifiers: eframe::egui::Modifiers::NONE,
+        });
+    }
+    step(h);
+    step(h);
+}
+
+#[test]
+fn a_click_beside_a_tabs_close_button_shows_its_document_and_on_it_closes_nothing_else() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico", "other.silico"]);
+    let shown = |h: &AppHarness, name: &str| toggled(&bar_button(h, name)) == Some(true);
+    // `.doc-tab` is the whole tab: right of its close button, in its 6 of padding, and
+    // above and below the button, each shows the document.
+    let x = bar_button(&h, "Close example.silico").rect();
+    let tab = bar_button(&h, "example.silico").rect();
+    for at in [
+        eframe::egui::pos2(x.right() + 3.0, x.center().y),
+        eframe::egui::pos2(x.center().x, (tab.top() + x.top()) / 2.0),
+        eframe::egui::pos2(x.center().x, (x.bottom() + tab.bottom()) / 2.0),
+    ] {
+        bar_button(&h, "other.silico").click();
+        step_until(&mut h, "other shown", |h| shown(h, "other.silico"));
+        click_at(&mut h, at);
+        assert!(shown(&h, "example.silico"), "{at:?}");
+        assert_eq!(h.state().tabs().len(), 2, "{at:?}");
+    }
+    // The close button itself closes it.
+    click_at(&mut h, x.center());
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().len() == 1);
+    assert_eq!(h.state().tabs()[0].name(), "other.silico");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_unsaved_documents_tab_ends_in_a_white_asterisk_and_the_shown_ones_name_is_white() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico", "other.silico"]);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| anywhere(h, "other.silico *"));
+    assert!(anywhere(&h, "example.silico"));
+    pointer_away(&mut h);
+    // `.doc-tab.active`: white; `.doc-tab .dirty`, " *" after the name, white; `.doc-tab`,
+    // Gray.550.
+    let white = eframe::egui::Color32::from_rgb(0xff, 0xff, 0xff);
+    let gray_550 = eframe::egui::Color32::from_rgb(0x93, 0x90, 0x90);
+    assert_eq!(
+        texts_in(&h, bar_button(&h, "other.silico *").rect()),
+        [("other.silico".to_owned(), white), (" *".to_owned(), white)]
+    );
+    assert_eq!(
+        texts_in(&h, bar_button(&h, "example.silico").rect()),
+        [("example.silico".to_owned(), gray_550)]
+    );
+    // Hovered, the other's name is Gray.800 (`.doc-tab:hover`).
+    bar_button(&h, "example.silico").hover();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        texts_in(&h, bar_button(&h, "example.silico").rect()),
+        [(
+            "example.silico".to_owned(),
+            eframe::egui::Color32::from_rgb(0xe0, 0xdf, 0xdf)
+        )]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_long_name_ends_in_an_ellipsis_in_a_tab_no_wider_than_220() {
+    let f = fixture();
+    let long = format!("{}.silico", "a-very-long-document-name".repeat(4));
+    let h = f.themed_with(&[long.as_str()]);
+    // `.doc-tab`'s `max-width: 220px`, borders and padding in it (`box-sizing:
+    // border-box`): from its left to its close button's right, and 6 and 1 after that.
+    let tab = bar_button(&h, &long).rect();
+    let x = bar_button(&h, &format!("Close {long}")).rect();
+    assert_eq!(x.right() + 6.0 + 1.0 - tab.left(), 220.0);
+    let names: Vec<_> = painted_in(&h, tab)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) => Some(text.galley),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names.len(), 1);
+    assert!(names[0].elided);
+    assert_eq!(names[0].text(), long);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn tabs_wider_than_the_bar_scroll_across_rather_than_squeeze() {
+    let f = fixture();
+    // Twelve, and a thirteenth later: a process holds sixteen sessions at most.
+    let names: Vec<String> = (0..12).map(|n| format!("document-{n:02}.silico")).collect();
+    let mut h = f.themed_with(&[]);
+    let close = |name: &str| format!("Close {name}");
+    // A tab's width: from its left to its close button's, and the 6 of padding and the 1
+    // point border after that (`.doc-tab`, `.x`).
+    let width = |h: &AppHarness, name: &str| {
+        bar_button(h, &close(name)).rect().right() + 6.0 + 1.0 - bar_button(h, name).rect().left()
+    };
+    // The first four, opened with room to spare: each tab's width then.
+    let mut alone = Vec::new();
+    for name in &names {
+        let path = f.file(name, EXAMPLE);
+        open_and_wait(&mut h, &path);
+        step(&mut h);
+        if alone.len() < 4 {
+            alone.push(width(&h, name));
+        }
+    }
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let redo = bar_button(&h, "Redo").rect();
+    let window = h.ctx.content_rect();
+    let last = names.last().unwrap();
+    // Wider than the window, so scrolled: the newest, shown, in view at the right; the
+    // first out of view, left of the separator.
+    assert!(width(&h, last) * 12.0 > window.width());
+    assert!(
+        bar_button(&h, &close(last)).rect().right() <= window.right(),
+        "{window:?}"
+    );
+    assert!(bar_button(&h, &names[0]).rect().left() < redo.right());
+    // The wheel over the tabs scrolls them back: the first where it was, after the
+    // separator, and the first four as wide as they were.
+    let over = bar_button(&h, last).rect().center();
+    for _ in 0..10 {
+        wheel(&mut h, over, eframe::egui::MouseWheelUnit::Point, 400.0);
+    }
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    // egui places widgets on a grid of 1/16 point; File's text width isn't on it.
+    let gap = bar_button(&h, &names[0]).rect().left() - redo.right();
+    assert!(
+        (gap - (2.0 + 6.0 + 1.0 + 6.0 + 2.0)).abs() <= 1.0 / 16.0,
+        "{gap}"
+    );
+    let now: Vec<f32> = names[..4].iter().map(|name| width(&h, name)).collect();
+    assert_eq!(now, alone);
+    assert!(bar_button(&h, last).rect().left() > window.right());
+    // A tab shown by an open, past the strip's right as it's scrolled, is scrolled to.
+    let newest = f.file("document-12.silico", EXAMPLE);
+    open_and_wait(&mut h, &newest);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let shown = bar_button(&h, "Close document-12.silico").rect();
+    assert!(shown.right() <= window.right(), "{shown:?}");
+    assert!(shown.left() > redo.right(), "{shown:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_app_bar_draws_the_shown_tab_in_gray_200_on_lavapipe() {
+    on_lavapipe(
+        "the_app_bar_draws_the_shown_tab_in_gray_200_on_lavapipe",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            let path = f.file("bracket.silico", A_BOX);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            let other = f.file("vise-jaw.silico", A_BOX);
+            open_and_wait(&mut h, &other);
+            bar_button(&h, "bracket.silico").click();
+            step_until(&mut h, "bracket shown", |h| {
+                toggled(&bar_button(h, "bracket.silico")) == Some(true)
+            });
+            meshes_settled(&mut h);
+            select(&mut h, "Block");
+            type_name(&mut h, "x");
+            step_until(&mut h, "unsaved", |h| anywhere(h, "bracket.silico *"));
+            pointer_away(&mut h);
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            let shown = bar_button(&h, "bracket.silico *").rect();
+            let other = bar_button(&h, "vise-jaw.silico").rect();
+            // The shown tab: Gray.200 (`.doc-tab.active`), in its left padding, clear of its
+            // left border and its name; and down over the bar's border below it (`::after`).
+            let inside = eframe::egui::pos2(shown.left() + 5.0, shown.center().y);
+            assert_eq!(pixel(inside), [0x21, 0x21, 0x21, 0xff], "{shown:?}");
+            let below = eframe::egui::pos2(shown.left() + 5.0, shown.bottom() + 0.5);
+            assert_eq!(pixel(below), [0x21, 0x21, 0x21, 0xff], "{shown:?}");
+            // The other, at rest: the bar's Gray.100, over the bar's Gray.250 border.
+            let inside = eframe::egui::pos2(other.left() + 5.0, other.center().y);
+            assert_eq!(pixel(inside), [0x0d, 0x0d, 0x0d, 0xff], "{other:?}");
+            let below = eframe::egui::pos2(other.left() + 5.0, other.bottom() + 0.5);
+            assert_eq!(pixel(below), [0x27, 0x26, 0x26, 0xff], "{other:?}");
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}
+
+// ---- The toolbar (docs/design/m5-ui/DESIGN.md, *Layout*; styles.css's `.tb-*` and
+// `.btn-finish`; app.js's `renderToolbar` and `CMD`, interact.js's drop-downs) ----
+
+/// The labels of `node`'s buttons, in the tree's order.
+fn buttons_of(node: &egui_kittest::Node<'_>) -> Vec<String> {
+    node.query_all_by_role(Role::Button)
+        .filter_map(|node| node.accesskit_node().label())
+        .collect()
+}
+
+/// The labels of `node`'s buttons that are on.
+fn on_of(node: &egui_kittest::Node<'_>) -> Vec<String> {
+    node.query_all_by_role(Role::Button)
+        .filter(|node| !node.accesskit_node().is_disabled())
+        .filter_map(|node| node.accesskit_node().label())
+        .collect()
+}
+
+/// The toolbar's panels: every toolbar but the canvas's navigation bar, in order.
+fn panels_of<'a>(nodes: impl Iterator<Item = egui_kittest::Node<'a>>) -> Vec<String> {
+    nodes
+        .filter_map(|node| node.accesskit_node().label())
+        .filter(|label| label != "Navigation bar")
+        .collect()
+}
+
+/// The toolbar's tabs, each with whether it's the one shown.
+fn tabs_of<'a>(nodes: impl Iterator<Item = egui_kittest::Node<'a>>) -> Vec<(String, bool)> {
+    nodes
+        .map(|node| {
+            let shown = toggled(&node) == Some(true);
+            (node.accesskit_node().label().unwrap_or_default(), shown)
+        })
+        .collect()
+}
+
+/// The texts of the labels the window shows (a tooltip's lines among them).
+fn label_texts<'a>(nodes: impl Iterator<Item = egui_kittest::Node<'a>>) -> Vec<String> {
+    nodes
+        .filter_map(|node| {
+            let node = node.accesskit_node();
+            node.label().or_else(|| node.value())
+        })
+        .collect()
+}
+
+/// CREATE's row, as app.js:394 lays it out: Create Sketch and the sweeps.
+const CREATE_ROW: [&str; 5] = ["Create Sketch", "Pad", "Pocket", "Revolve", "Groove"];
+
+#[test]
+fn the_toolbar_holds_solids_panels_their_buttons_in_the_prototypes_order_and_sizes() {
+    let f = fixture();
+    let h = f.themed_with(&["example.silico"]);
+    // `.tb-tabs`: SOLID, shown; no SKETCH with no sketch open.
+    assert_eq!(
+        tabs_of(h.query_all_by_role(Role::Tab)),
+        [("SOLID".to_owned(), true)]
+    );
+    assert!(h.query_by_role_and_label(Role::Label, "DESIGN").is_some());
+    // CREATE, MODIFY, INSPECT, SELECT (DESIGN.md, *Layout*), each its row then its label.
+    assert_eq!(
+        panels_of(h.query_all_by_role(Role::Toolbar)),
+        ["CREATE", "MODIFY", "INSPECT", "SELECT"]
+    );
+    let panel = |label: &'static str| h.get_by_role_and_label(Role::Toolbar, label);
+    let mut create: Vec<&str> = CREATE_ROW.to_vec();
+    create.push("CREATE");
+    assert_eq!(buttons_of(&panel("CREATE")), create);
+    for primitive in PRIMITIVES {
+        assert!(
+            panel("CREATE").query_by_label(primitive).is_none(),
+            "{primitive}"
+        );
+    }
+    assert_eq!(
+        buttons_of(&panel("MODIFY")),
+        [
+            "Fillet",
+            "Chamfer",
+            "Union",
+            "Subtract",
+            "Intersect",
+            "MODIFY"
+        ]
+    );
+    assert_eq!(buttons_of(&panel("INSPECT")), ["Measure", "INSPECT"]);
+    assert_eq!(
+        buttons_of(&panel("SELECT")),
+        ["Faces", "Edges", "Vertices", "SELECT"]
+    );
+    // On: every dialog (the example has a body, so the cuts too) and the drop-downs; off:
+    // Create Sketch, until sketch mode, and what isn't built.
+    let mut on: Vec<&str> = CREATE_ROW[1..].to_vec();
+    on.push("CREATE");
+    assert_eq!(on_of(&panel("CREATE")), on);
+    for label in ["MODIFY", "INSPECT", "SELECT"] {
+        assert_eq!(on_of(&panel(label)), [label]);
+    }
+    // Sizes (`--toolbar-tabs-h: 24px`, `--toolbar-h: 52px`, `.tb-btn` 30 square 1 apart
+    // with `.tb-panel`'s 4 above), from the toolbar's top left: DESIGN's top (`.tb-ws`, the
+    // tabs' row's height), and its left less `.tb-tabs`' 8. The buttons' tops 24 + 4 down;
+    // the first's left after `.tb-panels`' 6 and the first panel's 6.
+    let design = h.get_by_role_and_label(Role::Label, "DESIGN").rect();
+    let (left, top) = (design.left() - 8.0, design.top());
+    // Under the 30 high app bar, whose tabs run from its top.
+    assert_eq!(top, bar_button(&h, "example.silico").rect().top() + 30.0);
+    assert_eq!(design.height(), 24.0 - 1.0);
+    let rect = |label: &str| panel("CREATE").get_by_label(label).rect();
+    for label in CREATE_ROW {
+        assert_eq!(
+            rect(label).size(),
+            eframe::egui::vec2(30.0, 30.0),
+            "{label}"
+        );
+        assert_eq!(rect(label).top(), top + 24.0 + 4.0, "{label}");
+    }
+    assert_eq!(rect("Create Sketch").left(), left + 6.0 + 6.0);
+    for pair in CREATE_ROW.windows(2) {
+        assert_eq!(
+            rect(pair[1]).left() - rect(pair[0]).right(),
+            1.0,
+            "{pair:?}"
+        );
+    }
+    // `.tb-label`: 1 under the row, 14 of line and 1 of padding over and under; MODIFY's
+    // first button after CREATE's last, CREATE's 6 of padding (`.tb-panel`'s `padding: 4px
+    // 6px 0`), its 1 of `border-right`, and MODIFY's 6.
+    let label = rect("CREATE");
+    assert_eq!(label.top(), rect("Groove").bottom() + 1.0);
+    assert_eq!(label.height(), 16.0);
+    let fillet = panel("MODIFY").get_by_label("Fillet").rect();
+    assert_eq!(fillet.left() - rect("Groove").right(), 6.0 + 1.0 + 6.0);
+    // `.tb-tab`: 22 high, on the tabs' row's border; the toolbar ends 1 under its panels.
+    let solid = h.get_by_role_and_label(Role::Tab, "SOLID").rect();
+    assert_eq!(solid.height(), 22.0);
+    assert_eq!(solid.bottom(), top + 24.0 - 1.0);
+    assert_eq!(solid.left(), design.right() + 2.0 + 6.0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn each_toolbar_button_names_its_command_and_says_what_it_does_or_that_it_isnt_built() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    // app.js's `CMD`: each command's `label` and `desc`; one not built says so after it.
+    for (panel, button, lines) in [
+        (
+            "CREATE",
+            "Pad",
+            vec!["Extrudes a sketch's profile into solid"],
+        ),
+        (
+            "CREATE",
+            "Pocket",
+            vec!["Cuts a sketch's profile out of the solid"],
+        ),
+        ("CREATE", "Revolve", vec!["Sweeps a profile around an axis"]),
+        (
+            "CREATE",
+            "Groove",
+            vec!["Cuts a profile swept around an axis"],
+        ),
+        (
+            "CREATE",
+            "Create Sketch",
+            vec!["Sketches on an origin plane. Not built yet"],
+        ),
+        (
+            "MODIFY",
+            "Fillet",
+            vec!["Rounds the selected edges. Not built yet"],
+        ),
+        (
+            "MODIFY",
+            "Chamfer",
+            vec!["Bevels the selected edges. Not built yet"],
+        ),
+        ("MODIFY", "Union", vec!["Not built yet"]),
+        (
+            "INSPECT",
+            "Measure",
+            vec!["Distance, angle, and size of what you select. Not built yet"],
+        ),
+        (
+            "SELECT",
+            "Edges",
+            vec!["Toggles whether edges can be selected. Not built yet"],
+        ),
+    ] {
+        pointer_away(&mut h);
+        h.get_by_role_and_label(Role::Toolbar, panel)
+            .get_by_label(button)
+            .hover();
+        step_until(&mut h, "its tooltip", |h| {
+            h.query_by_role_and_label(Role::Label, button).is_some()
+        });
+        step(&mut h);
+        let shown = label_texts(h.query_all_by_role(Role::Label));
+        let at = shown.iter().position(|text| text == button).unwrap();
+        // The title, then the line, if any, and nothing more of the tooltip's.
+        let after: Vec<&str> = shown[at + 1..].iter().map(String::as_str).collect();
+        assert!(after.starts_with(&lines), "{button}: {shown:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    let open = |h: &mut AppHarness, label: &str| {
+        pointer_away(h);
+        h.get_by_role_and_label(Role::Toolbar, label)
+            .get_by_role_and_label(Role::Button, label)
+            .click();
+        step(h);
+        step(h);
+    };
+    // interact.js:172: the filters under a heading, all of them, and Clear selection (Esc),
+    // which the app has: off with nothing selected.
+    open(&mut h, "SELECT");
+    let menu = h.get_by_role_and_label(Role::Menu, "SELECT");
+    let entries = buttons_of(&menu);
+    assert_eq!(
+        entries[..4],
+        ["Faces", "Edges", "Vertices", "Select all filters"]
+    );
+    assert_eq!(entries.len(), 5, "{entries:?}");
+    assert!(entries[4].starts_with("Clear selection"), "{entries:?}");
+    assert!(menu.query_by_label("SELECTION FILTERS").is_some());
+    assert!(on_of(&menu).is_empty());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    // interact.js:170: Create Sketch, the sweeps, and the primitives under a heading.
+    open(&mut h, "CREATE");
+    let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
+    let entries = buttons_of(&menu);
+    assert_eq!(entries.len(), 10, "{entries:?}");
+    assert!(entries[0].starts_with("Create Sketch"), "{entries:?}");
+    assert_eq!(entries[1..5], CREATE_ROW[1..]);
+    assert_eq!(entries[5..], PRIMITIVES);
+    assert!(menu.query_by_label("PRIMITIVES").is_some());
+    let mut on: Vec<&str> = CREATE_ROW[1..].iter().chain(&PRIMITIVES).copied().collect();
+    on.sort_unstable();
+    let mut menu_on = on_of(&menu);
+    menu_on.sort_unstable();
+    assert_eq!(menu_on, on);
+    // An entry opens its dialog, as the row's button does, and the menu closes.
+    menu.get_by_label("Cylinder").click();
+    step_until(&mut h, "the dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Cylinder")
+            .is_some()
+    });
+    assert!(h.query_by_role_and_label(Role::Menu, "CREATE").is_none());
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| {
+        h.query_by_role(Role::Dialog).is_none()
+    });
+    settled(&mut h);
+    // interact.js:171: the edge tools, and the booleans under a heading, none built.
+    open(&mut h, "MODIFY");
+    let menu = h.get_by_role_and_label(Role::Menu, "MODIFY");
+    assert_eq!(
+        buttons_of(&menu),
+        ["Fillet", "Chamfer", "Union", "Subtract", "Intersect"]
+    );
+    assert!(menu.query_by_label("COMBINE").is_some());
+    assert!(on_of(&menu).is_empty());
+    // An entry not built says so after the prototype's line, as its button does.
+    h.get_by_role_and_label(Role::Menu, "MODIFY")
+        .get_by_label("Fillet")
+        .hover();
+    step_until(&mut h, "its tooltip", |h| {
+        h.query_by_role_and_label(Role::Label, "Rounds the selected edges. Not built yet")
+            .is_some()
+    });
+    open(&mut h, "INSPECT");
+    let menu = h.get_by_role_and_label(Role::Menu, "INSPECT");
+    assert_eq!(buttons_of(&menu), ["Measure"]);
+    assert!(on_of(&menu).is_empty());
+    // With a feature selected, Clear selection clears it, as Esc does.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    select(&mut h, "Pin");
+    open(&mut h, "SELECT");
+    let menu = h.get_by_role_and_label(Role::Menu, "SELECT");
+    let clear = menu
+        .query_all_by_role(Role::Button)
+        .find(|node| {
+            node.accesskit_node()
+                .label()
+                .is_some_and(|label| label.starts_with("Clear selection"))
+        })
+        .unwrap();
+    assert!(!clear.accesskit_node().is_disabled());
+    clear.click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].selected, None);
+    assert!(h.query_by_role_and_label(Role::Menu, "SELECT").is_none());
+    // With a feature selected and a dialog open, Clear selection is off: the dialog's
+    // Cancel (Esc) comes first.
+    select(&mut h, "Pin");
+    create(&mut h, "Box");
+    settled(&mut h);
+    assert!(h.state().tabs()[0].selected.is_some());
+    open(&mut h, "SELECT");
+    let clear = h
+        .get_by_role_and_label(Role::Menu, "SELECT")
+        .query_all_by_role(Role::Button)
+        .find(|node| {
+            node.accesskit_node()
+                .label()
+                .is_some_and(|label| label.starts_with("Clear selection"))
+        })
+        .unwrap();
+    assert!(clear.accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The toolbar's state as a test stubs it (sketch mode's among it), and what it was asked.
+struct ToolbarStub {
+    in_sketch: bool,
+    create_sketch: Option<bool>,
+    off: Vec<silico_app::dialog::Kind>,
+    selected: bool,
+    acts: Vec<silico_app::toolbar::Act>,
+}
+
+impl ToolbarStub {
+    fn new() -> Self {
+        Self {
+            in_sketch: false,
+            create_sketch: None,
+            off: Vec::new(),
+            selected: false,
+            acts: Vec::new(),
+        }
+    }
+}
+
+type ToolbarHarness = Harness<'static, ToolbarStub>;
+
+/// The toolbar alone, drawn in the theme from `stub`, by `builder`.
+fn toolbar_with(
+    builder: egui_kittest::HarnessBuilder<ToolbarStub>,
+    stub: ToolbarStub,
+) -> ToolbarHarness {
+    let mut h = builder
+        .with_size((1280.0, 600.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            |ui, stub: &mut ToolbarStub| {
+                let off = stub.off.clone();
+                let can_open = move |kind| !off.contains(&kind);
+                let shown = silico_app::toolbar::Shown {
+                    in_sketch: stub.in_sketch,
+                    create_sketch: stub.create_sketch,
+                    can_open: &can_open,
+                    selected: stub.selected,
+                };
+                // The whole window, as the app's frame has it, not the harness's panel inside
+                // its margin.
+                let window = eframe::egui::UiBuilder::new().max_rect(ui.ctx().content_rect());
+                let act = ui
+                    .scope_builder(window, |ui| silico_app::toolbar::show(ui, &shown))
+                    .inner;
+                stub.acts.extend(act);
+            },
+            stub,
+        );
+    silico_app::theme::apply(&h.ctx);
+    h.step();
+    h.step();
+    h
+}
+
+fn toolbar(stub: ToolbarStub) -> ToolbarHarness {
+    toolbar_with(Harness::builder(), stub)
+}
+
+/// Frames stepped until `done` holds, for a second of the harness's time at most, and one
+/// more: egui lays a new popup out unseen in its first frame, and places it in its next.
+#[track_caller]
+fn toolbar_until(h: &mut ToolbarHarness, what: &str, done: impl Fn(&ToolbarHarness) -> bool) {
+    for _ in 0..120 {
+        h.step();
+        if done(h) {
+            h.step();
+            return;
+        }
+    }
+    panic!("never {what}");
+}
+
+/// The pointer away from the toolbar, a frame drawn.
+fn toolbar_pointer_away(h: &mut ToolbarHarness) {
+    h.hover_at(eframe::egui::pos2(640.0, 590.0));
+    h.step();
+    h.step();
+}
+
+#[test]
+fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
+    use silico_app::toolbar::Act;
+    let mut h = toolbar(ToolbarStub::new());
+    assert_eq!(
+        tabs_of(h.query_all_by_role(Role::Tab)),
+        [("SOLID".to_owned(), true)]
+    );
+    assert!(h.query_by_label("Finish Sketch").is_none());
+    // A sketch open (#351's `tab.in_sketch()`): SKETCH after SOLID, and shown; its panels
+    // (app.js:384), none of their tools built in the toolbar yet; Finish Sketch, on.
+    h.state_mut().in_sketch = true;
+    h.step();
+    h.step();
+    assert_eq!(
+        tabs_of(h.query_all_by_role(Role::Tab)),
+        [("SOLID".to_owned(), false), ("SKETCH".to_owned(), true)]
+    );
+    assert_eq!(
+        panels_of(h.query_all_by_role(Role::Toolbar)),
+        ["CREATE", "MODIFY", "CONSTRAINTS", "INSPECT"]
+    );
+    let panel = |h: &ToolbarHarness, label: &str| {
+        buttons_of(&h.get_by_role_and_label(Role::Toolbar, label))
+    };
+    assert_eq!(
+        panel(&h, "CREATE"),
+        [
+            "Line",
+            "Rectangle",
+            "Circle",
+            "Arc",
+            "Point",
+            "Construction",
+            "CREATE"
+        ]
+    );
+    assert_eq!(panel(&h, "MODIFY"), ["Trim", "Extend", "Split", "MODIFY"]);
+    assert_eq!(
+        panel(&h, "CONSTRAINTS"),
+        [
+            "Smart Dimension",
+            "Horizontal",
+            "Vertical",
+            "Coincident",
+            "Tangent",
+            "Equal",
+            "Parallel",
+            "Perpendicular",
+            "Midpoint",
+            "Symmetric",
+            "Fix",
+            "CONSTRAINTS"
+        ]
+    );
+    assert_eq!(panel(&h, "INSPECT"), ["Measure", "INSPECT"]);
+    for label in ["CREATE", "MODIFY", "CONSTRAINTS", "INSPECT"] {
+        assert_eq!(
+            on_of(&h.get_by_role_and_label(Role::Toolbar, label)),
+            [label]
+        );
+    }
+    // `.tb-finish`: at the panels' right end, inside `.tb-panels`' 6 and its own 8; 30
+    // high, centred in the 52 of panels under the 24 of tabs.
+    let finish = h.get_by_role_and_label(Role::Button, "Finish Sketch");
+    assert!(!finish.accesskit_node().is_disabled());
+    let rect = finish.rect();
+    assert_eq!(rect.right(), 1280.0 - 6.0 - 8.0);
+    assert_eq!(rect.height(), 30.0);
+    assert_eq!(rect.center().y, 24.0 + 52.0 / 2.0);
+    // Its tooltip: its name, its key (app.js: `Mod Enter`), and the prototype's line.
+    finish.hover();
+    toolbar_until(&mut h, "its tooltip", |h| {
+        h.query_by_role_and_label(Role::Label, "Keeps your changes and rebuilds")
+            .is_some()
+    });
+    h.step();
+    let command = if h.ctx.os() == eframe::egui::os::OperatingSystem::Mac {
+        "⌘"
+    } else {
+        "Ctrl"
+    };
+    let texts = |h: &ToolbarHarness| -> Vec<String> {
+        h.output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                eframe::egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+    toolbar_until(&mut h, "its tooltip drawn", |h| {
+        texts(h)
+            .iter()
+            .any(|text| text == "Keeps your changes and rebuilds")
+    });
+    let texts = texts(&h);
+    assert!(texts.iter().any(|text| text == command), "{texts:?}");
+    assert!(texts.iter().any(|text| text == "Enter"), "{texts:?}");
+    // A label's drop-down lists its row's commands, CONSTRAINTS' among them.
+    let label = |h: &ToolbarHarness| {
+        h.get_by_role_and_label(Role::Toolbar, "CONSTRAINTS")
+            .get_by_role_and_label(Role::Button, "CONSTRAINTS")
+            .click();
+    };
+    label(&h);
+    toolbar_until(&mut h, "CONSTRAINTS' drop-down", |h| {
+        h.query_by_role_and_label(Role::Menu, "CONSTRAINTS")
+            .is_some()
+    });
+    let mut row = panel(&h, "CONSTRAINTS");
+    row.pop();
+    assert_eq!(
+        buttons_of(&h.get_by_role_and_label(Role::Menu, "CONSTRAINTS")),
+        row
+    );
+    label(&h);
+    toolbar_until(&mut h, "CONSTRAINTS' drop-down closed", |h| {
+        h.query_by_role_and_label(Role::Menu, "CONSTRAINTS")
+            .is_none()
+    });
+    // A click says Finish Sketch, which the caller sends to sketch mode's finish.
+    h.get_by_role_and_label(Role::Button, "Finish Sketch")
+        .click();
+    h.step();
+    assert_eq!(h.state().acts, [Act::FinishSketch]);
+    // The sketch closed: SOLID's again, and no Finish Sketch.
+    h.state_mut().in_sketch = false;
+    h.step();
+    h.step();
+    assert_eq!(
+        tabs_of(h.query_all_by_role(Role::Tab)),
+        [("SOLID".to_owned(), true)]
+    );
+    assert!(h.query_by_label("Finish Sketch").is_none());
+    assert_eq!(h.state().acts, [Act::FinishSketch]);
+}
+
+#[test]
+fn create_sketch_waits_for_sketch_mode_then_offers_the_origin_planes_from_its_button_and_creates_drop_down()
+ {
+    use silico_app::toolbar::Act;
+    use silico_core::document::OriginPlane;
+    let create_sketch = |h: &ToolbarHarness| {
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    };
+    // No sketch mode: off, and its tooltip says it isn't built.
+    let mut h = toolbar(ToolbarStub::new());
+    assert!(create_sketch(&h));
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .hover();
+    toolbar_until(&mut h, "its tooltip", |h| {
+        h.query_by_role_and_label(Role::Label, "Sketches on an origin plane. Not built yet")
+            .is_some()
+    });
+    // Sketch mode, but it can't open now (#351's `tab.can_sketch()` false): off, built.
+    let mut stub = ToolbarStub::new();
+    stub.create_sketch = Some(false);
+    let mut h = toolbar(stub);
+    assert!(create_sketch(&h));
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .hover();
+    toolbar_until(&mut h, "its tooltip", |h| {
+        h.query_by_role_and_label(Role::Label, "Sketches on an origin plane")
+            .is_some()
+    });
+    assert!(h.query_by_label_contains("Not built").is_none());
+    // It can: on, and a click opens the origin's planes; one clicked says it.
+    let mut stub = ToolbarStub::new();
+    stub.create_sketch = Some(true);
+    let mut h = toolbar(stub);
+    assert!(!create_sketch(&h));
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    toolbar_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_some()
+    });
+    let planes = h.get_by_role_and_label(Role::Menu, "Create Sketch");
+    assert_eq!(buttons_of(&planes), ["XY plane", "XZ plane", "YZ plane"]);
+    planes.get_by_label("XZ plane").click();
+    h.step();
+    h.step();
+    assert_eq!(h.state().acts, [Act::CreateSketch(OriginPlane::Xz)]);
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_none()
+    );
+    // And from CREATE's drop-down, as a menu of its own.
+    toolbar_pointer_away(&mut h);
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_role_and_label(Role::Button, "CREATE")
+        .click();
+    toolbar_until(&mut h, "CREATE's drop-down", |h| {
+        h.query_by_role_and_label(Role::Menu, "CREATE").is_some()
+    });
+    h.get_by_role_and_label(Role::Menu, "CREATE")
+        .query_all_by_role(Role::Button)
+        .find(|node| {
+            node.accesskit_node()
+                .label()
+                .is_some_and(|label| label.starts_with("Create Sketch"))
+        })
+        .unwrap()
+        .click();
+    toolbar_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Menu, "Create Sketch")
+        .get_by_label("YZ plane")
+        .click();
+    h.step();
+    h.step();
+    assert_eq!(
+        h.state().acts,
+        [
+            Act::CreateSketch(OriginPlane::Xz),
+            Act::CreateSketch(OriginPlane::Yz)
+        ]
+    );
+    assert!(h.query_by_role_and_label(Role::Menu, "CREATE").is_none());
+}
+
+#[test]
+fn a_dialog_that_cant_open_is_off_in_creates_row_and_drop_down_and_one_that_can_says_so_once() {
+    use silico_app::dialog::Kind;
+    use silico_app::toolbar::Act;
+    let mut stub = ToolbarStub::new();
+    stub.off = vec![Kind::Pocket, Kind::Groove];
+    let mut h = toolbar(stub);
+    let create = h.get_by_role_and_label(Role::Toolbar, "CREATE");
+    let off = |label: &str| create.get_by_label(label).accesskit_node().is_disabled();
+    assert!(off("Pocket") && off("Groove"));
+    assert!(!off("Pad") && !off("Revolve"));
+    create.get_by_label("Pad").click();
+    h.step();
+    assert_eq!(h.state().acts, [Act::Dialog(Kind::Pad)]);
+    // A click on an off one says nothing.
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Pocket")
+        .click();
+    h.step();
+    assert_eq!(h.state().acts, [Act::Dialog(Kind::Pad)]);
+    toolbar_pointer_away(&mut h);
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_role_and_label(Role::Button, "CREATE")
+        .click();
+    toolbar_until(&mut h, "CREATE's drop-down", |h| {
+        h.query_by_role_and_label(Role::Menu, "CREATE").is_some()
+    });
+    let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
+    let menu_off = |label: &str| menu.get_by_label(label).accesskit_node().is_disabled();
+    assert!(menu_off("Pocket") && menu_off("Groove"));
+    assert!(!menu_off("Pad") && !menu_off("Box") && !menu_off("Torus"));
+    menu.get_by_label("Torus").click();
+    h.step();
+    h.step();
+    assert_eq!(
+        h.state().acts,
+        [Act::Dialog(Kind::Pad), Act::Dialog(Kind::Torus)]
+    );
+}
+
+#[test]
+fn the_toolbar_draws_solid_in_gray_200_and_its_hovered_button_in_gray_300_on_lavapipe() {
+    on_lavapipe(
+        "the_toolbar_draws_solid_in_gray_200_and_its_hovered_button_in_gray_300_on_lavapipe",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            let path = f.file("bracket.silico", A_BOX);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            let pad = h
+                .get_by_role_and_label(Role::Toolbar, "CREATE")
+                .get_by_label("Pad")
+                .rect();
+            h.hover_at(pad.left_top() + eframe::egui::vec2(2.0, 2.0));
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            // SOLID, shown: Gray.200 (`.tb-tab.active`), in its left padding, clear of its
+            // rounded corner and its text.
+            let solid = h.get_by_role_and_label(Role::Tab, "SOLID").rect();
+            let inside = eframe::egui::pos2(solid.left() + 5.0, solid.center().y);
+            assert_eq!(pixel(inside), [0x21, 0x21, 0x21, 0xff], "{solid:?}");
+            // The toolbar's own fill beside it, Gray.100 (`#toolbar`), and the tabs' border
+            // under it, Gray.200 (`.tb-tabs`), and the toolbar's under the panels, Gray.250.
+            let beside = eframe::egui::pos2(solid.right() + 40.0, solid.center().y);
+            assert_eq!(pixel(beside), [0x0d, 0x0d, 0x0d, 0xff]);
+            let under = eframe::egui::pos2(solid.right() + 40.0, solid.bottom() + 0.5);
+            assert_eq!(pixel(under), [0x21, 0x21, 0x21, 0xff]);
+            let bottom =
+                eframe::egui::pos2(solid.right() + 40.0, solid.bottom() + 1.0 + 52.0 + 0.5);
+            assert_eq!(pixel(bottom), [0x27, 0x26, 0x26, 0xff]);
+            // CREATE's border at its right, Gray.200 (`.tb-panel`'s `border-right`), in the
+            // column after its 6 of padding past Groove; the padding itself the toolbar's.
+            let groove = h
+                .get_by_role_and_label(Role::Toolbar, "CREATE")
+                .get_by_label("Groove")
+                .rect();
+            let border = eframe::egui::pos2(groove.right() + 6.5, groove.center().y);
+            assert_eq!(pixel(border), [0x21, 0x21, 0x21, 0xff], "{groove:?}");
+            let padding = eframe::egui::pos2(groove.right() + 3.0, groove.center().y);
+            assert_eq!(pixel(padding), [0x0d, 0x0d, 0x0d, 0xff], "{groove:?}");
+            // Pad, hovered: Gray.300 (`.tb-btn:hover`), clear of its rounded corner and its
+            // icon.
+            let inside = eframe::egui::pos2(pad.left() + 4.0, pad.center().y);
+            assert_eq!(pixel(inside), [0x2c, 0x2b, 0x2b, 0xff], "{pad:?}");
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}
+
+#[test]
+fn the_sketch_tab_and_finish_sketch_are_blue_500_on_lavapipe() {
+    on_lavapipe(
+        "the_sketch_tab_and_finish_sketch_are_blue_500_on_lavapipe",
+        || {
+            let state = lavapipe_render_state();
+            let builder = Harness::builder().renderer(
+                egui_kittest::wgpu::WgpuTestRenderer::from_render_state(state.clone()),
+            );
+            let mut stub = ToolbarStub::new();
+            stub.in_sketch = true;
+            let mut h = toolbar_with(builder, stub);
+            toolbar_pointer_away(&mut h);
+            let rendered = h.render().unwrap();
+            let image = |x, y| rendered.get_pixel(x, y).0;
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |image: &dyn Fn(u32, u32) -> [u8; 4], at: eframe::egui::Pos2| {
+                image((at.x * ppp) as u32, (at.y * ppp) as u32)
+            };
+            // SKETCH: Blue.500 (`.tb-tab.ctx`, `--blue`), in its left padding.
+            let sketch = h.get_by_role_and_label(Role::Tab, "SKETCH").rect();
+            let inside = eframe::egui::pos2(sketch.left() + 5.0, sketch.center().y);
+            assert_eq!(
+                pixel(&image, inside),
+                [0x18, 0x6a, 0xdd, 0xff],
+                "{sketch:?}"
+            );
+            // SOLID, not shown: no fill, the toolbar's Gray.100.
+            let solid = h.get_by_role_and_label(Role::Tab, "SOLID").rect();
+            let inside = eframe::egui::pos2(solid.left() + 5.0, solid.center().y);
+            assert_eq!(pixel(&image, inside), [0x0d, 0x0d, 0x0d, 0xff], "{solid:?}");
+            // Finish Sketch: Blue.500 (`.btn-finish`), in its left padding, clear of its
+            // rounded corners and its icon.
+            let finish = h
+                .get_by_role_and_label(Role::Button, "Finish Sketch")
+                .rect();
+            let inside = eframe::egui::pos2(finish.left() + 6.0, finish.center().y);
+            assert_eq!(
+                pixel(&image, inside),
+                [0x18, 0x6a, 0xdd, 0xff],
+                "{finish:?}"
+            );
+            // Hovered: the prototype's `#2a78e8` (`.btn-finish:hover`); the pointer, which the
+            // harness draws, at its right end, clear of where it's read.
+            h.hover_at(eframe::egui::pos2(finish.right() - 8.0, finish.top() + 4.0));
+            h.step();
+            h.step();
+            let rendered = h.render().unwrap();
+            let image = |x, y| rendered.get_pixel(x, y).0;
+            assert_eq!(
+                pixel(&image, inside),
+                [0x2a, 0x78, 0xe8, 0xff],
+                "{finish:?}"
+            );
+        },
+    );
 }
