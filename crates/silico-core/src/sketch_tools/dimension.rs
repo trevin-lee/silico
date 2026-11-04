@@ -112,6 +112,17 @@ pub enum DimensionEvent {
     Enter,
     /// The Modify box's text, whole, as it now reads.
     Typed(String),
+    /// The press in progress ended without a release (focus lost, a navigation tool taking
+    /// the drag, the tab hidden): dropped as if it had never happened, by
+    /// [`Event::Cancel`](super::Event::Cancel)'s rule. What the press changed goes back to
+    /// what it was before it (that a press is down, and where the pointer was): the picks,
+    /// the lock, and the Modify box, which a press doesn't change, stay. The press in
+    /// progress is the first since the last event that wasn't a press or a move. Otherwise
+    /// it's what [`settle`](SmartDimension::settle) is: the read is taken, as with every
+    /// event, so the last placement's offer (SD7) and whether it's settled are what that
+    /// read makes them. It adds nothing, and leaves nothing (`left` false). With no press in
+    /// progress, it changes nothing a read doesn't.
+    Cancel,
 }
 
 /// What the viewport draws for Smart Dimension.
@@ -162,6 +173,16 @@ pub struct SmartDimension {
     modify: Option<Modify>,
     placed: Option<Placed>,
     preview: DimensionPreview,
+    /// What the press in progress changed, as it was before it, for
+    /// [`DimensionEvent::Cancel`] to put back: none with no press in progress.
+    before_press: Option<BeforePress>,
+}
+
+/// Smart Dimension before a press: whether a press was down, and where the pointer was.
+#[derive(Debug, Clone, Copy)]
+struct BeforePress {
+    pressed: bool,
+    pointer: Option<Xy>,
 }
 
 /// The Modify box, open.
@@ -396,6 +417,7 @@ impl SmartDimension {
             modify: None,
             placed: None,
             preview: DimensionPreview::default(),
+            before_press: None,
         }
     }
 
@@ -468,12 +490,13 @@ impl SmartDimension {
         self.placed.as_ref()?.placement(self.adds.sketch()?)
     }
 
-    /// The tool afresh: nothing picked, no box, no lock.
+    /// The tool afresh: nothing picked, no box, no lock, no press to cancel.
     fn restart(&mut self) {
         self.picks.clear();
         self.lock = None;
         self.pressed = false;
         self.modify = None;
+        self.before_press = None;
     }
 
     /// `event` against `context`, whose read gives the sketch the states `states`: what it
@@ -556,6 +579,36 @@ impl SmartDimension {
             infer: true,
             woken: &[],
         };
+        let event = match event {
+            Some(DimensionEvent::Cancel) => {
+                if let Some(before) = self.before_press.take() {
+                    self.pressed = before.pressed;
+                    self.pointer = before.pointer;
+                }
+                // The rest is the read's, as `settle` takes it.
+                None
+            }
+            Some(DimensionEvent::Press(_)) => {
+                if self.before_press.is_none() {
+                    self.before_press = Some(BeforePress {
+                        pressed: self.pressed,
+                        pointer: self.pointer,
+                    });
+                }
+                event
+            }
+            Some(DimensionEvent::Move(_)) | None => event,
+            Some(
+                DimensionEvent::Release(_)
+                | DimensionEvent::RightClick(_)
+                | DimensionEvent::Escape
+                | DimensionEvent::Enter
+                | DimensionEvent::Typed(_),
+            ) => {
+                self.before_press = None;
+                event
+            }
+        };
         if let Some(
             DimensionEvent::Press(at)
             | DimensionEvent::Move(at)
@@ -605,6 +658,8 @@ impl SmartDimension {
                     Outcome::left()
                 }
             },
+            // Taken above, as no event.
+            DimensionEvent::Cancel => Outcome::default(),
             _ if self.modify.is_some() => Outcome::default(),
             DimensionEvent::Press(_) => {
                 self.pressed = true;
@@ -727,7 +782,7 @@ impl SmartDimension {
         read: Revision,
         states: &SketchStates,
     ) -> Result<Outcome, Message> {
-        let mut builder = Builder::new(ids, view);
+        let mut builder = Builder::new(ids, view, false);
         builder.constraint(form).map_err(Message::NoId)?;
         let members = builder.members;
         let Some(constraint) = members.constraints.first() else {

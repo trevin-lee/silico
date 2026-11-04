@@ -230,6 +230,7 @@ fn a_refused_add_mid_chain_is_forgotten_with_the_chain() {
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SketchTool::new(ToolKind::Line);
     let mut ids = Counter(0);
@@ -299,6 +300,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
             sketch: &first,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -313,6 +315,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
         sketch: &first,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut ids = Counter(0);
     line.handle(&context(&sid), &mut ids, Event::Press([1.0, 2.0]), keys);
@@ -379,6 +382,7 @@ fn a_sketch_at_the_gates_limits_builds_each_shape_once_and_tries_few_crossings()
         sketch: &s,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SketchTool::new(ToolKind::Point);
     let mut ids = Counter(0);
@@ -1085,6 +1089,7 @@ fn an_id_source_that_gives_a_taken_id_is_caught() {
         sketch: &s,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SketchTool::new(ToolKind::Point);
     let keys = Modifiers::default();
@@ -1359,6 +1364,7 @@ fn each_add_is_answered_by_its_token_whatever_the_order() {
             sketch,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -1588,6 +1594,7 @@ fn another_tools_token_answers_nothing() {
             sketch: &none,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -2066,6 +2073,7 @@ fn what_a_tool_added_keeps_its_ids_taken_before_a_read_shows_them() {
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let keys = Modifiers::default();
     for (kind, clicks) in [

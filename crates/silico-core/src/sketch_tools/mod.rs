@@ -17,6 +17,10 @@
 //!   ends it there; Esc ends it and leaves the tool ([`Outcome::left`]). A click within the
 //!   pick tolerance of the gesture's last point (a double-click's second click) adds nothing;
 //!   a drag released within it of its press stays a drag, and draws nothing (too small).
+//!   A press that ends with no release (the viewport's [`Event::Cancel`]) is dropped: the
+//!   gesture is as it was before the press, a chain's points kept.
+//! - **For construction** ([`Context::construction`]): each line, circle, and arc a tool
+//!   adds is construction, and its preview says so; points and relations are as ever.
 //! - **Points shared.** A click on a point of the sketch always shares it: structure, never a
 //!   relation, whatever *Automatic relations* says and whether Ctrl is held (#278's F). The
 //!   point tool clicked on a point adds nothing, and says so (#278's D).
@@ -121,8 +125,8 @@ impl ToolKind {
 
 /// What a tool works against: the sketch, by its feature's ID; the newest `sketch` read's
 /// members, as solved, and the revision of the model it read; the pick tolerance, in
-/// millimetres, that the viewport gives (a few pixels at its zoom); and whether *Automatic
-/// relations* is on.
+/// millimetres, that the viewport gives (a few pixels at its zoom); whether *Automatic
+/// relations* is on; and whether the tool draws for construction.
 #[derive(Debug, Clone, Copy)]
 pub struct Context<'a> {
     pub sketch_id: &'a FeatureId,
@@ -130,6 +134,12 @@ pub struct Context<'a> {
     pub sketch: &'a Sketch,
     pub tolerance: f64,
     pub automatic_relations: bool,
+    /// SolidWorks' *For construction* (X): every line, circle, and arc a tool adds is
+    /// `construction: true`, and its [`Preview::construction`] says so, for the canvas to
+    /// dash them. Points are left as the tool makes them (a centre rectangle's centre is
+    /// construction either way, every other point not), and the relations inferred are the
+    /// same. Smart Dimension, which adds no curve, doesn't read it.
+    pub construction: bool,
 }
 
 /// The keys held with an event: Shift (a square), and Ctrl (no inferred relations).
@@ -152,6 +162,17 @@ pub enum Event {
     EndChain,
     Escape,
     Enter,
+    /// The press in progress ended without a release (focus lost, a navigation tool taking
+    /// the drag, the tab hidden): dropped as if it had never happened. The tool's gesture
+    /// goes back to exactly what it was before that press, and its preview with it, until
+    /// the next event draws it: a chain's points already placed stay, and the tool stays
+    /// active. The press in progress is the first [`Press`](Event::Press) since the last
+    /// event that wasn't a press or a move (a second press with no release between is part
+    /// of it). What isn't the gesture's stays: the points the pointer woke (it was there),
+    /// the adds already made and their tokens, and what the newest read settles (the
+    /// gesture is found in it again, as at every event). It adds nothing, and leaves
+    /// nothing (`left` false). With no press in progress, it does nothing.
+    Cancel,
 }
 
 /// What an event did: the members to add, if it completed something (a `sketch_add`'s,
@@ -332,6 +353,9 @@ pub struct Preview {
     pub arcs: Vec<PreviewArc>,
     pub shown: Vec<Shown>,
     pub guides: Vec<[Xy; 2]>,
+    /// Whether the `lines`, `circles`, and `arcs` are construction, as the add will make
+    /// them ([`Context::construction`]): the canvas dashes them.
+    pub construction: bool,
 }
 
 /// Where a tool's new members' IDs come from: fresh ones, none `taken`, never one given
@@ -373,6 +397,16 @@ pub struct SketchTool {
     adds: Adds,
     /// The points the pointer has woken, the newest first, at most [`WAKE`] (#278's E).
     woken: Vec<ElementId>,
+    /// The gesture and its preview before the press in progress, for [`Event::Cancel`] to
+    /// put back: none with no press in progress.
+    before_press: Option<BeforePress>,
+}
+
+/// A tool's gesture and preview as they were before a press.
+#[derive(Debug)]
+struct BeforePress {
+    state: State,
+    preview: Preview,
 }
 
 #[derive(Debug, Clone)]
@@ -387,12 +421,13 @@ enum State {
     Point(point::Point),
 }
 
-/// What a tool's step has: the sketch it snaps to, the pointer there, the keys held, and
-/// where new IDs come from.
+/// What a tool's step has: the sketch it snaps to, the pointer there, the keys held, where
+/// new IDs come from, and whether its curves are construction.
 struct Step<'v, 's, 'i> {
     pointer: infer::Pointer<'v, 's>,
     shift: bool,
     ids: &'i mut dyn NewIds,
+    construction: bool,
 }
 
 impl SketchTool {
@@ -412,6 +447,7 @@ impl SketchTool {
             preview: Preview::default(),
             adds: Adds::new(),
             woken: Vec::new(),
+            before_press: None,
         }
     }
 
@@ -446,10 +482,11 @@ impl SketchTool {
         }
     }
 
-    /// The tool's gesture begun afresh, its kind kept: nothing under way.
+    /// The tool's gesture begun afresh, its kind kept: nothing under way, no press to cancel.
     fn restart(&mut self) {
         let fresh = SketchTool::new(self.kind());
         self.state = fresh.state;
+        self.before_press = None;
     }
 
     /// Forgets everything it added that no read has shown, and the gesture under way, which
@@ -509,6 +546,15 @@ impl SketchTool {
             return Outcome::said(Message::NotFinite);
         }
         self.settle(context);
+        if event == Event::Cancel {
+            // The gesture as it was before the press, found in the newest read below.
+            let Some(before) = self.before_press.take() else {
+                return Outcome::default();
+            };
+            self.state = before.state;
+            self.preview = before.preview;
+            self.preview.construction = context.construction;
+        }
         let pending = self.adds.members();
         let view = infer::View::of(context.sketch, &pending);
         let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
@@ -525,6 +571,23 @@ impl SketchTool {
             State::TangentArc(t) => t.revalidate(&view),
             State::Point(_) => {}
         }
+        match event {
+            Event::Cancel => return Outcome::default(),
+            Event::Press(_) => {
+                if self.before_press.is_none() {
+                    self.before_press = Some(BeforePress {
+                        state: self.state.clone(),
+                        preview: self.preview.clone(),
+                    });
+                }
+            }
+            Event::Move(_) => {}
+            Event::Release(_)
+            | Event::DoubleClick(_)
+            | Event::EndChain
+            | Event::Escape
+            | Event::Enter => self.before_press = None,
+        }
         if let Event::Press(at) | Event::Move(at) | Event::Release(at) = event {
             self.wake(view.points_near(at, tolerance).into_iter());
         }
@@ -538,8 +601,12 @@ impl SketchTool {
             },
             shift: keys.shift,
             ids,
+            construction: context.construction,
         };
-        let mut preview = Preview::default();
+        let mut preview = Preview {
+            construction: context.construction,
+            ..Preview::default()
+        };
         let mut outcome = match &mut self.state {
             State::Line(t) => t.handle(&mut step, event, &mut preview),
             State::CornerRectangle(t) | State::CenterRectangle(t) => {

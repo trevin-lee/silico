@@ -223,7 +223,7 @@ impl Line {
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
         let at = match event {
             Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => at,
-            Event::EndChain | Event::Escape | Event::Enter => return,
+            Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         let from = match &self.state {
             State::Idle => {
@@ -309,7 +309,7 @@ fn segment(step: &mut Step<'_, '_, '_>, start: &Start, at: Xy) -> Click {
     if end.placed.shared().is_none() && !within_reach(end.placed.at) {
         return Click::Refused(Message::TooFar);
     }
-    let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+    let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
     let built = (|| -> Result<ElementId, crate::Error> {
         let a = match start {
             Start::New(placed) => builder.point(placed, false)?,

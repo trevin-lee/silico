@@ -208,7 +208,7 @@ impl Rectangle {
         if ![c0, c1, c2, c3].into_iter().all(within_reach) {
             return Outcome::said(Message::TooFar);
         }
-        let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+        let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
         let built = (|| -> Result<(), crate::Error> {
             if self.centred {
                 let centre = builder.point(first, true)?;
@@ -239,7 +239,7 @@ impl Rectangle {
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
         let at = match event {
             Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => at,
-            Event::EndChain | Event::Escape | Event::Enter => return,
+            Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         let first = match &self.state {
             State::Idle => {

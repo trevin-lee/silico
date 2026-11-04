@@ -325,7 +325,7 @@ impl Centerpoint {
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
         let at = match event {
             Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => at,
-            Event::EndChain | Event::Escape | Event::Enter => return,
+            Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         match &self.state {
             CenterState::Idle => {
@@ -439,7 +439,7 @@ fn finish_centerpoint(
     if !reach(&[&end]) || !drawn.sized() {
         return Outcome::said(Message::TooFar);
     }
-    let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+    let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
     let built = (|| -> Result<(), crate::Error> {
         let c = builder.point(centre, false)?;
         let s = builder.point(start, false)?;
@@ -648,7 +648,7 @@ impl ThreePoint {
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
         let at = match event {
             Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => at,
-            Event::EndChain | Event::Escape | Event::Enter => return,
+            Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         match &self.state {
             ThreeState::Idle => show(preview, &placed_at(step, at, &[])),
@@ -684,7 +684,7 @@ fn finish_three(step: &mut Step<'_, '_, '_>, start: &Placed, end: &Placed, at: X
     if drawn.too_small() {
         return Outcome::said(Message::TooSmall);
     }
-    let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+    let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
     let built = (|| -> Result<(), crate::Error> {
         let c = builder.new_point(drawn.center, false)?;
         let s = builder.point(start, false)?;
@@ -844,7 +844,7 @@ impl Tangent {
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
         let at = match event {
             Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => at,
-            Event::EndChain | Event::Escape | Event::Enter => return,
+            Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         match &self.state {
             TangentState::Idle => {
@@ -914,7 +914,7 @@ fn finish_tangent(step: &mut Step<'_, '_, '_>, base: &Base, at: Xy) -> Option<Ou
     if drawn.too_small() {
         return Some(Outcome::said(Message::TooSmall));
     }
-    let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+    let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
     let built = (|| -> Result<(), crate::Error> {
         let c = builder.new_point(drawn.center, false)?;
         let e = builder.point(&end, false)?;

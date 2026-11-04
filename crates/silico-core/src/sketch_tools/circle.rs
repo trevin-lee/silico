@@ -145,7 +145,7 @@ impl Circle {
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
         let at = match event {
             Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => at,
-            Event::EndChain | Event::Escape | Event::Enter => return,
+            Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         match &self.state {
             State::Idle => {
@@ -189,7 +189,7 @@ fn finish(step: &mut Step<'_, '_, '_>, centre: &Placed, at: Xy) -> Outcome {
     if radius > silico_protocol::MAX_LENGTH {
         return Outcome::said(Message::TooFar);
     }
-    let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+    let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
     let built = (|| -> Result<(), crate::Error> {
         let c = builder.point(centre, false)?;
         let circle = builder.circle(&c, radius)?;
