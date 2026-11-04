@@ -191,6 +191,9 @@ pub struct View {
     picking: Option<PixelRect>,
     picked: Option<Picking>,
     frame: Option<ViewFrame>,
+    /// The pane's height in pixels, as its last frame had it: an orthographic view's least
+    /// is the renderer's at that height (`views::least_view_height`).
+    rows: u32,
 }
 
 impl Default for View {
@@ -219,6 +222,7 @@ impl Default for View {
             picking: None,
             picked: None,
             frame: None,
+            rows: 1,
         }
     }
 }
@@ -481,7 +485,7 @@ impl View {
         self.generation = self.generation.wrapping_add(1);
         // A view zoomed in before these bodies came (or as close as smaller ones allowed)
         // raised to the least they allow, so every control can move it on.
-        self.camera = navigate::clamped(self.camera.clone(), self.drawn_boxes());
+        self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
     }
 
     /// Every body's box.
@@ -611,7 +615,7 @@ impl View {
         let Some(camera) = camera else {
             return false;
         };
-        self.camera = navigate::clamped(camera, self.drawn_boxes());
+        self.camera = navigate::clamped(camera, self.rows, self.drawn_boxes());
         self.placed = true;
         true
     }
@@ -622,10 +626,10 @@ impl View {
     fn zoom(&mut self, scroll: f64, cursor: [f64; 2], height: f64) {
         let mut scroll = scroll;
         if let Projection::Orthographic { view_height } = self.camera.projection {
-            let least = silico_core::views::least_view_height(silico_core::views::reach(
-                self.camera.target,
-                self.drawn_boxes(),
-            ));
+            let least = silico_core::views::least_view_height(
+                self.rows,
+                silico_core::views::reach(self.camera.target, self.drawn_boxes()),
+            );
             // The most it may zoom in: to the least, at 200 points an octave.
             let most = -navigate::ZOOM_POINTS_PER_OCTAVE * libm::log2(least / view_height);
             if scroll > 0.0 && least > 0.0 {
@@ -992,7 +996,12 @@ pub fn show<P: Clients + 'static>(
     if now_hidden != view.hidden {
         view.hidden = now_hidden;
         // A body shown again may reach farther than the view's least allowed.
-        view.camera = navigate::clamped(view.camera.clone(), view.drawn_boxes());
+        view.camera = navigate::clamped(view.camera.clone(), view.rows, view.drawn_boxes());
+    }
+    if size_px[1].max(1) != view.rows {
+        // A taller pane's least is more: the view raised to it.
+        view.rows = size_px[1].max(1);
+        view.camera = navigate::clamped(view.camera.clone(), view.rows, view.drawn_boxes());
     }
     view.poll(now);
     match view.notice.take() {
@@ -1419,6 +1428,7 @@ mod tests {
             placed: true,
             bodies: bodies.iter().cloned().collect(),
             model: Revision::from_number(model),
+            rows: 400,
             ..View::default()
         }
     }
@@ -1892,10 +1902,14 @@ mod tests {
 
     #[test]
     fn a_view_under_the_least_a_new_table_allows_is_raised_to_it() {
-        // Zoomed to 1e-5 mm onto (20, 10, 5) before any body came: the cut's box (0, 0, −1)
-        // to (40, 20, 11) reaches √(20² + 10² + 6²) = 23.152 mm from there, so the least is
-        // 23.152 · 1e-5 · 1.01 = 2.3384e-4 mm, which the view is raised to.
-        let mut view = View::default();
+        // Zoomed to 1e-5 mm onto (20, 10, 5) before any body came, in a pane 400 pixels
+        // high: the cut's box (0, 0, −1) to (40, 20, 11) reaches √(20² + 10² + 6²) = 23.152 mm
+        // from there, so the least is 400 · 23.152 / 2^19 · 1.01 = 0.017838 mm, which the
+        // view is raised to.
+        let mut view = View {
+            rows: 400,
+            ..View::default()
+        };
         view.set_camera(front(1e-5));
         view.take_bodies(vec![meshed(
             1,
@@ -1903,7 +1917,7 @@ mod tests {
             0.03125,
             Some(Arc::clone(&body(0.03125, [0.03125, 0.0625], CUT).mesh)),
         )]);
-        let least = 536f64.sqrt() * 1e-5 * 1.01;
+        let least = 536f64.sqrt() * 400.0 / 524_288.0 * 1.01;
         let Projection::Orthographic { view_height } = view.camera.projection else {
             panic!("orthographic")
         };
@@ -1951,7 +1965,7 @@ mod tests {
             up: [0.0, 0.0, 1.0],
         };
         assert!(view.moved(Some(far)));
-        let least = (1020.0f64 * 1020.0 + 100.0 + 36.0).sqrt() * 1e-5 * 1.01;
+        let least = (1020.0f64 * 1020.0 + 100.0 + 36.0).sqrt() * 400.0 / 524_288.0 * 1.01;
         let Projection::Orthographic { view_height } = view.camera.projection else {
             panic!("orthographic")
         };
@@ -2081,7 +2095,7 @@ mod tests {
             Projection::Perspective { .. } => panic!("orthographic"),
         };
         view.moved(Some(tiny.clone()));
-        assert!((height(&view) - 536f64.sqrt() * 1e-5 * 1.01).abs() < 1e-15);
+        assert!((height(&view) - 536f64.sqrt() * 400.0 / 524_288.0 * 1.01).abs() < 1e-15);
         let mut unmeasured = body(0.03125, [0.03125, 0.0625], None);
         unmeasured.mesh = Arc::new(Mesh {
             positions: vec![[20.0, 10.0, 5.0], [100.0, 10.0, 5.0]],
@@ -2091,7 +2105,7 @@ mod tests {
         let mut view = view_with(&[(1, unmeasured)], 3);
         view.moved(Some(tiny));
         // Its edge's point at (200, 10, 5) is the farthest: 180 mm.
-        assert!((height(&view) - 180.0 * 1e-5 * 1.01).abs() < 1e-15);
+        assert!((height(&view) - 180.0 * 400.0 / 524_288.0 * 1.01).abs() < 1e-15);
     }
 
     fn hidden_far() -> (ViewBody, FeatureId) {
@@ -2109,7 +2123,7 @@ mod tests {
     fn a_new_tables_clamp_and_a_zooms_stop_are_by_the_bodies_drawn() {
         // The cut, and a body 10 m off that the browser hides: the least from (20, 10, 5) is
         // the cut's alone, √536 · 1e-5 · 1.01, both as a table comes and as a zoom stops.
-        let least = 536f64.sqrt() * 1e-5 * 1.01;
+        let least = 536f64.sqrt() * 400.0 / 524_288.0 * 1.01;
         let height = |view: &View| match view.camera.projection {
             Projection::Orthographic { view_height } => view_height,
             Projection::Perspective { .. } => panic!("orthographic"),
@@ -2117,6 +2131,7 @@ mod tests {
         let (far, id) = hidden_far();
         let mut view = View {
             hidden: [id.clone()].into_iter().collect(),
+            rows: 400,
             ..View::default()
         };
         view.set_camera(front(1e-6));
