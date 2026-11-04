@@ -95,6 +95,38 @@ fn an_orthographic_view_down_on_xy_maps_each_pixel_as_worked_by_hand() {
 }
 
 #[test]
+fn at_fractional_scales_points_and_pixels_convert_by_the_scale_itself_as_worked_by_hand() {
+    // The view above's: 100 mm high over 200 pixels, half a millimetre a pixel, the image's
+    // centre (200, 100) over the origin; the viewport's top left at (40, 30) points. Only
+    // the points a pixel is change with the scale, never the pixels a place is.
+    let at = |ppp| placed(&down(ORTHOGRAPHIC), [400, 200], ppp, SketchPlane::Xy);
+    // At 1.25: (25, -10) is pixel (250, 120), 200 and 96 points in, at (240, 126); the
+    // point (100, 50) is 60 and 20 points in, pixel (75, 25), at (-62.5, 37.5).
+    let p = at(1.25);
+    by_hand(p.pixel_of([25.0, -10.0]).unwrap(), [250.0, 120.0]);
+    at_point(p.project([25.0, -10.0]), pos2(240.0, 126.0));
+    by_hand(p.pixel_at(pos2(100.0, 50.0)), [75.0, 25.0]);
+    by_hand(p.to_plane(pos2(100.0, 50.0)).unwrap(), [-62.5, 37.5]);
+    // The pane's pixel (251, 121) through `at_points`, as the events are: (200.8, 96.8)
+    // points in, and back to that pixel, (25.5, -10.5) on the plane.
+    let pane = crate::sketch::at_points([251.0, 121.0], 1.25, ORIGIN);
+    at_point(Some(pane), pos2(240.8, 126.8));
+    by_hand(p.to_plane(pane).unwrap(), [25.5, -10.5]);
+    // At 1.5: (-40, 12.5) is pixel (120, 75), 80 and 50 points in, at (120, 80); (25, -10)
+    // is 166.667 and 80 points in; the point (100, 50) is pixel (90, 30), at (-55, 35).
+    let p = at(1.5);
+    by_hand(p.pixel_of([-40.0, 12.5]).unwrap(), [120.0, 75.0]);
+    at_point(p.project([-40.0, 12.5]), pos2(120.0, 80.0));
+    at_point(p.project([25.0, -10.0]), pos2(40.0 + 250.0 / 1.5, 110.0));
+    by_hand(p.pixel_at(pos2(100.0, 50.0)), [90.0, 30.0]);
+    by_hand(p.to_plane(pos2(100.0, 50.0)).unwrap(), [-55.0, 35.0]);
+    // The pane's pixel (301.5, 64.5), a pixel's centre: 201 and 43 points in, (50.75, 17.75).
+    let pane = crate::sketch::at_points([301.5, 64.5], 1.5, ORIGIN);
+    at_point(Some(pane), pos2(241.0, 73.0));
+    by_hand(p.to_plane(pane).unwrap(), [50.75, 17.75]);
+}
+
+#[test]
 fn a_perspective_view_down_on_xy_maps_each_pixel_as_worked_by_hand() {
     // 90° high over 200 pixels, 100 above the plane: the top edge's middle, (100, 0), 45°
     // up, meets the plane 100 · tan 45° = 100 mm up; (150, 100), a quarter across, at
