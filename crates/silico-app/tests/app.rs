@@ -20415,8 +20415,9 @@ fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_say
     double_click(&mut h, "Browser", "Box");
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     sketch_read(&mut h);
+    // The sketch's properties (main's panel gives its ID, no longer "Type: sketch").
     step_until(&mut h, "the sketch in Properties", |h| {
-        shows(h, "Properties", "Type: sketch")
+        property(h, "ID").as_deref() == Some("s0000001")
     });
     // The block's warning marks the timeline, so a read that marks nothing never clears
     // what was said wholesale.
@@ -20449,7 +20450,7 @@ fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_say
     }
     // The block still marked: the timeline marks something, the sketch nothing.
     assert!(marks(&h, "k7f2qx3m").is_some_and(|(_, warnings)| warnings > 0));
-    assert!(shows(&h, "Properties", "Type: sketch"));
+    assert_eq!(property(&h, "ID").as_deref(), Some("s0000001"));
     assert_eq!(showing(&h, "Properties", "conflict"), None);
     assert!(!h.state().tabs()[0].said.contains_key("s0000001"));
     assert_eq!(never_waits::waits(), 0);
@@ -20553,17 +20554,6 @@ fn at_one_and_a_quarter_and_one_and_a_half_pixels_a_point_the_sketch_menu_stays_
 // ---- M5.11's wiring, the prototype's look: the Modify box's icons, the over-define
 // prompt's head, rows, and keys, and the Sketch Palette inside the viewport ----
 
-/// The text of every text shape the last frame painted.
-fn painted_texts(h: &AppHarness) -> Vec<String> {
-    painted(h)
-        .iter()
-        .filter_map(|shape| match shape {
-            eframe::egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
-            _ => None,
-        })
-        .collect()
-}
-
 #[test]
 fn the_modify_boxs_buttons_are_its_icons_named_accept_and_cancel_with_no_glyph_drawn() {
     let f = fixture();
@@ -20592,8 +20582,22 @@ fn the_modify_boxs_buttons_are_its_icons_named_accept_and_cancel_with_no_glyph_d
             "{name} {button:?}"
         );
     }
-    // Drawn as icons: no ✓, ✕, or a font's stand-in for one, among the frame's text.
-    let texts = painted_texts(&h);
+    // Drawn as icons: no ✓, ✕, or a font's stand-in for one, among the text the frame draws
+    // in the box (the status bar's Shortcuts key, main's, is a "?" of its own).
+    let field = dialog.get_by_role(Role::TextInput).rect();
+    let area = ["Accept", "Cancel"]
+        .into_iter()
+        .map(|name| dialog.get_by_role_and_label(Role::Button, name).rect())
+        .fold(field, |area, button| area.union(button));
+    let texts: Vec<String> = painted(&h)
+        .iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) if area.intersects(text.visual_bounding_rect()) => {
+                Some(text.galley.text().to_owned())
+            }
+            _ => None,
+        })
+        .collect();
     for glyph in ["✓", "✕", "?"] {
         assert!(!texts.iter().any(|t| t == glyph), "{glyph} in {texts:?}");
     }
@@ -20733,7 +20737,11 @@ fn in_a_short_window_the_sketch_palette_stays_inside_the_viewport_and_its_last_s
     );
     // Its title stays; the legend's last row, Construction, is below it, out of sight.
     let title = h.get_by_label("SKETCH PALETTE").rect();
-    let last = |h: &AppHarness| h.get_by_label("Construction").rect();
+    let last = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .get_by_label("Construction")
+            .rect()
+    };
     assert!(
         last(&h).bottom() > palette.bottom(),
         "{:?} {palette:?}",

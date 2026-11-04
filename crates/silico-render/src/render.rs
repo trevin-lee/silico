@@ -1466,8 +1466,12 @@ pub fn ray(camera: &Camera, size_px: [u32; 2], pixel: [f64; 2]) -> Option<([f64;
             // The point on the near plane, in the eye's frame: the ray's way from the eye.
             let projection = view_projection(camera.projection, size_px, 0.0);
             let along = into_document(unproject(projection, size_px, pixel, 1.0)?);
+            // Never 0: the near plane's point is `near` along the view (its z, the inverse's
+            // of device depth 1), and the rotation keeps its length.
             let length = dot(along, along).sqrt();
-            (length.is_finite() && length > 0.0).then(|| (camera.eye, along.map(|c| c / length)))
+            length
+                .is_finite()
+                .then(|| (camera.eye, along.map(|c| c / length)))
         }
         Projection::Orthographic { .. } => {
             // Across the view only: x and y don't depend on the depth, or on the far plane.
@@ -3727,6 +3731,81 @@ mod tests {
                             "{x} {lit}: pixel {i}"
                         );
                     }
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn an_edge_reaching_far_past_the_pyramid_or_behind_the_eye_is_drawn_where_it_projects() {
+        on_lavapipe(
+            "an_edge_reaching_far_past_the_pyramid_or_behind_the_eye_is_drawn_where_it_projects",
+            |r| {
+                // From the origin along +y, up +z, 60° over 48 rows, 64 wide: a point (x, 1,
+                // z) is at column 32 + 24 x / tan 30° and row 24 − 24 z / tan 30° (by hand).
+                // An edge from (−0.3, 1, −0.2), in the image, to (1e7, 1, 6e6), 1.6e7 across
+                // the view at depth 1 (past the pyramid's 12,612), crosses the image to its
+                // right side; another from (0.2, 1, 0.3) to (0.2, −1, 0.3), behind the eye,
+                // runs from its point to the image's edge. Cut to the pyramid, every pixel of
+                // each is within its stroke's pixel and an eighth of where its line projects.
+                let s = 24.0 / libm::tan(30f64.to_radians());
+                let lines = [
+                    ([-0.3, 1.0, -0.2], [1e7, 1.0, 6e6]),
+                    ([0.2, 1.0, 0.3], [0.2, -1.0, 0.3]),
+                ];
+                for (n, &(a, b)) in lines.iter().enumerate() {
+                    let scene = RenderScene {
+                        bodies: vec![body(
+                            1,
+                            Mesh {
+                                positions: vec![],
+                                normals: vec![],
+                                triangles: vec![],
+                                face_triangles: vec![],
+                                edge_points: vec![a, b],
+                                edge_point_counts: vec![2],
+                                valid: None,
+                            },
+                        )],
+                        camera: Camera {
+                            projection: Projection::Perspective {
+                                field_of_view: 60.0,
+                            },
+                            eye: [0.0; 3],
+                            target: [0.0, 10.0, 0.0],
+                            up: [0.0, 0.0, 1.0],
+                        },
+                        width: 64,
+                        height: 48,
+                        ids: true,
+                    };
+                    let seen = ids(r, &scene);
+                    // The line in the image through a's projection, along the projection's
+                    // direction toward the part of b before the eye.
+                    let at = |p: [f64; 3]| (32.0 + p[0] / p[1] * s, 24.0 - p[2] / p[1] * s);
+                    let (x0, y0) = at(a);
+                    let ahead = if b[1] > 0.0 {
+                        b
+                    } else {
+                        // Where it meets the depth of a hundredth, still ahead.
+                        let t = (a[1] - 0.01) / (a[1] - b[1]);
+                        std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t)
+                    };
+                    let (x1, y1) = at(ahead);
+                    let (dx, dy) = (x1 - x0, y1 - y0);
+                    let length = (dx * dx + dy * dy).sqrt();
+                    let mut drawn = 0;
+                    for (i, id) in seen.iter().enumerate() {
+                        if *id == [0, 0] {
+                            continue;
+                        }
+                        assert_eq!(*id, [1, silico_protocol::EDGE_BIT | 1], "line {n}");
+                        let (px, py) = ((i % 64) as f64 + 0.5, (i / 64) as f64 + 0.5);
+                        let off = ((px - x0) * dy - (py - y0) * dx).abs() / length;
+                        assert!(off <= 1.125, "line {n}: pixel {i} is {off} off its line");
+                        drawn += 1;
+                    }
+                    assert!(drawn > 30, "line {n}: {drawn} pixels");
                 }
             },
         );

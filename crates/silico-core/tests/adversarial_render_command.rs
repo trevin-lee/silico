@@ -1301,3 +1301,32 @@ fn a_highlight_past_its_bodys_mesh_is_the_cores_naming_it_by_kind_and_number() {
     bench.render(&request).unwrap();
     assert_eq!(bench.renderer.sent()[0].bodies[0].highlight_faces, [0]);
 }
+
+#[test]
+fn a_perspective_camera_with_a_side_of_no_pixels_is_refused_for_that_side_alone() {
+    // A side refused (none, or past 4096) is the request's one error: the camera's angle
+    // isn't judged against a size the image hasn't. At 0.005° (by hand under the narrowest
+    // any real image takes: 2 atan(rows / 2^20) is 0.011° at 100 rows and 0.55° at 5000),
+    // with a height of 5000 the refusal is for the height, with a width of 5000 (100 rows,
+    // 50 to 1) for the width; at 60° with a height or width of 0, likewise. Nothing sent.
+    let bench = Bench::of(EXAMPLE);
+    let at = |field_of_view| perspective(field_of_view, [20.0, -100.0, 5.0], [20.0, 10.0, 5.0]);
+    for (field_of_view, width, height, side) in [
+        (0.005, 100, 5000, "height"),
+        (0.005, 5000, 100, "width"),
+        (60.0, 100, 0, "height"),
+        (60.0, 0, 100, "width"),
+    ] {
+        let problems = bench
+            .render(&camera(at(field_of_view), width, height))
+            .unwrap_err();
+        let parameters: Vec<Option<&str>> =
+            problems.errors().iter().map(|e| e.parameter()).collect();
+        assert_eq!(
+            parameters,
+            [Some(side)],
+            "{field_of_view}° at {width} by {height}"
+        );
+    }
+    assert!(bench.renderer.sent().is_empty());
+}

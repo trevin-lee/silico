@@ -1073,22 +1073,29 @@ impl Tab {
         if let Some((gate, read)) = self.check_read.take() {
             match read.try_take() {
                 Ok(response) => {
-                    self.check_superseded = false;
-                    if std::mem::take(&mut self.fresh_out) {
+                    let superseded = std::mem::take(&mut self.check_superseded);
+                    let fresh = std::mem::take(&mut self.fresh_out);
+                    if fresh {
                         // Rebuild everything's: what it published is read again.
                         self.timeline_asked = None;
                     }
-                    // Only a check of the newest timeline's revision and model says what's
-                    // marked: one of an older (its timeline taken since, this frame or
-                    // before) would bring back what that timeline let go. The newest's is
-                    // asked next, if it's wanted.
+                    // Only a check of the newest model says what's marked: one of an older
+                    // (its timeline taken since, this frame or before) would bring back what
+                    // that timeline let go. The tab's own check is of the newest timeline's
+                    // revision and model; Rebuild everything's, of the current model as it
+                    // was sent, is the newest unless an edit has superseded it since. The
+                    // newest's is asked next, if it's wanted.
                     let newest = self
                         .timeline
                         .as_ref()
                         .map(|timeline| (timeline.revision, timeline.model));
+                    let current = if fresh {
+                        !superseded
+                    } else {
+                        self.checked.is_some() && self.checked == newest
+                    };
                     if let Ok(answer) = response.result
-                        && self.checked.is_some()
-                        && self.checked == newest
+                        && current
                     {
                         self.took_check(&answer, gate);
                     }

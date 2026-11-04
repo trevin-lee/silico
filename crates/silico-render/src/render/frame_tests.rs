@@ -1144,6 +1144,47 @@ fn assert_pixel(got: Option<[f64; 2]>, want: [f64; 2], within: f64) {
 }
 
 #[test]
+fn the_projection_is_the_cameras_with_its_near_plane_half_the_least_eye_distance() {
+    // By the design (docs/design/m4.6-render.md, *A given camera*): what's drawn is cut to
+    // depth MIN_EYE_DISTANCE and more, and the near plane is half that, so no triangle drawn
+    // crosses it. The angle in radians and the image's aspect, f32, as the GPU takes them.
+    let ViewProjection::Perspective {
+        vertical_fov,
+        near_plane_distance,
+        aspect_ratio,
+    } = super::view_projection(
+        Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        [WIDTH, HEIGHT],
+        0.0,
+    )
+    else {
+        panic!("not a perspective");
+    };
+    assert_eq!(near_plane_distance, 5e-7f32);
+    assert_eq!(aspect_ratio, 4.0f32 / 3.0);
+    assert_eq!(vertical_fov, 40f64.to_radians() as f32);
+    let ViewProjection::Orthographic {
+        camera_mode,
+        vertical_world_size,
+        far_plane_distance,
+    } = super::view_projection(
+        Projection::Orthographic { view_height: 44.0 },
+        [WIDTH, HEIGHT],
+        3.5,
+    )
+    else {
+        panic!("not orthographic");
+    };
+    assert!(matches!(
+        camera_mode,
+        OrthographicCameraMode::NearPlaneCenter
+    ));
+    assert_eq!((vertical_world_size, far_plane_distance), (44.0, 3.5));
+}
+
+#[test]
 fn a_box_corner_projects_to_the_pixel_worked_by_hand() {
     // The corner (0, 0, 10), its top front left. From the front, orthographic: column
     // 32 + (0 − 21) × 12/11, row 24 − (10 − 7) × 12/11. To 2e-6 of a pixel: the GPU's
@@ -1269,6 +1310,13 @@ fn project_is_none_behind_the_eye_where_the_drawing_cuts_and_for_what_the_checks
     assert_eq!(project(&at_the_target, size, [20.0, 0.0, 5.0]), None);
     assert_eq!(project(&front(), [0, HEIGHT], [20.0, 0.0, 5.0]), None);
     assert_eq!(project(&front(), [WIDTH, 0], [20.0, 0.0, 5.0]), None);
+    // In perspective a height of 0 passes the camera's check (its corner's sec² and its
+    // pyramid's slope both infinite), and the projection's x scale is then 0 and its y
+    // pixels 0 high: a pixel (32, 0) of nothing, if the size weren't refused first.
+    let at = [21.0, 0.0, 7.0];
+    assert!(front_in_perspective().check(WIDTH, 0).is_ok());
+    assert_eq!(project(&front_in_perspective(), [WIDTH, 0], at), None);
+    assert_eq!(project(&front_in_perspective(), [0, HEIGHT], at), None);
 }
 
 #[test]
@@ -2020,9 +2068,21 @@ fn a_perspective_frame_takes_the_angles_a_scenes_check_does_at_its_size_and_any_
 /// its picking reads them back: the body's number and the element's, as the worker's ID
 /// buffer writes them.
 fn frame_ids(r: &mut Renderer, camera: &Camera, bodies: &[u32], size: [u32; 2]) -> Vec<[u32; 2]> {
+    frame_ids_at(r, camera, bodies, size, 1.0)
+}
+
+/// [`frame_ids`] at `pixels_per_point`.
+fn frame_ids_at(
+    r: &mut Renderer,
+    camera: &Camera,
+    bodies: &[u32],
+    size: [u32; 2],
+    pixels_per_point: f32,
+) -> Vec<[u32; 2]> {
     let asking = Frame {
         size_px: size,
         picking: Some(rect([0, 0], size)),
+        pixels_per_point,
         ..frame(camera, bodies, &[], None)
     };
     pick(r, &asking);
@@ -2048,6 +2108,43 @@ fn frame_ids(r: &mut Renderer, camera: &Camera, bodies: &[u32], size: [u32; 2]) 
             ]
         })
         .collect()
+}
+
+#[test]
+fn an_edge_past_the_frames_side_by_less_than_its_stroke_at_two_pixels_a_point_is_drawn() {
+    on_lavapipe(
+        "render::frame_tests::an_edge_past_the_frames_side_by_less_than_its_stroke_at_two_pixels_a_point_is_drawn",
+        |r| {
+            // Orthographic about the origin from −y, 48 mm over 48 rows, 64 wide: a pixel a
+            // millimetre, the frame's right side at x = 32. At 2 pixels a point an edge's
+            // 2-point stroke is 4 pixels, reaching 2 past its line: one along z at x = 33.25,
+            // 1.25 past the side, reaches the last column's centres (1.75 from it), by hand
+            // rows 16 to 32; at one pixel a point (a reach of 1) it doesn't reach the frame.
+            let edge = Arc::new(Mesh {
+                positions: vec![],
+                normals: vec![],
+                triangles: vec![],
+                face_triangles: vec![],
+                edge_points: vec![[33.25, 0.0, -10.0], [33.25, 0.0, 10.0]],
+                edge_point_counts: vec![2],
+                valid: None,
+            });
+            r.upload(1, &edge).unwrap();
+            let camera = Camera {
+                projection: Projection::Orthographic { view_height: 48.0 },
+                eye: [0.0, -10.0, 0.0],
+                target: [0.0; 3],
+                up: [0.0, 0.0, 1.0],
+            };
+            let id = [1, 0x8000_0001];
+            let ids = frame_ids_at(r, &camera, &[1], [64, 48], 2.0);
+            for row in 16..=32 {
+                assert_eq!(ids[row * 64 + 63], id, "row {row}");
+            }
+            let ids = frame_ids_at(r, &camera, &[1], [64, 48], 1.0);
+            assert!(ids.iter().all(|id| *id == [0, 0]));
+        },
+    );
 }
 
 #[test]
