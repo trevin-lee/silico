@@ -926,7 +926,18 @@ impl Tab {
             match read.try_take() {
                 Ok(response) => {
                     self.check_superseded = false;
-                    if let Ok(answer) = response.result {
+                    // Only a check of the newest timeline's revision and model says what's
+                    // marked: one of an older (its timeline taken since, this frame or
+                    // before) would bring back what that timeline let go. The newest's is
+                    // asked next, if it's wanted.
+                    let newest = self
+                        .timeline
+                        .as_ref()
+                        .map(|timeline| (timeline.revision, timeline.model));
+                    if let Ok(answer) = response.result
+                        && self.checked.is_some()
+                        && self.checked == newest
+                    {
                         self.took_check(&answer, gate);
                     }
                 }
@@ -3960,6 +3971,70 @@ mod tests {
         // Taken as `take_answers` takes it: the same timeline asks it again.
         tab.read_check(&sessions);
         assert!(tab.check_read.is_some());
+    }
+
+    #[test]
+    fn a_check_of_an_older_timeline_taken_in_the_frame_of_a_newer_one_brings_back_nothing() {
+        // Two boxes with no fingerprint, each warned. The first selected: its check out,
+        // then the first removed, then the timeline of the revision that made, all answered
+        // before the frame takes them, the timeline first. That timeline marks only the
+        // second: the first's warning, the check's, isn't brought back.
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("part.silico");
+        std::fs::write(
+            &document,
+            r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "a0000001", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}, {"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [10, 0, 0], "length": 4, "width": 2, "height": 1}]}"#,
+        )
+        .unwrap();
+        let kernel = Arc::new(silico_core::fake::FakeKernel::new(1).unwrap());
+        let sessions = Arc::new(Sessions::with_cache_opener(Arc::clone(&kernel), |dir| {
+            silico_core::cache::Cache::unsealed(dir)
+        }));
+        let opened = sessions.open(&document, false).wait();
+        let id = opened.session.unwrap().id;
+        let mut tab = Tab::opened(
+            id,
+            document.to_str().unwrap().to_owned(),
+            &opened.result.unwrap().problems,
+        );
+        let first = sessions
+            .timeline(&id, ModelChoice::Current)
+            .wait()
+            .result
+            .unwrap();
+        let warned = |timeline: &TimelineAnswer| -> Vec<String> {
+            timeline
+                .features
+                .iter()
+                .flatten()
+                .filter(|entry| entry.warnings > 0)
+                .map(|entry| entry.id.as_str().to_owned())
+                .collect()
+        };
+        assert_eq!(warned(&first), ["a0000001", "b0000001"]);
+        tab.took_timeline(first);
+        tab.selected = Some(FeatureId::new("a0000001").unwrap());
+        tab.read_check(&sessions);
+        assert!(tab.check_read.is_some());
+        // Queued behind the check, in turn on the session's thread.
+        let removed =
+            sessions.remove_feature(&id, Revision::OPENED, FeatureId::new("a0000001").unwrap());
+        tab.timeline_read = Some(sessions.timeline(&id, ModelChoice::Current));
+        assert!(removed.wait().result.unwrap().changed);
+        // Queued after both reads: once it answers, so have they.
+        sessions.text(&id, None).wait().result.unwrap();
+        tab.selected = None;
+        tab.take_answers(&sessions);
+        assert!(tab.timeline_read.is_none() && tab.check_read.is_none());
+        let newest = tab.timeline.as_ref().unwrap();
+        assert_ne!(newest.revision, Revision::OPENED);
+        assert_eq!(warned(newest), ["b0000001"]);
+        assert!(
+            !tab.said.contains_key("a0000001"),
+            "{:?}",
+            tab.said.keys().collect::<Vec<_>>()
+        );
+        assert!(tab.document_problems.is_empty());
     }
 
     #[test]
