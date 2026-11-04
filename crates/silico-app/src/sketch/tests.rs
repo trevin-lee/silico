@@ -3923,7 +3923,7 @@ fn the_modify_boxs_accept_waits_on_the_core_and_its_hint_says_so() {
         let (mut h, _) = modify_harness(waiting);
         h.run();
         assert_eq!(
-            h.get_by_label("✓").accesskit_node().is_disabled(),
+            h.get_by_label("Accept").accesskit_node().is_disabled(),
             waiting,
             "{waiting}"
         );
