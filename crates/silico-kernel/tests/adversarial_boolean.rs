@@ -580,6 +580,92 @@ fn cut_that_splits_the_base_in_two_then_used_again() {
 }
 
 #[test]
+fn boxes_with_flat_faces_just_past_the_fuzzy_value_are_right_or_occts_known_wrong_answer() {
+    // A 1.0000001 × 1 × 1.0000001 box, and a 1.0000001 × 3 × 1.0000001 box at (0.5, d, 0.5):
+    // their low y faces d apart, sharing 0.5000001². The fuzzy value is 1e-6 of the pair's
+    // diagonal, √(1.5000001² + (3 + d)² + 1.5000001²): 3.674e-6. Found by the property test
+    // below. Within it (d = 3e-6) the faces are one, and each op is FreeCAD 1.1.3's `-1.0`
+    // answer, near right but more than the slab between them off (fuse 3.75000090161307,
+    // cut 0.749999599999967, common 0.24999984999991, by its fixed-order integration, exact
+    // on planes). Well past it (d = 8e-6, 1e-5) each is right. Just past it, from about
+    // 1.1 to 1.7 times it (d = 4e-6, 5e-6, 6e-6), OCCT gets all three wrong, as FreeCAD
+    // 1.1.3's `-1.0` booleans do, each valid: the fuse two solids overlapping (va + vb,
+    // which every feature refuses, S5), the cut removing nothing (va), the common empty
+    // (refused); with no fuzzy value, both get it right (docs/ports/booleans.md, Known
+    // wrong results). Silico takes OCCT's answer, as FreeCAD does: each op is right, or in
+    // the band that wrong one.
+    let side = 1.000_000_1;
+    let a = make(&Primitive::Box {
+        dx: side,
+        dy: 1.0,
+        dz: side,
+    })
+    .unwrap();
+    let (va, vb) = (side * side, side * 3.0 * side);
+    let freecads = [
+        3.750_000_901_613_07,
+        0.749_999_599_999_967,
+        0.249_999_849_999_91,
+    ];
+    for (d, band) in [
+        (3e-6, false),
+        (4e-6, true),
+        (5e-6, true),
+        (6e-6, true),
+        (8e-6, false),
+        (1e-5, false),
+    ] {
+        let b = at(
+            Primitive::Box {
+                dx: side,
+                dy: 3.0,
+                dz: side,
+            },
+            [0.5, d, 0.5],
+        );
+        let shared = (side - 0.5) * (side - 0.5);
+        let common = shared * (1.0 - d);
+        let what = format!("{d:e} apart");
+        for (k, (op, right)) in [
+            (BooleanOp::Fuse, va + vb - common),
+            (BooleanOp::Cut, va - common),
+            (BooleanOp::Common, common),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            match boolean(op, &a, &b) {
+                Ok(built) => {
+                    let s = summarize(&built.shape).unwrap();
+                    assert!(s.valid, "{what} {op:?}: {s:?}");
+                    let is_right = if d < 3.674e-6 {
+                        close(s.volume, freecads[k], 1e-9)
+                    } else {
+                        close(s.volume, right, 1e-9)
+                    };
+                    let is_known_wrong = band
+                        && match op {
+                            BooleanOp::Fuse => {
+                                built.history.result.solids == 2 && close(s.volume, va + vb, 1e-12)
+                            }
+                            _ => close(s.volume, va, 1e-12),
+                        };
+                    assert!(
+                        is_right || is_known_wrong,
+                        "{what} {op:?}: volume {} for {right}",
+                        s.volume
+                    );
+                }
+                Err(e) => {
+                    assert!(band && op == BooleanOp::Common, "{what} {op:?}: {e}");
+                    assert_eq!(e.message(), "the common's result is empty", "{what}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn a_fuse_of_shapes_apart_used_as_a_tool() {
     let a = make(&cube(1.0)).unwrap();
     let b = at(cube(1.0), [3.0, 0.0, 0.0]);
@@ -882,6 +968,11 @@ fn offset() -> impl Strategy<Value = f64> {
         1 => Just(-1e-9),
         1 => Just(1e-4),
         1 => Just(-1e-4),
+        // In and above the fuzzy value's band (1e-6 of the boxes' diagonal: 2e-6 to 1e-5).
+        1 => Just(5e-6),
+        1 => Just(-5e-6),
+        1 => Just(5e-5),
+        1 => Just(-5e-5),
     ];
     (whole, nudge).prop_map(|(w, n)| w + n)
 }
@@ -913,8 +1004,8 @@ proptest! {
     /// Axis-aligned boxes: each boolean's volume is a product of interval overlaps. A
     /// result must be valid, with a history in which every face has a source, and must
     /// have that volume; a refusal must say what to try, and be right that the result is
-    /// empty. Except where two parallel faces are within a micron of each other and not
-    /// coincident: there the fuzzy value takes them as one, or a contact as none, so the
+    /// empty. Except where two parallel faces are within the fuzzy value of each other and
+    /// not coincident: there the fuzzy value takes them as one, or a contact as none, so the
     /// volume is off by the slab between them or the result is empty, as FreeCAD 1.1.3's is
     /// (docs/ports/booleans.md; pinned in
     /// `boxes_with_flat_faces_a_hair_apart_are_right_to_the_hair`), and only the result's
@@ -932,17 +1023,26 @@ proptest! {
         let vb = b.iter().product::<f64>();
         let dims: Vec<f64> = (0..3).map(|i| overlap(0.0, a[i], o[i], o[i] + b[i])).collect();
         let common = dims.iter().product::<f64>();
-        // Two parallel faces closer than a micron but not coincident: their planes that
-        // close, and the faces themselves meeting, or within a micron, along the other axes.
+        // The fuzzy value, by hand: 1e-6 of the diagonal of the box round both, and the two
+        // faces' own tolerances (1e-7 each) on top, which OCCT adds to it.
+        let span = |i: usize| a[i].max(o[i] + b[i]) - 0.0f64.min(o[i]);
+        let diagonal = (span(0) * span(0) + span(1) * span(1) + span(2) * span(2)).sqrt();
+        let fuzzy = 1e-6 * diagonal + 2e-7;
+        // Two parallel faces closer than twice that but not coincident: their planes that
+        // close, and the faces themselves meeting, or within it, along the other axes. Up to
+        // the fuzzy value they're one face; just past it, up to about 1.7 times it, OCCT can
+        // give a valid wrong result (`boxes_with_flat_faces_just_past_the_fuzzy_value_are_
+        // right_or_occts_known_wrong_answer`), as FreeCAD 1.1.3 does.
+        let fuzzy = 2.0 * fuzzy;
         let near = (0..3).any(|i| {
             let faces_meet = (0..3)
                 .filter(|&j| j != i)
-                .all(|j| o[j] <= a[j] + 1e-6 && o[j] + b[j] >= -1e-6);
+                .all(|j| o[j] <= a[j] + fuzzy && o[j] + b[j] >= -fuzzy);
             faces_meet
                 && [0.0, a[i]].iter().any(|&p| {
                     [o[i], o[i] + b[i]].iter().any(|&q| {
                         let d = (p - q).abs();
-                        d > 0.0 && d < 1e-6
+                        d > 0.0 && d < fuzzy
                     })
                 })
         });
