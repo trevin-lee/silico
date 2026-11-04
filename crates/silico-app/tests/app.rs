@@ -10513,15 +10513,16 @@ fn an_opens_pick_refused_at_once_asks_for_the_frame_that_says_so() {
         let path = f.dir.path().join(format!("held{n}.silico"));
         f.sessions.open(&path, true).wait().session.unwrap();
     }
-    file_menu(&mut h, "Open…", "Open document");
-    browse(&mut h, &browser);
+    // File > Open…: Open's panel asked at once, no question of the app's first.
+    file_menu_item(&mut h, "Open…");
+    open_panel_asked(&mut h, &browser, 1);
     quiet_wakes(&mut h);
     idle(&mut h);
     let path = f.file("picked.silico", EXAMPLE);
     browser.answer(Some(&path));
     let woken = h.state().wakes();
     // The frame the answer's waker asked for (egui gives each such request two frames): it
-    // takes the pick, the dialog closes, and the open is refused, not yet taken.
+    // takes the pick, asking no question, and the open is refused, not yet taken.
     step(&mut h);
     assert!(!anywhere(&h, "Open document"));
     assert_eq!(h.state().message(), None);
