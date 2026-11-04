@@ -433,12 +433,14 @@ fn a_step_only_dead_features_share_is_never_run() {
 
 #[test]
 fn a_step_a_live_feature_shares_with_a_dead_one_is_run() {
-    // The council's round 4, its premise reached by an unmeasured shared step: boxes B and C
+    // The council's round 4's outcomes, reached by an unmeasured shared step: boxes B and C
     // alike above XY, sketch S, a baseless reversed pad P (the pocket's prism), the M2 cut
     // K = cut(C, P) (built, its change unjudged), and the pocket Q on B (failed: unmeasured;
     // K's step). Then, on the same engine, the reversed pocket G on Q and the M2 cut F of K
-    // by U, a baseless pad of the sketch up 10 (G's prism): one cut step, which F (alive)
-    // needs and G (blocked) doesn't. It's run once; G is blocked on Q, F built.
+    // by V, a baseless pad of the sketch up 10 (G's prism): one cut step, F's and G's. It's
+    // run once; G is blocked on Q, F built. Q failed unmeasured, not refused by its check,
+    // so G isn't dead to the scheduler (only a verdict kills): the step a live feature shares
+    // with a dead one is `a_step_a_live_pad_shares_with_a_dead_pocket_is_run_once`'s.
     let engine = unmeasured_engine();
     let base = [
         box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0),
@@ -465,4 +467,51 @@ fn a_step_a_live_feature_shares_with_a_dead_one_is_run() {
         Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
     );
     built(&model, "ffffffff");
+}
+
+#[test]
+fn a_step_a_live_pad_shares_with_a_dead_pocket_is_run_once() {
+    // A step a dead feature and a live one share is run, for the live one (`needed`'s
+    // any-owner): on a fresh engine, the cube B above XY, sketch S, and the pocket Q of S
+    // down 10 into B, which misses it: refused, removing nothing. Then, on the same engine,
+    // the reversed pocket G on Q (up 10: dead, made from a refused feature) and the baseless
+    // pad W of S up 10 (live): a sweep feature owns its faces and prism steps, which carry no
+    // check, and the reversed pocket's prism is the pad's, one step. It's run once; W is
+    // built, G blocked on Q.
+    let engine = engine();
+    let first = [
+        box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0),
+        rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0),
+        pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN),
+    ];
+    let refs: Vec<&str> = first.iter().map(String::as_str).collect();
+    let model = published(&engine, &refs);
+    assert!(
+        matches!(
+            model.outcome(&id("qqqqqqqq")),
+            Some(FeatureOutcome::Failed(_))
+        ),
+        "{:?}",
+        model.outcome(&id("qqqqqqqq"))
+    );
+    let prisms = |engine: &Recompute<FakeKernel>| {
+        engine
+            .kernel()
+            .calls()
+            .iter()
+            .filter(|call| matches!(call.op, silico_protocol::Op::Prism { .. }))
+            .count()
+    };
+    let before = prisms(&engine);
+    let g = pocket("gggggggg", "qqqqqqqq", "ssssssss", REVERSED);
+    let w = pad("wwwwwwww", None, "ssssssss", &one_side("10"));
+    let mut more = refs.clone();
+    more.extend([g.as_str(), w.as_str()]);
+    let model = published(&engine, &more);
+    assert_eq!(prisms(&engine) - before, 1, "the shared prism, once");
+    built(&model, "wwwwwwww");
+    assert_eq!(
+        model.outcome(&id("gggggggg")),
+        Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
+    );
 }

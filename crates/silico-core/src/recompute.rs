@@ -6876,8 +6876,12 @@ mod tests {
 mod checked_tests {
     use super::*;
 
-    /// An M2 cut `kkkkkkkk` of feature 0 by feature 1, built, its solid `measured` or not.
-    fn cut(measured: bool) -> (Planned, FeatureOutcome, Vec<(FeatureId, FeatureOutcome)>) {
+    /// An M2 cut `kkkkkkkk` of feature 0 (1 mm³) by feature 1, built, its solid `measured`
+    /// at `volume` or not.
+    fn cut_to(
+        volume: f64,
+        measured: bool,
+    ) -> (Planned, FeatureOutcome, Vec<(FeatureId, FeatureOutcome)>) {
         let fid = |text: &str| FeatureId::new(text).unwrap();
         let summary = ShapeSummary {
             volume: 1.0,
@@ -6918,7 +6922,7 @@ mod checked_tests {
         };
         let outcome = FeatureOutcome::Built {
             key: Key([2; 32]),
-            built: Arc::new(solid(0.5, measured)),
+            built: Arc::new(solid(volume, measured)),
         };
         let inputs = vec![
             (
@@ -6937,6 +6941,11 @@ mod checked_tests {
             ),
         ];
         (planned, outcome, inputs)
+    }
+
+    /// [`cut_to`] at half its base's volume.
+    fn cut(measured: bool) -> (Planned, FeatureOutcome, Vec<(FeatureId, FeatureOutcome)>) {
+        cut_to(0.5, measured)
     }
 
     #[test]
@@ -6977,6 +6986,20 @@ mod checked_tests {
         assert!(
             matches!(decided, FeatureOutcome::Built { .. }),
             "{decided:?}"
+        );
+        // Measured, its volume its base's: it removes nothing, and is refused, naming it.
+        let (planned, outcome, inputs) = cut_to(1.0, true);
+        let decided = checked(&planned, outcome, &inputs, &BTreeMap::new());
+        let FeatureOutcome::Failed(error) = decided else {
+            panic!("{decided:?}");
+        };
+        assert_eq!(error.code(), ErrorCode::KernelFailed, "{error:?}");
+        assert_eq!(error.feature(), Some("kkkkkkkk"));
+        assert!(
+            error
+                .message()
+                .starts_with("cut kkkkkkkk removes nothing from its base bbbbbbbb"),
+            "{error:?}"
         );
     }
 }

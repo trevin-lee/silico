@@ -796,8 +796,12 @@ fn an_m2_cut_on_a_metre_cube_is_refused_under_its_limit_and_built_over_it() {
     // S7's limit, 1e-9 of the base's volume, for M2 booleans (Fable's decision, 2026-11-04):
     // on a 1000 mm cube, 1e9 mm³, 1 mm³ by hand. A cube in its corner, 0.9 mm: 0.729 mm³
     // removed, no more than the limit: refused, the message naming the change and the
-    // limit, with the boolean's advice. A 1.1 mm cube: 1.331 mm³, over it: built, 1e9 −
-    // 1.331 = 999999998.669 mm³, its 6 faces and the notch's 3, 9. Both tools are hundreds
+    // limit, with the boolean's advice. A 1.1 mm cube: 1.331 mm³, over it: built, valid,
+    // 1e9 − 1.331 = 999999998.669 mm³; the cube's 6 faces and the notch's 3, 9; the cube's
+    // 12 edges (the three at the corner shortened), 2 more on each notched face, and the 3
+    // where the notch's faces meet, 21; the cube's 7 other corners, one where each shortened
+    // edge now ends, one at each notched face's inner corner, and the notch's own, 14. Both
+    // tools are hundreds
     // of times the fuzzy value (1e-6 × √3 × 1000 = 1.73e-3 mm), so OCCT builds both right.
     // The equality case (1 mm³) isn't pinned: 1e9 isn't exact in a sum of face integrals.
     let engine = engine();
@@ -841,5 +845,10 @@ fn an_m2_cut_on_a_metre_cube_is_refused_under_its_limit_and_built_over_it() {
         "{}",
         summary.volume
     );
-    assert_eq!(summary.faces, 9);
+    assert_eq!(
+        (summary.faces, summary.edges, summary.vertices),
+        (9, 21, 14),
+        "{summary:?}"
+    );
+    assert!(summary.valid, "{summary:?}");
 }
