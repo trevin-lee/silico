@@ -257,6 +257,13 @@ pub struct Browser {
     pub sketches: Vec<Row>,
 }
 
+/// One of a tab's reads of the model that the stop cancels ([`Tab::halt`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OwnRead {
+    Timeline,
+    Check,
+}
+
 /// One open document.
 pub struct Tab {
     pub id: SessionId,
@@ -292,6 +299,10 @@ pub struct Tab {
     /// A `check` read, and whether it's of a document the gate refused (whose problems are
     /// all the document's).
     check_read: Option<(bool, Running<CheckAnswer>)>,
+    /// Whether the `check` read out was sent before the timeline read out, both being out:
+    /// the session runs its queue in the order sent, so the later one runs after the other
+    /// and is the one the stop cancels first ([`halt`](Self::halt)).
+    check_first: bool,
     checked: Option<(Revision, Option<Revision>)>,
     pub edits: Edits,
     under: Vec<Under>,
@@ -413,6 +424,7 @@ impl Tab {
                 })
                 .collect(),
             check_read: None,
+            check_first: false,
             checked: None,
             edits: Edits::default(),
             under: Vec::new(),
@@ -1437,20 +1449,42 @@ impl Tab {
     /// stops its rebuild, not by the stop (a cancel of a cancelled read says it stopped it
     /// all the same). Refused with the cancel's refusal only if the rebuild wasn't stopped:
     /// it ended (published, failed, or superseded) before the stop reached it.
+    ///
+    /// The two reads are cancelled the one sent later first ([`check_first`](Self::check_first)):
+    /// the session runs them in the order sent, and the earlier, the rebuild's waiter,
+    /// cancelled, stops the rebuild and answers at once, its session going straight on to
+    /// the next in its queue. Cancelled second, the later read could be run in between,
+    /// uncancelled, and start the stopped rebuild again; cancelled first, it never runs.
     fn halt<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> Result<(), Problems> {
-        let timeline_stopped = !self.timeline_superseded
-            && self
-                .timeline_read
-                .as_ref()
-                .is_some_and(|read| read.cancel());
-        let check_stopped = self
-            .check_read
-            .as_ref()
-            .is_some_and(|(_, read)| read.cancel());
+        self.halt_with(sessions, |_| ())
+    }
+
+    /// [`halt`](Self::halt), with `between` called after the first of the tab's reads is
+    /// cancelled and before the second is, told which was: where a test holds the stop to
+    /// let the session run what that cancel lets it.
+    fn halt_with<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        between: impl FnOnce(OwnRead),
+    ) -> Result<(), Problems> {
+        let newest_first = if self.check_first {
+            [OwnRead::Timeline, OwnRead::Check]
+        } else {
+            [OwnRead::Check, OwnRead::Timeline]
+        };
+        let [first, second] = newest_first;
+        let first_stopped = self.cancel_own(first);
+        between(first);
+        let second_stopped = self.cancel_own(second);
+        let check_stopped = if first == OwnRead::Check {
+            first_stopped
+        } else {
+            second_stopped
+        };
         if check_stopped {
             self.checked = None;
         }
-        let read_stopped = timeline_stopped || check_stopped;
+        let read_stopped = first_stopped || second_stopped;
         let refused = match sessions.cancel(&self.id, Cancellable::Rebuild).result {
             Ok(_) => return Ok(()),
             Err(problems) => problems,
@@ -1463,6 +1497,25 @@ impl Tab {
         if stopped { Ok(()) } else { Err(refused) }
     }
 
+    /// The tab's read `read` cancelled through its handle, if it's out: whether the stop
+    /// stopped it before it had done its work. A timeline read an edit superseded was
+    /// cancelled by that edit, not by the stop ([`halt`](Self::halt)).
+    fn cancel_own(&self, read: OwnRead) -> bool {
+        match read {
+            OwnRead::Timeline => {
+                !self.timeline_superseded
+                    && self
+                        .timeline_read
+                        .as_ref()
+                        .is_some_and(|read| read.cancel())
+            }
+            OwnRead::Check => self
+                .check_read
+                .as_ref()
+                .is_some_and(|(_, read)| read.cancel()),
+        }
+    }
+
     /// Rebuild (Ctrl+B, docs/ux/solidworks.md, §5, *Rebuild*): the tab's revision's rebuild,
     /// stopped, started again by a read of the current model (from the cache, so what was
     /// built before the stop isn't built again), whose answer is the timeline. Only while
@@ -1473,6 +1526,7 @@ impl Tab {
         }
         // A read of the published model in flight answers at once: this one replaces it.
         self.timeline_asked = Some((self.revision, self.published));
+        self.check_first = self.check_read.is_some();
         self.timeline_read = Some(sessions.timeline(&self.id, ModelChoice::Current));
         self.timeline_superseded = false;
         self.rebuild_out = true;
@@ -1558,6 +1612,7 @@ impl Tab {
             ModelChoice::Published
         };
         self.timeline_asked = Some(asked);
+        self.check_first = self.check_read.is_some();
         self.timeline_read = Some(sessions.timeline(&self.id, model));
     }
 
@@ -1914,6 +1969,7 @@ impl Tab {
             return;
         }
         self.checked = Some(asked);
+        self.check_first = false;
         self.check_read = Some((gate, sessions.check(&self.id, model)));
     }
 
@@ -2758,5 +2814,115 @@ mod tests {
         let said = tab.message.clone().unwrap_or_default();
         assert!(said.contains("no rebuild is running in session"), "{said}");
         hold.release();
+    }
+
+    #[test]
+    fn the_stop_cancels_the_tabs_read_sent_later_first_so_neither_starts_the_rebuild_again() {
+        // The tab's timeline and check reads of the current model, the one sent first the
+        // rebuild's waiter (the box held), the other queued behind it. The stop is held after
+        // its first cancel until the session has run what that cancel lets it run. Had it
+        // cancelled the waiter first, the waiter would stop the rebuild and answer, and the
+        // session go on to the other read, not yet cancelled, which starts the stopped
+        // rebuild again (decision 34): the box asked of the kernel a second time. Cancelled
+        // the one sent later first, in either order sent, the box is asked once, both reads
+        // answer `cancelled`, and the rebuild stays stopped.
+        use silico_core::command::{RunningCommand, SessionCommand};
+        use silico_core::kernel::{Op, Primitive};
+        const WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+        let until = |what: &str, done: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + WAIT;
+            while !done() {
+                assert!(std::time::Instant::now() < deadline, "never {what}");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        for check_first in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let document = dir.path().join("part.silico");
+            std::fs::write(
+                &document,
+                r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}]}"#,
+            )
+            .unwrap();
+            let kernel = Arc::new(silico_core::fake::FakeKernel::new(1).unwrap());
+            let sessions = Arc::new(Sessions::with_cache_opener(Arc::clone(&kernel), |dir| {
+                silico_core::cache::Cache::unsealed(dir)
+            }));
+            let opened = sessions.open(&document, false).wait();
+            let id = opened.session.unwrap().id;
+            let mut tab = Tab::opened(
+                id,
+                document.to_str().unwrap().to_owned(),
+                &opened.result.unwrap().problems,
+            );
+            let hold = kernel.hold(|_| true);
+            let boxes = || {
+                kernel
+                    .asked()
+                    .iter()
+                    .filter(|call| matches!(call.op, Op::MakePrimitive(Primitive::Box { .. })))
+                    .count()
+            };
+            let send_timeline = |tab: &mut Tab| {
+                // Nothing published yet: the timeline is read of the current model.
+                tab.nothing_published = true;
+                tab.read_timeline(&sessions);
+                assert!(tab.timeline_read.is_some());
+            };
+            let send_check = |tab: &mut Tab| {
+                // A timeline naming no model, a marked feature selected: a check of the
+                // current model.
+                tab.timeline = Some(timeline(0, None, vec![entry("k7f2qx3m", 0, 1)]));
+                tab.selected = Some(FeatureId::new("k7f2qx3m").unwrap());
+                tab.read_check(&sessions);
+                assert!(tab.check_read.is_some());
+            };
+            let (first_sent, waiter) = if check_first {
+                send_check(&mut tab);
+                (OwnRead::Check, SessionCommand::Check)
+            } else {
+                send_timeline(&mut tab);
+                (OwnRead::Timeline, SessionCommand::Timeline)
+            };
+            until("the first read waiting on the rebuild", &|| {
+                sessions.status(&id).result.is_ok_and(|status| {
+                    status.running == Some(RunningCommand::Command(waiter))
+                        && status.rebuild.state == RebuildState::Running
+                })
+            });
+            assert!(kernel.wait_running(1, WAIT));
+            assert_eq!(boxes(), 1);
+            if check_first {
+                send_timeline(&mut tab);
+            } else {
+                send_check(&mut tab);
+            }
+            assert_eq!(tab.check_first, check_first);
+            let stopped = tab.halt_with(&sessions, |cancelled| {
+                // The waiter cancelled, the other read still uncancelled: the session runs it
+                // next, which starts the rebuild again, asking for the box.
+                if cancelled == first_sent {
+                    until("the stopped rebuild started again", &|| boxes() > 1);
+                }
+            });
+            assert!(stopped.is_ok(), "{check_first}");
+            let timeline_answer = tab.timeline_read.take().unwrap().wait();
+            let (_, check) = tab.check_read.take().unwrap();
+            let check_answer = check.wait();
+            assert_eq!(
+                timeline_answer.result.unwrap_err().errors()[0].code(),
+                silico_core::ErrorCode::Cancelled
+            );
+            assert_eq!(
+                check_answer.result.unwrap_err().errors()[0].code(),
+                silico_core::ErrorCode::Cancelled
+            );
+            // Both answered, so the session's queue is empty: nothing more will ask.
+            assert_eq!(boxes(), 1, "check first: {check_first}");
+            let status = sessions.status(&id).result.unwrap();
+            assert_eq!(status.running, None);
+            assert_eq!(status.rebuild.state, RebuildState::Stopped);
+            hold.release();
+        }
     }
 }

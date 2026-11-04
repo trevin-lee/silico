@@ -2311,6 +2311,48 @@ mod tests {
     }
 
     #[test]
+    fn a_read_answered_of_a_newer_revision_than_asked_is_not_asked_again() {
+        // A published read takes the newest model as its thread starts, not as it's sent:
+        // asked at revision 4 (the bodies of 3), it may answer of 5, published meanwhile.
+        // The bodies are then 5's, and 5 is read no more; 6 is. One answered of 4, as asked,
+        // with 5 published, leaves 5 to read.
+        let answer = |revision: u64| Response {
+            session: None,
+            model: Some(silico_core::command::ModelRead {
+                revision: Revision::from_number(revision).unwrap(),
+                of: ModelChoice::Published,
+                fault: None,
+            }),
+            result: Ok(MeshesRead {
+                camera: AnsweredCamera::of(&front(80.0)).unwrap(),
+                bodies: vec![meshed(1, 1, 0.03125, None)],
+                coarser: "height",
+            }),
+        };
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        let mesh = Arc::clone(&view.bodies[&1].mesh);
+        let request = asked(&view, 4);
+        view.took(request, false, answer(5), now());
+        assert_eq!(view.model(), revision(5));
+        assert!(Arc::ptr_eq(&view.bodies[&1].mesh, &mesh));
+        for settled in [false, true] {
+            assert_eq!(view.wanted(revision(5), [1000, 1000], settled, now()), None);
+        }
+        assert!(
+            view.wanted(revision(6), [1000, 1000], false, now())
+                .is_some()
+        );
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        let request = asked(&view, 4);
+        view.took(request, false, answer(4), now());
+        assert_eq!(view.model(), revision(4));
+        let again = view
+            .wanted(revision(5), [1000, 1000], false, now())
+            .unwrap();
+        assert_eq!(again.revision, Revision::from_number(5).unwrap());
+    }
+
+    #[test]
     fn an_answer_names_its_own_frame_when_an_earlier_answer_never_came() {
         // Frames 0 and 1 picked; only frame 1's answer comes: it's frame 1's pick (table
         // 2), frame 0's let go with it; then an answer naming no waiting pick gives none.
