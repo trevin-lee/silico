@@ -13,7 +13,7 @@
 //! core's.
 
 use std::collections::BTreeSet;
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
 
 use silico_core::command::sketch::SketchRead;
 use silico_core::command::{ExtendBy, Revision};
@@ -114,8 +114,10 @@ enum Active {
 
 /// Trim, between events: a press under way, with what it was on (a curve, its kind, and its
 /// geometry then), where it was, whether it has left the pick tolerance of there, whether
-/// every place since has stayed within it of that curve's line or round, the path's last
-/// place and its trail (the last [`TRAIL`] places, for drawing), and the curves the path
+/// every place since has stayed within it of that curve's line or round, and, for a round,
+/// the signed angle the path has turned about its centre while it did (counter-clockwise
+/// positive, each step's change taken the short way round); the path's last place and its
+/// trail (the last [`TRAIL`] places, for drawing), and the curves the path
 /// has crossed so far, each with where it first crossed it.
 #[derive(Debug, Default)]
 enum Trim {
@@ -126,6 +128,7 @@ enum Trim {
         press: [f64; 2],
         dragged: bool,
         along: bool,
+        turned: f64,
         last: [f64; 2],
         trail: Vec<[f64; 2]>,
         crossed: Vec<(ElementId, [f64; 2])>,
@@ -284,8 +287,9 @@ impl Tools {
     /// way ended with nothing added, the tool kept, so no press outlives its release. The
     /// core's tools end one only by Esc, which is sent with `input`, its leaving the tool
     /// not taken; with no read to give it, the tool is started afresh
-    /// ([`SketchTool::forget_pending`], which forgets its unanswered adds too: their points
-    /// are found again in the next read).
+    /// ([`SketchTool::forget_pending`], which forgets its unanswered adds too: a click finds
+    /// their points again only once a read holds them, so until then one at their place
+    /// makes a point of its own).
     pub fn cancel(&mut self, input: Option<&Input<'_>>) {
         match (&mut self.active, input) {
             (Some(Active::Draw(tool)), Some(input)) => {
@@ -490,6 +494,7 @@ fn trim_event(
             let on = curve_at(input.read, at, tolerance);
             *trim = Trim::Pressed {
                 along: on.is_some(),
+                turned: 0.0,
                 on,
                 press: at,
                 dragged: false,
@@ -504,6 +509,7 @@ fn trim_event(
                 press,
                 dragged,
                 along,
+                turned,
                 last,
                 trail,
                 crossed,
@@ -515,6 +521,10 @@ fn trim_event(
                 *along &= on
                     .as_ref()
                     .is_some_and(|(_, _, curve)| off_carrier(*curve, at) <= tolerance);
+                if *along && let Some((_, _, Curve::Round { centre, .. })) = on {
+                    let step = angle(sub(at, *centre)) - angle(sub(*last, *centre));
+                    *turned += (step + PI).rem_euclid(TAU) - PI;
+                }
                 if input.trim == TrimMode::Power {
                     cross_path(input.read, *last, at, crossed);
                 }
@@ -574,6 +584,7 @@ fn released(
         press,
         dragged,
         along,
+        turned,
         crossed,
         ..
     } = trim
@@ -590,7 +601,7 @@ fn released(
     match (input.trim, on) {
         (TrimMode::Power, on) => {
             let past = on.filter(|_| along).and_then(|(curve, _, geometry)| {
-                let end = past_end(geometry, at)?;
+                let end = past_end(geometry, press, turned, at)?;
                 let to = onto(geometry, at)?;
                 let by = [Coordinate::new(to[0])?, Coordinate::new(to[1])?];
                 Some((curve, end, by))
@@ -635,10 +646,11 @@ fn off_carrier(curve: Curve, at: [f64; 2]) -> f64 {
     }
 }
 
-/// The end of a line or an arc that `at`, put on its carrier, lies past: a line's end
-/// beyond `to`, its start before `from`; an arc's, outside its sweep, the end nearer in
-/// angle. None within it, and for a circle, which has no end.
-fn past_end(curve: Curve, at: [f64; 2]) -> Option<End> {
+/// The end of a line or an arc a drag along it went past: a line's end if `at`, put on its
+/// line, lies beyond `to`, its start if before `from`; an arc's end if the angle of `press`
+/// within its sweep, with the angle the drag `turned` round it added, passes the sweep, its
+/// start if it goes below none. None within it, and for a circle, which has no end.
+fn past_end(curve: Curve, press: [f64; 2], turned: f64, at: [f64; 2]) -> Option<End> {
     match curve {
         Curve::Line { from, to } => {
             let d = sub(to, from);
@@ -664,13 +676,24 @@ fn past_end(curve: Curve, at: [f64; 2]) -> Option<End> {
             if sweep >= TAU {
                 return None;
             }
-            let turned = (angle(sub(at, centre)) - start).rem_euclid(TAU);
-            if turned <= sweep {
-                None
-            } else if turned - sweep < TAU - turned {
-                Some(End::End)
+            let from = (angle(sub(press, centre)) - start).rem_euclid(TAU);
+            // A press past the arc's end, within the pick of it, is at its end.
+            let from = if from > sweep {
+                if from - sweep < TAU - from {
+                    sweep
+                } else {
+                    0.0
+                }
             } else {
+                from
+            };
+            let reached = from + turned;
+            if reached > sweep {
+                Some(End::End)
+            } else if reached < 0.0 {
                 Some(End::Start)
+            } else {
+                None
             }
         }
     }

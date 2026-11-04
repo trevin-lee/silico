@@ -1333,3 +1333,99 @@ fn a_long_power_trim_draws_only_its_trails_newest_places() {
     assert_eq!(guides.len(), TRAIL - 1);
     assert_eq!(guides.last(), Some(&[[99.9, 5.0], [100.0, 5.0]]));
 }
+
+/// A power trim drag through `path`, each place by its angle in degrees and its distance
+/// from the origin: pressed at the first, moved through the rest, released at the last.
+fn round_drag(desk: &mut Desk, path: &[(f64, f64)]) {
+    let place = |(degrees, radius): (f64, f64)| {
+        let a = f64::to_radians(degrees);
+        [radius * libm::cos(a), radius * libm::sin(a)]
+    };
+    let mut events: Vec<PointerEvent> = Vec::new();
+    for (i, &step) in path.iter().enumerate() {
+        let [x, y] = place(step);
+        let action = match i {
+            0 => PointerAction::Press,
+            _ if i == path.len() - 1 => PointerAction::Release,
+            _ => PointerAction::Move,
+        };
+        events.push(ev(action, x, y));
+    }
+    desk.frame(&events);
+}
+
+#[test]
+fn an_arc_dragged_round_past_its_start_extends_its_start_however_far_the_drag_turns() {
+    // The quarter from 0° to 90°, pressed at 45° and dragged clockwise through 0°, −45°,
+    // −90°, and −135° to −140°: 185° turned back from 45°, so past its start, though −140°
+    // (220°) is nearer its end in angle.
+    let mut desk = Desk::new(Choice::Trim, arced());
+    let path = [45.0, 0.0, -45.0, -90.0, -135.0, -140.0].map(|d| (d, 10.0));
+    round_drag(&mut desk, &path);
+    assert!(
+        matches!(
+            desk.edits.as_slice(),
+            [Request::Extend { curve, end: End::Start, .. }] if *curve == id("aa000001")
+        ),
+        "{:?}",
+        desk.edits
+    );
+    // A 300° arc, from 0° to 300°, pressed at 20° and dragged 51° back to −31°: 31° past
+    // its start, though −31° (329°) is nearer its end, 29° past it.
+    let mut sketch = arced();
+    let end = on_ten(300.0);
+    sketch.points[2] = point("pa000003", end[0], end[1]);
+    let mut desk = Desk::new(Choice::Trim, sketch);
+    let path = [20.0, 10.0, 0.0, -15.0, -31.0].map(|d| (d, 10.0));
+    round_drag(&mut desk, &path);
+    assert!(
+        matches!(
+            desk.edits.as_slice(),
+            [Request::Extend {
+                end: End::Start,
+                ..
+            }]
+        ),
+        "{:?}",
+        desk.edits
+    );
+}
+
+#[test]
+fn an_arc_drag_that_leaves_its_round_on_the_way_trims_where_it_crossed() {
+    // Pressed on the quarter at 45°, out to radius 13 at 30°, in to radius 7 at 10°, and
+    // back on its circle past its start at −10°: it left the round, so it's a sweep, which
+    // crossed the arc (at its press, and on the way in near 20°): trimmed, not extended.
+    let mut desk = Desk::new(Choice::Trim, arced());
+    round_drag(
+        &mut desk,
+        &[(45.0, 10.0), (30.0, 13.0), (10.0, 7.0), (-10.0, 10.0)],
+    );
+    assert!(
+        matches!(
+            desk.edits.as_slice(),
+            [Request::Trim { curve, .. }] if *curve == id("aa000001")
+        ),
+        "{:?}",
+        desk.edits
+    );
+}
+
+#[test]
+fn a_drag_released_off_its_line_past_its_end_trims_where_it_crossed() {
+    // Pressed on na000001 at (30, 0), along it to (38, 0.1), then released at (45, 3), past
+    // its end but 3 mm off its line: a sweep, crossing the line where it was pressed.
+    let mut desk = Desk::new(Choice::Trim, crossed());
+    desk.frame(&[
+        ev(PointerAction::Press, 30.0, 0.0),
+        ev(PointerAction::Move, 38.0, 0.1),
+        ev(PointerAction::Release, 45.0, 3.0),
+    ]);
+    assert_eq!(
+        desk.edits,
+        [Request::Trim {
+            curve: id("na000001"),
+            pick: [30.0, 0.0]
+        }]
+    );
+}
