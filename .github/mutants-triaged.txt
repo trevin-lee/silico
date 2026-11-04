@@ -477,3 +477,24 @@ crates/silico-app/src/viewport.rs | sequenced | replace < with <= | #376
 # `.tb-row`'s 1px (`TOOLBAR_BUTTON_GAP`). The gaps' count times 1 and divided by 1 are the
 # same width, bit for bit, so nothing drawn tells them apart; any other gap's would.
 crates/silico-app/src/toolbar.rs | panel | replace * with / | #362
+# The render limits' box corners (#353). `box_corners` gives a box's eight corners, each axis
+# `k`'s coordinate chosen by bit `k` of `i`, `low` for 0 and `high` for 1: `== 0` as `!= 0`
+# swaps `low` and `high` on every axis for every `i`, so the array holds the same eight
+# corners in another order. Its one caller, `ViewRegion::class_of_box`, passes them to
+# `ViewRegion::class`, whose answer is an all or an any over the points (every point in
+# every side; every point outside one same side), which no order changes.
+crates/silico-protocol/src/render.rs | box_corners | replace == with != | #353
+# The edges' cut (#353). `View::cut_strip` builds a strip from each segment's kept part: it
+# pushes the part's start and end (two points) when a strip begins, and one more point for
+# each segment that carries it on, and takes the strip away (leaving it empty) whenever it's
+# ended. So at the top of each segment the strip holds no point or at least two, never one:
+# `strip.len() > 1` as `>= 1` in the branch of a segment wholly outside ends the same strips.
+# And `leave < 1.0` as `leave > 1.0` (never so: `leave` is at most 1) never ends a strip
+# where a segment leaves the pyramid; the strip is ended all the same where it would be next,
+# with nothing pushed between: the next segment starts at that end, outside the half-space
+# it left by (its form there below 0), so the next segment is wholly outside (the branch
+# above ends the strip), or enters at a fraction above 0 (`fa / (fa - fb)` with `fa` below 0
+# and `fb` at least 0), which ends it before it begins another; or there's no next segment,
+# and the strip is ended after the loop. Each gives the same strips.
+crates/silico-render/src/render.rs | View::cut_strip | replace > with >= | #353
+crates/silico-render/src/render.rs | View::cut_strip | replace < with > | #353

@@ -660,3 +660,85 @@ fn an_orthographic_views_corners_bound_its_reach_and_the_least_is_its_points() {
         "{message}"
     );
 }
+
+#[test]
+fn a_cameras_frame_takes_an_angle_above_0_and_under_180_whatever_the_size() {
+    // The frame's own bound, before an image's size narrows it (`Camera::check`): 180° is a
+    // half-angle of 90°, whose tangent is no number a view is; the double under it, and the
+    // least positive angle, make a frame.
+    let at = |field_of_view: f64| Camera {
+        projection: Projection::Perspective { field_of_view },
+        eye: [0.0, -10.0, 0.0],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 1.0],
+    };
+    for (field_of_view, takes) in [
+        (180.0, false),
+        (180f64.next_down(), true),
+        (0.0, false),
+        (f64::from_bits(1), true),
+        (-1.0, false),
+        (f64::NAN, false),
+    ] {
+        let frame = at(field_of_view).frame();
+        assert_eq!(frame.is_ok(), takes, "{field_of_view}");
+        if let Err(e) = frame {
+            assert_eq!(e.parameter, "camera.field_of_view");
+            assert!(
+                e.message.contains("must be above 0 and under 180 degrees"),
+                "{}",
+                e.message
+            );
+        }
+    }
+}
+
+#[test]
+fn an_orthographic_refusal_names_the_farthest_body_the_least_is_for() {
+    // Two bodies a view 1e-6 mm high over 48 rows can't draw: one reaching 100 mm from the
+    // target, one 200 mm, in either order. The refusal gives the farther's reach and its
+    // least, 48 × 200 / 2^19 = 0.018310546875 mm (by hand, exact), to the micrometre above,
+    // so the view it names draws both.
+    let near = triangle(1, [[100.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+    let far = RenderBody {
+        body: 2,
+        ..triangle(2, [[200.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    };
+    for bodies in [
+        vec![near.clone(), far.clone()],
+        vec![
+            RenderBody {
+                body: 1,
+                ..far.clone()
+            },
+            RenderBody {
+                body: 2,
+                ..near.clone()
+            },
+        ],
+    ] {
+        let s = RenderScene {
+            bodies,
+            camera: Camera {
+                projection: Projection::Orthographic { view_height: 1e-6 },
+                eye: [0.0, -10.0, 0.0],
+                target: [0.0; 3],
+                up: [0.0, 0.0, 1.0],
+            },
+            width: 64,
+            height: 48,
+            ids: false,
+        };
+        let (parameter, message) = refused(&s);
+        assert_eq!(parameter, "camera.view_height");
+        assert!(
+            message.contains("bodies that reach 200.0 mm from camera.target: at least 0.018311 mm"),
+            "{message}"
+        );
+        let mut drawn = s.clone();
+        drawn.camera.projection = Projection::Orthographic {
+            view_height: 0.018_311,
+        };
+        drawn.check().unwrap();
+    }
+}
