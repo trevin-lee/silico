@@ -7755,7 +7755,13 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     // From (1, −1, 1) onto the cut's box's centre, z up: the view's right is (1, 1, 0)/√2
     // and its up (−1, 1, 2)/√6, so the cube's point (x, y, z), its faces at ±1, is drawn
     // at ((x + y)/√2, −(−x + y + 2z)/√6) · s from the cube's centre, y down, s half its
-    // edge, 0.28 of its 96-point side. The front, right, and top face the view, each at
+    // edge, 0.28 of its 92-point side (the prototype's `CUBE`): 0.28 · 92 = 25.76, so
+    // s/√2 = 18.215, s/√6 = 10.516, s·√2 = 36.430, 2s/√6 = 21.033, and 4s/√6 = 42.066
+    // (the front's label at (−18.215, 10.516) from the centre, the right's at (18.215,
+    // 10.516), the top's at (0, −21.033); the top front left corner at (−36.430, −21.033),
+    // the top back right at (36.430, −21.033), the bottom front right at (0, 42.066), the
+    // top back left at (0, −42.066), and the bottom front left and back right at
+    // (∓36.430, 21.033)). The front, right, and top face the view, each at
     // 1/√3 (over a quarter, so each is labelled where its centre is drawn), shaded 0.6 of
     // the fill edge-on rising to all of it square-on: 0.6 + 0.4/√3. The corners facing it
     // more than a tenth, 1 or 1/3, are clickable at theirs: the top front right (at the
@@ -7772,7 +7778,7 @@ fn the_view_cubes_faces_corners_and_home_are_where_the_home_view_sees_them() {
     step(&mut h);
     step(&mut h);
     let cube = silico_app::viewport::view_cube_rect(the_viewport(&h));
-    let s = 0.28 * 96.0;
+    let s = 0.28 * 92.0;
     let (r2, r6) = (2f32.sqrt(), 6f32.sqrt());
     let at = |x: f32, y: f32| cube.center() + eframe::egui::vec2(x, y) * s;
     // The cube's corners as drawn: (1, −1, 1) at the centre; (−1, −1, 1), (1, 1, 1),
@@ -7920,15 +7926,17 @@ fn the_view_cubes_menu_marks_the_projection_the_view_has() {
 
 #[test]
 fn the_navigation_bar_floats_its_margin_above_the_canvass_bottom_centre() {
-    // 220 by 26 points about the canvas's middle, its bottom 8 points above the canvas's:
-    // its middle 8 + 13 = 21 points up. Its tools sit in a row along that middle.
+    // 220 by 32 points (the prototype's `.nav-bar`: a 24-point button, 3 of padding and a
+    // 1 border above and below, 24 + 2·3 + 2·1 = 32) about the canvas's middle, its bottom
+    // 12 points (`bottom: 12px`) above the canvas's: its middle 12 + 32/2 = 28 points up.
+    // Its tools sit in a row along that middle.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     let canvas = the_viewport(&h);
     let bar = eframe::egui::Rect::from_center_size(
-        eframe::egui::pos2(canvas.center().x, canvas.bottom() - 21.0),
-        eframe::egui::vec2(220.0, 26.0),
+        eframe::egui::pos2(canvas.center().x, canvas.bottom() - 28.0),
+        eframe::egui::vec2(220.0, 32.0),
     );
     for word in ["Orbit", "Pan", "Zoom", "Fit"] {
         let tool = h
@@ -9951,4 +9959,57 @@ fn an_opens_pick_refused_at_once_asks_for_the_frame_that_says_so() {
     assert!(!asked_at_once(&h));
     assert!(h.state().tabs().is_empty());
     assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe() {
+    on_lavapipe(
+        "the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            // As main.rs does, once at startup.
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            let path = f.file("box.silico", A_BOX);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            select(&mut h, "Block");
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            // The browser's empty space, left of the viewport and above the timeline: the
+            // panels' Gray.100 (DESIGN.md, *Tokens*).
+            let viewport = the_viewport(&h);
+            let browser = viewport.left_bottom() + eframe::egui::vec2(-20.0, -20.0);
+            assert_eq!(pixel(browser), [0x0d, 0x0d, 0x0d, 0xff]);
+            // The selected feature's timeline entry: Blue.500 (styles.css, `.tl-item.selected`)
+            // at its left edge, inside its fill, clear of a focus ring's 1 point, and short
+            // of its text.
+            let entry = h
+                .get_by_role_and_label(Role::Pane, "Timeline")
+                .get_by_label("Block")
+                .rect();
+            let inside = eframe::egui::pos2(entry.left() + 2.5, entry.center().y);
+            assert_eq!(pixel(inside), [0x18, 0x6a, 0xdd, 0xff], "{entry:?}");
+        },
+    );
 }

@@ -56,9 +56,9 @@ allow = [
     "Zlib",
 ]
 confidence-threshold = 0.9
-# Inter, the app's one font (M5 decision 13b): OFL-1.1 for the crate that ships it alone, so
-# no other crate brings a font licence in unseen. egui's default fonts (Ubuntu-font-1.0) are
-# off, so that licence never enters.
+# The app's fonts, Inter and JetBrains Mono (M5 decision 13b): OFL-1.1 for the crate that
+# ships them alone, so no other crate brings a font licence in unseen. egui's default fonts
+# (Ubuntu-font-1.0) are off, so that licence never enters.
 exceptions = [
     { crate = "silico-font", allow = ["OFL-1.1"] },
 ]
