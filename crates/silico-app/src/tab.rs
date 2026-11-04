@@ -709,6 +709,26 @@ impl Tab {
         ) {
             self.toast = Some(toast);
         }
+        if self.box_toggled() {
+            // What the box took is sent from the dialog's pane, maybe drawn already.
+            painter.ctx().request_repaint();
+        }
+    }
+
+    /// What clicks toggled in the selection while the dialog's box of names took the
+    /// canvas's picks, taken into the box (`Dialog::toggled`); each it refused let go from
+    /// the selection again, so the canvas shows what the box holds. Whether any was.
+    fn box_toggled(&mut self) -> bool {
+        let toggled = self.selection.take_toggled();
+        let Some(dialog) = self.dialog.as_mut() else {
+            return false;
+        };
+        for toggled in &toggled {
+            if dialog.toggled(toggled) == crate::dialog::Taken::Refused {
+                self.selection.let_go(&toggled.name);
+            }
+        }
+        !toggled.is_empty()
     }
 
     /// What a toast is to say for the tab, taken once (the app shows it).
@@ -959,6 +979,9 @@ impl Tab {
             .ok()
             .map(|published| (Arc::clone(&published.model), published.revision));
         self.selection.published(model, self.published_models);
+        self.selection
+            .take_into(self.dialog.as_ref().and_then(Dialog::takes));
+        self.box_toggled();
         self.published = published.result.ok().map(|published| published.revision);
         if self.published.is_some() {
             self.nothing_published = false;
@@ -1371,8 +1394,12 @@ impl Tab {
                                 dialog.adding = false;
                                 dialog.feature = Some(added.feature.id.clone());
                                 // Selected, so its mark's text is read and the property
-                                // panel shows it.
-                                self.selection.select_feature(added.feature.id);
+                                // panel shows it; but not over the elements a box of
+                                // names takes from the selection (its mark's text is read
+                                // for the dialog's feature, `read_check`).
+                                if dialog.takes().is_none() {
+                                    self.selection.select_feature(added.feature.id);
+                                }
                             }
                         }
                         Err(problems) => {
@@ -1463,7 +1490,16 @@ impl Tab {
                                     .map_err(|_| "its text doesn't read as a feature".to_owned())
                             });
                         match node.map(|node| Dialog::load(kind, feature, &node, serial)) {
-                            Ok(Some(dialog)) => self.dialog = Some(dialog),
+                            Ok(Some(dialog)) => {
+                                // Its box of names holds the feature's own: the selection
+                                // (the feature, as Edit Feature selected it) let go, so the
+                                // canvas shows what the box takes from it.
+                                if let Some(kinds) = dialog.takes() {
+                                    self.selection.clear();
+                                    self.selection.take_into(Some(kinds));
+                                }
+                                self.dialog = Some(dialog);
+                            }
                             Ok(None) => {
                                 self.message =
                                     Some(format!("Its dialog doesn't read this {}", kind.title()));
@@ -2559,9 +2595,42 @@ impl Tab {
             .feature()
             .cloned()
             .filter(|id| self.is_sketch(id));
-        self.dialog = Some(Dialog::new(kind, sketch, serial));
+        let mut dialog = Dialog::new(kind, sketch, serial);
+        if let Some(kinds) = dialog.takes() {
+            self.take_selection(&mut dialog, kinds);
+        }
+        self.dialog = Some(dialog);
         self.dialog_changed(sessions);
         self.advance(sessions);
+    }
+
+    /// The selection taken into `dialog`'s box of names, which takes `kinds`, as SolidWorks'
+    /// PropertyManager box takes what's selected when its command starts: what else is
+    /// selected let go and said; the rest's names as a store writes them, or, if one can't
+    /// be stored, or they're on several bodies, none, said and the selection cleared (the
+    /// canvas shows what the box holds); and the canvas's picks the box's from then.
+    fn take_selection(&mut self, dialog: &mut Dialog, kinds: crate::selection::Filter) {
+        let left_out = self.selection.keep_only(kinds).words().and_then(|words| {
+            dialog.names().map(|names| {
+                format!(
+                    "{words} left out: a {} takes {}",
+                    names.of,
+                    names.takes.plural()
+                )
+            })
+        });
+        let stored = self.selection.storable();
+        let mut bodies: Vec<FeatureId> = Vec::new();
+        for selected in self.selection.elements().filter_map(|p| p.found()) {
+            if !bodies.contains(&selected.feature) {
+                bodies.push(selected.feature.clone());
+            }
+        }
+        if stored.is_err() || bodies.len() > 1 {
+            self.selection.clear();
+        }
+        dialog.take_selection(stored, &bodies, left_out);
+        self.selection.take_into(Some(kinds));
     }
 
     /// A dialog opening: numbered, the revision it opens at marked in the queue, and what
@@ -2655,6 +2724,10 @@ impl Tab {
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
         };
+        // What its boxes let go of, let go from the selection too.
+        for name in dialog.take_unpicked() {
+            self.selection.let_go(&name);
+        }
         if let Some(members) = dialog.add() {
             let (serial, kind) = (dialog.serial, dialog.kind);
             self.edits.queue.push_back(Queued::Add {
@@ -2776,7 +2849,14 @@ impl Tab {
         if self.check_read.is_some() || self.checked == Some(asked) {
             return;
         }
-        let Some((gate, model)) = check_wanted(timeline, self.selection.feature()) else {
+        // The feature selected; or, with none, the open dialog's (a box of names keeps the
+        // selection's elements, not the feature).
+        let wanted = self.selection.feature().or_else(|| {
+            self.dialog
+                .as_ref()
+                .and_then(|dialog| dialog.feature.as_ref())
+        });
+        let Some((gate, model)) = check_wanted(timeline, wanted) else {
             return;
         };
         // Never the current model of a revision whose rebuild was stopped: its check would

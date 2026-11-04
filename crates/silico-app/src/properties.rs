@@ -593,6 +593,89 @@ pub(crate) fn selection_box(
     response
 }
 
+/// A row under a selection box listing one of its items: `name`'s chip with `icon`, across
+/// the row from the panel's padding (the value's column is too narrow for an element's
+/// name, which a chip would cut short), its whole name its tooltip; and at the row's right
+/// a button that removes it (`renderDialog`'s Clear, an `.ab-btn` 18 points square with a
+/// ×), labelled "Remove `name`": whether it was clicked. Off unless `enabled`. `salt` names
+/// the row among its siblings.
+pub(crate) fn listed(
+    ui: &mut Ui,
+    salt: impl egui::AsIdSalt,
+    icon: Icon,
+    name: &str,
+    enabled: bool,
+) -> bool {
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(ui.available_width(), theme::PROPERTY_ROW_HEIGHT),
+        Sense::hover(),
+    );
+    let id = ui.id().with(salt);
+    let value = Rect::from_min_max(
+        pos2(rect.left() + pad(), rect.top()),
+        pos2(rect.right() - pad(), rect.bottom()),
+    );
+    let side = theme::SELECTION_BOX_CLEAR_SIDE;
+    let button = Rect::from_center_size(
+        pos2(value.right() - side / 2.0, value.center().y),
+        Vec2::splat(side),
+    );
+    let chip_at = Rect::from_min_max(
+        value.min,
+        pos2(button.left() - theme::CHIP_GAP, value.bottom()),
+    );
+    within(ui, chip_at, id.with("chip"), |ui| {
+        chip(ui, icon, name).on_hover_text(name)
+    });
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(button, id.with("remove"), sense);
+    let label = format!("Remove {name}");
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, &label));
+    let ink = if response.hovered() && enabled {
+        ui.painter().rect_filled(
+            button,
+            theme::SMALL_CORNER_RADIUS,
+            theme::APP_BAR_BUTTON_HOVER_BG,
+        );
+        theme::TEXT_STRONG
+    } else {
+        theme::TEXT_DEFAULT
+    };
+    Icon::Close.image(IconSize::Small).tint(ink).paint_at(
+        ui,
+        Rect::from_center_size(button.center(), Vec2::splat(IconSize::Small.points())),
+    );
+    enabled && response.on_hover_text(label).clicked()
+}
+
+/// What a selection box says under it (`renderDialog`'s `.err-text`, 11 px, in a row whose
+/// key is empty): `text`, wrapped, in [`theme::SELECTION_BOX_SAID`].
+pub(crate) fn said(ui: &mut Ui, text: &str) {
+    let job = LayoutJob::single_section(
+        text.to_owned(),
+        TextFormat {
+            line_height: Some(theme::BODY_LINE_HEIGHT),
+            ..format(theme::HEADER_SIZE, theme::SELECTION_BOX_SAID, false)
+        },
+    );
+    let left = pad() + theme::PROPERTY_KEY_WIDTH + theme::PROPERTY_ROW_GAP;
+    egui::Frame::new()
+        .outer_margin(Margin {
+            left: left as i8,
+            right: theme::VIEW_PADDING,
+            top: 0,
+            bottom: theme::HINT_MARGIN as i8,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(Label::new(job).wrap().selectable(false));
+        });
+}
+
 /// A chip (`.selbox .chip`): `icon` and `name`, labelled `name`.
 fn chip(ui: &mut Ui, icon: Icon, name: &str) -> Response {
     let side = IconSize::Small.points();

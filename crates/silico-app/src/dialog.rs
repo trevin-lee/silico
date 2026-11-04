@@ -5,17 +5,27 @@
 //! inside its transaction ([`crate::tab::Tab`]), so the preview is the model rebuilt.
 //!
 //! Every input sets one part of one field of the feature (`set_field`'s field): a number,
-//! a choice, a toggle, or a selection box, which the browser fills now and a pick in the
-//! canvas will fill too (M5.7), as one more source of the same input.
+//! a choice, a toggle, or a selection box. A box of a feature (a sweep's sketch) the browser
+//! fills. A box of elements by name ([`Names`], a fillet's edges) takes the selection the
+//! dialog opened with, and, while it's the active box, each click in the canvas toggles one
+//! element in it, as SolidWorks' PropertyManager box takes its items (docs/ux/solidworks.md,
+//! §5): the selection's pick, read against the published model, whose stored name it writes
+//! ([`crate::selection::Toggled`]), or whose refusal it says.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use eframe::egui::{self, Ui};
+use silico_core::Error;
+use silico_core::command::Problems;
 use silico_core::document::FeatureId;
 use silico_core::document::json::{self, Node, Value as Json};
+use silico_core::naming::Name;
+use silico_protocol::ElementKind;
 
 use crate::icons::Icon;
 use crate::properties;
+use crate::selection::{Filter, Toggled};
 use crate::shortcuts::Command;
 use crate::theme::{self, FieldKind};
 
@@ -115,6 +125,9 @@ pub enum Part {
     ExtentNumber(&'static str),
     /// `extent`'s `reversed`.
     Reversed,
+    /// A list of elements' names, by its field (a fillet's `edges`), and with it the body
+    /// they're of, the feature's `base`.
+    Names(&'static str),
 }
 
 impl Part {
@@ -127,6 +140,7 @@ impl Part {
             Part::Sketch => "sketch",
             Part::Axis => "axis",
             Part::ExtentType | Part::ExtentNumber(_) | Part::Reversed => "extent",
+            Part::Names(field) => field,
         }
     }
 }
@@ -145,9 +159,79 @@ pub enum Value {
         options: Vec<(String, String)>,
         chosen: usize,
     },
-    /// A selection box: the feature picked, by its ID, if one is. The browser fills it now;
-    /// a pick in the canvas fills it too once there's one (M5.7).
+    /// A selection box: the feature picked, by its ID, if one is. The browser fills it.
     Selection(Option<FeatureId>),
+    /// A selection box of elements by name, which the canvas fills.
+    Names(Names),
+}
+
+/// The field a box of names writes its body to: the feature's `base`.
+pub const BASE: &str = "base";
+
+/// A selection box of elements by name (a fillet's edges; section 9's *The active selection
+/// box*), as SolidWorks' PropertyManager box holds them: the names it writes, in the order
+/// taken, each as the document stores it (a stable name, as
+/// [`Selection::storable`](crate::selection::Selection::storable) gives it); the body
+/// they're of, which the feature builds on (its `base`); and what it last said: why it
+/// refused an element, or what of the selection it opened with it left out. It takes one
+/// kind of element, `takes`, for a feature of type `of` (`fillet`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Names {
+    pub takes: ElementKind,
+    pub of: &'static str,
+    pub names: Vec<String>,
+    pub body: Option<FeatureId>,
+    pub said: Option<String>,
+}
+
+impl Names {
+    /// An empty box of `takes`, of a feature of type `of`.
+    pub fn new(takes: ElementKind, of: &'static str) -> Self {
+        Names {
+            takes,
+            of,
+            names: Vec::new(),
+            body: None,
+            said: None,
+        }
+    }
+
+    /// Its names as JSON writes them, an array of strings: none while it holds none.
+    pub fn text(&self) -> Option<String> {
+        (!self.names.is_empty()).then(|| {
+            let quoted: Vec<String> = self.names.iter().map(|name| quoted(name)).collect();
+            format!("[{}]", quoted.join(", "))
+        })
+    }
+
+    /// How many it holds, in words: "1 edge", "3 edges".
+    pub fn count(&self) -> String {
+        let word = if self.names.len() == 1 {
+            self.takes.word()
+        } else {
+            self.takes.plural()
+        };
+        format!("{} {word}", self.names.len())
+    }
+}
+
+/// What a box of names made of an element a click toggled in the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Taken {
+    /// Added to the box.
+    Added,
+    /// Removed from it.
+    Removed,
+    /// Refused, and why said: the selection lets it go again, so it shows what the box
+    /// holds.
+    Refused,
+    /// Nothing changed: no box of names is active, or the box held it as it was.
+    Ignored,
+}
+
+/// What `error` says, its message and its suggestion, as the tab says a refusal.
+fn words(error: &Error) -> String {
+    crate::tab::said(&Problems::from(error.clone()))
 }
 
 /// One input of a dialog: its label, the part of the feature it sets, and what it holds.
@@ -198,6 +282,9 @@ pub struct Dialog {
     pub active: Option<usize>,
     /// Which dialog of the tab's it is: an add's answer is this one's only if it says so.
     pub serial: u64,
+    /// The names its boxes let go of (a chip's remove button) since the tab last took them:
+    /// the tab lets them go from the selection too.
+    unpicked: Vec<String>,
 }
 
 /// A length's input.
@@ -316,7 +403,7 @@ impl Dialog {
         };
         let active = inputs
             .iter()
-            .position(|input| matches!(input.value, Value::Selection(_)));
+            .position(|input| matches!(input.value, Value::Selection(_) | Value::Names(_)));
         Dialog {
             kind,
             feature: None,
@@ -326,6 +413,7 @@ impl Dialog {
             adding: false,
             active,
             serial,
+            unpicked: Vec::new(),
         }
     }
 
@@ -346,6 +434,7 @@ impl Dialog {
                 Part::ExtentType => extent.and_then(|extent| member(extent, "type")),
                 Part::ExtentNumber(field) => extent.and_then(|extent| member(extent, field)),
                 Part::Reversed => extent.and_then(|extent| member(extent, "reversed")),
+                Part::Names(field) => member(node, field),
             };
             let Some(found) = found else {
                 // A value the form hasn't (`length2` of a one-sided pad): left at its default.
@@ -358,6 +447,19 @@ impl Dialog {
                 (Value::Toggle(on), Json::Bool(value)) => *on = *value,
                 (Value::Selection(picked), Json::String(text)) => {
                     *picked = Some(FeatureId::new(text)?);
+                }
+                (Value::Names(names), Json::Array(items)) => {
+                    names.names = items
+                        .iter()
+                        .map(|item| match &item.value {
+                            Json::String(name) => Some(name.clone()),
+                            _ => None,
+                        })
+                        .collect::<Option<Vec<String>>>()?;
+                    names.body = match member(node, BASE).map(|base| &base.value) {
+                        Some(Json::String(base)) => Some(FeatureId::new(base)?),
+                        _ => return None,
+                    };
                 }
                 (Value::Choice { options, chosen }, Json::String(text)) => {
                     match options.iter().position(|(value, _)| value == text) {
@@ -412,6 +514,7 @@ impl Dialog {
             || match &input.value {
                 Value::Length(text) | Value::Angle(text) => number(text).is_some(),
                 Value::Selection(picked) => picked.is_some(),
+                Value::Names(names) => names.text().is_some() && names.body.is_some(),
                 Value::Toggle(_) | Value::Choice { .. } => true,
             }
     }
@@ -435,13 +538,17 @@ impl Dialog {
                     options.get(*chosen).map(|(value, _)| quoted(value))
                 }
                 Value::Selection(picked) => picked.as_ref().map(|id| quoted(id.as_str())),
+                Value::Names(names) => {
+                    fields.insert(BASE, names.body.as_ref().map(|body| quoted(body.as_str())));
+                    names.text()
+                }
             };
             match input.part {
                 Part::Position(at) => match (text, position.get_mut(at)) {
                     (Some(text), Some(slot)) => *slot = text,
                     _ => position_ok = false,
                 },
-                Part::Number(_) | Part::Sketch | Part::Axis => {
+                Part::Number(_) | Part::Sketch | Part::Axis | Part::Names(_) => {
                     fields.insert(input.part.field(), text);
                 }
                 Part::ExtentType => match text {
@@ -458,7 +565,8 @@ impl Dialog {
                 },
             }
         }
-        if self.kind.sweeps() {
+        let has = |part: fn(&Part) -> bool| self.inputs.iter().any(|input| part(&input.part));
+        if has(|part| matches!(part, Part::ExtentType)) {
             let members: Vec<String> = extent
                 .iter()
                 .map(|(field, text)| format!("{}: {text}", quoted(field)))
@@ -467,7 +575,8 @@ impl Dialog {
                 "extent",
                 extent_ok.then(|| format!("{{{}}}", members.join(", "))),
             );
-        } else {
+        }
+        if has(|part| matches!(part, Part::Position(_))) {
             fields.insert(
                 "position",
                 position_ok.then(|| format!("[{}]", position.join(", "))),
@@ -544,6 +653,155 @@ impl Dialog {
         }
     }
 
+    /// The active selection box, if it's a box of names.
+    pub fn names(&self) -> Option<&Names> {
+        match self.active.and_then(|at| self.inputs.get(at)) {
+            Some(Input {
+                value: Value::Names(names),
+                ..
+            }) => Some(names),
+            _ => None,
+        }
+    }
+
+    fn names_mut(&mut self) -> Option<&mut Names> {
+        match self.active.and_then(|at| self.inputs.get_mut(at)) {
+            Some(Input {
+                value: Value::Names(names),
+                ..
+            }) => Some(names),
+            _ => None,
+        }
+    }
+
+    /// What the canvas picks while the dialog is open, as a selection filter: the kind of
+    /// element its active box takes, if it's a box of names; else none (the canvas picks as
+    /// its own filter has it).
+    pub fn takes(&self) -> Option<Filter> {
+        self.names().map(|names| Filter {
+            faces: names.takes == ElementKind::Face,
+            edges: names.takes == ElementKind::Edge,
+            vertices: names.takes == ElementKind::Vertex,
+        })
+    }
+
+    /// The selection the dialog opened with, taken into its active box of names, if it has
+    /// one: `stored`, each element's name as a store writes it
+    /// ([`Selection::storable`](crate::selection::Selection::storable)), or the first
+    /// refusal, said and nothing taken; `bodies`, the bodies they're in, of which there must
+    /// be one, the feature's base (several: said, and nothing taken); and `left_out`, what of
+    /// the selection the box doesn't take, said if nothing else is.
+    pub fn take_selection(
+        &mut self,
+        stored: Result<Vec<Arc<Name>>, Error>,
+        bodies: &[FeatureId],
+        left_out: Option<String>,
+    ) {
+        let Some(names) = self.names_mut() else {
+            return;
+        };
+        let stored = match stored {
+            Ok(stored) => stored,
+            Err(refusal) => {
+                names.said = Some(words(&refusal));
+                return;
+            }
+        };
+        if let [first, second, ..] = bodies {
+            let (plural, of) = (names.takes.plural(), names.of);
+            let others = if bodies.len() > 2 {
+                ", among others"
+            } else {
+                ""
+            };
+            names.said = Some(format!(
+                "The selected {plural} are on {} bodies, {first} and {second}{others}: a {of} \
+                 takes one body's {plural}",
+                bodies.len(),
+            ));
+            return;
+        }
+        names.names = stored.iter().map(ToString::to_string).collect();
+        names.body = bodies.first().cloned();
+        names.said = left_out;
+    }
+
+    /// An element a click toggled in the selection while the dialog's box of names is
+    /// active, taken into the box: one the selection let go, let go of; one it added,
+    /// added, unless it can't be stored (its name unstable, or not answered yet: why, as a
+    /// store refuses it), it's made by the dialog's own feature (as its preview built it),
+    /// or it's on another body than the box's names (a feature builds on one); each refusal
+    /// said. An element of the dialog's own feature's body is of its base, as the preview
+    /// built it from there.
+    pub fn toggled(&mut self, toggled: &Toggled) -> Taken {
+        let own = self.feature.clone();
+        let Some(names) = self.names_mut() else {
+            return Taken::Ignored;
+        };
+        if !toggled.added {
+            let stored = toggled.stored.as_ref().ok().map(ToString::to_string);
+            let before = names.names.len();
+            names
+                .names
+                .retain(|name| *name != toggled.name && Some(name) != stored.as_ref());
+            if names.names.len() == before {
+                return Taken::Ignored;
+            }
+            names.said = None;
+            return Taken::Removed;
+        }
+        let stored = match &toggled.stored {
+            Ok(stored) => stored,
+            Err(refusal) => {
+                names.said = Some(words(refusal));
+                return Taken::Refused;
+            }
+        };
+        if let Some(own) = &own
+            && stored.features().contains(&own)
+        {
+            names.said = Some(format!(
+                "{stored} is made by this {} itself: select one of the {} it's built on",
+                names.of,
+                names.takes.plural()
+            ));
+            return Taken::Refused;
+        }
+        if let Some(body) = toggled
+            .body
+            .as_ref()
+            .filter(|body| Some(*body) != own.as_ref())
+        {
+            match &names.body {
+                Some(held) if held != body && !names.names.is_empty() => {
+                    names.said = Some(format!(
+                        "{stored} is on {body}, and the {}'s other {} on {held}: a {} takes \
+                         one body's {}",
+                        names.of,
+                        names.takes.plural(),
+                        names.of,
+                        names.takes.plural()
+                    ));
+                    return Taken::Refused;
+                }
+                _ => names.body = Some(body.clone()),
+            }
+        }
+        let name = stored.to_string();
+        if names.names.contains(&name) {
+            return Taken::Ignored;
+        }
+        names.names.push(name);
+        names.said = None;
+        Taken::Added
+    }
+
+    /// The names its boxes let go of since this was last asked: the tab lets them go from
+    /// the selection too.
+    pub fn take_unpicked(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.unpicked)
+    }
+
     /// The dialog drawn into `ui`, docked in the property panel as the prototype docks it
     /// (`renderDialog`): its title with its close button (Cancel), its inputs under INPUTS,
     /// its `preview`'s line under PREVIEW if it has one (state 3e), `said` (its feature's
@@ -583,6 +841,8 @@ impl Dialog {
             .collect();
         let mut any_refused = false;
         let active = self.active;
+        let serial = self.serial;
+        let mut unpicked: Option<(usize, usize)> = None;
         let inputs = &mut self.inputs;
         ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
             egui::ScrollArea::vertical()
@@ -611,6 +871,20 @@ impl Dialog {
                                 enabled,
                             );
                         });
+                        // A box of names lists them under it, each with its remove button,
+                        // and what it last said.
+                        if let Value::Names(names) = &input.value {
+                            for (place, name) in names.names.iter().enumerate() {
+                                let salt = ("dialog-name", serial, at, place);
+                                if properties::listed(ui, salt, icon_of(names.takes), name, enabled)
+                                {
+                                    unpicked = Some((at, place));
+                                }
+                            }
+                            if let Some(said) = &names.said {
+                                properties::said(ui, said);
+                            }
+                        }
                     }
                     if let Some(preview) = preview {
                         properties::section(ui, "Preview");
@@ -621,6 +895,16 @@ impl Dialog {
                     }
                 });
         });
+        if let Some((at, place)) = unpicked
+            && let Some(Input {
+                value: Value::Names(names),
+                ..
+            }) = self.inputs.get_mut(at)
+            && place < names.names.len()
+        {
+            self.unpicked.push(names.names.remove(place));
+            names.said = None;
+        }
         properties::footer_paint(ui, footer);
         // Off while its add is unanswered: what's typed meanwhile is sent after it.
         let ok = enabled && self.valid() && !any_refused && !self.adding;
@@ -666,7 +950,7 @@ fn input_ui(
     let unit = match input.value {
         Value::Length(_) => "mm",
         Value::Angle(_) => "°",
-        Value::Toggle(_) | Value::Choice { .. } | Value::Selection(_) => "",
+        Value::Toggle(_) | Value::Choice { .. } | Value::Selection(_) | Value::Names(_) => "",
     };
     match &mut input.value {
         Value::Length(text) | Value::Angle(text) => {
@@ -711,6 +995,21 @@ fn input_ui(
                 "Select in the browser",
             );
         }
+        Value::Names(names) => {
+            // The active box, highlighted (section 9); its count, the names listed under it.
+            let count = (!names.names.is_empty()).then(|| names.count());
+            let empty = format!("Select {} in the canvas", names.takes.plural());
+            properties::selection_box(ui, active, icon_of(names.takes), count.as_deref(), &empty);
+        }
+    }
+}
+
+/// The icon a box of names shows its kind of element with: the selection filters'.
+fn icon_of(kind: ElementKind) -> Icon {
+    match kind {
+        ElementKind::Face | ElementKind::Solid => Icon::SelFace,
+        ElementKind::Edge => Icon::SelEdge,
+        ElementKind::Vertex => Icon::SelVertex,
     }
 }
 
@@ -892,6 +1191,229 @@ mod tests {
         let before = cube.clone();
         cube.pick(&FeatureId::new("s0000001").unwrap());
         assert_eq!(cube, before);
+    }
+
+    /// Box `feature`'s edge `n`, by its name (`k7f2qx3m.box.Edge3`).
+    fn edge(feature: &str, n: u32) -> Arc<Name> {
+        Arc::new(Name::Element {
+            feature: FeatureId::new(feature).unwrap(),
+            made: silico_core::naming::TypeWord::Primitive(silico_core::naming::PrimitiveKind::Box),
+            element: silico_protocol::ElementRef {
+                kind: ElementKind::Edge,
+                index: n,
+            },
+        })
+    }
+
+    /// A click's toggle of `name`, in `body`.
+    fn toggle(added: bool, name: &Arc<Name>, body: &str) -> Toggled {
+        Toggled {
+            added,
+            name: name.to_string(),
+            stored: Ok(Arc::clone(name)),
+            body: Some(FeatureId::new(body).unwrap()),
+        }
+    }
+
+    /// A dialog whose only input is a box of edges, of a fillet, active.
+    fn edges_dialog() -> Dialog {
+        let mut dialog = Dialog::new(Kind::Box, None, 1);
+        dialog.inputs = vec![Input {
+            label: "Edges",
+            part: Part::Names("edges"),
+            value: Value::Names(Names::new(ElementKind::Edge, "fillet")),
+        }];
+        dialog.active = Some(0);
+        dialog
+    }
+
+    fn field(dialog: &Dialog, name: &str) -> Option<String> {
+        dialog.fields().get(name).cloned().flatten()
+    }
+
+    #[test]
+    fn a_box_of_names_writes_them_as_an_array_and_their_body_as_base_once_it_holds_one() {
+        let mut dialog = edges_dialog();
+        assert_eq!(
+            dialog.takes(),
+            Some(Filter {
+                faces: false,
+                edges: true,
+                vertices: false
+            })
+        );
+        // Empty: neither written, and not valid.
+        assert_eq!(field(&dialog, "edges"), None);
+        assert_eq!(field(&dialog, "base"), None);
+        assert!(!dialog.valid());
+        assert_eq!(
+            dialog.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
+            Taken::Added
+        );
+        assert_eq!(
+            dialog.toggled(&toggle(true, &edge("k7f2qx3m", 5), "k7f2qx3m")),
+            Taken::Added
+        );
+        assert_eq!(
+            field(&dialog, "edges").as_deref(),
+            Some(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]"#)
+        );
+        assert_eq!(field(&dialog, "base").as_deref(), Some(r#""k7f2qx3m""#));
+        assert!(dialog.valid());
+        assert_eq!(dialog.names().unwrap().count(), "2 edges");
+        // Again: held already.
+        assert_eq!(
+            dialog.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
+            Taken::Ignored
+        );
+        // Let go: removed; let go of one it doesn't hold: nothing.
+        assert_eq!(
+            dialog.toggled(&toggle(false, &edge("k7f2qx3m", 3), "k7f2qx3m")),
+            Taken::Removed
+        );
+        assert_eq!(
+            dialog.toggled(&toggle(false, &edge("k7f2qx3m", 9), "k7f2qx3m")),
+            Taken::Ignored
+        );
+        assert_eq!(
+            field(&dialog, "edges").as_deref(),
+            Some(r#"["k7f2qx3m.box.Edge5"]"#)
+        );
+        assert_eq!(dialog.names().unwrap().count(), "1 edge");
+        // A dialog with no box of names takes nothing.
+        let mut cube = Dialog::new(Kind::Box, None, 2);
+        assert_eq!(cube.takes(), None);
+        assert_eq!(
+            cube.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m")),
+            Taken::Ignored
+        );
+    }
+
+    #[test]
+    fn a_box_of_names_refuses_an_unstorable_name_another_bodys_and_its_own_features_saying_why() {
+        let mut dialog = edges_dialog();
+        dialog.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m"));
+        let unstable = Toggled {
+            stored: Err(Error::new(
+                silico_core::ErrorCode::ReferenceBroken,
+                "selection.1 names an edge whose name is unstable",
+            )
+            .with_suggestion("select another")),
+            ..toggle(true, &edge("k7f2qx3m", 4), "k7f2qx3m")
+        };
+        assert_eq!(dialog.toggled(&unstable), Taken::Refused);
+        let said = |dialog: &Dialog| dialog.names().unwrap().said.clone();
+        assert_eq!(
+            said(&dialog).as_deref(),
+            Some("selection.1 names an edge whose name is unstable (select another)")
+        );
+        // Another body's edge, while it holds one: refused, said.
+        assert_eq!(
+            dialog.toggled(&toggle(true, &edge("a91cw0de", 1), "a91cw0de")),
+            Taken::Refused
+        );
+        assert_eq!(
+            said(&dialog).as_deref(),
+            Some(
+                "a91cw0de.box.Edge1 is on a91cw0de, and the fillet's other edges on k7f2qx3m: \
+                 a fillet takes one body's edges"
+            )
+        );
+        // Its feature made: an edge its preview made is refused; one found in its body (the
+        // preview's) is its base's, taken, the base kept.
+        dialog.feature = Some(FeatureId::new("f0000001").unwrap());
+        let made = Arc::new(Name::Element {
+            feature: FeatureId::new("f0000001").unwrap(),
+            made: silico_core::naming::TypeWord::Primitive(silico_core::naming::PrimitiveKind::Box),
+            element: silico_protocol::ElementRef {
+                kind: ElementKind::Edge,
+                index: 1,
+            },
+        });
+        assert_eq!(
+            dialog.toggled(&toggle(true, &made, "f0000001")),
+            Taken::Refused
+        );
+        assert_eq!(
+            said(&dialog).as_deref(),
+            Some(
+                "f0000001.box.Edge1 is made by this fillet itself: select one of the edges it's \
+                 built on"
+            )
+        );
+        assert_eq!(
+            dialog.toggled(&toggle(true, &edge("k7f2qx3m", 7), "f0000001")),
+            Taken::Added
+        );
+        assert_eq!(said(&dialog), None);
+        assert_eq!(
+            field(&dialog, "edges").as_deref(),
+            Some(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]"#)
+        );
+        assert_eq!(field(&dialog, "base").as_deref(), Some(r#""k7f2qx3m""#));
+        // Emptied, another body's is taken, and its body is the base.
+        dialog.toggled(&toggle(false, &edge("k7f2qx3m", 3), "k7f2qx3m"));
+        dialog.toggled(&toggle(false, &edge("k7f2qx3m", 7), "k7f2qx3m"));
+        assert_eq!(
+            dialog.toggled(&toggle(true, &edge("a91cw0de", 1), "a91cw0de")),
+            Taken::Added
+        );
+        assert_eq!(field(&dialog, "base").as_deref(), Some(r#""a91cw0de""#));
+    }
+
+    #[test]
+    fn a_box_of_names_takes_the_selection_it_opens_with_or_says_why_it_cant() {
+        let ids = |ids: &[&str]| -> Vec<FeatureId> {
+            ids.iter().map(|id| FeatureId::new(id).unwrap()).collect()
+        };
+        let mut dialog = edges_dialog();
+        dialog.take_selection(
+            Ok(vec![edge("k7f2qx3m", 3), edge("k7f2qx3m", 5)]),
+            &ids(&["k7f2qx3m"]),
+            Some("1 face left out: a fillet takes edges".to_owned()),
+        );
+        let names = dialog.names().unwrap();
+        assert_eq!(names.names, ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+        assert_eq!(names.body, Some(FeatureId::new("k7f2qx3m").unwrap()));
+        assert_eq!(
+            names.said.as_deref(),
+            Some("1 face left out: a fillet takes edges")
+        );
+        // Refused: nothing taken, why said.
+        let mut dialog = edges_dialog();
+        dialog.take_selection(
+            Err(Error::new(
+                silico_core::ErrorCode::Conflict,
+                "Edge3 isn't answered yet",
+            )),
+            &ids(&["k7f2qx3m"]),
+            None,
+        );
+        assert!(dialog.names().unwrap().names.is_empty());
+        assert_eq!(
+            dialog.names().unwrap().said.as_deref(),
+            Some("Edge3 isn't answered yet")
+        );
+        assert!(!dialog.valid());
+        // On three bodies: nothing taken.
+        let mut dialog = edges_dialog();
+        dialog.take_selection(
+            Ok(vec![
+                edge("k7f2qx3m", 3),
+                edge("a91cw0de", 1),
+                edge("b0000001", 1),
+            ]),
+            &ids(&["k7f2qx3m", "a91cw0de", "b0000001"]),
+            None,
+        );
+        assert!(dialog.names().unwrap().names.is_empty());
+        assert_eq!(
+            dialog.names().unwrap().said.as_deref(),
+            Some(
+                "The selected edges are on 3 bodies, k7f2qx3m and a91cw0de, among others: a \
+                 fillet takes one body's edges"
+            )
+        );
     }
 
     #[test]

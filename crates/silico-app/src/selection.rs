@@ -41,6 +41,13 @@
 //! after [`CLICK_WAIT`], a backstop. Each let go the person didn't do is said, in its
 //! cause's words, never over what a rebuild left gone from the same model.
 //!
+//! While a dialog's selection box of names is active ([`Selection::take_into`], section 9's
+//! *Feature dialogs*), the canvas picks only what the box takes, every click toggles the
+//! element under it (a click on nothing changes nothing), as SolidWorks' PropertyManager
+//! box takes its items, and each toggle is kept for the box ([`Selection::take_toggled`]);
+//! what a rebuild leaves gone isn't said, as the box, not the selection, holds what it
+//! writes (its own feature's preview may consume it).
+//!
 //! The visuals are behind [`outlines`], which the UI port replaces.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -212,6 +219,79 @@ pub struct Filter {
     pub vertices: bool,
 }
 
+impl Filter {
+    /// What both filters take.
+    pub fn and(self, other: Filter) -> Filter {
+        Filter {
+            faces: self.faces && other.faces,
+            edges: self.edges && other.edges,
+            vertices: self.vertices && other.vertices,
+        }
+    }
+
+    /// Whether it takes an element of `kind`.
+    pub fn takes(self, kind: ElementKind) -> bool {
+        match kind {
+            ElementKind::Face => self.faces,
+            ElementKind::Edge => self.edges,
+            ElementKind::Vertex => self.vertices,
+            ElementKind::Solid => false,
+        }
+    }
+}
+
+/// An element a click toggled in the selection while a dialog's box took the canvas's
+/// picks ([`Selection::take_into`]): whether it was added or let go, the name the
+/// selection holds it by, what a store writes for it or why it can't (as
+/// [`Selection::storable`] says it), and the body it's in, if it's found.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Toggled {
+    pub added: bool,
+    pub name: String,
+    pub stored: Result<Arc<Name>, Error>,
+    pub body: Option<FeatureId>,
+}
+
+/// What [`Selection::keep_only`] let go of: how many elements of each kind, and how many
+/// features.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LeftOut {
+    pub elements: BTreeMap<ElementKind, usize>,
+    pub features: usize,
+}
+
+impl LeftOut {
+    /// What it says, if anything was left out: "1 face and 2 vertices"; faces first, then
+    /// edges, vertices, and features.
+    pub fn words(&self) -> Option<String> {
+        let mut parts: Vec<String> = [ElementKind::Face, ElementKind::Edge, ElementKind::Vertex]
+            .into_iter()
+            .filter_map(|kind| {
+                let count = *self.elements.get(&kind)?;
+                let word = if count == 1 {
+                    kind.word()
+                } else {
+                    kind.plural()
+                };
+                Some(format!("{count} {word}"))
+            })
+            .collect();
+        if self.features > 0 {
+            let word = if self.features == 1 {
+                "feature"
+            } else {
+                "features"
+            };
+            parts.push(format!("{} {word}", self.features));
+        }
+        match parts.as_slice() {
+            [] => None,
+            [one] => Some(one.clone()),
+            [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
+        }
+    }
+}
+
 impl Default for Filter {
     fn default() -> Self {
         Filter {
@@ -296,6 +376,11 @@ pub struct Selection {
     heard: Option<([u32; 2], Option<Arc<Name>>)>,
     /// The newest picking answer taken, by its frame.
     taken: Option<u64>,
+    /// What a dialog's active box takes from the canvas, while one does: the canvas picks
+    /// only that, and each click toggles.
+    taking: Option<Filter>,
+    /// What clicks toggled while a box took them, in order, until the tab takes them.
+    toggled: Vec<Toggled>,
     /// The version and bodies table the highlights were last worked out for.
     drawn: Option<(u64, u64)>,
 }
@@ -358,26 +443,80 @@ impl Selection {
     pub fn storable(&self) -> Result<Vec<Arc<Name>>, Error> {
         self.elements()
             .enumerate()
-            .map(|(place, picked)| match &picked.state {
-                State::Found(selected) => selected.stored.clone(),
-                State::Waiting { why, .. } => {
-                    let message = match why {
-                        Some(why) => format!(
-                            "{} isn't in the model as it's built now: {why}",
-                            picked.name
-                        ),
-                        None => format!(
-                            "{} isn't answered yet: its body's elements aren't named yet",
-                            picked.name
-                        ),
-                    };
-                    Err(Error::new(ErrorCode::Conflict, message)
-                        .with_element(picked.name.as_str())
-                        .with_parameter(format!("{PARAMETER}.{place}"))
-                        .with_suggestion("select it again once the model has rebuilt"))
-                }
-            })
+            .map(|(place, picked)| stored(place, picked))
             .collect()
+    }
+
+    /// The kinds a dialog's active box takes from the canvas, while one does; none once
+    /// none does. While it does, the canvas picks only those (and what the filter takes),
+    /// and each click toggles one element, kept for the box ([`take_toggled`]
+    /// (Self::take_toggled)).
+    pub fn take_into(&mut self, kinds: Option<Filter>) {
+        if self.taking != kinds {
+            self.taking = kinds;
+            self.toggled.clear();
+        }
+    }
+
+    /// What clicks toggled since this was last asked, in order, while a box took them.
+    pub fn take_toggled(&mut self) -> Vec<Toggled> {
+        std::mem::take(&mut self.toggled)
+    }
+
+    /// What the canvas picks: what the filter takes, and, while a box takes the canvas's
+    /// picks, what the box takes.
+    fn picks(&self) -> Filter {
+        match self.taking {
+            Some(kinds) => self.filter.and(kinds),
+            None => self.filter,
+        }
+    }
+
+    /// The selection cut to what `kinds` takes, as a box of those takes it when its dialog
+    /// opens: each feature let go, and each element found of another kind (one not found
+    /// yet is kept: its kind isn't known, and a store refuses it). What was let go.
+    pub fn keep_only(&mut self, kinds: Filter) -> LeftOut {
+        let mut left = LeftOut::default();
+        let mut items = Vec::with_capacity(self.items.len());
+        for item in &self.items {
+            match item {
+                Item::Feature(_) => left.features += 1,
+                Item::Element(picked) => match picked.found().map(Selected::kind) {
+                    Some(kind) if !kinds.takes(kind) => {
+                        *left.elements.entry(kind).or_default() += 1;
+                    }
+                    _ => items.push(item.clone()),
+                },
+            }
+        }
+        if items.len() != self.items.len() {
+            self.set(items);
+        }
+        left
+    }
+
+    /// The element held by `name` let go: by the name the selection holds it by, or the
+    /// name a store writes for it (a box's chip removed, or an element a box refused).
+    pub fn let_go(&mut self, name: &str) {
+        let held = |item: &Item| match item {
+            Item::Element(picked) => {
+                picked.name == name
+                    || picked
+                        .found()
+                        .and_then(|selected| selected.stored.as_ref().ok())
+                        .is_some_and(|stored| stored.to_string() == name)
+            }
+            Item::Feature(_) => false,
+        };
+        if self.items.iter().any(held) {
+            let items = self
+                .items
+                .iter()
+                .filter(|item| !held(item))
+                .cloned()
+                .collect();
+            self.set(items);
+        }
     }
 
     /// What the pointer is over in the canvas, if anything.
@@ -499,14 +638,26 @@ impl Selection {
                 index.add(at, each);
             }
         }
+        let boxed = how == How::Toggle && self.taking.is_some();
         match index.find(&picked) {
             Some(at) if how == How::Toggle => {
-                items.remove(at);
+                let place = elements_before(&items, at);
+                if let Item::Element(gone) = items.remove(at)
+                    && boxed
+                {
+                    self.toggled.push(toggled(false, place, &gone));
+                }
                 self.scroll = None;
             }
             // Added, and selected already: kept where it was.
             Some(_) => {}
-            None => items.push(Item::Element(picked)),
+            None => {
+                if boxed {
+                    let place = elements_before(&items, items.len());
+                    self.toggled.push(toggled(true, place, &picked));
+                }
+                items.push(Item::Element(picked));
+            }
         }
         self.set(items);
         self.read(&model);
@@ -787,7 +938,9 @@ impl Selection {
                 }
             }
         }
-        if let Some((_, first)) = dropped.first() {
+        // While a box takes the canvas's picks, it holds what it writes, which its own
+        // feature's preview may consume: what goes from the selection isn't said.
+        if let Some((_, first)) = dropped.first().filter(|_| self.taking.is_none()) {
             let said = gone_words(&dropped, &before);
             self.gone_said = self.of.map(|of| (of, said.clone()));
             self.said = Some(said);
@@ -821,7 +974,7 @@ impl Selection {
                 how,
                 after: view.last_asked(),
                 frames: 0,
-                filter: self.filter,
+                filter: self.picks(),
                 at: frame.now,
                 awaits: if current { None } else { self.of },
             });
@@ -871,7 +1024,7 @@ impl Selection {
         let Some(click) = &self.click else {
             return;
         };
-        if click.filter != self.filter {
+        if click.filter != self.picks() {
             tracing::debug!("the filter changed under a click waiting: let go");
             self.click = None;
             return;
@@ -1021,8 +1174,14 @@ impl Selection {
     }
 
     /// A click's pick answered: what's under it selected `how`; nothing there, the
-    /// selection cleared by a plain click, kept by a Ctrl-click.
+    /// selection cleared by a plain click, kept by a Ctrl-click. While a box takes the
+    /// canvas's picks, every click toggles, and one on nothing changes nothing.
     fn clicked(&mut self, picking: &Picking, how: How, bodies: &BTreeMap<u32, ViewBody>) {
+        let how = if self.taking.is_some() {
+            How::Toggle
+        } else {
+            how
+        };
         match self.under(picking, bodies) {
             Some((_, _, name, _)) => self.pick(&name.to_string(), how),
             None if how == How::Replace => self.clear(),
@@ -1063,22 +1222,23 @@ impl Selection {
         });
     }
 
-    /// What a picking found under its centre, as the filter takes it: a vertex at its
-    /// centre pixel (its disc is its tolerance, [`VERTEX_PICK_POINTS`]), first; then an
-    /// edge in its square; else the face at its centre pixel. Its body, element, name, and
-    /// the name's stability, as the bodies' meshes name them.
+    /// What a picking found under its centre, as the canvas picks ([`Self::picks`]): a
+    /// vertex at its centre pixel (its disc is its tolerance, [`VERTEX_PICK_POINTS`]),
+    /// first; then an edge in its square; else the face at its centre pixel. Its body,
+    /// element, name, and the name's stability, as the bodies' meshes name them.
     fn under(
         &self,
         picking: &Picking,
         bodies: &BTreeMap<u32, ViewBody>,
     ) -> Option<(u32, Element, Arc<Name>, bool)> {
         let centre = centre_of(picking.rect);
+        let picks = self.picks();
         let vertex = picking.hit.filter(|hit| {
-            hit.pixel == centre && matches!(hit.hit, Element::Vertex(_)) && self.filter.vertices
+            hit.pixel == centre && matches!(hit.hit, Element::Vertex(_)) && picks.vertices
         });
-        let edge = picking.edge.filter(|_| self.filter.edges);
+        let edge = picking.edge.filter(|_| picks.edges);
         let face = picking.hit.filter(|hit| {
-            hit.pixel == centre && matches!(hit.hit, Element::Face(_)) && self.filter.faces
+            hit.pixel == centre && matches!(hit.hit, Element::Face(_)) && picks.faces
         });
         let pick = vertex.or(edge).or(face)?;
         let named = bodies.get(&pick.body)?.name_of(pick.hit)?;
@@ -1089,7 +1249,7 @@ impl Selection {
     /// when the selection or the bodies table changed (which model the bodies are of
     /// changes only with the table).
     fn draw(&mut self, view: &mut View) {
-        view.vertices = self.filter.vertices.then_some(VERTEX_PICK_POINTS);
+        view.vertices = self.picks().vertices.then_some(VERTEX_PICK_POINTS);
         let key = (self.version, view.table());
         if self.drawn != Some(key) {
             view.highlights = highlights(&self.items, view.bodies(), view.bodies_of());
@@ -1100,6 +1260,51 @@ impl Selection {
             .iter()
             .map(|hovered| (hovered.body, hovered.element))
             .collect();
+    }
+}
+
+/// What a store writes for `picked`, the element at `place` among the selection's: its
+/// stable name, if it's found and has one; or why not: the store's refusal of a name that
+/// isn't stable, or, for one waiting, that it isn't answered yet, or that its feature didn't
+/// build.
+fn stored(place: usize, picked: &Picked) -> Result<Arc<Name>, Error> {
+    match &picked.state {
+        State::Found(selected) => selected.stored.clone(),
+        State::Waiting { why, .. } => {
+            let message = match why {
+                Some(why) => format!(
+                    "{} isn't in the model as it's built now: {why}",
+                    picked.name
+                ),
+                None => format!(
+                    "{} isn't answered yet: its body's elements aren't named yet",
+                    picked.name
+                ),
+            };
+            Err(Error::new(ErrorCode::Conflict, message)
+                .with_element(picked.name.as_str())
+                .with_parameter(format!("{PARAMETER}.{place}"))
+                .with_suggestion("select it again once the model has rebuilt"))
+        }
+    }
+}
+
+/// How many of `items` before `at` are elements: an element's place among them.
+fn elements_before(items: &[Item], at: usize) -> usize {
+    items
+        .iter()
+        .take(at)
+        .filter(|item| matches!(item, Item::Element(_)))
+        .count()
+}
+
+/// `picked`, at `place` among the selection's elements, toggled: `added`, or let go.
+fn toggled(added: bool, place: usize, picked: &Picked) -> Toggled {
+    Toggled {
+        added,
+        name: picked.name.clone(),
+        stored: stored(place, picked),
+        body: picked.found().map(|selected| selected.feature.clone()),
     }
 }
 
@@ -2126,6 +2331,144 @@ mod tests {
         assert_eq!(selection.names(), [other]);
         let said = selection.said().unwrap();
         assert!(said.starts_with(CARRIED_GONE), "{said}");
+    }
+
+    #[test]
+    fn while_a_box_takes_the_canvas_only_its_kinds_are_picked_and_each_toggle_is_kept_for_it() {
+        let faces = Filter {
+            faces: true,
+            edges: false,
+            vertices: false,
+        };
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), Revision::from_number(1).unwrap())), 1);
+        // No box: the filter alone, and no pick kept.
+        assert_eq!(selection.picks(), Filter::default());
+        selection.pick("aaaaaaaa.box.Face3", How::Toggle);
+        assert!(selection.take_toggled().is_empty());
+        selection.clear();
+        // A box of faces: what both take; a filter that's off for faces picks nothing.
+        selection.take_into(Some(faces));
+        assert_eq!(selection.picks(), faces);
+        selection.filter.faces = false;
+        assert_eq!(
+            selection.picks(),
+            Filter {
+                faces: false,
+                edges: false,
+                vertices: false
+            }
+        );
+        selection.filter.faces = true;
+        // A stable face added, an unstable one added, the stable one let go: each kept, in
+        // order, with what a store writes or its refusal (references.rs's words, by hand, at
+        // the place the pick's own read of the name alone gives it), and the body it's in
+        // (the second fuse's).
+        selection.pick("aaaaaaaa.box.Face3", How::Toggle);
+        selection.pick("rrrrrrrr.fuse.Face1", How::Toggle);
+        selection.pick("aaaaaaaa.box.Face3", How::Toggle);
+        let toggled = selection.take_toggled();
+        // Added, its name, what a store writes or its refusal's message, and its body.
+        type Seen<'a> = (bool, &'a str, Result<String, &'a str>, Option<&'a str>);
+        let seen: Vec<Seen<'_>> = toggled
+            .iter()
+            .map(|t| {
+                (
+                    t.added,
+                    t.name.as_str(),
+                    t.stored
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .map_err(Error::message),
+                    t.body.as_ref().map(FeatureId::as_str),
+                )
+            })
+            .collect();
+        let unstable = "selection.0, \"rrrrrrrr.fuse.Face1\", names a face, whose name is \
+                        unstable (it came about as another element did, or is its number): an \
+                        edit could make it another element";
+        assert_eq!(
+            seen,
+            [
+                (
+                    true,
+                    "aaaaaaaa.box.Face3",
+                    Ok("aaaaaaaa.box.Face3".to_owned()),
+                    Some("ssssssss")
+                ),
+                (true, "rrrrrrrr.fuse.Face1", Err(unstable), Some("ssssssss")),
+                (
+                    false,
+                    "aaaaaaaa.box.Face3",
+                    Ok("aaaaaaaa.box.Face3".to_owned()),
+                    Some("ssssssss")
+                ),
+            ]
+        );
+        assert!(selection.take_toggled().is_empty());
+        // A plain pick (not a click's: a box turns those to toggles) isn't kept.
+        selection.pick("aaaaaaaa.box.Face3", How::Replace);
+        assert!(selection.take_toggled().is_empty());
+        // Toggles not taken are let go with the box.
+        selection.pick("rrrrrrrr.fuse.Face1", How::Toggle);
+        selection.take_into(None);
+        assert!(selection.take_toggled().is_empty());
+        assert_eq!(selection.picks(), Filter::default());
+    }
+
+    #[test]
+    fn while_a_box_takes_the_canvas_what_a_rebuild_leaves_gone_is_dropped_unsaid() {
+        let revision = |n| Revision::from_number(n).unwrap();
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), revision(1))), 1);
+        selection.pick("rrrrrrrr.fuse.Face1", How::Replace);
+        selection.take_into(Some(Filter::default()));
+        // Carried to the next model, the unstable name is gone: dropped, nothing said.
+        selection.published(Some((fused(3, 4), revision(2))), 2);
+        assert!(selection.is_empty());
+        assert_eq!(selection.said(), None);
+    }
+
+    #[test]
+    fn keep_only_lets_go_of_features_and_other_kinds_and_let_go_drops_by_either_name() {
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), Revision::from_number(1).unwrap())), 1);
+        selection.pick("aaaaaaaa.box.Face3", How::Replace);
+        selection.pick("aaaaaaaa.box.Face2", How::Toggle);
+        selection.items.push(Item::Feature(fid("aaaaaaaa")));
+        selection.items.push(picked("k7f2qx3m.box.Edge9"));
+        let edges = Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        };
+        let left = selection.keep_only(edges);
+        assert_eq!(
+            left,
+            LeftOut {
+                elements: BTreeMap::from([(ElementKind::Face, 2)]),
+                features: 1
+            }
+        );
+        assert_eq!(left.words().as_deref(), Some("2 faces and 1 feature"));
+        // One not answered yet is kept: its kind isn't known.
+        assert_eq!(selection.names(), ["k7f2qx3m.box.Edge9"]);
+        selection.let_go("k7f2qx3m.box.Edge9");
+        assert!(selection.is_empty());
+        // By the name a store writes for it.
+        selection.pick("aaaaaaaa.box.Face3", How::Replace);
+        let stored = selection.storable().unwrap()[0].to_string();
+        selection.let_go(&stored);
+        assert!(selection.is_empty());
+        assert_eq!(LeftOut::default().words(), None);
+        let three = LeftOut {
+            elements: BTreeMap::from([(ElementKind::Vertex, 2), (ElementKind::Face, 1)]),
+            features: 2,
+        };
+        assert_eq!(
+            three.words().as_deref(),
+            Some("1 face, 2 vertices and 2 features")
+        );
     }
 
     /// The words the carried `rrrrrrrr.fuse.Face1` is dropped with, gone after the rebuild
