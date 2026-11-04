@@ -62,6 +62,13 @@
 //!   read has come with no offer, or, with one ([`open_offer`](SmartDimension::open_offer)),
 //!   until it's released (see `open_offer`). The app gives the tool each read
 //!   ([`settle`](SmartDimension::settle)), so it settles without a pointer event.
+//!   A dimension's value edited (`set_field`, M5.0 section 9: a dimension "placed or edited"
+//!   that over-defines is applied and offered the three) is judged by [`offer`] too, as a
+//!   [`PlacementKind::Edit`]: an edit adds no equation, so the freedoms say nothing of it,
+//!   and only a newly flagged constraint or a newly over defined or unsolvable sketch offers
+//!   it. SolidWorks' help gives the prompt only "when you add an over defining dimension",
+//!   and says nothing of a value changed to over-define (docs/study/smart-dimension.md, §8);
+//!   Silico applies the edit (SD7) and offers the same three.
 //!
 //! Adds are tracked as the sketch tools' are ([`super::SketchTool`]): each with a token the
 //! viewport answers with the revision it made, or its refusal.
@@ -134,21 +141,33 @@ pub struct DimensionPreview {
     pub modify: Option<String>,
 }
 
-/// A dimension Smart Dimension placed, once the core answered its add: the sketch, the
-/// constraint's ID, the revision the add made, and, of the read it was placed on, its
+/// A dimension placed, or its value edited, once the core answered the change: the sketch,
+/// the constraint's ID, the revision the change made, and, of the read it was made on, its
 /// revision, the sketch's state and the constraints it flagged (conflicting, redundant, or
-/// partially redundant), and its degrees of freedom.
+/// partially redundant), and which change it was, with what [`offer`] judges it by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placement {
     pub sketch: FeatureId,
     pub constraint: ElementId,
     pub revision: Revision,
-    /// The revision of the read it was placed on.
+    /// The revision of the read it was made on.
     pub read: Revision,
     pub before: SketchState,
     pub flagged: BTreeSet<ElementId>,
-    /// The read's degrees of freedom.
-    pub dofs: i32,
+    pub kind: PlacementKind,
+}
+
+/// Which change a [`Placement`] is, which decides whether [`offer`] counts freedoms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlacementKind {
+    /// The dimension added (`sketch_add`, as Smart Dimension places it), on a read with
+    /// `dofs` degrees of freedom. A driving dimension adds an equation, so a solved add that
+    /// leaves the freedoms where they were (or higher) is dependent, and offered.
+    Add { dofs: i32 },
+    /// The dimension's value edited (`set_field` of its `value`). An edit adds no equation,
+    /// so the freedoms say nothing of it: it's offered only where it flags a constraint the
+    /// read before didn't, or takes the sketch to over defined or no solution.
+    Edit,
 }
 
 /// Smart Dimension, between events. Not `Clone`, as a sketch tool isn't.
@@ -212,7 +231,7 @@ impl Placed {
             read: self.read,
             before: self.before,
             flagged: self.flagged.clone(),
-            dofs: self.dofs,
+            kind: PlacementKind::Add { dofs: self.dofs },
         })
     }
 }
@@ -1271,7 +1290,7 @@ pub enum OfferChoice {
     Driven,
     /// Leave it driving: nothing is sent.
     Leave,
-    /// Cancel: `undo` of its add.
+    /// Cancel: `undo` of its add, or of its edit.
     Cancel,
 }
 
@@ -1293,15 +1312,15 @@ pub enum OfferRequest {
         field: String,
         value: Node,
     },
-    /// `undo` of one step: the add.
+    /// `undo` of one step: the add, or the edit.
     Undo {
         revision: Revision,
         to: Option<Revision>,
     },
 }
 
-/// The offer SD7 makes for a dimension placed that over-defines the sketch: the dimension,
-/// its state in the read, the sketch's state, and what each choice sends.
+/// The offer SD7 makes for a dimension placed, or edited, that over-defines the sketch: the
+/// dimension, its state in the read, the sketch's state, and what each choice sends.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Offer {
     pub constraint: ElementId,
@@ -1348,23 +1367,27 @@ fn flagged(states: &SketchStates) -> BTreeSet<ElementId> {
 }
 
 /// The offer for `placement`, given `read`, the `sketch` read of the model at `revision`:
-/// only for a read of the model the add made (an older one doesn't hold it, and a newer one
-/// is past the moment), of its sketch, where the dimension is there and still driving, and
-/// the add (SD7):
-/// - flagged a constraint the read it was placed on didn't (any, not only itself: which of
+/// only for a read of the model the add (or the edit) made (an older one doesn't hold it,
+/// and a newer one is past the moment), of its sketch, where the dimension is there and
+/// still driving, and the change (SD7):
+/// - flagged a constraint the read it was made on didn't (any, not only itself: which of
 ///   a group PlaneGCS flags follows the IDs' order);
-/// - or, the sketch solved, left its degrees of freedom where they were, or higher: a
-///   driving dimension adds an equation, so one that doesn't lower the rank is dependent,
-///   whatever PlaneGCS's greedy contest flagged (a constraint flagged already can cover the
-///   new group: four of one horizontal distance flag no more than three);
+/// - or, an add ([`PlacementKind::Add`]), the sketch solved, left its degrees of freedom
+///   where they were, or higher: a driving dimension adds an equation, so one that doesn't
+///   lower the rank is dependent, whatever PlaneGCS's greedy contest flagged (a constraint
+///   flagged already can cover the new group: four of one horizontal distance flag no more
+///   than three). Never an edit ([`PlacementKind::Edit`]): a value changed adds no
+///   equation, so on a solved sketch it leaves the freedoms where they were, over-defining
+///   or not, and they say nothing of it;
 /// - or took the sketch to over defined or no solution from a state that was neither (a
-///   refused solve, whose degrees of freedom say nothing of the add).
+///   refused solve, whose degrees of freedom say nothing of the change).
 ///
 /// So a sketch already over defined, left so, offers each dimension that adds to it, as
 /// SolidWorks prompts for each.
 ///
-/// Those compare the read the dimension was placed on with the add's, so they hold only
-/// where the add is the one change between them: its revision the next after that read's.
+/// Those compare the read the dimension was placed (or edited) on with the change's, so they
+/// hold only where the change is the one between them: its revision the next after that
+/// read's.
 /// Where another came between (another client's edit, an agent's, landing first), its
 /// flags, freedoms, and state would be taken for the dimension's (an added line raising the
 /// freedoms, an added constraint lowering them), so the dimension is judged by its own state
@@ -1408,7 +1431,10 @@ fn offer_of(
         let newly_flagged = flagged(states)
             .iter()
             .any(|id| !placement.flagged.contains(id));
-        let dependent = states.solve_problem.is_none() && states.dofs >= placement.dofs;
+        let dependent = match placement.kind {
+            PlacementKind::Add { dofs } => states.solve_problem.is_none() && states.dofs >= dofs,
+            PlacementKind::Edit => false,
+        };
         let newly_prompted = prompted(sketch_state) && !prompted(placement.before);
         newly_flagged || dependent || newly_prompted
     } else {

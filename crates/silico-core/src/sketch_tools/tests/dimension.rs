@@ -2860,7 +2860,7 @@ fn a_dimension_that_leaves_a_solved_sketchs_freedoms_where_they_were_is_offered(
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
-    assert_eq!(placement.dofs, 1000);
+    assert_eq!(placement.kind, PlacementKind::Add { dofs: 1000 });
     let made = placement.revision;
     let read = |dofs: i32, refused: bool| {
         let mut read = read_of(
@@ -3235,7 +3235,7 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
             read: Revision::OPENED,
             before: SketchState::UnderDefined,
             flagged: BTreeSet::new(),
-            dofs: 0,
+            kind: PlacementKind::Add { dofs: 0 },
         })
     );
     tool.refused(token);
@@ -3441,6 +3441,189 @@ fn forget_pending_forgets_the_placement_and_what_is_under_way() {
     assert!(!d.tool.busy());
     d.to(50.0, 50.0);
     assert!(d.tool.preview().picks.is_empty());
+}
+
+// --- SD7: an edit of a dimension's value -----------------------------------------------
+
+/// The corner with A's `length`, 25, placed as t0000101 (its add revision 2), then its
+/// value edited (`set_field`, revision 3) on revision 2's read, the sketch then in `before`
+/// with `flagged` flagged: the sketch and the edit's placement.
+fn edited(before: SketchState, flagged: &[&str]) -> (Sketch, Placement) {
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
+    let added = d.tool.placement().unwrap();
+    assert_eq!(added.constraint, id("t0000101"));
+    let edit = Placement {
+        revision: added.revision.next().unwrap(),
+        read: added.revision,
+        before,
+        flagged: flagged.iter().map(|k| id(k)).collect(),
+        kind: PlacementKind::Edit,
+        ..added
+    };
+    (d.sketch, edit)
+}
+
+/// A read of `members` with each constraint in its state, the sketch in `of`, with `dofs`
+/// freedoms, its solve refused where it has no solution.
+fn edit_read(
+    members: &Sketch,
+    constraints: &[(&str, ConstraintState)],
+    of: SketchState,
+    dofs: i32,
+) -> SketchRead {
+    let mut read = read_with(members.clone(), constraints, of);
+    read.states.dofs = dofs;
+    if of == SketchState::NoSolution {
+        read.states.solve_problem = Some(Error::new(ErrorCode::InvalidResult, "no solution"));
+    }
+    read
+}
+
+#[test]
+fn an_edit_that_leaves_the_sketch_as_it_was_offers_nothing() {
+    // A fully defined sketch (0 freedoms), its dimension's value changed: the edit's read is
+    // fully defined, 0 freedoms, nothing flagged. An add would be dependent there (freedoms
+    // not lowered: offered); an edit adds no equation, so nothing is offered. Likewise an
+    // under defined sketch left at 3 freedoms, and a value that frees one (degenerate
+    // geometry, 1 freedom from 0): freedoms are never an edit's measure.
+    let cases = [
+        (SketchState::FullyDefined, SketchState::FullyDefined, 0),
+        (SketchState::FullyDefined, SketchState::FullyDefined, 1),
+        (SketchState::UnderDefined, SketchState::UnderDefined, 3),
+    ];
+    for (before, after, dofs) in cases {
+        let (sketch, edit) = edited(before, &[]);
+        let read = edit_read(
+            &sketch,
+            &[("t0000101", ConstraintState::Satisfied)],
+            after,
+            dofs,
+        );
+        assert_eq!(
+            offer(&read, edit.revision, &edit),
+            None,
+            "{before:?} {dofs}"
+        );
+        // The same read after an add on a read with those freedoms: dependent, offered.
+        let add = Placement {
+            kind: PlacementKind::Add { dofs },
+            ..edit.clone()
+        };
+        assert!(
+            offer(&read, edit.revision, &add).is_some(),
+            "{before:?} {dofs}"
+        );
+    }
+}
+
+#[test]
+fn an_edit_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_cancel() {
+    // Fully defined, nothing flagged; the edit's read over defined, or with no solution (its
+    // solve refused), nothing flagged either, so only the state offers it. Driven and Cancel
+    // are made against the edit's revision, 3: Cancel undoes the edit.
+    let three = Revision::OPENED.next().unwrap().next().unwrap();
+    for after in [SketchState::OverDefined, SketchState::NoSolution] {
+        let (sketch, edit) = edited(SketchState::FullyDefined, &[]);
+        assert_eq!(edit.revision, three);
+        let read = edit_read(
+            &sketch,
+            &[("t0000101", ConstraintState::Satisfied)],
+            after,
+            0,
+        );
+        let offered = offer(&read, three, &edit).unwrap();
+        assert_eq!(offered.constraint, id("t0000101"), "{after:?}");
+        assert_eq!(offered.state, ConstraintState::Satisfied, "{after:?}");
+        assert_eq!(offered.sketch_state, after);
+        assert_eq!(
+            offered.request(OfferChoice::Driven),
+            Some(OfferRequest::SetField {
+                revision: three,
+                feature: sketch_id(),
+                field: "constraints.t0000101.driving".to_owned(),
+                value: json::read(b"false")
+                    .map(|mut n| {
+                        json::unplace(&mut n);
+                        n
+                    })
+                    .unwrap(),
+            })
+        );
+        assert_eq!(offered.request(OfferChoice::Leave), None);
+        assert_eq!(
+            offered.request(OfferChoice::Cancel),
+            Some(OfferRequest::Undo {
+                revision: three,
+                to: None
+            })
+        );
+        // Over defined or unsolvable before the edit, and left so with nothing newly
+        // flagged: not the edit's doing.
+        for before in [SketchState::OverDefined, SketchState::NoSolution] {
+            let (sketch, edit) = edited(before, &[]);
+            let read = edit_read(
+                &sketch,
+                &[("t0000101", ConstraintState::Satisfied)],
+                after,
+                0,
+            );
+            assert_eq!(offer(&read, three, &edit), None, "{before:?} {after:?}");
+        }
+    }
+}
+
+#[test]
+fn an_edit_that_newly_flags_a_constraint_is_offered() {
+    // Under defined, nothing flagged; the edit's read flags a relation redundant, the sketch
+    // still under defined at the same 3 freedoms: offered. Over defined before by k0000009,
+    // the edit's read flags the dimension too: offered, though the state isn't new; k0000009
+    // alone, as before: not.
+    let (sketch, edit) = edited(SketchState::UnderDefined, &[]);
+    let read = edit_read(
+        &sketch,
+        &[
+            ("t0000101", ConstraintState::Satisfied),
+            ("k0000009", ConstraintState::Redundant),
+        ],
+        SketchState::UnderDefined,
+        3,
+    );
+    let offered = offer(&read, edit.revision, &edit).unwrap();
+    assert_eq!(offered.constraint, id("t0000101"));
+    assert_eq!(offered.state, ConstraintState::Satisfied);
+    let (sketch, edit) = edited(SketchState::OverDefined, &["k0000009"]);
+    let flags_it = edit_read(
+        &sketch,
+        &[
+            ("t0000101", ConstraintState::Conflicting),
+            ("k0000009", ConstraintState::Conflicting),
+        ],
+        SketchState::OverDefined,
+        0,
+    );
+    assert_eq!(
+        offer(&flags_it, edit.revision, &edit).map(|o| o.state),
+        Some(ConstraintState::Conflicting)
+    );
+    let same = edit_read(
+        &sketch,
+        &[
+            ("t0000101", ConstraintState::Satisfied),
+            ("k0000009", ConstraintState::Conflicting),
+        ],
+        SketchState::OverDefined,
+        0,
+    );
+    assert_eq!(offer(&same, edit.revision, &edit), None);
+    // With another change between the edit's read and the edit, the edit is judged by its
+    // dimension's own state, as an add is: flagged, offered; satisfied, not.
+    let between = Placement {
+        revision: edit.revision.next().unwrap(),
+        ..edit
+    };
+    assert!(offer(&flags_it, between.revision, &between).is_some());
+    assert_eq!(offer(&same, between.revision, &between), None);
 }
 
 // --- Any events at all -----------------------------------------------------------------
