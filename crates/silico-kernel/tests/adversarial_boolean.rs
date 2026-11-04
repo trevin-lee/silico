@@ -648,7 +648,8 @@ fn boxes_with_flat_faces_just_past_the_fuzzy_value_are_right_or_occts_known_wron
                             BooleanOp::Fuse => {
                                 built.history.result.solids == 2 && close(s.volume, va + vb, 1e-12)
                             }
-                            _ => close(s.volume, va, 1e-12),
+                            BooleanOp::Cut => close(s.volume, va, 1e-12),
+                            BooleanOp::Common => false,
                         };
                     assert!(
                         is_right || is_known_wrong,
