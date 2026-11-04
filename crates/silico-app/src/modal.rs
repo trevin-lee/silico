@@ -631,21 +631,25 @@ pub(crate) mod tests {
     }
 
     /// A key cap's border as painted: its colour, where its outer edge is, each side's width
-    /// (top, right, bottom, left), and, at each corner, how much it covers of the corner's
-    /// pixel and of the point 3 in from the corner on its diagonal.
+    /// (top, right, bottom, left); at each corner, how much it covers of the corner's pixel
+    /// and of the point 3 in from the corner on its diagonal, and where its outer and inner
+    /// edges cross that diagonal, as how far in from the corner on each axis; and the stroke
+    /// of every rectangle painted about the cap.
     #[derive(Debug)]
     pub(crate) struct CapBorder {
         pub colour: Color32,
         pub outer: Rect,
         pub widths: [f32; 4],
         pub corners: [(f32, f32); 4],
+        pub diagonals: [(f32, f32); 4],
+        pub strokes: Vec<egui::Stroke>,
     }
 
     /// The border painted round the key cap whose box is `rect`, read from its mesh, the one
     /// mesh painted about it: each edge where its cover crosses a half, along the lines
-    /// through the box's middle, read in steps of 1/256 point and between them in a line;
-    /// at each corner, its cover half a point in from it across and down, and 3 in on its
-    /// diagonal less 2.5 along it.
+    /// through the box's middle and along each corner's diagonal, read in steps of 1/256
+    /// point and between them in a line; at each corner, its cover half a point in from it
+    /// across and down, and 3 in on its diagonal less 2.5 along it.
     #[track_caller]
     pub(crate) fn cap_border<S>(h: &Harness<'_, S>, rect: Rect) -> CapBorder {
         let found: Vec<epaint::Mesh> = painted(h)
@@ -729,18 +733,37 @@ pub(crate) mod tests {
         let widths = [top, right, bottom, left].map(|(outer, inner)| inner - outer);
         // The ring's middle 2.5 from a corner's centre, 3 in from it, on the diagonal.
         let ring = 3.0 - 2.5 * std::f32::consts::FRAC_1_SQRT_2;
-        let corners = [
+        let ways = [
             (outer.left_top(), Vec2::new(1.0, 1.0)),
             (outer.right_top(), Vec2::new(-1.0, 1.0)),
             (outer.right_bottom(), Vec2::new(-1.0, -1.0)),
             (outer.left_bottom(), Vec2::new(1.0, -1.0)),
-        ]
-        .map(|(corner, inward)| (cover(corner + inward * 0.5), cover(corner + inward * ring)));
+        ];
+        let corners = ways
+            .map(|(corner, inward)| (cover(corner + inward * 0.5), cover(corner + inward * ring)));
+        // From each corner 4.5 in on each axis, past where its inner edge crosses the
+        // diagonal; a distance along the diagonal is √2 times one on each axis.
+        let diagonals = ways.map(|(corner, inward)| {
+            let (outer, inner) = crossings(corner, corner + inward * 4.5);
+            (
+                outer * std::f32::consts::FRAC_1_SQRT_2,
+                inner * std::f32::consts::FRAC_1_SQRT_2,
+            )
+        });
+        let strokes = rects(h)
+            .into_iter()
+            .filter(|shape| {
+                shape.rect.contains(rect.center()) && rect.expand(1.0).contains_rect(shape.rect)
+            })
+            .map(|shape| shape.stroke)
+            .collect();
         CapBorder {
             colour: solid,
             outer,
             widths,
             corners,
+            diagonals,
+            strokes,
         }
     }
 
@@ -751,7 +774,14 @@ pub(crate) mod tests {
     /// from the corner's centre, so 3.54 from it, outside the radius and its half a pixel of
     /// feathering (a square corner covers it, a radius under 2.9 reaches it); and the point
     /// 2.5 from the centre on the diagonal covered, the ring's middle there (an outer radius
-    /// of 4 covers it 0.59; of 2, about 0.6).
+    /// of 4 covers it 0.59; of 2, about 0.6). On each corner's diagonal, `border-box`'s
+    /// outer edge is a circle of 3 about the point 3 in on each axis, crossing it
+    /// 3 − 3/√2 = 0.879 in; its inner edge, the outer radius less the widths at the corner
+    /// about the same centre (1 + 2 and 1 + 2 in at the top, 1 + 2 and 2 + 1 at the bottom):
+    /// at the top a circle of 2, crossing it 3 − 2/√2 = 1.586 in, and at the bottom an
+    /// ellipse 2 across and 1 down, crossing it where (3 − t)²(1/4 + 1) = 1, at
+    /// 3 − 1/√1.25 = 2.106 in. No rectangle about the cap is stroked: its border is drawn
+    /// once.
     #[track_caller]
     pub(crate) fn kbd_border(border: &CapBorder, rect: Rect, colour: Color32, what: &str) {
         use egui::emath::GuiRounding as _;
@@ -775,6 +805,26 @@ pub(crate) mod tests {
                 .all(|(corner, ring)| *corner < 0.01 && *ring > 0.9),
             "{what}'s corners: {:?}",
             border.corners
+        );
+        let top = (
+            3.0 - 3.0 * std::f32::consts::FRAC_1_SQRT_2,
+            3.0 - std::f32::consts::SQRT_2,
+        );
+        let bottom = (
+            3.0 - 3.0 * std::f32::consts::FRAC_1_SQRT_2,
+            3.0 - 1.0 / 1.25_f32.sqrt(),
+        );
+        for (got, want) in border.diagonals.into_iter().zip([top, top, bottom, bottom]) {
+            assert!(
+                (got.0 - want.0).abs() <= 1.0 / 16.0 && (got.1 - want.1).abs() <= 1.0 / 16.0,
+                "{what}'s border on its corners' diagonals: {:?}, not {want:?}",
+                border.diagonals
+            );
+        }
+        assert!(
+            border.strokes.iter().all(|stroke| stroke.is_empty()),
+            "{what}'s rectangles' strokes: {:?}",
+            border.strokes
         );
     }
 
@@ -988,6 +1038,7 @@ pub(crate) mod tests {
                     && near(shape.rect.height(), css::KBD_H)
             })
             .expect("the cap's box");
+        assert!(boxed.stroke.is_empty(), "Save's cap: {:?}", boxed.stroke);
         assert!(near(boxed.rect.center().y, save.center().y));
         assert!(near(
             boxed.rect.left(),
@@ -1294,6 +1345,11 @@ pub(crate) mod tests {
                         && button.contains_rect(shape.rect)
                 })
                 .expect("the cap's box");
+            assert!(
+                outline.stroke.is_empty(),
+                "{label}'s cap: {:?}",
+                outline.stroke
+            );
             let content = words.galley.size().x + css::BTN_GAP + css::KBD_MARGIN + cap;
             let width = (content + 2.0 * css::BTN_PADDING).max(css::FOOT_BTN_MIN_W);
             assert!(

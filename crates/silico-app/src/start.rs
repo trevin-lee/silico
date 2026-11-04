@@ -411,7 +411,7 @@ pub(crate) fn key_caps_width_spaced(ui: &Ui, caps: &[String], gap: f32) -> f32 {
         + gaps
 }
 
-/// A key cap's width, for text `text` wide: its padding and its outline at each side.
+/// A key cap's width, for text `text` wide: its padding and its side border at each side.
 fn key_cap_width(text: f32) -> f32 {
     (text + 2.0 * (theme::KEY_CAP_PADDING + theme::KEY_CAP_BORDER)).max(theme::KEY_CAP_MIN_WIDTH)
 }
@@ -1287,6 +1287,11 @@ mod tests {
                     })
                     .unwrap_or_else(|| panic!("{label}'s {cap} cap at {want:?}"));
                 assert_eq!(drawn.fill, cap_fill, "{label}'s {cap}");
+                assert!(
+                    drawn.stroke.is_empty(),
+                    "{label}'s {cap}: {:?}",
+                    drawn.stroke
+                );
                 crate::modal::tests::kbd_border(
                     &crate::modal::tests::cap_border(&h, want),
                     want,

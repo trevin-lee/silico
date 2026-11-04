@@ -1016,6 +1016,7 @@ mod tests {
             (caps[0].fill, caps[0].corner_radius),
             (css::G250, CornerRadius::same(css::KBD_R))
         );
+        assert!(caps[0].stroke.is_empty(), "the ? cap: {:?}", caps[0].stroke);
         crate::modal::tests::kbd_border(
             &crate::modal::tests::cap_border(&h, caps[0].rect),
             caps[0].rect,

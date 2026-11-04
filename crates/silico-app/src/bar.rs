@@ -1054,11 +1054,15 @@ mod tests {
         // Its caps 8 beyond it (`.tt-title`'s `gap`, the caps' `margin-left: auto` taking
         // no more in a tooltip as wide as its content), 16 high on its middle, left to
         // right.
-        let mut caps: Vec<Rect> = rects(&h)
+        let shapes: Vec<RectShape> = rects(&h)
             .into_iter()
             .filter(|(_, shape)| shape.corner_radius == CornerRadius::same(css::KBD_RADIUS))
-            .map(|(_, shape)| shape.rect)
+            .map(|(_, shape)| shape)
             .collect();
+        for shape in &shapes {
+            assert!(shape.stroke.is_empty(), "{shape:?}");
+        }
+        let mut caps: Vec<Rect> = shapes.iter().map(|shape| shape.rect).collect();
         caps.sort_by(|a, b| a.left().total_cmp(&b.left()));
         assert_eq!(caps.len(), 3, "{caps:?}");
         assert!(

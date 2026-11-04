@@ -923,6 +923,7 @@ mod tests {
                     && button.contains_rect(shape.rect)
             })
             .expect("Esc's box");
+        assert!(boxed.stroke.is_empty(), "Esc's box: {:?}", boxed.stroke);
         assert!(
             near(
                 boxed.rect.left(),

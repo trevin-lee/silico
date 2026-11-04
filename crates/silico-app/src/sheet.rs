@@ -746,6 +746,7 @@ mod tests {
             for cap in &drawn {
                 assert!(cap.rect.width() >= css::KBD_MIN_W);
                 assert_eq!(cap.fill, css::G250);
+                assert!(cap.stroke.is_empty(), "{name}'s cap: {:?}", cap.stroke);
                 modal::tests::kbd_border(
                     &modal::tests::cap_border(&h, cap.rect),
                     cap.rect,
