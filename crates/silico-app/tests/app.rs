@@ -10834,10 +10834,31 @@ fn with_no_native_dialogs_each_way_to_open_asks_for_a_typed_path() {
     }
 }
 
+/// Whether `pixel` is within `by` of `rgb` in each channel.
+fn pixel_near(pixel: [u8; 4], rgb: [u8; 3], by: u8) -> bool {
+    pixel[..3]
+        .iter()
+        .zip(rgb)
+        .all(|(&have, want)| have.abs_diff(want) <= by)
+}
+
+/// A field's frame as `pixel` reads a frame drawn: the pixels of the two columns its left
+/// edge crosses, at its mid-height (its 1-point border, antialiased over them).
+fn left_edge(
+    pixel: &dyn Fn(eframe::egui::Pos2) -> [u8; 4],
+    field: eframe::egui::Rect,
+) -> [[u8; 4]; 2] {
+    let y = field.center().y;
+    [
+        pixel(eframe::egui::pos2(field.left(), y)),
+        pixel(eframe::egui::pos2(field.left() + 1.0, y)),
+    ]
+}
+
 #[test]
-fn a_modals_text_field_is_drawn_darker_than_the_modal_in_a_border_on_lavapipe() {
+fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
     on_lavapipe(
-        "a_modals_text_field_is_drawn_darker_than_the_modal_in_a_border_on_lavapipe",
+        "text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe",
         || {
             let f = fixture();
             let state = lavapipe_render_state();
@@ -10856,7 +10877,11 @@ fn a_modals_text_field_is_drawn_darker_than_the_modal_in_a_border_on_lavapipe() 
             silico_app::theme::apply(&h.ctx);
             h.set_render_every_step(true);
             step(&mut h);
-            // No native dialogs: Open asks for a typed path, in a modal.
+            let ppp = h.ctx.pixels_per_point();
+            let (blue, red, gray_350) =
+                ([0x46, 0x76, 0xff], [0xff, 0x38, 0x65], [0x52, 0x51, 0x51]);
+
+            // A modal's field. No native dialogs: Open asks for a typed path, in a modal.
             h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::O);
             step_until(&mut h, "the typed-path Open", |h| {
                 anywhere(h, "Open document")
@@ -10866,7 +10891,6 @@ fn a_modals_text_field_is_drawn_darker_than_the_modal_in_a_border_on_lavapipe() 
                 step(&mut h);
             }
             let image = h.render().unwrap();
-            let ppp = h.ctx.pixels_per_point();
             let pixel = |at: eframe::egui::Pos2| {
                 image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
             };
@@ -10887,12 +10911,114 @@ fn a_modals_text_field_is_drawn_darker_than_the_modal_in_a_border_on_lavapipe() 
                 [0x21, 0x21, 0x21, 0xff],
                 "{field:?}"
             );
-            // Its border, a pixel in from its left edge at mid-height: Gray.350's, lighter
-            // than both fills (antialiased, so by how much it stands out, not exactly).
-            let [r, g, b, _] = pixel(eframe::egui::pos2(field.left() + 0.5, field.center().y));
-            assert!(r >= 0x40 && g >= 0x40 && b >= 0x40, "{:?}", [r, g, b]);
+            // Its border: Gray.350's (antialiased, so near it, not exactly).
+            let edge = left_edge(&pixel, field);
+            assert!(
+                edge.iter().any(|&px| pixel_near(px, gray_350, 24)),
+                "{edge:?}"
+            );
+            // Focused: the focus blue's border (`.modify-box input:focus`), the only focus
+            // ring a framed field has (egui draws none of its own on one).
+            h.get_by_role_and_label(Role::TextInput, "Path").focus();
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            let edge = left_edge(&pixel, field);
+            assert!(edge.iter().any(|&px| pixel_near(px, blue, 48)), "{edge:?}");
+            assert!(
+                !edge.iter().any(|&px| pixel_near(px, gray_350, 24)),
+                "{edge:?}"
+            );
+            h.key_press(eframe::egui::Key::Escape);
+            step_until(&mut h, "it gone", |h| !anywhere(h, "Open document"));
+
+            // A panel's field: the Sphere's dialog's Radius, docked at the right.
+            let path = f.file("example.silico", EXAMPLE);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            step_until(&mut h, "the timeline read", |h| {
+                h.state()
+                    .tabs()
+                    .first()
+                    .is_some_and(|tab| tab.timeline.is_some())
+            });
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+            create(&mut h, "Sphere");
+            added(&mut h);
+            settled(&mut h);
+            // The pointer off it, on the dialog's title.
+            dialog(&h).get_by_label("SPHERE").hover();
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            let field = input(&h, "Radius").rect();
+            assert!(field.width() > 30.0 && field.height() > 10.0, "{field:?}");
+            // Inside it, clear of its text (at its left) and its border.
+            let inside = field.right_center() + eframe::egui::vec2(-4.0, 0.0);
+            // At rest: its fill Gray.200 (`.field`), on the panel's Gray.100 just above it.
+            assert_eq!(pixel(inside), [0x21, 0x21, 0x21, 0xff], "{field:?}");
+            assert_eq!(
+                pixel(field.center_top() + eframe::egui::vec2(0.0, -3.0)),
+                [0x0d, 0x0d, 0x0d, 0xff],
+                "{field:?}"
+            );
+            // Hovered: Gray.250 (`.field:hover`).
+            input(&h, "Radius").hover();
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            assert_eq!(pixel(inside), [0x27, 0x26, 0x26, 0xff], "{field:?}");
+            // A value that doesn't parse: the red border (`.field.bad`), focused or not.
+            type_into(&mut h, "Radius", "x");
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            // Its 5 and the x, in either order (where the caret was), parse as no number.
+            let typed = input(&h, "Radius").value().unwrap_or_default();
+            assert!(["x5", "5x"].contains(&typed.as_str()), "{typed}");
+            let image = h.render().unwrap();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            let edge = left_edge(&pixel, field);
+            assert!(edge.iter().any(|&px| pixel_near(px, red, 48)), "{edge:?}");
+            assert!(!edge.iter().any(|&px| pixel_near(px, blue, 48)), "{edge:?}");
         },
     );
+}
+
+#[test]
+fn open_while_a_browse_is_open_asks_for_a_typed_path_and_opens_no_second_dialog() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    // New's Browse…, its native dialog left open, and New cancelled.
+    file_menu(&mut h, "New…", "New document");
+    browse(&mut h, &browser);
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "New gone", |h| !anywhere(h, "New document"));
+    let asked = browser.asked().len();
+    // Open: the typed-path question, the platform's dialog not asked for again.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::O);
+    step_until(&mut h, "the typed-path Open", |h| {
+        anywhere(h, "Open document")
+    });
+    assert_eq!(browser.asked().len(), asked);
+    // Its Browse… is off while the other dialog is open.
+    assert!(browse_button(&h).accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
 }
 
 // ---- The start page (docs/design/m5-ui/DESIGN.md, *Start page or blank canvas?*) ----
