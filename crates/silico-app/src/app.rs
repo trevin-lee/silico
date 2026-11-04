@@ -2446,51 +2446,61 @@ mod tests {
 
         use crate::toolbar::FilterKind;
 
-        /// Each frame's filters taken, and whether X was left for what comes after (sketch
-        /// mode's Construction).
+        /// The filters taken in a step's passes, and whether X was left in one for what
+        /// comes after (sketch mode's Construction).
         #[derive(Default)]
         struct Seen {
             in_sketch: bool,
-            taken: Vec<Vec<FilterKind>>,
-            x_left: Vec<bool>,
+            taken: Vec<FilterKind>,
+            x_left: bool,
         }
         let mut h = Harness::builder().build_ui_state(
             |ui, seen: &mut Seen| {
                 let taken = super::filter_keys(ui, seen.in_sketch);
                 let x = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::X));
-                seen.taken.push(taken);
-                seen.x_left.push(x);
+                seen.taken.extend(taken);
+                seen.x_left |= x;
             },
             Seen::default(),
         );
+        h.run();
         let press = |h: &mut Harness<'_, Seen>, key: Key, modifiers: Modifiers| {
-            h.event(Event::Key {
-                key,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers,
-            });
-            h.step();
-            h.state().taken.last().cloned().unwrap_or_default()
+            h.state_mut().taken.clear();
+            h.state_mut().x_left = false;
+            // Pressed and let go, so the next press isn't egui's repeat of a key held down.
+            for pressed in [true, false] {
+                h.event(Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                });
+            }
+            h.run();
+            (h.state().taken.clone(), h.state().x_left)
         };
         // Outside a sketch: X faces, E edges, V vertices, each taken, so X is no one else's.
-        assert_eq!(press(&mut h, Key::X, Modifiers::NONE), [FilterKind::Faces]);
-        assert_eq!(h.state().x_left.last(), Some(&false));
-        assert_eq!(press(&mut h, Key::E, Modifiers::NONE), [FilterKind::Edges]);
         assert_eq!(
-            press(&mut h, Key::V, Modifiers::NONE),
+            press(&mut h, Key::X, Modifiers::NONE),
+            (vec![FilterKind::Faces], false)
+        );
+        assert_eq!(
+            press(&mut h, Key::E, Modifiers::NONE).0,
+            [FilterKind::Edges]
+        );
+        assert_eq!(
+            press(&mut h, Key::V, Modifiers::NONE).0,
             [FilterKind::Vertices]
         );
         // Exactly the key: Shift+X or Ctrl+E is no filter's.
-        assert!(press(&mut h, Key::X, Modifiers::SHIFT).is_empty());
-        assert!(press(&mut h, Key::E, Modifiers::COMMAND).is_empty());
+        assert!(press(&mut h, Key::X, Modifiers::SHIFT).0.is_empty());
+        assert!(press(&mut h, Key::E, Modifiers::COMMAND).0.is_empty());
         // In a sketch: none of them, and X left for sketch mode.
         h.state_mut().in_sketch = true;
-        for key in [Key::X, Key::E, Key::V] {
-            assert!(press(&mut h, key, Modifiers::NONE).is_empty(), "{key:?}");
+        for key in [Key::E, Key::V] {
+            assert!(press(&mut h, key, Modifiers::NONE).0.is_empty(), "{key:?}");
         }
-        let x = h.state().x_left.len() - 3;
-        assert!(h.state().x_left[x], "sketch mode's X taken");
+        assert_eq!(press(&mut h, Key::X, Modifiers::NONE), (Vec::new(), true));
     }
 }
