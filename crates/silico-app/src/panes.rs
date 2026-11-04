@@ -162,7 +162,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
     fn browser(&mut self, ui: &mut Ui) {
         // `.panel-body` straight under `.panel-title`, as each row under the last.
         ui.spacing_mut().item_spacing = Vec2::ZERO;
-        title(ui, "BROWSER");
+        properties::title(ui, None, "Browser", None);
         let Some(tab) = self.tab.as_deref_mut() else {
             padded(ui, |ui| {
                 ui.weak("No document open");
@@ -203,7 +203,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
     fn properties(&mut self, ui: &mut Ui) {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let Some(tab) = self.tab.as_deref_mut() else {
-            properties::title(ui, None, "Properties");
+            properties::title(ui, None, "Properties", None);
             properties::hint(
                 ui,
                 &[(
@@ -221,7 +221,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             // A dialog still being read (Edit Feature): Esc cancels it.
             tab.close_dialog(self.sessions, false);
         }
-        properties::title(ui, None, "Properties");
+        properties::title(ui, None, "Properties", None);
         let entry: Option<Entry> = tab.selected.as_ref().and_then(|selected| {
             tab.timeline
                 .as_ref()
@@ -262,6 +262,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             .filter(|field| tab.field_refused(field))
             .collect();
         let said = tab.dialog_said();
+        let preview = preview_of(tab);
         let Some(mut dialog) = tab.dialog.take() else {
             return;
         };
@@ -280,7 +281,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
                     node.set_role(egui::accesskit::Role::Dialog);
                     node.set_label(title);
                 });
-                dialog.ui(ui, &said, &named, &refused, enabled)
+                dialog.ui(ui, &said, preview, &named, &refused, enabled)
             })
             .inner;
         tab.dialog = Some(dialog);
@@ -299,6 +300,31 @@ impl<P: Clients + 'static> Panes<'_, P> {
     }
 }
 
+/// What `tab`'s open dialog's preview line says (`renderDialog`'s PREVIEW, state 3e): none
+/// before its feature is there (a new one's add unanswered); else its rebuild running (Esc
+/// stops it), stopped, or done, with the errors the timeline counts, if any.
+fn preview_of(tab: &Tab) -> Option<properties::Preview> {
+    use silico_core::command::RebuildState;
+    tab.dialog.as_ref()?.feature.as_ref()?;
+    let rebuild = &tab.status.as_ref()?.rebuild;
+    if tab.preview_rebuilding() {
+        let progress = rebuild
+            .progress
+            .as_ref()
+            .map(|progress| (progress.done, progress.steps));
+        return Some(properties::Preview::Running(progress));
+    }
+    if tab.rebuild_stopped() {
+        return Some(properties::Preview::Stopped);
+    }
+    (rebuild.state == RebuildState::Done && rebuild.revision == tab.revision).then(|| {
+        match tab.errors() {
+            0 => properties::Preview::UpToDate(rebuild.revision.number()),
+            errors => properties::Preview::Errors(errors),
+        }
+    })
+}
+
 /// The selected feature's properties (`featureProps`): its head (its type's icon, its name,
 /// its type and ID), the document's problems and its own (its mark's text and suggestion),
 /// its name, editable, which is an edit of the document, and its health and ID.
@@ -306,6 +332,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
 /// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
 /// direction), which need its fields read, as its dialog reads them; and its Edit feature
 /// and Suppress buttons (the timeline's double-click and menu edit it already).
+/// SEAM: the ID row's copy button (`.prop .v .copy`), once the app has a clipboard command
+/// of its own; and the purple Changed on disk card (`d.outside`: what an agent's edit
+/// changed in this feature, with Mark as seen), which needs the reload's changes by feature
+/// and field, which the core doesn't give yet.
 fn feature<P: Clients + 'static>(
     ui: &mut Ui,
     tab: &mut Tab,
@@ -762,29 +792,6 @@ fn group(ui: &mut Ui, name: &str, rows: impl FnOnce(&mut Ui)) {
         });
         rows(ui);
     });
-}
-
-/// The pane's title (`.panel-title`): `text`, in capitals, on its row.
-fn title(ui: &mut Ui, text: &str) {
-    let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), theme::TITLE_BAR_HEIGHT),
-        Sense::hover(),
-    );
-    let job = egui::text::LayoutJob::single_section(
-        text.to_owned(),
-        egui::TextFormat {
-            font_id: egui::FontId::proportional(theme::HEADER_SIZE),
-            extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
-            color: theme::TEXT_STRONG,
-            ..Default::default()
-        },
-    );
-    let galley = ui.painter().layout_job(job);
-    let at = egui::pos2(
-        rect.left() + theme::BROWSER_TITLE_PADDING,
-        rect.center().y - galley.size().y / 2.0,
-    );
-    ui.painter().galley(at, galley, theme::TEXT_STRONG);
 }
 
 /// `add`, at the pane's padding from its left.
@@ -2173,12 +2180,12 @@ mod property_panel_drawn {
     use eframe::egui::{CornerRadius, FontFamily, FontId, Pos2, Rect, Shape, Stroke};
     use egui::accesskit::Role;
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
     use silico_core::command::{Problems, Revision, TimelineAnswer};
     use silico_core::fake::FakeKernel;
 
     use super::*;
-    use crate::dialog::{Dialog, Kind};
+    use crate::dialog::{Action, Dialog, Kind};
     use crate::tab::Said;
 
     /// The prototype's tokens and geometry.
@@ -2261,6 +2268,21 @@ mod property_panel_drawn {
         pub const FOOTER_PADDING: f32 = 8.0;
         pub const FOOTER_GAP: f32 = 6.0;
         pub const FOOTER_BTN_H: f32 = 26.0;
+        /// `.field.select`: `padding: 0 6px`, its `svg` 10 square; `.field input`: `padding:
+        /// 0 6px`; `.field .unit`: `padding: 0 6px 0 0`.
+        pub const SELECT_PADDING: f32 = 6.0;
+        pub const SELECT_ARROW: f32 = 10.0;
+        pub const INPUT_PADDING: f32 = 6.0;
+        pub const UNIT_PADDING: f32 = 6.0;
+        /// `.dlg-status`: `padding: 6px 8px; gap: 6px`.
+        pub const STATUS_PADDING_X: f32 = 8.0;
+        pub const STATUS_PADDING_Y: f32 = 6.0;
+        pub const STATUS_GAP: f32 = 6.0;
+        /// `.panel-title`: `padding-right: 6px; gap: 6px`; `.panel-title .ab-btn`: 20
+        /// square.
+        pub const TITLE_PADDING_RIGHT: f32 = 6.0;
+        pub const TITLE_BTN: f32 = 20.0;
+        pub const TITLE_GAP: f32 = 6.0;
     }
 
     /// The pane's top left in the harness's window, its width (`#right`'s, less its
@@ -2794,7 +2816,9 @@ mod property_panel_drawn {
             .build_ui(move |ui| {
                 let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
                 ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
-                    dialog.borrow_mut().ui(ui, &[], &|_| None, &|_| false, true);
+                    dialog
+                        .borrow_mut()
+                        .ui(ui, &[], None, &|_| None, &|_| false, true);
                 });
             });
         theme::apply(&h.ctx);
@@ -2855,5 +2879,331 @@ mod property_panel_drawn {
                 body(css::FS)
             );
         }
+    }
+
+    /// `dialog` drawn at the pane, in the app's theme; with `preview` its preview's line.
+    fn dialog_drawn(
+        dialog: Dialog,
+        preview: Option<properties::Preview>,
+    ) -> Harness<'static, (Dialog, Action)> {
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(PANE.x + W + 40.0, PANE.y + HEIGHT + 40.0))
+            .build_ui_state(
+                move |ui, (dialog, action): &mut (Dialog, Action)| {
+                    let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
+                    ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
+                        let done = dialog.ui(ui, &[], preview, &|_| None, &|_| false, true);
+                        if done != Action::None {
+                            *action = done;
+                        }
+                    });
+                },
+                (dialog, Action::None),
+            );
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        h
+    }
+
+    /// The words each of `kind`'s choices offers.
+    fn choices(dialog: &Dialog) -> Vec<(&'static str, Vec<String>, usize)> {
+        dialog
+            .inputs
+            .iter()
+            .filter(|input| dialog.shown(input))
+            .filter_map(|input| match &input.value {
+                crate::dialog::Value::Choice { options, chosen } => Some((
+                    input.label,
+                    options.iter().map(|(_, shown)| shown.clone()).collect(),
+                    *chosen,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn each_dialogs_choices_draw_as_seg_where_their_words_fit_and_as_a_select_where_not() {
+        // A revolve about one of its sketch's lines, offered as itself, besides each kind's.
+        let mut about_a_line = Dialog::new(Kind::Revolve, None, 1);
+        for input in &mut about_a_line.inputs {
+            if let crate::dialog::Value::Choice { options, .. } = &mut input.value
+                && input.label == "Axis"
+            {
+                options.push(("nc000000".to_owned(), "nc000000".to_owned()));
+            }
+        }
+        let dialogs = Kind::ALL
+            .into_iter()
+            .map(|kind| Dialog::new(kind, None, 1))
+            .chain([about_a_line]);
+        let mut selects = Vec::new();
+        for dialog in dialogs {
+            let kind = dialog.kind.title();
+            let offered = choices(&dialog);
+            let h = dialog_drawn(dialog, None);
+            for (key, options, chosen) in offered {
+                if let Some(select) = h.query_by_role_and_label(Role::ComboBox, key) {
+                    // A select: what's chosen shows; none of the words is laid out as `.seg`.
+                    assert_eq!(
+                        select.accesskit_node().value().as_deref(),
+                        Some(options[chosen].as_str()),
+                        "{kind}'s {key}"
+                    );
+                    for option in &options {
+                        assert!(h.query_by_label(option).is_none(), "{kind}'s {option}");
+                    }
+                    selects.push(format!("{kind} {key}"));
+                    continue;
+                }
+                // `.seg`: no two choices overlap, and each one's words lie inside it.
+                let rects: Vec<Rect> = options
+                    .iter()
+                    .map(|option| h.get_by_role_and_label(Role::Button, option).rect())
+                    .collect();
+                for (at, rect) in rects.iter().enumerate() {
+                    for other in &rects[at + 1..] {
+                        assert!(
+                            rect.intersect(*other).area() <= 0.0,
+                            "{kind}'s {key}: {rect:?} and {other:?}"
+                        );
+                    }
+                    let shown = text(&h, &options[at]);
+                    let words = Rect::from_min_size(shown.pos, shown.galley.size());
+                    assert!(
+                        rect.contains_rect(words),
+                        "{kind}'s {:?}: {words:?} outside {rect:?}",
+                        options[at]
+                    );
+                }
+            }
+        }
+        // At 295 (the reviewer's measures, Inter Medium at 12: One side 50.6, Symmetric 61.6,
+        // Two sides 58.5, Through all 64.6, in a value column of 167): the pocket's four and
+        // the pad's three don't fit; a revolve's two forms and two axes do; its three axes,
+        // one a line's ID, don't.
+        assert_eq!(
+            selects,
+            ["Pad Extent", "Pocket Extent", "Revolve Axis"],
+            "the choices drawn as selects"
+        );
+    }
+
+    #[test]
+    fn a_select_is_drawn_as_field_select_and_its_menu_picks() {
+        let h = dialog_drawn(Dialog::new(Kind::Pocket, None, 1), None);
+        let select = h.get_by_role_and_label(Role::ComboBox, "Extent").rect();
+        // `.field.select`: across the value column, a field's 22, Gray.200, corners 4.
+        let left = PANE.x + css::PAD + css::KEY_W + css::ROW_GAP;
+        assert!(near(select.left(), left) && near(select.right(), PANE.x + W - css::PAD));
+        assert!(near(select.height(), css::FIELD_H));
+        assert_eq!(
+            fills_at(&h, select),
+            [(css::G200, CornerRadius::same(css::R_SM), Stroke::NONE)]
+        );
+        // Its words padded 6 in (inside its 1 px border), Gray.800; its arrow 10 square,
+        // as far in from the right, Gray.550.
+        said_at(
+            &h,
+            "One side",
+            select.left() + css::BORDER + css::SELECT_PADDING,
+            select.center().y,
+            body(css::FS),
+            css::G800,
+        );
+        let arrow = Rect::from_min_size(
+            Pos2::new(
+                select.right() - css::BORDER - css::SELECT_PADDING - css::SELECT_ARROW,
+                select.center().y - css::SELECT_ARROW / 2.0,
+            ),
+            Vec2::splat(css::SELECT_ARROW),
+        );
+        assert_eq!(icon_at(&h, arrow), Some(css::G550), "the arrow");
+        // A click opens its menu; a choice in it is chosen.
+        let mut h = h;
+        h.get_by_role_and_label(Role::ComboBox, "Extent").click();
+        h.run_steps(2);
+        h.get_by_label("Two sides").click();
+        h.run_steps(2);
+        let extent = h
+            .state()
+            .0
+            .inputs
+            .iter()
+            .find(|input| input.label == "Extent")
+            .map(|input| input.value.clone());
+        assert!(
+            matches!(extent, Some(crate::dialog::Value::Choice { chosen: 2, .. })),
+            "{extent:?}"
+        );
+        assert_eq!(
+            h.get_by_role_and_label(Role::ComboBox, "Extent")
+                .accesskit_node()
+                .value()
+                .as_deref(),
+            Some("Two sides")
+        );
+    }
+
+    #[test]
+    fn a_fields_unit_is_drawn_inside_it_as_field_unit() {
+        let h = dialog_drawn(Dialog::new(Kind::Box, None, 1), None);
+        let field = h.get_by_role_and_label(Role::TextInput, "Length").rect();
+        // The field across the value column, its unit inside it, 6 and its border from its
+        // right, Gray.550.
+        assert!(near(field.right(), PANE.x + W - css::PAD), "{field:?}");
+        let units: Vec<TextShape> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Text(shown) if shown.galley.text() == "mm" && field.contains(shown.pos) => {
+                    Some(shown)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(units.len(), 1, "Length's unit");
+        let unit = &units[0];
+        let size = unit.galley.size();
+        at(
+            unit.pos,
+            Pos2::new(
+                field.right() - css::BORDER - css::UNIT_PADDING - size.x,
+                field.center().y - size.y / 2.0,
+            ),
+            "the unit",
+        );
+        assert_eq!(colour(unit, 0), css::G550);
+        // The value's text ends clear of it: the field's text area stops 6 (the input's
+        // padding) short of the unit.
+        let value = painted(&h)
+            .into_iter()
+            .find_map(|shape| match shape {
+                Shape::Text(shown) if shown.galley.text() == "10" && field.contains(shown.pos) => {
+                    Some(shown)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(near(
+            value.pos.x,
+            field.left() + css::BORDER + css::INPUT_PADDING
+        ));
+        assert!(
+            value.galley.job.wrap.max_width.is_infinite()
+                || value.pos.x + value.galley.job.wrap.max_width
+                    <= unit.pos.x - css::INPUT_PADDING + 0.5
+        );
+    }
+
+    #[test]
+    fn the_preview_is_drawn_as_dlg_status_in_each_state() {
+        let dialog = || Dialog::new(Kind::Box, None, 1);
+        let line = |h: &Harness<'_, (Dialog, Action)>, words: &str, ink: Color32| {
+            let shown = text(h, words);
+            assert_eq!(colour(&shown, 0), ink, "{words}");
+            assert_eq!(
+                shown.galley.job.sections[0].format.font_id,
+                body(css::FS_SMALL)
+            );
+            // `.dlg-status`: `--pad` in, its padding 8 at the left, after a 14 point mark
+            // and the 6 gap; in its Gray.150 box with corners 4.
+            let boxed = rects(h).into_iter().find(|shape| {
+                shape.fill == css::G150
+                    && near(shape.rect.left(), PANE.x + css::PAD)
+                    && near(shape.rect.right(), PANE.x + W - css::PAD)
+            });
+            let boxed = boxed.unwrap_or_else(|| panic!("{words}'s box"));
+            assert_eq!(boxed.corner_radius, CornerRadius::same(css::R_SM));
+            boxed.rect
+        };
+        // 3e: errors, red; OK keeps the feature with them.
+        let h = dialog_drawn(dialog(), Some(properties::Preview::Errors(2)));
+        assert!(h.query_by_label("PREVIEW").is_some());
+        let boxed = line(
+            &h,
+            "The preview has 2 errors. OK keeps the feature with them.",
+            css::RED,
+        );
+        // Its words on 16 point lines, wrapped; the icon centred on them (`align-items:
+        // center`); the box their height and its padding.
+        let shown = text(
+            &h,
+            "The preview has 2 errors. OK keeps the feature with them.",
+        );
+        let words = Rect::from_min_size(shown.pos, shown.galley.size());
+        assert!(near(shown.galley.rows[0].height(), css::LH));
+        assert!(near(words.top(), boxed.top() + css::STATUS_PADDING_Y));
+        assert!(near(words.bottom(), boxed.bottom() - css::STATUS_PADDING_Y));
+        let icon = Rect::from_min_size(
+            Pos2::new(
+                boxed.left() + css::STATUS_PADDING_X,
+                words.center().y - css::ICON / 2.0,
+            ),
+            Vec2::splat(css::ICON),
+        );
+        assert_eq!(icon_at(&h, icon), Some(css::RED), "the error icon");
+        assert!(near(shown.pos.x, icon.right() + css::STATUS_GAP));
+        // Running: Gray.750, and Esc stops it, Gray.550, at its right.
+        let h = dialog_drawn(dialog(), Some(properties::Preview::Running(Some((1, 3)))));
+        let boxed = line(&h, "Rebuilding the preview · 1 of 3", css::G750);
+        let esc = text(&h, "Esc stops it");
+        assert_eq!(colour(&esc, 0), css::G550);
+        assert!(near(
+            esc.pos.x + esc.galley.size().x,
+            boxed.right() - css::STATUS_PADDING_X
+        ));
+        // Up to date, and stopped.
+        let h = dialog_drawn(dialog(), Some(properties::Preview::UpToDate(7)));
+        line(&h, "Preview up to date · revision 7", css::G550);
+        let h = dialog_drawn(dialog(), Some(properties::Preview::Stopped));
+        let stopped = painted(&h).into_iter().any(|shape| {
+            matches!(shape, Shape::Text(shown)
+                if shown.galley.text().starts_with("Preview stopped. Rebuild ")
+                    && shown.galley.text().ends_with(" resumes it."))
+        });
+        assert!(stopped);
+        // None: no PREVIEW.
+        let h = dialog_drawn(dialog(), None);
+        assert!(h.query_by_label("PREVIEW").is_none());
+    }
+
+    #[test]
+    fn the_dialogs_close_button_is_the_titles_ab_btn_and_cancels() {
+        let mut h = dialog_drawn(Dialog::new(Kind::Box, None, 1), None);
+        let close = h
+            .get_by_role_and_label(Role::Button, crate::dialog::CLOSE)
+            .rect();
+        // `.panel-title .ab-btn`: 20 square, its right 6 in, centred on the 24 row.
+        let want = Rect::from_min_size(
+            Pos2::new(
+                PANE.x + W - css::TITLE_PADDING_RIGHT - css::TITLE_BTN,
+                PANE.y + (css::TITLE_H - css::TITLE_BTN) / 2.0,
+            ),
+            Vec2::splat(css::TITLE_BTN),
+        );
+        assert!(near_rect(close, want), "{close:?}, not {want:?}");
+        let cross = Rect::from_center_size(want.center(), Vec2::splat(css::ICON));
+        assert_eq!(icon_at(&h, cross), Some(css::G750), "its ×");
+        // Before it, the kind's icon at the padding and its title 6 after (`.panel-title {
+        // gap: 6px }`), white capitals.
+        let middle = PANE.y + css::TITLE_H / 2.0;
+        let icon = Rect::from_min_size(
+            Pos2::new(PANE.x + css::PAD, middle - css::ICON / 2.0),
+            Vec2::splat(css::ICON),
+        );
+        assert_eq!(icon_at(&h, icon), Some(css::G1000), "the kind's icon");
+        said_at(
+            &h,
+            "BOX",
+            icon.right() + css::TITLE_GAP,
+            middle,
+            body(css::FS_SMALL),
+            css::G1000,
+        );
+        assert_eq!(h.state().1, Action::None);
+        h.get_by_role_and_label(Role::Button, crate::dialog::CLOSE)
+            .click();
+        h.run_steps(2);
+        assert_eq!(h.state().1, Action::Cancel);
     }
 }

@@ -85,9 +85,11 @@ fn truncated(ui: &mut Ui, mut job: LayoutJob) -> Response {
     ui.add(Label::new(job).selectable(false))
 }
 
-/// The panel's title (`.panel-title`): `icon`, if it has one (a dialog's), and `text` in
-/// capitals, on a [`theme::TITLE_BAR_HEIGHT`] row.
-pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str) {
+/// A side panel's title (`.panel-title`, the browser's and the property panel's): `icon`,
+/// if it has one (a dialog's), and `text` in capitals, on a [`theme::TITLE_BAR_HEIGHT`]
+/// row; and at its right, if `close` names one, a close button (`.panel-title .ab-btn`)
+/// labelled so: whether it was clicked.
+pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str, close: Option<&str>) -> bool {
     let (rect, _) = ui.allocate_exact_size(
         vec2(ui.available_width(), theme::TITLE_BAR_HEIGHT),
         Sense::hover(),
@@ -95,25 +97,83 @@ pub(crate) fn title(ui: &mut Ui, icon: Option<Icon>, text: &str) {
     let inner = Rect::from_min_max(
         pos2(rect.left() + theme::BROWSER_TITLE_PADDING, rect.top()),
         pos2(
-            rect.right() - theme::BROWSER_ROW_PADDING_RIGHT,
+            rect.right() - theme::PANEL_TITLE_PADDING_RIGHT,
             rect.bottom(),
         ),
     );
-    within(ui, inner, ("title", text), |ui| {
-        ui.spacing_mut().item_spacing = vec2(theme::STATUS_ITEM_GAP, 0.0);
+    let mut clicked = false;
+    let words = match close {
+        Some(label) => {
+            let side = theme::PANEL_TITLE_BUTTON_SIZE;
+            let button = Rect::from_min_size(
+                pos2(inner.right() - side, inner.center().y - side / 2.0),
+                Vec2::splat(side),
+            );
+            clicked = within(ui, button, ("title-close", text), |ui| {
+                close_button(ui, label)
+            })
+            .clicked();
+            Rect::from_min_max(
+                inner.min,
+                pos2(button.left() - theme::PANEL_TITLE_GAP, inner.bottom()),
+            )
+        }
+        None => inner,
+    };
+    within(ui, words, ("title", text), |ui| {
+        ui.spacing_mut().item_spacing = vec2(theme::PANEL_TITLE_GAP, 0.0);
         if let Some(icon) = icon {
             ui.add(icon.image(IconSize::Small).tint(theme::TEXT_STRONG));
         }
+        let shown = text.to_uppercase();
         let mut job = LayoutJob::single_section(
-            text.to_uppercase(),
+            shown.clone(),
             TextFormat {
                 extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
                 ..format(theme::HEADER_SIZE, theme::TEXT_STRONG, false)
             },
         );
         job.wrap = TextWrapping::truncate_at_width(ui.available_width());
-        ui.add(Label::new(job).selectable(false));
+        let galley = ui.painter().layout_job(job);
+        let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
+        ui.painter().galley(rect.min, galley, theme::TEXT_STRONG);
+        // A heading in the accessibility tree, not one more of the pane's labels.
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, &shown));
+        ui.ctx().accesskit_node_builder(response.id, |node| {
+            node.set_role(egui::accesskit::Role::Heading);
+        });
     });
+    clicked
+}
+
+/// The title's close button (`.panel-title .ab-btn`): its × in Gray.750, white on Gray.300
+/// hovered, labelled `label`, with Cancel's tooltip.
+fn close_button(ui: &mut Ui, label: &str) -> Response {
+    let side = theme::PANEL_TITLE_BUTTON_SIZE;
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
+    let ink = if response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            theme::SMALL_CORNER_RADIUS,
+            theme::APP_BAR_BUTTON_HOVER_BG,
+        );
+        theme::TEXT_STRONG
+    } else {
+        theme::TEXT_DEFAULT
+    };
+    theme::focus_ring(
+        ui,
+        &response,
+        rect,
+        theme::SMALL_CORNER_RADIUS,
+        StrokeKind::Outside,
+    );
+    Icon::Close.image(IconSize::Small).tint(ink).paint_at(
+        ui,
+        Rect::from_center_size(rect.center(), Vec2::splat(IconSize::Small.points())),
+    );
+    response.on_hover_text("Cancel (Esc)")
 }
 
 /// The head (`.prop-head`): `icon` in its box, `title` over `sub`.
@@ -275,6 +335,12 @@ pub(crate) fn hint(ui: &mut Ui, parts: &[(&str, bool)]) {
 
 /// An error card (`.err-card`), a warning's if `warning`: its icon and `message`, and
 /// `suggestion` after an arrow, if it has one.
+///
+/// SEAM: the rest of the prototype's card (DESIGN.md, *Agents as equal clients*; app.js's
+/// `errCard`): its code chip (`.ec-code`), its Feature, Elements, and Parameter rows
+/// (`.ec-kv`), Copy as JSON, and Edit and Show in timeline. The tab keeps only each
+/// problem's message and suggestion (`tab::Said`); with the structured error kept, each is
+/// a row or a button here.
 pub(crate) fn card(ui: &mut Ui, warning: bool, message: &str, suggestion: Option<&str>) {
     let (fill, border, head, icon) = if warning {
         (
@@ -446,6 +512,233 @@ fn chip(ui: &mut Ui, icon: Icon, name: &str) -> Response {
         theme::CHIP_TEXT,
     );
     response
+}
+
+/// A choice among `options`, the `chosen` one shown, labelled `key`: `.seg` if each of its
+/// words fits its share of `ui`'s width ([`fits_segmented`]), else a drop-down
+/// (`.field.select`, as `renderDialog`'s Extent); the one picked, if one was. Off unless
+/// `enabled`.
+pub(crate) fn choice(
+    ui: &mut Ui,
+    key: &str,
+    options: &[String],
+    chosen: usize,
+    enabled: bool,
+) -> Option<usize> {
+    if fits_segmented(ui, options, ui.available_width()) {
+        segmented(ui, options, chosen, enabled)
+    } else {
+        select(ui, key, options, chosen, enabled)
+    }
+}
+
+/// Whether each of `options`' words, as `.seg` draws them, fits its share of a `.seg`
+/// `width` wide with [`theme::SEGMENTED_ROOM`] at each side.
+pub(crate) fn fits_segmented(ui: &Ui, options: &[String], width: f32) -> bool {
+    let count = options.len().max(1) as f32;
+    let inner = width - 2.0 * theme::SEGMENTED_PADDING;
+    let share = (inner - (count - 1.0) * theme::SEGMENTED_PADDING) / count;
+    options.iter().all(|shown| {
+        let words = ui
+            .painter()
+            .layout_job(body(shown, theme::SEGMENTED_TEXT))
+            .size()
+            .x;
+        words + 2.0 * theme::SEGMENTED_ROOM <= share
+    })
+}
+
+/// A drop-down (`.field.select`) labelled `key`, showing `options`' `chosen` one, a menu of
+/// them opened by a click: the one picked, if one was.
+fn select(
+    ui: &mut Ui,
+    key: &str,
+    options: &[String],
+    chosen: usize,
+    enabled: bool,
+) -> Option<usize> {
+    let shown = options.get(chosen).cloned().unwrap_or_default();
+    let at = field_rect(ui, ui.available_width());
+    let response = ui
+        .add_enabled_ui(enabled, |ui| {
+            ui.put(at, |ui: &mut Ui| {
+                let (rect, response) = ui.allocate_exact_size(at.size(), Sense::click());
+                let enabled = ui.is_enabled();
+                response.widget_info(|| WidgetInfo {
+                    label: Some(key.to_owned()),
+                    current_text_value: Some(shown.clone()),
+                    enabled,
+                    ..WidgetInfo::new(WidgetType::ComboBox)
+                });
+                let fill = if enabled && response.hovered() {
+                    theme::FIELD_HOVER_BG
+                } else {
+                    theme::FIELD_BG
+                };
+                ui.painter()
+                    .rect_filled(rect, theme::SMALL_CORNER_RADIUS, fill);
+                theme::focus_ring(
+                    ui,
+                    &response,
+                    rect,
+                    theme::SMALL_CORNER_RADIUS,
+                    StrokeKind::Inside,
+                );
+                let inner = rect.shrink2(vec2(theme::BORDER_WIDTH + theme::SELECT_PADDING, 0.0));
+                let arrow = Rect::from_min_size(
+                    pos2(
+                        inner.right() - theme::SELECT_ARROW_SIZE,
+                        rect.center().y - theme::SELECT_ARROW_SIZE / 2.0,
+                    ),
+                    Vec2::splat(theme::SELECT_ARROW_SIZE),
+                );
+                Icon::Down
+                    .image(IconSize::Small)
+                    .tint(theme::SELECT_ARROW)
+                    .paint_at(ui, arrow);
+                let mut job = body(&shown, theme::SELECT_TEXT);
+                job.wrap = TextWrapping::truncate_at_width(
+                    (arrow.left() - theme::CHIP_GAP - inner.left()).max(0.0),
+                );
+                let galley = ui.painter().layout_job(job);
+                ui.painter().galley(
+                    pos2(inner.left(), rect.center().y - galley.size().y / 2.0),
+                    galley,
+                    theme::SELECT_TEXT,
+                );
+                response
+            })
+        })
+        .inner;
+    let mut picked = None;
+    crate::bar::menu(&response, |ui| {
+        ui.set_min_width(at.width());
+        for (place, option) in options.iter().enumerate() {
+            if ui
+                .add(egui::Button::selectable(place == chosen, option))
+                .clicked()
+            {
+                picked = Some(place);
+                ui.close();
+            }
+        }
+    });
+    picked
+}
+
+/// What a dialog's preview line says (`.dlg-status`, state 3e).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preview {
+    /// Its rebuild runs, as far as it's got: Esc stops it.
+    Running(Option<(usize, usize)>),
+    /// Its rebuild was stopped: Rebuild resumes it.
+    Stopped,
+    /// Built with errors: OK keeps the feature with them.
+    Errors(u64),
+    /// Built, at the revision.
+    UpToDate(u64),
+}
+
+/// The preview's line (`.dlg-status`): its mark, its words, and, while it runs, what stops
+/// it. `rebuild` names Rebuild's shortcut.
+///
+/// SEAM: the preview's time (`· 84 ms`), as the status bar's rebuild's: `status` gives none.
+pub(crate) fn preview(ui: &mut Ui, preview: Preview, rebuild: &str) {
+    let plural = |n: u64| if n == 1 { "" } else { "s" };
+    let (mark, words, ink) = match preview {
+        Preview::Running(progress) => (
+            None,
+            match progress {
+                Some((done, steps)) => format!("Rebuilding the preview · {done} of {steps}"),
+                None => "Rebuilding the preview".to_owned(),
+            },
+            theme::DIALOG_STATUS_RUNNING_TEXT,
+        ),
+        Preview::Stopped => (
+            Some(Icon::Stop),
+            format!("Preview stopped. Rebuild {rebuild} resumes it."),
+            theme::DIALOG_STATUS_TEXT,
+        ),
+        Preview::Errors(errors) => (
+            Some(Icon::Error),
+            format!(
+                "The preview has {errors} error{}. OK keeps the feature with them.",
+                plural(errors)
+            ),
+            theme::ERROR_TEXT,
+        ),
+        Preview::UpToDate(revision) => (
+            Some(Icon::Check),
+            format!("Preview up to date · revision {revision}"),
+            theme::DIALOG_STATUS_TEXT,
+        ),
+    };
+    egui::Frame::new()
+        .fill(theme::DIALOG_STATUS_BG)
+        .corner_radius(CornerRadius::same(theme::SMALL_CORNER_RADIUS))
+        .inner_margin(theme::DIALOG_STATUS_PADDING)
+        .outer_margin(Margin {
+            left: theme::VIEW_PADDING,
+            right: theme::VIEW_PADDING,
+            top: theme::DIALOG_STATUS_MARGIN as i8,
+            bottom: 0,
+        })
+        .show(ui, |ui| {
+            // `align-items: center`: the mark centred on the words, however many lines.
+            let width = ui.available_width();
+            let side = match mark {
+                Some(_) => IconSize::Small.points(),
+                None => theme::SPINNER_SIZE,
+            };
+            let small = |text: &str, colour| {
+                LayoutJob::single_section(
+                    text.to_owned(),
+                    TextFormat {
+                        line_height: Some(theme::BODY_LINE_HEIGHT),
+                        ..format(theme::HEADER_SIZE, colour, false)
+                    },
+                )
+            };
+            let esc = matches!(preview, Preview::Running(_)).then(|| {
+                ui.painter()
+                    .layout_job(small("Esc stops it", theme::TEXT_SUBDUED))
+            });
+            let room = width
+                - side
+                - theme::DIALOG_STATUS_GAP
+                - esc
+                    .as_ref()
+                    .map_or(0.0, |esc| esc.size().x + theme::DIALOG_STATUS_GAP);
+            let mut job = small(&words, ink);
+            job.wrap.max_width = room.max(0.0);
+            let galley = ui.painter().layout_job(job);
+            let height = galley.size().y.max(side);
+            let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+            let middle = rect.center().y;
+            let at = Rect::from_min_size(pos2(rect.left(), middle - side / 2.0), Vec2::splat(side));
+            match mark {
+                Some(icon) => icon.image(IconSize::Small).tint(ink).paint_at(ui, at),
+                None => crate::status::spinner(ui, at.center()),
+            }
+            let said = |ui: &mut Ui, galley: std::sync::Arc<egui::Galley>, left: f32, salt| {
+                let place =
+                    Rect::from_min_size(pos2(left, middle - galley.size().y / 2.0), galley.size());
+                let text = galley.text().to_owned();
+                let colour = galley
+                    .job
+                    .sections
+                    .first()
+                    .map_or(theme::DIALOG_STATUS_TEXT, |section| section.format.color);
+                ui.painter().galley(place.min, galley, colour);
+                ui.interact(place, ui.id().with(("preview", salt)), Sense::hover())
+                    .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
+            };
+            said(ui, galley, at.right() + theme::DIALOG_STATUS_GAP, 0);
+            if let Some(esc) = esc {
+                let left = rect.right() - esc.size().x;
+                said(ui, esc, left, 1);
+            }
+        });
 }
 
 /// A choice of a few (`.seg`): each of `options`, the `chosen` one on, each a selectable
@@ -641,7 +934,21 @@ pub(crate) fn footer_paint(ui: &Ui, footer: Rect) {
     );
 }
 
-/// A value's unit after its field (`.field .unit`), Gray.550: its width.
+/// `unit`, painted inside the field at `field` (`.field .unit`): Gray.550, its padding and
+/// the field's outline from its right, centred on its height.
+pub(crate) fn unit(ui: &Ui, field: Rect, unit: &str) {
+    if unit.is_empty() {
+        return;
+    }
+    let galley = ui.painter().layout_job(body(unit, theme::FIELD_UNIT));
+    let at = pos2(
+        field.right() - theme::FOCUS_WIDTH - theme::FIELD_UNIT_PADDING - galley.size().x,
+        field.center().y - galley.size().y / 2.0,
+    );
+    ui.painter().galley(at, galley, theme::FIELD_UNIT);
+}
+
+/// A value's unit inside its field (`.field .unit`), Gray.550: its width.
 pub(crate) fn unit_width(ui: &Ui, unit: &str) -> f32 {
     if unit.is_empty() {
         return 0.0;

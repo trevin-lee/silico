@@ -544,32 +544,33 @@ impl Dialog {
     }
 
     /// The dialog drawn into `ui`, docked in the property panel as the prototype docks it
-    /// (`renderDialog`): its title, its inputs under INPUTS, `said` (its feature's error, a
-    /// refusal), and Cancel and OK in its footer at the bottom of `ui`; `named` gives a
-    /// feature's name by its ID (a selection box shows it), `refused` whether an edit of a
-    /// field was refused (its input red, OK off), and `enabled` whether anything can be sent
-    /// now (off while the tab closes).
+    /// (`renderDialog`): its title with its close button (Cancel), its inputs under INPUTS,
+    /// its `preview`'s line under PREVIEW if it has one (state 3e), `said` (its feature's
+    /// error, a refusal), and Cancel and OK in its footer at the bottom of `ui`; `named`
+    /// gives a feature's name by its ID (a selection box shows it), `refused` whether an edit
+    /// of a field was refused (its input red, OK off), and `enabled` whether anything can be
+    /// sent now (off while the tab closes).
     ///
-    /// Left out, each for a reason: the Name field (the property panel's renames a feature,
-    /// a dialog's would be one more way), the PREVIEW section's words (the status bar says
-    /// how the rebuild stands, the preview's too), the title's close button (Cancel and Esc
-    /// are it), and each unit inside its field (`.field .unit`: egui's `TextEdit` holds no
-    /// suffix, so the unit stands just after the field).
+    /// Left out: the Name field (the property panel's renames a feature, a dialog's would be
+    /// one more way).
     pub fn ui(
         &mut self,
         ui: &mut Ui,
         said: &[String],
+        preview: Option<properties::Preview>,
         named: &dyn Fn(&FeatureId) -> Option<String>,
         refused: &dyn Fn(&str) -> bool,
         enabled: bool,
     ) -> Action {
         let whole = ui.max_rect();
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        properties::title(
+        let closed = properties::title(
             ui,
             Some(Icon::of_kind(self.kind.type_name())),
             self.kind.title(),
+            Some(CLOSE),
         );
+        let rebuild = crate::start::shortcut_caps(ui.ctx(), egui::Key::B).concat();
         let (footer, cancel_at, ok_at) = properties::footer_places(whole);
         let body =
             egui::Rect::from_min_max(ui.cursor().min, egui::pos2(whole.right(), footer.top()));
@@ -610,6 +611,10 @@ impl Dialog {
                             );
                         });
                     }
+                    if let Some(preview) = preview {
+                        properties::section(ui, "Preview");
+                        properties::preview(ui, preview, &rebuild);
+                    }
                     for said in said {
                         properties::card(ui, false, said, None);
                     }
@@ -618,7 +623,11 @@ impl Dialog {
         properties::footer_paint(ui, footer);
         // Off while its add is unanswered: what's typed meanwhile is sent after it.
         let ok = enabled && self.valid() && !any_refused && !self.adding;
-        let mut action = Action::None;
+        let mut action = if closed && enabled {
+            Action::Cancel
+        } else {
+            Action::None
+        };
         let cancel = properties::footer_button(
             ui,
             cancel_at,
@@ -656,22 +665,23 @@ fn input_ui(
     };
     match &mut input.value {
         Value::Length(text) | Value::Angle(text) => {
+            // The unit inside the field, at its right (`.field .unit`), the text clear of it.
             let unit_width = properties::unit_width(ui, unit);
-            let width = ui.available_width() - unit_width - theme::PROPERTY_ROW_GAP;
             let salt = ("dialog-input", input.label);
-            let edit = theme::field(
+            let edit = theme::field_with_room(
                 ui,
                 egui::TextEdit::singleline(text),
                 salt,
                 FieldKind::Dialog,
                 red,
+                unit_width + theme::FIELD_UNIT_PADDING,
             );
-            let at = properties::field_rect(ui, width.max(0.0));
-            ui.add_enabled_ui(enabled, |ui| ui.put(at, edit))
+            let at = properties::field_rect(ui, ui.available_width());
+            let field = ui
+                .add_enabled_ui(enabled, |ui| ui.put(at, edit))
                 .inner
                 .labelled_by(label);
-            ui.add_space(theme::PROPERTY_ROW_GAP);
-            ui.label(properties::body(unit, theme::TEXT_SUBDUED));
+            properties::unit(ui, field.rect, unit);
         }
         Value::Toggle(on) => {
             ui.add_enabled(enabled, egui::Checkbox::without_text(on))
@@ -679,7 +689,7 @@ fn input_ui(
         }
         Value::Choice { options, chosen } => {
             let shown: Vec<String> = options.iter().map(|(_, shown)| shown.clone()).collect();
-            if let Some(place) = properties::segmented(ui, &shown, *chosen, enabled) {
+            if let Some(place) = properties::choice(ui, input.label, &shown, *chosen, enabled) {
                 *chosen = place;
             }
         }
@@ -698,6 +708,10 @@ fn input_ui(
         }
     }
 }
+
+/// The dialog's close button's label: Cancel, as its tooltip says (Cancel's own label is
+/// the footer's).
+pub const CLOSE: &str = "Close the dialog";
 
 /// Whether an input shows red: its value doesn't read (unparseable, or a selection not
 /// made), or the core refused its last edit.

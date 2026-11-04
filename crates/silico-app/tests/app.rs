@@ -14653,3 +14653,82 @@ fn the_changed_on_disk_chip_offers_again_the_choice_the_edits_were_kept_over() {
     assert!(h.query_by_role_and_label(Role::Button, "Reload").is_some());
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn the_dialogs_close_button_cancels_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    assert!(shows(&h, "Timeline", "Box"));
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Close the dialog")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    // Cancel's: the box it added is taken away again.
+    step_until(&mut h, "the box gone", |h| {
+        shows(h, "Timeline", "Hole") && !shows(h, "Timeline", "Box")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let hold = f.kernel.hold(is_box);
+    create(&mut h, "Box");
+    added(&mut h);
+    // Running: what stops it said beside it.
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+            && dialog(h)
+                .query_by_label_contains("Rebuilding the preview")
+                .is_some()
+    });
+    assert!(dialog(&h).query_by_label("Esc stops it").is_some());
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the preview stopped", |h| {
+        dialog(h)
+            .query_by_label_contains("Preview stopped. Rebuild ")
+            .is_some()
+    });
+    assert!(dialog_open(&h));
+    hold.release();
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // A box the kernel refuses: the preview's error, and that OK keeps the feature with it.
+    f.kernel
+        .refuse(|op| is_box(op).then(|| Error::new(ErrorCode::KernelFailed, "the box came apart")));
+    create(&mut h, "Box");
+    added(&mut h);
+    step_until(&mut h, "the preview's errors", |h| {
+        dialog(h)
+            .query_by_label_contains("OK keeps the feature with them.")
+            .is_some_and(|node| {
+                node.accesskit_node()
+                    .label()
+                    .or_else(|| node.accesskit_node().value())
+                    .is_some_and(|said| said.starts_with("The preview has "))
+            })
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn shortcuts_is_off_saying_the_sheet_comes_later() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let shortcuts = h.get_by_role_and_label(Role::Button, "Shortcuts");
+    assert!(shortcuts.accesskit_node().is_disabled());
+    shortcuts.hover();
+    step_until(&mut h, "its tooltip", |h| {
+        anywhere(h, "The shortcut sheet comes later")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}

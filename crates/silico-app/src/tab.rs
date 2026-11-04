@@ -508,6 +508,19 @@ impl Tab {
     ) {
     }
 
+    /// The errors its timeline counts: the gate's, and each feature's problems (the
+    /// timeline's summary and the status bar's).
+    pub fn errors(&self) -> u64 {
+        self.timeline.as_ref().map_or(0, |timeline| {
+            timeline
+                .features
+                .iter()
+                .flatten()
+                .map(|entry| entry.problems)
+                .fold(timeline.problems, u64::saturating_add)
+        })
+    }
+
     /// The tab's name: its file's.
     pub fn name(&self) -> &str {
         std::path::Path::new(&self.path)

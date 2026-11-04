@@ -706,7 +706,7 @@ impl<P: Clients + 'static> App<P> {
     /// Ctrl+B rebuilds what was stopped (§5, *Rebuild*), and H hides or shows the selected
     /// body or sketch, outside a text field. With a dialog open, Enter and Esc are the
     /// dialog's, taken here and given to it once its inputs have taken this frame's typing
-    /// ([`dialog_panel`](Self::dialog_panel)). Whether a command was started, and the
+    /// (`Panes::dialog`, in `crate::panes`). Whether a command was started, and the
     /// dialog's key.
     fn keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         self.modal_key = None;

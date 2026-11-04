@@ -683,9 +683,14 @@ pub const TOOLBAR_FINISH_HOVER_BG: Color32 = hex(0x2a78e8);
 
 // ---- The browser (`#browser`, `.panel-title`, `.row`, `.tree-empty`) ----
 
-/// The pane's title (`.panel-title`): its padding at the left (`--pad`), in
-/// [`HEADER_SIZE`] capitals, [`TEXT_STRONG`], on a [`TITLE_BAR_HEIGHT`] row.
+/// A side panel's title (`.panel-title`, the browser's and the property panel's): its
+/// padding at the left (`--pad`) and at the right, and the gap between its parts (`padding:
+/// 0 6px 0 var(--pad); gap: 6px`), in [`HEADER_SIZE`] capitals, [`TEXT_STRONG`], on a
+/// [`TITLE_BAR_HEIGHT`] row; its buttons (`.panel-title .ab-btn`) 20 square.
 pub const BROWSER_TITLE_PADDING: f32 = VIEW_PADDING as f32;
+pub const PANEL_TITLE_PADDING_RIGHT: f32 = 6.0;
+pub const PANEL_TITLE_GAP: f32 = 6.0;
+pub const PANEL_TITLE_BUTTON_SIZE: f32 = 20.0;
 
 /// A row's padding at its left before its depth's indents (`6 + depth * 18`), at its right,
 /// and the gap between its parts (`.row`).
@@ -958,8 +963,8 @@ pub const HINT_STRONG: Color32 = GRAY_800;
 /// (`.ec-fix::before`'s arrow); its words are white (`.ec-head .t`, `.ec-fix`).
 pub const ERROR_CARD_MARGIN: f32 = 8.0;
 pub const ERROR_CARD_BG: Color32 = ALERT_ERROR_BG;
-pub const ERROR_CARD_BORDER: Color32 = hex(0x5c001a);
-pub const ERROR_CARD_HEAD: Color32 = hex(0xffd1d6);
+pub const ERROR_CARD_BORDER: Color32 = DANGER_BUTTON_BG;
+pub const ERROR_CARD_HEAD: Color32 = DANGER_BUTTON_TEXT;
 pub const ERROR_CARD_ACCENT: Color32 = hex(0xff99a6);
 /// A warning's card (`.err-card.warn`): its fill, border, and head.
 pub const WARNING_CARD_BG: Color32 = ALERT_WARNING_BG;
@@ -994,7 +999,7 @@ pub const SELECTION_BOX_PADDING_RIGHT: f32 = 4.0;
 pub const SELECTION_BOX_BORDER: f32 = 2.0;
 pub const SELECTION_BOX_BG: Color32 = FIELD_BG;
 pub const SELECTION_BOX_ACTIVE_BORDER: Color32 = SELECTION_BG;
-pub const SELECTION_BOX_ACTIVE_BG: Color32 = hex_alpha(0x186add, 46);
+pub const SELECTION_BOX_ACTIVE_BG: Color32 = with_alpha(SELECTION_BG, 46);
 
 /// What a selection box holds (`.selbox .chip`): 16 high, padded 5, 4 after its icon,
 /// corners 3, Gray.300, its text `--fs-small` in Gray.800.
@@ -1015,6 +1020,30 @@ pub const SEGMENTED_TEXT: Color32 = TEXT_SUBDUED;
 pub const SEGMENTED_HOVER_TEXT: Color32 = TEXT_STRONG;
 pub const SEGMENTED_ON_BG: Color32 = GRAY_350;
 pub const SEGMENTED_ON_TEXT: Color32 = TEXT_STRONG;
+
+/// A choice of several as a drop-down (`.field.select`), where its words don't fit `.seg`:
+/// a field's fill and corners, padded 6 at each side, its words Gray.800, its arrow 10
+/// square in Gray.550. A choice stays `.seg` only while each of its words fits its share
+/// with [`SEGMENTED_ROOM`] at each side (a proposal: `.seg` sets none, its words centred).
+pub const SELECT_PADDING: f32 = 6.0;
+pub const SELECT_TEXT: Color32 = GRAY_800;
+pub const SELECT_ARROW: Color32 = TEXT_SUBDUED;
+pub const SELECT_ARROW_SIZE: f32 = 10.0;
+pub const SEGMENTED_ROOM: f32 = 4.0;
+
+/// The preview's line in a dialog (`.dlg-status`): 8 above it, `--pad` at its sides; padded
+/// 6 by 8, corners `--r-sm`, Gray.150; its words `--fs-small` Gray.550, Gray.750 while it
+/// runs (`.running`), red with errors; 6 between its parts.
+pub const DIALOG_STATUS_MARGIN: f32 = 8.0;
+pub const DIALOG_STATUS_PADDING: Margin = Margin::symmetric(8, 6);
+pub const DIALOG_STATUS_BG: Color32 = GRAY_150;
+pub const DIALOG_STATUS_TEXT: Color32 = TEXT_SUBDUED;
+pub const DIALOG_STATUS_RUNNING_TEXT: Color32 = TEXT_DEFAULT;
+pub const DIALOG_STATUS_GAP: f32 = 6.0;
+
+/// A field's unit inside it (`.field .unit`): Gray.550, 6 from the field's right.
+pub const FIELD_UNIT: Color32 = TEXT_SUBDUED;
+pub const FIELD_UNIT_PADDING: f32 = 6.0;
 
 /// The dialog's footer (`.dlg-footer`): padded 8 by `--pad`, 6 between its buttons, a 1 px
 /// Gray.250 border above it, on the panel's fill; each button 26 high, sharing its width.
@@ -1273,14 +1302,32 @@ pub fn field<'t>(
     kind: FieldKind,
     invalid: bool,
 ) -> egui::TextEdit<'t> {
+    field_with_room(ui, edit, id_salt, kind, invalid, 0.0)
+}
+
+/// [`field`], with `room` more points inside its frame at its right, past its text: where
+/// its unit goes (`.field .unit`), which the caller paints there.
+pub fn field_with_room<'t>(
+    ui: &egui::Ui,
+    edit: egui::TextEdit<'t>,
+    id_salt: impl egui::AsIdSalt,
+    kind: FieldKind,
+    invalid: bool,
+    room: f32,
+) -> egui::TextEdit<'t> {
     let id = ui.make_persistent_id(id_salt);
     let hovered = ui
         .ctx()
         .read_response(id)
         .is_some_and(|drawn| drawn.enabled() && ui.rect_contains_pointer(drawn.rect));
     let focused = ui.memory(|memory| memory.has_focus(id));
+    let mut frame = field_frame(kind, hovered, focused, invalid);
+    frame.inner_margin.right = frame
+        .inner_margin
+        .right
+        .saturating_add(room.ceil().clamp(0.0, f32::from(i8::MAX)) as i8);
     edit.id(id)
-        .frame(field_frame(kind, hovered, focused, invalid))
+        .frame(frame)
         .text_color(if invalid { ERROR_TEXT } else { TEXT_STRONG })
 }
 

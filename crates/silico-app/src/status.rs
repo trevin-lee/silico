@@ -13,7 +13,8 @@
 //!   the tab's count of its own undo steps.
 //! - the hover, the selection, and the pointer's coordinates in the middle: SEAM(M5.7),
 //!   picking's, and SEAM(#351), sketch mode's (see [`middle`]).
-//! - the shortcut sheet the Shortcuts button opens: SEAM, the sheet is a later PR's.
+//! - the shortcut sheet the Shortcuts button opens: SEAM, the sheet is a later PR's; the
+//!   button is off until then, saying so.
 //! - What's Wrong, which `Rebuilt with 2 errors` opens in the prototype: not built yet.
 
 use eframe::egui::text::{LayoutJob, TextFormat};
@@ -137,7 +138,7 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
             RebuildState::Stopped => Said::Stopped(progress),
             RebuildState::Done => Said::Rebuilt {
                 revision: status.rebuild.revision.number(),
-                errors: errors(tab),
+                errors: tab.errors(),
             },
             RebuildState::Faulted => Said::Faulted,
             RebuildState::Idle => Said::Nothing,
@@ -168,19 +169,6 @@ pub fn unopened(warming: Option<Warming>, message: Option<String>) -> Bar {
         disk: None,
         saved: None,
     }
-}
-
-/// The errors the timeline counts (the gate's and each feature's), as its summary does.
-fn errors(tab: &Tab) -> u64 {
-    tab.timeline.as_ref().map_or(0, |timeline| {
-        timeline.problems
-            + timeline
-                .features
-                .iter()
-                .flatten()
-                .map(|entry| entry.problems)
-                .fold(0u64, u64::saturating_add)
-    })
 }
 
 /// The bar drawn across `ui`'s whole rectangle: what the person asked of it.
@@ -293,9 +281,8 @@ fn middle(ui: &mut Ui, bar: &Bar) {
 /// The right's parts, from the right: the shortcut sheet, the units, whether it's saved,
 /// and the file on disk.
 fn right_parts(ui: &mut Ui, bar: &Bar, asked: &mut Asked) {
-    // SEAM: the shortcut sheet (DESIGN.md, state 7), a later PR's; until then this opens
-    // nothing.
-    let _sheet = shortcuts(ui);
+    // SEAM: the shortcut sheet (DESIGN.md, state 7), a later PR's; off until then.
+    shortcuts(ui);
     let Some(saved) = bar.saved else {
         return;
     };
@@ -432,7 +419,7 @@ fn paint_mark(ui: &Ui, mark: Mark, centre: Pos2, colour: Color32) {
 /// come. It asks for none of its own: a rebuild held with nothing answering draws at the
 /// idle frame's rate, never the display's (the timeline asks for frames while a step runs,
 /// and turns it then).
-fn spinner(ui: &Ui, centre: Pos2) {
+pub(crate) fn spinner(ui: &Ui, centre: Pos2) {
     let radius = theme::SPINNER_SIZE / 2.0 - theme::SPINNER_WIDTH / 2.0;
     ui.painter().circle_stroke(
         centre,
@@ -550,59 +537,75 @@ fn button(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, stop: bool) -> Res
 }
 
 /// An item that's a button (`button.st-item`): `mark`, then `text` in `colour`, white on
-/// Gray.300 hovered, then `caps` as key caps, if any.
-fn item_button(ui: &mut Ui, mark: Mark, text: &str, colour: Color32, caps: &[String]) -> Response {
-    let galley = ui.painter().layout_job(plain(text, colour));
-    let keys = if caps.is_empty() {
-        0.0
-    } else {
-        theme::STATUS_ITEM_GAP + start::key_caps_width(ui, caps)
-    };
-    let size = vec2(
-        2.0 * theme::STATUS_ITEM_PADDING
-            + mark.width()
-            + theme::STATUS_ITEM_GAP
-            + galley.size().x
-            + keys,
-        theme::STATUS_ITEM_HEIGHT,
-    );
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, text));
-    let ink = if response.hovered() {
-        ui.painter().rect_filled(
+/// Gray.300 hovered, then `caps` as key caps, if any. Off unless `enabled`, its mark and
+/// words then Gray.400, as a `.st-btn:disabled`'s.
+fn item_button(
+    ui: &mut Ui,
+    mark: Mark,
+    text: &str,
+    colour: Color32,
+    caps: &[String],
+    enabled: bool,
+) -> Response {
+    // Painted at the bar's opacity, not faded further when off.
+    let opacity = ui.opacity();
+    ui.add_enabled(enabled, |ui: &mut Ui| {
+        ui.set_opacity(opacity);
+        let galley = ui.painter().layout_job(plain(text, colour));
+        let keys = if caps.is_empty() {
+            0.0
+        } else {
+            theme::STATUS_ITEM_GAP + start::key_caps_width(ui, caps)
+        };
+        let size = vec2(
+            2.0 * theme::STATUS_ITEM_PADDING
+                + mark.width()
+                + theme::STATUS_ITEM_GAP
+                + galley.size().x
+                + keys,
+            theme::STATUS_ITEM_HEIGHT,
+        );
+        let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+        let enabled = ui.is_enabled();
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
+        let ink = if !enabled {
+            theme::STATUS_BUTTON_DISABLED_TEXT
+        } else if response.hovered() {
+            ui.painter().rect_filled(
+                rect,
+                theme::SMALL_CORNER_RADIUS,
+                theme::STATUS_ITEM_HOVER_BG,
+            );
+            theme::STATUS_ITEM_HOVER_TEXT
+        } else {
+            colour
+        };
+        theme::focus_ring(
+            ui,
+            &response,
             rect,
             theme::SMALL_CORNER_RADIUS,
-            theme::STATUS_ITEM_HOVER_BG,
+            StrokeKind::Outside,
         );
-        theme::STATUS_ITEM_HOVER_TEXT
-    } else {
-        colour
-    };
-    theme::focus_ring(
-        ui,
-        &response,
-        rect,
-        theme::SMALL_CORNER_RADIUS,
-        StrokeKind::Outside,
-    );
-    let left = rect.left() + theme::STATUS_ITEM_PADDING;
-    paint_mark(
-        ui,
-        mark,
-        pos2(left + mark.width() / 2.0, rect.center().y),
-        ink,
-    );
-    let at = pos2(
-        left + mark.width() + theme::STATUS_ITEM_GAP,
-        rect.center().y - galley.size().y / 2.0,
-    );
-    let words_right = at.x + galley.size().x;
-    ui.painter()
-        .galley_with_override_text_color(at, galley, ink);
-    if !caps.is_empty() {
-        start::key_caps(ui, pos2(words_right + keys, rect.center().y), caps, false);
-    }
-    response
+        let left = rect.left() + theme::STATUS_ITEM_PADDING;
+        paint_mark(
+            ui,
+            mark,
+            pos2(left + mark.width() / 2.0, rect.center().y),
+            ink,
+        );
+        let at = pos2(
+            left + mark.width() + theme::STATUS_ITEM_GAP,
+            rect.center().y - galley.size().y / 2.0,
+        );
+        let words_right = at.x + galley.size().x;
+        ui.painter()
+            .galley_with_override_text_color(at, galley, ink);
+        if !caps.is_empty() {
+            start::key_caps(ui, pos2(words_right + keys, rect.center().y), caps, false);
+        }
+        response
+    })
 }
 
 /// The Changed on disk chip (`button.st-item.warn-text`).
@@ -613,10 +616,15 @@ fn chip(ui: &mut Ui) -> Response {
         "Changed on disk",
         theme::WARNING,
         &[],
+        true,
     )
 }
 
-/// The shortcut sheet's button (`button.st-item`): `?` in a key cap after its words.
+/// What the Shortcuts button says while there's no sheet for it to open.
+pub const SHORTCUTS_LATER: &str = "The shortcut sheet comes later";
+
+/// The shortcut sheet's button (`button.st-item`): `?` in a key cap after its words. Off,
+/// saying so, until the sheet exists (SEAM: DESIGN.md's state 7, a later PR's).
 fn shortcuts(ui: &mut Ui) -> Response {
     item_button(
         ui,
@@ -624,7 +632,9 @@ fn shortcuts(ui: &mut Ui) -> Response {
         "Shortcuts",
         theme::STATUS_TEXT,
         &["?".to_owned()],
+        false,
     )
+    .on_disabled_hover_text(SHORTCUTS_LATER)
 }
 
 #[cfg(test)]
@@ -643,7 +653,7 @@ mod tests {
     use eframe::egui::{self, CornerRadius, FontFamily, FontId};
     use egui::accesskit::Role;
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
 
@@ -977,13 +987,19 @@ mod tests {
         let rebuild = button_at(&h, "Rebuild", stop + css::GAP, css::G400, None);
         separator_at(&h, rebuild + css::GAP, css::SEP_MARGIN);
         // From the right, 6 in: Shortcuts (`button.st-item`: help, its words, `?` in a key
-        // cap 6 after), a separator, mm, a separator, Saved, a separator, and the chip.
+        // cap 6 after; off until the sheet exists, Gray.400 as `.st-btn:disabled`), a
+        // separator, mm, a separator, Saved, a separator, and the chip.
         let shortcuts = widget(&h, Role::Button, "Shortcuts");
+        assert!(
+            h.get_by_role_and_label(Role::Button, "Shortcuts")
+                .accesskit_node()
+                .is_disabled()
+        );
         assert!(near(shortcuts.right(), BAR.right() - css::PADDING_RIGHT));
         assert!(near(shortcuts.height(), css::ITEM_H));
         let help = centred(shortcuts.left() + css::ITEM_PADDING, css::ICON, css::ICON);
-        assert_eq!(icon_at(&h, help), Some(css::G550));
-        let words = said_at(&h, "Shortcuts", help.right() + css::ITEM_GAP, css::G550);
+        assert_eq!(icon_at(&h, help), Some(css::G400));
+        let words = said_at(&h, "Shortcuts", help.right() + css::ITEM_GAP, css::G400);
         let caps: Vec<RectShape> = rects(&h)
             .into_iter()
             .filter(|shape| {
