@@ -13394,3 +13394,306 @@ fn the_sketch_tab_and_finish_sketch_are_blue_500_on_lavapipe() {
         },
     );
 }
+
+// ---- The browser, as the UI prototype draws it (DESIGN.md, *Layout*; app.js's
+// renderBrowser) ----
+
+/// The browser's pane.
+fn browser(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::Pane, "Browser")
+}
+
+/// The names of the browser's rows, in the tree's order: the document's, each header's, and
+/// each row's (its eye's, caret's, and mark's words left out).
+fn browser_rows(h: &AppHarness) -> Vec<String> {
+    browser(h)
+        .query_all(egui_kittest::kittest::by().recursive(true))
+        .filter_map(|node| {
+            let node = node.accesskit_node();
+            match node.role() {
+                Role::Label => node.value(),
+                // A selectable row: a button with a toggled state (an eye or a caret has
+                // none).
+                Role::Button if node.toggled().is_some() => node.label(),
+                _ => None,
+            }
+        })
+        .filter(|name| !name.starts_with("error") && !name.starts_with("warning"))
+        .collect()
+}
+
+#[test]
+fn the_browser_lists_the_document_then_origin_bodies_and_sketches_each_row_with_its_eye() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    // app.js:427–455: the document's row (its file's name, `.silico` left off), Origin
+    // (its point, its axes, its planes), Bodies, and Sketches, each a header with a caret;
+    // the bodies and the sketch in the document's order.
+    assert_eq!(
+        browser_rows(&h),
+        [
+            "sketched", "Origin", "Origin", "X", "Y", "Z", "XY", "XZ", "YZ", "Bodies", "Washer",
+            "Plate", "Sketches", "Triangle"
+        ]
+    );
+    let bodies = browser(&h).get_by_role_and_label(Role::Group, "Bodies");
+    assert!(bodies.query_by_label("Washer").is_some());
+    assert!(bodies.query_by_label("Plate").is_some());
+    assert!(bodies.query_by_label("Triangle").is_none());
+    let sketches = browser(&h).get_by_role_and_label(Role::Group, "Sketches");
+    assert!(sketches.query_by_label("Triangle").is_some());
+    // An eye on each row of a thing that can be hidden; a caret on the document's and each
+    // header's.
+    for name in ["Origin", "X", "XY", "Washer", "Plate", "Triangle"] {
+        assert!(
+            browser(&h)
+                .query_by_label(&format!("Hide {name}"))
+                .is_some(),
+            "{name}"
+        );
+    }
+    for name in ["sketched", "Origin", "Bodies", "Sketches"] {
+        assert!(
+            browser(&h)
+                .query_by_role_and_label(Role::Button, &format!("Collapse {name}"))
+                .is_some(),
+            "{name}"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_headers_caret_folds_its_rows_away_and_back_and_the_documents_folds_them_all() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    browser(&h).get_by_label("Collapse Bodies").click();
+    step_until(&mut h, "Bodies folded", |h| {
+        !shows(h, "Browser", "Washer") && shows(h, "Browser", "Expand Bodies")
+    });
+    assert_eq!(
+        browser_rows(&h),
+        [
+            "sketched", "Origin", "Origin", "X", "Y", "Z", "XY", "XZ", "YZ", "Bodies", "Sketches",
+            "Triangle"
+        ]
+    );
+    assert!(
+        browser(&h)
+            .query_by_role_and_label(Role::Group, "Bodies")
+            .is_none()
+    );
+    browser(&h).get_by_label("Expand Bodies").click();
+    step_until(&mut h, "Bodies open", |h| shows(h, "Browser", "Washer"));
+    // The document's caret: its row alone.
+    browser(&h).get_by_label("Collapse sketched").click();
+    step_until(&mut h, "all folded", |h| !shows(h, "Browser", "Triangle"));
+    assert_eq!(browser_rows(&h), ["sketched"]);
+    browser(&h).get_by_label("Expand sketched").click();
+    step_until(&mut h, "all open", |h| shows(h, "Browser", "Triangle"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_empty_group_says_what_makes_its_first_row() {
+    // The M2.1 example has a body and no sketch (app.js:446: `.tree-empty`).
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its body", |h| shows(h, "Browser", "Hole"));
+    let sketches = browser(&h).get_by_role_and_label(Role::Group, "Sketches");
+    assert!(
+        sketches
+            .query_by_label("None yet. Create Sketch starts one.")
+            .is_some()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Two boxes of one name, each a body: the first 50 mm at the origin, the second 1 m, 2 m
+/// along x.
+const TWINS: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Cube", "position": [0, 0, 0], "length": 50, "width": 50, "height": 50},
+    {"id": "a91cw0de", "type": "box", "v": 1, "name": "Cube", "position": [2000, 0, 0], "length": 1000, "width": 1000, "height": 1000}
+  ]
+}
+"#;
+
+#[test]
+fn an_eye_hides_its_own_body_of_two_of_one_name_and_shows_closed() {
+    let f = fixture();
+    let (mut h, record) = f.drawn("twins.silico", TWINS);
+    meshes_settled(&mut h);
+    step_until(&mut h, "both eyes", |h| {
+        browser(h).query_all_by_label("Hide Cube").count() == 2
+    });
+    // The second row's eye: that body alone hidden, its eye closed, the first's open.
+    browser(&h)
+        .query_all_by_label("Hide Cube")
+        .nth(1)
+        .unwrap()
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(browser(&h).query_all_by_label("Hide Cube").count(), 1);
+    assert_eq!(browser(&h).query_all_by_label("Show Cube").count(), 1);
+    let eyes: Vec<String> = browser(&h)
+        .query_all_by_role(Role::Button)
+        .filter_map(|node| node.accesskit_node().label())
+        .filter(|label| label.ends_with(" Cube"))
+        .collect();
+    assert_eq!(eyes, ["Hide Cube", "Show Cube"]);
+    assert_eq!(
+        h.state().tabs()[0].hidden,
+        [silico_app::tab::Hideable::Feature(
+            silico_core::document::FeatureId::new("a91cw0de").unwrap()
+        )]
+        .into_iter()
+        .collect()
+    );
+    // The view draws the first body (the table's first) and not the second.
+    assert_eq!(record.lock().unwrap().frames.last().unwrap().bodies, [1]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn h_hides_and_shows_the_selected_body_but_not_while_a_field_is_typed_in() {
+    let f = fixture();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        shows(h, "Browser", "Large")
+    });
+    browser(&h).get_by_label("Large").click();
+    step_until(&mut h, "Large selected", |h| {
+        toggled(&browser(h).get_by_label("Large")) == Some(true)
+    });
+    h.key_press(eframe::egui::Key::H);
+    step(&mut h);
+    step(&mut h);
+    assert!(shows(&h, "Browser", "Show Large"));
+    assert!(shows(&h, "Browser", "Hide Small"));
+    assert_eq!(record.lock().unwrap().frames.last().unwrap().bodies, [1]);
+    h.key_press(eframe::egui::Key::H);
+    step(&mut h);
+    step(&mut h);
+    assert!(shows(&h, "Browser", "Hide Large"));
+    assert_eq!(record.lock().unwrap().frames.last().unwrap().bodies, [1, 2]);
+    // Typing in the Name field: the H is the field's, nothing hidden.
+    name_field(&h).focus();
+    step(&mut h);
+    h.key_press(eframe::egui::Key::H);
+    step(&mut h);
+    step(&mut h);
+    assert!(shows(&h, "Browser", "Hide Large"));
+    assert!(h.state().tabs()[0].hidden.is_empty());
+    assert_eq!(record.lock().unwrap().frames.last().unwrap().bodies, [1, 2]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn h_with_a_feature_the_browser_doesnt_list_selected_hides_nothing() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // The pin, consumed by the cut: no row of its own.
+    select(&mut h, "Pin");
+    h.key_press(eframe::egui::Key::H);
+    step(&mut h);
+    step(&mut h);
+    assert!(h.state().tabs()[0].hidden.is_empty());
+    assert!(shows(&h, "Browser", "Hide Hole"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The SKETCHED part, its washer cut from its plate by a cut the kernel refuses: two
+/// bodies, a sketch, and a feature in error.
+const SKETCHED_FAILING: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000002", "type": "box", "v": 1, "name": "Washer", "position": [50, 0, 0], "length": 5, "width": 5, "height": 1},
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Slot", "base": "b0000001", "tool": "b0000002"}
+  ]
+}
+"#;
+
+#[test]
+fn the_browsers_rows_are_filled_as_the_prototype_fills_them_and_its_mark_is_red_on_lavapipe() {
+    on_lavapipe(
+        "the_browsers_rows_are_filled_as_the_prototype_fills_them_and_its_mark_is_red_on_lavapipe",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            f.kernel.refuse(|op| {
+                matches!(op, Op::Boolean { .. })
+                    .then(|| Error::new(ErrorCode::KernelFailed, "the slot came apart"))
+            });
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_pixels_per_point(2.0)
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            let path = f.file("sketched.silico", SKETCHED_FAILING);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            step_until(&mut h, "the rows and the mark", |h| {
+                shows(h, "Browser", "Triangle") && shows(h, "Browser", "error")
+            });
+            // Plate selected, Washer hidden, the pointer over Triangle's row.
+            browser(&h).get_by_label("Plate").click();
+            step(&mut h);
+            browser(&h).get_by_label("Hide Washer").click();
+            step(&mut h);
+            let triangle = browser(&h).get_by_label("Triangle").rect();
+            h.hover_at(eframe::egui::pos2(triangle.center().x, triangle.center().y));
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            // In each row's padding at its left (`.row`'s `padding-left: 6px`), clear of a
+            // focus ring's 1 point: Plate, selected, Blue.500 (`.row.selected`, `--blue`);
+            // Triangle, hovered, Gray.250 (`.row:hover`, `--g250`); Washer, neither, the
+            // panel's Gray.100 (`.panel`, `--g100`).
+            let at_left = |name: &str| {
+                let row = browser(&h).get_by_label(name).rect();
+                eframe::egui::pos2(row.left() + 3.0, row.center().y)
+            };
+            assert_eq!(pixel(at_left("Plate")), [0x18, 0x6a, 0xdd, 0xff]);
+            assert_eq!(pixel(at_left("Triangle")), [0x27, 0x26, 0x26, 0xff]);
+            assert_eq!(pixel(at_left("Washer")), [0x0d, 0x0d, 0x0d, 0xff]);
+            // The document's mark (`.r-err`): its icon's stroke in Red.550, `#ff3865`
+            // (`--red`), within a step of rounding where the stroke covers a whole pixel.
+            let mark = browser(&h).get_by_label("error").rect();
+            let red = [0xff, 0x38, 0x65];
+            let near = |rgba: [u8; 4]| (0..3).all(|c| rgba[c].abs_diff(red[c]) <= 3);
+            let (x0, y0) = ((mark.left() * ppp) as u32, (mark.top() * ppp) as u32);
+            let (x1, y1) = ((mark.right() * ppp) as u32, (mark.bottom() * ppp) as u32);
+            let found = (y0..y1).any(|y| (x0..x1).any(|x| near(image.get_pixel(x, y).0)));
+            assert!(found, "no {red:x?} in the mark at {mark:?}");
+        },
+    );
+}

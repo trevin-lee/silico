@@ -668,11 +668,12 @@ impl<P: Clients + 'static> App<P> {
 
     /// Ctrl+S saves and Ctrl+Shift+S asks where to save as (neither while a dialog is
     /// open), Ctrl+W closes, Ctrl+Z undoes and Ctrl+Y or Ctrl+Shift+Z redoes
-    /// (docs/ux/solidworks.md, §6; DESIGN.md, *Keyboard*),
-    /// Esc stops what's running and Ctrl+B rebuilds what was stopped (§5, *Rebuild*). With a dialog open, Enter and Esc are
-    /// the dialog's, taken here and given to it once its inputs have taken this frame's
-    /// typing ([`dialog_panel`](Self::dialog_panel)). Whether a command was started, and
-    /// the dialog's key.
+    /// (docs/ux/solidworks.md, §6; DESIGN.md, *Keyboard*), Esc stops what's running and
+    /// Ctrl+B rebuilds what was stopped (§5, *Rebuild*), and H hides or shows the selected
+    /// body or sketch, outside a text field. With a dialog open, Enter and Esc are the
+    /// dialog's, taken here and given to it once its inputs have taken this frame's typing
+    /// ([`dialog_panel`](Self::dialog_panel)). Whether a command was started, and the
+    /// dialog's key.
     fn keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         self.modal_key = None;
         if self.asking.is_some() {
@@ -750,9 +751,17 @@ impl<P: Clients + 'static> App<P> {
             pressed(Key::B),
         );
         let stop = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+        // H hides or shows the selection (DESIGN.md, *Keyboard*), never a letter typed.
+        let hide = !ui.ctx().text_edit_focused()
+            && ui.input_mut(|input| {
+                !input.modifiers.alt && input.consume_key(Modifiers::NONE, Key::H)
+            });
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return (false, None);
         };
+        if hide {
+            tab.toggle_selected_shown();
+        }
         let sessions = &self.sessions;
         if save && tab.unsaved() && !tab.in_dialog() {
             tab.save(sessions, false);

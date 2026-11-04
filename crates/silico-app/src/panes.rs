@@ -14,7 +14,8 @@ use silico_core::document::json::Node;
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 
-use crate::tab::{Edit, Tab};
+use crate::icons::{self, Icon, IconSize};
+use crate::tab::{Edit, Hideable, Tab};
 use crate::theme;
 
 /// The property panel's Name field, while it's typed in: the document's feature it's of,
@@ -117,11 +118,15 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
             crate::viewport::show(ui, self.tab.as_deref_mut(), self.sessions, self.drawing);
             return UiResponse::None;
         }
+        if *pane == Pane::Browser {
+            // Its rows' fills reach the pane's edges; each part pads itself.
+            self.browser(ui);
+            return UiResponse::None;
+        }
         egui::Frame::new()
             .inner_margin(egui::Margin::same(theme::VIEW_PADDING / 2))
             .show(ui, |ui| match pane {
-                Pane::Browser => self.browser(ui),
-                Pane::Viewport => {}
+                Pane::Browser | Pane::Viewport => {}
                 Pane::Properties => self.properties(ui),
                 Pane::Timeline => self.timeline(ui),
             });
@@ -154,117 +159,44 @@ fn building(tab: &Tab) -> &'static str {
     }
 }
 
-/// A group of rows, labelled for the accessibility tree (the browser's Origin, Bodies, and
-/// Sketches, by type, as Fusion's browser groups them).
-fn group(ui: &mut Ui, name: &str, rows: impl FnOnce(&mut Ui)) {
-    egui::CollapsingHeader::new(RichText::new(name).strong())
-        .id_salt(name)
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.scope_builder(UiBuilder::new().id_salt(("group", name)), |ui| {
-                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-                    node.set_role(egui::accesskit::Role::Group);
-                    node.set_label(name);
-                });
-                rows(ui);
-            });
-        });
-}
-
-/// A feature's health mark (section 9, *Error marks*): an error's or a warning's icon of
-/// the app's own, in `theme`'s colour, with its text for the accessibility tree and as its
-/// hover text; none for a healthy, suppressed, or unknown feature.
-fn mark(ui: &mut Ui, health: Health, text: Option<&str>) {
-    let (word, colour) = match health {
-        Health::Error => ("error", ui.visuals().error_fg_color),
-        Health::Warning => ("warning", ui.visuals().warn_fg_color),
-        Health::Healthy | Health::Suppressed | Health::Unknown => return,
-    };
-    let said = match text {
-        Some(text) => format!("{word}: {text}"),
-        None => word.to_owned(),
-    };
-    let side = theme::LIST_ITEM_HEIGHT - 8.0;
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
-    let painter = ui.painter();
-    match health {
-        // An error: a filled circle with a bar; a warning: a filled triangle with a bar.
-        Health::Error => {
-            painter.circle_filled(rect.center(), side / 2.0, colour);
-        }
-        _ => {
-            let points = vec![
-                egui::pos2(rect.center().x, rect.top()),
-                egui::pos2(rect.right(), rect.bottom()),
-                egui::pos2(rect.left(), rect.bottom()),
-            ];
-            painter.add(egui::Shape::convex_polygon(
-                points,
-                colour,
-                egui::Stroke::NONE,
-            ));
-        }
-    }
-    let bar = egui::Rect::from_center_size(rect.center(), Vec2::new(2.0, side * 0.45));
-    painter.rect_filled(bar, 0.0, Color32::WHITE);
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
-    response.on_hover_text(said);
-}
-
 impl<P: Clients + 'static> Panes<'_, P> {
-    /// The browser (section 8, *The browser*): Origin, Bodies, and Sketches, each row with a
-    /// visibility eye, its name, and its mark, from the rows the tab worked out as its
-    /// timeline was read ([`crate::tab::browser`]).
+    /// The browser (section 8, *The browser*; DESIGN.md, *egui mapping*): the document's
+    /// row, and under it Origin, Bodies, and Sketches, by type as Fusion groups them, each
+    /// under a header with its caret; each row with its eye (the tab's visibility, never
+    /// saved), its icon, its name, its meta at its right, and its mark, from the rows the
+    /// tab worked out as its timeline was read ([`crate::tab::browser`]).
     fn browser(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("BROWSER").small().strong());
+        title(ui, "BROWSER");
         let Some(tab) = self.tab.as_deref_mut() else {
-            ui.weak("No document open");
+            padded(ui, |ui| {
+                ui.weak("No document open");
+            });
             return;
         };
-        group(ui, "Origin", |ui| {
-            for name in ["Origin", "X", "Y", "Z", "XY", "XZ", "YZ"] {
-                row(ui, &mut tab.hidden, name, None, Health::Healthy, None);
-            }
-        });
-        if tab.timeline.is_none() {
-            ui.weak(building(tab));
-            return;
-        }
-        let mut selected = tab.selected.clone();
-        let crate::tab::Tab {
-            browser,
-            hidden,
-            said,
-            ..
-        } = &mut *tab;
-        for (name, rows) in [("Bodies", &browser.bodies), ("Sketches", &browser.sketches)] {
-            group(ui, name, |ui| {
-                for each in rows {
-                    let text = each
-                        .marked_by
-                        .as_ref()
-                        .and_then(|by| said.get(by.as_str()))
-                        .map(|said| said.message.as_str());
-                    if row(
-                        ui,
-                        hidden,
-                        &each.name,
-                        Some(selected.as_ref() == Some(&each.id)),
-                        each.health,
-                        text,
-                    ) {
-                        selected = Some(each.id.clone());
-                    }
-                }
+        let mut asked = Asked::default();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
+                tree(ui, tab, &mut asked);
+                ui.add_space(theme::BROWSER_PADDING_BOTTOM);
             });
+        for what in asked.toggled {
+            tab.toggle_shown(what);
         }
-        if selected != tab.selected
-            && let Some(id) = &selected
+        if let Some(id) = asked.selected
+            && tab.selected.as_ref() != Some(&id)
         {
             // A sketch chosen here fills an open dialog's selection box (section 9).
-            tab.pick(id);
+            tab.pick(&id);
+            tab.selected = Some(id);
         }
-        tab.selected = selected;
+        if let Some(id) = asked.edit {
+            // SEAM(#351): `tab.edit_sketch_or_feature(self.sessions, &id)`, Edit Sketch for a
+            // sketch; until then a sketch has no dialog, and this opens none.
+            tab.edit_feature(self.sessions, &id);
+            *self.started = true;
+        }
     }
 
     /// The timeline (section 8, *The timeline*): the features in order, left to right, each
@@ -422,52 +354,617 @@ fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxErr
     silico_core::document::json::read(crate::dialog::quoted(name).as_bytes())
 }
 
-/// A browser row: its eye (the tab's visibility, never saved), its name (selectable if
-/// `selected` is given; whether it was clicked is returned), and its mark.
-fn row(
-    ui: &mut Ui,
-    hidden: &mut std::collections::BTreeSet<String>,
-    name: &str,
-    selected: Option<bool>,
-    health: Health,
-    said: Option<&str>,
-) -> bool {
-    ui.horizontal(|ui| {
-        let shown = !hidden.contains(name);
-        let toggle = if shown { "Hide" } else { "Show" };
-        // The eye, drawn: a filled dot while the row shows, a ring while it's hidden.
-        let side = theme::LIST_ITEM_HEIGHT - 10.0;
-        let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
-        let colour = ui.visuals().widgets.inactive.fg_stroke.color;
-        if shown {
-            ui.painter()
-                .circle_filled(rect.center(), side / 3.0, colour);
-        } else {
-            ui.painter()
-                .circle_stroke(rect.center(), side / 3.0, egui::Stroke::new(1.0, colour));
+/// A feature's health mark (section 9, *Error marks*): an error's or a warning's icon of
+/// the app's own, in `theme`'s colour, with its text for the accessibility tree and as its
+/// hover text; none for a healthy, suppressed, or unknown feature.
+fn mark(ui: &mut Ui, health: Health, text: Option<&str>) {
+    let (word, colour) = match health {
+        Health::Error => ("error", ui.visuals().error_fg_color),
+        Health::Warning => ("warning", ui.visuals().warn_fg_color),
+        Health::Healthy | Health::Suppressed | Health::Unknown => return,
+    };
+    let said = match text {
+        Some(text) => format!("{word}: {text}"),
+        None => word.to_owned(),
+    };
+    let side = theme::LIST_ITEM_HEIGHT - 8.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
+    let painter = ui.painter();
+    match health {
+        // An error: a filled circle with a bar; a warning: a filled triangle with a bar.
+        Health::Error => {
+            painter.circle_filled(rect.center(), side / 2.0, colour);
         }
-        response.widget_info(|| {
-            WidgetInfo::labeled(WidgetType::Button, true, format!("{toggle} {name}"))
+        _ => {
+            let points = vec![
+                egui::pos2(rect.center().x, rect.top()),
+                egui::pos2(rect.right(), rect.bottom()),
+                egui::pos2(rect.left(), rect.bottom()),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                points,
+                colour,
+                egui::Stroke::NONE,
+            ));
+        }
+    }
+    let bar = egui::Rect::from_center_size(rect.center(), Vec2::new(2.0, side * 0.45));
+    painter.rect_filled(bar, 0.0, Color32::WHITE);
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
+    response.on_hover_text(said);
+}
+
+/// What the browser's rows asked for this frame, done once they're drawn: eyes clicked, a
+/// row selected, and a sketch's Edit Sketch.
+#[derive(Default)]
+struct Asked {
+    toggled: Vec<Hideable>,
+    selected: Option<FeatureId>,
+    edit: Option<FeatureId>,
+}
+
+/// The origin's rows, each by its name with its icon (Fusion's Origin folder: its point,
+/// its axes, and its planes).
+const ORIGIN: [(&str, Icon); 7] = [
+    ("Origin", Icon::Origin),
+    ("X", Icon::Axis),
+    ("Y", Icon::Axis),
+    ("Z", Icon::Axis),
+    ("XY", Icon::Plane),
+    ("XZ", Icon::Plane),
+    ("YZ", Icon::Plane),
+];
+
+/// A sketch row's prefix, `(–)`, `(+)`, or `(?)` (DESIGN.md, *Errors*: SolidWorks'
+/// definition prefixes). SEAM(#351): `tab.prefixes.prefix(id)`; none until it lands.
+fn sketch_prefix(_tab: &Tab, _id: &FeatureId) -> Option<&'static str> {
+    None
+}
+
+/// Whether a sketch's row asks for Edit Sketch. SEAM(#351):
+/// `crate::sketch::edit_asked(Some(row), tab.can_sketch())`; none until it lands.
+fn sketch_edit_asked(_tab: &Tab, _row: &egui::Response) -> bool {
+    false
+}
+
+/// A prefix's colour (`.row .prefix`, `.under`, `.over`).
+fn prefix_colour(prefix: &str) -> Color32 {
+    match prefix {
+        "(–)" => theme::SKETCH_UNDER_DEFINED,
+        "(+)" => theme::SKETCH_OVER_DEFINED,
+        _ => theme::BROWSER_PREFIX,
+    }
+}
+
+/// The browser's tree, for `tab`: what its rows ask is put in `asked`.
+fn tree(ui: &mut Ui, tab: &Tab, asked: &mut Asked) {
+    let ctx = ui.ctx().clone();
+    let name = tab.name();
+    let root_name = name.strip_suffix(".silico").unwrap_or(name);
+    let failed = tab.timeline.as_ref().is_some_and(|timeline| {
+        timeline.problems > 0
+            || timeline
+                .features
+                .as_ref()
+                .is_some_and(|features| features.iter().any(|entry| entry.health == Health::Error))
+    });
+    let root_text = tab
+        .document_problems
+        .first()
+        .map(|said| said.message.as_str());
+    let mut root = Openness::load(&ctx, "root");
+    let answer = row(
+        ui,
+        &Line {
+            id: egui::Id::new("browser-root"),
+            depth: 0,
+            caret: Some(root.open),
+            eye: None,
+            icon: Icon::Doc,
+            prefix: None,
+            name: root_name,
+            selected: None,
+            meta: tab.unsaved().then_some("unsaved"),
+            mark: failed.then_some((Health::Error, root_text)),
+            failed: false,
+        },
+    );
+    root.take(&ctx, &answer);
+    if !root.open {
+        return;
+    }
+    let origin_open = header(ui, "Origin", None);
+    if origin_open {
+        group(ui, "Origin", |ui| {
+            for (name, icon) in ORIGIN {
+                let what = Hideable::Origin(name);
+                let shown = tab.shown(&what);
+                let answer = row(
+                    ui,
+                    &Line {
+                        id: egui::Id::new(("browser-origin", name)),
+                        depth: 2,
+                        caret: None,
+                        eye: Some(shown),
+                        icon,
+                        prefix: None,
+                        name,
+                        selected: None,
+                        meta: None,
+                        mark: None,
+                        failed: false,
+                    },
+                );
+                if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
+                    asked.toggled.push(what);
+                }
+            }
         });
-        let response = response.on_hover_text(format!("{toggle} {name}"));
-        if response.clicked() {
-            if shown {
-                hidden.insert(name.to_owned());
-            } else {
-                hidden.remove(name);
-            }
+    }
+    let Some(timeline) = &tab.timeline else {
+        padded(ui, |ui| {
+            ui.weak(building(tab));
+        });
+        return;
+    };
+    let any_features = timeline
+        .features
+        .as_ref()
+        .is_some_and(|features| !features.is_empty());
+    let no_body = match tab.document_problems.first() {
+        Some(said) if any_features => format!("No body: {}", said.message),
+        None if any_features => "No body: nothing builds one yet".to_owned(),
+        _ => "None yet. A pad or a primitive makes one.".to_owned(),
+    };
+    let groups = [
+        ("Bodies", &tab.browser.bodies, Icon::Body, no_body),
+        (
+            "Sketches",
+            &tab.browser.sketches,
+            Icon::Sketch,
+            "None yet. Create Sketch starts one.".to_owned(),
+        ),
+    ];
+    for (group_name, rows, icon, empty) in groups {
+        let count = rows.is_empty().then_some("0");
+        if !header(ui, group_name, count) {
+            continue;
         }
-        let clicked = match selected {
-            Some(selected) => ui.selectable_label(selected, name).clicked(),
-            None => {
-                ui.label(name);
-                false
+        let sketches = group_name == "Sketches";
+        group(ui, group_name, |ui| {
+            if rows.is_empty() {
+                empty_words(ui, &empty);
             }
+            for each in rows {
+                let text = each
+                    .marked_by
+                    .as_ref()
+                    .and_then(|by| tab.said.get(by.as_str()))
+                    .map(|said| said.message.as_str());
+                let what = Hideable::Feature(each.id.clone());
+                let marked = matches!(each.health, Health::Error | Health::Warning);
+                let answer = row(
+                    ui,
+                    &Line {
+                        id: egui::Id::new(("browser-feature", each.id.as_str())),
+                        depth: 2,
+                        caret: None,
+                        eye: Some(tab.shown(&what)),
+                        icon,
+                        prefix: if sketches {
+                            sketch_prefix(tab, &each.id)
+                        } else {
+                            None
+                        },
+                        name: &each.name,
+                        selected: Some(tab.selected.as_ref() == Some(&each.id)),
+                        meta: None,
+                        mark: marked.then_some((each.health, text)),
+                        // A sketch's own failure reddens its name (`.row.err`); a body's
+                        // mark is its chain's.
+                        failed: sketches && each.health == Health::Error,
+                    },
+                );
+                if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
+                    asked.toggled.push(what);
+                } else if answer.row.clicked() {
+                    asked.selected = Some(each.id.clone());
+                }
+                if sketches && sketch_edit_asked(tab, &answer.row) {
+                    asked.edit = Some(each.id.clone());
+                }
+            }
+        });
+    }
+}
+
+/// A header's or the document's row: open or not (egui's memory keeps it, by `key`).
+struct Openness {
+    state: egui::collapsing_header::CollapsingState,
+    open: bool,
+}
+
+impl Openness {
+    /// The open state of the row `key`; open at first.
+    fn load(ctx: &egui::Context, key: &str) -> Self {
+        let id = egui::Id::new(("browser-open", key));
+        let state = egui::collapsing_header::CollapsingState::load_with_default_open(ctx, id, true);
+        let open = state.is_open();
+        Openness { state, open }
+    }
+
+    /// Its caret's state taken from the row: opened or closed, and kept.
+    fn take(&mut self, ctx: &egui::Context, answer: &RowAnswer) {
+        if let Some(open) = answer.open
+            && open != self.open
+        {
+            self.open = open;
+            self.state.set_open(open);
+            self.state.store(ctx);
+        }
+    }
+}
+
+/// A group's header row (a folder, with its caret, and `meta`): whether it's open.
+fn header(ui: &mut Ui, name: &str, meta: Option<&str>) -> bool {
+    let ctx = ui.ctx().clone();
+    let mut openness = Openness::load(&ctx, name);
+    let answer = row(
+        ui,
+        &Line {
+            id: egui::Id::new(("browser-group", name)),
+            depth: 1,
+            caret: Some(openness.open),
+            eye: None,
+            icon: Icon::Folder,
+            prefix: None,
+            name,
+            selected: None,
+            meta,
+            mark: None,
+            failed: false,
+        },
+    );
+    openness.take(&ctx, &answer);
+    openness.open
+}
+
+/// A group of rows, labelled for the accessibility tree (the browser's Origin, Bodies, and
+/// Sketches, by type, as Fusion's browser groups them).
+fn group(ui: &mut Ui, name: &str, rows: impl FnOnce(&mut Ui)) {
+    ui.scope_builder(UiBuilder::new().id_salt(("group", name)), |ui| {
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_role(egui::accesskit::Role::Group);
+            node.set_label(name);
+        });
+        rows(ui);
+    });
+}
+
+/// The pane's title (`.panel-title`): `text`, in capitals, on its row.
+fn title(ui: &mut Ui, text: &str) {
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), theme::TITLE_BAR_HEIGHT),
+        Sense::hover(),
+    );
+    let job = egui::text::LayoutJob::single_section(
+        text.to_owned(),
+        egui::TextFormat {
+            font_id: egui::FontId::proportional(theme::HEADER_SIZE),
+            extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
+            color: theme::TEXT_STRONG,
+            ..Default::default()
+        },
+    );
+    let galley = ui.painter().layout_job(job);
+    let at = egui::pos2(
+        rect.left() + theme::BROWSER_TITLE_PADDING,
+        rect.center().y - galley.size().y / 2.0,
+    );
+    ui.painter().galley(at, galley, theme::TEXT_STRONG);
+}
+
+/// `add`, at the pane's padding from its left.
+fn padded(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(theme::VIEW_PADDING, 0))
+        .show(ui, add);
+}
+
+/// An empty group's words (`.tree-empty`).
+fn empty_words(ui: &mut Ui, words: &str) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: margin(theme::BROWSER_EMPTY_PADDING_LEFT),
+            right: theme::VIEW_PADDING,
+            top: margin(theme::BROWSER_EMPTY_PADDING_TOP),
+            bottom: margin(theme::BROWSER_EMPTY_PADDING_BOTTOM),
+        })
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(words)
+                    .size(theme::HEADER_SIZE)
+                    .color(theme::BROWSER_EMPTY),
+            );
+        });
+}
+
+/// A margin's points, as egui's `Margin` holds them (whole points, each well under 127).
+fn margin(points: f32) -> i8 {
+    // The browser's paddings are whole points under 127.
+    points.round().clamp(0.0, f32::from(i8::MAX)) as i8
+}
+
+/// A browser row (`.row`; app.js's `row`): what it shows.
+struct Line<'a> {
+    /// Its interaction's ID: unique in the tree.
+    id: egui::Id,
+    /// Its depth in the tree, which indents it.
+    depth: u8,
+    /// Its caret, if it has one: whether it's open.
+    caret: Option<bool>,
+    /// Its eye, if it has one: whether it shows.
+    eye: Option<bool>,
+    icon: Icon,
+    /// A sketch's definition prefix, before its name.
+    prefix: Option<&'static str>,
+    name: &'a str,
+    /// Whether it's selectable, and selected; a label if not.
+    selected: Option<bool>,
+    /// Its words at its right (`.r-meta`).
+    meta: Option<&'a str>,
+    /// Its mark (`.r-err`, `.r-warn`): its health and the text it's marked with.
+    mark: Option<(Health, Option<&'a str>)>,
+    /// Whether its name is the error's red (`.row.err`).
+    failed: bool,
+}
+
+/// What a row answered: the row's response, its caret's state, and its eye's response.
+struct RowAnswer {
+    row: egui::Response,
+    /// Whether its caret is open, its click this frame taken.
+    open: Option<bool>,
+    eye: Option<egui::Response>,
+}
+
+/// The colours of a row's name and its icon (`.row`, `:hover`, `.selected`, `.err`,
+/// `.hidden-obj`): hovered or selected, failed, and hidden.
+fn row_colours(hovered: bool, selected: bool, failed: bool, hidden: bool) -> (Color32, Color32) {
+    let (name, icon) = match (selected, failed, hovered) {
+        (true, _, _) => (theme::ON_SELECTION, theme::ON_SELECTION),
+        (false, true, _) => (theme::ERROR_TEXT, theme::ROW_ICON),
+        (false, false, true) => (theme::TEXT_ROW_HOVER, theme::ROW_ICON),
+        (false, false, false) => (theme::TEXT_ROW, theme::ROW_ICON),
+    };
+    if hidden {
+        (faded(name), faded(icon))
+    } else {
+        (name, icon)
+    }
+}
+
+/// `colour` at the hidden rows' opacity, as CSS's `opacity` takes it: its alpha scaled and
+/// rounded, its colour kept.
+fn faded(colour: Color32) -> Color32 {
+    let [r, g, b, a] = colour.to_srgba_unmultiplied();
+    // An alpha times a fraction under one: within u8's range.
+    let alpha = (f32::from(a) * theme::BROWSER_HIDDEN_OPACITY).round() as u8;
+    Color32::from_rgba_unmultiplied(r, g, b, alpha)
+}
+
+/// The fill behind a row: selected, hovered, or none (`.row.selected`, `.row:hover`).
+fn row_fill(hovered: bool, selected: bool) -> Option<Color32> {
+    if selected {
+        Some(theme::BROWSER_ROW_SELECTED_BG)
+    } else if hovered {
+        Some(theme::BROWSER_ROW_HOVER_BG)
+    } else {
+        None
+    }
+}
+
+/// A browser row, [`theme::LIST_ITEM_HEIGHT`] high across the pane: its caret, its eye, its
+/// icon, its prefix, its name, its meta at its right, and its mark. The row is one widget
+/// for the accessibility tree, by its name (selectable, with its state, if `selected` is
+/// given); its caret and its eye are buttons of their own on top of it.
+fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), theme::LIST_ITEM_HEIGHT),
+        Sense::hover(),
+    );
+    let id = line.id;
+    let sense = if line.selected.is_some() {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(rect, id, sense);
+    let selected = line.selected.unwrap_or(false);
+    response.widget_info(|| match line.selected {
+        Some(selected) => {
+            WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, line.name)
+        }
+        None => WidgetInfo::labeled(WidgetType::Label, true, line.name),
+    });
+    let centre = rect.center().y;
+    let gap = theme::BROWSER_ROW_GAP;
+    let place = |x: f32, side: f32| {
+        egui::Rect::from_min_size(egui::pos2(x, centre - side / 2.0), Vec2::splat(side))
+    };
+    let mut x =
+        rect.left() + theme::BROWSER_ROW_PADDING_LEFT + f32::from(line.depth) * theme::TREE_INDENT;
+    let caret_rect = place(x, theme::BROWSER_CARET_SIDE);
+    x += theme::BROWSER_CARET_SIDE + gap;
+    let eye_rect = place(x, theme::BROWSER_EYE_SIDE);
+    x += theme::BROWSER_EYE_SIDE + gap;
+    // The caret and the eye, on top of the row, each drawn as its click leaves it, so
+    // nothing shows a frame late.
+    let caret = line.caret.map(|open| {
+        let caret = ui.interact(caret_rect, id.with("caret"), Sense::click());
+        let open = if caret.clicked() { !open } else { open };
+        (caret, open)
+    });
+    let eye = line.eye.map(|shown| {
+        let eye = ui.interact(eye_rect, id.with("eye"), Sense::click());
+        let shown = if eye.clicked() { !shown } else { shown };
+        (eye, shown)
+    });
+    let hovered = response.contains_pointer();
+    if let Some(fill) = row_fill(hovered, selected) {
+        ui.painter().rect_filled(rect, 0.0, fill);
+    }
+    theme::focus_ring(ui, &response, rect, 0, egui::StrokeKind::Inside);
+    // The caret: a chevron turned down while open (`.caret.open`).
+    if let Some((caret, open)) = &caret {
+        let word = if *open { "Collapse" } else { "Expand" };
+        caret.widget_info(|| {
+            WidgetInfo::labeled(WidgetType::Button, true, format!("{word} {}", line.name))
+        });
+        let chevron = egui::Rect::from_center_size(
+            caret_rect.center(),
+            Vec2::splat(theme::BROWSER_CARET_ICON),
+        );
+        let turn = if *open {
+            std::f32::consts::FRAC_PI_2
+        } else {
+            0.0
         };
-        mark(ui, health, said);
-        clicked
-    })
-    .inner
+        Icon::Chevron
+            .image(IconSize::Small)
+            .fit_to_exact_size(chevron.size())
+            .tint(theme::BROWSER_CARET)
+            .rotate(turn, Vec2::splat(0.5))
+            .paint_at(ui, chevron);
+        theme::focus_ring(
+            ui,
+            caret,
+            caret_rect,
+            theme::BROWSER_EYE_CORNER_RADIUS,
+            egui::StrokeKind::Inside,
+        );
+    }
+    // The eye: open while the row shows, struck through while it's hidden.
+    let eye = eye.map(|(eye, shown)| {
+        let word = if shown { "Hide" } else { "Show" };
+        eye.widget_info(|| {
+            WidgetInfo::labeled(WidgetType::Button, true, format!("{word} {}", line.name))
+        });
+        let colour = if eye.hovered() {
+            ui.painter().rect_filled(
+                eye_rect,
+                theme::BROWSER_EYE_CORNER_RADIUS,
+                theme::BROWSER_EYE_HOVER_BG,
+            );
+            theme::BROWSER_EYE_HOVER
+        } else if shown {
+            theme::BROWSER_EYE
+        } else {
+            theme::BROWSER_EYE_OFF
+        };
+        let glyph = if shown { Icon::Eye } else { Icon::EyeOff };
+        let at = egui::Rect::from_center_size(eye_rect.center(), Vec2::splat(icons::ICON_SIZE));
+        glyph.image(IconSize::Small).tint(colour).paint_at(ui, at);
+        theme::focus_ring(
+            ui,
+            &eye,
+            eye_rect,
+            theme::BROWSER_EYE_CORNER_RADIUS,
+            egui::StrokeKind::Inside,
+        );
+        let hide = egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::H);
+        (crate::bar::tooltip(eye, word, Some(hide), None), shown)
+    });
+    let hidden = eye.as_ref().is_some_and(|(_, shown)| !shown);
+    let (name_colour, icon_colour) = row_colours(hovered, selected, line.failed, hidden);
+    // The icon.
+    line.icon
+        .image(IconSize::Small)
+        .tint(icon_colour)
+        .paint_at(ui, place(x, icons::ICON_SIZE));
+    x += icons::ICON_SIZE + gap;
+    // The prefix, in the monospace font.
+    if let Some(prefix) = line.prefix {
+        let colour = if selected {
+            theme::ON_SELECTION
+        } else {
+            prefix_colour(prefix)
+        };
+        let galley = ui.painter().layout_no_wrap(
+            prefix.to_owned(),
+            egui::FontId::monospace(theme::MONOSPACE_SIZE),
+            colour,
+        );
+        let width = galley.size().x;
+        ui.painter().galley(
+            egui::pos2(x, centre - galley.size().y / 2.0),
+            galley,
+            colour,
+        );
+        x += width + gap;
+    }
+    // From the right: the mark, then the meta.
+    let mut right = rect.right() - theme::BROWSER_ROW_PADDING_RIGHT;
+    if let Some((health, text)) = line.mark {
+        let at = place(right - icons::ICON_SIZE, icons::ICON_SIZE);
+        browser_mark(ui, id.with("mark"), at, health, text);
+        right -= icons::ICON_SIZE + gap;
+    }
+    if let Some(meta) = line.meta {
+        let colour = if selected {
+            theme::ON_SELECTION
+        } else {
+            theme::BROWSER_META
+        };
+        let galley = ui.painter().layout_no_wrap(
+            meta.to_owned(),
+            egui::FontId::proportional(theme::HEADER_SIZE),
+            colour,
+        );
+        let width = galley.size().x;
+        ui.painter().galley(
+            egui::pos2(right - width, centre - galley.size().y / 2.0),
+            galley,
+            colour,
+        );
+        right -= width + gap;
+    }
+    // The name, cut short with an ellipsis where it won't fit (`text-overflow: ellipsis`).
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        line.name.to_owned(),
+        egui::FontId::proportional(theme::BODY_SIZE),
+        name_colour,
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width((right - x).max(0.0));
+    let galley = ui.painter().layout_job(job);
+    ui.painter().galley(
+        egui::pos2(x, centre - galley.size().y / 2.0),
+        galley,
+        name_colour,
+    );
+    RowAnswer {
+        row: response,
+        open: caret.map(|(_, open)| open),
+        eye: eye.map(|(eye, _)| eye),
+    }
+}
+
+/// A row's health mark (`.r-err`, `.r-warn`; section 9, *Error marks*): the error's icon in
+/// the error's red, or the warning's in its orange, at `rect`, with its text for the
+/// accessibility tree and as its hover text; none for any other health.
+fn browser_mark(ui: &mut Ui, id: egui::Id, rect: egui::Rect, health: Health, text: Option<&str>) {
+    let (word, glyph, colour) = match health {
+        Health::Error => ("error", Icon::Error, theme::ERROR_TEXT),
+        Health::Warning => ("warning", Icon::Warn, theme::WARNING),
+        Health::Healthy | Health::Suppressed | Health::Unknown => return,
+    };
+    let said = match text {
+        Some(text) => format!("{word}: {text}"),
+        None => word.to_owned(),
+    };
+    glyph.image(IconSize::Small).tint(colour).paint_at(ui, rect);
+    let response = ui.interact(rect, id, Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &said));
+    response.on_hover_text(said);
 }
 
 #[cfg(test)]
@@ -556,6 +1053,70 @@ mod tests {
                 Some("a91cw0de".to_owned())
             )]
         );
+    }
+
+    #[test]
+    fn a_rows_name_and_icon_are_the_prototypes_in_each_state() {
+        let rgb = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // styles.css: `.row` `--g700`, its `.r-icon` `--g500`; `:hover` `--g800`;
+        // `.selected` both `--blue-text`; `.err .r-name` `--red`, and `--blue-text` when
+        // selected too.
+        let cases = [
+            ((false, false, false), (0xbfbfbf, 0x827f7f)),
+            ((true, false, false), (0xe0dfdf, 0x827f7f)),
+            ((false, true, false), (0xf0f2ff, 0xf0f2ff)),
+            ((true, true, false), (0xf0f2ff, 0xf0f2ff)),
+            ((false, false, true), (0xff3865, 0x827f7f)),
+            ((true, false, true), (0xff3865, 0x827f7f)),
+            ((false, true, true), (0xf0f2ff, 0xf0f2ff)),
+        ];
+        for ((hovered, selected, failed), (name, icon)) in cases {
+            assert_eq!(
+                row_colours(hovered, selected, failed, false),
+                (rgb(name), rgb(icon)),
+                "{hovered} {selected} {failed}"
+            );
+        }
+        // `.hidden-obj .r-name, .hidden-obj .r-icon { opacity: .45 }`: each at 45% of 255,
+        // 115, over what's behind it.
+        let at = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgba_unmultiplied(r, g, b, 115)
+        };
+        assert_eq!(
+            row_colours(false, false, false, true),
+            (at(0xbfbfbf), at(0x827f7f))
+        );
+        assert_eq!(
+            row_colours(false, true, false, true),
+            (at(0xf0f2ff), at(0xf0f2ff))
+        );
+    }
+
+    #[test]
+    fn a_rows_fill_is_blue_selected_gray_hovered_and_none_at_rest() {
+        // `.row.selected` `--blue`, after `.row:hover` `--g250` in styles.css, so a selected
+        // row hovered stays blue.
+        let blue = Some(Color32::from_rgb(0x18, 0x6a, 0xdd));
+        assert_eq!(row_fill(false, true), blue);
+        assert_eq!(row_fill(true, true), blue);
+        assert_eq!(
+            row_fill(true, false),
+            Some(Color32::from_rgb(0x27, 0x26, 0x26))
+        );
+        assert_eq!(row_fill(false, false), None);
+    }
+
+    #[test]
+    fn a_sketchs_prefix_is_coloured_by_its_state() {
+        // `.prefix.under` `--sk-under` (`#7a95ff`), `.over` `--sk-over` (`#ff3865`), and
+        // otherwise `--g550`.
+        assert_eq!(prefix_colour("(–)"), Color32::from_rgb(0x7a, 0x95, 0xff));
+        assert_eq!(prefix_colour("(+)"), Color32::from_rgb(0xff, 0x38, 0x65));
+        assert_eq!(prefix_colour("(?)"), Color32::from_rgb(0x93, 0x90, 0x90));
     }
 
     #[test]

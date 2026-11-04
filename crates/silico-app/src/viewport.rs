@@ -1397,15 +1397,14 @@ pub fn show<P: Clients + 'static>(
         return;
     };
     let now = drawing.now();
-    let hidden: BTreeSet<&FeatureId> = tab
+    let now_hidden: BTreeSet<FeatureId> = tab
         .browser
         .bodies
         .iter()
-        .filter(|row| tab.hidden.contains(&row.name))
-        .map(|row| &row.id)
+        .filter(|row| !tab.shown(&crate::tab::Hideable::Feature(row.id.clone())))
+        .map(|row| row.id.clone())
         .collect();
     let view = &mut tab.view;
-    let now_hidden: BTreeSet<FeatureId> = hidden.iter().map(|id| (*id).clone()).collect();
     if now_hidden != view.hidden {
         view.hidden = now_hidden;
         // A body shown again may reach farther than the view's least allowed.
