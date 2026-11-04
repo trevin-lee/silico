@@ -15040,3 +15040,72 @@ fn the_modify_boxs_buttons_are_its_icons_named_accept_and_cancel_with_no_glyph_d
     read_with_constraints(&mut h, 5);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn the_over_define_prompts_rows_share_their_edges_its_keys_are_16_high_at_their_tops_and_its_head_has_the_warning()
+ {
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    // The app's fonts and icons, so text and icons have their sizes.
+    silico_app::theme::apply(&h.ctx);
+    step(&mut h);
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(50.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(60.0, 20.0));
+    step_until(&mut h, "the Modify box open", |h| {
+        sketch_mode(h).and_then(|mode| mode.modify_view()).is_some()
+    });
+    modify(&f, &mut h, ModifyAction::Typed("99".to_owned()));
+    modify(&f, &mut h, ModifyAction::Accept);
+    settled(&mut h);
+    // Laid out: a modal is centred, so it moves as it's first sized.
+    let rows = |h: &AppHarness| {
+        prompt(h).map(|p| {
+            ["Make it driven", "Leave it driving", "Cancel"]
+                .map(|title| p.get_by_role_and_label(Role::Button, title).rect())
+        })
+    };
+    let last = std::cell::Cell::new(rows(&h));
+    step_until(&mut h, "the prompt laid out", |h| {
+        let now = rows(h);
+        now.is_some() && now == last.replace(now)
+    });
+    let rows = rows(&h).unwrap();
+    let prompt = prompt(&h).unwrap();
+    // The prototype's 440 wide: its rows the width inside its 16-point sides and border,
+    // 406, each with the same left and right edges.
+    for row in &rows {
+        assert!((row.width() - 406.0).abs() < 1e-3, "{rows:?}");
+        assert!((row.left() - rows[0].left()).abs() < 1e-3, "{rows:?}");
+        assert!((row.right() - rows[0].right()).abs() < 1e-3, "{rows:?}");
+    }
+    // Each key's badge 16 high (`.kbd`), at its row's top inside its border and padding
+    // (1 + 8), and its right inside them (1 + 10).
+    for (row, key) in rows.iter().zip(["1", "2", "Esc"]) {
+        let badge = prompt.get_by_label(key).rect();
+        assert!((badge.height() - 16.0).abs() < 1e-3, "{key} {badge:?}");
+        assert!(badge.width() >= 16.0 - 1e-3, "{key} {badge:?}");
+        assert!(
+            (badge.top() - (row.top() + 9.0)).abs() < 1e-3,
+            "{key} {badge:?} {row:?}"
+        );
+        assert!(
+            (badge.right() - (row.right() - 11.0)).abs() < 1e-3,
+            "{key} {badge:?} {row:?}"
+        );
+    }
+    // The second row's words wrap beside its badge: the row taller than a line's two.
+    assert!(rows[1].height() > rows[2].height() + 8.0, "{rows:?}");
+    // The head: the title, after the warning's icon (an image, no text).
+    let title = prompt
+        .get_by_label("This dimension over-defines Box")
+        .rect();
+    assert!(
+        title.left() >= rows[0].left() + 14.0 + 8.0 - 1e-3,
+        "{title:?} {rows:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}

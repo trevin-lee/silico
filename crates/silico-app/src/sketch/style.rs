@@ -191,6 +191,21 @@ pub const SKETCH_PALETTE_CLEARANCE: f32 = 8.0;
 pub const SKETCH_PROMPT_CHOICE_STROKE: Color32 = PANEL_BORDER;
 pub const SKETCH_KEY_BG: Color32 = PANEL_BORDER;
 pub const SKETCH_KEY_STROKE: Color32 = GRAY_350;
+/// The over-define prompt's padding (the prototype's `.m-head` and `.m-body`: 16 at its
+/// sides, 12 above and below), the gap between its choices (`.choice`'s margin), each
+/// choice's padding (8 above and below, 10 at the sides) and the gap between its words and
+/// its key; a key's badge's height (`.kbd`, its border inside it) and text (Gray.800).
+pub const SKETCH_PROMPT_MARGIN: Margin = Margin {
+    left: 16,
+    right: 16,
+    top: 12,
+    bottom: 12,
+};
+pub const SKETCH_PROMPT_CHOICE_GAP: f32 = 6.0;
+pub const SKETCH_PROMPT_CHOICE_PADDING: Margin = Margin::symmetric(10, 8);
+pub const SKETCH_PROMPT_CHOICE_GAP_X: f32 = 10.0;
+pub const SKETCH_KEY_HEIGHT: f32 = 16.0;
+pub const SKETCH_KEY_TEXT: Color32 = hex(0xe0dfdf);
 
 /// Which field a frame is for: a feature dialog's, or the Modify box's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

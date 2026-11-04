@@ -363,21 +363,28 @@ pub fn offer_prompt(ctx: &egui::Context, view: &OfferView) -> Option<OfferChoice
                 .fill(FLOATING_BG)
                 .stroke(Stroke::new(1.0, PANEL_BORDER))
                 .corner_radius(CornerRadius::same(6))
-                .inner_margin(Margin::same(16)),
+                .inner_margin(SKETCH_PROMPT_MARGIN),
         )
         .show(ctx, |ui| {
             *ui.visuals_mut() = super::bar::panel_visuals();
-            ui.set_width(SKETCH_PROMPT_WIDTH);
+            // The prototype's 440 wide, its border and its sides' padding inside it.
+            let margin = SKETCH_PROMPT_MARGIN.left + SKETCH_PROMPT_MARGIN.right;
+            ui.set_width(SKETCH_PROMPT_WIDTH - 2.0 - f32::from(margin));
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Dialog);
                 node.set_label("Dimension over-defines the sketch");
             });
-            ui.label(
-                RichText::new(format!("This dimension over-defines {}", view.sketch))
-                    .size(14.0)
-                    .color(TEXT_STRONG),
-            );
-            ui.add_space(6.0);
+            // Its head (`.m-head`): the warning's icon, then the title, 8 apart.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.add(icons::icon(Icon::Warn).tint(TEXT_STRONG));
+                ui.label(
+                    RichText::new(format!("This dimension over-defines {}", view.sketch))
+                        .size(14.0)
+                        .color(TEXT_STRONG),
+                );
+            });
+            ui.add_space(8.0);
             let value = view
                 .value
                 .as_deref()
@@ -395,7 +402,8 @@ pub fn offer_prompt(ctx: &egui::Context, view: &OfferView) -> Option<OfferChoice
                         .color(ERROR_TEXT),
                 );
             }
-            ui.add_space(10.0);
+            ui.add_space(12.0);
+            ui.spacing_mut().item_spacing.y = SKETCH_PROMPT_CHOICE_GAP;
             for (choice, title, words, key) in [
                 (
                     OfferChoice::Driven,
@@ -425,38 +433,38 @@ pub fn offer_prompt(ctx: &egui::Context, view: &OfferView) -> Option<OfferChoice
     chose
 }
 
-/// One of the prompt's choices (the prototype's `.choice`): its title, its words, and its
-/// key at the right, the whole row a button. Whether it was clicked.
+/// One of the prompt's choices (the prototype's `.choice`): the prompt's whole width, its
+/// title and its words in a column that wraps them, and its key's badge ([`key_badge`]) at
+/// the top right, [`SKETCH_PROMPT_CHOICE_PADDING`]'s gap from them; the whole row a button.
+/// Whether it was clicked.
 fn choice_row(ui: &mut Ui, title: &str, words: &str, key: &str) -> bool {
+    let padding = SKETCH_PROMPT_CHOICE_PADDING;
     let frame = egui::Frame::new()
         .stroke(Stroke::new(1.0, SKETCH_PROMPT_CHOICE_STROKE))
         .corner_radius(CornerRadius::same(6))
-        .inner_margin(Margin::symmetric(10, 8));
+        .inner_margin(padding);
+    // Inside its border and padding, the row's width shared by the words and the badge.
+    let inner = ui.available_width() - 2.0 - f32::from(padding.left) - f32::from(padding.right);
+    let badge = key_size(ui, key);
     let shown = frame.show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
+        ui.set_width(inner);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = SKETCH_PROMPT_CHOICE_GAP_X;
+            let column = (inner - badge.x - SKETCH_PROMPT_CHOICE_GAP_X).max(0.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new(title).color(TEXT_STRONG));
-                ui.label(
-                    RichText::new(words)
-                        .size(CANVAS_LABEL_SIZE)
-                        .color(TEXT_SUBDUED),
+                ui.set_width(column);
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.add(egui::Label::new(RichText::new(title).color(TEXT_STRONG)).wrap());
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(words)
+                            .size(CANVAS_LABEL_SIZE)
+                            .color(TEXT_SUBDUED),
+                    )
+                    .wrap(),
                 );
             });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                egui::Frame::new()
-                    .fill(SKETCH_KEY_BG)
-                    .stroke(Stroke::new(1.0, SKETCH_KEY_STROKE))
-                    .corner_radius(CornerRadius::same(3))
-                    .inner_margin(Margin::symmetric(4, 0))
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(key)
-                                .size(SKETCH_MODIFY_HINT_SIZE)
-                                .color(TEXT_DEFAULT),
-                        );
-                    });
-            });
+            key_badge(ui, key, badge);
         });
     });
     let response = ui.interact(
@@ -466,4 +474,39 @@ fn choice_row(ui: &mut Ui, title: &str, words: &str, key: &str) -> bool {
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, title));
     response.clicked()
+}
+
+/// A key's badge's size (the prototype's `.kbd`): [`SKETCH_KEY_HEIGHT`] high, and as wide
+/// as its text and 4 each side, its border too, but never narrower than it is high.
+fn key_size(ui: &Ui, key: &str) -> Vec2 {
+    let text = ui.painter().layout_no_wrap(
+        key.to_owned(),
+        egui::FontId::proportional(SKETCH_MODIFY_HINT_SIZE),
+        TEXT_DEFAULT,
+    );
+    let width = (text.size().x + 2.0 * 4.0 + 2.0).max(SKETCH_KEY_HEIGHT);
+    Vec2::new(width, SKETCH_KEY_HEIGHT)
+}
+
+/// A key's badge (the prototype's `.kbd`), `size` big: Gray.250, its border Gray.350 and 2
+/// at its foot, its corners 3, and the key centred, in the hint's size; a label in the
+/// accessibility tree.
+fn key_badge(ui: &mut Ui, key: &str, size: Vec2) {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, key));
+    let painter = ui.painter();
+    let corners = CornerRadius::same(3);
+    // The border's colour under the whole badge, then its fill inset 1 at the top and
+    // sides and 2 at its foot.
+    painter.rect_filled(rect, corners, SKETCH_KEY_STROKE);
+    let inside =
+        egui::Rect::from_min_max(rect.min + Vec2::splat(1.0), rect.max - Vec2::new(1.0, 2.0));
+    painter.rect_filled(inside, CornerRadius::same(2), SKETCH_KEY_BG);
+    painter.text(
+        inside.center(),
+        egui::Align2::CENTER_CENTER,
+        key,
+        egui::FontId::proportional(SKETCH_MODIFY_HINT_SIZE),
+        SKETCH_KEY_TEXT,
+    );
 }
