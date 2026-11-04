@@ -175,6 +175,20 @@ pub struct PixelRect {
     pub size: [u32; 2],
 }
 
+impl PixelRect {
+    /// Whether a frame takes it as its picking: from 1 to [`MAX_PICKING_SIDE`] pixels on
+    /// each side, its corner within [`MAX_PICKING_OFFSET`] of the frame's top left. The one
+    /// rule, for the frame's check and for a caller asking before it sends one.
+    pub fn takes(&self) -> bool {
+        let sides = self.size.iter().all(|s| (1..=MAX_PICKING_SIDE).contains(s));
+        let corner = self
+            .min
+            .iter()
+            .all(|c| c.unsigned_abs() <= MAX_PICKING_OFFSET.unsigned_abs());
+        sides && corner
+    }
+}
+
 /// One frame of the app's viewport: how it's seen, how large it is, and what's drawn.
 #[derive(Debug, Clone, Copy)]
 pub struct Frame<'a> {
@@ -658,20 +672,15 @@ impl Renderer {
                 ),
             });
         }
-        if let Some(rect) = frame.picking {
-            let sides = rect.size.iter().all(|s| (1..=MAX_PICKING_SIDE).contains(s));
-            let corner = rect
-                .min
-                .iter()
-                .all(|c| c.unsigned_abs() <= MAX_PICKING_OFFSET.unsigned_abs());
-            if !(sides && corner) {
-                return Err(InvalidParameter {
-                    parameter: "picking",
-                    message: format!(
-                        "picking {rect:?} must be from 1 to {MAX_PICKING_SIDE} pixels on each side, its corner within {MAX_PICKING_OFFSET} of the frame's"
-                    ),
-                });
-            }
+        if let Some(rect) = frame.picking
+            && !rect.takes()
+        {
+            return Err(InvalidParameter {
+                parameter: "picking",
+                message: format!(
+                    "picking {rect:?} must be from 1 to {MAX_PICKING_SIDE} pixels on each side, its corner within {MAX_PICKING_OFFSET} of the frame's"
+                ),
+            });
         }
         // The camera at this size, and the bodies in its view, by the rules a scene's check
         // takes (`RenderScene::check`).

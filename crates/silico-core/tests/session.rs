@@ -197,14 +197,14 @@ fn a_document_opens_at_revision_1_holding_its_path_as_given() {
     let path = f.file("block.silico", BOX);
     let response = answer(f.sessions.open(&path, false));
     let opened = response.result.unwrap();
-    assert_eq!(opened.path, path);
+    assert_eq!(opened.path.as_deref(), path.to_str());
     assert!(!opened.created);
     assert_eq!(opened.features, Some(1));
     assert_eq!(opened.bodies, [FeatureId::new("k7f2qx3m").unwrap()]);
     assert!(opened.problems.is_empty());
     let session = response.session.unwrap();
     assert_eq!(session.id.to_string(), "s1");
-    assert_eq!(session.path, path);
+    assert_eq!(session.path.as_deref(), path.to_str());
     assert_eq!(session.revision, Revision::OPENED);
     assert_eq!(session.revision.number(), 1);
     assert!(!session.transaction);
@@ -374,7 +374,7 @@ fn a_file_is_open_in_one_session_by_any_of_its_paths_until_it_closes() {
     let again = answer(f.sessions.open(&link, false));
     assert!(again.result.is_ok());
     let session = again.session.unwrap();
-    assert_eq!(session.path, link);
+    assert_eq!(session.path.as_deref(), link.to_str());
     assert_eq!(session.id.to_string(), format!("s{}", 2 + paths.len()));
 }
 

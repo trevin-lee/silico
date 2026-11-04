@@ -376,6 +376,10 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 
 ## Rendering
 
+- A client's re-read rule run on its own unrounded camera while the server levels with the camera it answers (rounded to the nanometre): at a level's edge, every settled frame reads again, a read storm
+- A queue of GPU changes appended each frame and drained only when a paint callback runs: a minimized window, a zero-sized clip, or no renderer installed grows it (and every mesh it holds) without bound
+- An answer that arrives a frame late (picking) matched to whatever is shown now: a tab switch or a re-read that renumbers bodies between the ask and the answer names the wrong element
+- A refusal of the moment (a worker crash, too many reads) remembered like a refusal of the request: nothing asks again until the person moves the view
 - Camera numbers a check takes in f64 that the renderer's f32 can't hold: an up or eye-to-target distance whose f32 square overflows or underflows (above about 1.8e19, below about 1e-19), a view height or field of view under f32's smallest normal, a position or target past 3.4e38: look_at returns None and a fallback identity view is drawn as Ok, the projection is NaN and the image blank, or the renderer refuses a mesh as an internal error
 - Angles whose f32 rounding crosses a singularity: a field of view within 1e-5° of 180° rounds past π in f32, the half-angle's tangent changes sign, and the image is drawn turned half a turn
 - Thresholds set in f64 for a value the renderer uses in f32 (an up's part across the view at 1e-9, against f32's 6e-8 rounding of an oblique direction): the image's roll comes from rounding noise
