@@ -233,14 +233,14 @@ impl ToWire for RolledBack {
 
 impl ToWire for Reformatted {
     /// `format`'s result: whether the canonical text differs from the file and was written,
-    /// the path, the features refingerprinted, the sketches re-solved, the drift accepted,
+    /// the path (`null` while the session is untitled), the features refingerprinted, the sketches re-solved, the drift accepted,
     /// and the problems it couldn't fix.
     fn to_wire(&self) -> Json<'_> {
         let (problems, problems_total) = problems(&self.problems);
         Json::object([
             ("changed", Json::bool(self.changed)),
             ("written", Json::bool(self.written)),
-            ("path", Json::str(&self.path)),
+            ("path", Json::or_null(self.path.as_deref(), Json::str)),
             ("refingerprinted", Json::ids(&self.refingerprinted)),
             ("resolved", Json::ids(&self.resolved)),
             ("accepted", Json::ids(&self.accepted)),
@@ -305,7 +305,9 @@ pub struct CommitRequestSchema {
     /// null to save to the session's own file. A path (relative to the workspace's root
     /// under `silico serve`) to save to that file instead, written even if nothing changed:
     /// it must end in .silico, can't be the session's own file or one another session
-    /// holds, and the session holds it from then on, letting its old file go.
+    /// holds, and the session holds it from then on, letting its old file go. An untitled
+    /// session (opened with `path` null) has no file of its own: its commit must give a
+    /// path, its first save, after which it holds that file as if it had been opened there.
     pub path: Option<String>,
     /// Whether to replace a file already at `path`. Must be false when `path` is null.
     pub replace: bool,
@@ -381,8 +383,8 @@ pub struct FormatResultSchema {
     pub changed: bool,
     /// Whether the file was written: never inside a transaction.
     pub written: bool,
-    /// The document's path, as `open` was given it.
-    pub path: String,
+    /// The document's path, as `open` was given it: null while the session is untitled.
+    pub path: Option<String>,
     /// Every feature whose fingerprint was written (or, not writing, would be), in timeline
     /// order.
     pub refingerprinted: Vec<FeatureId>,

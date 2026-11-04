@@ -550,7 +550,7 @@ mod tests {
         Response {
             session: Some(SessionInfo {
                 id: SessionId::parse("s1").unwrap(),
-                path: "bracket.silico".to_owned(),
+                path: Some("bracket.silico".to_owned()),
                 revision: Revision::OPENED,
                 transaction: false,
                 reloaded: false,

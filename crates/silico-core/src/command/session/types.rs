@@ -98,8 +98,9 @@ impl Revision {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
     pub id: SessionId,
-    /// Its document's path as `open` was given it.
-    pub path: String,
+    /// Its document's path as `open` was given it (or, after a Save As, the commit): none
+    /// while the session is untitled, opened with no path, until its first save.
+    pub path: Option<String>,
     pub revision: Revision,
     /// Whether a transaction is open (the design's section 4).
     pub transaction: bool,
@@ -151,8 +152,8 @@ impl ModelRead {
 /// whether it was stopped (decision 34), and a kernel client of the read's own, for a read
 /// that asks the kernel (`distance`).
 pub struct Read<'a, C> {
-    /// The session's document's path, as `open` was given it.
-    pub(super) path: String,
+    /// The session's document's path, as `open` was given it: none while it's untitled.
+    pub(super) path: Option<String>,
     pub(super) model: &'a Model,
     pub(super) read: ModelRead,
     pub(super) stop: &'a Ticket,
@@ -166,9 +167,9 @@ pub struct Read<'a, C> {
 
 impl<C> Read<'_, C> {
     /// The session's document's path, as `open` was given it (STEP's header names its
-    /// file).
-    pub fn path(&self) -> &str {
-        &self.path
+    /// file): none while the session is untitled.
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
     }
 
     /// The model read.
@@ -570,7 +571,8 @@ fn unanswered<T>(lost: &str) -> Response<T> {
 pub struct Opened {
     /// The session opened: the envelope's `session.id`, so not written in the result again.
     pub session: SessionId,
-    pub path: String,
+    /// The path as given: none for an untitled session, opened with no path.
+    pub path: Option<String>,
     pub created: bool,
     pub features: Option<usize>,
     pub bodies: Vec<FeatureId>,
@@ -804,7 +806,8 @@ impl Committed {
 pub struct Reformatted {
     pub changed: bool,
     pub written: bool,
-    pub path: String,
+    /// The session's path: none while it's untitled.
+    pub path: Option<String>,
     pub refingerprinted: Vec<FeatureId>,
     pub resolved: Vec<FeatureId>,
     pub accepted: Vec<FeatureId>,

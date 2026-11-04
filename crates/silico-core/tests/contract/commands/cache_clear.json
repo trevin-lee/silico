@@ -2,7 +2,7 @@
   "request": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
-    "description": "`cache_clear`'s request: remove every entry of the rebuild cache beside the session's\ndocument. The cache is the directory's, shared by every document in it, and an entry\nremoved is only a miss: the next rebuild of each step makes it again.",
+    "description": "`cache_clear`'s request: remove every entry of the rebuild cache beside the session's\ndocument. The cache is the directory's, shared by every document in it, and an entry\nremoved is only a miss: the next rebuild of each step makes it again. An untitled\nsession (opened with `path` null) keeps no cache until its first save gives it the one\nbeside its file: its clear is refused, naming `session`.",
     "properties": {
       "session": {
         "description": "The session's ID, as `open` gave it.",
