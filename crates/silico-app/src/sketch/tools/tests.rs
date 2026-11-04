@@ -602,14 +602,33 @@ fn each_drawing_tool_adds_its_members() {
 }
 
 #[test]
-fn construction_on_draws_the_tools_curves_as_construction() {
+fn construction_on_draws_the_tools_curves_as_construction_and_leaves_their_points() {
+    // Construction (X) reaches the tool as its context's: a rectangle's four lines, a
+    // circle, each `construction`, their points as made; the preview says so.
     let mut desk = Desk::new(Choice::Draw(ToolKind::CornerRectangle), empty());
     desk.mode.settings.construction = true;
-    desk.frame(&drag([10.0, 10.0], [50.0, 30.0]));
+    desk.frame(&[
+        ev(PointerAction::Press, 10.0, 10.0),
+        ev(PointerAction::Move, 50.0, 30.0),
+    ]);
+    assert!(desk.mode.tools.preview().construction);
+    desk.frame(&[ev(PointerAction::Release, 50.0, 30.0)]);
     let add = &desk.adds[0];
     assert_eq!(add.lines.len(), 4);
     assert!(add.lines.iter().all(|l| l.construction));
     assert!(add.points.iter().all(|p| !p.construction));
+    let mut desk = Desk::new(Choice::Draw(ToolKind::Circle), empty());
+    desk.mode.settings.construction = true;
+    desk.frame(&click(20.0, 20.0));
+    desk.frame(&click(25.0, 20.0));
+    let add = &desk.adds[0];
+    assert!(add.circles.iter().all(|c| c.construction) && add.circles.len() == 1);
+    assert!(add.points.iter().all(|p| !p.construction));
+    // Off, nothing is.
+    let mut desk = Desk::new(Choice::Draw(ToolKind::Circle), empty());
+    desk.frame(&click(20.0, 20.0));
+    desk.frame(&click(25.0, 20.0));
+    assert!(!desk.adds[0].circles[0].construction);
 }
 
 /// na000001 from (0, 0) to (40, 0), na000002 from (20, −10) to (20, 10), crossing it at
@@ -774,6 +793,37 @@ fn a_cancelled_press_ends_the_gesture_with_nothing_sent() {
     assert_eq!(desk.mode.tools.choice(), Some(Choice::Draw(ToolKind::Line)));
     desk.frame(&drag([10.0, 10.0], [30.0, 25.0]));
     assert_eq!(desk.adds.len(), 1);
+    // A chain's click cancelled (#365's `Event::Cancel`): as if never pressed, the chain
+    // kept with its placed points, and the tool. Clicks at (10, 10) and (30, 15), then a
+    // press at (50, 15) cancelled: the next click, at (30, 40), goes on from (30, 15).
+    let mut desk = Desk::new(Choice::Draw(ToolKind::Line), empty());
+    desk.frame(&click(10.0, 10.0));
+    desk.frame(&click(30.0, 15.0));
+    desk.frame(&[
+        ev(PointerAction::Press, 50.0, 15.0),
+        ev(PointerAction::Move, 50.0, 16.0),
+        ev(PointerAction::Cancel, 50.0, 16.0),
+    ]);
+    assert_eq!(desk.adds.len(), 1);
+    assert!(desk.mode.tools.busy());
+    assert_eq!(desk.mode.tools.choice(), Some(Choice::Draw(ToolKind::Line)));
+    desk.frame(&click(30.0, 40.0));
+    assert_eq!(desk.adds.len(), 2);
+    assert_eq!(desk.adds[1].lines[0].from, desk.adds[0].lines[0].to);
+    assert!(near(desk.place(&desk.adds[1].lines[0].to), [30.0, 40.0]));
+    // A rectangle's second click cancelled: its first corner kept; the click after it
+    // makes the rectangle from (10, 10).
+    let mut desk = Desk::new(Choice::Draw(ToolKind::CornerRectangle), empty());
+    desk.frame(&click(10.0, 10.0));
+    desk.frame(&[
+        ev(PointerAction::Press, 60.0, 60.0),
+        ev(PointerAction::Cancel, 60.0, 60.0),
+    ]);
+    assert!(desk.adds.is_empty());
+    assert!(desk.mode.tools.busy());
+    desk.frame(&click(50.0, 30.0));
+    let members = desk.adds[0].clone();
+    assert_rectangle(&desk, &members);
 }
 
 #[test]
@@ -1254,7 +1304,7 @@ fn trim_and_split_take_an_arc_where_its_clicked_crossed_or_dragged_past_its_end(
 }
 
 #[test]
-fn construction_on_draws_an_arc_as_construction() {
+fn construction_on_draws_an_arc_as_construction_and_leaves_its_points() {
     let mut desk = Desk::new(Choice::Draw(ToolKind::ThreePointArc), empty());
     desk.mode.settings.construction = true;
     for [x, y] in [[10.0, 10.0], [30.0, 10.0], [20.0, 20.0]] {
@@ -1264,6 +1314,7 @@ fn construction_on_draws_an_arc_as_construction() {
         panic!("{:?}", desk.adds);
     };
     assert!(arc.construction);
+    assert!(desk.adds[0].points.iter().all(|p| !p.construction));
 }
 
 #[test]
