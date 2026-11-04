@@ -23,6 +23,9 @@ env:
   # Each runner keeps one build (tests/committed-tree.sh); incremental compilation's caches
   # grew to about 19 GB on each (2026-10-18), for rebuilds that rarely reuse them.
   CARGO_INCREMENTAL: "0"
+  # Proptest's seed isn't set here: pixi.toml's test task fixes it (PROPTEST_RNG_SEED=20261021,
+  # mutants' too), so every gate meets the same cases, and a task's env wins over a workflow's.
+  # New seeds are explored apart, on idle runners (proptest-explore.yml).
 
 jobs:
   gate:

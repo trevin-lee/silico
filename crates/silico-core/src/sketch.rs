@@ -2084,10 +2084,9 @@ impl Translation {
         disagreeing_out: &mut Vec<Tag>,
     ) -> Result<SketchSolution, Error> {
         if !solved.conflicting.is_empty() {
-            let n = solved.conflicting.len();
             return Err(Error::new(
                 ErrorCode::OverConstrained,
-                format!("the sketch's constraints conflict: these {n} can't all hold"),
+                "the sketch's constraints conflict: the ones named can't all hold",
             )
             .with_elements(self.ids(&solved.conflicting)?)
             .with_suggestion("remove or change one of the constraints named"));
