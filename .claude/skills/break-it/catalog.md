@@ -323,6 +323,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Reads that redo work a model already did (a sketch read solving its sketch again) on a shared pool whose take starts a worker whenever none is idle: N reads at once start N workers, kept idle for ever; count the starts against the design's bound on workers
 - Reads that redo a model's step against a model whose step failed transiently (a worker crash under the rebuild): the read answers a result the model never had, beside the envelope's fault naming the same feature
 - Rebuilds that iterate to a fixed point, one round per link of a chain (each sketch on a face of the last pad): per-round work over every item still waiting, each walking every feature before it, is n³; time chains of 100 and 200 links and compare the ratio (4 is n², 8 is n³)
+- A rebuild's per-item progress read in the window between a cancel being reported (`stopped`) and its recompute ending: an item still says running under a rebuild that says it isn't; read `status` right after the state flips, before waiting for the end
 
 ## Oracles and comparisons
 

@@ -10,7 +10,7 @@ use crate::fake::{FakeClient, FakeKernel};
 use crate::file;
 use crate::kernel::{Kernel, KernelRequest, Op, Primitive};
 use crate::pool::Outcome;
-use crate::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
+use crate::recompute::{FeatureOutcome, Model, Recompute, RunOutcome, StepState};
 use std::collections::BTreeSet;
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
@@ -851,6 +851,14 @@ impl Fixture {
 
 fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
+}
+
+/// Each feature's state in a rebuild, as `status` lists them: `pairs`, by ID, in order.
+fn states(pairs: &[(&str, StepState)]) -> crate::recompute::FeatureStates {
+    pairs
+        .iter()
+        .map(|(feature, state)| (id(feature), *state))
+        .collect()
 }
 
 fn is_box(op: &Op) -> bool {
@@ -1823,6 +1831,11 @@ fn a_one_edit_commits_fault_is_the_saved_revisions_and_never_met_again() {
                 done: 4,
                 steps: 4,
                 running: None,
+                features: states(&[
+                    ("k7f2qx3m", StepState::Built),
+                    ("b0000001", StepState::Faulted),
+                    ("f0000001", StepState::Blocked)
+                ]),
             }),
         }
     );
@@ -3676,6 +3689,11 @@ fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
         done: 1,
         steps: 4,
         running: Some("b0000001 box".to_owned()),
+        features: states(&[
+            ("k7f2qx3m", StepState::Built),
+            ("b0000001", StepState::Running),
+            ("f0000001", StepState::Queued),
+        ]),
     });
     until_progress(|| check.progress(), one_of_four.clone());
     assert_eq!(
@@ -3697,6 +3715,11 @@ fn a_held_rebuild_shows_its_steps_done_below_its_steps_then_all_of_them() {
                 done: 4,
                 steps: 4,
                 running: None,
+                features: states(&[
+                    ("k7f2qx3m", StepState::Built),
+                    ("b0000001", StepState::Built),
+                    ("f0000001", StepState::Built)
+                ]),
             }),
         }
     );
@@ -3731,6 +3754,11 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
             done: 1,
             steps: 4,
             running: Some("b0000001 box".to_owned()),
+            features: states(&[
+                ("k7f2qx3m", StepState::Built),
+                ("b0000001", StepState::Running),
+                ("f0000001", StepState::Queued),
+            ]),
         }),
     );
     // A step counts as running as its job starts, before its request reaches the kernel
@@ -3770,6 +3798,11 @@ fn counting_a_rebuilds_steps_never_keeps_status_or_a_published_read_waiting() {
                 done: 1,
                 steps: 4,
                 running: Some("b0000001 box".to_owned()),
+                features: states(&[
+                    ("k7f2qx3m", StepState::Built),
+                    ("b0000001", StepState::Running),
+                    ("f0000001", StepState::Queued)
+                ]),
             }),
         }
     );
@@ -3798,6 +3831,11 @@ fn a_published_reads_handle_reports_no_rebuilds_progress() {
         done: 1,
         steps: 4,
         running: Some("b0000001 box".to_owned()),
+        features: states(&[
+            ("k7f2qx3m", StepState::Built),
+            ("b0000001", StepState::Running),
+            ("f0000001", StepState::Queued),
+        ]),
     });
     until_progress(|| check.progress(), lug_held.clone());
     let (go, held) = mpsc::channel::<()>();
@@ -4599,6 +4637,7 @@ fn asked_without_pause_through_many_commits_the_sessions_own_saves_never_read_as
 mod cancel_rebuild;
 mod disk_reload;
 mod drag;
+mod rebuild_features;
 mod timeline;
 mod undo;
 mod undo_adversarial;

@@ -13,6 +13,7 @@ mod recompute;
 use std::sync::Arc;
 use std::time::Duration;
 
+use StepState::{Blocked, Built, Failed, Queued, Running};
 use example::EXAMPLE;
 use model::{WAIT, checked, described, id, published};
 use recompute::{calls_since, document, engine};
@@ -23,12 +24,22 @@ use silico_core::kernel::{
     Kernel, KernelRequest, Op, Primitive, Topology,
 };
 use silico_core::pool::Pending;
-use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome, StepCount};
+use silico_core::recompute::{
+    FeatureOutcome, FeatureStates, Model, Recompute, RunOutcome, StepCount, StepState,
+};
 use silico_core::{Error, ErrorCode};
 use silico_protocol::Reply;
 
 fn ids(texts: &[&str]) -> Vec<FeatureId> {
     texts.iter().map(|t| id(t)).collect()
+}
+
+/// Each feature's state in a rebuild, as its count lists them: `pairs`, by ID, in order.
+fn states(pairs: &[(&str, StepState)]) -> FeatureStates {
+    pairs
+        .iter()
+        .map(|(feature, state)| (id(feature), *state))
+        .collect()
 }
 
 /// The design's example with a different pin or block.
@@ -298,6 +309,11 @@ fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
             steps: 4,
             running: Some("a91cw0de cylinder".to_owned()),
             ended: false,
+            features: states(&[
+                ("k7f2qx3m", Built),
+                ("a91cw0de", Running),
+                ("m3tq8v0z", Queued),
+            ]),
         },
     );
     hold.release();
@@ -307,6 +323,11 @@ fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
         steps: 4,
         running: None,
         ended: true,
+        features: states(&[
+            ("k7f2qx3m", Built),
+            ("a91cw0de", Built),
+            ("m3tq8v0z", Built),
+        ]),
     };
     assert_eq!(progress.now(), all_done);
     // Again, every step kept: all four settled before any runs.
@@ -330,6 +351,11 @@ fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
             steps: 4,
             running: Some("a91cw0de cylinder".to_owned()),
             ended: false,
+            features: states(&[
+                ("k7f2qx3m", Built),
+                ("a91cw0de", Running),
+                ("m3tq8v0z", Queued),
+            ]),
         },
     );
     hold.release();
@@ -340,6 +366,76 @@ fn a_recompute_counts_its_steps_names_the_one_running_and_ends_with_all_done() {
     assert_eq!(
         calls_since(&engine, before),
         ["MakeCylinder", "Translate", "Cut"]
+    );
+}
+
+#[test]
+fn a_second_rebuild_of_the_same_document_has_its_kept_features_built_at_its_first_plan() {
+    // The example and a ball on a branch of its own. The first rebuild: the ball's worker
+    // crashes, a fault, which isn't kept; the block, the pin, and the cut are. The second,
+    // of the same document, the ball's sphere held: the three kept settle with the plan,
+    // never run, and are built then, the ball running. Steps by hand: the block (1), the
+    // pin's cylinder and move (2), the cut (1), the ball at the origin (1): five, four
+    // kept.
+    let engine = engine(2);
+    let crashing = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let crashes = Arc::clone(&crashing);
+    engine.kernel().refuse(move |op| {
+        (crashes.load(std::sync::atomic::Ordering::SeqCst)
+            && matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })))
+        .then(|| Error::new(ErrorCode::WorkerCrashed, "crashed"))
+    });
+    let ball = r#"{"id": "q0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}"#;
+    let block = format!(r#"{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", {BLOCK}}}"#);
+    let pin = format!(r#"{{"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", {PIN}}}"#);
+    let hole = r#"{"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"}"#;
+    let parts = [block.as_str(), pin.as_str(), hole, ball];
+    let first = engine.start(document(&parts));
+    let progress = first.progress();
+    assert!(matches!(first.wait().unwrap(), RunOutcome::Published(_)));
+    assert_eq!(
+        progress.now().features,
+        states(&[
+            ("k7f2qx3m", Built),
+            ("a91cw0de", Built),
+            ("m3tq8v0z", Built),
+            ("q0000001", StepState::Faulted),
+        ])
+    );
+    crashing.store(false, std::sync::atomic::Ordering::SeqCst);
+    let hold = engine
+        .kernel()
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Sphere { .. })));
+    let before = engine.kernel().calls().len();
+    let second = engine.start(document(&parts));
+    let progress = second.progress();
+    until_counted(
+        &progress,
+        &StepCount {
+            done: 4,
+            steps: 5,
+            running: Some("q0000001 sphere".to_owned()),
+            ended: false,
+            features: states(&[
+                ("k7f2qx3m", Built),
+                ("a91cw0de", Built),
+                ("m3tq8v0z", Built),
+                ("q0000001", Running),
+            ]),
+        },
+    );
+    hold.release();
+    assert!(matches!(second.wait().unwrap(), RunOutcome::Published(_)));
+    // Only the ball ran again.
+    assert_eq!(calls_since(&engine, before), ["MakeSphere"]);
+    assert_eq!(
+        progress.now().features,
+        states(&[
+            ("k7f2qx3m", Built),
+            ("a91cw0de", Built),
+            ("m3tq8v0z", Built),
+            ("q0000001", Built),
+        ])
     );
 }
 
@@ -367,6 +463,11 @@ fn steps_that_cant_run_are_counted_done_before_any_runs() {
             steps: 4,
             running: Some("k7f2qx3m box".to_owned()),
             ended: false,
+            features: states(&[
+                ("k7f2qx3m", Running),
+                ("a91cw0de", Failed),
+                ("m3tq8v0z", Blocked),
+            ]),
         },
     );
     hold.release();
@@ -378,6 +479,11 @@ fn steps_that_cant_run_are_counted_done_before_any_runs() {
             steps: 4,
             running: None,
             ended: true,
+            features: states(&[
+                ("k7f2qx3m", Built),
+                ("a91cw0de", Failed),
+                ("m3tq8v0z", Blocked)
+            ]),
         }
     );
     // Kept, not run: the block's box alone was made, and no cylinder was asked for again.
@@ -465,6 +571,14 @@ fn a_step_only_a_feature_refused_mid_run_needs_is_counted_done_unrun_while_anoth
             steps: 6,
             running: Some("pppppppp cylinder".to_owned()),
             ended: false,
+            features: states(&[
+                ("aaaaaaaa", Built),
+                ("bbbbbbbb", Built),
+                ("ffffffff", Failed),
+                ("cccccccc", Built),
+                ("dddddddd", Blocked),
+                ("pppppppp", Running),
+            ]),
         },
     );
     // Counted while held: the cut was never asked for, so it was counted as it was skipped,
@@ -481,6 +595,14 @@ fn a_step_only_a_feature_refused_mid_run_needs_is_counted_done_unrun_while_anoth
             steps: 6,
             running: None,
             ended: true,
+            features: states(&[
+                ("aaaaaaaa", Built),
+                ("bbbbbbbb", Built),
+                ("ffffffff", Failed),
+                ("cccccccc", Built),
+                ("dddddddd", Blocked),
+                ("pppppppp", Built)
+            ]),
         }
     );
     // The fuse refused in its own words (design S5, as tests/sweep_refusals.rs pins them),

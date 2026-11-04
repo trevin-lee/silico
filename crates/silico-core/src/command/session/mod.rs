@@ -2246,11 +2246,18 @@ fn status_in<P: Clients + 'static>(
     let gated = matches!(*held.gated, Gated::Checked(_));
     let rebuild = {
         let state = lock(&found.rebuilds).reported(held.revision, gated);
-        let progress = if gated || state.state == RebuildState::Running {
+        let mut progress = if gated || state.state == RebuildState::Running {
             found.newest.of(held.revision)
         } else {
             None
         };
+        // A rebuild not running has no feature running, though its recompute, stopped, may
+        // not have ended yet.
+        if state.state != RebuildState::Running
+            && let Some(progress) = &mut progress
+        {
+            progress.features.none_running();
+        }
         Rebuild { progress, ..state }
     };
     Response {

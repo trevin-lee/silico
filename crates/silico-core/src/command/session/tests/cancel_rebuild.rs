@@ -962,6 +962,7 @@ fn a_candidate_rebuilding_for_a_document_the_gate_refused_is_reported_running_an
                     done: 0,
                     steps: 1,
                     running: Some("k7f2qx3m box".to_owned()),
+                    features: states(&[("k7f2qx3m", StepState::Running)]),
                 }),
             }
         )

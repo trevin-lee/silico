@@ -689,7 +689,7 @@ fn a_transaction_is_written_from_each_of_its_own_values() {
     }
     // In a status, it holds; a count missing or negative doesn't.
     let status = format!(
-        r#"{{"features": 1, "gated": true, "transaction": {}, "running": "undo", "reads": [], "rebuild": {{"revision": 9, "state": "none", "done": null, "steps": null}}, "drag": null, "disk": null}}"#,
+        r#"{{"features": 1, "gated": true, "transaction": {}, "running": "undo", "reads": [], "rebuild": {{"revision": 9, "state": "none", "done": null, "steps": null, "features": null}}, "drag": null, "disk": null}}"#,
         one_line(&transaction)
     );
     holds(&schema_of("status", "result"), &status, "a transaction");

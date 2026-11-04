@@ -666,7 +666,7 @@ fn spinner(ui: &Ui, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use silico_core::command::Progress;
+    use silico_core::command::{FeatureStates, Progress};
 
     fn entry(id: &str, kind: &'static str, inputs: &[&str], health: Health) -> Entry {
         Entry {
@@ -689,6 +689,7 @@ mod tests {
                 done: 0,
                 steps: 0,
                 running: running.map(str::to_owned),
+                features: FeatureStates::default(),
             }),
         }
     }
@@ -1489,6 +1490,7 @@ mod tests {
                     done: 2,
                     steps: 4,
                     running: Some("p0000001 pad".to_owned()),
+                    features: FeatureStates::default(),
                 }),
             },
         );
