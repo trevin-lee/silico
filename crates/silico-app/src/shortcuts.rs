@@ -18,6 +18,9 @@
 //!   `crate::toolbar` until then), between Dialogs and Help as the prototype orders them.
 //! - SEAM: Ctrl+8 Look At, once the app can turn the view square to a face or a sketch.
 //! - SEAM(M5.7): Select Other (right-click), picking's part 3.
+//! - F5, SolidWorks' key for its filter toolbar, which the app hasn't: the app takes it
+//!   itself and says where the filters are (`App::keys`), as the prototype's F5 is no
+//!   command of its `CMD` and isn't on its sheet.
 //! - SEAM: F2 Rename, Delete, and S Search commands, once they're built.
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Ui};
@@ -52,7 +55,6 @@ pub enum Command {
     FilterFace,
     FilterEdge,
     FilterVertex,
-    Filters,
     ClearSelection,
     Hide,
     Ok,
@@ -359,16 +361,6 @@ const FILTER_VERTEX: Entry = entry(
     &[Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::V))],
     Some("Toggles whether vertices can be selected"),
 );
-/// F5, SolidWorks' key for its filter toolbar (docs/ux/solidworks.md §1): there's none here
-/// (DESIGN.md, open question 2), so it says where the filters live, as the prototype's F5
-/// does (interact.js).
-const FILTERS: Entry = entry(
-    Command::Filters,
-    "Selection filters",
-    Group::Selection,
-    &[bare(Key::F5)],
-    Some("Says where they are: the toolbar, under SELECT"),
-);
 const HIDE: Entry = entry(
     Command::Hide,
     "Hide or show",
@@ -387,7 +379,7 @@ const SHORTCUTS: Entry = entry(
 );
 
 /// Every command, in the order the sheet lists each group's.
-pub const REGISTRY: [Entry; 31] = [
+pub const REGISTRY: [Entry; 30] = [
     NEW,
     OPEN,
     SAVE,
@@ -413,7 +405,6 @@ pub const REGISTRY: [Entry; 31] = [
     FILTER_FACE,
     FILTER_EDGE,
     FILTER_VERTEX,
-    FILTERS,
     CLEAR_SELECTION,
     HIDE,
     OK,
@@ -451,7 +442,6 @@ impl Command {
             Command::FilterFace => &FILTER_FACE,
             Command::FilterEdge => &FILTER_EDGE,
             Command::FilterVertex => &FILTER_VERTEX,
-            Command::Filters => &FILTERS,
             Command::Hide => &HIDE,
             Command::Ok => &OK,
             Command::Cancel => &CANCEL,

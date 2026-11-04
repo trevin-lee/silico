@@ -652,9 +652,9 @@ mod tests {
         let height =
             |rows: f32| css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H;
         // By hand: File 5 rows (135), Edit 2 (69), Rebuild 3 (91), View 12 (289),
-        // Selection 6 (157), Dialogs 2 (69), Help 1 (47). The least height that takes three
+        // Selection 5 (135), Dialogs 2 (69), Help 1 (47). The least height that takes three
         // columns, filled in order: 323, File, Edit, and Rebuild's (135 + 14 + 69 + 14 +
-        // 91); View alone (289, with Selection 460); Selection, Dialogs, and Help (301).
+        // 91); View alone (289, with Selection 438); Selection, Dialogs, and Help (279).
         let placed = [
             ("FILE", 0, 0.0),
             ("EDIT", 0, height(5.0) + css::GROUP_GAP),
@@ -665,8 +665,8 @@ mod tests {
             ),
             ("VIEW", 1, 0.0),
             ("SELECTION", 2, 0.0),
-            ("DIALOGS", 2, height(6.0) + css::GROUP_GAP),
-            ("HELP", 2, height(6.0) + height(2.0) + 2.0 * css::GROUP_GAP),
+            ("DIALOGS", 2, height(5.0) + css::GROUP_GAP),
+            ("HELP", 2, height(5.0) + height(2.0) + 2.0 * css::GROUP_GAP),
         ];
         for (name, at_column, down) in placed {
             let shown = texts(&h, name);
@@ -966,7 +966,7 @@ mod tests {
             ("EDIT", 2.0),
             ("REBUILD", 3.0),
             ("VIEW", 12.0),
-            ("SELECTION", 6.0),
+            ("SELECTION", 5.0),
             ("DIALOGS", 2.0),
             ("HELP", 1.0),
         ] {

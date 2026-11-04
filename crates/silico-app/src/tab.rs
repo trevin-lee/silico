@@ -391,6 +391,9 @@ pub struct Tab {
     selection: crate::selection::Selection,
     /// The canvas's box selection (M5.7): a left drag, on geometry or empty space.
     box_select: crate::box_select::BoxSelect,
+    /// What a toast is to say for the tab (a box's count, or why it took nothing), until
+    /// the app takes it.
+    toast: Option<String>,
     /// What the browser's eyes hide: the tab's state, never saved (open item 29).
     pub hidden: std::collections::BTreeSet<Hideable>,
     /// The last refusal a command of the tab's answered, as said to the person, until
@@ -523,6 +526,7 @@ impl Tab {
             reload_asked: false,
             selection: crate::selection::Selection::default(),
             box_select: crate::box_select::BoxSelect::default(),
+            toast: None,
             hidden: std::collections::BTreeSet::new(),
             message: None,
             close_refused: false,
@@ -589,14 +593,21 @@ impl Tab {
         let shown = |id: &silico_core::document::FeatureId| {
             !hidden.contains(&Hideable::Feature(id.clone()))
         };
-        self.box_select.overlay(
+        if let Some(toast) = self.box_select.overlay(
             &mut self.selection,
             &mut self.view,
             frame,
             painter,
             current,
             &shown,
-        );
+        ) {
+            self.toast = Some(toast);
+        }
+    }
+
+    /// What a toast is to say for the tab, taken once (the app shows it).
+    pub fn take_toast(&mut self) -> Option<String> {
+        self.toast.take()
     }
 
     /// What's selected (M5.7), and what the pointer is over in the canvas: one selection,

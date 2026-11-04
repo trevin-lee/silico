@@ -47,10 +47,6 @@ pub const IDLE_MARGIN: Duration = Duration::from_millis(100);
 /// [`DISK_CHECK_INTERVAL`], whose `status` starts the next comparison (section 3, *Idle*).
 pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN);
 
-/// Whether Enter, pressed this frame, is an open dialog's OK, taking it if so: while typing
-/// in a field or with nothing focused (a focused button's or checkbox's Enter is its own
-/// click), and only a fresh press, never the system's repeat of one held down (an Enter held
-/// on the menu item that opened the dialog would otherwise go on to be its OK).
 /// What F5 says (the prototype's toast, interact.js): SolidWorks' key for its filter
 /// toolbar, which the app has none of (DESIGN.md, open question 2).
 pub const FILTERS_SAID: &str =
@@ -99,6 +95,10 @@ fn toast(ctx: &egui::Context, canvas: egui::Rect, text: &str) {
         });
 }
 
+/// Whether Enter, pressed this frame, is an open dialog's OK, taking it if so: while typing
+/// in a field or with nothing focused (a focused button's or checkbox's Enter is its own
+/// click), and only a fresh press, never the system's repeat of one held down (an Enter held
+/// on the menu item that opened the dialog would otherwise go on to be its OK).
 fn enter_is_ok(ui: &mut Ui) -> bool {
     // Only a focus inside the dialog counts: one left on a widget no longer drawn (the
     // menu item that opened it), or behind a modal (the menu button it went back to), takes
@@ -308,7 +308,7 @@ pub struct App<P: Clients + 'static> {
     /// document is shown and none listed in Recent will do.
     documents: Option<PathBuf>,
     /// The toast shown over the canvas's bottom right (DESIGN.md's *Toasts*), and when it
-    /// was shown, by egui's clock: F5's word on where the filters are.
+    /// was shown, by egui's clock: F5's word on where the filters are, or a box's.
     toast: Option<(String, f64)>,
 }
 
@@ -606,6 +606,15 @@ impl<P: Clients + 'static> App<P> {
             self.disk_banner(ui, canvas, &mut started);
             self.show_toast(ui, canvas);
         });
+        // A toast the tab shown asked for this frame (a box's), drawn from the next.
+        if let Some(text) = self
+            .active_place()
+            .and_then(|at| self.tabs.get_mut(at))
+            .and_then(Tab::take_toast)
+        {
+            self.toast = Some((text, ui.input(|input| input.time)));
+            ui.ctx().request_repaint();
+        }
         self.after_drawing(ui, started);
     }
 
@@ -1027,7 +1036,9 @@ impl<P: Clients + 'static> App<P> {
         } else {
             filter_keys(ui, in_sketch)
         };
-        let filters_said = !typing && shortcuts::take(ui, Command::Filters);
+        // F5: where the filters are (the prototype's, no command of the registry's).
+        let filters_said =
+            !typing && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::F5));
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return (false, None);
         };

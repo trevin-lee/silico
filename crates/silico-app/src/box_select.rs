@@ -3,46 +3,55 @@
 //! wholly inside, and right to left also what it crosses; in a part, a box takes edges by
 //! default; Shift with a box adds, and Ctrl with a box inverts inside it", and "a drag on
 //! geometry selects what's under the press, and draws no box"; SolidWorks' Box Selection
-//! and Cross Selection, docs/ux/solidworks.md §1).
+//! and Cross Selection, docs/ux/solidworks.md §1; the approved prototype's `onBox`,
+//! docs/design/m5-ui/js/interact.js).
 //!
 //! **The press.** A left press on the canvas records what the pointer was over there, as
 //! the selection's hover answered for the press's pixel ([`Selection::hovered`]). At the
 //! first move farther from the press than egui's click distance (the distance the
 //! selection's click is judged by, so a press is either a click or a drag, never both),
 //! the drag is decided: on geometry, what's under the press is picked as a click picks it
-//! (Ctrl toggling), and no box is drawn; on empty space, a box. If the hover hasn't
-//! answered for the press's pixel yet, the decision is held until it has, the pick at the
-//! press asked again each frame meanwhile (as the selection's click is), unless a click
-//! waiting for its own pick is asking. A held decision is bounded by state, never by a
-//! count of frames: it's let go (the drag then does nothing) when the camera moves or the
-//! view's bodies change, since the press's pixel no longer shows what it did, and when the
-//! button is let go before it was answered. A Cancel ends the press and changes nothing.
+//! (Ctrl toggling), and no box is drawn; on empty space, a box. The answer is the hover's,
+//! as the selection took it ([`Selection::heard`], each frame's, kept here until the view
+//! changes): to the press's pixel, never a click's answer. If the hover hasn't answered
+//! for the press's pixel yet, the decision is held until it has, the pick at the press
+//! asked again each frame meanwhile (as the selection's click is), in place of the
+//! hover's request only, never a waiting click's; a drag let go meanwhile keeps its
+//! corners and modifiers and is decided when the answer comes, as a click waits. A held
+//! decision is bounded by state, never by a count of frames: it's let go when the camera
+//! moves, the view's bodies change, another model is published, or the filter changes,
+//! since the press's pixel no longer shows what it did; a drag let go so selects nothing,
+//! and a toast says why ([`PRESS_MOVED`]), as one does if the next press comes first
+//! ([`PRESS_UNREAD`]: a renderer that never answers, backing off or not installed, ends
+//! there). Nothing is picked from meshes of another model than the selection's. A Cancel
+//! ends the press and changes nothing.
 //!
 //! **The box.** Dragged left to right it's a window, drawn solid: it takes what's wholly
 //! inside. Right to left it's a crossing, drawn dashed: it takes what's inside or crosses
 //! its outline. The box is clamped to the canvas, so nothing off the canvas is inside it.
 //! Let go, it replaces the selection; with Shift it adds ([`How::Add`]); with Ctrl it
 //! inverts what's inside ([`How::Toggle`]); through [`Selection::pick_all`], one change.
+//! As the prototype's `onBox`: a box in a part takes edges, always; with the edge filter
+//! off it takes nothing and a toast says so ([`EDGE_FILTER_OFF`]); else a toast says how
+//! many edges it took ("Window selection: 4 edges").
 //!
 //! **What's inside** is decided against the displayed mesh, what the person sees: each
-//! body drawn (not hidden), its faces' triangles and its edges' polylines as the view's
-//! meshes hold them, projected by the renderer's own projection
-//! ([`silico_render::render::project`]) and tested in f64. An edge is inside when every one
-//! of its points projects inside the box, and crosses when one of its segments meets the
-//! box. A face is inside when every vertex of its triangles projects inside, and crosses
-//! when one of its triangles overlaps the box. A point that doesn't project (behind the eye
-//! in perspective, or nearer than the drawing's cut) is never inside, so an element with
-//! one isn't wholly inside; a segment or a triangle with one is tested by its points that
-//! project alone. This is the mesh, not the exact B-rep: a curved edge's chord can lie
-//! inside a box its true arc bulges out of, and a face's facets likewise; the box takes it,
-//! as what's drawn is inside. A face or an edge the mesh has nothing of (a sliver OCCT
-//! couldn't mesh) is never taken. What's behind other faces is taken too: the box doesn't
-//! test what's seen in front.
-//!
-//! **What a box takes** (SolidWorks: "in a part, a box selects edges by default; selection
-//! filters select other types"): with the selection filter as it starts, every kind on,
-//! edges alone; with the filter changed, the kinds it leaves on (faces, edges; vertices
-//! once they can be picked, M5.7's part 3).
+//! body drawn (not hidden), its edges' polylines (and, for a box that takes faces, its
+//! faces' triangles) as the view's meshes hold them, cut where the drawing cuts them and
+//! projected by the renderer's own projection ([`silico_render::render::project`]), tested
+//! in f64. In perspective the drawing cuts away what's nearer the eye than
+//! [`MIN_EYE_DISTANCE`] along the view (#353's pyramid): each segment and triangle is cut
+//! there in 3D first, and what's left is tested, so a part of an edge in front of the eye
+//! counts though its other end is behind it. An edge is inside when every point of what's
+//! drawn of it projects inside the box, and crosses when a drawn segment meets the box; a
+//! face, when every vertex of its drawn triangles is inside, or one of them overlaps the
+//! box. Nothing drawn of it, it's never taken. A point that can't be read (not finite, an
+//! index past the mesh) leaves its element not wholly inside, and a crossing tests the
+//! points beside it that are read. This is the mesh, not the exact B-rep: a curved edge's
+//! chord can lie inside a box its true arc bulges out of; the box takes it, as what's
+//! drawn is inside. A face or an edge the mesh has nothing of (a sliver OCCT couldn't
+//! mesh) is never taken. What's behind other faces is taken too: the box doesn't test
+//! what's seen in front, as the prototype's doesn't.
 //!
 //! The visuals are behind [`draw_box`], which the UI port may replace.
 
@@ -52,30 +61,55 @@ use std::sync::Arc;
 use eframe::egui::{self, Painter, Rect, Shape, Stroke};
 use silico_core::document::FeatureId;
 use silico_core::naming::Name;
-use silico_protocol::Camera;
+use silico_protocol::vec3::{dot, sub};
+use silico_protocol::{Camera, MIN_EYE_DISTANCE, Projection};
 use silico_render::render::project;
 
-use crate::renderer::{Element, PixelRect};
-use crate::selection::{EDGE_BAND_POINTS, Filter, How, Selection};
+use crate::renderer::Element;
+use crate::selection::{How, Selection, band_px, centre_of, distance, square};
 use crate::theme;
 use crate::viewport::{LeftEvent, LeftKind, View, ViewBody, ViewFrame};
 
-/// The canvas's box selection: the left press, while one is held, and the view the
-/// press's answer is of.
+/// What a box let go with the edge filter off says (the prototype's `onBox`), selecting
+/// nothing.
+pub const EDGE_FILTER_OFF: &str = "The edge filter is off, and a box selects edges in a part.";
+
+/// What a drag let go before what's under its press was read says: it selects nothing.
+pub const PRESS_UNREAD: &str = "The drag selected nothing: what's under its press wasn't read yet";
+
+/// What a drag let go after the view changed under its undecided press says.
+pub const PRESS_MOVED: &str =
+    "The drag selected nothing: the view changed before what's under its press was read";
+
+/// The canvas's box selection: the left press, while one is held (or let go and waiting
+/// for what's under it), what the view was the last frame, and the newest hover answer of
+/// that view.
 #[derive(Debug, Default)]
 pub struct BoxSelect {
     press: Option<Press>,
-    /// The camera and the bodies table last seen: once either changes, a held decision is
-    /// let go, and answers to frames before the change are passed over.
-    seen: Option<(Camera, u64)>,
-    stale_to: Option<u64>,
+    /// The camera, the bodies table, the model the selection is read against, and its
+    /// filter, as the last frame had them: once any changes, a press undecided is let go,
+    /// and the hover's answers before it are forgotten.
+    seen: Option<Seen>,
+    /// The newest answer the hover took since the view last changed: the pixel, and what
+    /// it found there.
+    heard: Option<([u32; 2], Option<Arc<Name>>)>,
 }
 
-/// A left press held on the canvas.
+/// What a press's answer is true of: the view, the model, and the filter.
+#[derive(Debug, Clone, PartialEq)]
+struct Seen {
+    camera: Camera,
+    table: u64,
+    model: Option<(u64, silico_core::command::Revision)>,
+    filter: crate::selection::Filter,
+}
+
+/// A left press on the canvas.
 #[derive(Debug, Clone, PartialEq)]
 struct Press {
-    /// Where it was pressed and where the pointer is now, in physical pixels from the
-    /// canvas's top left.
+    /// Where it was pressed and where the pointer is now (or was let go), in physical
+    /// pixels from the canvas's top left.
     at_px: [f32; 2],
     corner: [f32; 2],
     /// The pixel it was pressed on, as the hover's pick centres on it.
@@ -84,6 +118,13 @@ struct Press {
     /// none until it has answered.
     under: Option<Option<Arc<Name>>>,
     phase: Phase,
+    /// Whether the button has been let go: a drag let go undecided waits for its answer,
+    /// and is decided then, with the modifiers it was let go with.
+    released: bool,
+    /// Whether the view changed while it was still a click's: past the click distance, it's
+    /// let go (what's under its pixel isn't what it was pressed on); let go within it, it
+    /// was a click, the selection's alone.
+    stale: bool,
     /// The modifiers of its newest event.
     ctrl: bool,
     shift: bool,
@@ -100,7 +141,8 @@ enum Phase {
     Geometry,
     /// On empty space: a box.
     Boxing,
-    /// Let go undecided: the view changed under it. Nothing more until its end.
+    /// Let go undecided: the view, the model, or the filter changed under it. Nothing
+    /// more until its end.
     LetGo,
 }
 
@@ -116,12 +158,14 @@ enum Effect {
         crossing: bool,
         how: How,
     },
+    /// A drag let go undecided: said, nothing selected.
+    Said(&'static str),
 }
 
-/// What a frame tells [`BoxSelect::step`]: the left button's events; the freshest answer
-/// for a pixel (the pixel, and what the hover found there), if there is one now; whether
-/// the view changed since the last frame; the click distance, in physical pixels; and the
-/// canvas's size.
+/// What a frame tells [`BoxSelect::step`]: the left button's events; the newest answer
+/// the hover took for a pixel (the pixel, and what it found there), if one stands now;
+/// whether the view, the model, or the filter changed since the last frame; the click
+/// distance, in physical pixels; and the canvas's size.
 struct Told<'a> {
     left: &'a [LeftEvent],
     heard: Option<([u32; 2], Option<Arc<Name>>)>,
@@ -136,7 +180,8 @@ impl BoxSelect {
     /// `painter` and, let go, selected; the pick at the press asked again of `view` while
     /// its answer is awaited. `current` is whether the view's bodies are of the model the
     /// selection is read against (nothing is decided or selected from other bodies);
-    /// `shown`, whether a body is drawn (the browser hides some).
+    /// `shown`, whether a body is drawn (the browser hides some). What a toast is to say,
+    /// if anything: how many edges a box took, or why a drag took none.
     pub(crate) fn overlay(
         &mut self,
         selection: &mut Selection,
@@ -145,27 +190,44 @@ impl BoxSelect {
         painter: &Painter,
         current: bool,
         shown: &dyn Fn(&FeatureId) -> bool,
-    ) {
+    ) -> Option<String> {
         let ppp = frame.pixels_per_point;
         let click_px = painter
             .ctx()
             .options(|options| options.input_options.max_click_dist)
             * ppp;
-        let changed = self.view_changed(view, frame);
-        let heard = self.heard(view, current).map(|pixel| {
-            let under = selection.hovered().map(|hovered| Arc::clone(&hovered.name));
-            (pixel, under)
-        });
+        let now = Seen {
+            camera: frame.camera.clone(),
+            table: view.table(),
+            model: selection.model_of(),
+            filter: selection.filter,
+        };
+        let changed = self.seen.as_ref().is_some_and(|seen| *seen != now);
+        self.seen = Some(now);
+        if changed {
+            self.heard = None;
+        }
+        if let Some(heard) = selection.heard() {
+            self.heard = Some(heard.clone());
+        }
         let effects = self.step(&Told {
             left: &frame.left,
-            heard,
+            heard: self.heard.clone().filter(|_| current),
             changed,
             click_px,
             size_px: frame.size_px,
         });
+        let mut toast = None;
         for effect in effects {
             match effect {
-                Effect::Pick(name, how) => selection.pick(&name.to_string(), how),
+                Effect::Pick(name, how) if current => selection.pick(&name.to_string(), how),
+                // Decided over meshes of another model than the selection's: the name was
+                // read from what's drawn, not what it would be read against.
+                Effect::Pick(..) => toast = Some(PRESS_MOVED.to_owned()),
+                Effect::Said(said) => toast = Some(said.to_owned()),
+                Effect::Box { .. } if !selection.filter.edges => {
+                    toast = Some(EDGE_FILTER_OFF.to_owned());
+                }
                 Effect::Box {
                     from,
                     to,
@@ -176,19 +238,19 @@ impl BoxSelect {
                     let names = taken(
                         view.bodies(),
                         shown,
-                        kinds(selection.filter),
+                        EDGES,
                         &frame.camera,
                         frame.size_px,
                         area,
                         crossing,
                     );
                     tracing::debug!(crossing, ?how, taken = names.len(), "box_select");
+                    toast = Some(box_words(crossing, names.len()));
                     selection.pick_all(&names, how);
                 }
-                // Let go over bodies of another model than the selection's: what's drawn
-                // isn't what its names would be read against.
                 Effect::Box { .. } => {
                     tracing::debug!("a box let go over meshes of another model: nothing taken");
+                    toast = Some(PRESS_MOVED.to_owned());
                 }
             }
         }
@@ -200,33 +262,7 @@ impl BoxSelect {
         {
             draw_box(painter, frame, press.at_px, press.corner);
         }
-    }
-
-    /// Whether the camera or the bodies table changed since the last frame: if so, the
-    /// newest frame that carried a pick before it is noted, so answers to it or an earlier
-    /// one are passed over, as the selection's hover passes them over.
-    fn view_changed(&mut self, view: &View, frame: &ViewFrame) -> bool {
-        let now = (frame.camera.clone(), view.table());
-        let changed = self.seen.as_ref().is_some_and(|seen| *seen != now);
-        if changed {
-            self.stale_to = view.last_asked();
-        }
-        self.seen = Some(now);
-        changed
-    }
-
-    /// The pixel whose pick the newest answer is to, if one is in and the hover took it:
-    /// the view's bodies `current`, and the answer to a frame since the view last changed.
-    /// The selection's hover then holds what it found there.
-    fn heard(&self, view: &View, current: bool) -> Option<[u32; 2]> {
-        if !current {
-            return None;
-        }
-        let picking = view.picked()?;
-        if self.stale_to.is_some_and(|stale| picking.frame <= stale) {
-            return None;
-        }
-        Some(centre_of(picking.rect))
+        toast
     }
 
     /// The press's pick asked again, while its answer is awaited, unless a click waiting
@@ -236,14 +272,17 @@ impl BoxSelect {
         let Some(press) = &self.press else {
             return;
         };
-        if press.under.is_some() || !matches!(press.phase, Phase::Pressed | Phase::Held) {
+        if press.under.is_some()
+            || press.stale
+            || !matches!(press.phase, Phase::Pressed | Phase::Held)
+        {
             return;
         }
         let band = band_px(frame.pixels_per_point);
         let hover = frame
             .pointer_px
             .map(|pointer| pixel_of(pointer, frame.size_px));
-        let ours = square(press.pixel, band);
+        let ours = square(press.at_px, frame.size_px, band);
         match view.asking() {
             Some(asked) if asked == ours => {}
             Some(asked) if Some(centre_of(asked)) != hover => {}
@@ -259,27 +298,48 @@ impl BoxSelect {
         let mut effects = Vec::new();
         if told.changed
             && let Some(press) = &mut self.press
-            && matches!(press.phase, Phase::Pressed | Phase::Held)
         {
-            tracing::debug!(?press.phase, "the view changed under a press undecided: let go");
-            press.phase = Phase::LetGo;
+            match press.phase {
+                Phase::Pressed => press.stale = true,
+                Phase::Held => {
+                    tracing::debug!("the view changed under a drag undecided: let go");
+                    press.phase = Phase::LetGo;
+                    if press.released {
+                        effects.push(Effect::Said(PRESS_MOVED));
+                        self.press = None;
+                    }
+                }
+                Phase::Geometry | Phase::Boxing | Phase::LetGo => {}
+            }
         }
         for event in told.left {
             match event.kind {
                 LeftKind::Press => {
+                    if self
+                        .press
+                        .as_ref()
+                        .is_some_and(|press| press.released && press.phase == Phase::Held)
+                    {
+                        // A drag let go and still waiting, superseded.
+                        effects.push(Effect::Said(PRESS_UNREAD));
+                    }
                     self.press = Some(Press {
                         at_px: event.at_px,
                         corner: event.at_px,
                         pixel: pixel_of(event.at_px, told.size_px),
                         under: None,
                         phase: Phase::Pressed,
+                        released: false,
+                        stale: false,
                         ctrl: event.ctrl,
                         shift: event.shift,
                     });
                     self.learn(told, &mut effects);
                 }
                 LeftKind::Move => {
-                    if let Some(press) = &mut self.press {
+                    if let Some(press) = &mut self.press
+                        && !press.released
+                    {
                         press.corner = event.at_px;
                         press.ctrl = event.ctrl;
                         press.shift = event.shift;
@@ -292,12 +352,16 @@ impl BoxSelect {
                     self.learn(told, &mut effects);
                 }
                 LeftKind::Release => {
-                    let Some(mut press) = self.press.take() else {
+                    let Some(press) = &mut self.press else {
                         continue;
                     };
+                    if press.released {
+                        continue;
+                    }
                     press.corner = event.at_px;
                     press.ctrl = event.ctrl;
                     press.shift = event.shift;
+                    press.released = true;
                     // Let go past the click distance with no move there between: decided
                     // now, as a move there would have.
                     if press.phase == Phase::Pressed
@@ -305,32 +369,7 @@ impl BoxSelect {
                     {
                         press.phase = Phase::Held;
                     }
-                    self.press = Some(press);
                     self.learn(told, &mut effects);
-                    let Some(press) = self.press.take() else {
-                        continue;
-                    };
-                    match press.phase {
-                        Phase::Boxing => {
-                            let how = if press.shift {
-                                How::Add
-                            } else if press.ctrl {
-                                How::Toggle
-                            } else {
-                                How::Replace
-                            };
-                            effects.push(Effect::Box {
-                                from: press.at_px,
-                                to: press.corner,
-                                crossing: press.corner[0] < press.at_px[0],
-                                how,
-                            });
-                        }
-                        Phase::Held => {
-                            tracing::debug!("a drag let go before its press was answered");
-                        }
-                        Phase::Pressed | Phase::Geometry | Phase::LetGo => {}
-                    }
                 }
                 LeftKind::Cancel => self.press = None,
                 LeftKind::DoubleClick => {}
@@ -340,54 +379,81 @@ impl BoxSelect {
         effects
     }
 
-    /// The press's answer taken if it's heard now (the newest answer is to its pixel), and,
-    /// if the press is past the click distance, the drag decided by it: on geometry, its
-    /// element picked as a click picks it (Ctrl toggling); on empty space, a box.
+    /// The press's answer taken if it's heard now (the newest answer the hover took is to
+    /// its pixel), and, if the press is past the click distance, the drag decided by it: on
+    /// geometry, its element picked as a click picks it (Ctrl toggling); on empty space, a
+    /// box. A press let go is ended: a box selected as its modifiers say, or a drag let go
+    /// undecided said; one let go undecided and unanswered waits.
     fn learn(&mut self, told: &Told<'_>, effects: &mut Vec<Effect>) {
         let Some(press) = &mut self.press else {
             return;
         };
+        if press.stale && press.phase == Phase::Held {
+            press.phase = Phase::LetGo;
+        }
         if press.under.is_none()
+            && !press.stale
             && let Some((pixel, under)) = &told.heard
             && *pixel == press.pixel
             && matches!(press.phase, Phase::Pressed | Phase::Held)
         {
             press.under = Some(under.clone());
         }
-        if press.phase != Phase::Held {
+        if press.phase == Phase::Held {
+            match &press.under {
+                None => {}
+                Some(Some(name)) => {
+                    let how = if press.ctrl {
+                        How::Toggle
+                    } else {
+                        How::Replace
+                    };
+                    effects.push(Effect::Pick(Arc::clone(name), how));
+                    press.phase = Phase::Geometry;
+                }
+                Some(None) => press.phase = Phase::Boxing,
+            }
+        }
+        if !press.released {
             return;
         }
-        match &press.under {
-            None => {}
-            Some(Some(name)) => {
-                let how = if press.ctrl {
+        match press.phase {
+            Phase::Boxing => {
+                let how = if press.shift {
+                    How::Add
+                } else if press.ctrl {
                     How::Toggle
                 } else {
                     How::Replace
                 };
-                effects.push(Effect::Pick(Arc::clone(name), how));
-                press.phase = Phase::Geometry;
+                effects.push(Effect::Box {
+                    from: press.at_px,
+                    to: press.corner,
+                    crossing: press.corner[0] < press.at_px[0],
+                    how,
+                });
             }
-            Some(None) => press.phase = Phase::Boxing,
+            Phase::LetGo => effects.push(Effect::Said(PRESS_MOVED)),
+            // Let go and still unanswered: it waits.
+            Phase::Held => return,
+            Phase::Pressed | Phase::Geometry => {}
         }
+        self.press = None;
     }
 }
 
-/// The kinds a box takes under `filter`: edges alone with the filter as it starts (every
-/// kind on: "in a part, a box selects edges by default"); else those it leaves on.
-/// Vertices aren't in the displayed meshes yet (M5.7's part 3), so none is taken.
-fn kinds(filter: Filter) -> Kinds {
-    if filter == Filter::default() {
-        Kinds {
-            faces: false,
-            edges: true,
-        }
-    } else {
-        Kinds {
-            faces: filter.faces,
-            edges: filter.edges,
-        }
-    }
+/// What a box takes in a part, as the prototype's `onBox`: edges alone, whatever the
+/// filter (with the edge filter off, nothing, and that's said).
+const EDGES: Kinds = Kinds {
+    faces: false,
+    edges: true,
+};
+
+/// What the toast says of a box that took `count` edges (the prototype's `onBox`).
+fn box_words(crossing: bool, count: usize) -> String {
+    let kind = if crossing { "Crossing" } else { "Window" };
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{kind} selection: {count} edge{plural}")
 }
 
 /// Which kinds of element a box takes.
@@ -496,6 +562,156 @@ fn orient(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
+/// How `camera` draws on a canvas `size` pixels: where it cuts a perspective view (its eye
+/// and its view's back, depth along the view being `−back · (p − eye)`, as
+/// [`project`] takes it), and where a point lands.
+struct Sight<'a> {
+    camera: &'a Camera,
+    size: [u32; 2],
+    cut: Option<([f64; 3], [f64; 3])>,
+}
+
+/// A segment or a triangle as it's drawn: wholly cut away; drawn, the projected points of
+/// what's left of it after the cut; or with a point that can't be read, the projected
+/// points beside it that are.
+enum Drawn {
+    Cut,
+    Shown(Vec<[f64; 2]>),
+    Unread(Vec<[f64; 2]>),
+}
+
+impl<'a> Sight<'a> {
+    fn new(camera: &'a Camera, size: [u32; 2]) -> Self {
+        let cut = match camera.projection {
+            Projection::Perspective { .. } => camera
+                .check(size[0], size[1])
+                .ok()
+                .map(|frame| (camera.eye, frame.back)),
+            Projection::Orthographic { .. } => None,
+        };
+        Sight { camera, size, cut }
+    }
+
+    /// `p`'s depth along a perspective view; none in an orthographic one, which cuts
+    /// nothing.
+    fn depth(&self, p: [f64; 3]) -> Option<f64> {
+        self.cut.map(|(eye, back)| -dot(back, sub(p, eye)))
+    }
+
+    /// Whether the drawing keeps `p` (a finite point): in front of the cut, or in a view
+    /// that cuts nothing.
+    fn kept(&self, p: [f64; 3]) -> bool {
+        self.depth(p).is_none_or(|depth| depth >= MIN_EYE_DISTANCE)
+    }
+
+    /// Where the segment from `inside` (kept) to `outside` (cut) crosses the cut, nudged a
+    /// hair toward `inside` if rounding leaves it short, so it projects; `inside` itself
+    /// if it can't be.
+    fn crossing(&self, inside: [f64; 3], outside: [f64; 3]) -> [f64; 3] {
+        let (Some(near), Some(far)) = (self.depth(inside), self.depth(outside)) else {
+            return inside;
+        };
+        let t = (near - MIN_EYE_DISTANCE) / (near - far);
+        for nudge in [0.0, 1e-12, 1e-9, 1e-6] {
+            let s = t * (1.0 - nudge);
+            let p: [f64; 3] = std::array::from_fn(|k| inside[k] + s * (outside[k] - inside[k]));
+            if self.kept(p) && project(self.camera, self.size, p).is_some() {
+                return p;
+            }
+        }
+        inside
+    }
+
+    /// `points`, a segment or a triangle, as drawn: cut to its part in front of the cut (a
+    /// polygon clipped by the plane), then projected.
+    fn drawn(&self, points: &[Option<[f64; 3]>]) -> Drawn {
+        let read: Vec<[f64; 3]> = points
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|p| p.iter().all(|c| c.is_finite()))
+            .collect();
+        if read.len() < points.len() {
+            let beside = read
+                .iter()
+                .filter(|p| self.kept(**p))
+                .filter_map(|p| project(self.camera, self.size, *p))
+                .collect();
+            return Drawn::Unread(beside);
+        }
+        let mut left = Vec::with_capacity(read.len() + 1);
+        if read.iter().all(|p| self.kept(*p)) {
+            left = read;
+        } else {
+            let closed = read.len() > 2;
+            let sides = if closed { read.len() } else { read.len() - 1 };
+            for k in 0..sides {
+                let (a, b) = (read[k], read[(k + 1) % read.len()]);
+                match (self.kept(a), self.kept(b)) {
+                    (true, true) => left.push(a),
+                    (true, false) => {
+                        left.push(a);
+                        left.push(self.crossing(a, b));
+                    }
+                    (false, true) => left.push(self.crossing(b, a)),
+                    (false, false) => {}
+                }
+                if !closed && self.kept(b) {
+                    left.push(b);
+                }
+            }
+        }
+        if left.is_empty() {
+            return Drawn::Cut;
+        }
+        let projected: Vec<Option<[f64; 2]>> = left
+            .iter()
+            .map(|p| project(self.camera, self.size, *p))
+            .collect();
+        if projected.iter().any(Option::is_none) {
+            return Drawn::Unread(projected.into_iter().flatten().collect());
+        }
+        Drawn::Shown(projected.into_iter().flatten().collect())
+    }
+}
+
+/// What's decided of an element from its drawn pieces (segments or triangles): whether
+/// it's wholly inside `area` (something of it drawn, all of it read and inside), or, for a
+/// crossing, whether it meets it.
+fn decide(pieces: impl Iterator<Item = Drawn>, area: &PxBox, crossing: bool) -> bool {
+    let mut any = false;
+    for piece in pieces {
+        let (points, read) = match piece {
+            Drawn::Cut => continue,
+            Drawn::Shown(points) => (points, true),
+            Drawn::Unread(points) => (points, false),
+        };
+        if crossing {
+            let meets = if read {
+                match points.as_slice() {
+                    [p] => area.holds(*p),
+                    [a, b] => area.meets_segment(*a, *b),
+                    [first, rest @ ..] => rest
+                        .windows(2)
+                        .any(|pair| area.overlaps_triangle([*first, pair[0], pair[1]])),
+                    [] => false,
+                }
+            } else {
+                points.iter().any(|p| area.holds(*p))
+            };
+            if meets {
+                return true;
+            }
+        } else {
+            if !read || !points.iter().all(|p| area.holds(*p)) {
+                return false;
+            }
+            any = true;
+        }
+    }
+    !crossing && any
+}
+
 /// The names of what a box `area` takes of `bodies`, those `shown` alone, of the `kinds`
 /// it takes, seen through `camera` on a canvas `size` pixels: wholly inside, or also
 /// crossing it if `crossing`. By body in its number's order, then faces, then edges, each
@@ -509,19 +725,15 @@ fn taken(
     area: PxBox,
     crossing: bool,
 ) -> Vec<String> {
+    let sight = Sight::new(camera, size);
     let mut names = Vec::new();
     for body in bodies.values().filter(|body| shown(&body.feature)) {
         let mesh = &body.mesh;
         if kinds.faces {
-            let projected: Vec<Option<[f64; 2]>> = mesh
-                .positions
-                .iter()
-                .map(|p| project(camera, size, *p))
-                .collect();
-            let vertex = |index: u32| -> Option<[f64; 2]> {
+            let position = |index: u32| -> Option<[f64; 3]> {
                 usize::try_from(index)
                     .ok()
-                    .and_then(|at| projected.get(at).copied().flatten())
+                    .and_then(|at| mesh.positions.get(at).copied())
             };
             let mut first = 0usize;
             for (count, number) in mesh.face_triangles.iter().zip(1u32..) {
@@ -532,18 +744,10 @@ fn taken(
                 let Some(triangles) = triangles.filter(|t| !t.is_empty()) else {
                     continue;
                 };
-                let corners = triangles.iter().map(|t| t.map(vertex));
-                let take = if crossing {
-                    corners.into_iter().any(|t| match t {
-                        [Some(a), Some(b), Some(c)] => area.overlaps_triangle([a, b, c]),
-                        partial => partial.iter().flatten().any(|p| area.holds(*p)),
-                    })
-                } else {
-                    corners
-                        .into_iter()
-                        .all(|t| t.iter().all(|p| p.is_some_and(|p| area.holds(p))))
-                };
-                if take && let Some(named) = body.name_of(Element::Face(number)) {
+                let pieces = triangles.iter().map(|t| sight.drawn(&t.map(position)));
+                if decide(pieces, &area, crossing)
+                    && let Some(named) = body.name_of(Element::Face(number))
+                {
                     names.push(named.name.to_string());
                 }
             }
@@ -558,16 +762,17 @@ fn taken(
                 let Some(points) = points.filter(|p| !p.is_empty()) else {
                     continue;
                 };
-                let projected: Vec<Option<[f64; 2]>> =
-                    points.iter().map(|p| project(camera, size, *p)).collect();
-                let take = if crossing {
-                    projected.iter().flatten().any(|p| area.holds(*p))
-                        || projected.windows(2).any(|pair| match pair {
-                            [Some(a), Some(b)] => area.meets_segment(*a, *b),
-                            _ => false,
-                        })
+                let take = if let [point] = points {
+                    decide(
+                        std::iter::once(sight.drawn(&[Some(*point)])),
+                        &area,
+                        crossing,
+                    )
                 } else {
-                    projected.iter().all(|p| p.is_some_and(|p| area.holds(p)))
+                    let pieces = points
+                        .windows(2)
+                        .map(|pair| sight.drawn(&[Some(pair[0]), Some(pair[1])]));
+                    decide(pieces, &area, crossing)
                 };
                 if take && let Some(named) = body.name_of(Element::Edge(number)) {
                     names.push(named.name.to_string());
@@ -613,42 +818,10 @@ pub(crate) fn draw_box(painter: &Painter, frame: &ViewFrame, from: [f32; 2], to:
     }
 }
 
-/// The edge band, in physical pixels, at `ppp` pixels a point, as the selection's pick
-/// takes it: at least one.
-fn band_px(ppp: f32) -> u32 {
-    (EDGE_BAND_POINTS * ppp).ceil().clamp(1.0, 96.0) as u32
-}
-
 /// The pixel `at_px` (physical pixels from the canvas's top left, maybe outside it) is in,
 /// clamped into a canvas `size` pixels, as the selection's pick centres its square on it.
 fn pixel_of(at_px: [f32; 2], size: [u32; 2]) -> [u32; 2] {
-    let pixel = |at: f32, side: u32| {
-        let last = side.saturating_sub(1);
-        // Floored and clamped into [0, last]: a NaN is 0, as `as` takes it.
-        (at.floor().max(0.0) as u32).min(last)
-    };
-    [pixel(at_px[0], size[0]), pixel(at_px[1], size[1])]
-}
-
-/// The square `band` pixels out on each side of `pixel`, as the selection's pick asks it.
-fn square(pixel: [u32; 2], band: u32) -> PixelRect {
-    // A canvas's side is a few thousand pixels: inside an i32.
-    let corner = |c: u32| i32::try_from(c).unwrap_or(i32::MAX) - band as i32;
-    PixelRect {
-        min: [corner(pixel[0]), corner(pixel[1])],
-        size: [2 * band + 1, 2 * band + 1],
-    }
-}
-
-/// A pick's square's centre pixel (its sides are odd).
-fn centre_of(rect: PixelRect) -> [u32; 2] {
-    let at = |min: i32, side: u32| u32::try_from(i64::from(min) + i64::from(side / 2)).unwrap_or(0);
-    [at(rect.min[0], rect.size[0]), at(rect.min[1], rect.size[1])]
-}
-
-fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
-    let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
-    (dx * dx + dy * dy).sqrt()
+    centre_of(square(at_px, size, 0))
 }
 
 #[cfg(test)]
@@ -864,27 +1037,38 @@ mod tests {
     }
 
     #[test]
-    fn what_a_box_takes_follows_the_filter_edges_alone_at_first() {
-        let edges: [&[[f64; 2]]; 1] = [&[[110.0, 30.0], [130.0, 30.0]]];
-        let square: &[[[f64; 2]; 3]] = &[[[110.0, 20.0], [150.0, 20.0], [150.0, 40.0]]];
-        let held = bodies(body(&edges, &[square]));
-        let everything = |filter: Filter| boxed(&held, kinds(filter), [100.0, 10.0], [160.0, 50.0]);
-        let filter = |faces, edges, vertices| Filter {
-            faces,
-            edges,
-            vertices,
-        };
-        // Every kind on, as the filter starts: edges alone ("in a part, a box takes edges
-        // by default").
-        assert_eq!(everything(Filter::default()), ["Edge1"]);
-        // Edges off (E): faces.
-        assert_eq!(everything(filter(true, false, true)), ["Face1"]);
-        // Faces off (X): edges.
-        assert_eq!(everything(filter(false, true, true)), ["Edge1"]);
-        // Vertices off (V): the filter changed, so the kinds it leaves on, faces first.
-        assert_eq!(everything(filter(true, true, false)), ["Face1", "Edge1"]);
-        // Vertices alone: none drawn yet, so nothing.
-        assert!(everything(filter(false, false, true)).is_empty());
+    fn a_box_takes_edges_alone_and_its_toast_counts_them_as_the_prototype_words_it() {
+        // The prototype's `onBox`: edges, whatever the filter (its edge filter off, the
+        // overlay takes nothing, `EDGE_FILTER_OFF`); and its toast's words.
+        assert_eq!(
+            super::EDGES,
+            Kinds {
+                faces: false,
+                edges: true
+            }
+        );
+        assert_eq!(box_words(false, 4), "Window selection: 4 edges");
+        assert_eq!(box_words(true, 1), "Crossing selection: 1 edge");
+        assert_eq!(box_words(false, 0), "Window selection: 0 edges");
+    }
+
+    #[test]
+    fn a_segment_crosses_a_box_by_its_line_not_by_its_bounds_or_its_ends() {
+        // The box (100, 20)–(140, 40), dragged right to left. Edge1, from (135, 10) to
+        // (150, 25) (x − y = 125), passes outside its corner (140, 20) (x − y = 120): their
+        // bounds overlap, but every corner is on one side of its line, so it isn't taken.
+        // Edge2 and Edge3 run along its top and its foot, both ends outside: on its outline,
+        // so taken, whichever side of them the other corners lie.
+        let edges: [&[[f64; 2]]; 3] = [
+            &[[135.0, 10.0], [150.0, 25.0]],
+            &[[90.0, 20.0], [150.0, 20.0]],
+            &[[90.0, 40.0], [150.0, 40.0]],
+        ];
+        let held = bodies(body(&edges, &[]));
+        assert_eq!(
+            boxed(&held, EDGES, [140.0, 20.0], [100.0, 40.0]),
+            ["Edge2", "Edge3"]
+        );
     }
 
     #[test]
@@ -901,36 +1085,110 @@ mod tests {
         assert!(taken(&held, &hidden, EDGES, &front(), SIZE, area, false).is_empty());
     }
 
-    #[test]
-    fn a_point_behind_the_eye_is_never_inside() {
-        // In perspective from (0, −100, 0), a point at y −200 is behind the eye: the edge
-        // from it to the origin isn't wholly inside any box, and a crossing takes it only
-        // by its point that projects, the origin at the canvas's middle (128, 64).
-        let camera = Camera {
+    /// In perspective from (0, −100, 0) onto the origin, z up, 45° high: depth along the
+    /// view is y + 100, and the drawing cuts what's nearer than `MIN_EYE_DISTANCE`.
+    fn from_near() -> Camera {
+        Camera {
             projection: Projection::Perspective {
                 field_of_view: 45.0,
             },
             eye: [0.0, -100.0, 0.0],
             target: [0.0, 0.0, 0.0],
             up: [0.0, 0.0, 1.0],
-        };
-        assert_eq!(project(&camera, SIZE, [0.0, -200.0, 0.0]), None);
+        }
+    }
+
+    /// A body of `edges` and `faces` in the document's coordinates, named in order.
+    fn body_at(edges: &[&[[f64; 3]]], faces: &[[[f64; 3]; 3]]) -> BTreeMap<u32, ViewBody> {
         let mut held = body(&[], &[]);
-        held.mesh = Arc::new(Mesh {
-            edge_points: vec![[0.0, -200.0, 0.0], [0.0, 0.0, 0.0]],
-            edge_point_counts: vec![2],
-            ..(*held.mesh).clone()
-        });
-        held.edges = vec![named(ElementKind::Edge, 1)];
-        let held = bodies(held);
+        let mut mesh = (*held.mesh).clone();
+        for edge in edges {
+            mesh.edge_points.extend(edge.iter().copied());
+            mesh.edge_point_counts.push(edge.len() as u32);
+        }
+        for face in faces {
+            let base = mesh.positions.len() as u32;
+            mesh.positions.extend(face.iter().copied());
+            mesh.normals.extend([[0.0, -1.0, 0.0]; 3]);
+            mesh.triangles.push([base, base + 1, base + 2]);
+            mesh.face_triangles.push(1);
+        }
+        held.mesh = Arc::new(mesh);
+        held.edges = (1..=edges.len() as u32)
+            .map(|n| named(ElementKind::Edge, n))
+            .collect();
+        held.faces = (1..=faces.len() as u32)
+            .map(|n| named(ElementKind::Face, n))
+            .collect();
+        bodies(held)
+    }
+
+    #[test]
+    fn what_the_drawing_keeps_in_front_of_the_eye_is_tested_and_whats_behind_isnt() {
+        // Edge1, from (−50, 0, 0), 100 in front of the eye, to (50, −150, 0), 50 behind
+        // it: drawn from its start to where it meets the cut, two thirds along, which lands
+        // far off to the right; it runs along the canvas's middle row (z = 0, y 64) through
+        // x 128 halfway (the origin's x at depth 25 is 0). Edge2 lies wholly behind the eye.
+        // Edge3 runs along the view, from behind the eye to the origin: what's drawn of it
+        // lands on the canvas's middle, (128, 64).
+        let camera = from_near();
+        assert_eq!(project(&camera, SIZE, [50.0, -150.0, 0.0]), None);
+        let edges: [&[[f64; 3]]; 3] = [
+            &[[-50.0, 0.0, 0.0], [50.0, -150.0, 0.0]],
+            &[[0.0, -200.0, 0.0], [10.0, -150.0, 5.0]],
+            &[[0.0, -200.0, 0.0], [0.0, 0.0, 0.0]],
+        ];
+        let held = body_at(&edges, &[]);
+        let names = |area: PxBox, crossing| -> Vec<String> {
+            taken(&held, &every, EDGES, &camera, SIZE, area, crossing)
+                .into_iter()
+                .map(|name| name.trim_start_matches("k7f2qx3m.box.").to_owned())
+                .collect()
+        };
+        // The reviewer's box, (190, 60) to (150, 68), right to left: Edge1's drawn part
+        // crosses it, though its far end doesn't project.
+        let right = PxBox::clamped([190.0, 60.0], [150.0, 68.0], SIZE);
+        assert_eq!(names(right, true), ["Edge1"]);
+        // A window over the whole canvas: Edge3's drawn part is inside; Edge1's runs off
+        // the canvas to its cut; Edge2 has nothing drawn.
         let whole = PxBox::clamped([0.0, 0.0], [256.0, 128.0], SIZE);
-        assert!(taken(&held, &every, EDGES, &camera, SIZE, whole, false).is_empty());
+        assert_eq!(names(whole, false), ["Edge3"]);
+        assert_eq!(names(whole, true), ["Edge1", "Edge3"]);
+        // Off the middle, left of x 50: nothing drawn there.
+        let aside = PxBox::clamped([0.0, 0.0], [40.0, 128.0], SIZE);
+        assert!(names(aside, true).is_empty());
+    }
+
+    #[test]
+    fn a_face_partly_behind_the_eye_is_tested_by_what_the_drawing_keeps_of_it() {
+        // Face1: (−50, 0, ∓10), 100 in front, and (50, −150, 0), 50 behind: drawn as the
+        // quadrilateral left of the cut, which reaches far to the right along the middle
+        // row. Face2 lies wholly behind the eye.
+        let camera = from_near();
+        let faces = [
+            [[-50.0, 0.0, -10.0], [-50.0, 0.0, 10.0], [50.0, -150.0, 0.0]],
+            [
+                [0.0, -200.0, -10.0],
+                [0.0, -200.0, 10.0],
+                [10.0, -150.0, 0.0],
+            ],
+        ];
+        let held = body_at(&[], &faces);
+        let right = PxBox::clamped([190.0, 60.0], [150.0, 68.0], SIZE);
         assert_eq!(
-            taken(&held, &every, EDGES, &camera, SIZE, whole, true),
-            ["k7f2qx3m.box.Edge1"]
+            taken(&held, &every, FACES, &camera, SIZE, right, true),
+            ["k7f2qx3m.box.Face1"]
         );
-        let aside = PxBox::clamped([0.0, 0.0], [100.0, 128.0], SIZE);
-        assert!(taken(&held, &every, EDGES, &camera, SIZE, aside, true).is_empty());
+        let whole = PxBox::clamped([0.0, 0.0], [256.0, 128.0], SIZE);
+        assert!(taken(&held, &every, FACES, &camera, SIZE, whole, false).is_empty());
+        // Above the middle row, right of the near side (x ≈ 51, y 48.5 to 79.5): the quad's
+        // cut corners fan out far up and down (its top side falls about 0.19 a pixel, to
+        // y ≈ 20 at x 200), so it covers (200, 25)–(250, 35) too.
+        let above = PxBox::clamped([250.0, 25.0], [200.0, 35.0], SIZE);
+        assert_eq!(
+            taken(&held, &every, FACES, &camera, SIZE, above, true),
+            ["k7f2qx3m.box.Face1"]
+        );
     }
 
     #[test]
@@ -1163,22 +1421,79 @@ mod tests {
     }
 
     #[test]
-    fn a_held_drag_is_let_go_when_the_view_changes_or_its_button_does() {
+    fn a_drag_let_go_unanswered_waits_with_its_corners_and_is_decided_when_answered() {
         let mut boxes = BoxSelect::default();
         let left = [event(Press, [50.0, 40.0]), event(Move, [70.0, 40.0])];
+        // Let go with Shift before its press is answered: nothing yet, and it waits.
         frame(&mut boxes, &left, None, false);
-        // The camera moved (or the bodies changed): let go, and an answer after it decides
-        // nothing.
+        let release = with(event(Release, [90.0, 70.0]), true, false);
+        assert!(frame(&mut boxes, &[release], None, false).is_empty());
+        for _ in 0..50 {
+            assert!(frame(&mut boxes, &[], None, false).is_empty());
+        }
+        assert_eq!(phase(&boxes), Some(Phase::Held));
+        // Answered, nothing there: the box it was let go as, Shift's.
+        assert_eq!(
+            frame(&mut boxes, &[], Some(([50, 40], None)), false),
+            [Effect::Box {
+                from: [50.0, 40.0],
+                to: [90.0, 70.0],
+                crossing: false,
+                how: How::Add,
+            }]
+        );
+        assert_eq!(phase(&boxes), None);
+        // Answered with a face there: picked, as a drag on geometry.
+        let face = name(ElementKind::Face, 2);
+        frame(&mut boxes, &left, None, false);
+        frame(&mut boxes, &[event(Release, [90.0, 70.0])], None, false);
+        assert_eq!(
+            frame(
+                &mut boxes,
+                &[],
+                Some(([50, 40], Some(Arc::clone(&face)))),
+                false
+            ),
+            [Effect::Pick(face, How::Replace)]
+        );
+        assert_eq!(phase(&boxes), None);
+    }
+
+    #[test]
+    fn a_drag_undecided_is_let_go_when_the_view_changes_and_says_so() {
+        let mut boxes = BoxSelect::default();
+        let left = [event(Press, [50.0, 40.0]), event(Move, [70.0, 40.0])];
+        // Held, then the camera moves (or the bodies, the model, or the filter change): let
+        // go, an answer after it decides nothing, and its release says why.
+        frame(&mut boxes, &left, None, false);
         assert!(frame(&mut boxes, &[], None, true).is_empty());
         assert_eq!(phase(&boxes), Some(Phase::LetGo));
         assert!(frame(&mut boxes, &[], Some(([50, 40], None)), false).is_empty());
-        assert!(frame(&mut boxes, &[event(Release, [90.0, 70.0])], None, false).is_empty());
+        assert_eq!(
+            frame(&mut boxes, &[event(Release, [90.0, 70.0])], None, false),
+            [Effect::Said(PRESS_MOVED)]
+        );
         assert_eq!(phase(&boxes), None);
-        // Let go of before it's answered: nothing.
+        // Let go and waiting, then the change: said at once.
         frame(&mut boxes, &left, None, false);
-        assert!(frame(&mut boxes, &[event(Release, [90.0, 70.0])], None, false).is_empty());
-        // A press still a click's when the view changes is let go too: its pixel's answer
-        // isn't what it was pressed on.
+        frame(&mut boxes, &[event(Release, [90.0, 70.0])], None, false);
+        assert_eq!(
+            frame(&mut boxes, &[], None, true),
+            [Effect::Said(PRESS_MOVED)]
+        );
+        assert_eq!(phase(&boxes), None);
+        // Let go and waiting, then the next press: said, and the new press begins.
+        frame(&mut boxes, &left, None, false);
+        frame(&mut boxes, &[event(Release, [90.0, 70.0])], None, false);
+        assert_eq!(
+            frame(&mut boxes, &[event(Press, [10.0, 10.0])], None, false),
+            [Effect::Said(PRESS_UNREAD)]
+        );
+        assert_eq!(phase(&boxes), Some(Phase::Pressed));
+        frame(&mut boxes, &[event(Cancel, [10.0, 10.0])], None, false);
+        // A press still a click's when the view changes, its answer known before: past the
+        // click distance it's let go (its pixel's answer isn't what it was pressed on), and
+        // an answer of the new view for its pixel isn't taken.
         let empty = Some(([50, 40], None));
         frame(
             &mut boxes,
@@ -1187,13 +1502,84 @@ mod tests {
             false,
         );
         frame(&mut boxes, &[], None, true);
-        assert!(frame(&mut boxes, &[event(Move, [90.0, 40.0])], empty, false).is_empty());
+        assert!(
+            frame(
+                &mut boxes,
+                &[event(Move, [90.0, 40.0])],
+                empty.clone(),
+                false
+            )
+            .is_empty()
+        );
         assert_eq!(phase(&boxes), Some(Phase::LetGo));
-        // A box already drawn isn't: it's of the canvas, and selects at its release.
-        let empty = Some(([50, 40], None));
+        frame(&mut boxes, &[event(Release, [90.0, 40.0])], None, false);
+        // Let go within the click distance, it was a click: nothing said, the selection's.
+        frame(
+            &mut boxes,
+            &[event(Press, [50.0, 40.0])],
+            empty.clone(),
+            false,
+        );
+        frame(&mut boxes, &[], None, true);
+        assert!(
+            frame(
+                &mut boxes,
+                &[event(Release, [51.0, 40.0])],
+                empty.clone(),
+                false
+            )
+            .is_empty()
+        );
+        // A box already drawn isn't let go: it's of the canvas, and selects at its release.
         frame(&mut boxes, &left, empty, false);
         frame(&mut boxes, &[], None, true);
         assert_eq!(phase(&boxes), Some(Phase::Boxing));
+    }
+
+    /// A frame of the view: 256 by 128 pixels, at one a point, the pointer at `pointer`.
+    fn view_frame(pointer: Option<[f32; 2]>) -> ViewFrame {
+        ViewFrame {
+            session: silico_core::command::SessionId::parse("s1").unwrap(),
+            rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(256.0, 128.0)),
+            camera: front(),
+            size_px: SIZE,
+            pixels_per_point: 1.0,
+            pointer_px: pointer,
+            left: Vec::new(),
+            secondary: Vec::new(),
+            now: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn the_presss_pick_takes_the_hovers_place_never_a_waiting_clicks() {
+        let mut boxes = BoxSelect::default();
+        frame(&mut boxes, &[event(Press, [50.0, 40.0])], None, false);
+        let ours = square([50.0, 40.0], SIZE, 3);
+        let at = |pixel: [f32; 2]| square(pixel, SIZE, 3);
+        let pointer = [80.5, 70.5];
+        // A click's pick asked this frame, about another pixel than the pointer's: kept.
+        let mut view = View::default();
+        view.pick(at([20.0, 20.0]));
+        boxes.ask(&mut view, &view_frame(Some(pointer)));
+        assert_eq!(view.asking(), Some(at([20.0, 20.0])));
+        // So is one with the pointer off the canvas, which the hover never asks.
+        boxes.ask(&mut view, &view_frame(None));
+        assert_eq!(view.asking(), Some(at([20.0, 20.0])));
+        // The hover's, about the pointer's pixel: replaced by the press's.
+        let mut view = View::default();
+        view.pick(at(pointer));
+        boxes.ask(&mut view, &view_frame(Some(pointer)));
+        assert_eq!(view.asking(), Some(ours));
+        // Nothing asked: the press's.
+        let mut view = View::default();
+        boxes.ask(&mut view, &view_frame(Some(pointer)));
+        assert_eq!(view.asking(), Some(ours));
+        // Answered: nothing more asked.
+        frame(&mut boxes, &[], Some(([50, 40], None)), false);
+        let mut view = View::default();
+        boxes.ask(&mut view, &view_frame(Some(pointer)));
+        assert_eq!(view.asking(), None);
     }
 
     #[test]
