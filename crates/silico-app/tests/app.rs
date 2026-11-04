@@ -18945,32 +18945,43 @@ fn a_move_cancelled_mid_solve_says_nothing_and_a_move_the_core_then_refuses_ends
 }
 
 #[test]
-fn a_drag_ended_with_no_change_is_let_go_at_its_answer_not_at_a_read() {
+fn a_drags_end_refused_after_another_clients_edit_is_let_go_at_once_not_at_a_read_of_it() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
     counting(&f);
     let mut h = boxed(&f);
-    let text = text_of(&f, &h);
     sketch_events(
         &f,
         &mut h,
-        &[
-            pointer(silico_app::sketch::PointerAction::Press, 50.0, 30.0),
-            pointer(silico_app::sketch::PointerAction::Move, 60.0, 40.0),
-        ],
+        &[pointer(Press, 50.0, 30.0), pointer(Move, 60.0, 40.0)],
     );
     step_until(&mut h, "the frame", |h| {
         the_drag(h).is_some_and(|d| d.frames >= 1)
     });
-    // Esc, every solve held, so no read of a new model can come: its end, from the begin
-    // state, changes nothing, and the drag is let go as it answers.
+    // Every solve held, so no read of a newer model can come; then another client moves
+    // the corner pa000001 to (11, 10), which ends the core's drag.
     f.sketches.hold();
-    h.key_press(eframe::egui::Key::Escape);
-    step(&mut h);
-    step_until(&mut h, "the drag let go", |h| the_drag(h).is_none());
+    let id = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&id).session.unwrap().revision;
+    let theirs = f
+        .sessions
+        .replace_text(
+            &id,
+            revision,
+            BOXED.replace(r#""x": 10, "y": 10"#, r#""x": 11, "y": 10"#),
+        )
+        .wait();
+    assert!(theirs.result.is_ok(), "{:?}", theirs.result);
+    // The release: its end refused, no drag being open, which is said; the drag, which
+    // changed nothing, let go at once, not kept for a read of the revision it answered at.
+    sketch_events(&f, &mut h, &[pointer(Release, 60.0, 40.0)]);
+    step_until(&mut h, "the end's refusal said", |h| {
+        h.state().tabs()[0].message.is_some()
+    });
     assert_eq!(drag_sends(&h, "drag_end"), 1);
+    assert!(the_drag(&h).is_none());
     f.sketches.release();
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -18982,6 +18993,14 @@ fn a_drags_edit_after_an_undo_in_sketch_mode_leaves_redo_nothing_of_sketch_modes
     counting(&f);
     let mut h = boxed(&f);
     let drag_to = |f: &Fixture, h: &mut AppHarness, to: [f64; 2]| {
+        // Pressed on a read of the session's state, as a drag begins only from one.
+        step_until(h, "the read of the session's revision", |h| {
+            let tab = &h.state().tabs()[0];
+            sketch_mode(h)
+                .and_then(|mode| mode.read.as_ref())
+                .and_then(|read| read.model)
+                == Some(tab.revision)
+        });
         sketch_events(
             f,
             h,
