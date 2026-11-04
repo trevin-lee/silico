@@ -14661,7 +14661,10 @@ fn the_dialogs_close_button_cancels_it() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     create(&mut h, "Box");
     added(&mut h);
-    settled(&mut h);
+    // The add answered is a revision; its timeline is read after, on a frame of its own.
+    step_until(&mut h, "the timeline read at the add's revision", |h| {
+        !h.state().tabs()[0].applying()
+    });
     assert!(shows(&h, "Timeline", "Box"));
     dialog(&h)
         .get_by_role_and_label(Role::Button, "Close the dialog")
