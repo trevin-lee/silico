@@ -1882,13 +1882,14 @@ mod tests {
 
     #[test]
     fn the_view_cube_sits_its_margin_in_from_the_canvass_top_right_under_home() {
-        // A canvas from (100, 50) to (900, 650): the cube's 96-point square 8 points in
-        // from its right edge, 900 − 8 − 96 = 796, and 8 points down past Home's 20-point
-        // row, 50 + 8 + 20 = 78.
+        // A canvas from (100, 50) to (900, 650): the cube's 92-point square (the prototype's
+        // `CUBE`) 16 points (`CUBE_M`) in from its right edge, 900 − 16 − 92 = 792 to
+        // 900 − 16 = 884, and 16 points down past Home's 20-point row, 50 + 16 + 20 = 86 to
+        // 86 + 92 = 178.
         let viewport = Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(900.0, 650.0));
         assert_eq!(
             view_cube_rect(viewport),
-            Rect::from_min_max(egui::pos2(796.0, 78.0), egui::pos2(892.0, 174.0))
+            Rect::from_min_max(egui::pos2(792.0, 86.0), egui::pos2(884.0, 178.0))
         );
     }
 
