@@ -742,3 +742,82 @@ fn an_orthographic_refusal_names_the_farthest_body_the_least_is_for() {
         drawn.check().unwrap();
     }
 }
+
+#[test]
+fn a_frustum_widened_by_some_pixels_moves_each_side_out_by_that_many_of_the_images() {
+    // 64 by 48, widened by 1.5 pixels. Perspective at 60°, t = tan 30°: a pixel is 2t / 48 of
+    // the depth, so each side moves out by 1.5 × 2t / 48 = t / 16 of it: up and down at
+    // t × 17/16 = 0.61343466101397737, left and right at t × 4/3 + t / 16 = 0.80588475074385263
+    // (mpmath). Orthographic, 10 mm high: a pixel is 10/48 mm, so each side moves out 0.3125
+    // mm: up and down at 5.3125, left and right at 10 × 4/3 / 2 + 0.3125 = 6.9791666...
+    use silico_protocol::ViewRegion;
+    let camera = |projection| Camera {
+        projection,
+        eye: [0.0, -10.0, 0.0],
+        target: [0.0; 3],
+        up: [0.0, 0.0, 1.0],
+    };
+    let perspective = camera(Projection::Perspective {
+        field_of_view: 60.0,
+    });
+    let frame = perspective.frame().unwrap();
+    let f = ViewRegion::frustum_widened(&perspective, &frame, 64, 48, 1.5);
+    let (ty, tx) = (0.613_434_661_013_977_4, 0.805_884_750_743_852_6);
+    for (k, normal) in [
+        (1, [-1.0, 0.0, tx]),
+        (2, [1.0, 0.0, tx]),
+        (3, [0.0, -1.0, ty]),
+        (4, [0.0, 1.0, ty]),
+    ] {
+        for (got, want) in f.sides[k].normal.iter().zip(normal) {
+            assert!((got - want).abs() < 1e-15, "side {k}: {:?}", f.sides[k]);
+        }
+        assert_eq!(f.sides[k].offset, 0.0);
+    }
+    let orthographic = camera(Projection::Orthographic { view_height: 10.0 });
+    let frame = orthographic.frame().unwrap();
+    let f = ViewRegion::frustum_widened(&orthographic, &frame, 64, 48, 1.5);
+    for (k, offset) in [
+        (1, 6.979_166_666_666_667),
+        (2, 6.979_166_666_666_667),
+        (3, 5.3125),
+        (4, 5.3125),
+    ] {
+        assert!(
+            (f.sides[k].offset - offset).abs() < 1e-14,
+            "side {k}: {:?}",
+            f.sides[k]
+        );
+    }
+    // Widened by none, the image's own frustum.
+    assert_eq!(
+        ViewRegion::frustum_widened(&orthographic, &frame, 64, 48, 0.0),
+        ViewRegion::frustum(&orthographic, &frame, 64, 48)
+    );
+}
+
+#[test]
+fn a_pyramids_sides_are_its_floor_then_its_four_slopes_in_order() {
+    // Eye at the origin looking along +y, up +z: a point (x, d, z) is x right and z up at
+    // depth d, exactly. At slope 2, (2, 1, 0.5) is past the side b d − x − y alone (2 − 2.5
+    // = −0.5; the others 0.5, 3.5, 4.5; its floor 1 − 1e-6): by hand, outside that one side
+    // only, the second. A point on the floor's plane is in it (the sides are closed).
+    use silico_protocol::{MIN_EYE_DISTANCE, ViewRegion};
+    let camera = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 60.0,
+        },
+        eye: [0.0; 3],
+        target: [0.0, 10.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let frame = camera.frame().unwrap();
+    let p = ViewRegion::pyramid([0.0; 3], &frame, 2.0);
+    let e = p.eye_frame([2.0, 1.0, 0.5]);
+    assert_eq!(e, [2.0, 0.5, 1.0]);
+    let values: Vec<f64> = p.sides.iter().map(|s| s.value(e)).collect();
+    assert_eq!(values, [1.0 - MIN_EYE_DISTANCE, -0.5, 0.5, 3.5, 4.5]);
+    let holds: Vec<bool> = p.sides.iter().map(|s| s.holds(e)).collect();
+    assert_eq!(holds, [true, false, true, true, true]);
+    assert!(p.sides[0].holds(p.eye_frame([0.0, MIN_EYE_DISTANCE, 0.0])));
+}

@@ -3571,4 +3571,79 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn an_edges_stroke_frustum_is_the_images_widened_by_half_the_stroke_in_pixels() {
+        // Orthographic, 48 mm over 48 rows, 64 wide (a pixel a millimetre): a stroke 2 points
+        // wide at 2 pixels a point reaches 2 pixels past its line, so the frustum's sides are
+        // 24 + 2 up and down and 32 + 2 left and right (by hand); 4 points at 1.5, 3 pixels.
+        let view = unchecked(&RenderScene {
+            bodies: vec![],
+            camera: Camera {
+                projection: Projection::Orthographic { view_height: 48.0 },
+                eye: [0.0, -10.0, 0.0],
+                target: [0.0; 3],
+                up: [0.0, 0.0, 1.0],
+            },
+            width: 64,
+            height: 48,
+            ids: false,
+        });
+        for (width, pixels_per_point, reach) in [(2.0, 2.0, 2.0), (4.0, 1.5, 3.0)] {
+            let f = view.stroke_frustum(width, pixels_per_point);
+            let offsets: Vec<f64> = f.sides[1..].iter().map(|s| s.offset).collect();
+            assert_eq!(
+                offsets,
+                [32.0 + reach, 32.0 + reach, 24.0 + reach, 24.0 + reach],
+                "{width} points at {pixels_per_point}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_strip_whose_cut_rounds_to_its_end_is_ended_where_it_next_leaves_or_reenters() {
+        // From the origin along +y (a point's depth its y, exactly): a segment from 1e6 deep
+        // to an ulp under the pyramid's floor (1e-6) leaves it at a fraction that rounds to 1,
+        // so the strip carries on to that end. Then on to 1 mm behind the eye: that segment is
+        // wholly outside, and the strip [a, b] is ended there, one strip. Or back to 1 mm
+        // ahead: it enters again a hair along, and the strip [a, b] is ended before another,
+        // from there to c, begins: two strips.
+        let view = from_origin(60.0, [64, 48], vec![]);
+        let (a, b) = ([0.0, 1e6, 0.0], [0.0, 1e-6f64.next_down(), 0.0]);
+        let strips = view.cut_strip(&[a, b, [0.0, -1.0, 0.0]]);
+        assert_eq!(strips.len(), 1, "{strips:?}");
+        assert_eq!(strips[0].len(), 2, "{strips:?}");
+        assert_eq!(strips[0][0], glam::Vec3::new(0.0, 0.0, -1e6));
+        let strips = view.cut_strip(&[a, b, [0.0, 1.0, 0.0]]);
+        assert_eq!(strips.len(), 2, "{strips:?}");
+        assert!(strips.iter().all(|s| s.len() == 2), "{strips:?}");
+        assert_eq!(strips[0][0], glam::Vec3::new(0.0, 0.0, -1e6));
+        assert_eq!(strips[1][1], glam::Vec3::new(0.0, 0.0, -1.0));
+    }
+
+    #[test]
+    fn a_cut_faces_normals_of_no_length_stay_of_no_length() {
+        // A triangle through the eye's plane whose corners' normals are 0 (re_renderer draws
+        // such a face unlit): its cut corners' normals, taken along its edges, are 0 too,
+        // never 0 / 0.
+        let view = from_origin(60.0, [64, 48], vec![]);
+        let mut mesh = sheet(&[[[0.0, -1.0, 0.0], [0.0, 1.0, 1.0], [0.0, 1.0, -1.0]]]);
+        mesh.normals = vec![[0.0; 3]; 3];
+        let cut = super::cut_face_vertices(
+            &mesh,
+            super::FaceSpan {
+                number: 1,
+                first: 0,
+                count: 1,
+            },
+            &view,
+        )
+        .unwrap();
+        assert!(!cut.triangles.is_empty());
+        assert!(
+            cut.normals.iter().all(|n| *n == glam::Vec3::ZERO),
+            "{:?}",
+            cut.normals
+        );
+    }
 }

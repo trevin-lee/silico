@@ -513,3 +513,22 @@ crates/silico-protocol/src/render.rs | box_corners | replace == with != | #353
 # and the strip is ended after the loop. Each gives the same strips.
 crates/silico-render/src/render.rs | View::cut_strip | replace > with >= | #353
 crates/silico-render/src/render.rs | View::cut_strip | replace < with > | #353
+# The render limits' rerun (#353). `check_bodies_in_view` keeps the farthest reach its rule
+# refuses by its points: `points > f` as `points >= f` differs only where a later body's
+# reach equals the one kept, and then keeps a value equal to it, so the refusal's reach and
+# least are the same.
+crates/silico-protocol/src/render.rs | check_bodies_in_view | replace > with >= | #353
+# `View::cut_strip`'s strip holds no point or at least two wherever its length is asked
+# (each strip begins with two, its start and its end, and grows by one; it's taken away
+# whole when ended), so `strip.len() > 1` as `>= 1` where a re-entering segment ends it, and
+# after the loop, ends the same strips.
+crates/silico-render/src/render.rs | View::cut_strip | replace > with >= | #353
+crates/silico-render/src/render.rs | View::cut_strip | replace > with >= | #353
+# `edges` chooses the frustum an edge is placed by from its stroke: a highlighted one's (4
+# points) where it's wider than the plain 2. `width > EDGE_WIDTH` as `>=` places a plain
+# edge by the highlighted stroke's frustum, wider than its own: it places, besides those
+# its own frustum places, only edges whose every point is past its own stroke's reach of the
+# image (the plain frustum is the image's widened by exactly that reach, on every side; its
+# floor, depth above 0, the same in both), which draw no pixel and pick nothing. The image
+# and the picking are the same.
+crates/silico-render/src/render.rs | edges | replace > with >= | #353
