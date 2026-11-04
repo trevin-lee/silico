@@ -715,6 +715,18 @@ impl Tab {
         self.replace_asked.take()
     }
 
+    /// Whether a Save As is queued or running: its answer gives the tab its file, or not.
+    pub fn saving_as(&self) -> bool {
+        self.edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::SaveAs { .. }))
+            || self
+                .under
+                .iter()
+                .any(|under| matches!(under, Under::SaveAs { .. }))
+    }
+
     /// Whether a save or a revert that was to close it was refused since this was last asked.
     pub fn take_close_refused(&mut self) -> bool {
         std::mem::take(&mut self.close_refused)
@@ -921,9 +933,13 @@ impl Tab {
                         Err(problems) => {
                             // Its own transaction, begun for it, ended: it held nothing.
                             self.roll_back |= began;
-                            if problems.errors().first().and_then(|e| e.suggestion())
-                                == Some(silico_core::file::REPLACE_ADVICE)
-                            {
+                            let advice = problems.errors().first().and_then(|e| e.suggestion());
+                            if advice == Some(silico_core::file::OWN_FILE_ADVICE) {
+                                // Its own file, by any path to it (a link, the panel's
+                                // canonical form): a Save, sent next, after the rollback of a
+                                // transaction it began (nothing to save then, but a close).
+                                self.edits.queue.push_front(Queued::Save { then_close });
+                            } else if advice == Some(silico_core::file::REPLACE_ADVICE) {
                                 // Whether to replace it is asked; a Cancel then refuses the
                                 // close, if it was to close.
                                 self.replace_asked = Some((path, then_close));

@@ -103,6 +103,13 @@ impl ExportForm {
         }
     }
 
+    /// The document saved as the file at `document` while the dialog was open (an untitled
+    /// part's first save): a relative path is in its folder from then on. The path typed is
+    /// left as it is.
+    pub fn saved_as(&mut self, document: &str) {
+        self.document = Some(document.to_owned());
+    }
+
     /// What's said of the path typed, if it can't be taken: one that isn't absolute, for an
     /// untitled part ([`NO_FOLDER`]).
     pub fn refusal(&self) -> Option<&'static str> {
@@ -499,6 +506,20 @@ mod tests {
         // A file's document takes the same relative path, in its folder.
         let mut form = form_of("/work/bracket.silico");
         form.path = "out.3mf".to_owned();
+        assert_eq!(form.refusal(), None);
+        assert_eq!(
+            form.request(&[]).unwrap().path,
+            PathBuf::from("/work/out.3mf")
+        );
+    }
+
+    #[test]
+    fn an_untitled_parts_form_takes_its_folder_once_its_first_save_gives_it_one() {
+        let mut form = ExportForm::untitled(SessionId::parse("s1").unwrap(), "Untitled", None);
+        form.path = "out.3mf".to_owned();
+        assert!(form.refusal().is_some());
+        form.saved_as("/work/part.silico");
+        assert_eq!(form.path, "out.3mf");
         assert_eq!(form.refusal(), None);
         assert_eq!(
             form.request(&[]).unwrap().path,

@@ -591,3 +591,68 @@ fn save_as_picking_the_documents_own_file_saves_it() {
     assert!(text.contains(r#""name": "Box""#), "{text}");
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn save_as_picking_a_link_to_the_documents_own_file_saves_it_and_keeps_its_path() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let own = f.dir.path().join("own.silico");
+    std::fs::write(&own, EXAMPLE).unwrap();
+    // A link to it, as a panel may answer (or its canonical form, /private/var for /var).
+    let link = f.dir.path().join("link.silico");
+    std::os::unix::fs::symlink(&own, &link).unwrap();
+    let mut h = f.app(&browser);
+    h.state_mut().open(own.to_str().unwrap(), false);
+    step_until(&mut h, "its timeline", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.timeline.is_some())
+    });
+    add_box(&mut h, "own.silico");
+    press_keys(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+    asked_times(&mut h, &browser, 1);
+    browser.answer(Some(&link));
+    step_until(&mut h, "saved", |h| !tab_named(h, "own.silico").unsaved());
+    steps(&mut h, 5);
+    let tab = tab_named(&h, "own.silico");
+    assert_eq!(tab.message, None);
+    assert_eq!(tab.path.as_deref(), own.to_str());
+    assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+    let text = std::fs::read_to_string(&own).unwrap();
+    assert!(text.contains(r#""name": "Box""#), "{text}");
+    // No transaction left open, nothing more to save.
+    assert!(!tab.transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_as_onto_its_own_file_with_no_edits_writes_nothing_and_leaves_it_clean() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let own = f.dir.path().join("own.silico");
+    std::fs::write(&own, EXAMPLE).unwrap();
+    let mut h = f.app(&browser);
+    h.state_mut().open(own.to_str().unwrap(), false);
+    step_until(&mut h, "its timeline", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.timeline.is_some())
+    });
+    press_keys(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+    asked_times(&mut h, &browser, 1);
+    browser.answer(Some(&own));
+    // Its own Save As began a transaction, refused, rolled back: nothing to save.
+    step_until(&mut h, "settled", |h| {
+        let tab = tab_named(h, "own.silico");
+        !tab.saving_as() && !tab.transaction && !tab.unsettled()
+    });
+    steps(&mut h, 5);
+    let tab = tab_named(&h, "own.silico");
+    assert_eq!(tab.message, None);
+    assert!(!tab.unsaved());
+    assert_eq!(std::fs::read_to_string(&own).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}

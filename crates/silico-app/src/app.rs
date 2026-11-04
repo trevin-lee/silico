@@ -663,10 +663,16 @@ impl<P: Clients + 'static> App<P> {
             // Saved as another file (an untitled part's first save among them): listed in
             // Recent as an open is.
             if tab.path != path
-                && let Some(recents) = &self.recents
                 && let Some(path) = &tab.path
             {
-                recents.opened(path);
+                if let Some(recents) = &self.recents {
+                    recents.opened(path);
+                }
+                // An export form opened while it was untitled: a relative path is in its
+                // folder from now on.
+                if let Some(form) = self.export.as_mut().filter(|form| form.session == tab.id) {
+                    form.saved_as(path);
+                }
             }
             // Asked once nothing else is: kept on the tab meanwhile.
             if self.asking.is_none()
@@ -704,23 +710,35 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// A tab's close refused (its save or revert refused, or its Save panel cancelled): a
-    /// quit under way stops, said, and the Save panels it had still to open are let go.
+    /// quit under way stops, said, and the Save panels it had still to open are let go; a
+    /// Save panel open is to close its part no more, so a later pick saves it and leaves it
+    /// open.
     fn close_refused(&mut self, name: &str) {
         if self.quitting {
             self.quitting = false;
             self.quit_saves.clear();
+            if let Some(Browsing {
+                what: Browsed::SaveAs { then_close, .. },
+                ..
+            }) = &mut self.browsing
+            {
+                *then_close = false;
+            }
             self.message = Some(format!("Quit stopped: {name} wasn't closed"));
             self.message_from = None;
         }
     }
 
     /// The next of a quit's untitled parts to save, once nothing is asked and no panel is
-    /// open: its Save panel opened, the part closed once it's saved; or, if it holds no edits
-    /// any more, closed. One gone or already closing is passed over. Whether a command was
+    /// open: its Save panel opened, the part closed once it's saved. One whose Save As (a
+    /// panel's pick from before the quit) is queued or running is waited for, and then
+    /// closed if that left it with no edits, saved (and closed) if it gave it a file and
+    /// edits were made after, or asked again if it's still untitled (its Save As refused,
+    /// and said). One gone or already closing is passed over. Whether a command was
     /// started.
     fn next_quit_save(&mut self, ctx: &egui::Context) -> bool {
         while self.quitting && self.asking.is_none() && self.browsing.is_none() {
-            let Some(id) = self.quit_saves.pop_front() else {
+            let Some(&id) = self.quit_saves.front() else {
                 return false;
             };
             let Some(tab) = self
@@ -728,10 +746,19 @@ impl<P: Clients + 'static> App<P> {
                 .iter_mut()
                 .find(|tab| tab.id == id && !tab.closing())
             else {
+                self.quit_saves.pop_front();
                 continue;
             };
+            if tab.saving_as() {
+                return false;
+            }
+            self.quit_saves.pop_front();
             if !tab.unsaved() {
                 tab.close(&self.sessions);
+                return true;
+            }
+            if !tab.is_untitled() {
+                tab.save(&self.sessions, true);
                 return true;
             }
             self.ask_save_as(id, true, ctx);
@@ -950,14 +977,16 @@ impl<P: Clients + 'static> App<P> {
             tab.view.ask(ask);
         }
         let sessions = &self.sessions;
-        // An untitled part's Save asks where, through the Save panel, once the tab is let go.
+        // An untitled part's Save asks where, through the Save panel, once the tab is let go:
+        // with no edits too, as its first save writes the document all the same.
         let mut save_panel = None;
-        if save && tab.unsaved() && !tab.in_dialog() {
-            if tab.is_untitled() {
+        if save && tab.is_untitled() {
+            // Not while a Save As of its runs: its answer gives it its file.
+            if !tab.in_dialog() && !tab.closing() && !tab.saving_as() {
                 save_panel = Some(tab.id);
-            } else {
-                tab.save(sessions, false);
             }
+        } else if save && tab.unsaved() && !tab.in_dialog() {
+            tab.save(sessions, false);
         }
         if undo && tab.undoable() {
             tab.step(sessions, true);
@@ -1101,7 +1130,7 @@ impl<P: Clients + 'static> App<P> {
     /// the path and `replace`, the panel having asked about a file there), then closed if
     /// `then_close`, if its tab is still open and not closing (Don't save chosen while a
     /// panel of the portal's was open); else nothing. Its own file picked is a Save (the core
-    /// refuses a Save As to it). Whether a command was started.
+    /// refuses a Save As to it, and the tab saves instead). Whether a command was started.
     fn saved_as(&mut self, session: SessionId, path: String, then_close: bool) -> bool {
         let Some(tab) = self
             .tabs
@@ -1110,14 +1139,9 @@ impl<P: Clients + 'static> App<P> {
         else {
             return false;
         };
-        let own = tab.path.as_deref().is_some_and(|own| {
-            std::path::absolute(own).is_ok_and(|own| own == std::path::Path::new(&path))
-        });
-        if own {
-            tab.save(&self.sessions, then_close);
-        } else {
-            tab.save_as(&self.sessions, path, true, then_close);
-        }
+        // Its own file picked (by any path to it) is refused by the core as its own, which
+        // the tab then takes as a Save.
+        tab.save_as(&self.sessions, path, true, then_close);
         true
     }
 
@@ -1347,10 +1371,17 @@ impl<P: Clients + 'static> App<P> {
             .active_place()
             .filter(|_| !start_shown)
             .and_then(|at| self.tabs.get_mut(at));
-        // Off while a dialog is open: its OK or Cancel ends its edits first.
-        let unsaved = tab
-            .as_ref()
-            .is_some_and(|tab| tab.unsaved() && !tab.in_dialog());
+        // Off while a dialog is open: its OK or Cancel ends its edits first. On for an
+        // untitled part with no edits too, its first save writing it, but not while it closes
+        // or a Save As of its runs.
+        let unsaved = tab.as_ref().is_some_and(|tab| {
+            !tab.in_dialog()
+                && if tab.is_untitled() {
+                    !tab.closing() && !tab.saving_as()
+                } else {
+                    tab.unsaved()
+                }
+        });
         let said = tab.as_ref().filter(|_| unsaved).map(|tab| match tab.path {
             Some(_) => format!("Writes your edits to {}", tab.name()),
             None => format!("Asks where to save {}, then writes it", tab.name()),
@@ -1943,8 +1974,30 @@ impl<P: Clients + 'static> App<P> {
                     self.quit_saves.clear();
                     for tab in &mut self.tabs {
                         match (tab.unsaved(), save) {
+                            // Its own Save panel open already (Command+S, the portal's
+                            // leaving the window usable): that panel closes it, as Close's
+                            // Save would have it.
+                            (true, true)
+                                if tab.is_untitled()
+                                    && matches!(
+                                        &self.browsing,
+                                        Some(Browsing {
+                                            what: Browsed::SaveAs { session, .. },
+                                            ..
+                                        }) if *session == tab.id
+                                    ) =>
+                            {
+                                if let Some(Browsing {
+                                    what: Browsed::SaveAs { then_close, .. },
+                                    ..
+                                }) = &mut self.browsing
+                                {
+                                    *then_close = true;
+                                }
+                            }
                             // An untitled part's Save panel, each in turn, after this
-                            // question has gone ([`next_quit_save`]).
+                            // question has gone ([`next_quit_save`]); one whose Save As
+                            // runs waits for it.
                             (true, true) if tab.is_untitled() => {
                                 self.quit_saves.push_back(tab.id);
                             }
