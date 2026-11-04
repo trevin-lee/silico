@@ -217,6 +217,38 @@ fn checking_a_document_just_under_the_size_limit_then_formatting_it_says_why_it_
 }
 
 #[test]
+fn a_block_too_short_for_the_pin_formats_and_its_cut_is_refused() {
+    // The property's shrunk case: the example's block shortened to 4 mm, so the pin at
+    // x = 20 misses it. It formats, but its cut removes nothing, refused by S7's rule for
+    // M2 booleans, before formatting and after: the only problem, the same each time.
+    let short = EXAMPLE.replace(r#""length": 40"#, r#""length": 4"#);
+    let e = engine();
+    let formatted = format_bytes(&e, short.as_bytes()).unwrap().unwrap();
+    for text in [short.as_str(), formatted.text.as_str()] {
+        let problems = check_bytes(&e, text.as_bytes()).unwrap();
+        let cut: Vec<&Error> = problems
+            .errors()
+            .iter()
+            .filter(|e| e.code() != ErrorCode::Drift)
+            .collect();
+        assert_eq!(cut.len(), 1, "{problems:?}");
+        assert_eq!(cut[0].code(), ErrorCode::KernelFailed, "{cut:?}");
+        assert_eq!(cut[0].feature(), Some("m3tq8v0z"));
+        assert!(
+            cut[0]
+                .message()
+                .starts_with("cut m3tq8v0z removes nothing from its base k7f2qx3m"),
+            "{cut:?}"
+        );
+    }
+    // After formatting, nothing else: no drift.
+    assert_eq!(
+        check_bytes(&e, formatted.text.as_bytes()).unwrap().total(),
+        1
+    );
+}
+
+#[test]
 fn a_refusal_doesnt_leave_the_engine_broken_for_the_next_command() {
     // After a refused rebuild and a document that doesn't read, the same engine checks and
     // formats another sound document cleanly: nothing stale from the earlier runs. (The
@@ -328,14 +360,31 @@ proptest! {
         prop_assert!(problems.total() >= problems.errors().len() as u64);
         match format_bytes(&e, &bytes).unwrap() {
             Ok(formatted) => {
-                // It read: the canonical text reads back, formats to itself, and checks
-                // clean.
+                // It read: the canonical text reads back and formats to itself. Formatting
+                // never introduces a problem: the formatted text passes the gate, nothing in
+                // its check is drift, and every problem its check reports the original's
+                // check reports too (by code, feature, and elements). A document that builds
+                // (its check nothing but drift, which the format writes away) checks clean.
+                // (One that formats needn't build: a mutation can make a cut miss its base,
+                // refused by S7's rule, `a_block_too_short_for_the_pin_formats_and_its_cut_is_refused`.)
                 let back = read(formatted.text.as_bytes());
                 prop_assert!(back.is_ok(), "{back:?}");
                 let again = format_bytes(&e, formatted.text.as_bytes()).unwrap().unwrap();
                 prop_assert_eq!(&again.text, &formatted.text);
                 prop_assert!(again.refingerprinted.is_empty());
-                prop_assert!(check_bytes(&e, formatted.text.as_bytes()).unwrap().is_empty());
+                prop_assert!(command::gate(formatted.text.as_bytes()).is_ok());
+                let after = check_bytes(&e, formatted.text.as_bytes()).unwrap();
+                let said = |error: &Error| {
+                    (error.code(), error.feature().map(str::to_owned), error.elements().to_vec())
+                };
+                let before: Vec<_> = problems.errors().iter().map(said).collect();
+                for error in after.errors() {
+                    prop_assert_ne!(error.code(), ErrorCode::Drift, "{:?}", error);
+                    prop_assert!(before.contains(&said(error)), "new after formatting: {:?}", error);
+                }
+                if problems.errors().iter().all(|e| e.code() == ErrorCode::Drift) {
+                    prop_assert!(after.is_empty(), "{:?}", after);
+                }
                 // And show says each feature on a line, each note on one more.
                 let doc = back.unwrap();
                 let notes = doc.features.iter().filter(|f| f.note.is_some()).count();
