@@ -83,8 +83,9 @@ fn typing(ui: &Ui) -> bool {
 }
 
 /// Sketch mode's tools' keys (the prototype's, DESIGN.md *Keyboard*): L line, R rectangle,
-/// C circle, A arc (the 3-point arc, Fusion's first), P point, and T trim.
-const SKETCH_KEYS: [(Key, sketch::tools::Choice); 6] = {
+/// C circle, A arc (the 3-point arc, Fusion's first), P point, T trim, and D Smart
+/// Dimension.
+const SKETCH_KEYS: [(Key, sketch::tools::Choice); 7] = {
     use silico_core::sketch_tools::ToolKind;
     use sketch::tools::Choice;
     [
@@ -94,6 +95,7 @@ const SKETCH_KEYS: [(Key, sketch::tools::Choice); 6] = {
         (Key::A, Choice::Draw(ToolKind::ThreePointArc)),
         (Key::P, Choice::Draw(ToolKind::Point)),
         (Key::T, Choice::Trim),
+        (Key::D, Choice::Dimension),
     ]
 };
 
@@ -969,6 +971,10 @@ impl<P: Clients + 'static> App<P> {
         let canvas = self.canvas.unwrap_or_else(|| ui.ctx().content_rect());
         let bar = mode.bar_view(&name, enabled);
         let view = mode.palette_view(revision);
+        // Smart Dimension's Modify box, at its dimension's text, and the over-define prompt
+        // (SD7), each the prototype's.
+        let modify = mode.modify_view();
+        let offer = mode.offer_view(&name);
         let mut action = BarAction::None;
         egui::Area::new(egui::Id::new(("sketch_bar", id.to_string())))
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
@@ -986,6 +992,17 @@ impl<P: Clients + 'static> App<P> {
             BarAction::Cancel => tab.finish_sketch(sessions, false),
         }
         *started |= action != BarAction::None;
+        if let Some(asked) = modify.and_then(|view| sketch::dimension::modify_box(ui.ctx(), &view))
+        {
+            tab.sketch_modify(sessions, asked);
+            *started = true;
+        }
+        if let Some(choice) =
+            offer.and_then(|view| sketch::dimension::offer_prompt(ui.ctx(), &view))
+        {
+            tab.sketch_offer(sessions, choice);
+            *started = true;
+        }
     }
 
     /// A file changed on disk while edits are held (section 4): Reload (`rollback`, after

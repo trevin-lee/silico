@@ -16,10 +16,10 @@ use std::f64::consts::{FRAC_1_SQRT_2, TAU};
 
 use eframe::egui::{self, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use silico_core::command::sketch::SketchRead;
-use silico_core::document::{ElementId, ElementKind, Form, Reference, SketchConstraint};
+use silico_core::document::{ElementId, ElementKind, Form, Reference};
 use silico_core::kernel::SketchPlane;
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
-use silico_core::sketch_tools::{Preview, Relation};
+use silico_core::sketch_tools::{DimensionPreview, Preview, Relation};
 
 use super::style::*;
 
@@ -195,7 +195,7 @@ pub enum Drawn {
     },
     /// An arrowhead, its tip at `tip`, its body along `toward` (a unit vector).
     Arrow {
-        of: ElementId,
+        of: Option<ElementId>,
         tip: Pos2,
         toward: Vec2,
         colour: Color32,
@@ -224,8 +224,8 @@ impl Drawn {
             | Drawn::Fill { of, .. }
             | Drawn::Point { of, .. }
             | Drawn::Glyph { of, .. }
+            | Drawn::Arrow { of, .. }
             | Drawn::Label { of, .. } => of.as_ref(),
-            Drawn::Arrow { of, .. } => Some(of),
             Drawn::Origin { .. } | Drawn::Ring { .. } => None,
         }
     }
@@ -435,8 +435,8 @@ pub(crate) fn placed(read: &SketchRead, geometry: &Geometry, scale: Scale) -> Pl
     };
     for constraint in &read.members.constraints {
         if constraint.form.is_dimension() {
-            if let Some(dimension) = dimension(constraint, geometry, scale) {
-                placed.dimensions.push(dimension);
+            if let Some(shape) = measure(&constraint.form, geometry, scale, None) {
+                placed.dimensions.push(shape.of(constraint.id.clone()));
             }
             continue;
         }
@@ -533,16 +533,43 @@ fn glyph_place(
     }
 }
 
-/// A dimension placed, if the geometry it measures is there.
-fn dimension(
-    constraint: &SketchConstraint,
+/// A dimension's shape, in the sketch's millimetres, before it's of a constraint: as
+/// [`PlacedDimension`]'s.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DimensionShape {
+    pub(crate) lines: Vec<Vec<[f64; 2]>>,
+    pub(crate) arrows: Vec<([f64; 2], [f64; 2])>,
+    pub(crate) text: String,
+    pub(crate) text_at: [f64; 2],
+}
+
+impl DimensionShape {
+    /// Placed, as the constraint `of`'s.
+    fn of(self, of: ElementId) -> PlacedDimension {
+        PlacedDimension {
+            of,
+            lines: self.lines,
+            arrows: self.arrows,
+            text: self.text,
+            text_at: self.text_at,
+        }
+    }
+}
+
+/// The dimension of form `form` (a driven one's value in parentheses), if the geometry it
+/// measures is there: standing off from it as SolidWorks draws one, its value at its line's
+/// middle; or, `through` a place (Smart Dimension's pointer), standing so its line runs
+/// through it, and its value there.
+pub(crate) fn measure(
+    form: &Form,
     geometry: &Geometry,
     scale: Scale,
-) -> Option<PlacedDimension> {
+    through: Option<[f64; 2]>,
+) -> Option<DimensionShape> {
     let offset = scale.mm(SKETCH_DIMENSION_OFFSET);
     let gap = scale.mm(SKETCH_DIMENSION_GAP);
     let past = scale.mm(EXTENSION_PAST);
-    let driving = constraint.form.driving().unwrap_or(true);
+    let driving = form.driving().unwrap_or(true);
     let text = |value: String| {
         if driving { value } else { format!("({value})") }
     };
@@ -553,14 +580,12 @@ fn dimension(
             n
         }
     };
-    let of = constraint.id.clone();
     // From `a` and `b`, standing off along `n`: extension lines out from each (a gap off
     // the geometry, a little past the dimension line), the dimension line between them, an
-    // arrowhead at each of its ends, and the value at its middle.
+    // arrowhead at each of its ends, and the value at its middle, or at `through`.
     let standing = |a: [f64; 2], b: [f64; 2], a1: [f64; 2], b1: [f64; 2], n: [f64; 2], value| {
         let t = unit(sub(b1, a1)).unwrap_or([1.0, 0.0]);
-        PlacedDimension {
-            of: of.clone(),
+        DimensionShape {
             lines: vec![
                 vec![add(a, mul(n, gap)), add(a1, mul(n, past))],
                 vec![add(b, mul(n, gap)), add(b1, mul(n, past))],
@@ -568,23 +593,28 @@ fn dimension(
             ],
             arrows: vec![(a1, t), (b1, mul(t, -1.0))],
             text: text(value),
-            text_at: [mid(a1[0], b1[0]), mid(a1[1], b1[1])],
+            text_at: through.unwrap_or([mid(a1[0], b1[0]), mid(a1[1], b1[1])]),
         }
     };
     let aligned = |a: [f64; 2], b: [f64; 2], value: String| {
         let t = unit(sub(b, a)).unwrap_or([1.0, 0.0]);
         let m = [mid(a[0], b[0]), mid(a[1], b[1])];
-        let n = away(m, [-t[1], t[0]]);
-        standing(
-            a,
-            b,
-            add(a, mul(n, offset)),
-            add(b, mul(n, offset)),
-            n,
-            value,
-        )
+        let normal = [-t[1], t[0]];
+        // Through the pointer: as far off as it is, on its side.
+        let (n, off) = match through {
+            Some(p) => {
+                let off = dot(sub(p, a), normal);
+                if off < 0.0 {
+                    (mul(normal, -1.0), -off)
+                } else {
+                    (normal, off)
+                }
+            }
+            None => (away(m, normal), offset),
+        };
+        standing(a, b, add(a, mul(n, off)), add(b, mul(n, off)), n, value)
     };
-    Some(match &constraint.form {
+    Some(match form {
         Form::Length { line, value, .. } => {
             let Curve::Line { from, to } = geometry.curve(line)? else {
                 return None;
@@ -597,16 +627,22 @@ fn dimension(
         Form::DistanceX { a, b, value, .. } | Form::DistanceY { a, b, value, .. } => {
             let (pa, pb) = (geometry.point(a)?, geometry.point(b)?);
             // The axis it measures along, and the one it stands off along.
-            let off = match constraint.form {
+            let off = match form {
                 Form::DistanceX { .. } => 1,
                 _ => 0,
             };
             let m = [mid(pa[0], pb[0]), mid(pa[1], pb[1])];
-            let outward = m[off] >= geometry.middle[off];
-            let level = if outward {
-                pa[off].max(pb[off]) + offset
-            } else {
-                pa[off].min(pb[off]) - offset
+            let (level, outward) = match through {
+                Some(p) => (p[off], p[off] >= m[off]),
+                None => {
+                    let outward = m[off] >= geometry.middle[off];
+                    let level = if outward {
+                        pa[off].max(pb[off]) + offset
+                    } else {
+                        pa[off].min(pb[off]) - offset
+                    };
+                    (level, outward)
+                }
             };
             let mut n = [0.0; 2];
             n[off] = if outward { 1.0 } else { -1.0 };
@@ -624,12 +660,11 @@ fn dimension(
             };
             let (a1, b1) = (at(pa), at(pb));
             let t = unit(sub(b1, a1)).unwrap_or([1.0, 0.0]);
-            PlacedDimension {
-                of,
+            DimensionShape {
                 lines: vec![extension(pa), extension(pb), vec![a1, b1]],
                 arrows: vec![(a1, t), (b1, mul(t, -1.0))],
                 text: text(value.to_string()),
-                text_at: [mid(a1[0], b1[0]), mid(a1[1], b1[1])],
+                text_at: through.unwrap_or([mid(a1[0], b1[0]), mid(a1[1], b1[1])]),
             }
         }
         Form::PointLineDistance {
@@ -641,12 +676,11 @@ fn dimension(
             };
             let foot = foot(p, from, to);
             let t = unit(sub(foot, p)).unwrap_or([0.0, -1.0]);
-            PlacedDimension {
-                of,
+            DimensionShape {
                 lines: vec![vec![p, foot]],
                 arrows: vec![(p, t), (foot, mul(t, -1.0))],
                 text: text(value.to_string()),
-                text_at: [mid(p[0], foot[0]), mid(p[1], foot[1])],
+                text_at: through.unwrap_or([mid(p[0], foot[0]), mid(p[1], foot[1])]),
             }
         }
         Form::Radius { curve, value, .. } | Form::Diameter { curve, value, .. } => {
@@ -659,16 +693,22 @@ fn dimension(
             else {
                 return None;
             };
-            // Out through an arc's middle; for a circle, away from the sketch's middle, or
-            // at 45° from a circle about it.
-            let u = if sweep < TAU {
-                direction(start + sweep / 2.0)
-            } else {
-                unit(sub(centre, geometry.middle)).unwrap_or([FRAC_1_SQRT_2, FRAC_1_SQRT_2])
+            // Out toward the pointer; else through an arc's middle, or, for a circle, away
+            // from the sketch's middle, or at 45° from a circle about it.
+            let toward = through.and_then(|p| unit(sub(p, centre)));
+            let u = match toward {
+                Some(u) => u,
+                None if sweep < TAU => direction(start + sweep / 2.0),
+                None => {
+                    unit(sub(centre, geometry.middle)).unwrap_or([FRAC_1_SQRT_2, FRAC_1_SQRT_2])
+                }
             };
             let rim = add(centre, mul(u, radius));
-            let beyond = add(centre, mul(u, radius + offset));
-            let (lines, arrows, word) = if matches!(constraint.form, Form::Diameter { .. }) {
+            let beyond = match (through, toward) {
+                (Some(p), Some(_)) => p,
+                _ => add(centre, mul(u, radius + offset)),
+            };
+            let (lines, arrows, word) = if matches!(form, Form::Diameter { .. }) {
                 let far = sub(centre, mul(u, radius));
                 (
                     vec![vec![far, beyond]],
@@ -678,8 +718,7 @@ fn dimension(
             } else {
                 (vec![vec![centre, beyond]], vec![(rim, mul(u, -1.0))], "R")
             };
-            PlacedDimension {
-                of,
+            DimensionShape {
                 lines,
                 arrows,
                 text: text(format!("{word}{value}")),
@@ -703,22 +742,26 @@ fn dimension(
             let corner = crossing(a0, da, b0, db).unwrap_or(a0);
             let from = angle(da);
             let sweep = value.degrees().to_radians();
-            let on = |at: f64| add(corner, mul(direction(at), offset));
+            // Its arc's radius: as far as the pointer is from the corner, if it's given.
+            let reach = through
+                .map(|p| length(sub(p, corner)))
+                .filter(|r| *r > 0.0 && r.is_finite())
+                .unwrap_or(offset);
+            let on = |at: f64| add(corner, mul(direction(at), reach));
             let arc: Vec<[f64; 2]> = (0..=ANGLE_ARC_SEGMENTS)
                 .map(|k| on(from + sweep * k as f64 / ANGLE_ARC_SEGMENTS as f64))
                 .collect();
             // The arrows along the arc's tangent, each pointing out of it.
             let sign = if sweep < 0.0 { -1.0 } else { 1.0 };
             let tangent = |at: f64| mul([-direction(at)[1], direction(at)[0]], sign);
-            PlacedDimension {
-                of,
+            DimensionShape {
                 lines: vec![arc],
                 arrows: vec![
                     (on(from), tangent(from)),
                     (on(from + sweep), mul(tangent(from + sweep), -1.0)),
                 ],
                 text: text(format!("{value}°")),
-                text_at: on(from + sweep / 2.0),
+                text_at: through.unwrap_or(on(from + sweep / 2.0)),
             }
         }
         _ => return None,
@@ -1058,7 +1101,7 @@ pub fn drawing(
             for &(tip, along) in &dimension.arrows {
                 if let (Some(at), Some(toward)) = (view.at(tip), view.direction(tip, along)) {
                     drawn.push(Drawn::Arrow {
-                        of: dimension.of.clone(),
+                        of: Some(dimension.of.clone()),
                         tip: at,
                         toward,
                         colour,
@@ -1370,6 +1413,220 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
         }
     }
     drawn
+}
+
+/// What's drawn of Smart Dimension's preview (the core's `DimensionPreview`) over `read`,
+/// seen through `view`: what's picked drawn selected; what a click would pick in the focus
+/// blue; the dimension a click would place, or the Modify box's, standing through the
+/// pointer (or, while the box is open, through `held`, the click that opened it), in the
+/// focus blue, its value there unless the box stands there in its place; and the pointer's
+/// crosshair.
+pub fn dimension_preview(
+    preview: &DimensionPreview,
+    read: &SketchRead,
+    view: &View<'_>,
+    held: Option<[f64; 2]>,
+) -> Vec<Drawn> {
+    let geometry = Geometry::of(read);
+    let mut drawn = Vec::new();
+    for (reference, picked) in preview
+        .picks
+        .iter()
+        .map(|r| (r, true))
+        .chain(preview.hover.iter().map(|r| (r, false)))
+    {
+        let of = reference.element().cloned();
+        if let Some(p) = geometry.point(reference) {
+            if let Some(at) = view.at(p) {
+                drawn.push(Drawn::Point {
+                    of,
+                    at,
+                    colour: FOCUS,
+                    selected: picked,
+                });
+                if !picked {
+                    drawn.push(Drawn::Ring { at, colour: FOCUS });
+                }
+            }
+            continue;
+        }
+        let Some(curve) = geometry.curve(reference) else {
+            continue;
+        };
+        let points = match curve {
+            // An axis is drawn along the grid's: its pick as a stretch of it about the origin.
+            Curve::Line { from, to } if of.is_none() => {
+                let reach = view.scale.mm(SKETCH_DIMENSION_OFFSET * 4.0);
+                let d = sub(to, from);
+                vec![view.at(mul(d, -reach)), view.at(mul(d, reach))]
+            }
+            Curve::Line { from, to } => vec![view.at(from), view.at(to)],
+            Curve::Round {
+                centre,
+                radius,
+                start,
+                sweep,
+            } => round_points(
+                centre,
+                radius,
+                start,
+                sweep,
+                view.project,
+                view.chord_tolerance,
+                0,
+            ),
+        };
+        for run in runs(points) {
+            drawn.push(Drawn::Stroke {
+                of: of.clone(),
+                kind: StrokeKind::Curve { dashed: false },
+                points: run,
+                colour: FOCUS,
+                selected: picked,
+            });
+        }
+    }
+    let through = held.or(preview.pointer);
+    if let (Some(form), Some(through)) = (&preview.dimension, through)
+        && let Some(shape) = measure(form, &geometry, view.scale, Some(through))
+    {
+        for line in &shape.lines {
+            for run in runs(line.iter().map(|&p| view.at(p)).collect()) {
+                drawn.push(Drawn::Stroke {
+                    of: None,
+                    kind: StrokeKind::Dimension,
+                    points: run,
+                    colour: FOCUS,
+                    selected: false,
+                });
+            }
+        }
+        for &(tip, along) in &shape.arrows {
+            if let (Some(at), Some(toward)) = (view.at(tip), view.direction(tip, along)) {
+                drawn.push(Drawn::Arrow {
+                    of: None,
+                    tip: at,
+                    toward,
+                    colour: FOCUS,
+                    selected: false,
+                });
+            }
+        }
+        if preview.modify.is_none()
+            && let Some(at) = view.at(shape.text_at)
+        {
+            drawn.push(Drawn::Label {
+                of: None,
+                kind: LabelKind::Dimension,
+                at,
+                text: shape.text,
+                colour: FOCUS,
+                selected: false,
+            });
+        }
+    }
+    if preview.modify.is_none()
+        && let Some(pointer) = preview.pointer.and_then(|p| view.at(p))
+    {
+        for d in [Vec2::new(CROSSHAIR_ARM, 0.0), Vec2::new(0.0, CROSSHAIR_ARM)] {
+            drawn.push(Drawn::Stroke {
+                of: None,
+                kind: StrokeKind::Crosshair,
+                points: vec![pointer - d, pointer + d],
+                colour: SKETCH_CROSSHAIR_STROKE.color,
+                selected: false,
+            });
+        }
+    }
+    drawn
+}
+
+/// The ghost of a drag (section 9, *Ghost image on drag*): what's drawn of the begin state,
+/// `begun`, of the members the drag has moved from there, faint, and never selected or a
+/// fill. A member moved is a point whose place differs from where it began, a circle whose
+/// radius does, and a curve with a point moved; a constraint's glyphs and dimensions
+/// aren't, their members' ghosts showing where they were.
+pub fn ghost(begun: &[Drawn], begin: &SketchRead, now: &SketchRead) -> Vec<Drawn> {
+    let at = |read: &SketchRead| -> BTreeMap<ElementId, [f64; 2]> {
+        read.members
+            .points
+            .iter()
+            .map(|p| (p.id.clone(), [p.x.mm(), p.y.mm()]))
+            .collect()
+    };
+    let (was, is) = (at(begin), at(now));
+    let moved_points: BTreeSet<&ElementId> = was
+        .iter()
+        .filter(|(id, p)| is.get(*id).is_some_and(|q| q != *p))
+        .map(|(id, _)| id)
+        .collect();
+    let radius = |read: &SketchRead| -> BTreeMap<ElementId, f64> {
+        read.members
+            .circles
+            .iter()
+            .map(|c| (c.id.clone(), c.radius.mm()))
+            .collect()
+    };
+    let (was_r, is_r) = (radius(begin), radius(now));
+    let members = &begin.members;
+    let mut moved: BTreeSet<&ElementId> = moved_points.clone();
+    moved.extend(
+        members
+            .lines
+            .iter()
+            .filter(|l| moved_points.contains(&l.from) || moved_points.contains(&l.to))
+            .map(|l| &l.id),
+    );
+    moved.extend(
+        members
+            .circles
+            .iter()
+            .filter(|c| {
+                moved_points.contains(&c.center)
+                    || is_r.get(&c.id).is_some_and(|r| was_r.get(&c.id) != Some(r))
+            })
+            .map(|c| &c.id),
+    );
+    moved.extend(
+        members
+            .arcs
+            .iter()
+            .filter(|a| {
+                [&a.center, &a.start, &a.end]
+                    .iter()
+                    .any(|p| moved_points.contains(p))
+            })
+            .map(|a| &a.id),
+    );
+    begun
+        .iter()
+        .filter(|d| {
+            matches!(
+                d,
+                Drawn::Stroke {
+                    kind: StrokeKind::Curve { .. },
+                    ..
+                } | Drawn::Point { .. }
+            )
+        })
+        .filter(|d| d.of().is_some_and(|id| moved.contains(id)))
+        .map(|d| {
+            let mut d = d.clone();
+            match &mut d {
+                Drawn::Stroke {
+                    colour, selected, ..
+                }
+                | Drawn::Point {
+                    colour, selected, ..
+                } => {
+                    *colour = colour.gamma_multiply(SKETCH_GHOST_OPACITY);
+                    *selected = false;
+                }
+                _ => {}
+            }
+            d
+        })
+        .collect()
 }
 
 /// The polyline of a circle or an arc about `centre`, of `radius`, from the angle `start`

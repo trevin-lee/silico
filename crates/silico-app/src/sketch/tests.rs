@@ -2825,3 +2825,465 @@ fn a_region_whose_loop_doesnt_run_end_to_end_is_left_unfilled_and_said() {
     assert!(fills.is_empty());
     assert_eq!(warnings.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+// ---- M5.11c: drags, the ghost, Smart Dimension's preview, and a placed dimension's edit ----
+
+/// Sketch mode on the sketch s0000001, its newest read `read`, of the model at revision 2.
+fn mode_at(read: SketchRead) -> SketchMode {
+    let mut mode = SketchMode::new(
+        1,
+        Some(silico_core::document::FeatureId::new("s0000001").unwrap()),
+    );
+    mode.read = Some(Read {
+        model: Revision::OPENED.next(),
+        result: Ok(read),
+    });
+    mode
+}
+
+/// One frame of `events`, through the hand projection, the pointer at the last of them.
+fn frame_of(mode: &mut SketchMode, events: &[PointerEvent]) {
+    let pointer = events.last().map(|event| event.at);
+    with_painter(|painter| {
+        let input = FrameInput {
+            events,
+            pointer,
+            project: &hand,
+            to_plane: &unhand,
+        };
+        mode.frame(painter, &input);
+    });
+}
+
+fn at_mm(x: f64, y: f64) -> Pos2 {
+    hand([x, y]).unwrap()
+}
+
+#[test]
+fn a_press_put_on_its_curve_lands_on_a_lines_segment_an_arcs_sweep_and_a_circles_round() {
+    let line = draw::Curve::Line {
+        from: [0.0, 0.0],
+        to: [40.0, 0.0],
+    };
+    // Off the segment's middle: its foot. Past its end: the end, not the line beyond.
+    assert_eq!(on_curve(line, [10.0, 0.5]), Some([10.0, 0.0]));
+    assert_eq!(on_curve(line, [40.6, 0.2]), Some([40.0, 0.0]));
+    assert_eq!(on_curve(line, [-0.5, -0.1]), Some([0.0, 0.0]));
+    // A quarter arc about the origin of radius 10, from 0 to 90°: a press at 45°, 10.5 out,
+    // goes onto the arc at 45°; one just past its end, at 95°, to its end (0, 10); one just
+    // before its start, at −5°, to its start (10, 0).
+    let arc = draw::Curve::Round {
+        centre: [0.0, 0.0],
+        radius: 10.0,
+        start: 0.0,
+        sweep: FRAC_PI_2,
+    };
+    let r = 10.5 * std::f64::consts::FRAC_1_SQRT_2;
+    let on = on_curve(arc, [r, r]).unwrap();
+    let h = 10.0 * std::f64::consts::FRAC_1_SQRT_2;
+    assert!((on[0] - h).abs() < 1e-12 && (on[1] - h).abs() < 1e-12);
+    let past = on_curve(arc, direction(95f64.to_radians()).map(|c| c * 10.0)).unwrap();
+    assert!(past[0].abs() < 1e-12 && (past[1] - 10.0).abs() < 1e-12);
+    let before = on_curve(arc, direction(-5f64.to_radians()).map(|c| c * 10.0)).unwrap();
+    assert!((before[0] - 10.0).abs() < 1e-12 && before[1].abs() < 1e-12);
+    // A circle's round anywhere; its centre, or a place that isn't one, nowhere.
+    let circle = draw::Curve::Round {
+        centre: [5.0, 5.0],
+        radius: 2.0,
+        start: 0.0,
+        sweep: TAU,
+    };
+    assert_eq!(on_curve(circle, [5.0, 9.0]), Some([5.0, 7.0]));
+    assert_eq!(on_curve(circle, [5.0, 5.0]), None);
+    assert_eq!(on_curve(circle, [f64::NAN, 5.0]), None);
+}
+
+#[test]
+fn a_dimension_through_the_pointer_stands_its_line_there_and_its_text_at_it() {
+    let read = under(rectangle(Vec::new()));
+    let geometry = draw::Geometry::of(&read);
+    let length = Form::Length {
+        line: element("na000001"),
+        value: mm("40"),
+        driving: true,
+    };
+    // The bottom, (0, 0) to (40, 0): through (25, 7), its line at y = 7 from x 0 to 40, its
+    // text at the pointer, extension lines up from a gap (4 points, 0.4 mm) to 5 points
+    // (0.5 mm) past it.
+    let shape = draw::measure(&length, &geometry, HAND, Some([25.0, 7.0])).unwrap();
+    assert_eq!(shape.lines[2], vec![[0.0, 7.0], [40.0, 7.0]]);
+    assert_eq!(shape.text_at, [25.0, 7.0]);
+    assert_eq!(shape.text, "40");
+    let ext = &shape.lines[0];
+    assert!((ext[0][1] - 0.4).abs() < 1e-9 && (ext[1][1] - 7.5).abs() < 1e-9);
+    // Below it, through (10, −3): at y = −3, the extension lines going down.
+    let below = draw::measure(&length, &geometry, HAND, Some([10.0, -3.0])).unwrap();
+    assert_eq!(below.lines[2], vec![[0.0, -3.0], [40.0, -3.0]]);
+    assert!((below.lines[0][1][1] + 3.5).abs() < 1e-9);
+    // With no pointer, as placed in the read: 26 points (2.6 mm) off, away from the middle.
+    let placed = draw::measure(&length, &geometry, HAND, None).unwrap();
+    assert!((placed.lines[2][0][1] + 2.6).abs() < 1e-9);
+    assert_eq!(placed.text_at, [20.0, placed.lines[2][0][1]]);
+    // A horizontal distance between the corners (0, 0) and (40, 20), through (30, 26): its
+    // line at y = 26, its text there.
+    let across = Form::DistanceX {
+        a: element("pa000001"),
+        b: element("pa000003"),
+        value: mm("40"),
+        driving: true,
+    };
+    let shape = draw::measure(&across, &geometry, HAND, Some([30.0, 26.0])).unwrap();
+    assert_eq!(shape.lines[2], vec![[0.0, 26.0], [40.0, 26.0]]);
+    assert_eq!(shape.text_at, [30.0, 26.0]);
+}
+
+#[test]
+fn smart_dimensions_preview_draws_its_picks_selected_its_hover_and_its_dimension_through_the_pointer()
+ {
+    use silico_core::sketch_tools::DimensionPreview;
+    let read = under(rectangle(Vec::new()));
+    let preview = DimensionPreview {
+        pointer: Some([20.0, -5.0]),
+        picks: vec![element("na000001")],
+        hover: Some(element("pa000003")),
+        dimension: Some(Form::Length {
+            line: element("na000001"),
+            value: mm("40"),
+            driving: true,
+        }),
+        locked: false,
+        unavailable: None,
+        modify: None,
+    };
+    let drawn = draw::dimension_preview(&preview, &read, &view(), None);
+    // The bottom, picked: from (100, 500) to (500, 500), selected.
+    let picked = of(&drawn, "na000001");
+    assert!(
+        matches!(picked.as_slice(), [Drawn::Stroke { points, selected: true, .. }] if points == &vec![pos2(100.0, 500.0), pos2(500.0, 500.0)])
+    );
+    // The corner the pointer would pick, (40, 20) at (500, 300): in the focus blue, ringed.
+    assert!(of(&drawn, "pa000003").iter().any(|d| matches!(d, Drawn::Point { at, colour, selected: false, .. } if *at == pos2(500.0, 300.0) && *colour == FOCUS)));
+    assert!(
+        drawn
+            .iter()
+            .any(|d| matches!(d, Drawn::Ring { at, .. } if *at == pos2(500.0, 300.0)))
+    );
+    // Its length's line at y = −5, (100, 550) to (500, 550), and its value at the pointer.
+    assert!(drawn.iter().any(|d| matches!(d, Drawn::Stroke { kind: StrokeKind::Dimension, points, colour, .. } if *points == vec![pos2(100.0, 550.0), pos2(500.0, 550.0)] && *colour == FOCUS)));
+    let labels: Vec<_> = drawn
+        .iter()
+        .filter_map(|d| match d {
+            Drawn::Label { text, at, .. } => Some((text.clone(), *at)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels, [("40".to_owned(), pos2(300.0, 550.0))]);
+    // With the Modify box open, held where it opened, (10, −8): its line there, no value
+    // drawn (the box stands there), and no crosshair.
+    let open = DimensionPreview {
+        modify: Some("40".to_owned()),
+        ..preview
+    };
+    let drawn = draw::dimension_preview(&open, &read, &view(), Some([10.0, -8.0]));
+    assert!(drawn.iter().any(|d| matches!(d, Drawn::Stroke { kind: StrokeKind::Dimension, points, .. } if *points == vec![pos2(100.0, 580.0), pos2(500.0, 580.0)])));
+    assert!(!drawn.iter().any(|d| matches!(d, Drawn::Label { .. })));
+    assert!(!drawn.iter().any(|d| matches!(
+        d,
+        Drawn::Stroke {
+            kind: StrokeKind::Crosshair,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn a_drags_ghost_is_the_begin_state_of_what_moved_faint_and_nothing_else() {
+    let begin = under(rectangle(Vec::new()));
+    let mut now = begin.clone();
+    // The top right corner, pa000003, dragged from (40, 20) to (45, 25).
+    if let Some(p) = now
+        .members
+        .points
+        .iter_mut()
+        .find(|p| p.id == id("pa000003"))
+    {
+        p.x = Coordinate::new(45.0).unwrap();
+        p.y = Coordinate::new(25.0).unwrap();
+    }
+    let begun = drawn(&begin);
+    let ghosted = draw::ghost(&begun, &begin, &now);
+    let mut members: Vec<&str> = ghosted
+        .iter()
+        .filter_map(|d| d.of())
+        .map(|id| id.as_str())
+        .collect();
+    members.sort_unstable();
+    members.dedup();
+    // The corner, and the two sides that end there: the right one and the top.
+    assert_eq!(members, ["na000002", "na000003", "pa000003"]);
+    let faint = SKETCH_UNDER_DEFINED.gamma_multiply(SKETCH_GHOST_OPACITY);
+    assert!(ghosted.iter().all(|d| d.colour() == faint && !d.selected()));
+    // Where it began: the corner's ghost at (500, 300).
+    assert!(
+        ghosted
+            .iter()
+            .any(|d| matches!(d, Drawn::Point { at, .. } if *at == pos2(500.0, 300.0)))
+    );
+    // Nothing moved, nothing ghosted.
+    assert!(draw::ghost(&begun, &begin, &begin).is_empty());
+}
+
+#[test]
+fn a_press_on_an_under_defined_corner_that_moves_past_the_threshold_is_a_drag_and_selects_nothing()
+{
+    let mut mode = mode_at(under(rectangle(Vec::new())));
+    let corner = at_mm(40.0, 20.0);
+    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
+    let drag = mode.drag.as_ref().unwrap();
+    assert_eq!(
+        drag.grab,
+        silico_core::command::DragGrab::Point(id("pa000003"))
+    );
+    assert!(!drag.moved && !drag.wants_begin());
+    // 2 points: within the 3-point threshold, still a press.
+    frame_of(
+        &mut mode,
+        &[event(PointerAction::Move, corner + vec2(2.0, 0.0), false)],
+    );
+    assert!(!mode.drag.as_ref().unwrap().moved);
+    // 40 points right and 30 up: (44, 23) on the plane. A drag, whose begin waits for the tab.
+    frame_of(
+        &mut mode,
+        &[event(
+            PointerAction::Move,
+            corner + vec2(40.0, -30.0),
+            false,
+        )],
+    );
+    let drag = mode.drag.as_ref().unwrap();
+    assert!(drag.moved && drag.wants_begin() && drag.held());
+    // Shown at the begin state till a frame comes.
+    assert_eq!(drag.shown().map(|read| read.members.points.len()), Some(4));
+    // Released: no click, so nothing selected, and the drag ends at its cursor.
+    frame_of(
+        &mut mode,
+        &[event(
+            PointerAction::Release,
+            corner + vec2(40.0, -30.0),
+            false,
+        )],
+    );
+    assert!(mode.selection.is_empty());
+    let drag = mode.drag.as_ref().unwrap();
+    assert!(!drag.held() && !drag.over());
+    // An edge: the right side pressed 0.4 mm off it at (40.4, 10) is grabbed at (40, 10).
+    let mut mode = mode_at(under(rectangle(Vec::new())));
+    frame_of(
+        &mut mode,
+        &[event(PointerAction::Press, at_mm(40.4, 10.0), false)],
+    );
+    assert_eq!(
+        mode.drag.as_ref().unwrap().grab,
+        silico_core::command::DragGrab::Edge {
+            curve: id("na000002"),
+            press: [40.0, 10.0]
+        }
+    );
+    // A press that never moves is a click: selected, no drag.
+    frame_of(
+        &mut mode,
+        &[event(PointerAction::Release, at_mm(40.4, 10.0), false)],
+    );
+    assert!(mode.drag.is_none());
+    assert_eq!(
+        mode.selected_ids()
+            .iter()
+            .map(|i| i.as_str())
+            .collect::<Vec<_>>(),
+        ["na000002"]
+    );
+}
+
+#[test]
+fn a_fully_defined_member_or_a_constraint_or_a_tool_on_starts_no_drag_and_a_press_selects() {
+    let full = read(
+        rectangle(vec![length("ka000001", "na000001", "40", true)]),
+        SketchState::FullyDefined,
+        MemberState::FullyDefined,
+        &[],
+    );
+    let mut mode = mode_at(full);
+    let corner = at_mm(40.0, 20.0);
+    frame_of(
+        &mut mode,
+        &[
+            event(PointerAction::Press, corner, false),
+            event(PointerAction::Move, corner + vec2(40.0, -30.0), false),
+            event(PointerAction::Release, corner + vec2(40.0, -30.0), false),
+        ],
+    );
+    assert!(mode.drag.is_none());
+    assert_eq!(
+        mode.selected_ids()
+            .iter()
+            .map(|i| i.as_str())
+            .collect::<Vec<_>>(),
+        ["pa000003"]
+    );
+    // A tool on takes the press: no drag of an under-defined corner either.
+    let mut mode = mode_at(under(rectangle(Vec::new())));
+    mode.tools.choose(Some(tools::Choice::Dimension));
+    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
+    frame_of(
+        &mut mode,
+        &[event(PointerAction::Move, corner + vec2(40.0, 0.0), false)],
+    );
+    assert!(mode.drag.is_none());
+    // A read of no model it names (a refused or older read's) drags nothing.
+    let mut mode = mode_on(under(rectangle(Vec::new())));
+    mode.sketch = Some(silico_core::document::FeatureId::new("s0000001").unwrap());
+    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
+    assert!(mode.drag.is_none());
+}
+
+#[test]
+fn a_read_mid_drag_leaves_the_drags_drawing_and_a_cursor_off_the_plane_or_past_the_view_is_kept_or_dropped()
+ {
+    let mut mode = mode_at(under(rectangle(Vec::new())));
+    let corner = at_mm(40.0, 20.0);
+    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
+    frame_of(
+        &mut mode,
+        &[event(
+            PointerAction::Move,
+            corner + vec2(40.0, -30.0),
+            false,
+        )],
+    );
+    // Another client's read, its corner elsewhere, taken mid-drag.
+    let mut moved = rectangle(Vec::new());
+    moved.points[2] = point("pa000003", 90.0, 90.0);
+    mode.took(Read {
+        model: Revision::OPENED.next().and_then(Revision::next),
+        result: Ok(under(moved)),
+    });
+    frame_of(&mut mode, &[]);
+    let drag = mode.drag.as_ref().unwrap();
+    assert!(drag.held());
+    // Still the drag's begin state drawn: the corner at (500, 300), not (1000, −400).
+    let corner_drawn: Vec<Pos2> = mode
+        .last_drawn()
+        .iter()
+        .filter(|d| {
+            matches!(d, Drawn::Point { .. }) && d.of().is_some_and(|i| i.as_str() == "pa000003")
+        })
+        .flat_map(Drawn::positions)
+        .collect();
+    assert_eq!(corner_drawn, [pos2(500.0, 300.0)]);
+    // A cursor far past the window is the plane's place there, unclamped: (−5000, 99999) on
+    // the screen is (−510, −9949.9).
+    frame_of(
+        &mut mode,
+        &[event(PointerAction::Move, pos2(-5000.0, 99999.0), false)],
+    );
+    // One that isn't a place (NaN) is dropped, and a release there ends at the last that was.
+    let nowhere = pos2(f32::NAN, f32::NAN);
+    frame_of(&mut mode, &[event(PointerAction::Move, nowhere, false)]);
+    frame_of(&mut mode, &[event(PointerAction::Release, nowhere, false)]);
+    let drag = mode.drag.as_ref().unwrap();
+    assert!(!drag.held() && !drag.over() && drag.wants_begin());
+    // Esc now has nothing held to cancel.
+    assert!(!mode.drag.as_mut().unwrap().cancel());
+}
+
+#[test]
+fn esc_or_a_cancel_ends_a_drag_from_its_begin_and_one_that_never_moved_is_let_go() {
+    let corner = at_mm(40.0, 20.0);
+    let mut mode = mode_at(under(rectangle(Vec::new())));
+    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
+    // Esc before it moved: no drag, nothing to send.
+    assert!(mode.cancel_drag());
+    assert!(mode.drag.is_none());
+    // Moved, then cancelled: it's to end from its begin state, its begin never sent, so
+    // it's over with nothing sent.
+    frame_of(&mut mode, &[event(PointerAction::Press, corner, false)]);
+    frame_of(
+        &mut mode,
+        &[event(PointerAction::Move, corner + vec2(40.0, 0.0), false)],
+    );
+    frame_of(
+        &mut mode,
+        &[event(
+            PointerAction::Cancel,
+            corner + vec2(40.0, 0.0),
+            false,
+        )],
+    );
+    let drag = mode.drag.as_ref().unwrap();
+    assert!(!drag.held() && !drag.wants_begin() && drag.over());
+    frame_of(&mut mode, &[]);
+    assert!(mode.drag.is_none());
+}
+
+#[test]
+fn a_double_click_on_a_dimension_opens_its_box_with_its_value_whose_text_is_asked_as_read() {
+    use dimension::{Ask, ModifyAction};
+    use silico_core::document::json::Value;
+    let read = under(rectangle(vec![length("ka000001", "na000001", "40", true)]));
+    let mut mode = mode_at(read);
+    frame_of(&mut mode, &[]);
+    // Its value's label, where the read's drawing put it.
+    let label = mode
+        .last_drawn()
+        .iter()
+        .find_map(|d| match d {
+            Drawn::Label {
+                of: Some(of), at, ..
+            } if of.as_str() == "ka000001" => Some(*at),
+            _ => None,
+        })
+        .unwrap();
+    let mut clicks = press(label, false).to_vec();
+    clicks.extend(press(label, false));
+    clicks.push(event(PointerAction::DoubleClick, label, false));
+    frame_of(&mut mode, &clicks);
+    let edit = mode.edit_box.as_ref().unwrap();
+    assert_eq!((edit.text.as_str(), edit.unit), ("40", "mm"));
+    assert_eq!(edit.constraint, id("ka000001"));
+    let view = mode.modify_view().unwrap();
+    assert!(!view.placing && !view.waiting);
+    // "25mm": the core's reader reads no JSON of it; said, nothing asked.
+    mode.modify(ModifyAction::Typed("25mm".to_owned()));
+    mode.modify(ModifyAction::Accept);
+    assert!(mode.take_asks().is_empty());
+    assert!(mode.edit_box.as_ref().unwrap().said.is_some());
+    // " 1e1 ": asked whole, as the reader reads it: the number's own text, "1e1".
+    mode.modify(ModifyAction::Typed(" 1e1 ".to_owned()));
+    assert!(mode.edit_box.as_ref().unwrap().said.is_none());
+    mode.modify(ModifyAction::Accept);
+    match mode.take_asks().as_slice() {
+        [
+            Ask::Value {
+                constraint, value, ..
+            },
+        ] => {
+            assert_eq!(*constraint, id("ka000001"));
+            assert_eq!(value.value, Value::Number("1e1".to_owned()));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(mode.modify_view().unwrap().waiting);
+    // Refused by the core: said in the box, which stays open; then taken, which closes it.
+    mode.value_answered(Revision::OPENED, Err("refused".to_owned()));
+    let edit = mode.edit_box.as_ref().unwrap();
+    assert_eq!((edit.said.as_deref(), edit.sent), (Some("refused"), false));
+    mode.modify(ModifyAction::Accept);
+    mode.take_asks();
+    mode.value_answered(Revision::OPENED.next().unwrap(), Ok(false));
+    assert!(mode.edit_box.is_none() && mode.edited.is_none());
+    // Esc's way: a box closed with nothing asked.
+    frame_of(&mut mode, &clicks);
+    mode.modify(ModifyAction::Skip);
+    assert!(mode.edit_box.is_none());
+    assert!(mode.take_asks().is_empty());
+}

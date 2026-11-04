@@ -1,6 +1,7 @@
-//! Sketch mode's tools (M5.11b; docs/design/m5.0-app.md, section 9, *Sketching*): the
+//! Sketch mode's tools (M5.11b and c; docs/design/m5.0-app.md, section 9, *Sketching*): the
 //! drawing tools, each the core's [`SketchTool`] (#335) driven through its API alone, with
-//! no rule of its own copied here; and trim and split, the core's `sketch_trim`,
+//! no rule of its own copied here; Smart Dimension, the core's [`SmartDimension`] (#345),
+//! likewise; and trim and split, the core's `sketch_trim`,
 //! `sketch_split`, and `sketch_extend` asked from the pointer's picks. What a tool asks of
 //! the core comes out as [`Request`]s, which the tab sends through its queue, never waited
 //! on; the core's answer to an add is given back by its token ([`Tools::added`],
@@ -21,16 +22,18 @@ use silico_core::document::sketch_edit::Members;
 use silico_core::document::{Coordinate, ElementId, ElementKind, FeatureId};
 use silico_core::extend::End;
 use silico_core::sketch_tools::{
-    AddToken, Context, Event, Modifiers, NewIds, Preview, SketchTool, SystemIds, ToolKind,
+    AddToken, Context, DimensionEvent, DimensionPreview, Event, Modifiers, NewIds, Offer, Outcome,
+    Preview, SketchTool, SmartDimension, SystemIds, ToolKind,
 };
 
 use super::draw::{Curve, Geometry, add, angle, dot, foot, length, mul, sub};
 use super::hit::distance;
 
-/// The tool chosen: a drawing tool of the core's, trim, or split.
+/// The tool chosen: a drawing tool of the core's, Smart Dimension, trim, or split.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Choice {
     Draw(ToolKind),
+    Dimension,
     Trim,
     Split,
 }
@@ -46,8 +49,9 @@ pub enum TrimMode {
     Closest,
 }
 
-/// What a tool asks of the core, in the order it asks: a drawing tool's `sketch_add`, with
-/// its token, and trim's, split's, and extend's edits, each of a curve of the newest read.
+/// What a tool asks of the core, in the order it asks: a drawing tool's or Smart
+/// Dimension's `sketch_add`, with its token, and trim's, split's, and extend's edits, each
+/// of a curve of the newest read.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     Add {
@@ -108,6 +112,7 @@ impl Input<'_> {
 /// The tool on, between frames.
 enum Active {
     Draw(Box<SketchTool>),
+    Dimension(Box<SmartDimension>),
     Trim(Trim),
     Split(Split),
 }
@@ -158,6 +163,11 @@ pub struct Tools {
     requests: Vec<Request>,
     /// Where the pointer was last given to the tool: a hover is given once it moves.
     last: Option<[f64; 2]>,
+    /// Smart Dimension's Modify box: how many times one has opened (what a box's focus is
+    /// keyed on, so each new one takes the keyboard once), and where on the plane the click
+    /// that opened the one open was, where its dimension's text stays while it's open.
+    pub modify_opened: u64,
+    modify_at: Option<[f64; 2]>,
 }
 
 impl Default for Tools {
@@ -169,6 +179,8 @@ impl Default for Tools {
             preview: Preview::default(),
             requests: Vec::new(),
             last: None,
+            modify_opened: 0,
+            modify_at: None,
         }
     }
 }
@@ -186,6 +198,7 @@ impl Tools {
     pub fn choice(&self) -> Option<Choice> {
         self.active.as_ref().map(|active| match active {
             Active::Draw(tool) => Choice::Draw(tool.kind()),
+            Active::Dimension(_) => Choice::Dimension,
             Active::Trim(_) => Choice::Trim,
             Active::Split(_) => Choice::Split,
         })
@@ -200,12 +213,14 @@ impl Tools {
         }
         self.active = choice.map(|choice| match choice {
             Choice::Draw(kind) => Active::Draw(Box::new(SketchTool::new(kind))),
+            Choice::Dimension => Active::Dimension(Box::new(SmartDimension::new())),
             Choice::Trim => Active::Trim(Trim::Idle),
             Choice::Split => Active::Split(Split::default()),
         });
         self.preview = Preview::default();
         self.said = None;
         self.last = None;
+        self.modify_at = None;
     }
 
     /// Whether a gesture is under way: a press held, a chain or an entity begun, or a
@@ -214,6 +229,7 @@ impl Tools {
         match &self.active {
             None => false,
             Some(Active::Draw(tool)) => tool.busy(),
+            Some(Active::Dimension(tool)) => tool.busy(),
             Some(Active::Trim(trim)) => matches!(trim, Trim::Pressed { .. }),
             Some(Active::Split(split)) => split.pressed.is_some() || split.first.is_some(),
         }
@@ -236,15 +252,125 @@ impl Tools {
 
     /// The core took the add `token` names, at `revision`.
     pub fn added(&mut self, token: AddToken, revision: Revision) {
-        if let Some(Active::Draw(tool)) = &mut self.active {
-            tool.added(token, revision);
+        match &mut self.active {
+            Some(Active::Draw(tool)) => tool.added(token, revision),
+            Some(Active::Dimension(tool)) => tool.added(token, revision),
+            _ => {}
         }
     }
 
     /// The core refused the add `token` names: the tool forgets it.
     pub fn refused(&mut self, token: AddToken) {
-        if let Some(Active::Draw(tool)) = &mut self.active {
-            tool.refused(token);
+        match &mut self.active {
+            Some(Active::Draw(tool)) => tool.refused(token),
+            Some(Active::Dimension(tool)) => tool.refused(token),
+            _ => {}
+        }
+    }
+
+    /// What Smart Dimension draws now, if it's the tool on.
+    pub fn dimension_preview(&self) -> Option<&DimensionPreview> {
+        match &self.active {
+            Some(Active::Dimension(tool)) => Some(tool.preview()),
+            _ => None,
+        }
+    }
+
+    /// Where on the plane the Modify box open was opened: where its dimension's text
+    /// stays while it's open.
+    pub fn modify_at(&self) -> Option<[f64; 2]> {
+        self.modify_at
+            .filter(|_| self.dimension_preview().is_some_and(|p| p.modify.is_some()))
+    }
+
+    /// The offer Smart Dimension holds open for the last dimension it placed (SD7), if it's
+    /// the tool on and holds one.
+    pub fn open_offer(&self) -> Option<&Offer> {
+        match &self.active {
+            Some(Active::Dimension(tool)) => tool.open_offer(),
+            _ => None,
+        }
+    }
+
+    /// Smart Dimension's offer answered (its request sent, or Leave): let go, so the next
+    /// dimension may be placed.
+    pub fn dismiss_offer(&mut self) {
+        if let Some(Active::Dimension(tool)) = &mut self.active {
+            tool.dismiss_offer();
+        }
+    }
+
+    /// A newer read, given to Smart Dimension if it's on (`SmartDimension::settle`): its
+    /// offer settled or released, its picks and its Modify box measured again; what that
+    /// says kept.
+    pub fn settle(&mut self, input: &Input<'_>) {
+        let Some(Active::Dimension(tool)) = &mut self.active else {
+            return;
+        };
+        let outcome = tool.settle(&input.context(), &input.read.states);
+        self.dimension_took(outcome);
+    }
+
+    /// `event` given to Smart Dimension, if it's the tool on, against `input`: what it adds
+    /// queued as a request, what it says kept, and whether the Modify box opened noted.
+    pub fn dimension(&mut self, input: &Input<'_>, event: DimensionEvent) {
+        if let DimensionEvent::Press(at)
+        | DimensionEvent::Move(at)
+        | DimensionEvent::Release(at)
+        | DimensionEvent::RightClick(at) = event
+        {
+            self.last = Some(at);
+        }
+        let Some(Active::Dimension(tool)) = &mut self.active else {
+            return;
+        };
+        // What was said of the text typed before is let go with it.
+        if matches!(event, DimensionEvent::Typed(_)) {
+            self.said = None;
+        }
+        let outcome = tool.handle(
+            &input.context(),
+            &input.read.states,
+            self.ids.as_mut(),
+            event,
+        );
+        self.dimension_took(outcome);
+    }
+
+    /// What Smart Dimension's step did: the Modify box's opening noted (where the click that
+    /// opened it was), and the outcome taken.
+    fn dimension_took(&mut self, outcome: Outcome) {
+        let Some(Active::Dimension(tool)) = &self.active else {
+            return;
+        };
+        let preview = tool.preview();
+        match (&preview.modify, self.modify_at) {
+            (Some(_), None) => {
+                self.modify_opened += 1;
+                self.modify_at = preview.pointer;
+            }
+            (None, Some(_)) => self.modify_at = None,
+            _ => {}
+        }
+        self.took(outcome, false);
+    }
+
+    /// A tool's outcome: what it said kept; what it added queued as a request (a drawing
+    /// tool's curves marked as construction if `construction`), letting go of what it said;
+    /// and the tool left if it was.
+    fn took(&mut self, outcome: Outcome, construct: bool) {
+        if let Some(message) = &outcome.message {
+            self.said = Some(message.text());
+        }
+        if let (Some(mut members), Some(token)) = (outcome.add, outcome.token) {
+            if construct {
+                construction(&mut members);
+            }
+            self.said = None;
+            self.requests.push(Request::Add { token, members });
+        }
+        if outcome.left {
+            self.choose(None);
         }
     }
 
@@ -253,6 +379,10 @@ impl Tools {
     pub fn forget_pending(&mut self) {
         if let Some(Active::Draw(tool)) = &mut self.active {
             tool.forget_pending();
+        }
+        if let Some(Active::Dimension(tool)) = &mut self.active {
+            tool.forget_pending();
+            self.modify_at = None;
         }
         if let Some(Active::Trim(trim)) = &mut self.active {
             *trim = Trim::Idle;
@@ -265,8 +395,14 @@ impl Tools {
 
     /// Esc, with a tool on (section 9, *Line*: Esc ends a chain and leaves the tool): the
     /// gesture ended and the tool left. A drawing tool is told, with `input` if there's a
-    /// read to give it. Whether there was a tool to leave.
+    /// read to give it. Smart Dimension takes it as its own (SD2 and section 9: with the
+    /// Modify box open it places the measured value; else it undoes the last pick, and with
+    /// none leaves the tool). Whether there was a tool to take it.
     pub fn escape(&mut self, input: Option<&Input<'_>>) -> bool {
+        if let (Some(Active::Dimension(_)), Some(input)) = (&self.active, input) {
+            self.dimension(input, DimensionEvent::Escape);
+            return true;
+        }
         let Some(active) = &mut self.active else {
             return false;
         };
@@ -301,6 +437,10 @@ impl Tools {
                 );
             }
             (Some(Active::Draw(tool)), None) => tool.forget_pending(),
+            // Until #365's `DimensionEvent::Cancel`, nothing: Smart Dimension's press is
+            // only a flag, which the next press sets again and its release clicks, so a
+            // cancelled one never clicks (Esc would undo a pick, which a cancel mustn't).
+            (Some(Active::Dimension(_)), _) => {}
             (Some(Active::Trim(trim)), _) => *trim = Trim::Idle,
             (Some(Active::Split(split)), Some(_)) => split.pressed = None,
             (Some(Active::Split(split)), None) => *split = Split::default(),
@@ -328,19 +468,19 @@ impl Tools {
             Some(Active::Draw(tool)) => {
                 let outcome = tool.handle(&input.context(), self.ids.as_mut(), event, keys);
                 self.preview = tool.preview().clone();
-                if let Some(message) = &outcome.message {
-                    self.said = Some(message.text());
-                }
-                if let (Some(mut members), Some(token)) = (outcome.add, outcome.token) {
-                    if input.construction {
-                        construction(&mut members);
-                    }
-                    self.said = None;
-                    self.requests.push(Request::Add { token, members });
-                }
-                if outcome.left {
-                    self.choose(None);
-                }
+                self.took(outcome, input.construction);
+            }
+            Some(Active::Dimension(_)) => {
+                let event = match event {
+                    Event::Press(at) => DimensionEvent::Press(at),
+                    Event::Move(at) => DimensionEvent::Move(at),
+                    Event::Release(at) => DimensionEvent::Release(at),
+                    Event::Enter | Event::EndChain => DimensionEvent::Enter,
+                    Event::Escape => DimensionEvent::Escape,
+                    // Its second click's press and release were its own.
+                    Event::DoubleClick(_) => return,
+                };
+                self.dimension(input, event);
             }
             Some(Active::Trim(trim)) => {
                 let asked = self.requests.len();
