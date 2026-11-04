@@ -80,6 +80,34 @@ fn enter_is_ok(ui: &mut Ui) -> bool {
     })
 }
 
+/// Hide/Show's shortcut, H with no modifier (DESIGN.md, *Keyboard*: Fusion's V, moved to
+/// H), shown in the browser's eyes' tooltips.
+pub(crate) const HIDE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::H);
+
+/// Whether `shortcut` was pressed this frame with exactly its modifiers (egui's own match
+/// ignores Shift and Alt, so Shift+H and Alt+H stay free for other commands), and freshly,
+/// never the system's repeat of a key held down: taking it if so.
+fn take_bare(ui: &mut Ui, shortcut: KeyboardShortcut) -> bool {
+    ui.input_mut(|input| {
+        let mut pressed = false;
+        input.events.retain(|event| {
+            let fresh = matches!(
+                event,
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } if *key == shortcut.logical_key && *modifiers == shortcut.modifiers
+            );
+            pressed |= fresh;
+            !fresh
+        });
+        pressed
+    })
+}
+
 /// What the app is asking the person.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Asking {
@@ -752,10 +780,7 @@ impl<P: Clients + 'static> App<P> {
         );
         let stop = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
         // H hides or shows the selection (DESIGN.md, *Keyboard*), never a letter typed.
-        let hide = !ui.ctx().text_edit_focused()
-            && ui.input_mut(|input| {
-                !input.modifiers.alt && input.consume_key(Modifiers::NONE, Key::H)
-            });
+        let hide = !ui.ctx().text_edit_focused() && take_bare(ui, HIDE);
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return (false, None);
         };

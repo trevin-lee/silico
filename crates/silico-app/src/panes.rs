@@ -675,10 +675,10 @@ fn padded(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 fn empty_words(ui: &mut Ui, words: &str) {
     egui::Frame::new()
         .inner_margin(egui::Margin {
-            left: margin(theme::BROWSER_EMPTY_PADDING_LEFT),
+            left: theme::BROWSER_EMPTY_PADDING_LEFT,
             right: theme::VIEW_PADDING,
-            top: margin(theme::BROWSER_EMPTY_PADDING_TOP),
-            bottom: margin(theme::BROWSER_EMPTY_PADDING_BOTTOM),
+            top: theme::BROWSER_EMPTY_PADDING_TOP,
+            bottom: theme::BROWSER_EMPTY_PADDING_BOTTOM,
         })
         .show(ui, |ui| {
             ui.label(
@@ -687,12 +687,6 @@ fn empty_words(ui: &mut Ui, words: &str) {
                     .color(theme::BROWSER_EMPTY),
             );
         });
-}
-
-/// A margin's points, as egui's `Margin` holds them (whole points, each well under 127).
-fn margin(points: f32) -> i8 {
-    // The browser's paddings are whole points under 127.
-    points.round().clamp(0.0, f32::from(i8::MAX)) as i8
 }
 
 /// A browser row (`.row`; app.js's `row`): what it shows.
@@ -871,8 +865,10 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
             theme::BROWSER_EYE_CORNER_RADIUS,
             egui::StrokeKind::Inside,
         );
-        let hide = egui::KeyboardShortcut::new(egui::Modifiers::NONE, egui::Key::H);
-        (crate::bar::tooltip(eye, word, Some(hide), None), shown)
+        (
+            crate::bar::tooltip(eye, word, Some(crate::app::HIDE), None),
+            shown,
+        )
     });
     let hidden = eye.as_ref().is_some_and(|(_, shown)| !shown);
     let (name_colour, icon_colour) = row_colours(hovered, selected, line.failed, hidden);
@@ -884,11 +880,9 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
     x += icons::ICON_SIZE + gap;
     // The prefix, in the monospace font.
     if let Some(prefix) = line.prefix {
-        let colour = if selected {
-            theme::ON_SELECTION
-        } else {
-            prefix_colour(prefix)
-        };
+        // Its state's colour on a selected row too: styles.css has no `.row.selected
+        // .prefix`.
+        let colour = prefix_colour(prefix);
         let galley = ui.painter().layout_no_wrap(
             prefix.to_owned(),
             egui::FontId::monospace(theme::MONOSPACE_SIZE),

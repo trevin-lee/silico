@@ -13597,6 +13597,104 @@ fn h_hides_and_shows_the_selected_body_but_not_while_a_field_is_typed_in() {
 }
 
 #[test]
+fn h_with_shift_or_alt_hides_nothing() {
+    // H alone is Hide/Show (DESIGN.md, *Keyboard*); egui's own match would take Shift+H and
+    // Alt+H for it too.
+    let f = fixture();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        shows(h, "Browser", "Large")
+    });
+    browser(&h).get_by_label("Large").click();
+    step_until(&mut h, "Large selected", |h| {
+        toggled(&browser(h).get_by_label("Large")) == Some(true)
+    });
+    for modifiers in [eframe::egui::Modifiers::SHIFT, eframe::egui::Modifiers::ALT] {
+        h.key_press_modifiers(modifiers, eframe::egui::Key::H);
+        step(&mut h);
+        step(&mut h);
+        assert!(shows(&h, "Browser", "Hide Large"), "{modifiers:?}");
+        assert!(h.state().tabs()[0].hidden.is_empty(), "{modifiers:?}");
+        assert_eq!(
+            record.lock().unwrap().frames.last().unwrap().bodies,
+            [1, 2],
+            "{modifiers:?}"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn h_hides_and_shows_the_selected_sketch() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    browser(&h).get_by_label("Triangle").click();
+    step_until(&mut h, "Triangle selected", |h| {
+        toggled(&browser(h).get_by_label("Triangle")) == Some(true)
+    });
+    h.key_press(eframe::egui::Key::H);
+    step(&mut h);
+    step(&mut h);
+    assert!(shows(&h, "Browser", "Show Triangle"));
+    assert!(shows(&h, "Browser", "Hide Plate"));
+    h.key_press(eframe::egui::Key::H);
+    step(&mut h);
+    step(&mut h);
+    assert!(shows(&h, "Browser", "Hide Triangle"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_hidden_body_stays_hidden_through_a_rename_and_its_undo_and_redo() {
+    // Hidden by its feature, not its name: each rename, undo, and redo rebuilds and reads
+    // the timeline again, and the body stays hidden and undrawn through each.
+    let f = fixture();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's bodies", |h| {
+        shows(h, "Browser", "Hide Large")
+    });
+    browser(&h).get_by_label("Hide Large").click();
+    step(&mut h);
+    browser(&h).get_by_label("Large").click();
+    step_until(&mut h, "its properties", |h| {
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .query_by_role(Role::TextInput)
+            .and_then(|field| field.value())
+            .is_some_and(|value| value == "Large")
+    });
+    let drawn = |record: &Record| record.lock().unwrap().frames.last().unwrap().bodies.clone();
+    // Renamed through the Name field: the cursor at its start, so "x" before the name.
+    type_name(&mut h, "x");
+    step_until(&mut h, "the renamed row", |h| {
+        shows(h, "Browser", "xLarge") && h.state().tabs()[0].edits.idle()
+    });
+    meshes_settled(&mut h);
+    assert!(shows(&h, "Browser", "Show xLarge"));
+    assert!(!shows(&h, "Browser", "Hide xLarge"));
+    assert_eq!(drawn(&record), [1]);
+    // Undone: the old name back, still hidden.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step_until(&mut h, "the rename undone", |h| {
+        shows(h, "Browser", "Large") && !shows(h, "Browser", "xLarge")
+    });
+    meshes_settled(&mut h);
+    assert!(shows(&h, "Browser", "Show Large"));
+    assert_eq!(drawn(&record), [1]);
+    // Redone: the new name again, still hidden.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
+    step_until(&mut h, "the rename redone", |h| {
+        shows(h, "Browser", "xLarge")
+    });
+    meshes_settled(&mut h);
+    assert!(shows(&h, "Browser", "Show xLarge"));
+    assert_eq!(drawn(&record), [1]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn h_with_a_feature_the_browser_doesnt_list_selected_hides_nothing() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);

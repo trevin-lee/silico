@@ -683,7 +683,7 @@ pub const TOOLBAR_FINISH_HOVER_BG: Color32 = hex(0x2a78e8);
 
 /// The pane's title (`.panel-title`): its padding at the left (`--pad`), in
 /// [`HEADER_SIZE`] capitals, [`TEXT_STRONG`], on a [`TITLE_BAR_HEIGHT`] row.
-pub const BROWSER_TITLE_PADDING: f32 = 12.0;
+pub const BROWSER_TITLE_PADDING: f32 = VIEW_PADDING as f32;
 
 /// A row's padding at its left before its depth's indents (`6 + depth * 18`), at its right,
 /// and the gap between its parts (`.row`).
@@ -722,9 +722,9 @@ pub const BROWSER_PREFIX: Color32 = TEXT_SUBDUED;
 
 /// An empty group's words (`.tree-empty`): their padding at the left (`--pad` and 36), top,
 /// and bottom, in [`HEADER_SIZE`] text, Gray.550.
-pub const BROWSER_EMPTY_PADDING_LEFT: f32 = 12.0 + 36.0;
-pub const BROWSER_EMPTY_PADDING_TOP: f32 = 2.0;
-pub const BROWSER_EMPTY_PADDING_BOTTOM: f32 = 6.0;
+pub const BROWSER_EMPTY_PADDING_LEFT: i8 = VIEW_PADDING + 36;
+pub const BROWSER_EMPTY_PADDING_TOP: i8 = 2;
+pub const BROWSER_EMPTY_PADDING_BOTTOM: i8 = 6;
 pub const BROWSER_EMPTY: Color32 = TEXT_SUBDUED;
 
 /// The space below the last row (`.panel-body`'s `padding-bottom`).
@@ -1515,9 +1515,9 @@ mod tests {
         assert_eq!(BROWSER_HIDDEN_OPACITY, 0.45);
         // `.tree-empty`: `padding: 2px 12px 6px calc(var(--pad) + 36px)`; `.panel-body`:
         // `padding-bottom: 12px`.
-        assert_eq!(BROWSER_EMPTY_PADDING_LEFT, 48.0);
-        assert_eq!(BROWSER_EMPTY_PADDING_TOP, 2.0);
-        assert_eq!(BROWSER_EMPTY_PADDING_BOTTOM, 6.0);
+        assert_eq!(BROWSER_EMPTY_PADDING_LEFT, 48);
+        assert_eq!(BROWSER_EMPTY_PADDING_TOP, 2);
+        assert_eq!(BROWSER_EMPTY_PADDING_BOTTOM, 6);
         assert_eq!(BROWSER_PADDING_BOTTOM, 12.0);
         for (name, color, hex) in [
             // `.row`, `--g700`; `:hover`, `--g800` on `--g250`; `.selected`, `--blue-text`
