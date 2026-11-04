@@ -250,8 +250,9 @@ fn a_body_forgotten_is_drawn_no_more_and_one_replaced_is_uploaded_again() {
             let found = hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE)));
             assert_eq!(found, Some((1, Element::Face(3), [32, 26])));
             // The same mesh again, by its Arc or an equal one, uploads nothing; another, the
-            // box moved 100 mm right (out of view: from column 32 + 79 × 12/11 = 118), is
-            // uploaded again and drawn where it now is.
+            // box moved 100 mm right (out of view: from column 32 + 79 × 12/11 = 118), drops
+            // the old meshes, and isn't placed where the view can't see it: nothing uploaded
+            // until a view does.
             let before = r.uploads();
             let mesh = the_box();
             r.upload(1, &mesh).unwrap();
@@ -264,7 +265,7 @@ fn a_body_forgotten_is_drawn_no_more_and_one_replaced_is_uploaded_again() {
             )
             .unwrap();
             assert_eq!(hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE))), None);
-            assert_eq!(r.uploads(), before + 6);
+            assert_eq!(r.uploads(), before);
         },
     );
 }
@@ -1290,12 +1291,13 @@ fn an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allow
         "render::frame_tests::an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allows",
         |r| {
             r.upload(1, &the_box()).unwrap();
-            // The box's reach from the target, by its box's farthest corner: from (21, 10,
-            // 7), the corner (0, 0, 0) on x, y, and z alike (21, 10, 7 away), √590; from
-            // (5, 4, 3), the corner (40, 20, 10) (35, 16, 7 away), √1530. The least height is
-            // that times MIN_VIEW_HEIGHT_OF_REACH: drawn at it, refused just under it.
+            // The box's reach from the target, its farthest corner: from (21, 10, 7), the
+            // corner (0, 0, 0) on x, y, and z alike (21, 10, 7 away), √590; from (5, 4, 3),
+            // the corner (40, 20, 10) (35, 16, 7 away), √1530. The least height at 48 rows is
+            // 48 times that over 2^19, as a scene's check takes it (0.00222 and 0.00358 mm):
+            // drawn at it, refused just under it.
             for (target, squared) in [([21.0, 10.0, 7.0], 590.0f64), ([5.0, 4.0, 3.0], 1530.0)] {
-                let least = squared.sqrt() * silico_protocol::MIN_VIEW_HEIGHT_OF_REACH;
+                let least = 48.0 * squared.sqrt() / 524_288.0;
                 let at = |view_height: f64| Camera {
                     projection: Projection::Orthographic { view_height },
                     eye: [target[0], target[1] - 60.0, target[2]],
@@ -1309,6 +1311,167 @@ fn an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allow
                     refused(r, &frame(&camera, &[1], &[], None)),
                     "camera.view_height",
                     "{target:?}"
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn a_perspective_frame_takes_the_angles_a_scenes_check_does_at_its_size_and_any_eye() {
+    on_lavapipe(
+        "render::frame_tests::a_perspective_frame_takes_the_angles_a_scenes_check_does_at_its_size_and_any_eye",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let at = |distance: f64, field_of_view: f64| Camera {
+                projection: Projection::Perspective { field_of_view },
+                eye: [21.0, -distance, 7.0],
+                target: [21.0, 10.0, 7.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            // Any eye: 0.1 mm before the front face (its corners 221 times as far across the
+            // view as along it at 1°, past the pyramid's 190.6 over 48 rows: cut), in its
+            // plane, or inside the box: each drawn, what's outside the pyramid cut away.
+            for (distance, field_of_view) in [(0.2, 1.0), (0.1, 1.0), (0.0, 60.0), (-1.0, 60.0)] {
+                let camera = at(distance, field_of_view);
+                r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
+            }
+            // The angle at the frame's size: at 64 by 48, from 0.005246° (by hand, the
+            // quadratic's root): 0.001° is refused, 0.006° drawn.
+            let camera = at(1e5, 0.001);
+            assert_eq!(
+                refused(r, &frame(&camera, &[1], &[], None)),
+                "camera.field_of_view"
+            );
+            let camera = at(1e5, 0.006);
+            r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
+        },
+    );
+}
+
+/// Every pixel's ID of `camera`'s frame of `bodies`, `size` pixels (at most 256 a side), as
+/// its picking reads them back: the body's number and the element's, as the worker's ID
+/// buffer writes them.
+fn frame_ids(r: &mut Renderer, camera: &Camera, bodies: &[u32], size: [u32; 2]) -> Vec<[u32; 2]> {
+    frame_ids_at(r, camera, bodies, size, 1.0)
+}
+
+/// [`frame_ids`] at `pixels_per_point`.
+fn frame_ids_at(
+    r: &mut Renderer,
+    camera: &Camera,
+    bodies: &[u32],
+    size: [u32; 2],
+    pixels_per_point: f32,
+) -> Vec<[u32; 2]> {
+    let asking = Frame {
+        size_px: size,
+        picking: Some(rect([0, 0], size)),
+        pixels_per_point,
+        ..frame(camera, bodies, &[], None)
+    };
+    pick(r, &asking);
+    // `pick` took the answer's hit; the frame again, and its readback read whole.
+    draw(r, &asking);
+    draw(
+        r,
+        &Frame {
+            serial: asking.serial.wrapping_add(1),
+            picking: None,
+            ..asking
+        },
+    );
+    r.harvest();
+    let answer = r.picked.take().expect("no answer");
+    answer
+        .ids
+        .iter()
+        .map(|id| {
+            [
+                u32::try_from(id.object.0).unwrap(),
+                u32::try_from(id.instance.0).unwrap(),
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn an_edge_past_the_frames_side_by_less_than_its_stroke_at_two_pixels_a_point_is_drawn() {
+    on_lavapipe(
+        "render::frame_tests::an_edge_past_the_frames_side_by_less_than_its_stroke_at_two_pixels_a_point_is_drawn",
+        |r| {
+            // Orthographic about the origin from −y, 48 mm over 48 rows, 64 wide: a pixel a
+            // millimetre, the frame's right side at x = 32. At 2 pixels a point an edge's
+            // 2-point stroke is 4 pixels, reaching 2 past its line: one along z at x = 33.25,
+            // 1.25 past the side, reaches the last column's centres (1.75 from it), by hand
+            // rows 16 to 32; at one pixel a point (a reach of 1) it doesn't reach the frame.
+            let edge = Arc::new(Mesh {
+                positions: vec![],
+                normals: vec![],
+                triangles: vec![],
+                face_triangles: vec![],
+                edge_points: vec![[33.25, 0.0, -10.0], [33.25, 0.0, 10.0]],
+                edge_point_counts: vec![2],
+                valid: None,
+            });
+            r.upload(1, &edge).unwrap();
+            let camera = Camera {
+                projection: Projection::Orthographic { view_height: 48.0 },
+                eye: [0.0, -10.0, 0.0],
+                target: [0.0; 3],
+                up: [0.0, 0.0, 1.0],
+            };
+            let id = [1, 0x8000_0001];
+            let ids = frame_ids_at(r, &camera, &[1], [64, 48], 2.0);
+            for row in 16..=32 {
+                assert_eq!(ids[row * 64 + 63], id, "row {row}");
+            }
+            let ids = frame_ids_at(r, &camera, &[1], [64, 48], 1.0);
+            assert!(ids.iter().all(|id| *id == [0, 0]));
+        },
+    );
+}
+
+#[test]
+fn a_box_seen_from_inside_draws_in_a_frame_as_the_workers_render_draws_it() {
+    on_lavapipe(
+        "render::frame_tests::a_box_seen_from_inside_draws_in_a_frame_as_the_workers_render_draws_it",
+        |r| {
+            // The bench's box with the eye at its centre, in a wall's plane (x = 0), and 1 mm
+            // from it, looking along +y at 90°: its walls beside and behind the eye cut to the
+            // view's pyramid, as a frame and the worker's render cut them, pixel for pixel.
+            for eye in [[20.0, 10.0, 5.0], [0.0, 10.0, 5.0], [1.0, 10.0, 5.0]] {
+                let camera = Camera {
+                    projection: Projection::Perspective {
+                        field_of_view: 90.0,
+                    },
+                    eye,
+                    target: [eye[0], 20.0, eye[2]],
+                    up: [0.0, 0.0, 1.0],
+                };
+                let scene = silico_protocol::RenderScene {
+                    bodies: vec![silico_protocol::RenderBody {
+                        body: 1,
+                        mesh: Mesh::clone(&the_box()),
+                        highlight_faces: vec![],
+                        highlight_edges: vec![],
+                    }],
+                    camera: camera.clone(),
+                    width: WIDTH,
+                    height: HEIGHT,
+                    ids: true,
+                };
+                scene.check().unwrap();
+                let rendered = r.render(&scene).unwrap().ids.unwrap();
+                assert!(
+                    rendered.contains(&[1, 4]),
+                    "{eye:?}: the far wall isn't drawn"
+                );
+                r.upload(1, &the_box()).unwrap();
+                let framed = frame_ids(r, &camera, &[1], [WIDTH, HEIGHT]);
+                assert!(
+                    framed == rendered,
+                    "{eye:?}: the frame differs from the render"
                 );
             }
         },

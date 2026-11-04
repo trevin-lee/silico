@@ -92,6 +92,18 @@ struct Told {
 
 type Record = Arc<Mutex<Told>>;
 
+/// The pane's height in pixels, as its last frame had it.
+fn rows(record: &Record) -> u32 {
+    record.lock().unwrap().frames.last().unwrap().size_px[1]
+}
+
+/// The least an orthographic view of bodies reaching `reach` mm from its target may be in
+/// the pane, as the app takes it: the renderer's at the pane's height in pixels, `rows ×
+/// reach / 2^19`, and a hundredth more.
+fn least_in(record: &Record, reach: f64) -> f64 {
+    f64::from(rows(record)) * reach / 524_288.0 * 1.01
+}
+
 struct FakeRenderer(Record);
 
 impl ViewRenderer for FakeRenderer {
@@ -291,10 +303,16 @@ fn a_viewport_of_no_height_pans_and_zooms_nothing_and_fits_nothing_wrong() {
     let cube = [[0.0; 3], [20.0; 3]];
     for (width, height) in [(0, 0), (0, 400), (400, 0), (1, 1), (1, 4096), (4096, 1)] {
         if let Some(fitted) = navigate::fit(&camera, cube, width, height) {
-            assert!(fitted.check().is_ok(), "{width} by {height}");
+            assert!(
+                fitted.check(width.max(1), height.max(1)).is_ok(),
+                "{width} by {height}"
+            );
         }
         let named = navigate::named(navigate::HOME, cube, width, height).unwrap();
-        assert!(named.check().is_ok(), "{width} by {height}");
+        assert!(
+            named.check(width.max(1), height.max(1)).is_ok(),
+            "{width} by {height}"
+        );
     }
     // One pixel high, one point a pixel: a pan of a point moves the whole view's height.
     let panned = navigate::pan(&camera, 0.0, 1.0, 1.0).unwrap();
@@ -311,7 +329,7 @@ fn zooming_in_and_out_without_end_stops_at_what_a_renderer_draws() {
             let mut camera = start.clone();
             let mut steps = 0;
             while let Some(next) = navigate::zoom(&camera, scroll, [37.0, -11.0], 400.0) {
-                assert!(next.check().is_ok());
+                assert!(next.frame().is_ok());
                 camera = next;
                 steps += 1;
                 assert!(steps < 200, "zoomed {steps} times without stopping");
@@ -361,11 +379,11 @@ fn an_orbit_over_the_poles_and_round_comes_back_where_it_began() {
         }
         // Straight down onto the target: one quarter turn up from the front, 180 points.
         let over = navigate::orbit(&start, 0.0, 180.0).unwrap();
-        assert!(over.check().is_ok());
+        assert!(over.frame().is_ok());
         assert!((over.eye[2] - 100.0).abs() < 1e-12 && over.eye[0].abs() < 1e-12);
         // Turned about z there, the view spins about its own axis, still valid.
         let spun = navigate::orbit(&over, 90.0, 0.0).unwrap();
-        assert!(spun.check().is_ok());
+        assert!(spun.frame().is_ok());
         assert!((spun.eye[2] - 100.0).abs() < 1e-12);
     }
 }
@@ -410,10 +428,10 @@ fn a_perspective_eye_a_micrometre_from_its_target_still_pans_orbits_and_zooms_ou
     assert!(
         navigate::pan(&twice, 50.0, 50.0, 400.0)
             .unwrap()
-            .check()
+            .frame()
             .is_ok()
     );
-    assert!(navigate::orbit(&twice, 50.0, 50.0).unwrap().check().is_ok());
+    assert!(navigate::orbit(&twice, 50.0, 50.0).unwrap().frame().is_ok());
     let out = navigate::zoom(&twice, -800.0, [0.0, 0.0], 400.0).unwrap();
     assert!((distance(&out) - 1.6e-5).abs() < 1e-17);
 }
@@ -1012,7 +1030,12 @@ fn a_window_too_small_for_a_viewport_draws_on_and_reads_nothing_wrong() {
     meshes_settled(&mut h, 0);
     assert!(reads_over(&mut h, 100) == 0);
     let frame = record.lock().unwrap().frames.last().unwrap().clone();
-    assert!(frame.camera.check().is_ok());
+    assert!(
+        frame
+            .camera
+            .check(frame.size_px[0].max(1), frame.size_px[1].max(1))
+            .is_ok()
+    );
     assert_eq!(frame.bodies, [1]);
     // A wheel there: refused or a valid camera, never NaN.
     h.hover_at(rect(&h).center());
@@ -1023,7 +1046,7 @@ fn a_window_too_small_for_a_viewport_draws_on_and_reads_nothing_wrong() {
         modifiers: Modifiers::NONE,
     });
     step(&mut h);
-    assert!(view(&h).camera().check().is_ok());
+    assert!(view(&h).camera().frame().is_ok());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1250,11 +1273,11 @@ fn highlights_of_a_body_not_drawn_or_an_element_its_mesh_hasnt_are_left_out_of_t
 #[test]
 fn zooming_in_without_end_stops_where_the_bodies_reach_from_the_target_allows() {
     // From the front onto (25, 25, 25): the large cube's corner (3000, 1000, 1000) is
-    // farthest, √(2975² + 975² + 975²) = 3,278.97 mm away, so no view under
-    // 3,278.97 · 1e-5 · 1.01 = 0.033118 mm is drawn: the wheel stops there, far above the
-    // camera's own least, 1e-6 mm.
+    // farthest, √(2975² + 975² + 975²) = 3,278.97 mm away, so no view under the pane's rows
+    // × 3,278.97 / 2^19 · 1.01 is drawn: the wheel stops there, far above the camera's own
+    // least, 1e-6 mm.
     let f = fixture();
-    let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
     meshes_settled(&mut h, 0);
     view_mut(&mut h).set_camera(Camera {
         projection: Projection::Orthographic { view_height: 80.0 },
@@ -1264,7 +1287,7 @@ fn zooming_in_without_end_stops_where_the_bodies_reach_from_the_target_allows() 
     });
     step(&mut h);
     let reach = (2975.0f64 * 2975.0 + 975.0 * 975.0 * 2.0).sqrt();
-    let least = reach * 1e-5 * 1.01;
+    let least = least_in(&record, reach);
     let centre = rect(&h).center();
     for _ in 0..40 {
         h.hover_at(centre);
@@ -1292,14 +1315,62 @@ fn zooming_in_without_end_stops_where_the_bodies_reach_from_the_target_allows() 
 }
 
 #[test]
+fn a_zoom_in_stops_at_a_floor_as_much_higher_as_the_pane_is_taller() {
+    // The same view, wheel, and bodies as above, in windows 800 and 1600 points high: the
+    // pane's height in pixels sets the least, rows × 3,278.97 / 2^19 · 1.01 (the renderer's
+    // f32 resolves a point to 2^-22 of its distance, at most an eighth of a pixel). The
+    // taller pane has more rows, and its zoom stops higher in the same ratio.
+    let mut floors = vec![];
+    for tall in [800.0, 1600.0] {
+        let f = fixture();
+        let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, tall));
+        meshes_settled(&mut h, 0);
+        view_mut(&mut h).set_camera(Camera {
+            projection: Projection::Orthographic { view_height: 80.0 },
+            eye: [25.0, -500.0, 25.0],
+            target: [25.0; 3],
+            up: [0.0, 0.0, 1.0],
+        });
+        step(&mut h);
+        let centre = rect(&h).center();
+        for _ in 0..40 {
+            h.hover_at(centre);
+            h.event(Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, 200.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            });
+            step(&mut h);
+        }
+        let reach = (2975.0f64 * 2975.0 + 975.0 * 975.0 * 2.0).sqrt();
+        let height = view_height(view(&h).camera());
+        let rows = rows(&record);
+        let least = f64::from(rows) * reach / 524_288.0 * 1.01;
+        assert!(
+            (height - least).abs() < 1e-12,
+            "{rows} rows: {height} against {least}"
+        );
+        floors.push((rows, height));
+    }
+    let [(low_rows, low), (high_rows, high)] = [floors[0], floors[1]];
+    assert!(high_rows > low_rows && high > low, "{floors:?}");
+    assert!(
+        (high / low - f64::from(high_rows) / f64::from(low_rows)).abs() < 1e-12,
+        "{floors:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_view_zoomed_in_before_the_first_read_answers_is_raised_to_the_least_its_bodies_allow() {
     // The first read held while the wheel zooms in fifty times at the centre: with no body
     // yet, down to the camera's own least. When the cut comes, its box (0, 0, −1) to (40,
     // 20, 11) reaches √(40² + 20² + 11²) = √2121 from the target, the origin, so the view
-    // is raised to √2121 · 1e-5 · 1.01 = 4.6514e-4 mm, and a wheel out doubles it.
+    // is raised to the pane's rows × √2121 / 2^19 · 1.01, and a wheel out doubles it.
     let f = fixture();
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
-    let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
+    let (mut h, record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
     step_until(&mut h, "the first read held", |h| {
         h.state()
             .tabs()
@@ -1321,7 +1392,7 @@ fn a_view_zoomed_in_before_the_first_read_answers_is_raised_to_the_least_its_bod
     assert_eq!(view(&h).camera().target, [0.0; 3]);
     hold.release();
     meshes_settled(&mut h, 0);
-    let least = 2121f64.sqrt() * 1e-5 * 1.01;
+    let least = least_in(&record, 2121f64.sqrt());
     let height = view_height(view(&h).camera());
     assert!((height - least).abs() < 1e-15, "{height} against {least}");
     h.hover_at(centre);
@@ -1338,12 +1409,13 @@ fn a_view_zoomed_in_before_the_first_read_answers_is_raised_to_the_least_its_bod
 
 #[test]
 fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() {
-    // At the least the small cube allows from (25, 25, 25), √(3 · 25²) · 1e-5 · 1.01; then
+    // At the least the small cube allows from (25, 25, 25) (the pane's rows × its reach /
+    // 2^19 · 1.01, for each reach here); then
     // another client moves the large cube a kilometre out, to (1e6, 0, 0): its far corner
     // (1,001,000, 1000, 1000) is √(1,000,975² + 975² + 975²) from the target, and the view is
     // raised to that reach's least; a pan, an orbit, and a wheel out all move it.
     let f = fixture();
-    let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
     meshes_settled(&mut h, 0);
     let id = h.state().tabs()[0].id;
     let revision = f.sessions.status(&id).session.unwrap().revision;
@@ -1379,7 +1451,7 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
         });
         step(&mut h);
     }
-    let near = (2025.0f64 * 2025.0 + 2.0 * 975.0 * 975.0).sqrt() * 1e-5 * 1.01;
+    let near = least_in(&record, (2025.0f64 * 2025.0 + 2.0 * 975.0 * 975.0).sqrt());
     assert!((view_height(view(&h).camera()) - near).abs() < 1e-12);
     meshes_settled(&mut h, 0);
     let revision = f.sessions.status(&id).session.unwrap().revision;
@@ -1398,7 +1470,10 @@ fn a_view_at_its_least_whose_bodies_then_reach_farther_is_raised_and_moves_on() 
     step_until(&mut h, "the move read", |h| {
         view(h).model() == published(h) && view(h).bodies()[&2].bounds.unwrap()[0][0] == 1e6
     });
-    let far = (1_000_975.0f64 * 1_000_975.0 + 2.0 * 975.0 * 975.0).sqrt() * 1e-5 * 1.01;
+    let far = least_in(
+        &record,
+        (1_000_975.0f64 * 1_000_975.0 + 2.0 * 975.0 * 975.0).sqrt(),
+    );
     assert!((view_height(view(&h).camera()) - far).abs() < 1e-9);
     let at = centre - vec2(100.0, 0.0);
     h.hover_at(at);
@@ -1558,14 +1633,18 @@ fn a_body_shown_again_raises_a_view_under_the_least_its_reach_allows() {
         });
         step(&mut h);
     }
-    let small = (3.0f64 * 25.0 * 25.0).sqrt() * 1e-5 * 1.01;
+    let small = least_in(&record, (3.0f64 * 25.0 * 25.0).sqrt());
     assert!((view_height(view(&h).camera()) - small).abs() < 1e-15);
     let boxes: Vec<[[f64; 3]; 2]> = view(&h)
         .bodies()
         .values()
         .filter_map(|body| body.bounds)
         .collect();
-    assert!(!navigate::drawable(view(&h).camera(), boxes.clone()));
+    assert!(!navigate::drawable(
+        view(&h).camera(),
+        rows(&record),
+        boxes.clone()
+    ));
     // No read lands across the show (its answer would clamp the view too): the kernel
     // refuses to mesh, and the read count is the same after.
     let failing = failing_kernel(&f);
@@ -1576,12 +1655,16 @@ fn a_body_shown_again_raises_a_view_under_the_least_its_reach_allows() {
     step(&mut h);
     step(&mut h);
     assert_eq!(view(&h).reads(), reads);
-    assert!(navigate::drawable(view(&h).camera(), boxes.clone()));
-    let both = (2975.0f64 * 2975.0 + 2.0 * 975.0 * 975.0).sqrt() * 1e-5 * 1.01;
+    assert!(navigate::drawable(
+        view(&h).camera(),
+        rows(&record),
+        boxes.clone()
+    ));
+    let both = least_in(&record, (2975.0f64 * 2975.0 + 2.0 * 975.0 * 975.0).sqrt());
     assert!((view_height(view(&h).camera()) - both).abs() < 1e-12);
     let last = record.lock().unwrap().frames.last().unwrap().clone();
     assert_eq!(last.bodies, [1, 2]);
-    assert!(navigate::drawable(&last.camera, boxes));
+    assert!(navigate::drawable(&last.camera, last.size_px[1], boxes));
     assert_eq!(never_waits::waits(), 0);
 }
 
