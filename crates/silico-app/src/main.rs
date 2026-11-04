@@ -160,4 +160,16 @@ mod tests {
         assert!(!exe.with_file_name(silico.file_name().unwrap()).exists());
         assert_eq!(silico_beside(), "silico");
     }
+
+    #[test]
+    fn the_title_bar_is_drawn_through_only_for_the_app_bar() {
+        // With the app bar as the title bar: the content under it, no title and no title
+        // bar of the platform's (as Rerun's window); without, the platform's own.
+        for (app_bar, platforms) in [(true, false), (false, true)] {
+            let viewport = options(app_bar).viewport;
+            assert_eq!(viewport.fullsize_content_view, Some(app_bar), "{app_bar}");
+            assert_eq!(viewport.title_shown, Some(platforms), "{app_bar}");
+            assert_eq!(viewport.titlebar_shown, Some(platforms), "{app_bar}");
+        }
+    }
 }

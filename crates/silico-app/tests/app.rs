@@ -11657,6 +11657,18 @@ fn the_app_bar_holds_home_file_save_undo_and_redo_then_the_tabs_as_the_prototype
             assert_eq!(rect(next).left() - x.right(), 6.0 + 1.0, "{close}");
         }
     }
+    // `.doc-tab:first-child`'s `border-left`, 1 of Gray.250: the first tab's alone.
+    let gray_250 = eframe::egui::Color32::from_rgb(0x27, 0x26, 0x26);
+    let left_border = |tab: &str| {
+        let x = rect(tab).left() + 0.5;
+        painted(&h).iter().any(|shape| {
+            matches!(shape, eframe::egui::Shape::LineSegment { points, stroke }
+                if *stroke == eframe::egui::Stroke::new(1.0, gray_250)
+                    && points.iter().all(|point| (point.x - x).abs() < 1e-3))
+        })
+    };
+    assert!(left_border("example.silico"));
+    assert!(!left_border("other.silico"));
     assert_eq!(never_waits::waits(), 0);
 }
 

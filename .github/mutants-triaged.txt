@@ -343,6 +343,14 @@ crates/silico-app/src/main.rs | options | delete field renderer from struct efra
 crates/silico-app/src/main.rs | options | delete field viewport from struct eframe::NativeOptions expression | #298
 crates/silico-app/src/app.rs | <impl eframe::App for App<P>>::ui | replace <impl eframe::App for App<P>>::ui with () | #298
 crates/silico-app/src/missing.rs | <impl eframe::App for Missing>::ui | replace <impl eframe::App for Missing>::ui with () | #298
+# The app bar as macOS's title bar (#361): `TITLE_BAR_IS_APP_BAR` is false off macOS, where
+# CI runs these, so `inset` never reads full screen and `move_window` returns before its
+# body (its other `delete !`, of that return's test, sends commands, and is killed there).
+# On macOS bar.rs's tests kill each: the inset full screen or not, and the window's drag,
+# zoom, and unzoom.
+crates/silico-app/src/bar.rs | inset | delete ! | #361
+crates/silico-app/src/bar.rs | move_window | replace move_window with () | #361
+crates/silico-app/src/bar.rs | move_window | delete ! | #361
 # `keys`' answer only asks egui for the next frame at once, which egui asks for itself
 # after any input event (each key press is one), so no frame comes later for it (#298).
 crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
