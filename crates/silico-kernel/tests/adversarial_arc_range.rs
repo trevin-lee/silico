@@ -24,7 +24,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use proptest::prelude::*;
 use silico_core::kernel::KernelWorker;
 use silico_kernel::{Axis, BooleanOp, Curve, FaceRegions, Region, SketchPlane};
-use silico_protocol::{Primitive, ShapeData};
+use silico_protocol::{Primitive, ShapeData, THROUGH_ALL_FACTOR};
 
 /// The bore of every ring here.
 const INNER: f64 = 1.0;
@@ -107,30 +107,35 @@ fn revolved(
     k.revolution(&faces.shape, axis, start, turn).unwrap().shape
 }
 
-/// The box from (−HALF, `low`, −HALF) to (HALF, `high`, HALF).
-fn slab(k: &mut KernelWorker, low: f64, high: f64) -> ShapeData {
+/// The box from (−`half`, `low`, −`half`) to (`half`, `high`, `half`).
+fn slab_of(k: &mut KernelWorker, half: f64, low: f64, high: f64) -> ShapeData {
     let block = k
         .make(Primitive::Box {
-            dx: 2.0 * HALF,
+            dx: 2.0 * half,
             dy: high - low,
-            dz: 2.0 * HALF,
+            dz: 2.0 * half,
         })
         .unwrap();
-    k.translate(&block, [-HALF, low, -HALF]).unwrap().shape
+    k.translate(&block, [-half, low, -half]).unwrap().shape
 }
 
 /// The box beyond y = Y0: y > Y0 for a turn about z, which turns +x towards +y; y < −Y0
 /// about x, which turns +z towards −y. Either way at angles in (0, π) from the profile.
 fn beyond(k: &mut KernelWorker, axis: Axis) -> ShapeData {
+    beyond_of(k, axis, HALF)
+}
+
+/// [`beyond`]'s box, `half` wide and deep each way and reaching `half` from the axis.
+fn beyond_of(k: &mut KernelWorker, axis: Axis, half: f64) -> ShapeData {
     if axis == X_AXIS {
-        slab(k, -HALF, -Y0)
+        slab_of(k, half, -half, -Y0)
     } else {
-        slab(k, Y0, HALF)
+        slab_of(k, half, Y0, half)
     }
 }
 
-fn beyond_volume() -> f64 {
-    4.0 * HALF * HALF * (HALF - Y0)
+fn beyond_volume_of(half: f64) -> f64 {
+    4.0 * half * half * (half - Y0)
 }
 
 /// The area of the disc of radius `rho` beyond a chord Y0 from its centre.
@@ -224,27 +229,61 @@ fn misses(
     turn: f64,
     tolerance: f64,
 ) -> Vec<String> {
+    let relative = |want: f64, _area: f64| tolerance * want.abs();
+    let against = Against {
+        half: HALF,
+        allowed: &relative,
+    };
+    misses_against(k, what, regions, axis, start, turn, against)
+}
+
+/// The box a revolve's booleans are made with, and how near each result is held.
+struct Against<'a> {
+    /// [`beyond_of`]'s box, this wide each way.
+    half: f64,
+    /// How far each boolean's volume may be from its hand value, from that value and the
+    /// result's area.
+    allowed: &'a dyn Fn(f64, f64) -> f64,
+}
+
+/// [`misses`] against `against`'s box, each boolean held as it says.
+fn misses_against(
+    k: &mut KernelWorker,
+    what: &str,
+    regions: &FaceRegions,
+    axis: Axis,
+    start: f64,
+    turn: f64,
+    against: Against,
+) -> Vec<String> {
+    let Against { half, allowed } = against;
     let about_x = axis == X_AXIS;
     let whole = by_hand(regions, about_x, |r| turn / 2.0 * r * r);
     let cut = by_hand(regions, about_x, |r| kept(r, turn));
     let common = by_hand(regions, about_x, |r| taken(r, turn));
     let solid = revolved(k, regions, axis, start, turn);
-    let block = beyond(k, axis);
-    let mut results = vec![("the solid".to_string(), solid.clone(), whole, SOLID)];
+    let block = beyond_of(k, axis, half);
+    let mut results = vec![("the solid".to_string(), solid.clone(), whole, true)];
     for (op, want) in [
         (BooleanOp::Cut, cut),
         (BooleanOp::Common, common),
-        (BooleanOp::Fuse, beyond_volume() + cut),
+        (BooleanOp::Fuse, beyond_volume_of(half) + cut),
     ] {
         let result = k.boolean(op, &solid, &block).unwrap().shape;
-        results.push((format!("{op:?}"), result, want, tolerance));
+        results.push((format!("{op:?}"), result, want, false));
     }
     let mut wrong = Vec::new();
-    for (name, shape, want, tolerance) in results {
+    for (name, shape, want, is_solid) in results {
         let s = k.summarize(&shape).unwrap();
-        if !(s.valid && near(s.volume, want, tolerance)) {
+        let within = if is_solid {
+            SOLID * want.abs()
+        } else {
+            allowed(want, s.area)
+        };
+        if !(s.valid && (s.volume - want).abs() <= within) {
             wrong.push(format!(
-                "{what}, {name}: valid {}, volume {} for {want} (relative error {:e})",
+                "{what}, {name}: valid {}, volume {} for {want} within {within:e} (relative \
+                 error {:e})",
                 s.valid,
                 s.volume,
                 ((s.volume - want) / want).abs()
@@ -374,52 +413,67 @@ fn a_band_turning_a_micro_radian_is_cut_by_a_box_or_is_occts_known_wrong_answer(
     // wall has a band of arc turning 1e-6 rad (radius 150, 1.5e-4 high), of a circle
     // reaching the axis (a surface of revolution) or not (a torus), less the box beyond
     // y = 0.5, comes back whole, 8 · 24π = 603.186 for 333.873, "valid", 14 faces, with no
-    // warning; FreeCAD 1.1.3's `Shape.cut` gives the same (2026-10-25). Turning 1e-5 rad
-    // it's right, and a band of line of the same height (a cylinder) is right. Silico takes
-    // OCCT's answer, as FreeCAD does: each cut is the right answer or that wrong one, so
-    // OCCT giving any other fails here, and a fixed OCCT passes. The uncut tube is also
-    // what the range's defect gave, so this documents OCCT's result and doesn't guard the
-    // range fix: the tests above and below do.
+    // warning; FreeCAD 1.1.3's `Shape.cut` gives the same (2026-10-25). With FreeCAD 1.1.3's
+    // fuzzy value the torus's band is cut right, and the others are too against a box 200
+    // wide (a fuzzy value of 3e-4), but not against one at the tube's own scale, as here
+    // ([`THROUGH_ALL_FACTOR`] times its diagonal each way, as a through-all tool is: 1.4e-4).
+    // Turning 1e-5 rad it's right, and a band of line of the same height (a cylinder) is
+    // right. Silico takes OCCT's answer, as FreeCAD does: each cut is right, within the
+    // fuzzy value times its area (the most the fuzzy value moves it, as the random barrels
+    // are held; the uncut tube is 270 off), or that wrong one, so OCCT giving any other
+    // fails here, and a fixed OCCT passes. The uncut tube is also what the range's defect
+    // gave, so this documents OCCT's result and doesn't guard the range fix: the tests above
+    // and below do.
     let mut k = kernel();
-    let block = beyond(&mut k, Z_AXIS);
+    let diagonal = (10.0f64 * 10.0 + 10.0 * 10.0 + 8.0 * 8.0).sqrt();
+    let half = THROUGH_ALL_FACTOR * diagonal;
+    let block = beyond_of(&mut k, Z_AXIS, half);
+    // 1e-6 of the diagonal of the box round both: x and z ±half, y from −5 to half.
+    let fuzzy = 1e-6 * (8.0 * half * half + (half + 5.0) * (half + 5.0)).sqrt();
     let want = 8.0 * (kept(5.0, TAU) - kept(INNER, TAU));
     let whole = 8.0 * PI * (5.0 * 5.0 - INNER * INNER);
     let r = 150.0;
     let mut wrong = Vec::new();
-    for (what, band) in [
+    for (what, band, may_be_known) in [
         (
             "of revolution, across 0",
             arc([5.0 - r, 0.0], r, -5e-7, 5e-7),
+            true,
         ),
-        ("of revolution, from 0", arc([5.0 - r, 0.0], r, 0.0, 1e-6)),
+        (
+            "of revolution, from 0",
+            arc([5.0 - r, 0.0], r, 0.0, 1e-6),
+            true,
+        ),
         (
             "of a torus, about π",
             arc([5.0 + r, 0.0], r, PI + 5e-7, PI - 5e-7),
+            true,
+        ),
+        // Turning 1e-5 rad: right.
+        (
+            "of revolution, turning 1e-5 rad",
+            arc([5.0 - r, 0.0], r, -5e-6, 5e-6),
+            false,
         ),
     ] {
         let tube = revolved(&mut k, &banded_tube(band), Z_AXIS, 0.0, TAU);
         let cut = k.boolean(BooleanOp::Cut, &tube, &block).unwrap().shape;
         let s = k.summarize(&cut).unwrap();
-        let known = (near(s.volume, whole, 1e-9), s.faces) == (true, 14);
-        if !(s.valid && (near(s.volume, want, 1e-9) || known)) {
+        let right = (s.volume - want).abs() <= fuzzy * s.area;
+        let known = may_be_known && (near(s.volume, whole, 1e-9), s.faces) == (true, 14);
+        if !(s.valid && (right || known)) {
             wrong.push(format!(
-                "a band {what}: valid {}, {} faces, volume {} for {want} (or {whole} whole)",
-                s.valid, s.faces, s.volume
+                "a band {what}: valid {}, {} faces, volume {} for {want} within {:e} (or \
+                 {whole} whole)",
+                s.valid,
+                s.faces,
+                s.volume,
+                fuzzy * s.area
             ));
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    // Turning 1e-5 rad: right.
-    let tube = revolved(
-        &mut k,
-        &banded_tube(arc([5.0 - r, 0.0], r, -5e-6, 5e-6)),
-        Z_AXIS,
-        0.0,
-        TAU,
-    );
-    let cut = k.boolean(BooleanOp::Cut, &tube, &block).unwrap().shape;
-    let s = k.summarize(&cut).unwrap();
-    assert!(s.valid && near(s.volume, want, 1e-9), "{s:?}");
 }
 
 // ---- Starts at and around the period's ends ----
@@ -702,6 +756,23 @@ impl Barrel {
         let z = |t: f64| self.zc + self.r * libm::sin(t);
         [-x, -x, z(self.from), x, x, z(self.to)]
     }
+
+    /// The box its booleans are made with, at its own scale as a through-all tool is:
+    /// [`THROUGH_ALL_FACTOR`] times its whole turn's diagonal each way from the axis.
+    fn half(&self) -> f64 {
+        let [x0, y0, z0, x1, y1, z1] = self.bounds();
+        let (dx, dy, dz) = (x1 - x0, y1 - y0, z1 - z0);
+        let diagonal = (dx * dx + dy * dy + dz * dz).sqrt();
+        THROUGH_ALL_FACTOR * diagonal
+    }
+
+    /// The fuzzy value its booleans with [`beyond_of`]'s box `half` run with, by hand:
+    /// 1e-6 of the diagonal of the box round both, from (−half, −x, −half) to (half, half,
+    /// half), x its farthest reach.
+    fn fuzzy(&self, half: f64) -> f64 {
+        let x = self.c + self.r;
+        1e-6 * (8.0 * half * half + (half + x) * (half + x)).sqrt()
+    }
 }
 
 fn barrels() -> impl Strategy<Value = Barrel> {
@@ -792,8 +863,17 @@ proptest! {
         // from elsewhere.
         let start = if turn == TAU { start } else { 0.0 };
         let regions = barrel.regions();
+        // The box at the barrel's own scale, holding all of it; each boolean within the fuzzy
+        // value times its result's area: every edge OCCT makes is within the fuzzy value of
+        // the true intersection, so no face moves farther (docs/ports/booleans.md).
+        let half = barrel.half();
+        let [x0, _, z0, x1, _, z1] = barrel.bounds();
+        prop_assert!(half > x1.max(-x0).max(z1.abs()).max(z0.abs()).max(Y0), "{barrel:?}");
+        let fuzzy = barrel.fuzzy(half);
+        let within = |_want: f64, area: f64| fuzzy * area;
         let wrong = with_worker(|k| {
-            let mut wrong = misses(k, &format!("{barrel:?} from {start}"), &regions, Z_AXIS, start, turn, 5e-7);
+            let against = Against { half, allowed: &within };
+            let mut wrong = misses_against(k, &format!("{barrel:?} from {start}"), &regions, Z_AXIS, start, turn, against);
             if turn == TAU && start == 0.0 {
                 let solid = revolved(k, &regions, Z_AXIS, 0.0, TAU);
                 let [low, high] = k.summarize(&solid).unwrap().bounds.unwrap();

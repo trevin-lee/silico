@@ -1001,8 +1001,11 @@ fn a_broken_result_of_a_kilometre_torus_is_measured_precisely_not_cleared_by_the
     // moved 175,000 along y (the family the port note lists: OCCT gets these wrong): OCCT's
     // result reads 3.0e13 by the quick measure, under 1e-5 d³ (6.3e14, d 4.0e6) but over d²
     // (1.6e13), and 32 precisely, with an area of 2e13: no volume to speak of. Measured
-    // precisely, it's refused as empty, never accepted. Should OCCT get it right one day,
-    // it has a volume, at least a tenth of a millionth of the torus's.
+    // precisely, it's refused as empty, never accepted. Under FreeCAD 1.1.3's fuzzy value
+    // (3.7 mm on this box) OCCT's cut is another broken shape, refused as an invalid result
+    // (FreeCAD 1.1.3's `cut([b], -1.0)`: a "valid" shape of volume −7.8e10): either refusal
+    // holds, never acceptance. Should OCCT get it right one day, it has a volume, at least a
+    // tenth of a millionth of the torus's.
     let t = Primitive::Torus {
         major_radius: 1e6,
         minor_radius: 2.5e5,
@@ -1012,6 +1015,9 @@ fn a_broken_result_of_a_kilometre_torus_is_measured_precisely_not_cleared_by_the
         &make(&t).unwrap(),
         &at(t, [0.0, 175_000.0, 0.0]),
     ) {
+        Err(e) if e.kind() == KernelErrorKind::InvalidResult => {
+            assert!(e.suggestion().is_some(), "{e}");
+        }
         Err(e) => {
             assert_eq!(e.kind(), KernelErrorKind::Failed, "{e}");
             assert!(e.message().ends_with("result is empty"), "{e}");

@@ -243,13 +243,36 @@ fn cubes_touching_at_a_vertex() {
     refused_empty("vertex contact", BooleanOp::Common, &a, &b);
 }
 
+/// The fuzzy value a boolean of two unit cubes side by side runs with, by hand: FreeCAD
+/// 1.1.3's, 10 × Precision::Confusion() (1e-7) for each millimetre of the diagonal of the box
+/// round both, about 2 × 1 × 1: √6 × 1e-6 = 2.449e-6 (docs/ports/booleans.md).
+const SIDE_BY_SIDE_FUZZY: f64 = 2.449e-6;
+
 #[test]
 fn cubes_with_a_gap_at_and_around_the_tolerance() {
+    // Unit cubes a gap apart along x. Up to 1e-6, under the fuzzy value, the fuzzy value
+    // bridges the gap: one solid, its volume 2 and at most gap × 1 × 1 more (FreeCAD 1.1.3's
+    // is 2 + gap / 1.5 at 1e-6); a gap of 1e-5, four times it, stays a gap: two solids, 2. The cut
+    // removes nothing and the common is empty either way. FreeCAD 1.1.3's `fuse([b], -1.0)`:
+    // one solid of 2.00000067 at 1e-6, two of 2 at 1e-5.
     let a = make(&cube(1.0)).unwrap();
-    for gap in [1e-9, 5e-8, 1e-7, 2e-7, 1e-6] {
+    for gap in [1e-9, 5e-8, 1e-7, 2e-7, 1e-6, 1e-5] {
         let b = at(cube(1.0), [1.0 + gap, 0.0, 0.0]);
         let what = format!("gap {gap}");
-        sound(&what, BooleanOp::Fuse, &a, &b, 2.0);
+        let fused = boolean(BooleanOp::Fuse, &a, &b).unwrap();
+        let s = summarize(&fused.shape).unwrap();
+        assert!(s.valid, "{what}: {s:?}");
+        if gap < SIDE_BY_SIDE_FUZZY {
+            assert_eq!(fused.history.result.solids, 1, "{what}");
+            assert!(
+                s.volume >= 2.0 - 1e-12 && s.volume <= 2.0 + gap + 1e-12,
+                "{what}: volume {}",
+                s.volume
+            );
+        } else {
+            assert_eq!(fused.history.result.solids, 2, "{what}");
+            assert!(close(s.volume, 2.0, 1e-12), "{what}: volume {}", s.volume);
+        }
         sound(&what, BooleanOp::Cut, &a, &b, 1.0);
         refused_empty(&what, BooleanOp::Common, &a, &b);
     }
@@ -257,26 +280,36 @@ fn cubes_with_a_gap_at_and_around_the_tolerance() {
 
 #[test]
 fn cubes_overlapping_by_less_than_the_tolerance() {
-    // An overlap thinner than OCCT's tolerance is contact: the common is empty (refused),
-    // or, if OCCT keeps the sliver, a valid solid of the sliver's volume. Never a "solid"
-    // whose volume is nothing like the overlap.
+    // Unit cubes overlapping along x. An overlap up to 1e-6, under the fuzzy value, is
+    // contact: the common is empty (refused), the cut removes nothing (1), and the fuse is
+    // the two cubes, between 2 − overlap and 2. FreeCAD 1.1.3's `-1.0` booleans give the
+    // same (at 1e-6: an empty common, a cut of 1, a fuse of 1.99999933). Above it, 3e-6 and
+    // 1e-5, the overlap is the sliver it is, on both sides of the band: the common the
+    // sliver's volume, the cut 1 − overlap, the fuse 2 − overlap (FreeCAD 1.1.3: the 1e-5
+    // sliver, 1e-5).
     let a = make(&cube(1.0)).unwrap();
-    for overlap in [1e-9, 5e-8, 1e-7, 2e-7, 1e-6, 1e-5] {
+    for overlap in [1e-9, 5e-8, 1e-7, 2e-7, 1e-6, 3e-6, 1e-5] {
         let b = at(cube(1.0), [1.0 - overlap, 0.0, 0.0]);
         let what = format!("overlap {overlap}");
-        sound(&what, BooleanOp::Fuse, &a, &b, 2.0 - overlap);
-        sound(&what, BooleanOp::Cut, &a, &b, 1.0 - overlap);
-        match boolean(BooleanOp::Common, &a, &b) {
-            Err(e) => {
-                // Faces within twice the tolerance of each other coincide.
-                assert!(overlap <= 2e-7, "{what}: common refused: {e}");
-                assert_eq!(e.message(), "the common's result is empty", "{what}");
-            }
-            Ok(built) => {
-                let s = summarize(&built.shape).unwrap();
-                assert!(s.valid, "{what}: {s:?}");
-                assert!(close(s.volume, overlap, 1e-6), "{what}: {s:?}");
-            }
+        if overlap < SIDE_BY_SIDE_FUZZY {
+            let fused = boolean(BooleanOp::Fuse, &a, &b).unwrap();
+            let s = summarize(&fused.shape).unwrap();
+            assert!(s.valid, "{what}: {s:?}");
+            assert_eq!(fused.history.result.solids, 1, "{what}");
+            assert!(
+                s.volume >= 2.0 - overlap - 1e-12 && s.volume <= 2.0 + 1e-12,
+                "{what}: volume {}",
+                s.volume
+            );
+            sound(&what, BooleanOp::Cut, &a, &b, 1.0);
+            refused_empty(&what, BooleanOp::Common, &a, &b);
+        } else {
+            sound(&what, BooleanOp::Fuse, &a, &b, 2.0 - overlap);
+            sound(&what, BooleanOp::Cut, &a, &b, 1.0 - overlap);
+            let common = boolean(BooleanOp::Common, &a, &b).unwrap();
+            let s = summarize(&common.shape).unwrap();
+            assert!(s.valid, "{what}: {s:?}");
+            assert!(close(s.volume, overlap, 1e-6), "{what}: {s:?}");
         }
     }
 }
@@ -310,41 +343,62 @@ fn a_boolean_result_refused_as_invalid_says_what_to_try() {
 }
 
 #[test]
-fn boxes_with_flat_faces_3e7_apart_are_right_or_occts_known_wrong_answer() {
-    // A 3 × 0.5 × 0.5 box, and a 1 × 1 × 1.0000001 box at (0, 0, −0.4999998): the second's
-    // top is 3e-7 above the first's, past OCCT's tolerance but within a few of it. They
-    // overlap in 1 × 0.5 × 0.5, so the common is 0.25, the cut 0.75 − 0.25 = 0.5, and the
-    // fuse 0.75 + 1.0000001 − 0.25 = 1.5000001. OCCT 7.9.3 gets all three wrong, as
-    // FreeCAD 1.1.3's `Shape.fuse`, `cut`, and `common` do on it: the fuse and common
-    // empty, and the cut a valid solid that removes nothing (0.75), with the warnings
-    // BOPAlgo_AlertBadPositioning and BOPAlgo_AlertAcquiredSelfIntersection. Silico takes
-    // OCCT's answer, as FreeCAD does (docs/ports/booleans.md, Known wrong results): each op
-    // is the right answer or that wrong one, so OCCT giving any other answer fails here.
-    // Found by the seeded property test below (PROPTEST_RNG_SEED=20261021).
-    let a = make(&Primitive::Box {
-        dx: 3.0,
-        dy: 0.5,
-        dz: 0.5,
-    })
-    .unwrap();
-    let b = at(
-        Primitive::Box {
+fn boxes_with_flat_faces_a_hair_apart_are_right_to_the_hair() {
+    // Two pairs of boxes with flat faces a hair d apart, past OCCT's tolerance, which OCCT
+    // 7.9.3 got wrong without a fuzzy value (docs/ports/booleans.md): the fuse and common
+    // empty or the first box alone, the cut removing nothing. Under the fuzzy value, 1e-6 of
+    // the pair's box (3.3e-6 and 2.3e-6 here), the faces are taken as one, so each op is
+    // right but for the slab between them: within d × the faces' shared area. A hair of
+    // 1e-5, above the fuzzy value, is a gap OCCT keeps, and each op is right to the
+    // measure's precision. FreeCAD 1.1.3's `-1.0` booleans of the first pair at 3e-7: fuse
+    // 1.49999996, cut 0.50000005, common 0.250000025; of the second at 2e-7: 1.75000007,
+    // 0.750000025, 0.25. Found by the seeded property test below (PROPTEST_RNG_SEED=20261021).
+    for d in [3e-7, 2e-7, 1e-5] {
+        // A 3 × 0.5 × 0.5 box, and a 1 × 1 × 1.0000001 box whose top is d above the first's:
+        // they overlap in 1 × 0.5 × 0.5, the tops sharing 1 × 0.5.
+        let a = make(&Primitive::Box {
+            dx: 3.0,
+            dy: 0.5,
+            dz: 0.5,
+        })
+        .unwrap();
+        let tall = 1.000_000_1;
+        let b = at(
+            Primitive::Box {
+                dx: 1.0,
+                dy: 1.0,
+                dz: tall,
+            },
+            [0.0, 0.0, 0.5 + d - tall],
+        );
+        let rows = [(0.25, 0.75, tall, d * 0.5, a, b)];
+        // A 1 × 1.0000001 × 1 box, and a unit cube at (0.5, −d, 0.5): their low y faces d
+        // apart and their high ones 1e-7 + d, each pair sharing 0.5 × 0.5; they overlap in
+        // 0.5 × (1 − d) × 0.5.
+        let a = make(&Primitive::Box {
             dx: 1.0,
-            dy: 1.0,
-            dz: 1.000_000_1,
-        },
-        [0.0, 0.0, -0.499_999_8],
-    );
-    let what = "boxes 3e-7 apart";
-    // Each op, its right volume, and OCCT's known wrong one: a volume, or (None) refused
-    // as empty.
-    for (op, right, wrong) in [
-        (BooleanOp::Fuse, 1.500_000_1, None),
-        (BooleanOp::Cut, 0.5, Some(0.75)),
-        (BooleanOp::Common, 0.25, None),
-    ] {
-        match boolean(op, &a, &b) {
-            Ok(built) => {
+            dy: 1.000_000_1,
+            dz: 1.0,
+        })
+        .unwrap();
+        let b = at(cube(1.0), [0.5, -d, 0.5]);
+        let both = 0.25 * (1.0 - d);
+        let rows = rows
+            .into_iter()
+            .chain([(both, 1.000_000_1, 1.0, (d + 1e-7 + d) * 0.25, a, b)]);
+        for (common, va, vb, slab, a, b) in rows {
+            let what = format!("boxes {d:e} apart, {va} and {vb}");
+            for (op, right) in [
+                (BooleanOp::Fuse, va + vb - common),
+                (BooleanOp::Cut, va - common),
+                (BooleanOp::Common, common),
+            ] {
+                if d >= 1e-5 {
+                    sound(&what, op, &a, &b, right);
+                    continue;
+                }
+                let built =
+                    boolean(op, &a, &b).unwrap_or_else(|e| panic!("{what} {op:?}: refused: {e}"));
                 let s = summarize(&built.shape).unwrap();
                 assert!(s.valid, "{what} {op:?}: result isn't valid: {s:?}");
                 assert_eq!(built.history.validate(2), Ok(()), "{what} {op:?}");
@@ -353,26 +407,12 @@ fn boxes_with_flat_faces_3e7_apart_are_right_or_occts_known_wrong_answer() {
                     Vec::<u32>::new(),
                     "{what} {op:?}: result faces with no source"
                 );
-                let is_right = close(s.volume, right, 3e-7);
-                let is_known_wrong = wrong.is_some_and(|w| close(s.volume, w, 1e-12));
                 assert!(
-                    is_right || is_known_wrong,
-                    "{what} {op:?}: volume {}, want {right} (or OCCT's known {wrong:?})",
+                    (s.volume - right).abs() <= slab + 1e-12,
+                    "{what} {op:?}: volume {}, want {right} within {slab:e}",
                     s.volume
                 );
             }
-            // OCCT's known wrong answer for the fuse and common: refused as empty.
-            Err(e) if wrong.is_none() => {
-                assert_eq!(e.kind(), KernelErrorKind::Failed, "{what} {op:?}: {e}");
-                let name = op.name().to_lowercase();
-                assert_eq!(
-                    e.message(),
-                    format!("the {name}'s result is empty"),
-                    "{what} {op:?}"
-                );
-                assert!(e.suggestion().is_some(), "{what} {op:?}");
-            }
-            Err(e) => panic!("{what} {op:?}: refused: {e} ({:?})", e.suggestion()),
         }
     }
 }
@@ -562,18 +602,29 @@ fn a_fuse_of_shapes_apart_used_as_a_tool() {
 
 #[test]
 fn tiny_cube_at_the_corner_of_a_huge_one() {
-    // A ratio of 1e10 between the two operands' sizes.
+    // A cube 1e5 on a side, and a cube centred on its corner. The fuzzy value is 1e-6 of the
+    // box round both, its diagonal about √3 × 1e5: 0.173 mm. A 1e-5 cube, far under it,
+    // merges away: the cut is the big cube, 6 faces, valid, and the common is empty,
+    // refused, as FreeCAD 1.1.3's Part::Cut and Part::Common. A 1 mm cube, six times the
+    // fuzzy value, notches it: the three faces it cuts and three of the notch, 9 faces, and
+    // the common is the eighth of it inside, 0.125.
     let huge = make(&cube(1e5)).unwrap();
     let tiny = at(cube(1e-5), [-0.5e-5, -0.5e-5, -0.5e-5]);
     let built = boolean(BooleanOp::Cut, &huge, &tiny).unwrap();
     let s = summarize(&built.shape).unwrap();
     assert!(s.valid, "{s:?}");
-    // A notch at the corner: the three faces it cuts, and three faces of the notch.
+    assert_eq!(s.faces, 6, "{s:?}");
+    assert!(close(s.volume, 1e15, 1e-12), "{s:?}");
+    refused_empty("the 1e-5 cube", BooleanOp::Common, &huge, &tiny);
+    let small = at(cube(1.0), [-0.5, -0.5, -0.5]);
+    let built = boolean(BooleanOp::Cut, &huge, &small).unwrap();
+    let s = summarize(&built.shape).unwrap();
+    assert!(s.valid, "{s:?}");
     assert_eq!(s.faces, 9, "{s:?}");
-    let common = boolean(BooleanOp::Common, &huge, &tiny).unwrap();
+    let common = boolean(BooleanOp::Common, &huge, &small).unwrap();
     let s = summarize(&common.shape).unwrap();
     assert!(s.valid, "{s:?}");
-    assert!(close(s.volume, 1.25e-16, 1e-6), "{s:?}");
+    assert!(close(s.volume, 0.125, 1e-9), "{s:?}");
 }
 
 #[test]
@@ -863,10 +914,11 @@ proptest! {
     /// result must be valid, with a history in which every face has a source, and must
     /// have that volume; a refusal must say what to try, and be right that the result is
     /// empty. Except where two parallel faces are within a micron of each other and not
-    /// coincident: there OCCT can give an empty result or a valid wrong one, and Silico
-    /// takes it, as FreeCAD does (docs/ports/booleans.md, Known wrong results; pinned in
-    /// `boxes_with_flat_faces_3e7_apart_are_right_or_occts_known_wrong_answer`), so only
-    /// the result's soundness and the refusal's suggestion are checked.
+    /// coincident: there the fuzzy value takes them as one, or a contact as none, so the
+    /// volume is off by the slab between them or the result is empty, as FreeCAD 1.1.3's is
+    /// (docs/ports/booleans.md; pinned in
+    /// `boxes_with_flat_faces_a_hair_apart_are_right_to_the_hair`), and only the result's
+    /// soundness and the refusal's suggestion are checked.
     #[test]
     fn box_booleans_match_interval_arithmetic(
         a in (size(), size(), size()),

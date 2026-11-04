@@ -294,11 +294,12 @@ fn a_grid_of_overlapping_copies_fuses_into_their_union_and_cuts_it_out() {
 fn copies_that_land_on_each_other_or_on_the_seed_fuse_into_one() {
     // Two placements alike: two copies in one place, one copy's volume (OCCT fuses tools
     // that coincide; no guard is needed). A cylinder turned about its own axis: every copy
-    // is the seed. A move of a hair: 1e-6 off the seed, the union of the two exactly;
-    // 1.1e-7 off, past the check's 1e-7 but within the two copies' tolerances together
-    // (2e-7), OCCT takes the copy for the seed, and the fuse changes nothing, valid (as
-    // FreeCAD's 359.9999999° copy fuses into its original): the 1.8e-6 mm³ sliver of the
-    // exact union is OCCT's to lose, within its tolerance.
+    // is the seed. A move of a hair: under the boolean's fuzzy value, 1e-6 of the diagonal
+    // of the box round the plate, the pin, and the copy (√825 mm: 2.87e-5), OCCT takes the
+    // copy for the seed and the fuse changes nothing, valid: 1.1e-7 (past the check's
+    // 1e-7), 1e-6, and 2e-5 off. Above it, 5e-5 and 1e-4 off, the union of the two exactly.
+    // FreeCAD 1.1.3's LinearPattern of the same pin on the same plate, a hair long, two
+    // occurrences: nothing added up to 2e-5, the union from 3e-5 (8e-4 more at 5e-5).
     let mut k = kernel();
     let plate = at(&mut k, block(20.0, 20.0, 1.0), [-10.0, -10.0, -1.0]);
     let pin = k
@@ -328,7 +329,13 @@ fn copies_that_land_on_each_other_or_on_the_seed_fuse_into_one() {
     assert_close("spun", volume(&mut k, &made.shape), one, PRECISE);
     // The union of two discs r 2 whose centres are `hair` apart is π·4 + 4·hair to first
     // order (the rest under 1e-12), 4 tall.
-    for (hair, more) in [(1e-6, 4.0 * 4.0 * 1e-6), (1.1e-7, 0.0)] {
+    for (hair, more) in [
+        (1.1e-7, 0.0),
+        (1e-6, 0.0),
+        (2e-5, 0.0),
+        (5e-5, 4.0 * 4.0 * 5e-5),
+        (1e-4, 4.0 * 4.0 * 1e-4),
+    ] {
         let made = copied(
             &mut k,
             CopiesOp::Fuse,

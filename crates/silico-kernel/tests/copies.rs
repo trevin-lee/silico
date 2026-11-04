@@ -479,7 +479,7 @@ fn copies_a_hair_apart_cut_and_fuse_the_union_of_their_footprints_from_a_plate()
     let square = |x: f64, y: f64| -> Vec<Point2> {
         vec![[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]]
     };
-    let length = normal[0].hypot(normal[1]);
+    let length = (normal[0] * normal[0] + normal[1] * normal[1]).sqrt();
     let unit = [normal[0] / length, normal[1] / length];
     let reflected = |p: Point2| -> Point2 {
         let d = (p[0] - origin[0]) * unit[0] + (p[1] - origin[1]) * unit[1];
