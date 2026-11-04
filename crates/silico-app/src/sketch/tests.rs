@@ -2904,3 +2904,42 @@ fn a_region_whose_loop_doesnt_run_end_to_end_is_left_unfilled_and_said() {
     assert!(fills.is_empty());
     assert_eq!(warnings.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+#[test]
+fn the_palette_says_how_the_tool_on_is_used_and_how_trim_trims_each_way() {
+    // The palette's Tool section, under the tool's name: how it's used, in the prototype's
+    // words for the line, and the help's for trim's two ways (docs/ux/solidworks.md, §4).
+    let mut mode = mode_on(under(rectangle(Vec::new())));
+    let words = |mode: &SketchMode, settings: &mut bar::Settings| -> Vec<String> {
+        let view = mode.palette_view(silico_core::command::Revision::OPENED);
+        texts_on_light(|ui| bar::palette(ui, &view, settings))
+            .into_iter()
+            .map(|(words, _)| words)
+            .collect()
+    };
+    let mut settings = bar::Settings::default();
+    mode.tools.choose(Some(tools::Choice::Draw(
+        silico_core::sketch_tools::ToolKind::Line,
+    )));
+    let said = words(&mode, &mut settings);
+    assert!(
+        said.iter()
+            .any(|w| w == "Click, click: a chain. Double-click or Enter ends it. Drag: one line."),
+        "{said:?}"
+    );
+    mode.tools.choose(Some(tools::Choice::Trim));
+    let said = words(&mode, &mut settings);
+    assert!(
+        said.iter()
+            .any(|w| w == "Drag across curves to trim them. Drag along one to extend it."),
+        "{said:?}"
+    );
+    settings.trim = tools::TrimMode::Closest;
+    let said = words(&mode, &mut settings);
+    assert!(
+        said.iter()
+            .any(|w| w
+                == "Click a curve to trim it to its closest cuts. Drag from one to extend it."),
+        "{said:?}"
+    );
+}

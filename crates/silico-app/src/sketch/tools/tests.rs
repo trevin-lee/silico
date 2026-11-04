@@ -1480,3 +1480,271 @@ fn a_drag_released_off_its_line_past_its_end_trims_where_it_crossed() {
         }]
     );
 }
+
+// ---- #364's mutants: the pick's edges, an arc's turn, and where a drag heads ----
+
+use std::f64::consts::FRAC_PI_2;
+
+/// The arc of radius 10 about the origin, counter-clockwise from `start` through `sweep`,
+/// in radians.
+fn ten(start: f64, sweep: f64) -> Curve {
+    Curve::Round {
+        centre: [0.0, 0.0],
+        radius: 10.0,
+        start,
+        sweep,
+    }
+}
+
+#[test]
+fn a_pick_of_no_tolerance_takes_a_curve_the_place_is_exactly_on() {
+    // (10, 0) lies on na000001, from (0, 0) to (40, 0), at a distance of exactly 0: a pick
+    // of no tolerance takes it; one of less than none takes nothing.
+    let read = under(crossed());
+    let found = curve_at(&read, [10.0, 0.0], 0.0).map(|(id, kind, _)| (id, kind));
+    assert_eq!(found, Some((id("na000001"), ElementKind::Line)));
+    assert_eq!(curve_at(&read, [10.0, 0.0], -1.0), None);
+    // A place 0.5 off it is outside a pick of none.
+    assert_eq!(curve_at(&read, [10.0, 0.5], 0.0), None);
+}
+
+#[test]
+fn a_place_put_on_a_round_from_infinitely_far_or_onto_no_number_is_none() {
+    let round = Curve::Round {
+        centre: [0.0, 0.0],
+        radius: 5.0,
+        start: 0.0,
+        sweep: TAU,
+    };
+    // (1.5e308, 1.5e308) is finite, but its distance from the centre, 2.1e308, isn't: no
+    // direction to put it on the round along.
+    assert_eq!(onto(round, [1.5e308, 1.5e308]), None);
+    // A round of radius 1e308 about (0, 1e308): (0, 1.5e308) is 5e307 above its centre, so
+    // it comes out to (0, 2e308), whose y is no number: none, though its x, 0, is one.
+    let huge = Curve::Round {
+        centre: [0.0, 1.0e308],
+        radius: 1.0e308,
+        start: 0.0,
+        sweep: TAU,
+    };
+    assert_eq!(onto(huge, [0.0, 1.5e308]), None);
+}
+
+#[test]
+fn a_step_crosses_an_arc_that_starts_off_the_x_axis_only_within_its_sweep() {
+    // The arc of radius 5 about the origin from 90° through 90°, to 180°. y = 4 from
+    // x = −10 to 0 meets the circle at (−3, 4), 126.87° round, on the arc, 0.7 along
+    // (|(−10 + 10 t, 4)| = 5: t = 0.7 or 1.3).
+    let arc = Curve::Round {
+        centre: [0.0, 0.0],
+        radius: 5.0,
+        start: FRAC_PI_2,
+        sweep: FRAC_PI_2,
+    };
+    let found = crossings([-10.0, 4.0], [0.0, 4.0], arc);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!((found[0].0 - 0.7).abs() < 1e-12, "{found:?}");
+    assert!(near(found[0].1, [-3.0, 4.0]), "{found:?}");
+    // y = −4 meets the circle at (−3, −4), 233.13° round: off the arc.
+    assert!(crossings([-10.0, -4.0], [0.0, -4.0], arc).is_empty());
+}
+
+/// Tools with `choice` on, and the input of `read` with a pick of exactly `tolerance` mm.
+fn input<'a>(read: &'a SketchRead, sketch: &'a FeatureId, tolerance: f64) -> Input<'a> {
+    Input {
+        read,
+        sketch,
+        revision: Revision::OPENED,
+        tolerance,
+        automatic_relations: true,
+        construction: false,
+        trim: TrimMode::Power,
+    }
+}
+
+#[test]
+fn a_trim_released_exactly_its_pick_from_its_press_is_a_click() {
+    // na000001 alone, from (0, 0) to (40, 0); a pick of exactly 1 mm. Pressed at (5, 0)
+    // and released 1 mm along at (6, 0), no farther than the pick: a click, trimming the
+    // line at its press, (5, 0); never a drag along it (which would cross nothing).
+    let mut sketch = empty();
+    sketch.points = vec![point("pa000001", 0.0, 0.0), point("pa000002", 40.0, 0.0)];
+    sketch.lines = vec![line("na000001", "pa000001", "pa000002")];
+    let read = under(sketch);
+    let feature = sketch_id();
+    let input = input(&read, &feature, 1.0);
+    let mut tools = Tools::default();
+    tools.choose(Some(Choice::Trim));
+    tools.handle(&input, Event::Press([5.0, 0.0]), Default::default());
+    tools.handle(&input, Event::Release([6.0, 0.0]), Default::default());
+    assert_eq!(
+        tools.take_requests(),
+        [Request::Trim {
+            curve: id("na000001"),
+            pick: [5.0, 0.0]
+        }]
+    );
+    assert_eq!(tools.said(), None);
+}
+
+#[test]
+fn a_drag_ends_past_a_lines_end_only_beyond_it() {
+    let line = Curve::Line {
+        from: [0.0, 0.0],
+        to: [10.0, 0.0],
+    };
+    // At its end and at its start exactly: within it, past neither.
+    assert_eq!(past_end(line, [5.0, 0.0], 0.0, [10.0, 0.0]), None);
+    assert_eq!(past_end(line, [5.0, 0.0], 0.0, [0.0, 0.0]), None);
+    // Beyond each.
+    assert_eq!(past_end(line, [5.0, 0.0], 0.0, [11.0, 0.0]), Some(End::End));
+    assert_eq!(
+        past_end(line, [5.0, 0.0], 0.0, [-1.0, 0.0]),
+        Some(End::Start)
+    );
+}
+
+#[test]
+fn a_drag_round_an_arc_ends_past_it_only_once_it_turns_beyond_its_sweep() {
+    // A quarter from 0°, pressed at its start, (10, 0), 0 into it.
+    let quarter = ten(0.0, FRAC_PI_2);
+    // Turned exactly its sweep: at its end, not past it; not turned at all: at its start.
+    assert_eq!(past_end(quarter, [10.0, 0.0], FRAC_PI_2, [0.0, 10.0]), None);
+    assert_eq!(past_end(quarter, [10.0, 0.0], 0.0, [10.0, 0.0]), None);
+    // A step either side: past its end, and before its start.
+    assert_eq!(
+        past_end(quarter, [10.0, 0.0], FRAC_PI_2 + 0.01, [0.0, 10.0]),
+        Some(End::End)
+    );
+    assert_eq!(
+        past_end(quarter, [10.0, 0.0], -0.01, [10.0, 0.0]),
+        Some(End::Start)
+    );
+}
+
+#[test]
+fn a_press_just_past_an_arcs_end_is_at_its_end_and_one_just_before_its_start_at_its_start() {
+    let deg = f64::to_radians;
+    // The quarter from 0° to 90°, pressed 10° past its end at 100° (10° from its end, 260°
+    // from its start): at its end, 90°. Turned back 5°, the drag is within it, at 85°.
+    let quarter = ten(0.0, deg(90.0));
+    assert_eq!(
+        past_end(quarter, on_ten(100.0), -deg(5.0), on_ten(95.0)),
+        None
+    );
+    // Turned on 5°: past its end, at 95°.
+    assert_eq!(
+        past_end(quarter, on_ten(100.0), deg(5.0), on_ten(105.0)),
+        Some(End::End)
+    );
+    // Pressed at 350°, 10° before its start (260° past its end): at its start, 0°. Turned
+    // on 5°, it's within it, at 5°; turned back 5°, before its start.
+    assert_eq!(
+        past_end(quarter, on_ten(350.0), deg(5.0), on_ten(355.0)),
+        None
+    );
+    assert_eq!(
+        past_end(quarter, on_ten(350.0), -deg(5.0), on_ten(345.0)),
+        Some(End::Start)
+    );
+    // A 30° arc from 0°, pressed at 170°: 140° past its end, 190° before its start, so at
+    // its end, 30°. Turned on 10°, to 40°: past its end. (At its start it'd be within it,
+    // at 10°.)
+    let thirty = ten(0.0, deg(30.0));
+    assert_eq!(
+        past_end(thirty, on_ten(170.0), deg(10.0), on_ten(180.0)),
+        Some(End::End)
+    );
+    // An arc whose start isn't 0°: from 90° through 90°, pressed at 100°, 10° into it.
+    // Turned back 20°, to −10°: before its start.
+    let second = ten(deg(90.0), deg(90.0));
+    assert_eq!(
+        past_end(second, on_ten(100.0), -deg(20.0), on_ten(80.0)),
+        Some(End::Start)
+    );
+}
+
+#[test]
+fn a_press_exactly_midway_past_both_ends_of_an_arc_is_at_its_start() {
+    // The arc from 2π − 5 rad through 10 − 2π = 3.7168 rad, pressed at angle 0, which is
+    // 5 rad round from its start: 5 − 3.7168 = 1.2832 past its end, and 2π − 5 = 1.2832
+    // before its start, exactly as far each way. The tie goes to its start: turned back
+    // 0.1, the drag is before it; on 0.1, within it.
+    let start = TAU - 5.0;
+    let sweep = 5.0 - (TAU - 5.0);
+    assert_eq!(5.0 - sweep, TAU - 5.0, "the tie, exactly");
+    let arc = ten(start, sweep);
+    assert_eq!(
+        past_end(arc, [10.0, 0.0], -0.1, [10.0, 0.0]),
+        Some(End::Start)
+    );
+    assert_eq!(past_end(arc, [10.0, 0.0], 0.1, [10.0, 0.0]), None);
+}
+
+#[test]
+fn a_drag_across_a_line_or_out_from_a_rounds_centre_heads_for_its_start() {
+    let line = Curve::Line {
+        from: [0.0, 0.0],
+        to: [10.0, 0.0],
+    };
+    // Along it, its end; against it, its start; straight across it, neither way along: its
+    // start.
+    assert_eq!(headed(line, [5.0, 0.0], [6.0, 0.0]), End::End);
+    assert_eq!(headed(line, [5.0, 0.0], [4.0, 0.0]), End::Start);
+    assert_eq!(headed(line, [5.0, 0.0], [5.0, 3.0]), End::Start);
+    let quarter = ten(0.0, FRAC_PI_2);
+    // Round it counter-clockwise, its end; clockwise, its start; straight out from its
+    // centre, neither way round: its start.
+    assert_eq!(headed(quarter, [10.0, 0.0], [0.0, 10.0]), End::End);
+    assert_eq!(headed(quarter, [0.0, 10.0], [10.0, 0.0]), End::Start);
+    assert_eq!(headed(quarter, [10.0, 0.0], [20.0, 0.0]), End::Start);
+}
+
+#[test]
+fn a_split_click_on_a_second_circle_begins_again_there() {
+    // ca000001, radius 5 about (60, 0), and ca000002, radius 5 about (80, 0).
+    let mut sketch = crossed();
+    sketch.points.push(point("pa000006", 80.0, 0.0));
+    sketch.circles.push(SketchCircle {
+        id: id("ca000002"),
+        center: id("pa000006"),
+        radius: silico_core::document::Coordinate::new(5.0).unwrap(),
+        construction: false,
+    });
+    let mut desk = Desk::new(Choice::Split, sketch);
+    desk.frame(&click(65.0, 0.0));
+    // Its second click on the other circle splits neither: that circle's first place.
+    desk.frame(&click(85.0, 0.0));
+    assert!(desk.edits.is_empty(), "{:?}", desk.edits);
+    assert_eq!(desk.said(), Some(SECOND_ON_CIRCLE));
+    assert_eq!(desk.mode.tools.preview().points, [[85.0, 0.0]]);
+    // And a second on it splits it at both.
+    desk.frame(&click(80.0, 5.0));
+    assert_eq!(
+        desk.edits,
+        [Request::Split {
+            curve: id("ca000002"),
+            at: vec![[85.0, 0.0], [80.0, 5.0]]
+        }]
+    );
+}
+
+#[test]
+fn a_pointer_half_a_number_is_off_the_plane_and_reaches_no_tool() {
+    // x no number, y one; then the other way round. The tool hears of neither: nothing
+    // said, nothing begun, no place given.
+    let mut desk = Desk::new(Choice::Draw(ToolKind::Line), empty());
+    for at in [Pos2::new(f32::NAN, 500.0), Pos2::new(100.0, f32::NAN)] {
+        let press = PointerEvent {
+            action: PointerAction::Press,
+            at,
+            shift: false,
+            ctrl: false,
+        };
+        desk.frame_at(&[press], None);
+        assert_eq!(desk.said(), None);
+        assert!(!desk.mode.tools.busy());
+        assert_eq!(desk.mode.tools.last(), None);
+    }
+    assert!(desk.adds.is_empty());
+}

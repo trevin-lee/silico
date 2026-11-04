@@ -17911,3 +17911,45 @@ fn a_tools_letter_with_shift_or_alt_chooses_nothing() {
     assert!(sketch_mode(&h).unwrap().tools.choice().is_some());
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn a_trim_asked_while_the_tab_closes_is_never_queued() {
+    let f = fixture();
+    // The crossed sketch, and a box beside it, whose rebuild the close's save is held behind.
+    let block = r#"    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#;
+    let text = CROSSED.replace("\n  ]\n}", &format!(",\n{block}\n  ]\n}}"));
+    let (mut h, _) = f.opened("crossed.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Cross"));
+    double_click(&mut h, "Browser", "Cross");
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::T);
+    step(&mut h);
+    // A click on na000001 at (30, 0.3) trims it: an edit, so the close asks.
+    sketch_events(&f, &mut h, &clicked(30.0, 0.3));
+    settled(&mut h);
+    read_with_lines(&mut h, 2);
+    // Closing, its save held.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_label("Close crossed.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to crossed.silico before closing?")
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    step(&mut h);
+    assert!(h.state().tabs()[0].closing());
+    // What the tab says, which an edit queued would let go of.
+    h.state_mut().tabs_mut()[0].message = Some("kept".to_owned());
+    let sent = h.state().tabs()[0].sent.clone();
+    // A click on na000002 at (20.3, 5): its trim asked, but the closing tab's queue takes
+    // no edit, so none is queued and what it says stays.
+    sketch_events(&f, &mut h, &clicked(20.3, 5.0));
+    assert_eq!(h.state().tabs()[0].message.as_deref(), Some("kept"));
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    hold.release();
+    check.wait();
+    assert_eq!(never_waits::waits(), 0);
+}
