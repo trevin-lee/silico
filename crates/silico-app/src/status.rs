@@ -2,7 +2,8 @@
 //! line*, *Layout*, and *egui mapping*; its `#status` and `.st-*` rules and `renderStatus`):
 //! the rebuild in words, with a dot or a spinner in its state's colour, and Stop and Rebuild
 //! beside it; then what the person points at; then, at the right, the file changed on disk,
-//! whether the document is saved, its units, and the shortcut sheet. With no document open,
+//! whether the document is saved, its units, and the shortcut sheet's button (`crate::sheet`).
+//! With no document open,
 //! how the warm start stands (decision 10) in the rebuild's place.
 //!
 //! Left out, each for a reason, each a seam:
@@ -13,8 +14,6 @@
 //!   the tab's count of its own undo steps.
 //! - the hover, the selection, and the pointer's coordinates in the middle: SEAM(M5.7),
 //!   picking's, and SEAM(#351), sketch mode's (see [`middle`]).
-//! - the shortcut sheet the Shortcuts button opens: SEAM, the sheet is a later PR's; the
-//!   button is off until then, saying so.
 //! - What's Wrong, which `Rebuilt with 2 errors` opens in the prototype: not built yet.
 
 use eframe::egui::text::{LayoutJob, TextFormat};
@@ -27,6 +26,7 @@ use silico_core::disk::Disk;
 use silico_core::document::Units;
 
 use crate::icons::{Icon, IconSize};
+use crate::shortcuts::Command;
 use crate::start::{self, Warming};
 use crate::tab::Tab;
 use crate::theme;
@@ -117,6 +117,8 @@ pub struct Asked {
     pub rebuild: bool,
     /// The Changed on disk chip: the choice it stands for offered again.
     pub disk: bool,
+    /// Shortcuts: the shortcut sheet opened.
+    pub shortcuts: bool,
 }
 
 /// The bar for `tab`, the tab shown, and `message`, the window's refusal, if it has one.
@@ -281,8 +283,7 @@ fn middle(ui: &mut Ui, bar: &Bar) {
 /// The right's parts, from the right: the shortcut sheet, the units, whether it's saved,
 /// and the file on disk.
 fn right_parts(ui: &mut Ui, bar: &Bar, asked: &mut Asked) {
-    // SEAM: the shortcut sheet (DESIGN.md, state 7), a later PR's; off until then.
-    shortcuts(ui);
+    asked.shortcuts = shortcuts(ui).clicked();
     let Some(saved) = bar.saved else {
         return;
     };
@@ -620,21 +621,18 @@ fn chip(ui: &mut Ui) -> Response {
     )
 }
 
-/// What the Shortcuts button says while there's no sheet for it to open.
-pub const SHORTCUTS_LATER: &str = "The shortcut sheet comes later";
-
-/// The shortcut sheet's button (`button.st-item`): `?` in a key cap after its words. Off,
-/// saying so, until the sheet exists (SEAM: DESIGN.md's state 7, a later PR's).
+/// The shortcut sheet's button (`button.st-item`): the sheet's key (`?`, from the
+/// registry) in a key cap after its words.
 fn shortcuts(ui: &mut Ui) -> Response {
+    let caps = Command::Shortcuts.caps(ui.ctx());
     item_button(
         ui,
         Mark::Icon(Icon::Help),
         "Shortcuts",
         theme::STATUS_TEXT,
-        &["?".to_owned()],
-        false,
+        &caps,
+        true,
     )
-    .on_disabled_hover_text(SHORTCUTS_LATER)
 }
 
 #[cfg(test)]
@@ -987,19 +985,19 @@ mod tests {
         let rebuild = button_at(&h, "Rebuild", stop + css::GAP, css::G400, None);
         separator_at(&h, rebuild + css::GAP, css::SEP_MARGIN);
         // From the right, 6 in: Shortcuts (`button.st-item`: help, its words, `?` in a key
-        // cap 6 after; off until the sheet exists, Gray.400 as `.st-btn:disabled`), a
-        // separator, mm, a separator, Saved, a separator, and the chip.
+        // cap 6 after; on, in the bar's Gray.550), a separator, mm, a separator, Saved, a
+        // separator, and the chip.
         let shortcuts = widget(&h, Role::Button, "Shortcuts");
         assert!(
-            h.get_by_role_and_label(Role::Button, "Shortcuts")
+            !h.get_by_role_and_label(Role::Button, "Shortcuts")
                 .accesskit_node()
                 .is_disabled()
         );
         assert!(near(shortcuts.right(), BAR.right() - css::PADDING_RIGHT));
         assert!(near(shortcuts.height(), css::ITEM_H));
         let help = centred(shortcuts.left() + css::ITEM_PADDING, css::ICON, css::ICON);
-        assert_eq!(icon_at(&h, help), Some(css::G400));
-        let words = said_at(&h, "Shortcuts", help.right() + css::ITEM_GAP, css::G400);
+        assert_eq!(icon_at(&h, help), Some(css::G550));
+        let words = said_at(&h, "Shortcuts", help.right() + css::ITEM_GAP, css::G550);
         let caps: Vec<RectShape> = rects(&h)
             .into_iter()
             .filter(|shape| {

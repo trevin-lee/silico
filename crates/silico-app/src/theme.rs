@@ -1062,6 +1062,162 @@ pub const SECONDARY_BUTTON_HOVER_TEXT: Color32 = TEXT_STRONG;
 /// (`.btn .kbd`: `opacity: .55`, its border and text the button's).
 pub const BUTTON_GAP: f32 = 6.0;
 pub const BUTTON_KEY_CAP_OPACITY: f32 = 0.55;
+/// A button's padding at its sides (`.btn { padding: 0 10px }`), and its height
+/// (`.btn { height: 22px }`, [`BUTTON_HEIGHT`]) where nothing sets another.
+pub const BUTTON_PADDING: f32 = 10.0;
+
+// ---- Modals (`.backdrop`, `.modal`) ----
+
+/// A modal's width, its border in it (`.modal { width: 440px }`, `border-box`), on
+/// [`MODAL_BACKDROP`].
+pub const MODAL_WIDTH: f32 = 440.0;
+/// A modal's tallest: the window's height but this (`.modal { max-height: calc(100vh -
+/// 80px) }`); its body scrolls past that (`.m-body { overflow: auto }`), its foot staying.
+pub const MODAL_WINDOW_MARGIN: f32 = 80.0;
+/// A modal's fill, its 1 px border, and its corners (`.modal`: Gray.200, Gray.250, `--r`).
+pub const MODAL_BG: Color32 = FLOATING_BG;
+pub const MODAL_BORDER: Color32 = PANEL_BORDER;
+pub const MODAL_CORNER_RADIUS: u8 = NORMAL_CORNER_RADIUS;
+/// A modal's shadow (`.modal`: `0 15px 50px rgba(0,0,0,.7)`).
+pub const MODAL_SHADOW: Shadow = Shadow {
+    offset: [0, 15],
+    blur: 50,
+    spread: 0,
+    color: with_alpha(GRAY_0, 179),
+};
+/// A modal's head (`.m-head`): padded 12 above, 12 at its right, 8 under, 16 at its left;
+/// its icon 8 from its title, which is 14 high in Gray.1000 on a line of the body's
+/// ([`BODY_LINE_HEIGHT`]).
+pub const MODAL_HEAD_PADDING: Margin = Margin {
+    left: 16,
+    right: 12,
+    top: 12,
+    bottom: 8,
+};
+pub const MODAL_HEAD_GAP: f32 = 8.0;
+pub const MODAL_TITLE_SIZE: f32 = 14.0;
+pub const MODAL_TITLE: Color32 = TEXT_STRONG;
+/// A modal's body (`.m-body`): padded 16 at its sides and 12 under; its words Gray.750
+/// (`p { color: var(--g750) }`), red where they say what went wrong (`.err-text`).
+pub const MODAL_BODY_PADDING: Margin = Margin {
+    left: 16,
+    right: 16,
+    top: 0,
+    bottom: 12,
+};
+pub const MODAL_TEXT: Color32 = TEXT_DEFAULT;
+/// A field's label in a modal (`.modal .lbl`): `--fs-small` in Gray.550, 10 above it and 4
+/// under, on a line of the body's.
+pub const MODAL_LABEL: Color32 = TEXT_SUBDUED;
+pub const MODAL_LABEL_MARGIN_TOP: f32 = 10.0;
+pub const MODAL_LABEL_MARGIN_BOTTOM: f32 = 4.0;
+/// A field in a modal (`.modal .field { height: 26px }`), and a button beside one.
+pub const MODAL_FIELD_HEIGHT: f32 = 26.0;
+/// A modal's foot (`.m-foot`): padded 10 above, 16 at its sides, 14 under; its buttons at
+/// its right, 6 apart, each 26 high and 76 wide at least (`.m-foot .btn`).
+pub const MODAL_FOOT_PADDING: Margin = Margin {
+    left: 16,
+    right: 16,
+    top: 10,
+    bottom: 14,
+};
+pub const MODAL_FOOT_GAP: f32 = 6.0;
+pub const MODAL_BUTTON_HEIGHT: f32 = DIALOG_BUTTON_HEIGHT;
+pub const MODAL_BUTTON_MIN_WIDTH: f32 = 76.0;
+
+// ---- The shortcut sheet (`.sheet`) ----
+
+/// The sheet's width, its border in it (`.sheet { width: 920px }`), at most the window's
+/// less this (`.modal { max-width: calc(100vw - 40px) }`).
+pub const SHEET_WIDTH: f32 = 920.0;
+pub const SHEET_WINDOW_MARGIN: f32 = 40.0;
+/// Its filter (the head's `.field`, `width: 220px; height: 24px`), its icon at its left and
+/// its text after it as a field's padding puts it (`.field input { padding: 0 6px }`).
+pub const SHEET_FILTER_WIDTH: f32 = 220.0;
+pub const SHEET_FILTER_HEIGHT: f32 = 24.0;
+/// Its columns (`.cols { columns: 3 260px; column-gap: 28px }`): three, each 260 wide at
+/// least, 28 apart.
+pub const SHEET_COLUMNS: usize = 3;
+pub const SHEET_COLUMN_MIN_WIDTH: f32 = 260.0;
+pub const SHEET_COLUMN_GAP: f32 = 28.0;
+/// A group (`.grp { margin-bottom: 14px }`), 14 above the next in its column.
+pub const SHEET_GROUP_GAP: f32 = 14.0;
+/// A group's title (`.grp-t`): 10.5 high capitals, spaced as the panels' ([`CAPITALS_LETTER_SPACING`]),
+/// in [`TEXT_SUBDUED`] on a line of the body's, its note beside it at its right; then 4,
+/// its 1 px [`PANEL_BORDER`] underline, and 4 more before its rows.
+pub const SHEET_GROUP_TITLE_SIZE: f32 = 10.5;
+pub const SHEET_GROUP_TITLE_TEXT: Color32 = TEXT_SUBDUED;
+pub const SHEET_GROUP_TITLE_PADDING: f32 = 4.0;
+pub const SHEET_GROUP_TITLE_BORDER: Color32 = PANEL_BORDER;
+pub const SHEET_GROUP_TITLE_MARGIN: f32 = 4.0;
+/// A command's row (`.sc-row`): 22 high, its name in [`TEXT_DEFAULT`] (`.d`), its caps at
+/// its right, 3 apart (`.sheet .sc-row .keys { gap: 3px }`), 8 from its name at the least.
+pub const SHEET_ROW_HEIGHT: f32 = 22.0;
+pub const SHEET_ROW_TEXT: Color32 = TEXT_DEFAULT;
+pub const SHEET_ROW_GAP: f32 = 8.0;
+pub const SHEET_KEY_CAP_GAP: f32 = 3.0;
+/// What the filter found in a name (`.sheet mark`): Blue.500 at 35% under white words.
+pub const SHEET_MATCH_BG: Color32 = with_alpha(SELECTION_BG, 89);
+pub const SHEET_MATCH_TEXT: Color32 = GRAY_1000;
+/// The notes (`.sheet .note`): `--fs-small` ([`HEADER_SIZE`]) in [`TEXT_SUBDUED`], their
+/// strong words (`.strong`) [`TEXT_STRONG`]. The note under the columns sits 6 under them,
+/// over a 1 px [`PANEL_BORDER`] rule, 8 above its words.
+pub const SHEET_NOTE_TEXT: Color32 = TEXT_SUBDUED;
+pub const SHEET_NOTE_STRONG: Color32 = TEXT_STRONG;
+pub const SHEET_NOTE_MARGIN: f32 = 6.0;
+pub const SHEET_NOTE_PADDING: f32 = 8.0;
+pub const SHEET_NOTE_BORDER: Color32 = PANEL_BORDER;
+
+// ---- Banners over the canvas (`.canvas-banner`) ----
+
+/// A banner's place over the canvas: 10 from its left and top, 148 from its right, clear of
+/// the ViewCube (`.canvas-banner { left: 10px; top: 10px }`, and `right: 148px` as
+/// `renderBanner` sets it).
+pub const BANNER_MARGIN: f32 = 10.0;
+pub const BANNER_MARGIN_RIGHT: f32 = 148.0;
+/// Where the prototype gives no rule (its canvas is never narrow), proposals: the least
+/// width a banner keeps beside the ViewCube, below which it takes the canvas's width but
+/// [`BANNER_MARGIN`] at each side; and the least room its words keep beside its buttons,
+/// below which the buttons go under the words, [`BANNER_ACTION_GAP`] under them, in rows
+/// as they fit, the words never narrower than this.
+pub const BANNER_MIN_WIDTH: f32 = 320.0;
+pub const BANNER_WORDS_MIN_WIDTH: f32 = 200.0;
+/// A banner's padding (`9px 10px 9px 12px`), inside its 1 px border, its corners `--r`; 10
+/// between its icon, its words, and its buttons, which are 6 apart; its icon 1 lower than
+/// its words' top (`.b-icon { margin-top: 1px }`); its second line 2 under its first, at
+/// 85% (`.b-text .s`).
+pub const BANNER_PADDING: Margin = Margin {
+    left: 12,
+    right: 10,
+    top: 9,
+    bottom: 9,
+};
+pub const BANNER_CORNER_RADIUS: u8 = NORMAL_CORNER_RADIUS;
+pub const BANNER_GAP: f32 = 10.0;
+pub const BANNER_ACTION_GAP: f32 = 6.0;
+pub const BANNER_ICON_MARGIN_TOP: f32 = 1.0;
+pub const BANNER_SUB_MARGIN_TOP: f32 = 2.0;
+pub const BANNER_SUB_OPACITY: f32 = 0.85;
+/// The banner's title (`.b-text .t`): Gray.1000.
+pub const BANNER_TITLE: Color32 = TEXT_STRONG;
+/// A banner with unsaved edits held over a file changed on disk (`.canvas-banner.warn`):
+/// its fill, border, and words (`--alert-warn-text`).
+pub const BANNER_WARNING_BG: Color32 = hex(0x2a1d0b);
+pub const BANNER_WARNING_BORDER: Color32 = hex(0x6b4310);
+pub const BANNER_WARNING_TEXT: Color32 = ALERT_WARNING_TEXT;
+/// A banner saying the session reloaded its file (`.canvas-banner.info`): purple.
+pub const BANNER_INFO_BG: Color32 = hex(0x17142a);
+pub const BANNER_INFO_BORDER: Color32 = hex(0x463375);
+pub const BANNER_INFO_TEXT: Color32 = hex(0xe4d6ff);
+/// A banner saying the file is gone (`.canvas-banner.err`).
+pub const BANNER_ERROR_BG: Color32 = hex(0x2a0a12);
+pub const BANNER_ERROR_BORDER: Color32 = hex(0x6e1228);
+pub const BANNER_ERROR_TEXT: Color32 = DANGER_BUTTON_TEXT;
+/// A button on a banner (`.canvas-banner .btn-secondary`): white at 8%, its words the
+/// banner's; hovered, white at 16%, its words white.
+pub const BANNER_BUTTON_BG: Color32 = with_alpha(GRAY_1000, 20);
+pub const BANNER_BUTTON_HOVER_BG: Color32 = with_alpha(GRAY_1000, 41);
+pub const BANNER_BUTTON_HOVER_TEXT: Color32 = GRAY_1000;
 
 // ---- The start page (`.st-*`, `.recent-row`) ----
 
@@ -1315,6 +1471,19 @@ pub fn field_with_room<'t>(
     invalid: bool,
     room: f32,
 ) -> egui::TextEdit<'t> {
+    field_with_rooms(ui, edit, id_salt, kind, invalid, [0.0, room])
+}
+
+/// [`field`], with `rooms[0]` more points inside its frame at its left, before its text
+/// (where an icon goes, which the caller paints there), and `rooms[1]` at its right.
+pub fn field_with_rooms<'t>(
+    ui: &egui::Ui,
+    edit: egui::TextEdit<'t>,
+    id_salt: impl egui::AsIdSalt,
+    kind: FieldKind,
+    invalid: bool,
+    rooms: [f32; 2],
+) -> egui::TextEdit<'t> {
     let id = ui.make_persistent_id(id_salt);
     let hovered = ui
         .ctx()
@@ -1322,10 +1491,9 @@ pub fn field_with_room<'t>(
         .is_some_and(|drawn| drawn.enabled() && ui.rect_contains_pointer(drawn.rect));
     let focused = ui.memory(|memory| memory.has_focus(id));
     let mut frame = field_frame(kind, hovered, focused, invalid);
-    frame.inner_margin.right = frame
-        .inner_margin
-        .right
-        .saturating_add(room.ceil().clamp(0.0, f32::from(i8::MAX)) as i8);
+    let room = |room: f32| room.ceil().clamp(0.0, f32::from(i8::MAX)) as i8;
+    frame.inner_margin.left = frame.inner_margin.left.saturating_add(room(rooms[0]));
+    frame.inner_margin.right = frame.inner_margin.right.saturating_add(room(rooms[1]));
     edit.id(id)
         .frame(frame)
         .text_color(if invalid { ERROR_TEXT } else { TEXT_STRONG })
@@ -1524,6 +1692,16 @@ mod tests {
             // `.menu`'s and `.tooltip`'s shadows, `rgba(0,0,0,.6)`.
             ("POPUP_SHADOW", POPUP_SHADOW.color, [0, 0, 0], 0.6),
             ("TOOLTIP_SHADOW", TOOLTIP_SHADOW.color, [0, 0, 0], 0.6),
+            // `.modal`'s shadow, `rgba(0,0,0,.7)`.
+            ("MODAL_SHADOW", MODAL_SHADOW.color, [0, 0, 0], 0.7),
+            // `.canvas-banner .btn-secondary`, `rgba(255,255,255,.08)`, `.16` hovered.
+            ("BANNER_BUTTON_BG", BANNER_BUTTON_BG, [255, 255, 255], 0.08),
+            (
+                "BANNER_BUTTON_HOVER_BG",
+                BANNER_BUTTON_HOVER_BG,
+                [255, 255, 255],
+                0.16,
+            ),
         ] {
             assert_eq!(
                 color,

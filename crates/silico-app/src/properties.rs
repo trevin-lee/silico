@@ -13,6 +13,7 @@ use eframe::egui::{
 };
 
 use crate::icons::{Icon, IconSize};
+use crate::modal::{self, Kind};
 use crate::theme;
 
 /// The panel's padding at its sides (`--pad`).
@@ -173,7 +174,9 @@ fn close_button(ui: &mut Ui, label: &str) -> Response {
         ui,
         Rect::from_center_size(rect.center(), Vec2::splat(IconSize::Small.points())),
     );
-    response.on_hover_text("Cancel (Esc)")
+    let cancel = crate::shortcuts::Command::Cancel;
+    let said = format!("{} ({})", cancel.label(), cancel.keys_text(ui.ctx()));
+    response.on_hover_text(said)
 }
 
 /// The head (`.prop-head`): `icon` in its box, `title` over `sub`.
@@ -814,100 +817,21 @@ pub(crate) fn segmented(
     clicked
 }
 
-/// Which of the dialog's footer buttons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Look {
-    /// `.btn-secondary`: Cancel.
-    Secondary,
-    /// `.btn-primary`: OK.
-    Primary,
-}
-
 /// A footer button (`.dlg-footer .btn`) in `rect`: `text`, labelled so, then `cap` as a key
-/// cap (`.btn .kbd`), in `look`; off unless `enabled`.
+/// cap (`.btn .kbd`), of `kind`; off unless `enabled`.
 pub(crate) fn footer_button(
     ui: &mut Ui,
     rect: Rect,
     text: &str,
     cap: &str,
-    look: Look,
+    kind: Kind,
     enabled: bool,
 ) -> Response {
-    let opacity = ui.opacity();
-    ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
-        ui.add_enabled_ui(enabled, |ui| {
-            ui.set_opacity(opacity);
-            let (rect, response) = ui.allocate_exact_size(rect.size(), Sense::click());
-            let enabled = ui.is_enabled();
-            response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
-            let hovered = response.hovered();
-            let (fill, ink) = match (look, enabled, hovered) {
-                (Look::Primary, false, _) => (
-                    theme::PRIMARY_BUTTON_DISABLED_BG,
-                    theme::PRIMARY_BUTTON_DISABLED_TEXT,
-                ),
-                (Look::Primary, true, false) => {
-                    (theme::PRIMARY_BUTTON_BG, theme::PRIMARY_BUTTON_TEXT)
-                }
-                (Look::Primary, true, true) => (
-                    theme::PRIMARY_BUTTON_HOVER_BG,
-                    theme::PRIMARY_BUTTON_HOVER_TEXT,
-                ),
-                (Look::Secondary, true, true) => (
-                    theme::SECONDARY_BUTTON_HOVER_BG,
-                    theme::SECONDARY_BUTTON_HOVER_TEXT,
-                ),
-                (Look::Secondary, _, _) => {
-                    (theme::SECONDARY_BUTTON_BG, theme::SECONDARY_BUTTON_TEXT)
-                }
-            };
-            ui.painter()
-                .rect_filled(rect, theme::SMALL_CORNER_RADIUS, fill);
-            theme::focus_ring(
-                ui,
-                &response,
-                rect,
-                theme::SMALL_CORNER_RADIUS,
-                StrokeKind::Outside,
-            );
-            let words = ui.painter().layout_job(body(text, ink));
-            let caps = ui.painter().layout_no_wrap(
-                cap.to_owned(),
-                FontId::proportional(theme::KEY_CAP_TEXT_SIZE),
-                ink,
-            );
-            let cap_width = (caps.size().x
-                + 2.0 * (theme::KEY_CAP_PADDING + theme::KEY_CAP_BORDER))
-                .max(theme::KEY_CAP_MIN_WIDTH);
-            let content = words.size().x + theme::BUTTON_GAP + cap_width;
-            let left = rect.center().x - content / 2.0;
-            let middle = rect.center().y;
-            ui.painter()
-                .galley(pos2(left, middle - words.size().y / 2.0), words, ink);
-            let cap_rect = Rect::from_min_size(
-                pos2(
-                    rect.center().x + content / 2.0 - cap_width,
-                    middle - theme::KEY_CAP_HEIGHT / 2.0,
-                ),
-                vec2(cap_width, theme::KEY_CAP_HEIGHT),
-            );
-            let faded = ink.gamma_multiply(theme::BUTTON_KEY_CAP_OPACITY);
-            ui.painter().rect_stroke(
-                cap_rect,
-                theme::KEY_CAP_CORNER_RADIUS,
-                Stroke::new(theme::KEY_CAP_BORDER, faded),
-                StrokeKind::Inside,
-            );
-            ui.painter().galley_with_override_text_color(
-                cap_rect.center() - caps.size() / 2.0,
-                caps,
-                faded,
-            );
-            response
-        })
-        .inner
-    })
-    .inner
+    modal::paint(
+        ui,
+        rect,
+        &modal::Button::new(text, kind).cap(cap).enabled(enabled),
+    )
 }
 
 /// The footer's place at the bottom of `rect` (`.dlg-footer`): its whole, and its two

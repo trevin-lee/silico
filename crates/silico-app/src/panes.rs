@@ -998,7 +998,12 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
             egui::StrokeKind::Inside,
         );
         (
-            crate::bar::tooltip(eye, word, Some(crate::app::HIDE), None),
+            crate::bar::tooltip(
+                eye,
+                word,
+                crate::shortcuts::Command::Hide.shown(ui.ctx()),
+                None,
+            ),
             shown,
         )
     });
