@@ -3706,7 +3706,7 @@ fn a_press_is_on_the_menu_by_the_pixel_it_is_in_among_the_pixels_the_menu_covers
 }
 
 #[test]
-fn a_press_off_the_menu_closes_it_but_the_right_press_of_the_click_that_opens_it() {
+fn a_press_off_the_menu_closes_it_but_none_before_the_release_of_the_click_that_opens_it() {
     use super::bar::pressed_off_menu;
     use egui::{Event, Modifiers, PointerButton, Rect};
     let button = |at: Pos2, button, pressed| Event::PointerButton {
@@ -3738,13 +3738,29 @@ fn a_press_off_the_menu_closes_it_but_the_right_press_of_the_click_that_opens_it
     let mut after = click.to_vec();
     after.push(button(pos2(120.0, 60.0), left, true));
     assert!(!pressed_off_menu(&after, menu, 2.0, true));
-    // A left press before the click's release counts: only the right press is the click's.
+    // A slow frame that took a tool's click (Line's, pressed and let go off where the menu
+    // opens) before the right-click: that press came before the menu was there, and closes
+    // nothing, as no press of any button before the opening release does.
     let left_first = [
         button(pos2(90.0, 40.0), left, true),
+        button(pos2(90.0, 40.0), left, false),
         click[0].clone(),
         click[2].clone(),
     ];
-    assert!(pressed_off_menu(&left_first, menu, 2.0, true));
+    assert!(!pressed_off_menu(&left_first, menu, 2.0, true));
+    // A middle press too, held across the right-click.
+    let middle_first = [
+        button(pos2(300.0, 300.0), PointerButton::Middle, true),
+        click[0].clone(),
+        click[2].clone(),
+    ];
+    assert!(!pressed_off_menu(&middle_first, menu, 2.0, true));
+    // But a press after the opening release, off the menu, still closes it, in the same
+    // frame; once the menu is open a frame, every press off it does.
+    let mut then_off = left_first.to_vec();
+    then_off.push(button(pos2(90.0, 40.0), left, true));
+    assert!(pressed_off_menu(&then_off, menu, 2.0, true));
+    assert!(pressed_off_menu(&left_first, menu, 2.0, false));
     // Releases and moves alone close nothing.
     let released = [
         button(pos2(10.0, 10.0), left, false),

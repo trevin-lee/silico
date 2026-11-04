@@ -423,9 +423,10 @@ pub fn on_menu(at: Pos2, menu: Rect, pixels_per_point: f32) -> bool {
 }
 
 /// Whether this frame's `events` press a button off the menu `menu` ([`on_menu`]), which
-/// closes it. In the frame the menu opens (`opening`), a right press before the last right
-/// release is the click that opened it, wherever in its click distance it was pressed, and
-/// closes nothing.
+/// closes it. In the frame the menu opens (`opening`), every press before the last right
+/// release (the click that opened it, wherever in its click distance it was pressed, and
+/// any press of any button a slow frame took before it, a tool's click among them) came
+/// before the menu was there, and closes nothing; only one after it does.
 pub fn pressed_off_menu(
     events: &[egui::Event],
     menu: Rect,
@@ -445,15 +446,10 @@ pub fn pressed_off_menu(
     });
     events.iter().enumerate().any(|(place, event)| match event {
         Event::PointerButton {
-            pos,
-            button,
-            pressed: true,
-            ..
+            pos, pressed: true, ..
         } => {
-            let opened_it = opening
-                && *button == PointerButton::Secondary
-                && released.is_some_and(|released| place < released);
-            !opened_it && !on_menu(*pos, menu, pixels_per_point)
+            let before_it = opening && released.is_some_and(|released| place < released);
+            !before_it && !on_menu(*pos, menu, pixels_per_point)
         }
         _ => false,
     })
