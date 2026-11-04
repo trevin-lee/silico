@@ -66,6 +66,11 @@ pub trait ViewRenderer: Send + Sync + 'static {
     /// Prepares `frame`'s drawing, once an egui frame: its bodies placed from its camera,
     /// its highlights, and its picking. A frame refused draws nothing until one succeeds.
     fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, Self::Failure>;
+    /// Whether `failure` is a frame refused for the moment, to be tried again by a later
+    /// frame (the renderer backing off after the GPU failed one), not a failure to say.
+    fn retry_later(_failure: &Self::Failure) -> bool {
+        false
+    }
     /// Draws what [`prepare`](Self::prepare) made into egui's render pass, its viewport
     /// already the pane's.
     fn composite(&self, pass: &mut wgpu::RenderPass<'_>);
@@ -84,6 +89,9 @@ impl ViewRenderer for Renderer {
     }
     fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, RenderFailure> {
         Renderer::prepare(self, frame)
+    }
+    fn retry_later(failure: &RenderFailure) -> bool {
+        matches!(failure, RenderFailure::BackingOff { .. })
     }
     fn composite(&self, pass: &mut wgpu::RenderPass<'_>) {
         Renderer::composite(self, pass);
@@ -311,6 +319,10 @@ fn prepared<R: ViewRenderer>(
             locked(shared).failure = None;
             vec![buffer]
         }
+        Err(failure) if R::retry_later(&failure) => {
+            tracing::debug!("the viewport's renderer is backing off: {failure}");
+            Vec::new()
+        }
         Err(failure) => {
             let said = failure.to_string();
             let mut shared = locked(shared);
@@ -380,6 +392,8 @@ mod tests {
         calls: Vec<String>,
         frames: Vec<Drawn>,
         picking: Option<Picking>,
+        /// Refusing each frame as backing off, rather than as having no GPU.
+        backing_off: bool,
     }
 
     impl ViewRenderer for Counting {
@@ -398,7 +412,13 @@ mod tests {
         fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, String> {
             self.frames
                 .push((frame.bodies.to_vec(), frame.highlights.to_vec()));
+            if self.backing_off {
+                return Err(format!("backing off, {} frame(s)", self.frames.len()));
+            }
             Err("no GPU here".to_owned())
+        }
+        fn retry_later(failure: &String) -> bool {
+            failure.starts_with("backing off")
         }
         fn composite(&self, _: &mut wgpu::RenderPass<'_>) {}
         fn take_picking(&mut self) -> Option<Picking> {
@@ -609,6 +629,28 @@ mod tests {
         assert_eq!(renderer.frames.len(), 100);
         assert_eq!(renderer.calls.len(), 100);
         assert_eq!(locked(&shared).failure.as_deref(), Some("no GPU here"));
+    }
+
+    #[test]
+    fn a_renderer_backing_off_is_neither_said_nor_taken_for_the_failure_said() {
+        // A failure said, then frames refused backing off, each worded otherwise: the
+        // failure said stays the GPU's, and the frames are still asked for and draw nothing.
+        let shared = Mutex::new(Shared::default());
+        let mut renderer = Counting::default();
+        assert!(prepared(Some(&mut renderer), &shared, &data(&[1], &[])).is_empty());
+        renderer.backing_off = true;
+        for _ in 0..10 {
+            assert!(prepared(Some(&mut renderer), &shared, &data(&[1], &[])).is_empty());
+        }
+        assert_eq!(renderer.frames.len(), 11);
+        assert_eq!(locked(&shared).failure.as_deref(), Some("no GPU here"));
+        // The real renderer's backing off is the one retried; its other failures aren't.
+        assert!(<Renderer as ViewRenderer>::retry_later(
+            &RenderFailure::BackingOff { frames: 2 }
+        ));
+        assert!(!<Renderer as ViewRenderer>::retry_later(
+            &RenderFailure::OutOfMemory("4 GiB".to_owned())
+        ));
     }
 
     #[test]
