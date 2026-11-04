@@ -3521,3 +3521,79 @@ fn after_a_drag_ends_a_press_hits_what_its_last_frame_drew_until_the_read_of_its
         .collect();
     assert_eq!(corner, [at_mm(45.0, 25.0)]);
 }
+
+#[test]
+fn a_frames_left_events_and_right_clicks_come_out_in_seq_order_in_points_unclamped() {
+    use crate::viewport::{LeftEvent, LeftKind, SecondaryClick};
+    let left = |kind, at_px: [f32; 2], seq| LeftEvent {
+        kind,
+        at_px,
+        shift: false,
+        ctrl: seq == 4,
+        frame: 7,
+        time: 1.5,
+        seq,
+    };
+    // A Cancel a navigation tool forced (seq 0), a press (1), a right-click while it's
+    // held (2), its release (3) and the double-click it made (4), and a move past the
+    // viewport's top left (5), handed over as the pane lists them: the left events, then the
+    // right clicks.
+    let lefts = [
+        left(LeftKind::Cancel, [0.0, 0.0], 0),
+        left(LeftKind::Press, [200.0, 100.0], 1),
+        left(LeftKind::Release, [220.0, 140.0], 3),
+        left(LeftKind::DoubleClick, [220.0, 140.0], 4),
+        left(LeftKind::Move, [-60.0, -40.0], 5),
+    ];
+    let rights = [SecondaryClick {
+        at_px: [400.0, 60.0],
+        shift: true,
+        ctrl: false,
+        frame: 7,
+        time: 1.5,
+        seq: 2,
+    }];
+    // At 2 pixels a point, the viewport's top left at (10, 20) in points.
+    let events = frame_events(&lefts, &rights, 2.0, pos2(10.0, 20.0));
+    let seen: Vec<(PointerAction, Pos2, bool, bool)> = events
+        .iter()
+        .map(|e| (e.action, e.at, e.shift, e.ctrl))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (PointerAction::Cancel, pos2(10.0, 20.0), false, false),
+            (PointerAction::Press, pos2(110.0, 70.0), false, false),
+            (PointerAction::RightClick, pos2(210.0, 50.0), true, false),
+            (PointerAction::Release, pos2(120.0, 90.0), false, false),
+            (PointerAction::DoubleClick, pos2(120.0, 90.0), false, true),
+            (PointerAction::Move, pos2(-20.0, 0.0), false, false),
+        ]
+    );
+    assert!(frame_events(&[], &[], 2.0, pos2(0.0, 0.0)).is_empty());
+}
+
+#[test]
+fn a_right_click_opens_the_canvas_menu_there_unless_smart_dimension_takes_it_for_its_lock() {
+    let at = at_mm(20.0, 10.0);
+    let right = [event(PointerAction::RightClick, at, false)];
+    // No tool on: the menu, at the click.
+    let mut mode = mode_at(under(rectangle(Vec::new())));
+    let mut dragged: Option<drag::Drag> = None;
+    frame_of(&mut mode, &mut dragged, &right);
+    assert_eq!(mode.menu_at, Some(at));
+    // A drawing tool on: the menu too (its End chain the menu's).
+    let mut mode = mode_at(under(rectangle(Vec::new())));
+    mode.tools.choose(Some(tools::Choice::Draw(
+        silico_core::sketch_tools::ToolKind::Line,
+    )));
+    frame_of(&mut mode, &mut dragged, &right);
+    assert_eq!(mode.menu_at, Some(at));
+    // Smart Dimension on: no menu, its kind locked instead (the right side picked first).
+    let mut mode = mode_at(under(rectangle(Vec::new())));
+    mode.tools.choose(Some(tools::Choice::Dimension));
+    frame_of(&mut mode, &mut dragged, &press(at_mm(40.0, 10.0), false));
+    frame_of(&mut mode, &mut dragged, &right);
+    assert_eq!(mode.menu_at, None);
+    assert!(mode.tools.dimension_preview().unwrap().locked);
+}

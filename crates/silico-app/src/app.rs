@@ -1137,6 +1137,7 @@ impl<P: Clients + 'static> App<P> {
         // (SD7), each the prototype's.
         let modify = mode.modify_view();
         let offer = mode.offer_view(&name);
+        let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
         egui::Area::new(egui::Id::new(("sketch_bar", id.to_string())))
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
@@ -1158,6 +1159,39 @@ impl<P: Clients + 'static> App<P> {
         {
             tab.sketch_modify(sessions, asked);
             *started = true;
+        }
+        // The canvas's right-click menu, at the click (the prototype's): what it asks done,
+        // and closed by it or by a click elsewhere.
+        if let Some((at, busy)) = menu {
+            let mut asked = sketch::bar::MenuAction::None;
+            let shown = egui::Area::new(egui::Id::new(("sketch_menu", id.to_string())))
+                .fixed_pos(at)
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
+                    *ui.visuals_mut() = sketch::bar::panel_visuals();
+                    ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                        node.set_role(egui::accesskit::Role::Menu);
+                        node.set_label("Sketch menu");
+                    });
+                    egui::Frame::menu(ui.style()).show(ui, |ui| {
+                        asked = sketch::bar::canvas_menu(ui, busy);
+                    });
+                });
+            match asked {
+                sketch::bar::MenuAction::None => {}
+                sketch::bar::MenuAction::EndChain => tab.sketch_end_chain(sessions),
+                sketch::bar::MenuAction::Finish => tab.finish_sketch(sessions, true),
+                sketch::bar::MenuAction::Cancel => tab.finish_sketch(sessions, false),
+            }
+            // Not by the right-click that opened it, let go in this frame.
+            let away = shown.response.clicked_elsewhere()
+                && !ui.input(|i| i.pointer.button_released(egui::PointerButton::Secondary));
+            if (asked != sketch::bar::MenuAction::None || away)
+                && let Some(mode) = tab.sketch.as_mut()
+            {
+                mode.menu_at = None;
+            }
+            *started |= asked != sketch::bar::MenuAction::None;
         }
         if let Some(choice) =
             offer.and_then(|view| sketch::dimension::offer_prompt(ui.ctx(), &view))

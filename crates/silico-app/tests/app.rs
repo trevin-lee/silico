@@ -13958,3 +13958,57 @@ fn an_edit_taking_a_solved_sketch_to_a_refused_solve_offers_though_it_flags_noth
     );
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn a_right_click_in_sketch_mode_opens_its_menu_whose_cancel_sketch_leaves_it() {
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    let text = text_of(&f, &h);
+    let at = to_screen([20.0, 20.0]).unwrap();
+    sketch_events(
+        &f,
+        &mut h,
+        &[silico_app::sketch::PointerEvent {
+            action: silico_app::sketch::PointerAction::RightClick,
+            at,
+            shift: false,
+            ctrl: false,
+        }],
+    );
+    step_until(&mut h, "the menu", |h| {
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_some()
+    });
+    let menu = h.get_by_role_and_label(Role::Menu, "Sketch menu");
+    for item in ["End chain", "Finish Sketch", "Cancel sketch"] {
+        assert!(
+            menu.query_by_role_and_label(Role::Button, item).is_some(),
+            "{item}"
+        );
+    }
+    // Where the click was: its first item just inside its frame, from the click.
+    let first = menu.get_by_role_and_label(Role::Button, "End chain").rect();
+    let off = first.left_top() - at;
+    assert!(
+        (0.0..16.0).contains(&off.x) && (0.0..16.0).contains(&off.y),
+        "{first:?} from {at:?}"
+    );
+    // No gesture under way: End chain is off.
+    assert!(
+        menu.get_by_role_and_label(Role::Button, "End chain")
+            .accesskit_node()
+            .is_disabled()
+    );
+    menu.get_by_role_and_label(Role::Button, "Cancel sketch")
+        .click();
+    step(&mut h);
+    settled(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_none()
+    );
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}

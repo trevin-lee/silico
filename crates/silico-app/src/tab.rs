@@ -2214,6 +2214,14 @@ impl Tab {
         if self.cancel_drag(sessions) {
             return;
         }
+        // The canvas's right-click menu closes.
+        if self
+            .sketch
+            .as_mut()
+            .is_some_and(|mode| mode.menu_at.take().is_some())
+        {
+            return;
+        }
         // The over-define prompt's Esc is its Cancel (the prototype's key).
         if self
             .sketch

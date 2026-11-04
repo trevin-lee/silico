@@ -146,7 +146,8 @@ pub enum PointerAction {
     /// taking over, the tab hidden): every press ends in one release or one of these.
     Cancel,
     /// A right-click (the secondary button's), outside the left button's presses: Smart
-    /// Dimension's, which locks the kind its preview shows (section 9); nothing else's.
+    /// Dimension's, which locks the kind its preview shows (section 9); otherwise the
+    /// canvas's menu's, which it opens at the click.
     RightClick,
 }
 
@@ -158,6 +159,62 @@ pub struct PointerEvent {
     pub at: Pos2,
     pub shift: bool,
     pub ctrl: bool,
+}
+
+/// The pane's left-button events and right clicks of one frame (`ViewFrame::left` and
+/// `ViewFrame::secondary`), as sketch mode takes them: one stream in the pane's order, by
+/// each event's `seq` (which puts a Cancel a navigation tool forces first, a Cancel just
+/// before the Press that forced it, and a DoubleClick just after its Release); each place
+/// from physical pixels to points, `at_px / pixels_per_point`, from the viewport's top left
+/// at `viewport_origin`, never clamped (a drag past the viewport's edge keeps going); each
+/// left kind as its action, a right click as [`PointerAction::RightClick`], with Shift and
+/// Ctrl as held.
+pub fn frame_events(
+    left: &[crate::viewport::LeftEvent],
+    secondary: &[crate::viewport::SecondaryClick],
+    pixels_per_point: f32,
+    viewport_origin: Pos2,
+) -> Vec<PointerEvent> {
+    use crate::viewport::LeftKind;
+    let point =
+        |at_px: [f32; 2]| viewport_origin + Vec2::new(at_px[0], at_px[1]) / pixels_per_point;
+    let mut events: Vec<(u32, PointerEvent)> = left
+        .iter()
+        .map(|event| {
+            let action = match event.kind {
+                LeftKind::Press => PointerAction::Press,
+                LeftKind::Move => PointerAction::Move,
+                LeftKind::Release => PointerAction::Release,
+                LeftKind::DoubleClick => PointerAction::DoubleClick,
+                LeftKind::Cancel => PointerAction::Cancel,
+            };
+            let at = point(event.at_px);
+            (
+                event.seq,
+                PointerEvent {
+                    action,
+                    at,
+                    shift: event.shift,
+                    ctrl: event.ctrl,
+                },
+            )
+        })
+        .chain(secondary.iter().map(|click| {
+            let at = point(click.at_px);
+            let action = PointerAction::RightClick;
+            (
+                click.seq,
+                PointerEvent {
+                    action,
+                    at,
+                    shift: click.shift,
+                    ctrl: click.ctrl,
+                },
+            )
+        }))
+        .collect();
+    events.sort_by_key(|(seq, _)| *seq);
+    events.into_iter().map(|(_, event)| event).collect()
 }
 
 /// What the viewport gives sketch mode each frame: the left button's events, the pointer
@@ -253,6 +310,10 @@ pub struct SketchMode {
     edit_offer: Option<(Offer, Revision)>,
     /// What it asks of the core besides its tools' requests, until the tab takes it.
     asks: Vec<Ask>,
+    /// Where the canvas's right-click menu (End chain, Finish Sketch, Cancel sketch) is open,
+    /// on the screen, if it is: opened by a right-click with no tool on, or a tool other
+    /// than Smart Dimension, whose right-click locks its kind instead.
+    pub menu_at: Option<Pos2>,
     /// Where the Modify box open stands on the screen, as the last frame projected it.
     modify_screen: Option<Pos2>,
     /// The pick tolerance, in millimetres, at the last frame's view's middle: what Smart
@@ -291,6 +352,7 @@ impl SketchMode {
             asks: Vec::new(),
             modify_screen: None,
             tolerance: 0.0,
+            menu_at: None,
         }
     }
 
@@ -530,7 +592,8 @@ impl SketchMode {
                 PointerAction::DoubleClick => {
                     self.edit_dimension_at(input, event.at, dragged.as_ref());
                 }
-                PointerAction::RightClick => {}
+                // With no tool on, the canvas's menu, at the click.
+                PointerAction::RightClick => self.menu_at = Some(event.at),
             }
         }
         let corners = [
@@ -669,6 +732,13 @@ impl SketchMode {
             scale_at(input.to_plane, at).map_or(0.0, |scale| scale.mm(SKETCH_PICK_TOLERANCE))
         };
         for event in input.events {
+            // A right-click is Smart Dimension's lock; with any other tool, the menu's.
+            if event.action == PointerAction::RightClick
+                && self.tools.choice() != Some(tools::Choice::Dimension)
+            {
+                self.menu_at = Some(event.at);
+                continue;
+            }
             let Some(context) = tool_input(
                 &self.read,
                 self.sketch.as_ref(),
