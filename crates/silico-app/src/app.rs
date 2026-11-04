@@ -820,7 +820,8 @@ impl<P: Clients + 'static> App<P> {
             (false, false) => None,
         };
         // Esc, with no dialog open: the selection cleared first, then a rebuild running
-        // stopped, as the stop does (section 3's order); with neither, nothing.
+        // stopped, as the stop does (section 3's order); with neither, the reload's banner
+        // dismissed.
         if stop && !in_dialog {
             tab.escape(sessions);
         }
@@ -1327,8 +1328,8 @@ impl<P: Clients + 'static> App<P> {
                     Tone::Error,
                     "is gone from disk",
                     &[(
-                        "The part is still open here, with your edits. Save As writes it \
-                         somewhere new.",
+                        "The part is still open here, with your edits: keep them, or reload, \
+                         which drops them.",
                         false,
                     )][..],
                 ),
@@ -1357,7 +1358,10 @@ impl<P: Clients + 'static> App<P> {
                     title: &title,
                     sub,
                     // Reload is off while the tab closes: its close drops the edits already.
-                    buttons: &[("Reload", !tab.closing()), ("Keep my edits", true)],
+                    buttons: &[
+                        ("Reload, discard my edits", !tab.closing()),
+                        ("Keep my edits…", true),
+                    ],
                     dismiss: false,
                 },
             );

@@ -107,14 +107,18 @@ pub(crate) fn frame() -> Frame {
 }
 
 /// A modal named `id`, over the backdrop (`.backdrop`, black at 60%), centred in the
-/// window, [`theme::MODAL_WIDTH`] wide, its border in that: `content` draws its head, body,
-/// and foot ([`head`], [`body`], [`foot`]). What `content` gives.
+/// window, [`theme::MODAL_WIDTH`] wide and no taller than the window but
+/// [`theme::MODAL_WINDOW_MARGIN`], its border in that: `content` draws its head, body, and
+/// foot ([`head`], [`body`], [`foot`]). What `content` gives.
 pub(crate) fn show<R>(ctx: &egui::Context, id: egui::Id, content: impl FnOnce(&mut Ui) -> R) -> R {
+    let tallest =
+        ctx.content_rect().height() - theme::MODAL_WINDOW_MARGIN - 2.0 * theme::BORDER_WIDTH;
     egui::Modal::new(id)
         .backdrop_color(theme::MODAL_BACKDROP)
         .frame(frame())
         .show(ctx, |ui| {
             ui.set_width(theme::MODAL_WIDTH - 2.0 * theme::BORDER_WIDTH);
+            ui.set_max_height(tallest.max(0.0));
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             content(ui)
         })
@@ -153,13 +157,23 @@ pub(crate) fn head(ui: &mut Ui, icon: Option<Icon>, title: &str) -> Response {
     )
 }
 
-/// The modal's body (`.m-body`): `add`'s parts, padded at its sides and under it.
+/// The modal's body (`.m-body`): `add`'s parts, padded at its sides and under it,
+/// scrolling (`overflow: auto`) where the modal would be taller than [`show`] lets it, the
+/// room for a foot under it kept.
 pub(crate) fn body<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-    Frame::NONE
-        .inner_margin(theme::MODAL_BODY_PADDING)
+    let foot = theme::MODAL_FOOT_PADDING.sum().y + theme::MODAL_BUTTON_HEIGHT;
+    egui::ScrollArea::vertical()
+        .id_salt("modal-body")
+        .max_height((ui.available_height() - foot).max(0.0))
+        .auto_shrink([false, true])
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui)
+            Frame::NONE
+                .inner_margin(theme::MODAL_BODY_PADDING)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    add(ui)
+                })
+                .inner
         })
         .inner
 }
@@ -944,5 +958,81 @@ pub(crate) mod tests {
         theme::apply(&h.ctx);
         h.run_steps(4);
         assert_eq!(colour(&text_shape(&h, "The export failed")), css::RED);
+    }
+
+    #[test]
+    fn a_modal_taller_than_the_window_allows_scrolls_its_body_and_keeps_its_foot() {
+        // `.modal { max-height: calc(100vh - 80px) }`, `.m-body { overflow: auto }`.
+        let window = Vec2::new(800.0, 300.0);
+        let mut h = Harness::builder().with_size(window).build_ui(|ui| {
+            show(ui.ctx(), egui::Id::new("tall"), |ui| {
+                head(ui, None, "Export a.silico");
+                body(ui, |ui| {
+                    for line in 0..30 {
+                        text(ui, &format!("Body {line}"), theme::MODAL_TEXT);
+                    }
+                });
+                foot(
+                    ui,
+                    [],
+                    [
+                        Button::new("Cancel", Kind::Secondary),
+                        Button::new("Export", Kind::Primary),
+                    ],
+                );
+            });
+        });
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        let frame = frame_of(&h).rect;
+        assert!(
+            near(frame.height(), window.y - 80.0),
+            "{frame:?} in a window {} high",
+            window.y
+        );
+        at(
+            frame.center(),
+            (window / 2.0).to_pos2(),
+            "the modal's middle",
+        );
+        // The foot stays, at the modal's foot, inside the window.
+        let export = widget(&h, Role::Button, "Export");
+        assert!(near(
+            export.bottom(),
+            frame.bottom() - css::BORDER - css::FOOT_BOTTOM
+        ));
+        // The body's last line is past its view until it's scrolled to.
+        // Whether the last line is painted whole inside what clips it (egui paints no label
+        // out of view at all).
+        let shown = |h: &Harness<'_>| {
+            h.output()
+                .shapes
+                .iter()
+                .any(|clipped| match &clipped.shape {
+                    Shape::Text(said) if said.galley.text() == "Body 29" => clipped
+                        .clip_rect
+                        .contains_rect(Rect::from_min_size(said.pos, said.galley.size())),
+                    _ => false,
+                })
+        };
+        assert!(!shown(&h), "the last line shows unscrolled");
+        let middle = frame.center();
+        h.event(egui::Event::PointerMoved(middle));
+        for _ in 0..20 {
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: Vec2::new(0.0, -5.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+        }
+        h.run_steps(4);
+        assert!(shown(&h), "the body didn't scroll to its last line");
+        let export = widget(&h, Role::Button, "Export");
+        assert!(near(
+            export.bottom(),
+            frame.bottom() - css::BORDER - css::FOOT_BOTTOM
+        ));
     }
 }

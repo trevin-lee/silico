@@ -1071,6 +1071,9 @@ pub const BUTTON_PADDING: f32 = 10.0;
 /// A modal's width, its border in it (`.modal { width: 440px }`, `border-box`), on
 /// [`MODAL_BACKDROP`].
 pub const MODAL_WIDTH: f32 = 440.0;
+/// A modal's tallest: the window's height but this (`.modal { max-height: calc(100vh -
+/// 80px) }`); its body scrolls past that (`.m-body { overflow: auto }`), its foot staying.
+pub const MODAL_WINDOW_MARGIN: f32 = 80.0;
 /// A modal's fill, its 1 px border, and its corners (`.modal`: Gray.200, Gray.250, `--r`).
 pub const MODAL_BG: Color32 = FLOATING_BG;
 pub const MODAL_BORDER: Color32 = PANEL_BORDER;
@@ -1129,6 +1132,13 @@ pub const MODAL_BUTTON_MIN_WIDTH: f32 = 76.0;
 /// `renderBanner` sets it).
 pub const BANNER_MARGIN: f32 = 10.0;
 pub const BANNER_MARGIN_RIGHT: f32 = 148.0;
+/// Where the prototype gives no rule (its canvas is never narrow), proposals: the least
+/// width a banner keeps beside the ViewCube, below which it takes the canvas's width but
+/// [`BANNER_MARGIN`] at each side; and the least room its words keep beside its buttons,
+/// below which the buttons go under the words, [`BANNER_ACTION_GAP`] under them, in rows
+/// as they fit, the words never narrower than this.
+pub const BANNER_MIN_WIDTH: f32 = 320.0;
+pub const BANNER_WORDS_MIN_WIDTH: f32 = 200.0;
 /// A banner's padding (`9px 10px 9px 12px`), inside its 1 px border, its corners `--r`; 10
 /// between its icon, its words, and its buttons, which are 6 apart; its icon 1 lower than
 /// its words' top (`.b-icon { margin-top: 1px }`); its second line 2 under its first, at

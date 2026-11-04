@@ -9,7 +9,9 @@
 
 use eframe::egui::epaint::RectShape;
 use eframe::egui::text::LayoutJob;
-use eframe::egui::{Color32, FontFamily, FontId, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2};
+use eframe::egui::{
+    Color32, FontFamily, FontId, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, pos2,
+};
 
 use crate::bar;
 use crate::icons::{ICON_SIZE, Icon, IconSize};
@@ -84,42 +86,79 @@ pub(crate) enum Clicked {
 /// The label of a banner's close button.
 pub(crate) const DISMISS: &str = "Dismiss";
 
-/// `banner`, drawn over `canvas`: what was clicked on it.
+/// One of a banner's actions: a button, by its place among them, or Dismiss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Action {
+    Button(usize),
+    Dismiss,
+}
+
+/// `banner`, drawn over `canvas` and clipped to it, the pointer taken only there: what was
+/// clicked on it. At [`theme::BANNER_MARGIN`] from the canvas's left and top, and
+/// [`theme::BANNER_MARGIN_RIGHT`] from its right, clear of the ViewCube, unless that leaves
+/// it narrower than [`theme::BANNER_MIN_WIDTH`]; its buttons beside its words, or under
+/// them where the words would have less than [`theme::BANNER_WORDS_MIN_WIDTH`].
 pub(crate) fn show(ui: &mut Ui, canvas: Rect, banner: &Banner<'_>) -> Clicked {
+    let clip = canvas.intersect(ui.clip_rect());
+    let mut child = ui.new_child(UiBuilder::new().id_salt("canvas-banner").max_rect(canvas));
+    child.set_clip_rect(clip);
+    let ui = &mut child;
     let (fill, border, ink) = banner.tone.colours();
     let pad = theme::BANNER_PADDING;
     let left = canvas.left() + theme::BANNER_MARGIN;
-    let width = (canvas.right() - theme::BANNER_MARGIN_RIGHT - left).max(0.0);
+    let beside_cube = canvas.right() - theme::BANNER_MARGIN_RIGHT - left;
+    let right = if beside_cube >= theme::BANNER_MIN_WIDTH {
+        canvas.right() - theme::BANNER_MARGIN_RIGHT
+    } else {
+        canvas.right() - theme::BANNER_MARGIN
+    };
+    let width = (right - left).max(0.0);
     let top = canvas.top() + theme::BANNER_MARGIN;
     let inner_left = left + theme::BORDER_WIDTH + pad.leftf();
     let inner_right = left + width - theme::BORDER_WIDTH - pad.rightf();
     let inner_top = top + theme::BORDER_WIDTH + pad.topf();
-    // The buttons' places, at the right, in a row (`.b-actions`).
+    // The actions (`.b-actions`) and their sizes: the buttons, `.btn` high, and Dismiss
+    // (`.ab-btn`: its icon padded, 22 at least).
     let buttons: Vec<Button<'_>> = banner
         .buttons
         .iter()
         .map(|(text, on)| Button::new(text, Kind::Banner(ink)).enabled(*on))
         .collect();
-    let mut widths: Vec<f32> = buttons
+    let mut actions: Vec<(Action, Vec2)> = buttons
         .iter()
-        .map(|button| modal::natural_width(ui, button))
+        .enumerate()
+        .map(|(place, button)| {
+            (
+                Action::Button(place),
+                Vec2::new(modal::natural_width(ui, button), theme::BUTTON_HEIGHT),
+            )
+        })
         .collect();
     if banner.dismiss {
-        // `.ab-btn`: its icon padded, 22 at least.
-        widths.push(
-            (ICON_SIZE + 2.0 * theme::APP_BAR_BUTTON_PADDING).max(theme::APP_BAR_BUTTON_SIZE),
-        );
+        actions.push((
+            Action::Dismiss,
+            Vec2::new(
+                (ICON_SIZE + 2.0 * theme::APP_BAR_BUTTON_PADDING).max(theme::APP_BAR_BUTTON_SIZE),
+                theme::APP_BAR_BUTTON_SIZE,
+            ),
+        ));
     }
-    let actions = widths.iter().sum::<f32>()
-        + widths.len().saturating_sub(1) as f32 * theme::BANNER_ACTION_GAP;
-    // The words between the icon and the buttons, wrapped there.
+    let row = actions.iter().map(|(_, size)| size.x).sum::<f32>()
+        + actions.len().saturating_sub(1) as f32 * theme::BANNER_ACTION_GAP;
+    // The words after the icon: beside the actions, or over them where that's too narrow.
     let text_left = inner_left + ICON_SIZE + theme::BANNER_GAP;
-    let gap = if widths.is_empty() {
+    let gap = if actions.is_empty() {
         0.0
     } else {
         theme::BANNER_GAP
     };
-    let text_width = (inner_right - actions - gap - text_left).max(1.0);
+    let beside = inner_right - row - gap - text_left;
+    let stacked = beside < theme::BANNER_WORDS_MIN_WIDTH;
+    let text_width = if stacked {
+        (inner_right - text_left).max(theme::BANNER_WORDS_MIN_WIDTH)
+    } else {
+        beside
+    };
     let title = ui.painter().layout_job(modal::wrapped(
         banner.title,
         theme::BODY_SIZE,
@@ -138,14 +177,42 @@ pub(crate) fn show(ui: &mut Ui, canvas: Rect, banner: &Banner<'_>) -> Clicked {
     sub.wrap.max_width = text_width;
     let sub = ui.painter().layout_job(sub);
     let words = title.size().y + theme::BANNER_SUB_MARGIN_TOP + sub.size().y;
-    let content = words
-        .max(theme::BUTTON_HEIGHT)
-        .max(theme::BANNER_ICON_MARGIN_TOP + ICON_SIZE);
-    let height = 2.0 * theme::BORDER_WIDTH + pad.sum().y + content;
-    let rect = Rect::from_min_size(pos2(left, top), Vec2::new(width, height));
-    // Under its buttons, so it takes the pointer only where they don't.
+    // The actions' places: in a row at the right, at the words' top; or under the words,
+    // from their left, a row after another as they fit (one alone in a row whatever its
+    // width).
+    let mut places = Vec::with_capacity(actions.len());
+    if stacked {
+        let mut at = pos2(text_left, inner_top + words + theme::BANNER_ACTION_GAP);
+        let mut row_height: f32 = 0.0;
+        for (action, size) in &actions {
+            if at.x > text_left && at.x + size.x > inner_right {
+                at = pos2(text_left, at.y + row_height + theme::BANNER_ACTION_GAP);
+                row_height = 0.0;
+            }
+            places.push((*action, Rect::from_min_size(at, *size)));
+            at.x += size.x + theme::BANNER_ACTION_GAP;
+            row_height = row_height.max(size.y);
+        }
+    } else {
+        let mut x = inner_right - row;
+        for (action, size) in &actions {
+            places.push((*action, Rect::from_min_size(pos2(x, inner_top), *size)));
+            x += size.x + theme::BANNER_ACTION_GAP;
+        }
+    }
+    let bottom = places
+        .iter()
+        .map(|(_, place)| place.bottom())
+        .fold(inner_top + words, f32::max)
+        .max(inner_top + theme::BANNER_ICON_MARGIN_TOP + ICON_SIZE);
+    let rect = Rect::from_min_max(
+        pos2(left, top),
+        pos2(left + width, bottom + pad.bottomf() + theme::BORDER_WIDTH),
+    );
+    // Under its buttons, so it takes the pointer only where they don't, and only where it
+    // shows.
     ui.interact(
-        rect,
+        rect.intersect(clip),
         ui.id().with("canvas-banner"),
         Sense::CLICK | Sense::DRAG,
     );
@@ -179,22 +246,21 @@ pub(crate) fn show(ui: &mut Ui, canvas: Rect, banner: &Banner<'_>) -> Clicked {
         sub,
     );
     let mut clicked = Clicked::None;
-    let mut x = inner_right - actions;
-    for (place, (button, width)) in buttons.iter().zip(&widths).enumerate() {
-        let at = Rect::from_min_size(pos2(x, inner_top), Vec2::new(*width, theme::BUTTON_HEIGHT));
-        if modal::paint(ui, at, button).clicked() {
-            clicked = Clicked::Button(place);
-        }
-        x += width + theme::BANNER_ACTION_GAP;
-    }
-    if banner.dismiss {
-        let at = Rect::from_min_size(
-            pos2(x, inner_top),
-            Vec2::new(widths[widths.len() - 1], theme::APP_BAR_BUTTON_SIZE),
-        );
-        let mut child = ui.new_child(eframe::egui::UiBuilder::new().max_rect(at));
-        if bar::button(&mut child, Icon::Close, None, DISMISS, true, None).clicked() {
-            clicked = Clicked::Dismiss;
+    for (action, place) in places {
+        match action {
+            Action::Button(at) => {
+                if let Some(button) = buttons.get(at)
+                    && modal::paint(ui, place, button).clicked()
+                {
+                    clicked = Clicked::Button(at);
+                }
+            }
+            Action::Dismiss => {
+                let mut child = ui.new_child(UiBuilder::new().max_rect(place));
+                if bar::button(&mut child, Icon::Close, None, DISMISS, true, None).clicked() {
+                    clicked = Clicked::Dismiss;
+                }
+            }
         }
     }
     clicked
@@ -234,17 +300,25 @@ mod tests {
     /// The banner of `tone` drawn over the canvas, which takes clicks as the viewport does;
     /// with the amber banner's buttons, or else only Dismiss.
     fn drawn(tone: Tone) -> Harness<'static, Drawn> {
+        drawn_over(tone, CANVAS)
+    }
+
+    /// [`drawn`], over `canvas`, in a window wider than the default's.
+    fn drawn_over(tone: Tone, canvas: Rect) -> Harness<'static, Drawn> {
         let mut h = Harness::builder()
             .with_size(Vec2::new(CANVAS.right() + 40.0, CANVAS.bottom() + 40.0))
             .build_ui_state(
                 move |ui, drawn: &mut Drawn| {
-                    let canvas = ui.allocate_rect(CANVAS, Sense::click_and_drag());
+                    let canvas = ui.allocate_rect(canvas, Sense::click_and_drag());
                     if canvas.clicked() {
                         drawn.under += 1;
                     }
                     let buttons: &[(&str, bool)] = match tone {
                         Tone::Info => &[],
-                        _ => &[("Reload", true), ("Keep my edits", false)],
+                        _ => &[
+                            ("Reload, discard my edits", true),
+                            ("Keep my edits…", false),
+                        ],
                     };
                     let banner = Banner {
                         tone,
@@ -253,7 +327,7 @@ mod tests {
                         buttons,
                         dismiss: tone == Tone::Info,
                     };
-                    let clicked = show(ui, CANVAS, &banner);
+                    let clicked = show(ui, canvas.rect, &banner);
                     if clicked != Clicked::None {
                         drawn.clicked.push(clicked);
                     }
@@ -369,11 +443,14 @@ mod tests {
             }
             // `.b-actions`: Reload, 6, Keep my edits, at the right, at the words' top, each
             // `.btn` high and padded, white at 8% with the banner's words.
-            let reload = widget(&h, Role::Button, "Reload");
-            let keep = widget(&h, Role::Button, "Keep my edits");
+            let reload = widget(&h, Role::Button, "Reload, discard my edits");
+            let keep = widget(&h, Role::Button, "Keep my edits…");
             assert!(near(keep.right(), inner_right));
             assert!(near(reload.right(), keep.left() - css::BANNER_ACTIONS_GAP));
-            for (rect, label) in [(reload, "Reload"), (keep, "Keep my edits")] {
+            for (rect, label) in [
+                (reload, "Reload, discard my edits"),
+                (keep, "Keep my edits…"),
+            ] {
                 assert!(near(rect.top(), inner_top) && near(rect.height(), css::BTN_H));
                 let words = text_shape(&h, label);
                 assert!(near(
@@ -386,9 +463,13 @@ mod tests {
                     "{label}'s fill"
                 );
             }
-            assert_eq!(colour(&text_shape(&h, "Reload")), ink, "Reload's words");
+            assert_eq!(
+                colour(&text_shape(&h, "Reload, discard my edits")),
+                ink,
+                "Reload's words"
+            );
             // Off, Keep my edits' words are the disabled grey.
-            assert_eq!(colour(&text_shape(&h, "Keep my edits")), css::G400);
+            assert_eq!(colour(&text_shape(&h, "Keep my edits…")), css::G400);
             assert!(title.pos.x + title.galley.size().x <= reload.left() - css::BANNER_GAP);
         }
     }
@@ -396,14 +477,18 @@ mod tests {
     #[test]
     fn a_banner_button_hovered_is_white_on_white_at_16() {
         let mut h = drawn(Tone::Warning);
-        h.get_by_role_and_label(Role::Button, "Reload").hover();
+        h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+            .hover();
         h.run_steps(2);
-        let reload = widget(&h, Role::Button, "Reload");
+        let reload = widget(&h, Role::Button, "Reload, discard my edits");
         assert_eq!(
             fills_at(&h, reload),
             [(rgba(css::BANNER_BTN_HOVER), CornerRadius::same(css::R_SM))]
         );
-        assert_eq!(colour(&text_shape(&h, "Reload")), css::G1000);
+        assert_eq!(
+            colour(&text_shape(&h, "Reload, discard my edits")),
+            css::G1000
+        );
     }
 
     #[test]
@@ -432,11 +517,12 @@ mod tests {
         );
         assert!(h.state().clicked.is_empty());
         // Its button: its own click.
-        h.get_by_role_and_label(Role::Button, "Reload").click();
+        h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+            .click();
         h.run_steps(2);
         assert_eq!(h.state().clicked, [Clicked::Button(0)]);
         // An off button takes no click.
-        h.get_by_role_and_label(Role::Button, "Keep my edits")
+        h.get_by_role_and_label(Role::Button, "Keep my edits…")
             .click();
         h.run_steps(2);
         assert_eq!(h.state().clicked, [Clicked::Button(0)]);
@@ -459,5 +545,80 @@ mod tests {
         h.run_steps(2);
         assert_eq!(h.state().clicked, [Clicked::Dismiss]);
         assert_eq!(h.state().under, 0);
+    }
+
+    #[test]
+    fn on_a_narrow_canvas_the_banner_stays_inside_it_and_its_height_bounded() {
+        // The prototype's canvas is never narrow: the banner takes the canvas's width but
+        // 10 at each side, its buttons go under its words, and nothing of it is drawn, or
+        // takes the pointer, outside the canvas, however narrow.
+        for (width, inside) in [(300.0, true), (60.0, false)] {
+            let canvas = Rect::from_min_size(CANVAS.min, Vec2::new(width, CANVAS.height()));
+            for tone in [Tone::Warning, Tone::Info] {
+                let mut h = drawn_over(tone, canvas);
+                let fill = tone.colours().0;
+                let banner = banner_rect(&h, fill);
+                assert!(near(banner.left(), canvas.left() + css::BANNER_LEFT));
+                if inside {
+                    assert!(
+                        near(banner.right(), canvas.right() - css::BANNER_LEFT),
+                        "{tone:?} at {width}: {banner:?}"
+                    );
+                }
+                assert!(
+                    banner.height() < 240.0,
+                    "{tone:?} at {width}: {} high",
+                    banner.height()
+                );
+                // What shows of every shape the banner's, inside the canvas (the harness's
+                // own panel, behind it all in the panel's fill, aside).
+                for clipped in &h.output().shapes {
+                    if matches!(&clipped.shape, egui::Shape::Rect(panel) if panel.fill == theme::PANEL_BG)
+                    {
+                        continue;
+                    }
+                    let bounds = clipped.shape.visual_bounding_rect();
+                    let shown = clipped.clip_rect.intersect(bounds);
+                    assert!(
+                        !shown.is_positive() || canvas.expand(0.5).contains_rect(shown),
+                        "{tone:?} at {width}: a shape shows at {shown:?}"
+                    );
+                }
+                let labels: &[&str] = match tone {
+                    Tone::Info => &[DISMISS],
+                    _ => &["Reload, discard my edits", "Keep my edits…"],
+                };
+                for label in labels {
+                    let rect = widget(&h, Role::Button, label);
+                    if inside {
+                        assert!(
+                            canvas.contains_rect(rect),
+                            "{tone:?} at {width}: {label} at {rect:?}"
+                        );
+                        // Under the words, not beside them.
+                        let title = text_shape(&h, TITLE);
+                        assert!(rect.top() >= title.pos.y + title.galley.size().y);
+                    }
+                }
+                // A click past the canvas, at either side, level with the banner's top,
+                // reaches nothing of the banner's.
+                for past in [
+                    Pos2::new(canvas.left() - 20.0, banner.top() + 12.0),
+                    Pos2::new(canvas.right() + 20.0, banner.top() + 12.0),
+                ] {
+                    h.event(egui::Event::PointerMoved(past));
+                    for pressed in [true, false] {
+                        h.event(egui::Event::PointerButton {
+                            pos: past,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                    h.run_steps(2);
+                }
+                assert!(h.state().clicked.is_empty(), "{tone:?} at {width}");
+            }
+        }
     }
 }

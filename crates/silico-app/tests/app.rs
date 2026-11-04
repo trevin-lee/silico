@@ -557,7 +557,8 @@ fn an_agents_commit_reloads_with_no_edits_held_and_is_announced_with_edits_held(
     assert!(shows(&h, "Timeline", "sPin"));
     assert!(shows(&h, "Timeline", "Bore"));
     // Reload: the edits dropped, the agent's file shown, never written over.
-    h.get_by_role_and_label(Role::Button, "Reload").click();
+    h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+        .click();
     step_until(&mut h, "reloaded", |h| {
         shows(h, "Timeline", "Drill") && !anywhere(h, "example.silico *") && !anywhere(h, said)
     });
@@ -575,7 +576,7 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     let f = fixture_reading(Some(Arc::new(real)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let reloaded = "Reloaded example.silico: another program changed it on disk";
+    let reloaded = RELOADED;
     assert!(!anywhere(&h, reloaded));
     // No edits held: the session reloads it itself, and the banner says so, from the
     // revision it opened at (1) to the one its reload gave (2).
@@ -621,7 +622,7 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
     let changed = "example.silico changed on disk while you have unsaved edits.";
     step_until(&mut h, "the change announced", |h| anywhere(h, changed));
     assert!(!anywhere(&h, reloaded));
-    h.get_by_role_and_label(Role::Button, "Keep my edits")
+    h.get_by_role_and_label(Role::Button, "Keep my edits…")
         .click();
     step(&mut h);
     for _ in 0..10 {
@@ -629,6 +630,136 @@ fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtake
         assert!(!anywhere(&h, changed), "the amber banner came back");
         assert!(!anywhere(&h, reloaded), "the purple banner came back");
     }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The purple banner's title for the example's reload.
+const RELOADED: &str = "Reloaded example.silico: another program changed it on disk";
+
+/// Frames stepped, the purple banner absent after each.
+#[track_caller]
+fn never_reloaded(h: &mut AppHarness, after: &str) {
+    for _ in 0..10 {
+        step(h);
+        assert!(!anywhere(h, RELOADED), "the purple banner after {after}");
+    }
+}
+
+/// The example written to `path` as another program would, its Hole named `name`, and
+/// frames stepped until the session's reload shows it.
+fn written_outside(h: &mut AppHarness, path: &Path, name: &str) {
+    std::fs::write(
+        path,
+        EXAMPLE.replace(r#""name": "Hole""#, &format!(r#""name": "{name}""#)),
+    )
+    .unwrap();
+    step_until(h, "the reload shown", |h| shows(h, "Timeline", name));
+}
+
+#[test]
+fn the_purple_banner_comes_only_from_the_sessions_own_reload() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    written_outside(&mut h, &path, "Bore");
+    step_until(&mut h, "the reload announced", |h| anywhere(h, RELOADED));
+    h.get_by_role_and_label(Role::Button, "Dismiss").click();
+    step_until(&mut h, "dismissed", |h| !anywhere(h, RELOADED));
+    // Each of the person's own changes moves the revision: none is a reload.
+    select(&mut h, "Pin");
+    type_name(&mut h, "A");
+    step_until(&mut h, "the edit", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "APin")
+    });
+    never_reloaded(&mut h, "an edit");
+    h.get_by_role_and_label(Role::Button, "Undo").click();
+    step_until(&mut h, "undone", |h| shows(h, "Timeline", "Pin"));
+    never_reloaded(&mut h, "an undo");
+    type_name(&mut h, "B");
+    step_until(&mut h, "the second edit", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "BPin")
+    });
+    h.get_by_role_and_label(Role::Button, "Save").click();
+    step_until(&mut h, "saved", |h| !anywhere(h, "example.silico *"));
+    never_reloaded(&mut h, "a save");
+    assert!(std::fs::read_to_string(&path).unwrap().contains("BPin"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_reload_the_person_asked_for_shows_no_purple_banner() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    // Reload, discard my edits: the reload is the person's.
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| h.state().tabs()[0].transaction);
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#),
+    )
+    .unwrap();
+    step_until(&mut h, "the change announced", |h| anywhere(h, changed));
+    h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+        .click();
+    step_until(&mut h, "reloaded", |h| {
+        shows(h, "Timeline", "Drill") && !anywhere(h, "example.silico *")
+    });
+    never_reloaded(&mut h, "Reload");
+    // Keep my edits…, then Revert: the reload is the person's too.
+    type_name(&mut h, "t");
+    step_until(&mut h, "the edit held again", |h| {
+        h.state().tabs()[0].transaction && shows(h, "Timeline", "tPin")
+    });
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Bit""#),
+    )
+    .unwrap();
+    step_until(&mut h, "the second change announced", |h| {
+        anywhere(h, changed)
+    });
+    h.get_by_role_and_label(Role::Button, "Keep my edits…")
+        .click();
+    step_until(&mut h, "kept", |h| !anywhere(h, changed));
+    h.get_by_label("File").click();
+    step(&mut h);
+    h.get_by_role_and_label(Role::Button, "Revert").click();
+    step_until(&mut h, "reverted", |h| {
+        shows(h, "Timeline", "Bit") && !anywhere(h, "example.silico *")
+    });
+    never_reloaded(&mut h, "Revert");
+    // Another program's change after them is announced again.
+    written_outside(&mut h, &path, "Bore");
+    step_until(&mut h, "the reload announced", |h| anywhere(h, RELOADED));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_dismisses_the_purple_banner_once_nothing_else_takes_it() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    written_outside(&mut h, &path, "Bore");
+    step_until(&mut h, "the reload announced", |h| anywhere(h, RELOADED));
+    // A feature selected: the first Esc clears the selection, the banner staying.
+    select(&mut h, "Pin");
+    step_until(&mut h, "settled", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.edits.idle() && !tab.stoppable()
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(h.state().tabs()[0].selected.is_none());
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, RELOADED));
+    // Nothing else to take it: the next dismisses the banner.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "dismissed", |h| !anywhere(h, RELOADED));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1171,7 +1302,7 @@ fn keep_my_edits_hides_the_banner_and_the_save_is_then_a_conflict() {
     std::fs::write(&path, &theirs).unwrap();
     let said = "example.silico changed on disk while you have unsaved edits.";
     step_until(&mut h, "the banner", |h| anywhere(h, said));
-    h.get_by_role_and_label(Role::Button, "Keep my edits")
+    h.get_by_role_and_label(Role::Button, "Keep my edits…")
         .click();
     step(&mut h);
     for _ in 0..30 {
@@ -2007,7 +2138,8 @@ fn reload_to_a_name_the_field_typed_before_shows_that_name() {
     std::fs::write(&path, &theirs).unwrap();
     let said = "example.silico changed on disk while you have unsaved edits.";
     step_until(&mut h, "the change announced", |h| anywhere(h, said));
-    h.get_by_role_and_label(Role::Button, "Reload").click();
+    h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
+        .click();
     step_until(&mut h, "reloaded", |h| {
         shows(h, "Timeline", "Drill") && !anywhere(h, "example.silico *")
     });
@@ -2222,7 +2354,7 @@ fn reload_is_off_while_the_tab_closes() {
     let said = "example.silico changed on disk while you have unsaved edits.";
     step_until(&mut h, "the change announced", |h| anywhere(h, said));
     assert!(
-        h.get_by_role_and_label(Role::Button, "Reload")
+        h.get_by_role_and_label(Role::Button, "Reload, discard my edits")
             .accesskit_node()
             .is_disabled()
     );
@@ -14705,14 +14837,17 @@ fn the_changed_on_disk_chip_offers_again_the_choice_the_edits_were_kept_over() {
     std::fs::write(&path, EXAMPLE.replace("Clearance", "Room")).unwrap();
     let said = "example.silico changed on disk while you have unsaved edits.";
     step_until(&mut h, "the change announced", |h| anywhere(h, said));
-    h.get_by_role_and_label(Role::Button, "Keep my edits")
+    h.get_by_role_and_label(Role::Button, "Keep my edits…")
         .click();
     step_until(&mut h, "the banner gone", |h| !anywhere(h, said));
     // The chip stays while the file differs; a click on it offers the choice again.
     let chip = h.get_by_role_and_label(Role::Button, "Changed on disk");
     chip.click();
     step_until(&mut h, "the choice offered again", |h| anywhere(h, said));
-    assert!(h.query_by_role_and_label(Role::Button, "Reload").is_some());
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Reload, discard my edits")
+            .is_some()
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
