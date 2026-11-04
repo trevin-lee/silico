@@ -2,17 +2,20 @@
 //! state while a sketch is open, never a pane of its own. The sketch open and the revision
 //! sketch mode opened at; the newest `sketch` read, one in flight at a time, the one
 //! source of what's drawn, the status, and the tools' context; the sketch's members
-//! selected; and the palette's settings. Entering, Finish, Cancel, and the edits are the
-//! tab's (`tab.rs`), through its queue, as a feature dialog's are.
+//! selected; the palette's settings; and the tool chosen ([`tools`]), with what it asks of
+//! the core. Entering, Finish, Cancel, and the edits are the tab's (`tab.rs`), through its
+//! queue, as a feature dialog's are.
 //!
-//! The viewport calls [`SketchMode::frame`] each frame with its left button's events, a
-//! projection to the screen, and the pointer's way back onto the sketch's plane; nothing
-//! here knows of a camera.
+//! The viewport calls [`SketchMode::frame`] each frame (through `Tab::sketch_frame`, which
+//! then sends what the tool asked) with its left button's events, a projection to the
+//! screen, and the pointer's way back onto the sketch's plane; nothing here knows of a
+//! camera. A tool on takes the left button before the selection does.
 
 pub mod bar;
 pub mod draw;
 pub mod hit;
 pub mod style;
+pub mod tools;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -24,7 +27,7 @@ use silico_core::command::{ModelChoice, Problems, Revision, Running, SessionId, 
 use silico_core::document::{ElementId, ElementKind, FeatureId, Reference};
 use silico_core::kernel::{Clients, SketchPlane};
 use silico_core::sketch_states::SketchState;
-use silico_core::sketch_tools::{Preview, ToolKind};
+use silico_core::sketch_tools::{Event, Modifiers};
 
 use crate::tab::{Row, said};
 use bar::{PaletteView, Settings, StateShown, StatusLine};
@@ -34,6 +37,7 @@ use draw::{
 };
 use hit::{Hit, hit};
 use style::*;
+use tools::{Input, Tools};
 
 /// A sketch's state as sketch mode words it (SolidWorks' five states, in the prototype's
 /// words: an empty sketch "Empty", an under-defined one with its degrees of freedom left),
@@ -216,9 +220,9 @@ pub struct SketchMode {
     pub selection: BTreeSet<Hit>,
     pressed: Option<(Option<Hit>, bool)>,
     pub settings: Settings,
-    /// The drawing tool chosen (M5.11b's), and what it draws as it's used.
-    pub tool: Option<ToolKind>,
-    pub preview: Preview,
+    /// The tool chosen, if one is (M5.11b's): what it draws as it's used, what it says, and
+    /// what it asks of the core, which the tab sends.
+    pub tools: Tools,
     /// The pointer on the sketch's plane, in millimetres, as the viewport last gave it.
     pub pointer: Option<[f64; 2]>,
     /// How many of its own edits sketch mode has undone and not redone: what Redo may give
@@ -249,8 +253,7 @@ impl SketchMode {
             selection: BTreeSet::new(),
             pressed: None,
             settings: Settings::default(),
-            tool: None,
-            preview: Preview::default(),
+            tools: Tools::default(),
             pointer: None,
             undone: 0,
             undo_floor: None,
@@ -378,7 +381,19 @@ impl SketchMode {
         self.pointer = input.pointer.and_then(|p| (input.to_plane)(p));
         let clip = painter.clip_rect();
         let scale = scale_at(input.to_plane, clip.center()).unwrap_or(Scale(1.0));
-        for event in input.events {
+        // A tool on takes the left button, before the selection (the plan's precedence).
+        let selecting: &[PointerEvent] = if self.tools.choice().is_some() {
+            self.pressed = None;
+            let held = painter.ctx().input(|i| Modifiers {
+                shift: i.modifiers.shift,
+                ctrl: i.modifiers.command,
+            });
+            self.tool_events(input, held);
+            &[]
+        } else {
+            input.events
+        };
+        for event in selecting {
             match event.action {
                 PointerAction::Press => {
                     let found = self.drawable().and_then(|read| {
@@ -422,8 +437,68 @@ impl SketchMode {
             chord_tolerance: SKETCH_CHORD_TOLERANCE,
         };
         let mut drawn = self.drawing(&view, clip);
-        drawn.extend(preview(&self.preview, &view));
+        drawn.extend(preview(self.tools.preview(), &view));
         painter.extend(to_shapes(painter, &drawn));
+    }
+
+    /// The frame's left-button events given to the tool on, in the sketch's millimetres
+    /// (through `to_plane`), each with the pick tolerance where it is; then the pointer, if
+    /// it has moved since, as a hover, with the keys `held`. A press off the plane is none
+    /// of the tool's; a release off it, or a press cancelled, ends the gesture with nothing
+    /// added; a double-click off it ends a chain. Nothing before the sketch is read.
+    fn tool_events(&mut self, input: &FrameInput<'_>, held: Modifiers) {
+        let on_plane =
+            |at: Pos2| (input.to_plane)(at).filter(|p| p[0].is_finite() && p[1].is_finite());
+        let tolerance = |at: Pos2| {
+            scale_at(input.to_plane, at).map_or(0.0, |scale| scale.mm(SKETCH_PICK_TOLERANCE))
+        };
+        for event in input.events {
+            let Some(context) = tool_input(
+                &self.read,
+                self.sketch.as_ref(),
+                &self.settings,
+                tolerance(event.at),
+            ) else {
+                return;
+            };
+            let keys = Modifiers {
+                shift: event.shift,
+                ctrl: event.ctrl,
+            };
+            let tools = &mut self.tools;
+            match (event.action, on_plane(event.at)) {
+                (PointerAction::Press, Some(at)) => tools.handle(&context, Event::Press(at), keys),
+                (PointerAction::Move, Some(at)) => tools.handle(&context, Event::Move(at), keys),
+                (PointerAction::Release, Some(at)) => {
+                    tools.handle(&context, Event::Release(at), keys);
+                }
+                (PointerAction::DoubleClick, Some(at)) => {
+                    tools.handle(&context, Event::DoubleClick(at), keys);
+                }
+                (PointerAction::DoubleClick, None) => tools.handle(&context, Event::EndChain, keys),
+                (PointerAction::Release, None) | (PointerAction::Cancel, _) => {
+                    tools.cancel(Some(&context));
+                }
+                (PointerAction::Press | PointerAction::Move, None) => {}
+            }
+        }
+        let Some(pointer) = input.pointer else {
+            return;
+        };
+        let Some(at) = on_plane(pointer) else {
+            return;
+        };
+        if self.tools.choice().is_none() || self.tools.last() == Some(at) {
+            return;
+        }
+        if let Some(context) = tool_input(
+            &self.read,
+            self.sketch.as_ref(),
+            &self.settings,
+            tolerance(pointer),
+        ) {
+            self.tools.handle(&context, Event::Move(at), held);
+        }
     }
 
     /// What's drawn of the read through `view`, in `clip`: the last frame's, if nothing it's
@@ -532,7 +607,8 @@ impl SketchMode {
         PaletteView {
             state: self.drawable().map(state_shown),
             hint: self.state().and_then(hint),
-            tool: self.tool,
+            tool: self.tools.choice(),
+            tool_said: self.tools.said().map(str::to_owned),
             said,
             plane_problem: self.plane_problem().map(|error| {
                 (
@@ -545,6 +621,21 @@ impl SketchMode {
 }
 
 impl SketchMode {
+    /// Esc, with a tool on: the gesture ended and the tool left, the tool told if the sketch
+    /// is read (section 9, *Line*). Whether a tool was on to take it.
+    pub fn escape_tool(&mut self) -> bool {
+        let input = tool_input(&self.read, self.sketch.as_ref(), &self.settings, 0.0);
+        self.tools.escape(input.as_ref())
+    }
+
+    /// Enter, or the right-click menu's *End chain* (`event`), given to the tool on: a
+    /// chain ended, the tool kept. Nothing before the sketch is read.
+    pub fn end_chain(&mut self, event: Event) {
+        if let Some(input) = tool_input(&self.read, self.sketch.as_ref(), &self.settings, 0.0) {
+            self.tools.handle(&input, event, Modifiers::default());
+        }
+    }
+
     /// What the status bar says of the sketch, named `name`: that it's being edited, the
     /// pointer's coordinates on its plane, and its state.
     pub fn status(&self, name: &str) -> StatusLine {
@@ -569,6 +660,29 @@ impl SketchMode {
             enabled,
         }
     }
+}
+
+/// What the tools work against: the newest read, if it read the sketch `sketch` of a model
+/// it names; the pick `tolerance`, in millimetres; and the palette's settings.
+fn tool_input<'a>(
+    read: &'a Option<Read>,
+    sketch: Option<&'a FeatureId>,
+    settings: &Settings,
+    tolerance: f64,
+) -> Option<Input<'a>> {
+    let read = read.as_ref()?;
+    let revision = read.model?;
+    let drawn = read.result.as_ref().ok()?;
+    let sketch = sketch.filter(|sketch| **sketch == drawn.sketch)?;
+    Some(Input {
+        read: drawn,
+        sketch,
+        revision,
+        tolerance,
+        automatic_relations: settings.automatic_relations,
+        construction: settings.construction,
+        trim: settings.trim,
+    })
 }
 
 /// Millimetres per screen point on the plane at `at`: the mean of how far one point across

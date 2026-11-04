@@ -9,6 +9,7 @@ use eframe::egui::{self, Color32, CornerRadius, Margin, RichText, Sense, Stroke,
 use silico_core::sketch_tools::ToolKind;
 
 use super::style::*;
+use super::tools::{Choice, TrimMode};
 
 /// The palette's layout: its title row's height; a section's heading's text size and its
 /// small text's; and a state's dot's radius, in points.
@@ -132,8 +133,9 @@ fn dark(ui: &mut Ui) {
     *ui.visuals_mut() = panel_visuals();
 }
 
-/// The palette's settings: what's shown, Construction, and *Automatic relations* (the last
-/// two kept for M5.11b's tools).
+/// The palette's settings: what's shown; Construction, the drawing tools' curves drawn as
+/// construction; *Automatic relations*, the relations the pointer shows added; and how trim
+/// trims.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     pub show_profile: bool,
@@ -142,6 +144,7 @@ pub struct Settings {
     pub show_constraints: bool,
     pub construction: bool,
     pub automatic_relations: bool,
+    pub trim: TrimMode,
 }
 
 impl Default for Settings {
@@ -155,18 +158,20 @@ impl Default for Settings {
             show_constraints: true,
             construction: false,
             automatic_relations: true,
+            trim: TrimMode::Power,
         }
     }
 }
 
-/// What the palette shows: the sketch's state, and a word on what it means; the tool on;
-/// the read's refusal, as said; and why the sketch's face wasn't found (#347), with its
-/// suggestion.
+/// What the palette shows: the sketch's state, and a word on what it means; the tool on,
+/// and what it last said; the read's refusal, as said; and why the sketch's face wasn't
+/// found (#347), with its suggestion.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PaletteView {
     pub state: Option<StateShown>,
     pub hint: Option<&'static str>,
-    pub tool: Option<ToolKind>,
+    pub tool: Option<Choice>,
+    pub tool_said: Option<String>,
     pub said: Option<String>,
     pub plane_problem: Option<(String, Option<String>)>,
 }
@@ -182,6 +187,47 @@ pub fn tool_name(tool: ToolKind) -> &'static str {
         ToolKind::ThreePointArc => "3-Point Arc",
         ToolKind::TangentArc => "Tangent Arc",
         ToolKind::Point => "Point",
+    }
+}
+
+/// A choice's name, as the palette says it.
+pub fn choice_name(choice: Choice) -> &'static str {
+    match choice {
+        Choice::Draw(tool) => tool_name(tool),
+        Choice::Trim => "Trim",
+        Choice::Split => "Split",
+    }
+}
+
+/// How a tool is used, as the palette says it (the prototype's words for the line; the
+/// help's for the rest, docs/ux/solidworks.md, §4).
+fn usage(choice: Choice, trim: TrimMode) -> &'static str {
+    match (choice, trim) {
+        (Choice::Draw(ToolKind::Line), _) => {
+            "Click, click: a chain. Double-click or Enter ends it. Drag: one line."
+        }
+        (Choice::Draw(ToolKind::CornerRectangle), _) => {
+            "Drag from corner to corner, or click each. Shift: a square."
+        }
+        (Choice::Draw(ToolKind::CenterRectangle), _) => {
+            "Click the centre, then a corner, or drag from one to the other."
+        }
+        (Choice::Draw(ToolKind::Circle), _) => "Click the centre, then a point on the circle.",
+        (Choice::Draw(ToolKind::CenterpointArc), _) => {
+            "Click the centre, then the start, then the end."
+        }
+        (Choice::Draw(ToolKind::ThreePointArc), _) => {
+            "Click the start, then the end, then a point on the arc."
+        }
+        (Choice::Draw(ToolKind::TangentArc), _) => "Press on the end of a line or an arc and drag.",
+        (Choice::Draw(ToolKind::Point), _) => "Click to place a point.",
+        (Choice::Trim, TrimMode::Power) => {
+            "Drag across curves to trim them. Drag along one to extend it."
+        }
+        (Choice::Trim, TrimMode::Closest) => {
+            "Click a curve to trim it to its closest cuts. Drag from one to extend it."
+        }
+        (Choice::Split, _) => "Click a curve to split it there. A circle takes two clicks.",
     }
 }
 
@@ -219,15 +265,7 @@ pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
                 ),
             );
             section(ui, "Status", |ui| status_section(ui, view));
-            section(ui, "Tool", |ui| match view.tool {
-                Some(tool) => {
-                    ui.label(RichText::new(tool_name(tool)).color(TEXT_STRONG));
-                    ui.checkbox(&mut settings.automatic_relations, "Automatic relations");
-                }
-                None => {
-                    ui.label(small("None").color(TEXT_SUBDUED));
-                }
-            });
+            section(ui, "Tool", |ui| tool_section(ui, view, settings));
             section(ui, "Show", |ui| {
                 ui.checkbox(&mut settings.show_profile, "Profile");
                 ui.checkbox(&mut settings.show_points, "Points");
@@ -240,6 +278,74 @@ pub fn palette(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
             });
             section(ui, "Colours", legend);
         });
+}
+
+/// The palette's Tool: the tool on, how it's used, and what it last said, or the keys that
+/// choose one; trim's two ways; and the drawing tools' settings, *Automatic relations*
+/// (Ctrl held does as it off, for one click) and Construction.
+fn tool_section(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
+    match view.tool {
+        Some(choice) => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(choice_name(choice)).color(TEXT_STRONG));
+                ui.label(small("Esc leaves").color(TEXT_SUBDUED));
+            });
+            ui.label(small(usage(choice, settings.trim)).color(TEXT_SUBDUED));
+            if choice == Choice::Trim {
+                ui.radio_value(&mut settings.trim, TrimMode::Power, "Power trim");
+                ui.radio_value(&mut settings.trim, TrimMode::Closest, "Trim to closest");
+            }
+            if let Some(said) = &view.tool_said {
+                ui.label(small(said).color(WARNING));
+            }
+        }
+        None => {
+            ui.label(
+                small("None. Line L, Rectangle R, Circle C, Arc A, Point P, Trim T")
+                    .color(TEXT_SUBDUED),
+            );
+        }
+    }
+    let held = match ui.ctx().os() {
+        egui::os::OperatingSystem::Mac | egui::os::OperatingSystem::IOS => "⌘",
+        _ => "Ctrl",
+    };
+    ui.checkbox(&mut settings.automatic_relations, "Automatic relations")
+        .on_hover_text(format!("Hold {held} to add none for one click"));
+    ui.checkbox(&mut settings.construction, "Construction (X)");
+}
+
+/// What the canvas's right-click menu in sketch mode was asked (the prototype's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    None,
+    EndChain,
+    Finish,
+    Cancel,
+}
+
+/// The canvas's right-click menu in sketch mode, as the prototype has it: *End chain*, on
+/// only while a tool's gesture is under way (`busy`), then Finish Sketch and Cancel sketch.
+/// The pane opens it; what was asked is given back.
+pub fn canvas_menu(ui: &mut Ui, busy: bool) -> MenuAction {
+    let mut action = MenuAction::None;
+    if ui
+        .add_enabled(busy, egui::Button::new("End chain"))
+        .clicked()
+    {
+        action = MenuAction::EndChain;
+    }
+    ui.separator();
+    if ui.button("Finish Sketch").clicked() {
+        action = MenuAction::Finish;
+    }
+    if ui.button("Cancel sketch").clicked() {
+        action = MenuAction::Cancel;
+    }
+    if action != MenuAction::None {
+        ui.close();
+    }
+    action
 }
 
 /// The palette's Status: the state, with its dot, a word on it, the read's refusal, and the

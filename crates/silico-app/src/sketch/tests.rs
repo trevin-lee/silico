@@ -27,7 +27,7 @@ use super::hit::{Hit, hit};
 use super::style::*;
 use super::*;
 
-fn id(text: &str) -> ElementId {
+pub(crate) fn id(text: &str) -> ElementId {
     ElementId::new(text).unwrap()
 }
 
@@ -35,7 +35,7 @@ fn element(text: &str) -> Reference {
     Reference::Element(id(text))
 }
 
-fn point(name: &str, x: f64, y: f64) -> SketchPoint {
+pub(crate) fn point(name: &str, x: f64, y: f64) -> SketchPoint {
     SketchPoint {
         id: id(name),
         x: Coordinate::new(x).unwrap(),
@@ -44,7 +44,7 @@ fn point(name: &str, x: f64, y: f64) -> SketchPoint {
     }
 }
 
-fn line(name: &str, from: &str, to: &str) -> SketchLine {
+pub(crate) fn line(name: &str, from: &str, to: &str) -> SketchLine {
     SketchLine {
         id: id(name),
         from: id(from),
@@ -142,7 +142,7 @@ fn read(
     }
 }
 
-fn under(sketch: Sketch) -> SketchRead {
+pub(crate) fn under(sketch: Sketch) -> SketchRead {
     read(
         sketch,
         SketchState::UnderDefined,
@@ -152,7 +152,7 @@ fn under(sketch: Sketch) -> SketchRead {
 }
 
 /// Ten screen points a millimetre, the origin at (100, 500), y up.
-fn hand(at: [f64; 2]) -> Option<Pos2> {
+pub(crate) fn hand(at: [f64; 2]) -> Option<Pos2> {
     Some(pos2(
         (100.0 + 10.0 * at[0]) as f32,
         (500.0 - 10.0 * at[1]) as f32,
@@ -1290,7 +1290,7 @@ fn a_flat_sketch_fills_its_rectangle_but_the_margin_and_maps_back() {
 }
 
 /// `f` with a painter, in one pass of a context with the app's fonts.
-fn with_painter(f: impl FnOnce(&egui::Painter)) {
+pub(crate) fn with_painter(f: impl FnOnce(&egui::Painter)) {
     let ctx = egui::Context::default();
     ctx.set_fonts(crate::theme::fonts());
     let mut f = Some(f);
@@ -1304,7 +1304,7 @@ fn with_painter(f: impl FnOnce(&egui::Painter)) {
 }
 
 /// [`hand`]'s way back: screen points to the sketch's millimetres.
-fn unhand(at: Pos2) -> Option<[f64; 2]> {
+pub(crate) fn unhand(at: Pos2) -> Option<[f64; 2]> {
     Some([
         (f64::from(at.x) - 100.0) / 10.0,
         (500.0 - f64::from(at.y)) / 10.0,

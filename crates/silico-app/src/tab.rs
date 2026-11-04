@@ -9,18 +9,22 @@ use std::sync::Arc;
 use silico_core::ErrorCode;
 use silico_core::command::export::{Export, Exported};
 use silico_core::command::{
-    Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, FieldSet, ModelChoice,
-    Problems, RebuildState, Response, Revision, RolledBack, Running, SessionId, Sessions,
-    SketchEdited, SketchJoined, Status, Stepped, TextAnswer, TimelineAnswer,
+    Added, Begun, Cancellable, CheckAnswer, CheckModel, Closed, Committed, ExtendBy, FieldSet,
+    ModelChoice, NewMembers, Problems, RebuildState, Response, Revision, RolledBack, Running,
+    SessionId, Sessions, SketchCut, SketchEdited, SketchJoined, Status, Stepped, TextAnswer,
+    TimelineAnswer,
 };
 use silico_core::disk::Disk;
 use silico_core::document::json::Node;
 use silico_core::document::{ElementId, FeatureId, Reference};
+use silico_core::extend::End;
 use silico_core::kernel::Clients;
+use silico_core::sketch_tools::AddToken;
 use silico_core::timeline::{Entry, Health};
 
 use crate::dialog::{Dialog, Kind, feature_node, quoted};
-use crate::sketch::{Deletion, Prefixes, SketchMode};
+use crate::sketch::tools::{Choice, Request};
+use crate::sketch::{Deletion, FrameInput, Prefixes, SketchMode};
 
 /// What a feature's mark says: its first problem's (or warning's) message, and its
 /// suggestion, from a `check` of the model the timeline's marks came from.
@@ -96,6 +100,33 @@ enum Queued {
         sketch: FeatureId,
         point: ElementId,
     },
+    /// A sketch tool's add (`sketch_add`), of sketch mode numbered `serial`, in the sketch
+    /// `sketch`: its members, and the token its answer is given back by.
+    SketchAdd {
+        serial: u64,
+        sketch: FeatureId,
+        token: AddToken,
+        members: NewMembers,
+    },
+    /// Trim's `sketch_trim` of `curve` at `pick`.
+    SketchTrim {
+        sketch: FeatureId,
+        curve: ElementId,
+        pick: [f64; 2],
+    },
+    /// Split's `sketch_split` of `curve` at `at`.
+    SketchSplit {
+        sketch: FeatureId,
+        curve: ElementId,
+        at: Vec<[f64; 2]>,
+    },
+    /// Trim's extend (`sketch_extend`) of `curve`'s `end` `by`.
+    SketchExtend {
+        sketch: FeatureId,
+        curve: ElementId,
+        end: End,
+        by: ExtendBy,
+    },
     /// Edit Feature's read of the feature `feature`, of `kind`, for the dialog numbered
     /// `serial`: sent once everything asked before it has answered, so the values it loads
     /// are those the edits before it left.
@@ -149,7 +180,8 @@ pub enum Sent {
     Redo(Option<Revision>),
     Commit,
     Rollback,
-    /// A sketch edit, by its command's name (`sketch_remove`, `sketch_join`).
+    /// A sketch edit, by its command's name (`sketch_remove`, `sketch_join`, `sketch_add`,
+    /// `sketch_trim`, `sketch_split`, `sketch_extend`).
     SketchEdit(&'static str),
 }
 
@@ -205,6 +237,10 @@ impl Edits {
                 | Queued::AddSketch { .. }
                 | Queued::SketchRemove { .. }
                 | Queued::SketchJoin { .. }
+                | Queued::SketchAdd { .. }
+                | Queued::SketchTrim { .. }
+                | Queued::SketchSplit { .. }
+                | Queued::SketchExtend { .. }
                 | Queued::Load { .. }
                 | Queued::Closed { .. } => break,
             }
@@ -270,6 +306,19 @@ enum Under {
     SketchJoin {
         sending: Sending,
         running: Running<SketchJoined>,
+    },
+    /// A sketch tool's add, of sketch mode numbered `serial`, as it was sent, with the token
+    /// its answer is given back by.
+    SketchAdd {
+        serial: u64,
+        token: AddToken,
+        sending: Sending,
+        running: Running<SketchEdited>,
+    },
+    /// Trim's or split's edit, as it was sent.
+    SketchCut {
+        sending: Sending,
+        running: Running<SketchCut>,
     },
     /// An existing feature's text, read for its dialog (Edit Feature), of `kind`, numbered
     /// `serial`.
@@ -681,6 +730,7 @@ impl Tab {
         self.offer_disk_choice();
         self.read_timeline(sessions);
         self.read_check(sessions);
+        self.sketch_requests(sessions);
         self.read_sketches(sessions);
     }
 
@@ -1027,6 +1077,54 @@ impl Tab {
                 }
                 Err(running) => Some(Under::SketchJoin { sending, running }),
             },
+            Under::SketchAdd {
+                serial,
+                token,
+                sending,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    // The revision the add made, as the session gave it.
+                    let made = response
+                        .session
+                        .as_ref()
+                        .map_or(self.revision, |session| session.revision);
+                    let mode = self.sketch.as_mut().filter(|mode| mode.serial == serial);
+                    match response.result {
+                        Ok(_) => {
+                            if let Some(mode) = mode {
+                                mode.tools.added(token, made);
+                            }
+                        }
+                        Err(problems) => {
+                            self.message = Some(said(&problems));
+                            if let Some(mode) = mode {
+                                mode.tools.refused(token);
+                            }
+                        }
+                    }
+                    None
+                }
+                Err(running) => Some(Under::SketchAdd {
+                    serial,
+                    token,
+                    sending,
+                    running,
+                }),
+            },
+            Under::SketchCut { sending, running } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(sending, &response);
+                    if let Err(problems) = response.result {
+                        self.message = Some(said(&problems));
+                    }
+                    None
+                }
+                Err(running) => Some(Under::SketchCut { sending, running }),
+            },
             Under::Load {
                 serial,
                 kind,
@@ -1257,6 +1355,60 @@ impl Tab {
                     let running = sessions.sketch_join(&self.id, self.revision, sketch, point);
                     self.under.push(Under::SketchJoin { sending, running });
                 }
+                Queued::SketchAdd {
+                    serial,
+                    sketch,
+                    token,
+                    members,
+                } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::SketchEdit("sketch_add"));
+                    let sending = self.sending();
+                    let running = sessions.sketch_add(&self.id, self.revision, sketch, members);
+                    self.under.push(Under::SketchAdd {
+                        serial,
+                        token,
+                        sending,
+                        running,
+                    });
+                }
+                Queued::SketchTrim {
+                    sketch,
+                    curve,
+                    pick,
+                } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::SketchEdit("sketch_trim"));
+                    let sending = self.sending();
+                    let running =
+                        sessions.sketch_trim(&self.id, self.revision, sketch, curve, pick, None);
+                    self.under.push(Under::SketchCut { sending, running });
+                }
+                Queued::SketchSplit { sketch, curve, at } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::SketchEdit("sketch_split"));
+                    let sending = self.sending();
+                    let running =
+                        sessions.sketch_split(&self.id, self.revision, sketch, curve, at, None);
+                    self.under.push(Under::SketchCut { sending, running });
+                }
+                Queued::SketchExtend {
+                    sketch,
+                    curve,
+                    end,
+                    by,
+                } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    self.record(Sent::SketchEdit("sketch_extend"));
+                    let sending = self.sending();
+                    let running =
+                        sessions.sketch_extend(&self.id, self.revision, sketch, curve, end, by);
+                    self.under.push(Under::SketchEdit { sending, running });
+                }
                 Queued::Load {
                     serial,
                     kind,
@@ -1416,6 +1568,8 @@ impl Tab {
                         | Under::AddSketch { .. }
                         | Under::SketchEdit { .. }
                         | Under::SketchJoin { .. }
+                        | Under::SketchAdd { .. }
+                        | Under::SketchCut { .. }
                 )
             })
     }
@@ -1685,11 +1839,15 @@ impl Tab {
         self.rebuild_stopped() && !self.rebuild_out
     }
 
-    /// Esc with no dialog open (section 3's order): the selection cleared (sketch mode's
-    /// first, then the feature's), or, with none, a
-    /// rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)); with
-    /// neither, nothing.
+    /// Esc with no dialog open (section 3's order, the nearest thing first): sketch mode's
+    /// tool left, its chain or gesture ended with it (section 9, *Line*); or the selection
+    /// cleared (sketch mode's first, then the feature's); or, with none, a rebuild running
+    /// stopped quietly ([`stop_quietly`](Self::stop_quietly)); with neither, nothing.
     pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let tool_left = self.sketch.as_mut().is_some_and(SketchMode::escape_tool);
+        if tool_left {
+            return;
+        }
         if let Some(mode) = self
             .sketch
             .as_mut()
@@ -1950,6 +2108,8 @@ impl Tab {
             self.dialog_base = Some(self.revision);
             self.dialog_began = true;
             mode.opened_at = Some(self.revision);
+            // What its tool added is the file's no longer: forgotten, with its gesture.
+            mode.tools.forget_pending();
         }
         let Some(dialog) = self.dialog.take() else {
             return;
@@ -2166,12 +2326,117 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// A drawing tool chosen in sketch mode (M5.11b's), or none (Esc's): its preview let
-    /// go of either way. Nothing outside sketch mode.
+    /// A drawing tool chosen in sketch mode (M5.11b's), or none: another than the one on
+    /// starts afresh, the gesture under way ended with nothing added. Nothing outside
+    /// sketch mode.
     pub fn sketch_tool(&mut self, tool: Option<silico_core::sketch_tools::ToolKind>) {
+        self.sketch_choose(tool.map(Choice::Draw));
+    }
+
+    /// A tool chosen in sketch mode, a drawing tool, trim, or split, or none, as
+    /// [`sketch_tool`](Self::sketch_tool) chooses one.
+    pub fn sketch_choose(&mut self, choice: Option<Choice>) {
         if let Some(mode) = self.sketch.as_mut() {
-            mode.tool = tool;
-            mode.preview = silico_core::sketch_tools::Preview::default();
+            mode.tools.choose(choice);
+        }
+    }
+
+    /// One frame of the viewport's in sketch mode ([`SketchMode::frame`]): its left
+    /// button's events given to the tool on, or to the selection, and the sketch drawn with
+    /// `painter`; then what the tool asked sent, through the queue.
+    pub fn sketch_frame<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        painter: &eframe::egui::Painter,
+        input: &FrameInput<'_>,
+    ) {
+        if let Some(mode) = self.sketch.as_mut() {
+            mode.frame(painter, input);
+        }
+        self.sketch_requests(sessions);
+    }
+
+    /// Enter in sketch mode: a tool's chain ended, the tool kept (section 9, *Line*).
+    pub fn sketch_enter<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if let Some(mode) = self.sketch.as_mut() {
+            mode.end_chain(silico_core::sketch_tools::Event::Enter);
+        }
+        self.sketch_requests(sessions);
+    }
+
+    /// The canvas menu's *End chain*: as Enter.
+    pub fn sketch_end_chain<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if let Some(mode) = self.sketch.as_mut() {
+            mode.end_chain(silico_core::sketch_tools::Event::EndChain);
+        }
+        self.sketch_requests(sessions);
+    }
+
+    /// What sketch mode's tool asked, queued in order and sent as what's before it answers,
+    /// never waited on: each add with its token (one whose members can't be written refused
+    /// to the tool at once, and said), each trim, split, and extend of its sketch. A new
+    /// edit drops what sketch mode undid, as Delete's does. Nothing while the tab closes,
+    /// whose queue takes no edit (the tool's adds refused, so it holds none).
+    fn sketch_requests<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let closing = self.closing();
+        let Some(mode) = self.sketch.as_mut() else {
+            return;
+        };
+        let requests = mode.tools.take_requests();
+        if requests.is_empty() {
+            return;
+        }
+        let Some(sketch) = mode.sketch.clone() else {
+            return;
+        };
+        let serial = mode.serial;
+        let mut queued = false;
+        for request in requests {
+            let next = match request {
+                Request::Add { token, members } => match NewMembers::of(&members) {
+                    Ok(members) if !closing => Queued::SketchAdd {
+                        serial,
+                        sketch: sketch.clone(),
+                        token,
+                        members,
+                    },
+                    Ok(_) => {
+                        mode.tools.refused(token);
+                        continue;
+                    }
+                    Err(error) => {
+                        mode.tools.refused(token);
+                        self.message = Some(said(&Problems::from(error)));
+                        continue;
+                    }
+                },
+                _ if closing => continue,
+                Request::Trim { curve, pick } => Queued::SketchTrim {
+                    sketch: sketch.clone(),
+                    curve,
+                    pick,
+                },
+                Request::Split { curve, at } => Queued::SketchSplit {
+                    sketch: sketch.clone(),
+                    curve,
+                    at,
+                },
+                Request::Extend { curve, end, by } => Queued::SketchExtend {
+                    sketch: sketch.clone(),
+                    curve,
+                    end,
+                    by,
+                },
+            };
+            if !queued {
+                mode.undone = 0;
+                self.message = None;
+                queued = true;
+            }
+            self.edits.queue.push_back(next);
+        }
+        if queued {
+            self.advance(sessions);
         }
     }
 

@@ -9132,3 +9132,525 @@ fn finish_or_cancel_back_at_where_it_opened_by_an_undo_changes_nothing_of_the_un
         assert_eq!(never_waits::waits(), 0);
     }
 }
+
+// ---- Sketch tools (M5.11b; section 9, *Sketching*) ----
+
+/// The projection the tools are driven through until the pane's overlay gives its own
+/// (#351): ten points a millimetre, the origin at (100, 500), y up.
+fn to_screen(at: [f64; 2]) -> Option<eframe::egui::Pos2> {
+    Some(eframe::egui::pos2(
+        (100.0 + 10.0 * at[0]) as f32,
+        (500.0 - 10.0 * at[1]) as f32,
+    ))
+}
+
+/// [`to_screen`]'s way back.
+fn to_sketch(at: eframe::egui::Pos2) -> Option<[f64; 2]> {
+    Some([
+        (f64::from(at.x) - 100.0) / 10.0,
+        (500.0 - f64::from(at.y)) / 10.0,
+    ])
+}
+
+fn pointer(
+    action: silico_app::sketch::PointerAction,
+    x: f64,
+    y: f64,
+) -> silico_app::sketch::PointerEvent {
+    silico_app::sketch::PointerEvent {
+        action,
+        at: to_screen([x, y]).unwrap(),
+        shift: false,
+        ctrl: false,
+    }
+}
+
+fn clicked(x: f64, y: f64) -> Vec<silico_app::sketch::PointerEvent> {
+    use silico_app::sketch::PointerAction::{Press, Release};
+    vec![pointer(Press, x, y), pointer(Release, x, y)]
+}
+
+fn dragged(from: [f64; 2], to: [f64; 2]) -> Vec<silico_app::sketch::PointerEvent> {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    vec![
+        pointer(Press, from[0], from[1]),
+        pointer(Move, (from[0] + to[0]) / 2.0, (from[1] + to[1]) / 2.0),
+        pointer(Move, to[0], to[1]),
+        pointer(Release, to[0], to[1]),
+    ]
+}
+
+/// `events` given to the first tab's sketch mode as one frame of the viewport's overlay
+/// gives them (`Tab::sketch_frame`, which the pane calls once #351 wires it), on a thread
+/// marked so a wait there counts, the pointer at the last; then one frame of the app's.
+fn sketch_events(f: &Fixture, h: &mut AppHarness, events: &[silico_app::sketch::PointerEvent]) {
+    {
+        let _marked = never_waits::marked();
+        let ctx = eframe::egui::Context::default();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        let pointer = events.last().map(|event| event.at);
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let input = silico_app::sketch::FrameInput {
+                events,
+                pointer,
+                project: &to_screen,
+                to_plane: &to_sketch,
+            };
+            tab.sketch_frame(&sessions, &painter, &input);
+        });
+        output.textures_delta.clear();
+    }
+    step(h);
+}
+
+/// The sketch `id` as the session's document holds it.
+fn sketch_of_text(f: &Fixture, h: &AppHarness, id: &str) -> silico_core::document::Sketch {
+    let document = silico_core::document::read(text_of(f, h).as_bytes()).unwrap();
+    document
+        .features
+        .into_iter()
+        .find_map(|feature| match feature.operation {
+            silico_core::document::Operation::Sketch(sketch) if feature.id.as_str() == id => {
+                Some(sketch)
+            }
+            _ => None,
+        })
+        .unwrap()
+}
+
+/// The ID of the point of `sketch` at (x, y), exactly.
+fn point_at(sketch: &silico_core::document::Sketch, x: f64, y: f64) -> String {
+    let found: Vec<&str> = sketch
+        .points
+        .iter()
+        .filter(|p| p.x.mm() == x && p.y.mm() == y)
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(found.len(), 1, "one point at ({x}, {y}) in {sketch:?}");
+    found[0].to_owned()
+}
+
+/// The line of `sketch` from the point `a` to `b`, either way, if there's one.
+fn line_between(sketch: &silico_core::document::Sketch, a: &str, b: &str) -> Option<String> {
+    sketch
+        .lines
+        .iter()
+        .find(|l| {
+            (l.from.as_str() == a && l.to.as_str() == b)
+                || (l.from.as_str() == b && l.to.as_str() == a)
+        })
+        .map(|l| l.id.as_str().to_owned())
+}
+
+/// Whether `sketch` holds a `horizontal` (or `vertical`) of the line `line`.
+fn holds_direction(sketch: &silico_core::document::Sketch, line: &str, horizontal: bool) -> bool {
+    use silico_core::document::{Form, Reference};
+    sketch
+        .constraints
+        .iter()
+        .any(|c| match (&c.form, horizontal) {
+            (
+                Form::Horizontal {
+                    line: Reference::Element(l),
+                },
+                true,
+            )
+            | (
+                Form::Vertical {
+                    line: Reference::Element(l),
+                },
+                false,
+            ) => l.as_str() == line,
+            _ => false,
+        })
+}
+
+/// `sketch` holds the rectangle from `lo` to `hi`, worked by hand: a point at each corner,
+/// four lines from corner to corner sharing them, the bottom and top `horizontal`, and the
+/// sides `vertical`.
+fn assert_rectangle_in(sketch: &silico_core::document::Sketch, lo: [f64; 2], hi: [f64; 2]) {
+    let a = point_at(sketch, lo[0], lo[1]);
+    let b = point_at(sketch, hi[0], lo[1]);
+    let c = point_at(sketch, hi[0], hi[1]);
+    let d = point_at(sketch, lo[0], hi[1]);
+    for (from, to, horizontal) in [
+        (&a, &b, true),
+        (&b, &c, false),
+        (&c, &d, true),
+        (&d, &a, false),
+    ] {
+        let side = line_between(sketch, from, to).unwrap_or_else(|| panic!("{from} to {to}"));
+        assert!(holds_direction(sketch, &side, horizontal), "{side}");
+        assert!(!holds_direction(sketch, &side, !horizontal), "{side}");
+    }
+}
+
+fn adds_sent(h: &AppHarness) -> usize {
+    h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter(|sent| **sent == Sent::SketchEdit("sketch_add"))
+        .count()
+}
+
+/// Stepped until sketch mode's newest read has `lines` lines.
+fn read_with_lines(h: &mut AppHarness, lines: usize) {
+    step_until(h, "the read after the edit", |h| {
+        sketch_mode(h)
+            .and_then(|mode| mode.drawable())
+            .is_some_and(|read| read.members.lines.len() == lines)
+    });
+}
+
+#[test]
+fn a_corner_rectangle_dragged_and_one_by_two_clicks_each_add_four_lines_on_four_shared_points() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    // R chooses the corner rectangle (DESIGN.md, *Keyboard*); the palette names it.
+    h.key_press(eframe::egui::Key::R);
+    step(&mut h);
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Draw(ToolKind::CornerRectangle))
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .query_by_label("Corner Rectangle")
+            .is_some()
+    );
+    // Pressed at (10, 10), dragged, and released at (50, 30).
+    sketch_events(&f, &mut h, &dragged([10.0, 10.0], [50.0, 30.0]));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!((sketch.points.len(), sketch.lines.len()), (4, 4));
+    assert_eq!(sketch.constraints.len(), 4);
+    assert_rectangle_in(&sketch, [10.0, 10.0], [50.0, 30.0]);
+    assert_eq!(adds_sent(&h), 1);
+    read_with_lines(&mut h, 4);
+    // Then one by two clicks, at (60, 10) and (80, 20).
+    sketch_events(&f, &mut h, &clicked(60.0, 10.0));
+    sketch_events(&f, &mut h, &clicked(80.0, 20.0));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!((sketch.points.len(), sketch.lines.len()), (8, 8));
+    assert_eq!(sketch.constraints.len(), 8);
+    assert_rectangle_in(&sketch, [10.0, 10.0], [50.0, 30.0]);
+    assert_rectangle_in(&sketch, [60.0, 10.0], [80.0, 20.0]);
+    assert_eq!(adds_sent(&h), 2);
+    read_with_lines(&mut h, 8);
+    // Finish keeps them.
+    leave_sketch(&mut h, true);
+    assert_eq!(sketch_of_text(&f, &h, id.as_str()).lines.len(), 8);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_chain_ends_by_enter_esc_leaves_the_tool_then_the_selection_and_its_letter_toggles_it() {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    select_member(&mut h, "nb000000", silico_core::document::ElementKind::Line);
+    let tool = |h: &AppHarness| sketch_mode(h).unwrap().tools.choice();
+    // L, twice: on, then off.
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    assert_eq!(tool(&h), Some(Choice::Draw(ToolKind::Line)));
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    assert_eq!(tool(&h), None);
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    // A chain from the triangle's corner pb000000 (20, 0) to (40, 0): one line, its start
+    // the corner, shared; `horizontal`, as it's level.
+    sketch_events(&f, &mut h, &clicked(20.2, 0.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 0.0));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let end = point_at(&sketch, 40.0, 0.0);
+    let side = line_between(&sketch, "pb000000", &end).unwrap();
+    assert!(holds_direction(&sketch, &side, true));
+    assert_eq!(sketch.points.len(), 4);
+    assert!(sketch_mode(&h).unwrap().tools.busy());
+    // Enter ends the chain, the tool kept.
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    assert!(!sketch_mode(&h).unwrap().tools.busy());
+    assert_eq!(tool(&h), Some(Choice::Draw(ToolKind::Line)));
+    // X turns Construction on and off.
+    h.key_press(eframe::egui::Key::X);
+    step(&mut h);
+    assert!(sketch_mode(&h).unwrap().settings.construction);
+    h.key_press(eframe::egui::Key::X);
+    step(&mut h);
+    assert!(!sketch_mode(&h).unwrap().settings.construction);
+    // Esc, the nearest thing first: the tool (the selection kept), then the selection.
+    sketch_events(&f, &mut h, &clicked(60.0, 30.0));
+    assert!(sketch_mode(&h).unwrap().tools.busy());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(tool(&h), None);
+    assert!(!sketch_mode(&h).unwrap().selection.is_empty());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(sketch_mode(&h).unwrap().selection.is_empty());
+    assert!(sketch_mode(&h).is_some());
+    // Nothing more was added: the click Esc ended was a chain's first.
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A sketch of 511 points, whose 1022 unknowns leave room for one more point and no more
+/// (the gate takes 1024 at most).
+fn crowded() -> String {
+    let points: Vec<String> = (0..511)
+        .map(|i| format!(r#"{{"id": "p{i:07}", "x": {i}, "y": 50, "construction": false}}"#))
+        .collect();
+    format!(
+        r#"{{
+  "silico": 1,
+  "units": {{"length": "mm", "resolution": "1nm"}},
+  "naming": 5,
+  "features": [
+    {{"id": "s0000001", "type": "sketch", "v": 1, "name": "Crowded", "plane": "xy", "points": [{}], "lines": [], "circles": [], "arcs": [], "constraints": []}}
+  ]
+}}
+"#,
+        points.join(", ")
+    )
+}
+
+#[test]
+fn a_refused_add_is_said_and_forgotten_so_its_chain_ends() {
+    let f = fixture();
+    let text = crowded();
+    let (mut h, _) = f.opened("crowded.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Crowded"));
+    double_click(&mut h, "Browser", "Crowded");
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    // A segment from (10, 10) to (30, 15): two new points, four unknowns, past the gate's
+    // 1024. Refused, said; the document as it was.
+    sketch_events(&f, &mut h, &clicked(10.0, 10.0));
+    sketch_events(&f, &mut h, &clicked(30.0, 15.0));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 1);
+    let said = h.state().tabs()[0].message.clone().unwrap_or_default();
+    assert!(said.contains("1024"), "{said}");
+    assert!(anywhere(&h, &said));
+    assert_eq!(text_of(&f, &h), text);
+    // The chain's last point was the refused add's: forgotten, so the chain ended there,
+    // and the next click begins one, sending nothing.
+    sketch_events(&f, &mut h, &clicked(50.0, 15.0));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_add_another_client_undoes_is_forgotten_once_a_read_without_it_arrives() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(30.0, 30.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 35.0));
+    settled(&mut h);
+    read_with_lines(&mut h, 4);
+    // Another client undoes it.
+    let id = h.state().tabs()[0].id;
+    let revision = h.state().tabs()[0].revision;
+    assert!(f.sessions.undo(&id, revision, None).wait().result.is_ok());
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    read_with_lines(&mut h, 3);
+    // The chain's last point, (40, 35), is gone: the next click begins a chain, sending
+    // nothing; the one after draws from it, a line from (50, 35) to (60, 45).
+    sketch_events(&f, &mut h, &clicked(50.0, 35.0));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 1);
+    sketch_events(&f, &mut h, &clicked(60.0, 45.0));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 2);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let (a, b) = (point_at(&sketch, 50.0, 35.0), point_at(&sketch, 60.0, 45.0));
+    assert!(line_between(&sketch, &a, &b).is_some());
+    assert_eq!(sketch.lines.len(), 4);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn automatic_relations_off_in_the_palette_adds_no_horizontal() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Group, "Sketch Palette")
+        .get_by_label("Automatic relations")
+        .click();
+    step(&mut h);
+    assert!(!sketch_mode(&h).unwrap().settings.automatic_relations);
+    // (30, 30) to (50, 30.3), 0.86° off level: with the setting on it would be put level and
+    // held `horizontal`; off, it's where the pointer left it, with nothing.
+    sketch_events(&f, &mut h, &dragged([30.0, 30.0], [50.0, 30.3]));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let (a, b) = (point_at(&sketch, 30.0, 30.0), point_at(&sketch, 50.0, 30.3));
+    assert!(line_between(&sketch, &a, &b).is_some());
+    assert!(sketch.constraints.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Two lines crossing at (20, 0): na000001 from pa000001 (0, 0) to pa000002 (40, 0), and
+/// na000002 from pa000003 (20, −10) to pa000004 (20, 10).
+const CROSSED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Cross", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 20, "y": -10, "construction": false}, {"id": "pa000004", "x": 20, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000003", "to": "pa000004", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn trim_to_closest_and_split_send_their_commands_and_their_results_read_back() {
+    use silico_core::document::{Direction, Form, Reference};
+    let f = fixture();
+    let (mut h, _) = f.opened("crossed.silico", CROSSED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Cross"));
+    double_click(&mut h, "Browser", "Cross");
+    sketch_read(&mut h);
+    // T, then Trim to closest in the palette.
+    h.key_press(eframe::egui::Key::T);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Group, "Sketch Palette")
+        .get_by_label("Trim to closest")
+        .click();
+    step(&mut h);
+    // A click 0.3 mm off na000001 at x = 30: the piece from the crossing (20, 0) to its end
+    // goes, pa000002 with it; its new end, a point at (20, 0), held `on` na000002.
+    sketch_events(&f, &mut h, &clicked(30.0, 0.3));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert!(sketch.points.iter().all(|p| p.id.as_str() != "pa000002"));
+    let cut = point_at(&sketch, 20.0, 0.0);
+    assert_eq!(
+        line_between(&sketch, "pa000001", &cut).as_deref(),
+        Some("na000001")
+    );
+    assert_eq!(sketch.lines.len(), 2);
+    assert!(matches!(
+        sketch.constraints.as_slice(),
+        [c] if c.form == Form::On {
+            point: Reference::Element(silico_core::document::ElementId::new(&cut).unwrap()),
+            curve: Reference::Element(silico_core::document::ElementId::new("na000002").unwrap()),
+        }
+    ));
+    assert!(
+        h.state().tabs()[0]
+            .sent
+            .contains(&Sent::SketchEdit("sketch_trim"))
+    );
+    read_with_lines(&mut h, 2);
+    // Split: a click 0.3 mm off na000002 at y = 5 splits it at (20, 5), on it: na000002 to
+    // a new point there, a new line on from it to pa000004, held on one line by a
+    // `tangent_at` (`same`).
+    h.state_mut().tabs_mut()[0].sketch_choose(Some(silico_app::sketch::tools::Choice::Split));
+    sketch_events(&f, &mut h, &clicked(20.3, 5.0));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let split = point_at(&sketch, 20.0, 5.0);
+    assert_eq!(
+        line_between(&sketch, "pa000003", &split).as_deref(),
+        Some("na000002")
+    );
+    let piece = line_between(&sketch, &split, "pa000004").unwrap();
+    assert!(sketch.constraints.iter().any(|c| c.form
+        == Form::TangentAt {
+            a: Reference::Element(silico_core::document::ElementId::new("na000002").unwrap()),
+            b: Reference::Element(silico_core::document::ElementId::new(&piece).unwrap()),
+            at: Reference::Element(silico_core::document::ElementId::new(&split).unwrap()),
+            direction: Direction::Same,
+        }));
+    read_with_lines(&mut h, 3);
+    // A split at na000001's end, pa000001, is the core's to refuse: said, nothing changed.
+    let before = text_of(&f, &h);
+    sketch_events(&f, &mut h, &clicked(0.0, 0.0));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    let said = h.state().tabs()[0].message.clone().unwrap_or_default();
+    assert!(said.contains("end"), "{said}");
+    assert!(anywhere(&h, &said));
+    assert!(
+        h.state().tabs()[0]
+            .sent
+            .contains(&Sent::SketchEdit("sketch_split"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn power_trim_extends_a_line_dragged_along_to_the_pointer() {
+    let f = fixture();
+    let (mut h, _) = f.opened("crossed.silico", CROSSED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Cross"));
+    double_click(&mut h, "Browser", "Cross");
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::T);
+    step(&mut h);
+    // Pressed on na000001 at (30, 0) and dragged along it to (45, 0.2): its end, pa000002,
+    // goes to (45, 0), the pointer put on its line (`sketch_extend` to a point).
+    sketch_events(&f, &mut h, &dragged([30.0, 0.0], [45.0, 0.2]));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(point_at(&sketch, 45.0, 0.0), "pa000002");
+    assert!(
+        h.state().tabs()[0]
+            .sent
+            .contains(&Sent::SketchEdit("sketch_extend"))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tools_add_undone_inside_sketch_mode_is_forgotten_once_a_read_without_it_arrives() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(30.0, 30.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 35.0));
+    settled(&mut h);
+    read_with_lines(&mut h, 4);
+    // Its own Undo, the chain still under way: the add answered at the revision it made, so
+    // the read of the undo's revision, without it, ends the chain there.
+    chord(&mut h, eframe::egui::Key::Z);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    read_with_lines(&mut h, 3);
+    sketch_events(&f, &mut h, &clicked(50.0, 35.0));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
