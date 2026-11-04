@@ -318,6 +318,53 @@ fn drift_is_exit_1_naming_the_feature() {
     assert_eq!(line["total"], 1);
 }
 
+/// A block 20 × 20 × 10 centred on the z axis, filleted r 2 on its vertical edge at
+/// (+10, +10), OCCT's box's Edge7 (Edge3 is its mirror image across x = 0, at (-10, +10)).
+const FILLETED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "aaaaaaaa", "type": "box", "v": 1, "name": "Block", "position": [-10, -10, 0], "length": 20, "width": 20, "height": 10},
+    {"id": "ffffffff", "type": "fillet", "v": 1, "name": "Round", "base": "aaaaaaaa", "edges": ["aaaaaaaa.box.Edge7"], "radius": 2}
+  ]
+}
+"#;
+
+#[test]
+fn a_fillet_moved_onto_its_mirror_image_is_drift_naming_its_centre() {
+    // The fillet's volume, area, box, and counts are the same on either edge (silico-kernel's
+    // tests/fingerprint.rs): only where its material is tells them apart. Moved by hand to
+    // the mirror image's edge, as a kernel change could move it, the check says so.
+    let scratch = Scratch::new("mirror");
+    let file = scratch.file(FILLETED);
+    let out = silico(&scratch, &["fmt"], &file);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains(r#""aaaaaaaa.box.Edge7""#), "{text}");
+    std::fs::write(
+        &file,
+        text.replacen(r#""aaaaaaaa.box.Edge7""#, r#""aaaaaaaa.box.Edge3""#, 1),
+    )
+    .unwrap();
+    let out = silico(&scratch, &["check", "--json"], &file);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let line: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(line["total"], 1, "{line}");
+    let problem = &line["problems"][0];
+    assert_eq!(problem["code"], "drift", "{line}");
+    assert_eq!(problem["feature"], "ffffffff", "{line}");
+    assert_eq!(problem["parameter"], "fingerprint.center", "{line}");
+    // By hand, c = ΔV (10 - k r) / (V - ΔV) = 0.0205456 mm (silico-kernel's
+    // tests/fingerprint.rs works it): the centre (-c, -c, 5) stored, (c, -c, 5) rebuilt, and
+    // nothing else moved.
+    assert_eq!(
+        problem["message"],
+        "feature ffffffff rebuilt to other measures than its fingerprint: center [-0.020546, -0.020546, 5] → [0.020546, -0.020546, 5]",
+        "{line}"
+    );
+}
+
 #[test]
 fn fmt_check_writes_nothing_and_says_the_file_would_change() {
     let scratch = Scratch::new("fmt-dry");
@@ -1067,10 +1114,11 @@ fn a_revolved_barrels_fingerprint_is_its_volume_by_hand_and_check_passes() {
     let text = std::fs::read_to_string(&file).unwrap();
     // Its tight box by hand, (−5, −5, −4) to (5, 5, 4): the arc's widest point, x = 5 at
     // z = 0, turned. Its arc crosses its circle's angle 0, whose face was boxed from x = −4
-    // before each arc edge took OCCT's own range (docs/ports/measure.md).
+    // before each arc edge took OCCT's own range (docs/ports/measure.md). Its centre is the
+    // origin: a whole turn about z of a profile symmetric across z = 0.
     assert!(
         text.contains(
-            r#""fingerprint": {"volume": 526.334314, "area": 388.599549, "bbox": [-5, -5, -4, 5, 5, 4],"#
+            r#""fingerprint": {"volume": 526.334314, "area": 388.599549, "center": [0, 0, 0], "bbox": [-5, -5, -4, 5, 5, 4],"#
         ),
         "{text}"
     );
