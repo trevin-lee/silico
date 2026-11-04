@@ -1234,7 +1234,7 @@ fn a_split_trim_or_unjoin_whose_solve_conflicts_or_fails_where_the_sketch_didnt_
                 json!([error(
                     "over_constrained",
                     &format!(
-                        "after the {edit}, the sketch's constraints conflict: these 1 can't all hold"
+                        "after the {edit}, the sketch's constraints conflict: the ones named can't all hold"
                     ),
                     Some("s0000001"),
                     &[named],
@@ -1361,7 +1361,7 @@ fn a_conflict_that_leaves_no_freedom_ranks_worse_than_one_that_does() {
     assert_eq!(envelope["ok"], false, "{envelope}");
     assert_eq!(
         envelope["errors"][0]["message"],
-        "after the split, the sketch's constraints conflict: these 1 can't all hold"
+        "after the split, the sketch's constraints conflict: the ones named can't all hold"
     );
     let envelope = judged(bound, free);
     assert_eq!(envelope["ok"], true, "{envelope}");
@@ -1397,7 +1397,7 @@ fn a_merge_is_refused_only_where_its_solve_is_worse_than_the_one_before() {
         refused,
         json!([error(
             "over_constrained",
-            "after the merge, the sketch's constraints conflict: these 1 can't all hold",
+            "after the merge, the sketch's constraints conflict: the ones named can't all hold",
             Some("s0000001"),
             &["ka000001"],
             None,
@@ -1821,7 +1821,7 @@ fn a_merge_that_adds_a_redundancy_to_one_the_sketch_had_is_refused_naming_the_ne
     );
     assert_eq!(
         envelope["errors"][0]["message"],
-        "after the merge, these 1 constraints repeat others, as the sketch's solve before it found none of them do"
+        "after the merge, the constraints named repeat others, as the sketch's solve before it found none of them do"
     );
 }
 
@@ -2050,7 +2050,7 @@ fn an_extend_whose_solve_conflicts_or_fails_is_refused_leaving_the_text_byte_for
             refused,
             json!([error(
                 "over_constrained",
-                "after the extend, the sketch's constraints conflict: these 1 can't all hold",
+                "after the extend, the sketch's constraints conflict: the ones named can't all hold",
                 Some("s0000001"),
                 &["ka000001"],
                 None,
@@ -2535,7 +2535,7 @@ fn a_suppressed_sketch_is_edited_and_its_edits_judged_as_any_sketchs() {
         f.refused("sketch_split", &request),
         json!([error(
             "over_constrained",
-            "after the split, the sketch's constraints conflict: these 1 can't all hold",
+            "after the split, the sketch's constraints conflict: the ones named can't all hold",
             Some("s0000001"),
             &["ka000001"],
             None,
@@ -2955,7 +2955,7 @@ fn a_join_whose_solve_conflicts_where_the_sketch_didnt_is_refused_and_the_sessio
         refused,
         json!([error(
             "over_constrained",
-            "after the join, the sketch's constraints conflict: these 1 can't all hold",
+            "after the join, the sketch's constraints conflict: the ones named can't all hold",
             Some("s0000001"),
             &["ka000001"],
             None,

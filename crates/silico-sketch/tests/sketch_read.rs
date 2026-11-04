@@ -292,7 +292,7 @@ fn two_driving_lengths_that_differ_over_define_the_line_given_as_stored() {
     );
     let conflict = error(
         "over_constrained",
-        "the sketch's constraints conflict: these 2 can't all hold",
+        "the sketch's constraints conflict: the ones named can't all hold",
         &["k0000001", "k0000002"],
         "remove or change one of the constraints named",
     );
@@ -508,7 +508,7 @@ fn the_rectangle_given_a_second_width_that_disagrees_reads_negative_degrees_of_f
         read["solve_problem"],
         error(
             "over_constrained",
-            "the sketch's constraints conflict: these 2 can't all hold",
+            "the sketch's constraints conflict: the ones named can't all hold",
             &["g4h5j6k7", "zz000003"],
             "remove or change one of the constraints named",
         )

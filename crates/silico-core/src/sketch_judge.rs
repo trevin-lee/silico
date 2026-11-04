@@ -144,11 +144,10 @@ pub fn judge(before: Option<&Judged>, after: &Judged, edit: WritingEdit) -> Opti
             } else {
                 new_redundant
             };
-            let n = named.len();
             Error::new(
                 ErrorCode::OverConstrained,
                 format!(
-                    "after the {name}, these {n} constraints repeat others, as the sketch's solve before it found none of them do"
+                    "after the {name}, the constraints named repeat others, as the sketch's solve before it found none of them do"
                 ),
             )
             .with_elements(named)
