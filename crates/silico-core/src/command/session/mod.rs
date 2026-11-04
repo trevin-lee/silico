@@ -113,16 +113,16 @@ use super::logs::{LogBuffer, LogQuery, Logs};
 use super::{Cancellable, Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
 use crate::cache::{Cache, Cleared};
 use crate::disk::{DISK_CHECK_INTERVAL, Disk, DiskWatch};
+use crate::document::FeatureId;
 use crate::document::json::Node;
-use crate::document::{self, FeatureId};
-#[cfg(doc)]
-use crate::file;
 use crate::file::{Workspace, shown_path};
 use crate::kernel::{Clients, Kernel};
 use crate::recompute::{self, SketchSolvers};
 use crate::sketch::SketchSolver;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
+#[cfg(doc)]
+use crate::{document, file};
 
 use cancel::{Interrupt, Ticket, Why, not_running};
 use clearing::{partly_cleared_problems, shown_cache_directory};
@@ -1038,29 +1038,28 @@ impl<P: Clients + 'static> Sessions<P> {
     /// The text `session`'s document is: the file's bytes exactly, until an edit; or, given
     /// a `feature`, that feature's canonical text ([`document::write_feature`]). Refused if
     /// the text isn't UTF-8 (the reader refused it), or, for a feature, if the text doesn't
-    /// read as a document or hasn't one feature of that ID.
+    /// read as a document or hasn't one feature of that ID: [`text_at`](Self::text_at) at
+    /// the revision now.
     pub fn text(&self, session: &SessionId, feature: Option<FeatureId>) -> Running<TextAnswer> {
+        self.text_at(session, feature, None)
+    }
+
+    /// [`text`](Self::text), of the revision `revision` names (`None` for the session's
+    /// revision now: Fable's decision of 2026-11-04, section 2): the text the session holds
+    /// at its revision now, at the one its last reload replaced, or, inside a transaction, at
+    /// the one `begin` saw; or that revision's feature's. Refused, naming `revision`, for a
+    /// revision it doesn't hold, the ones it does as candidates. "Restore" is this read,
+    /// then `begin` and `replace_text` of the text: an edit like any other.
+    pub fn text_at(
+        &self,
+        session: &SessionId,
+        feature: Option<FeatureId>,
+        revision: Option<Revision>,
+    ) -> Running<TextAnswer> {
         self.queued(session, SessionCommand::Text, move |session, _, _| {
-            let (text, gated) = session.document();
-            let text = match feature {
-                None => String::from_utf8(text.to_vec()).map_err(|e| {
-                    Problems::from(
-                        Error::new(
-                            ErrorCode::InvalidInput,
-                            format!(
-                                "the document's text isn't UTF-8 (at byte {}), so it can't be given as text",
-                                e.utf8_error().valid_up_to()
-                            ),
-                        )
-                        .with_suggestion("mend the file: a document is UTF-8 text"),
-                    )
-                }),
-                Some(id) => {
-                    let document = gated.document().map_err(Clone::clone)?;
-                    Ok(document::write_feature(document.feature(&id)?)?)
-                }
-            }?;
-            Ok(TextAnswer { text })
+            session
+                .text(feature, revision)
+                .map(|text| TextAnswer { text })
         })
     }
 

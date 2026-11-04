@@ -33,12 +33,14 @@ use crate::document::{Change, FeatureId, PROBLEMS_LISTED};
 use crate::timeline::{Entry, Health};
 use crate::{Error, ErrorCode};
 
-/// A `text` request: the session, and the feature to read alone (`None` for the whole
-/// document).
+/// A `text` request: the session, the feature to read alone (`None` for the whole
+/// document), and the revision whose text to read (`None` for the document now: Fable's
+/// decision of 2026-11-04, section 2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextRequest {
     pub session: SessionId,
     pub feature: Option<FeatureId>,
+    pub revision: Option<Revision>,
 }
 
 impl TextRequest {
@@ -47,9 +49,11 @@ impl TextRequest {
         RequestFields::read(node, |f| {
             let session = f.session();
             let feature = f.nullable_feature("feature");
+            let revision = f.nullable_revision("revision");
             Some(TextRequest {
                 session: session?,
                 feature: feature?,
+                revision: revision?,
             })
         })
     }
@@ -63,6 +67,10 @@ impl ToWire for TextRequest {
             (
                 "feature",
                 Json::or_null(self.feature.as_ref(), ToWire::to_wire),
+            ),
+            (
+                "revision",
+                Json::or_null(self.revision.as_ref(), ToWire::to_wire),
             ),
         ])
     }
@@ -402,6 +410,14 @@ pub struct TextRequestSchema {
     /// The feature whose text to give alone, by ID, or null for the whole document. For a
     /// document too large to give in one response, read it a feature at a time.
     pub feature: Option<FeatureId>,
+    /// The revision whose text to give, or null for the document now. A session holds the
+    /// text of its revision now, of the one its last reload replaced (after a response that
+    /// says `reloaded`), and, inside a transaction, of the one it began at; any other is
+    /// refused, the revisions it holds its candidates. To put back the text a reload
+    /// replaced, `begin`, then `replace_text` with it: an edit like any other, which `undo`
+    /// takes back and `commit` saves.
+    #[schemars(range(min = 1))]
+    pub revision: Option<u64>,
 }
 
 /// `text`'s result.

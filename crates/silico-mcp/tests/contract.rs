@@ -384,8 +384,9 @@ fn every_example_holds_to_its_tools_schemas() {
     // As, commit's 3: its request, its result, and a file already there; M5.10's
     // sketch_join's 4; and M5.5's 5, meshes': its request, its result, and its refusals of a
     // suppressed feature and of a response too long, for several bodies and for one; and
-    // diff's 3: its request, its result, and its refusal of a revision not held.
-    assert_eq!(seen, 194);
+    // diff's 3: its request, its result, and its refusal of a revision not held; and text's
+    // request of a revision (Fable's restore, 2026-11-04).
+    assert_eq!(seen, 195);
 }
 
 #[test]

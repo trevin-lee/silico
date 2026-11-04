@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::cancel::{Ticket, cancelled};
 use super::transaction::Held;
 use super::{Gated, Problems, Revision, Session, SessionId};
-use crate::document::{self, Change, Document};
+use crate::document::{self, Change, Document, FeatureId};
 use crate::kernel::Kernel;
 use crate::{Error, ErrorCode};
 
@@ -171,6 +171,46 @@ impl<C: Kernel + 'static> Session<C> {
         parameter: &'static str,
     ) -> Result<HeldText, Error> {
         self.held.read().text_at(self.id, revision, parameter)
+    }
+
+    /// `text`'s work: the text the session holds at `revision` (`None` for its revision
+    /// now), or, given a `feature`, that feature's canonical text as that revision's
+    /// document has it ([`document::write_feature`]). Refused for a revision not held
+    /// (naming `revision`), a text that isn't UTF-8, and, for a feature, a text that doesn't
+    /// read as a document or hasn't one feature of that ID.
+    pub(super) fn text(
+        &self,
+        feature: Option<FeatureId>,
+        revision: Option<Revision>,
+    ) -> Result<String, Problems> {
+        let held = self.text_at(revision, "revision")?;
+        match feature {
+            None => String::from_utf8(held.text.to_vec()).map_err(|e| {
+                Problems::from(
+                    Error::new(
+                        ErrorCode::InvalidInput,
+                        format!(
+                            "the document's text isn't UTF-8 (at byte {}), so it can't be given as text",
+                            e.utf8_error().valid_up_to()
+                        ),
+                    )
+                    .with_suggestion("mend the file: a document is UTF-8 text"),
+                )
+            }),
+            Some(id) => {
+                // The gate's finding where the session keeps it; the text read again where
+                // it doesn't (the one a reload replaced).
+                let read;
+                let document = match &held.gated {
+                    Some(gated) => gated.document().map_err(Clone::clone)?,
+                    None => {
+                        read = document::read(&held.text)?;
+                        &read
+                    }
+                };
+                Ok(document::write_feature(document.feature(&id)?)?)
+            }
+        }
     }
 
     /// `diff`'s work: the changes from the revision `from` names to the one `to` names

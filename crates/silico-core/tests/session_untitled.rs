@@ -55,7 +55,10 @@ impl Fixture {
 
     /// The session's document's text.
     fn text_of(&self, s: &str) -> String {
-        let text = self.env("text", &format!(r#"{{"session": "{s}", "feature": null}}"#));
+        let text = self.env(
+            "text",
+            &format!(r#"{{"session": "{s}", "feature": null, "revision": null}}"#),
+        );
         assert_eq!(text["ok"], true, "{text}");
         text["result"]["text"].as_str().unwrap().to_owned()
     }
@@ -346,7 +349,10 @@ fn the_first_save_writes_the_file_and_the_session_is_then_as_one_opened_on_it() 
     assert!(entries(&cache) > 0, "{:?}", listing(&f.work));
     // A hand edit of the file is reloaded by the next command, as any session's is.
     std::fs::write(f.work.join("part.silico"), OUTSIDE).unwrap();
-    let text = f.env("text", &format!(r#"{{"session": "{s}", "feature": null}}"#));
+    let text = f.env(
+        "text",
+        &format!(r#"{{"session": "{s}", "feature": null, "revision": null}}"#),
+    );
     assert_eq!(text["session"]["reloaded"], true, "{text}");
     assert_eq!(text["result"]["text"], OUTSIDE);
     // And its file is watched on disk: `status.disk` comes to say it's unchanged.

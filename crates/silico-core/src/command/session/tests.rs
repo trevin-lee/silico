@@ -4,6 +4,7 @@ use super::rebuilds::*;
 use super::transaction::*;
 use super::types::*;
 use super::*;
+use crate::document;
 use crate::document::Checked;
 use crate::document::Measure;
 use crate::fake::{FakeClient, FakeKernel};

@@ -96,6 +96,8 @@ mod adversarial_sketch_edit_commands;
 mod adversarial_sketch_geometry_edits;
 #[path = "adversarial_sketch_read.rs"]
 mod adversarial_sketch_read;
+#[path = "adversarial_text_revision.rs"]
+mod adversarial_text_revision;
 #[path = "adversarial_timeline.rs"]
 mod adversarial_timeline;
 #[path = "adversarial_type_words.rs"]
@@ -172,6 +174,8 @@ mod session_rebuild;
 mod session_reload;
 #[path = "session_render.rs"]
 mod session_render;
+#[path = "session_restore.rs"]
+mod session_restore;
 #[path = "session_save_as.rs"]
 mod session_save_as;
 #[path = "session_sketch.rs"]

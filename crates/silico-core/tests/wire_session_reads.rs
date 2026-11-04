@@ -282,6 +282,7 @@ fn the_designs_requests_are_read_written_back_byte_for_byte_and_hold_to_their_sc
         TextRequest {
             session: s1(),
             feature: None,
+            revision: None,
         }
     );
     assert_eq!(written(&request), text);
@@ -327,17 +328,47 @@ fn requests_with_their_other_values_are_read_and_written_back() {
         );
         holds(&schema_of("open", "request"), text, text);
     }
-    let text = "{\"session\": \"s12\", \"feature\": \"k7f2qx3m\"}\n";
+    let text = "{\"session\": \"s12\", \"feature\": \"k7f2qx3m\", \"revision\": null}\n";
     let request = TextRequest::read(&parsed(text)).unwrap();
     assert_eq!(
         request,
         TextRequest {
             session: SessionId::parse("s12").unwrap(),
             feature: Some(id("k7f2qx3m")),
+            revision: None,
         }
     );
     assert_eq!(written(&request), text);
     holds(&schema_of("text", "request"), text, "a feature");
+    // A revision, with a feature and without (Fable's decision of 2026-11-04, section 2).
+    let text = "{\"session\": \"s3\", \"feature\": \"k7f2qx3m\", \"revision\": 7}\n";
+    let request = TextRequest::read(&parsed(text)).unwrap();
+    assert_eq!(
+        request,
+        TextRequest {
+            session: SessionId::parse("s3").unwrap(),
+            feature: Some(id("k7f2qx3m")),
+            revision: Revision::from_number(7),
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(
+        &schema_of("text", "request"),
+        text,
+        "a feature at a revision",
+    );
+    let text = example("text/request-revision");
+    let request = TextRequest::read(&parsed(&text)).unwrap();
+    assert_eq!(
+        request,
+        TextRequest {
+            session: s1(),
+            feature: None,
+            revision: Revision::from_number(1),
+        }
+    );
+    assert_eq!(written(&request), text);
+    holds(&schema_of("text", "request"), &text, "a revision");
     let text = "{\"session\": \"s2\", \"model\": \"published\", \"fresh\": false}\n";
     let request = CheckRequest::read(&parsed(text)).unwrap();
     assert_eq!(request.model, CheckModel::Published);

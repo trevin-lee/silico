@@ -10133,6 +10133,14 @@
             ],
             "description": "The feature whose text to give alone, by ID, or null for the whole document. For a\ndocument too large to give in one response, read it a feature at a time."
           },
+          "revision": {
+            "description": "The revision whose text to give, or null for the document now. A session holds the\ntext of its revision now, of the one its last reload replaced (after a response that\nsays `reloaded`), and, inside a transaction, of the one it began at; any other is\nrefused, the revisions it holds its candidates. To put back the text a reload\nreplaced, `begin`, then `replace_text` with it: an edit like any other, which `undo`\ntakes back and `commit` saves.",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "session": {
             "description": "The session's ID, as `open` gave it.",
             "pattern": "^s[1-9][0-9]*$",
@@ -10141,6 +10149,7 @@
         },
         "required": [
           "feature",
+          "revision",
           "session"
         ],
         "title": "TextRequest",
