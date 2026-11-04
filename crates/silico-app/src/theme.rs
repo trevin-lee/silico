@@ -508,6 +508,111 @@ pub const NAVIGATION_BAR_WIDTH: f32 = 220.0;
 pub const NAVIGATION_BAR_HEIGHT: f32 = 32.0;
 pub const NAVIGATION_BAR_MARGIN: f32 = 12.0;
 
+/// A small button's height (`.btn`): Copy MCP config, and the dialogs' buttons.
+pub const BUTTON_HEIGHT: f32 = 22.0;
+
+/// A ghost button's padding at its sides (`.btn-ghost`, as the start page pads it).
+pub const GHOST_BUTTON_PADDING: f32 = 6.0;
+
+/// A ghost button's fill, hovered (`.btn-ghost:hover`, Gray.300).
+pub const GHOST_BUTTON_HOVER_BG: Color32 = WIDGET_BG;
+
+// ---- Key caps (`.kbd`) ----
+
+/// A key cap's fill (Gray.250).
+pub const KEY_CAP_BG: Color32 = GRAY_250;
+
+/// A key cap's outline (Gray.350).
+pub const KEY_CAP_STROKE: Color32 = GRAY_350;
+
+/// A key cap's text (Gray.800).
+pub const KEY_CAP_TEXT: Color32 = GRAY_800;
+
+/// A key cap's outline on a primary button: black at 25%.
+pub const KEY_CAP_ON_PRIMARY_STROKE: Color32 = hex_alpha(0x000000, 64);
+
+/// A key cap's text on a primary button (the prototype's `#444`).
+pub const KEY_CAP_ON_PRIMARY_TEXT: Color32 = hex(0x444444);
+
+/// A key cap's text size.
+pub const KEY_CAP_TEXT_SIZE: f32 = 10.5;
+
+/// A key cap's least width, its padding at each side of its text, and its outline's width,
+/// inside its width as `.kbd`'s `border-box` has it.
+pub const KEY_CAP_MIN_WIDTH: f32 = 16.0;
+pub const KEY_CAP_PADDING: f32 = 4.0;
+pub const KEY_CAP_BORDER: f32 = 1.0;
+
+/// A key cap's corners, and the space between two caps of one shortcut (`.keys`).
+pub const KEY_CAP_CORNER_RADIUS: u8 = 3;
+pub const KEY_CAP_GAP: f32 = 2.0;
+
+// ---- The status bar's marks ----
+
+/// A state's dot (`.state-dot`): its side.
+pub const STATE_DOT_SIZE: f32 = 8.0;
+
+/// The spinner beside work under way (`.spinner`): its side.
+pub const SPINNER_SIZE: f32 = 11.0;
+
+// ---- The start page (`.st-*`, `.recent-row`) ----
+
+/// The page's widest, centred in the window.
+pub const START_MAX_WIDTH: f32 = 1080.0;
+
+/// The page's padding: above, at its sides, and below.
+pub const START_PADDING_TOP: f32 = 44.0;
+pub const START_PADDING_SIDE: f32 = 40.0;
+pub const START_PADDING_BOTTOM: f32 = 40.0;
+
+/// The left column's width (the name, New and Open, and the agents' note), and the gap to
+/// the right column (Recent).
+pub const START_SIDE_WIDTH: f32 = 240.0;
+pub const START_COLUMN_GAP: f32 = 48.0;
+
+/// The name's size, the logo's side beside it, the gap between them, and the space below.
+pub const START_BRAND_SIZE: f32 = 18.0;
+pub const START_LOGO_SIZE: f32 = 26.0;
+pub const START_BRAND_GAP: f32 = 10.0;
+pub const START_BRAND_MARGIN: f32 = 26.0;
+
+/// An action's (New, Open) height, padding at its sides, the gap after its icon, and the
+/// gap between two actions.
+pub const START_ACTION_HEIGHT: f32 = 34.0;
+pub const START_ACTION_PADDING: f32 = 10.0;
+pub const START_ACTION_ICON_GAP: f32 = 10.0;
+pub const START_ACTION_GAP: f32 = 4.0;
+
+/// The primary action's fill, hovered (`.st-action.primary:hover`: white, where a primary
+/// button's is Gray.850); its text is [`PRIMARY_BUTTON_HOVER_TEXT`].
+pub const START_PRIMARY_HOVER_BG: Color32 = GRAY_1000;
+
+/// The agents' note: the space above its rule, below it, its line height, and the space
+/// above Copy MCP config.
+pub const START_NOTE_MARGIN: f32 = 28.0;
+pub const START_NOTE_PADDING: f32 = 16.0;
+pub const START_NOTE_LINE_HEIGHT: f32 = 17.0;
+pub const START_COPY_GAP: f32 = 10.0;
+
+/// A section header's (RECENT) extra space between letters, and the space below it.
+pub const START_HEADER_LETTER_SPACING: f32 = 0.5;
+pub const START_HEADER_GAP: f32 = 8.0;
+
+/// A recent document's row: its height, its padding left and right, the gap between its
+/// columns, the gap between two rows, and its fill hovered (Gray.200).
+pub const START_RECENT_ROW_HEIGHT: f32 = 52.0;
+pub const START_RECENT_PADDING_LEFT: f32 = 6.0;
+pub const START_RECENT_PADDING_RIGHT: f32 = 10.0;
+pub const START_RECENT_COLUMN_GAP: f32 = 14.0;
+pub const START_RECENT_ROW_GAP: f32 = 1.0;
+pub const START_RECENT_HOVER_BG: Color32 = GRAY_200;
+
+/// The thumbnail's place in a recent document's row: its width and height, and its fill
+/// (Gray.0).
+pub const START_THUMB_WIDTH: f32 = 52.0;
+pub const START_THUMB_HEIGHT: f32 = 40.0;
+pub const START_THUMB_BG: Color32 = GRAY_0;
+
 // ---- Type (DESIGN.md, *Type*) ----
 
 /// Body text: 12 points (`re_ui`'s Body), on a 16 point line where a caller sets one.

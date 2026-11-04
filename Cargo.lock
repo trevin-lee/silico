@@ -6733,6 +6733,7 @@ dependencies = [
 name = "silico-app"
 version = "0.0.0"
 dependencies = [
+ "directories",
  "eframe",
  "egui_extras",
  "egui_kittest",
