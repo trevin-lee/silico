@@ -9517,6 +9517,379 @@ fn a_cancelled_browse_changes_nothing() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- The right button's clicks handed on ----
+
+/// A right click as a tab's overlay was given it: the serial its call took, the frame's
+/// session, the click, and egui's time at the call.
+#[derive(Debug, Clone, Copy)]
+struct SecondarySeen {
+    serial: Option<u64>,
+    session: silico_core::command::SessionId,
+    click: silico_app::viewport::SecondaryClick,
+    time: f64,
+}
+
+/// Every right click the overlays were given, in order, the calls kept (for
+/// [`left_taken`], which clears them).
+fn secondary_seen(seen: &Overlays) -> Vec<SecondarySeen> {
+    let seen = seen.lock().unwrap();
+    seen.frames
+        .iter()
+        .flat_map(|(serial, frame, time)| {
+            frame.secondary.iter().map(move |click| SecondarySeen {
+                serial: *serial,
+                session: frame.session,
+                click: *click,
+                time: *time,
+            })
+        })
+        .collect()
+}
+
+/// Every right click the overlays were given, in order, and the calls cleared.
+fn secondary_taken(seen: &Overlays) -> Vec<SecondarySeen> {
+    let clicks = secondary_seen(seen);
+    seen.lock().unwrap().frames.clear();
+    clicks
+}
+
+/// A right press at `from` and its release at `to`, the pointer moved there between,
+/// `held` the whole time, each event a frame of its own; then frames enough for them all.
+fn right_click(
+    h: &mut AppHarness,
+    from: eframe::egui::Pos2,
+    to: eframe::egui::Pos2,
+    held: eframe::egui::Modifiers,
+) {
+    let right = eframe::egui::PointerButton::Secondary;
+    h.event(eframe::egui::Event::ModifiersChanged(held));
+    h.hover_at(from);
+    button_event(h, from, right, true, held);
+    h.hover_at(to);
+    button_event(h, to, right, false, held);
+    h.event(eframe::egui::Event::ModifiersChanged(
+        eframe::egui::Modifiers::NONE,
+    ));
+    for _ in 0..3 {
+        step(h);
+    }
+}
+
+#[test]
+fn a_right_click_on_the_canvas_is_handed_on_once_where_it_was_let_go_with_its_modifiers() {
+    use eframe::egui::{Modifiers, vec2};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    assert_eq!(h.ctx.pixels_per_point(), 2.0);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    secondary_taken(&seen);
+    // Shift without Ctrl: one click, at physical pixels from the viewport's top left, of
+    // the frame it came in, at egui's time then, given the tab's session.
+    right_click(&mut h, at, at, Modifiers::SHIFT);
+    let clicks = secondary_seen(&seen);
+    // The left button's stream is given nothing of it.
+    let left = left_taken(&seen);
+    assert!(left.is_empty(), "{left:?}");
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    let seen_click = clicks[0];
+    assert_eq!(seen_click.click.at_px, at_px(rect, at));
+    assert!(seen_click.click.shift && !seen_click.click.ctrl);
+    assert_eq!(Some(seen_click.click.frame), seen_click.serial);
+    assert_eq!(seen_click.click.time, seen_click.time);
+    assert_eq!(seen_click.session, h.state().tabs()[0].id);
+    // Handed on once: the frame the view keeps holds none of it.
+    assert!(view(&h).frame().unwrap().secondary.is_empty());
+    // Ctrl (Cmd on macOS) without Shift.
+    right_click(&mut h, at, at, Modifiers::COMMAND);
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert!(clicks[0].click.ctrl && !clicks[0].click.shift);
+    // Let go 5 points from its press, 10 physical pixels (egui's click distance is 6
+    // points): a click, where it was let go.
+    let near = at + vec2(5.0, 0.0);
+    right_click(&mut h, at, near, Modifiers::NONE);
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(clicks[0].click.at_px, at_px(rect, near));
+    assert_eq!(clicks[0].click.at_px[0] - at_px(rect, at)[0], 10.0);
+    assert!(!clicks[0].click.shift && !clicks[0].click.ctrl);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_drag_is_no_click_nor_is_a_right_click_while_the_pane_navigates() {
+    use eframe::egui::{Modifiers, PointerButton, vec2};
+    use silico_app::viewport::Navigation;
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let on = at + vec2(30.0, 0.0);
+    let none = Modifiers::NONE;
+    let right = PointerButton::Secondary;
+    secondary_taken(&seen);
+    // A right drag of 7 points, past egui's click distance, and its release: no click.
+    let camera = view(&h).camera().clone();
+    right_click(&mut h, at, at + vec2(7.0, 0.0), none);
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    // Nor does it navigate: no navigation takes the right button.
+    assert_eq!(view(&h).camera(), &camera);
+    // A right click, not moved, while the middle button pans: the pan's, none.
+    h.hover_at(at);
+    button_event(&h, at, PointerButton::Middle, true, none);
+    h.hover_at(on);
+    button_event(&h, on, right, true, none);
+    button_event(&h, on, right, false, none);
+    button_event(&h, on, PointerButton::Middle, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_ne!(view(&h).camera(), &camera, "the middle button didn't pan");
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    // And while the Orbit tool's left drag orbits: none.
+    view_mut(&mut h).tool = Some(Navigation::Orbit);
+    step(&mut h);
+    let camera = view(&h).camera().clone();
+    secondary_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, PointerButton::Primary, true, none);
+    h.hover_at(on);
+    button_event(&h, on, right, true, none);
+    button_event(&h, on, right, false, none);
+    button_event(&h, on, PointerButton::Primary, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_ne!(view(&h).camera(), &camera, "the tool didn't orbit");
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    // The tool still chosen, a right click with nothing dragging is handed on: a tool
+    // takes the left drag alone.
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    secondary_taken(&seen);
+    right_click(&mut h, on, on, none);
+    assert_eq!(secondary_taken(&seen).len(), 1);
+    // And with no tool, the same right click well after: handed on, so none above was
+    // missing for want of events.
+    view_mut(&mut h).tool = None;
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    secondary_taken(&seen);
+    right_click(&mut h, on, on, none);
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(clicks[0].click.at_px, at_px(rect, on));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_click_on_the_view_cube_or_the_navigation_bar_is_theirs_not_the_canvass() {
+    use eframe::egui::{Modifiers, Pos2, vec2};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let none = Modifiers::NONE;
+    secondary_taken(&seen);
+    // On the cube's Front face: its menu opens, and nothing is handed on.
+    let front = h
+        .get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Front")
+        .rect();
+    assert!(rect.contains(front.center()));
+    right_click(&mut h, front.center(), front.center(), none);
+    assert!(
+        h.query_by_role_and_label(Role::RadioButton, "Perspective")
+            .is_some(),
+        "the cube's menu didn't open"
+    );
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    // Closed by its own choice, the projection the view has.
+    h.get_by_role_and_label(Role::RadioButton, "Orthographic")
+        .click();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(
+        h.query_by_role_and_label(Role::RadioButton, "Perspective")
+            .is_none(),
+        "the cube's menu didn't close"
+    );
+    // On the bar's Orbit, and in its padding left of Orbit (6 points each side): none.
+    let orbit = h
+        .get_by_role_and_label(Role::Toolbar, "Navigation bar")
+        .get_by_label("Orbit")
+        .rect();
+    let padding = Pos2::new(orbit.left() - 3.0, orbit.center().y);
+    assert!(rect.contains(padding));
+    secondary_taken(&seen);
+    right_click(&mut h, orbit.center(), orbit.center(), none);
+    right_click(&mut h, padding, padding, none);
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    assert_eq!(view(&h).tool, None);
+    // And the same click on the canvas, well after: handed on, so none above was missing
+    // for want of events.
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    secondary_taken(&seen);
+    let at = rect.center() - vec2(100.0, 0.0);
+    right_click(&mut h, at, at, none);
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn several_right_clicks_in_one_frame_are_handed_on_in_their_order() {
+    use eframe::egui::{Event, Modifiers, PointerButton, vec2};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let (a, b, c) = (at, at + vec2(40.0, 0.0), at + vec2(40.0, 30.0));
+    let (d, dragged) = (at - vec2(40.0, 0.0), at - vec2(20.0, 0.0));
+    let right = |pos, pressed, modifiers| Event::PointerButton {
+        pos,
+        button: PointerButton::Secondary,
+        pressed,
+        modifiers,
+    };
+    let none = Modifiers::NONE;
+    secondary_taken(&seen);
+    // Three clicks, the second with Shift and the third with Ctrl, and a right drag of 20
+    // points between the first two, all in one frame.
+    h.input_mut().events.extend([
+        Event::PointerMoved(a),
+        right(a, true, none),
+        right(a, false, none),
+        Event::PointerMoved(d),
+        right(d, true, none),
+        Event::PointerMoved(dragged),
+        right(dragged, false, none),
+        Event::PointerMoved(b),
+        right(b, true, Modifiers::SHIFT),
+        right(b, false, Modifiers::SHIFT),
+        Event::PointerMoved(c),
+        right(c, true, Modifiers::COMMAND),
+        right(c, false, Modifiers::COMMAND),
+    ]);
+    step(&mut h);
+    let clicks = secondary_taken(&seen);
+    let places: Vec<[f32; 2]> = clicks.iter().map(|seen| seen.click.at_px).collect();
+    assert_eq!(places, [a, b, c].map(|p| at_px(rect, p)), "{clicks:?}");
+    let keys: Vec<(bool, bool)> = clicks
+        .iter()
+        .map(|seen| (seen.click.shift, seen.click.ctrl))
+        .collect();
+    assert_eq!(keys, [(false, false), (true, false), (false, true)]);
+    // Each of that one frame and its one time.
+    for seen in &clicks {
+        assert_eq!(Some(seen.click.frame), seen.serial, "{seen:?}");
+        assert_eq!(seen.click.time, seen.time, "{seen:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn right_clicks_leave_the_left_buttons_stream_as_it_was() {
+    use eframe::egui::{Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{self, DoubleClick, Move, Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let p = rect.center() - vec2(100.0, 0.0);
+    let q = p + vec2(40.0, 0.0);
+    let r = p + vec2(0.0, 40.0);
+    let to = r + vec2(10.0, 5.0);
+    let none = Modifiers::NONE;
+    let (left, right) = (PointerButton::Primary, PointerButton::Secondary);
+    let click = |h: &AppHarness, at, button| {
+        button_event(h, at, button, true, none);
+        button_event(h, at, button, false, none);
+    };
+    // The same left clicks and drag, with a right click a frame before each or none, every
+    // event a frame of its own; the left button's events given, and the right clicks.
+    type Given = Vec<(LeftKind, [f32; 2], bool, bool)>;
+    let run = |h: &mut AppHarness, with_right: bool| -> (Given, usize) {
+        for _ in 0..60 {
+            step(h);
+        }
+        left_taken(&seen);
+        // A left click a frame after a right one (egui, counting every button's clicks
+        // together, calls it a double-click).
+        h.hover_at(p);
+        if with_right {
+            click(h, p, right);
+        }
+        click(h, p, left);
+        // A second past (egui's double-click delay is 0.3 s, and a triple's 0.6), a left
+        // double-click a frame after a right click (to egui, a double and a triple).
+        for _ in 0..60 {
+            step(h);
+        }
+        h.hover_at(q);
+        if with_right {
+            click(h, q, right);
+        }
+        click(h, q, left);
+        click(h, q, left);
+        for _ in 0..60 {
+            step(h);
+        }
+        // A right click in the middle of a left drag.
+        h.hover_at(r);
+        button_event(h, r, left, true, none);
+        if with_right {
+            click(h, r, right);
+        }
+        h.hover_at(to);
+        button_event(h, to, left, false, none);
+        for _ in 0..3 {
+            step(h);
+        }
+        let clicks = secondary_seen(&seen).len();
+        let given = left_taken(&seen)
+            .iter()
+            .map(|seen| {
+                let e = seen.event;
+                (e.kind, e.at_px, e.shift, e.ctrl)
+            })
+            .collect();
+        (given, clicks)
+    };
+    let (alone, no_clicks) = run(&mut h, false);
+    let (with_right, clicks) = run(&mut h, true);
+    assert_eq!(no_clicks, 0);
+    assert_eq!(clicks, 3, "the right clicks weren't handed on");
+    let kinds: Vec<LeftKind> = alone.iter().map(|given| given.0).collect();
+    assert_eq!(
+        kinds,
+        [
+            Press,
+            Release,
+            Press,
+            Release,
+            Press,
+            Release,
+            DoubleClick,
+            Press,
+            Move,
+            Release
+        ]
+    );
+    assert_eq!(alone[6].1, at_px(rect, q));
+    assert_eq!(with_right, alone);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn save_as_browse_fills_the_path_and_save_and_replace_go_on_as_typed() {
     let f = fixture();
@@ -10022,4 +10395,54 @@ fn the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe() {
             assert_eq!(pixel(inside), [0x18, 0x6a, 0xdd, 0xff], "{entry:?}");
         },
     );
+}
+
+#[test]
+fn a_right_press_in_one_tab_let_go_in_another_is_no_click_in_either() {
+    use eframe::egui::{Modifiers, PointerButton, vec2};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let (first, second) = two_tabs_first_shown(&f, &mut h, &seen);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let right = PointerButton::Secondary;
+    let none = Modifiers::NONE;
+    secondary_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, right, true, none);
+    step(&mut h);
+    // The second tab chosen with no button (through the accessibility tree), and the
+    // release there, well within egui's click duration.
+    let frames = h.state().frames();
+    h.get_by_role_and_label(Role::Button, "other.silico")
+        .click_accesskit();
+    step_until(&mut h, "the second shown", |h| {
+        left_shown(h) == Some(second)
+    });
+    step(&mut h);
+    assert!(h.state().frames() - frames < 20, "too slow to be a click");
+    button_event(&h, at, right, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    // Both tabs were shown and watched while it was held.
+    let shown: Vec<_> = seen
+        .lock()
+        .unwrap()
+        .frames
+        .iter()
+        .map(|(_, frame, _)| frame.session)
+        .collect();
+    assert!(
+        shown.contains(&first) && shown.contains(&second),
+        "{shown:?}"
+    );
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    // A click of its own, in the tab shown: handed on to it.
+    right_click(&mut h, at, at, none);
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(clicks[0].session, second);
+    assert_eq!(never_waits::waits(), 0);
 }
