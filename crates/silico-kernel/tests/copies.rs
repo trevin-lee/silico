@@ -412,6 +412,111 @@ fn a_pin_mirrored_a_millimetre_off_its_axis_fuses_into_the_union_of_two_discs() 
     assert_eq!(made.history.result.solids, 1);
 }
 
+/// A point of the plane, in millimetres.
+type Point2 = [f64; 2];
+
+/// Twice the signed area of the triangle `a`, `b`, `p`: above nought when `p` is left of
+/// the line from `a` to `b`.
+fn side(a: Point2, b: Point2, p: Point2) -> f64 {
+    (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+}
+
+/// The area of a polygon by the shoelace formula, signed: above nought counter-clockwise.
+fn signed_area(polygon: &[Point2]) -> f64 {
+    let n = polygon.len();
+    0.5 * (0..n)
+        .map(|i| {
+            let (p, q) = (polygon[i], polygon[(i + 1) % n]);
+            p[0] * q[1] - q[0] * p[1]
+        })
+        .sum::<f64>()
+}
+
+/// The part of convex `polygon` inside convex `window`, both counter-clockwise, by
+/// Sutherland and Hodgman: `polygon` clipped to the left of each of `window`'s edges.
+fn clipped(polygon: &[Point2], window: &[Point2]) -> Vec<Point2> {
+    let mut kept = polygon.to_vec();
+    for i in 0..window.len() {
+        let (a, b) = (window[i], window[(i + 1) % window.len()]);
+        let input = std::mem::take(&mut kept);
+        for j in 0..input.len() {
+            let (p, q) = (input[j], input[(j + 1) % input.len()]);
+            let (sp, sq) = (side(a, b, p), side(a, b, q));
+            if sp >= 0.0 {
+                kept.push(p);
+            }
+            if (sp >= 0.0) != (sq >= 0.0) {
+                let t = sp / (sp - sq);
+                kept.push([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])]);
+            }
+        }
+    }
+    kept
+}
+
+#[test]
+fn copies_a_hair_apart_cut_and_fuse_the_union_of_their_footprints_from_a_plate() {
+    // Found by proptest (random_placements_build_a_valid_result_within_the_volumes_they_
+    // could_have, adversarial_copies.rs): a unit cube's copies moved a hair, 1.01e-7,
+    // along x, along x and y, and mirrored in an upright plane through the cube, cut from
+    // and fused onto a 10 × 10 × 1 plate. Without FreeCAD 1.1.3's automatic fuzzy value
+    // OCCT lost the whole plate, the cut 0.0048869 and valid. The copies' footprint union
+    // U, by hand: the squares S1 = [h, 1 + h] × [0, 1], S2 = [h, 1 + h]², and M, the unit
+    // square reflected, by inclusion and exclusion over their convex intersections. The cut
+    // sinks each copy half into the plate, removing U / 2; the fuse stands each on it,
+    // adding U. Merging the two hairs costs at most 2 × 1.01e-7 mm³ on the fuse, half on
+    // the cut, so 1e-6 holds them. FreeCAD 1.1.3, `plate.cut(copies, -1.0)` and
+    // `plate.fuse(copies, -1.0)` on the same copies: 99.4630736335 and 101.0738527329
+    // (`Shape.Volume`, its fixed order), valid, one solid each.
+    let hair = 1e-7 + 1e-9;
+    let origin = [1.0664139705275095, -0.0, 0.0];
+    let normal = [-0.6477064840690909, -0.7618899595708402, 0.0];
+    let placements = [
+        moved([hair, -0.0, 0.0]),
+        moved([hair, hair, 0.0]),
+        Placement::Mirror { origin, normal },
+    ];
+    let square = |x: f64, y: f64| -> Vec<Point2> {
+        vec![[x, y], [x + 1.0, y], [x + 1.0, y + 1.0], [x, y + 1.0]]
+    };
+    let length = normal[0].hypot(normal[1]);
+    let unit = [normal[0] / length, normal[1] / length];
+    let reflected = |p: Point2| -> Point2 {
+        let d = (p[0] - origin[0]) * unit[0] + (p[1] - origin[1]) * unit[1];
+        [p[0] - 2.0 * d * unit[0], p[1] - 2.0 * d * unit[1]]
+    };
+    // A reflection turns the square clockwise; reversed, counter-clockwise again.
+    let mut m: Vec<Point2> = square(0.0, 0.0).into_iter().map(reflected).collect();
+    m.reverse();
+    let (s1, s2) = (square(hair, 0.0), square(hair, hair));
+    let area = |p: &[Point2]| signed_area(p);
+    assert_close("M's area", area(&m), 1.0, 1e-12);
+    let s1_s2 = clipped(&s1, &s2);
+    let union = area(&s1) + area(&s2) + area(&m)
+        - area(&s1_s2)
+        - area(&clipped(&s1, &m))
+        - area(&clipped(&s2, &m))
+        + area(&clipped(&s1_s2, &m));
+    assert_close("hand's union", union, 1.0738527916, 1e-9);
+    let mut k = kernel();
+    let slab = Primitive::Box {
+        dx: 10.0,
+        dy: 10.0,
+        dz: 1.0,
+    };
+    let plate = at(&mut k, slab, [-5.0, -5.0, -1.0]);
+    for (op, sunk, want) in [
+        (CopiesOp::Cut, -0.5, 100.0 - union / 2.0),
+        (CopiesOp::Fuse, 0.0, 100.0 + union),
+    ] {
+        let tool = at(&mut k, cube(1.0), [0.0, 0.0, sunk]);
+        let made = built(&mut k, op, &plate, &tool, &placements);
+        assert_eq!(made.history.result.solids, 1, "{op:?}");
+        let v = k.summarize(&made.shape).unwrap().volume;
+        assert!((v - want).abs() <= 1e-6, "{op:?}: {v}, want {want}");
+    }
+}
+
 #[test]
 fn a_polar_pattern_puts_each_copy_at_its_angle_and_reversed_the_other_way() {
     // Pins r 3, 10 mm tall, 20 mm from the axis, standing in a disk r 30, 5 mm thick: each
