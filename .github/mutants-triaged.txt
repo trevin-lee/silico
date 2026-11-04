@@ -434,8 +434,10 @@ crates/silico-core/src/sketch_tools/dimension.rs | inside | replace > with >= | 
 crates/silico-core/src/sketch_tools/dimension.rs | lines | replace > with >= | #345
 crates/silico-core/src/sketch_tools/dimension.rs | SmartDimension::step | replace > with >= | #345
 # The viewport's zoom stop (#341). `View::zoom` caps an orthographic zoom in at `most`, the
-# octaves down to `least`, the least view height the drawn bodies' reach allows: `reach` is
-# a max over finite boxes from a finite target, so `least` is finite and never below 0, and
+# octaves down to `least`, the least view height the drawn bodies' reach allows in the pane
+# (`views::least_view_height(rows, reach)`, rows × reach / 2^19 × 1.01, the pane's rows at
+# least 1): `reach` is a max over finite boxes from a finite target, so `least` is finite
+# and never below 0 (0 for no box), and
 # the camera's view height is positive and finite. `scroll > 0.0` as `>= 0.0`: at a scroll of
 # 0 (or −0) the cap gives 0 (or −0) again, and `scroll != 0.0` zooms by neither. `least > 0.0`
 # as `>= 0.0`: at a least of 0, `most` is −200 · log2(0) = +∞, which caps nothing. `&&` as

@@ -176,6 +176,6 @@ jobs:
             echo "## View change: $(git log -1 --format='%h %s')"
             echo
             echo '```'
-            grep -e '^adapter' -e '^part' -e '^copies' -e '^model name' "$RUNNER_TEMP/views.txt"
+            grep -e '^adapter' -e '^part' -e '^copies' -e '^inside' -e '^model name' "$RUNNER_TEMP/views.txt"
             echo '```'
           } >>"$GITHUB_STEP_SUMMARY"

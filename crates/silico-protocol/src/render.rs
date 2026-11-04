@@ -71,7 +71,9 @@ pub const MAX_RENDER_COORDINATE: f64 = 1e12;
 pub const MIN_VIEW_HEIGHT: f64 = 1e-6;
 
 /// The least the eye may be from the target, in mm: a nanometre. Nearer, a perspective
-/// view's near plane is 0 in f32 and its projection degenerate.
+/// view's projection is degenerate. And how deep along a perspective view a point must be
+/// to be drawn: what's within a nanometre of the eye (the document's resolution) is cut
+/// away, its near plane half that.
 pub const MIN_EYE_DISTANCE: f64 = 1e-6;
 
 /// The most faces a scene may have, across its bodies. Each is drawn as a mesh of its own
@@ -90,18 +92,122 @@ pub const MAX_RENDER_TRIANGLES: usize = 2_000_000;
 /// 6.5 s (a debug build); 200,000 leaves room beside the faces.
 pub const MAX_RENDER_EDGES: usize = 200_000;
 
-/// The least an orthographic view's height may be against how far the scene reaches from
-/// the target: deeper, the scene's far points land past where f32 clips them exactly, and
-/// pixels go missing (lavapipe drew a 40 mm face whole at 1e-4 of its reach, not at 1e-5).
-pub const MIN_VIEW_HEIGHT_OF_REACH: f64 = 1e-5;
+/// How much f32 may be off at a point drawn, of the point's distance from where it's drawn
+/// about (the camera's point, or a face's centre): f32's step, at most 2^-23 of it, twice,
+/// for the transform's own rounding. 2^-22.
+pub const F32_ROUNDING: f64 = 1.0 / 4_194_304.0;
 
-/// The narrowest a perspective view's angle may be, in degrees: narrower, what it sees lands
-/// past where f32 clips it exactly (as [`MIN_VIEW_HEIGHT_OF_REACH`]; an orthographic view is
-/// the one for so close a look).
-pub const MIN_FIELD_OF_VIEW: f64 = 1e-3;
-/// The widest a perspective view's angle may be, in degrees: wider, its half-angle in f32
-/// rounds past a right angle, and the view is drawn turned half a turn.
-pub const MAX_FIELD_OF_VIEW: f64 = 179.999;
+/// The most of a pixel that f32's rounding may move what's drawn: an eighth. Every limit a
+/// view has against its image's size is this, with [`F32_ROUNDING`] (docs/design/m4.6-render.md,
+/// *A given camera*): an orthographic view's least height against the bodies' reach
+/// ([`least_view_height`]), a perspective view's angles ([`field_of_view_range`]), and the
+/// pyramid a perspective view's faces and edges are cut to as they're drawn (no farther
+/// across the view than `2^20 t / height` times their depth); and the point each face is
+/// drawn about.
+pub const PRECISION_OF_PIXEL: f64 = 0.125;
+
+/// The least an orthographic view `height` pixels high may be, in mm, of bodies that reach
+/// `reach` from its target: f32 resolves a point to [`F32_ROUNDING`] of its distance from the
+/// target, which must be at most [`PRECISION_OF_PIXEL`] of a pixel, so `height × reach /
+/// 2^19`. The depth (the camera sits the reach behind the target, so the depth buffer spans
+/// twice it) and the rasterizer (no point lands more than 2^19 pixels off the image's centre)
+/// are inside the same bound.
+pub fn least_view_height(height: u32, reach: f64) -> f64 {
+    f64::from(height) * reach * F32_ROUNDING / PRECISION_OF_PIXEL
+}
+
+/// Whether a perspective view at `field_of_view` degrees draws to [`PRECISION_OF_PIXEL`] in an
+/// image `width` by `height`: a point's error, [`F32_ROUNDING`] of its distance from the eye,
+/// grows to its corner by the corner ray's sec², `c = 1 + t²(1 + aspect²)` with `t` the tangent
+/// of half the angle, while a pixel at its depth is `2t / height` of it: so `height × c ≤ 2^20 ×
+/// t`. A quadratic in `t`, so the view's angle has both ends ([`field_of_view_range`]); NaN
+/// draws nothing.
+fn angle_draws(field_of_view: f64, width: u32, height: u32) -> bool {
+    let tan = libm::tan(field_of_view.to_radians() / 2.0);
+    corner_sec2(tan, width, height) <= pyramid_slope(tan, height)
+}
+
+/// How much more a point's error moves the image at its corner than at its centre, in a
+/// perspective view `width` by `height` whose half-angle's tangent is `tan`: the corner
+/// ray's sec², `1 + t²(1 + aspect²)`.
+pub fn corner_sec2(tan: f64, width: u32, height: u32) -> f64 {
+    let aspect = f64::from(width) / f64::from(height);
+    1.0 + tan * tan * (1.0 + aspect * aspect)
+}
+
+/// How far across a perspective view a point may be for its depth, `2^20 t / height`, in an
+/// image `height` pixels high whose half-angle's tangent is `tan`: so it projects at most
+/// 2^19 pixels off the view's axis, where f32 holds it to [`PRECISION_OF_PIXEL`]
+/// (`PRECISION_OF_PIXEL × 2t / F32_ROUNDING / height`). The slope of the pyramid a
+/// perspective view's faces and edges are cut to, and, against [`corner_sec2`], the bound
+/// on its angle.
+pub fn pyramid_slope(tan: f64, height: u32) -> f64 {
+    PRECISION_OF_PIXEL * 2.0 * tan / F32_ROUNDING / f64::from(height)
+}
+
+/// The narrowest and widest a perspective view's angle may be, in degrees, in an image `width`
+/// by `height` pixels (each from 1): the roots of [`angle_draws`]'s quadratic, `height (1 +
+/// a²) t² − 2^20 t + height = 0`, each the angle at its end that the check takes, and every
+/// angle between them taken. At 4096 by 4096, 0.4476° to 179.105°; at 1920 by 1080, 0.118°
+/// to 179.509°; the narrower the image, the wider both. Every image up to 4096 pixels on a
+/// side (and far past) has some: the quadratic's roots are real while `height √(1 + a²)`,
+/// the image's diagonal, is under 2^19 pixels.
+pub fn field_of_view_range(width: u32, height: u32) -> (f64, f64) {
+    let h = f64::from(height.max(1));
+    let aspect = f64::from(width.max(1)) / h;
+    let k = 1.0 + aspect * aspect;
+    // 2^20, the bound's factor: F32_ROUNDING's 2^22 times an eighth times 2.
+    let b = pyramid_slope(1.0, 1);
+    let root = (b * b - 4.0 * h * h * k).max(0.0).sqrt();
+    // The smaller root as c / (a x_large), so it keeps its digits.
+    let large = (b + root) / (2.0 * h * k);
+    let small = 1.0 / (k * large);
+    let degrees = |t: f64| 2.0 * libm::atan(t).to_degrees();
+    let at = |angle: f64| angle_draws(angle, width, height);
+    // Each end moved to the last angle the check takes, as it rounds: f64 steps from the
+    // root found in f64, a few at most.
+    let mut low = degrees(small);
+    for _ in 0..64 {
+        match (at(low), at(low.next_down())) {
+            (true, false) => break,
+            (true, true) => low = low.next_down(),
+            (false, _) => low = low.next_up(),
+        }
+    }
+    let mut high = degrees(large);
+    for _ in 0..64 {
+        match (at(high), at(high.next_up())) {
+            (true, false) => break,
+            (true, true) => high = high.next_up(),
+            (false, _) => high = high.next_down(),
+        }
+    }
+    (low, high)
+}
+
+/// `x` given to at most six decimals, the nearest such value on the side of `x` that `up`
+/// says (at least `x` if `up`, else at most it): a bound a message gives, which a request
+/// can send back as written (a result writes lengths to the nanometre and angles past it) and
+/// still be within it.
+fn to_six_decimals(x: f64, up: bool) -> f64 {
+    let scaled = x * 1e6;
+    let (mut n, step) = if up {
+        (scaled.ceil(), 1.0)
+    } else {
+        (scaled.floor(), -1.0)
+    };
+    // `x × 1e6` rounds, so its ceiling (or floor) may be a step short of `x`: the next
+    // six-decimal value then, never a long number the wire would round back past it.
+    for _ in 0..4 {
+        let shown = n / 1e6;
+        if (up && shown >= x) || (!up && shown <= x) {
+            return shown;
+        }
+        n += step;
+    }
+    // Past 2^53 millionths no six-decimal value is between, and `x` is one.
+    x
+}
 
 /// A scene for the render worker: the bodies in view, the camera, and the image's size.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -190,21 +296,40 @@ fn length_and_unit(v: [f64; 3]) -> Option<(f64, [f64; 3])> {
 }
 
 impl Camera {
-    /// Whether the camera's numbers can make a view, named as M4.1's request names them:
+    /// Whether the camera's numbers can make a view of an image `width` by `height` pixels
+    /// (each from 1), named as M4.1's request names them, and its [`Frame`] if so:
     /// - the eye and the target finite and within [`MAX_RENDER_COORDINATE`], and apart;
     /// - the up finite, with a part across the view of at least [`MIN_UP_ACROSS_VIEW`] of
     ///   its length (its length is otherwise free: only its direction counts);
-    /// - an orthographic view's height from [`MIN_VIEW_HEIGHT`] to [`MAX_RENDER_COORDINATE`];
-    /// - a perspective view's angle from [`MIN_FIELD_OF_VIEW`] to [`MAX_FIELD_OF_VIEW`].
+    /// - an orthographic view's height from [`MIN_VIEW_HEIGHT`] to [`MAX_RENDER_COORDINATE`]
+    ///   (its least against the bodies it draws is the scene's: [`least_view_height`]);
+    /// - a perspective view's angle within [`field_of_view_range`] at this size, where f32
+    ///   draws it to [`PRECISION_OF_PIXEL`].
     ///
     /// The bounds are what a renderer drawing in f32 can draw, well past any document's
-    /// lengths (1e6 mm at most).
-    pub fn check(&self) -> Result<(), InvalidParameter> {
-        self.frame().map(|_| ())
+    /// lengths (1e6 mm at most). One computation for the check and the renderer, so they
+    /// can't disagree.
+    pub fn check(&self, width: u32, height: u32) -> Result<Frame, InvalidParameter> {
+        let frame = self.frame()?;
+        if let Projection::Perspective { field_of_view } = self.projection
+            && !angle_draws(field_of_view, width, height)
+        {
+            let (low, high) = field_of_view_range(width, height);
+            return Err(invalid(
+                "camera.field_of_view",
+                format!(
+                    "camera.field_of_view {field_of_view:?} must be from {} to {} degrees for an image {width} by {height} pixels, where f32 draws the view to an eighth of a pixel",
+                    to_six_decimals(low, true),
+                    to_six_decimals(high, false),
+                ),
+            ));
+        }
+        Ok(frame)
     }
 
-    /// The camera's [`Frame`], if it passes [`Camera::check`]: one computation for the check
-    /// and the renderer, so they can't disagree.
+    /// The camera's [`Frame`], if its numbers make one whatever the image's size: all of
+    /// [`Camera::check`] but a perspective angle's range at a size, which here need only be
+    /// above 0 and under 180°. For what's computed of a camera that passed its check.
     pub fn frame(&self) -> Result<Frame, InvalidParameter> {
         for (parameter, v) in [("camera.eye", self.eye), ("camera.target", self.target)] {
             if let Some(message) = point_beyond(parameter, v, MAX_RENDER_COORDINATE) {
@@ -266,11 +391,11 @@ impl Camera {
                 }
             }
             Projection::Perspective { field_of_view } => {
-                if !(MIN_FIELD_OF_VIEW..=MAX_FIELD_OF_VIEW).contains(&field_of_view) {
+                if !(field_of_view > 0.0 && field_of_view < 180.0) {
                     return Err(invalid(
                         "camera.field_of_view",
                         format!(
-                            "camera.field_of_view {field_of_view:?} must be from {MIN_FIELD_OF_VIEW} to {MAX_FIELD_OF_VIEW} degrees"
+                            "camera.field_of_view {field_of_view:?} must be above 0 and under 180 degrees, and within the range the image's size allows"
                         ),
                     ));
                 }
@@ -292,9 +417,9 @@ impl RenderScene {
     /// [`MAX_RENDER_COORDINATE`], and one each, every index in range, the faces' and edges'
     /// counts adding up, every number fitting the ID buffer), the highlights (ascending, each
     /// once, in range), the faces, edges, and triangles across the bodies (at most
-    /// [`MAX_RENDER_FACES`], [`MAX_RENDER_EDGES`], and [`MAX_RENDER_TRIANGLES`]), and an
-    /// orthographic view's height against the bodies' reach ([`MIN_VIEW_HEIGHT_OF_REACH`]).
-    /// Only structure: what needs the model is the core's.
+    /// [`MAX_RENDER_FACES`], [`MAX_RENDER_EDGES`], and [`MAX_RENDER_TRIANGLES`]), and the
+    /// bodies in the view at this size ([`check_bodies_in_view`]: an orthographic view's
+    /// height against their reach). Only structure: what needs the model is the core's.
     pub fn check(&self) -> Result<(), InvalidParameter> {
         for (parameter, side) in [("width", self.width), ("height", self.height)] {
             if !(1..=MAX_RENDER_SIDE).contains(&side) {
@@ -304,7 +429,7 @@ impl RenderScene {
                 ));
             }
         }
-        self.camera.check()?;
+        self.camera.check(self.width, self.height)?;
         let mut last = 0;
         for (i, body) in self.bodies.iter().enumerate() {
             if body.body <= last {
@@ -351,34 +476,334 @@ impl RenderScene {
                 ));
             }
         }
-        if let Projection::Orthographic { view_height } = self.camera.projection {
-            let reach = self.reach(self.camera.target);
-            let least = reach * MIN_VIEW_HEIGHT_OF_REACH;
-            if view_height < least {
-                return Err(invalid(
-                    "camera.view_height",
-                    format!(
-                        "camera.view_height {view_height:?} is too small to draw the bodies in view, which reach {reach:?} mm from camera.target: at least {least:?}, or a camera.target nearer them"
-                    ),
-                ));
-            }
-        }
-        Ok(())
+        let bodies = self.bodies.iter().map(|b| InViewBody::of(b.body, &b.mesh));
+        let target = self.camera.target;
+        let mut exact = |_: u32, mesh: &Mesh| reach_of_points(mesh, target);
+        check_bodies_in_view(&self.camera, self.height, bodies, &mut exact).map(|_| ())
     }
 
     /// How far the scene reaches from `from`: its farthest point (a mesh's position or an
-    /// edge's) from it, 0 for a scene with none. The check bounds an orthographic view's
-    /// zoom by it, and the renderer sets its clipping from it.
+    /// edge's) from it, 0 for a scene with none.
     pub fn reach(&self, from: [f64; 3]) -> f64 {
         self.bodies
             .iter()
             .flat_map(|b| b.mesh.positions.iter().chain(&b.mesh.edge_points))
-            .map(|p| {
-                let d = sub(*p, from);
-                dot(d, d).sqrt()
-            })
+            .map(|p| distance(*p, from))
             .fold(0.0, f64::max)
     }
+}
+
+fn distance(p: [f64; 3], from: [f64; 3]) -> f64 {
+    let d = sub(p, from);
+    dot(d, d).sqrt()
+}
+
+/// A box of points: its least and its greatest corner.
+pub type PointBox = ([f64; 3], [f64; 3]);
+
+/// The box of `mesh`'s points, its positions and its edges' points; none for a mesh of
+/// neither.
+pub fn points_box(mesh: &Mesh) -> Option<PointBox> {
+    box_of(mesh.positions.iter().chain(&mesh.edge_points))
+}
+
+/// The box of `points`; none for none.
+pub fn box_of<'a>(mut points: impl Iterator<Item = &'a [f64; 3]>) -> Option<PointBox> {
+    let first = *points.next()?;
+    Some(points.fold((first, first), |(low, high), p| {
+        (
+            std::array::from_fn(|k| low[k].min(p[k])),
+            std::array::from_fn(|k| high[k].max(p[k])),
+        )
+    }))
+}
+
+/// A box's eight corners, the `i`th taking `high` on each axis `k` whose bit `i >> k & 1` is
+/// set, `low` on the others.
+pub fn box_corners((low, high): PointBox) -> [[f64; 3]; 8] {
+    std::array::from_fn(|i| std::array::from_fn(|k| if i >> k & 1 == 0 { low[k] } else { high[k] }))
+}
+
+/// A half-space of a view's eye frame (x and y across the view, right and up, and the depth
+/// along it): the points whose linear form `normal · p + offset` is at least 0, or above 0
+/// if `open`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HalfSpace {
+    pub normal: [f64; 3],
+    pub offset: f64,
+    pub open: bool,
+}
+
+impl HalfSpace {
+    /// The linear form at `p`, in the eye's frame.
+    pub fn value(&self, p: [f64; 3]) -> f64 {
+        dot(self.normal, p) + self.offset
+    }
+
+    /// Whether `p`, in the eye's frame, is in it.
+    pub fn holds(&self, p: [f64; 3]) -> bool {
+        let v = self.value(p);
+        if self.open { v > 0.0 } else { v >= 0.0 }
+    }
+}
+
+/// Where points lie against a [`ViewRegion`]: every one in it, every one outside one of its
+/// half-spaces (so none in it), or neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Class {
+    In,
+    Out,
+    Crosses,
+}
+
+/// A convex region of a view, five half-spaces of its eye frame about `origin` (the eye, or
+/// an orthographic view's target): the image's frustum ([`ViewRegion::frustum`]), what can have
+/// a pixel; or a perspective view's pyramid ([`ViewRegion::pyramid`]), what f32 draws to an
+/// eighth of a pixel. One test serves both: [`ViewRegion::class`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewRegion {
+    pub origin: [f64; 3],
+    pub frame: Frame,
+    pub sides: [HalfSpace; 5],
+}
+
+impl ViewRegion {
+    /// The frustum of `camera`'s view (its `frame`) of an image `width` by `height`: a
+    /// perspective view's F = { depth > 0, |x| ≤ a t depth, |y| ≤ t depth } about the eye
+    /// (t the tangent of half its angle, a the aspect); an orthographic view's rectangle,
+    /// `view_height` high, about the target, every depth.
+    pub fn frustum(camera: &Camera, frame: &Frame, width: u32, height: u32) -> ViewRegion {
+        ViewRegion::frustum_widened(camera, frame, width, height, 0.0)
+    }
+
+    /// [`ViewRegion::frustum`] with each side moved out by `pixels` of the image (at every
+    /// depth, perspective: a pixel is `2t / height` of its depth there; orthographic,
+    /// `view_height / height`): what a line drawn `pixels` wide each side of its centre can
+    /// reach the image from.
+    pub fn frustum_widened(
+        camera: &Camera,
+        frame: &Frame,
+        width: u32,
+        height: u32,
+        pixels: f64,
+    ) -> ViewRegion {
+        let aspect = f64::from(width) / f64::from(height);
+        let rows = f64::from(height);
+        let side = |normal: [f64; 3], offset: f64, open: bool| HalfSpace {
+            normal,
+            offset,
+            open,
+        };
+        let (origin, sides) = match camera.projection {
+            Projection::Perspective { field_of_view } => {
+                let t = libm::tan(field_of_view.to_radians() / 2.0);
+                let more = pixels * 2.0 * t / rows;
+                let (ty, tx) = (t + more, t * aspect + more);
+                (
+                    camera.eye,
+                    [
+                        side([0.0, 0.0, 1.0], 0.0, true),
+                        side([-1.0, 0.0, tx], 0.0, false),
+                        side([1.0, 0.0, tx], 0.0, false),
+                        side([0.0, -1.0, ty], 0.0, false),
+                        side([0.0, 1.0, ty], 0.0, false),
+                    ],
+                )
+            }
+            Projection::Orthographic { view_height } => {
+                let more = pixels * view_height / rows;
+                let (half_up, half_right) =
+                    (view_height / 2.0 + more, view_height * aspect / 2.0 + more);
+                (
+                    camera.target,
+                    [
+                        // Every depth: an orthographic camera sits behind the scene.
+                        side([0.0; 3], 0.0, false),
+                        side([-1.0, 0.0, 0.0], half_right, false),
+                        side([1.0, 0.0, 0.0], half_right, false),
+                        side([0.0, -1.0, 0.0], half_up, false),
+                        side([0.0, 1.0, 0.0], half_up, false),
+                    ],
+                )
+            }
+        };
+        ViewRegion {
+            origin,
+            frame: *frame,
+            sides,
+        }
+    }
+
+    /// The pyramid of a perspective view from `eye` (its `frame`) whose slope is `b`
+    /// ([`pyramid_slope`]): P = { depth ≥ [`MIN_EYE_DISTANCE`], |x| + |y| ≤ b × depth }.
+    pub fn pyramid(eye: [f64; 3], frame: &Frame, b: f64) -> ViewRegion {
+        let side = |sx: f64, sy: f64| HalfSpace {
+            normal: [-sx, -sy, b],
+            offset: 0.0,
+            open: false,
+        };
+        ViewRegion {
+            origin: eye,
+            frame: *frame,
+            sides: [
+                HalfSpace {
+                    normal: [0.0, 0.0, 1.0],
+                    offset: -MIN_EYE_DISTANCE,
+                    open: false,
+                },
+                side(1.0, 1.0),
+                side(1.0, -1.0),
+                side(-1.0, 1.0),
+                side(-1.0, -1.0),
+            ],
+        }
+    }
+
+    /// `p`, a point in the document, in the region's eye frame, in f64: across the view
+    /// (right, up) from its origin, and its depth along it.
+    pub fn eye_frame(&self, p: [f64; 3]) -> [f64; 3] {
+        let d = sub(p, self.origin);
+        [
+            dot(self.frame.right, d),
+            dot(self.frame.up, d),
+            -dot(self.frame.back, d),
+        ]
+    }
+
+    /// Where `points`, in the document, lie against the region; [`Class::Out`] for none.
+    pub fn class(&self, points: impl IntoIterator<Item = [f64; 3]>) -> Class {
+        let mut outside = [true; 5];
+        let (mut any, mut all_in) = (false, true);
+        for p in points {
+            let e = self.eye_frame(p);
+            any = true;
+            for (side, out) in self.sides.iter().zip(&mut outside) {
+                let holds = side.holds(e);
+                all_in &= holds;
+                *out &= !holds;
+            }
+        }
+        if !any || outside.iter().any(|&out| out) {
+            Class::Out
+        } else if all_in {
+            Class::In
+        } else {
+            Class::Crosses
+        }
+    }
+
+    /// Where the box `bounds` lies, by its eight corners: as every point of it does where
+    /// that's [`Class::In`] or [`Class::Out`] (the region is convex, each half-space linear).
+    pub fn class_of_box(&self, bounds: PointBox) -> Class {
+        self.class(box_corners(bounds))
+    }
+}
+
+/// How far `mesh`'s farthest point (a position or an edge's point) is from `from`: exact,
+/// one pass over them; 0 for none.
+pub fn reach_of_points(mesh: &Mesh, from: [f64; 3]) -> f64 {
+    mesh.positions
+        .iter()
+        .chain(&mesh.edge_points)
+        .map(|p| distance(*p, from))
+        .fold(0.0, f64::max)
+}
+
+/// How far a box's farthest corner is from `from`: at least its every point's distance, as
+/// the distance is convex and a box's farthest point from anywhere is a corner.
+pub fn reach_of_box((low, high): PointBox, from: [f64; 3]) -> f64 {
+    let d: [f64; 3] =
+        std::array::from_fn(|k| (from[k] - low[k]).abs().max((high[k] - from[k]).abs()));
+    dot(d, d).sqrt()
+}
+
+/// A body as [`check_bodies_in_view`] takes it: its number, its mesh, and its points' box
+/// ([`points_box`]; none for a mesh with no points, which the rules don't see).
+#[derive(Debug, Clone, Copy)]
+pub struct InViewBody<'a> {
+    pub body: u32,
+    pub mesh: &'a Mesh,
+    pub bounds: Option<PointBox>,
+}
+
+impl<'a> InViewBody<'a> {
+    /// Body `body` of `mesh`, its box found from its points.
+    pub fn of(body: u32, mesh: &'a Mesh) -> Self {
+        InViewBody {
+            body,
+            mesh,
+            bounds: points_box(mesh),
+        }
+    }
+}
+
+/// A view as [`check_bodies_in_view`] found its bodies, which the renderer's clipping is set
+/// from: an orthographic view's height and how far the bodies reach from its target (at
+/// most: a bound found from their boxes' corners where those pass); a perspective view's
+/// angle, which needs nothing of them (what it draws is cut to its pyramid, *A given
+/// camera*).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InView {
+    Orthographic { view_height: f64, reach: f64 },
+    Perspective { field_of_view: f64 },
+}
+
+/// Whether f32 draws `bodies` to [`PRECISION_OF_PIXEL`] in `camera`'s view, an image
+/// `height` pixels high (docs/design/m4.6-render.md, *A given camera*): an orthographic
+/// view's height at least [`least_view_height`] of the bodies' reach from its target, else
+/// `camera.view_height`, naming the least. A perspective view takes any bodies: what lies
+/// outside its pyramid (behind the eye's nanometre, or more than 2^19 pixels off its axis)
+/// is cut away as it's drawn.
+///
+/// Each body is taken first by its box's farthest corner ([`reach_of_box`], a sufficient
+/// bound); only a body whose corner the rule refuses is measured exactly, by `exact` (its
+/// points' [`reach_of_points`]), and refused only if its points are. A refusal's reach is
+/// the points', never a corner's. The scene's check ([`RenderScene::check`]), the worker's
+/// view, and the app's frames all take the rule here.
+pub fn check_bodies_in_view<'a>(
+    camera: &Camera,
+    height: u32,
+    bodies: impl IntoIterator<Item = InViewBody<'a>>,
+    exact: &mut dyn FnMut(u32, &Mesh) -> f64,
+) -> Result<InView, InvalidParameter> {
+    let view_height = match camera.projection {
+        Projection::Perspective { field_of_view } => {
+            return Ok(InView::Perspective { field_of_view });
+        }
+        Projection::Orthographic { view_height } => view_height,
+    };
+    let takes = |reach: f64| view_height >= least_view_height(height, reach);
+    // How far the bodies the rule takes reach (by a corner where it passes), and the
+    // farthest the rule refuses, by its points.
+    let mut reach = 0.0f64;
+    let mut farthest: Option<f64> = None;
+    for body in bodies {
+        let Some(bounds) = body.bounds else {
+            continue;
+        };
+        let corner = reach_of_box(bounds, camera.target);
+        let this = if takes(corner) {
+            corner
+        } else {
+            let points = exact(body.body, body.mesh);
+            if !takes(points) && farthest.is_none_or(|f| points > f) {
+                farthest = Some(points);
+            }
+            points
+        };
+        reach = reach.max(this);
+    }
+    if let Some(reach) = farthest {
+        let least = least_view_height(height, reach);
+        return Err(invalid(
+            "camera.view_height",
+            format!(
+                "camera.view_height {view_height:?} is too small for an image {height} pixels high of bodies that reach {reach:?} mm from camera.target: at least {} mm, where f32 draws them to an eighth of a pixel (the image's height times the reach over 2^19), or a camera.target nearer them",
+                to_six_decimals(least, true)
+            ),
+        ));
+    }
+    Ok(InView::Orthographic { view_height, reach })
 }
 
 /// Whether `mesh` can be drawn without the renderer trusting anything about it: its
@@ -486,7 +911,39 @@ impl RenderBody {
 
 #[cfg(test)]
 mod tests {
-    use super::length_and_unit;
+    use super::{length_and_unit, to_six_decimals};
+
+    #[test]
+    fn a_bound_given_to_six_decimals_is_on_its_side_and_six_decimals_long() {
+        // One ulp above (below) a six-decimal value N / 1e6, whose product with 1e6 rounds
+        // back to N: the next six-decimal value up (down), not the long number one ulp off,
+        // which the wire would round back past the bound.
+        for n in [
+            2_653_911_595.0f64,
+            447_635.0,
+            179_104_744.0,
+            1.0,
+            123_456_789_012.0,
+        ] {
+            let at = n / 1e6;
+            let above = at.next_up();
+            let up = to_six_decimals(above, true);
+            assert!(up >= above, "{n}: {up}");
+            assert_eq!(up, (n + 1.0) / 1e6, "{n}");
+            let below = at.next_down();
+            let down = to_six_decimals(below, false);
+            assert!(down <= below, "{n}: {down}");
+            assert_eq!(down, (n - 1.0) / 1e6, "{n}");
+            // N / 1e6 itself is given as it is.
+            assert_eq!(to_six_decimals(at, true), at);
+            assert_eq!(to_six_decimals(at, false), at);
+            for shown in [up, down] {
+                let written = format!("{shown}");
+                let decimals = written.split('.').nth(1).map_or(0, str::len);
+                assert!(decimals <= 6, "{written}");
+            }
+        }
+    }
 
     #[test]
     fn a_zero_vector_has_no_length_or_direction_and_the_least_positive_one_has() {

@@ -222,20 +222,21 @@ fn refused(result: Result<Rendering, Problems>) -> Error {
 // 1.1 times the body's extent across (1.1 mm) while the scene's reach from the target is half
 // the rod's length (250,000 mm), and `RenderScene::check` wants a view at least 1e-5 of the
 // reach (2.5 mm): render.rs maps any `camera.*` refusal of a named view's scene to Internal.
+// The fit's floor is the image's own now: at 100 rows, 100 × the half diagonal / 2^19.
 #[test]
 fn a_named_view_of_a_long_rod_seen_end_on_is_never_called_silicos_bug() {
     // A 1 x 500,000 x 1 rod along y. From the front (−y): along up (z) it spans 1, along
     // the right (x) 1 × 100/100, so the view is 1.1 high, about (0.5, 250000, 0.5). The
     // fake's mesh has a corner at the origin, 250,000 from there.
     let bench = Bench::of(&boxes(&[("aaaaaaaa", [0.0; 3], [1.0, 500_000.0, 1.0])]));
-    // Drawn, the view held to the scene's reach: 1.01 × 1e-5 of half the rod's diagonal,
-    // √(500,000² + 2)/2 = 250,000.000002, so 2.52500000002, written to the nanometre 2.525,
-    // over the 1.1 its extent across gives.
+    // Drawn, the view held to the scene's reach: 1.01 × 100 / 2^19 of half the rod's
+    // diagonal, √(500,000² + 2)/2 = 250,000.000002, so 47.683715821 × 1.01 = 48.160552979,
+    // written to the nanometre 48.160553, over the 1.1 its extent across gives.
     let done = bench.render(&view("front", 100, 100)).unwrap();
     let Projection::Orthographic { view_height } = done.result.camera.camera().projection else {
         panic!("{:?}", done.result.camera.camera());
     };
-    assert_eq!(view_height, 2.525);
+    assert_eq!(view_height, 48.160_553);
     // From the right (+x), the same rod spans 500,000 across: 550,000 high, drawn.
     bench.render(&view("right", 100, 100)).unwrap();
 }
@@ -459,14 +460,27 @@ fn an_up_just_across_the_view_is_taken_and_one_just_under_refused() {
 #[test]
 fn cameras_at_the_coordinate_limit_mesh_at_the_ladders_level_by_hand() {
     let bench = Bench::of(EXAMPLE);
-    // The eye at (1e12, 1e12, 1e12), the target at its negation, 179.999° high. Half a
-    // pixel is taken at the body's nearest depth along the view, its box's corner
-    // (40, 20, 11)'s, (3e12 − 71)/√3 = √3e12 to 1e-10 of it: at 100 pixels √3e12 × tan(89.9995°) / 100 = 1.7321e12 ×
-    // 114591.56 / 100 = 1.98e15, whose power of two below is 2⁵⁰ (at the target's 2√3e12
-    // it would be 2⁵¹).
-    let far = perspective(179.999, [1e12; 3], [-1e12; 3]);
+    // The eye at (1e12, 1e12, 1e12), the target at its negation, 179.978143° high, the
+    // widest 100 by 100 allows as its refusal writes it (by hand, the quadratic's root,
+    // 179.9781433945°; 179.999, M4.6's widest, refused). Half a pixel is taken at the
+    // body's nearest depth along the view, its box's corner (40, 20, 11)'s, (3e12 − 71)/√3
+    // = √3e12 to 1e-10 of it: at 100 pixels √3e12 × tan(89.9890715°) / 100 = 1.7321e12 ×
+    // 5242.86 / 100 = 9.08e13, whose power of two below is 2⁴⁶ (at the target's 2√3e12 it
+    // would be 2⁴⁷).
+    let e = refused(bench.render(&camera(
+        perspective(179.999, [1e12; 3], [-1e12; 3]),
+        100,
+        100,
+    )));
+    assert_eq!(e.parameter(), Some("camera.field_of_view"));
+    assert!(
+        e.message()
+            .contains("must be from 0.010929 to 179.978143 degrees"),
+        "{e:?}"
+    );
+    let far = perspective(179.978_143, [1e12; 3], [-1e12; 3]);
     bench.render(&camera(far.clone(), 100, 100)).unwrap();
-    assert_eq!(bench.meshed(), [1_125_899_906_842_624.0]);
+    assert_eq!(bench.meshed(), [70_368_744_177_664.0]);
     // An ulp past the limit: refused.
     let mut past = far;
     past.eye[0] = f64::from_bits(1e12f64.to_bits() + 1);
@@ -474,7 +488,7 @@ fn cameras_at_the_coordinate_limit_mesh_at_the_ladders_level_by_hand() {
     assert_eq!(e.parameter(), Some("camera.eye"));
     // The tallest orthographic view, 1e12, at 1 pixel: half a pixel 5e11, so 2³⁸.
     bench.render(&camera(front(1e12), 1, 1)).unwrap();
-    assert_eq!(bench.meshed(), [1_125_899_906_842_624.0, 274_877_906_944.0]);
+    assert_eq!(bench.meshed(), [70_368_744_177_664.0, 274_877_906_944.0]);
     assert_eq!(bench.renderer.sent().len(), 2);
 }
 
@@ -597,7 +611,7 @@ proptest! {
             // and nothing sent.
             let rounded = AnsweredCamera::rounded(&c).map(|a| a.camera());
             prop_assert!(
-                c.check().is_err() || rounded.is_none_or(|r| r.check().is_err()),
+                c.check(64, 48).is_err() || rounded.is_none_or(|r| r.check(64, 48).is_err()),
                 "{c:?}"
             );
             prop_assert!(bench.renderer.sent().is_empty());
@@ -1059,7 +1073,7 @@ fn a_camera_whose_eye_and_target_round_to_one_point_is_refused_naming_it() {
         target: [4.9e-7; 3],
         up: [0.0, 0.0, 1.0],
     };
-    assert!(c.check().is_ok());
+    assert!(c.check(100, 100).is_ok());
     let e = refused(bench.render(&camera(c, 100, 100)));
     assert_eq!(
         (e.code(), e.parameter()),
