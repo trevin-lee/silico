@@ -742,7 +742,9 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                 .on_disabled_hover_text(NOT_BUILT);
         }
         Entry::ClearSelection => {
-            let clear = egui::Button::new("Clear selection").shortcut_text("Esc");
+            let command = crate::shortcuts::Command::ClearSelection;
+            let clear =
+                egui::Button::new(command.label()).shortcut_text(command.keys_text(ui.ctx()));
             if ui.add_enabled(shown.selected, clear).clicked() {
                 *act = Some(Act::ClearSelection);
                 ui.close();
@@ -848,7 +850,10 @@ fn finish(ui: &mut Ui, row: Rect) -> Response {
     bar::tooltip(
         response,
         label,
-        Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter)),
+        Some(crate::shortcuts::Chord::Key(KeyboardShortcut::new(
+            Modifiers::COMMAND,
+            Key::Enter,
+        ))),
         Some("Keeps your changes and rebuilds"),
     )
 }
