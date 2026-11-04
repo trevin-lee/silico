@@ -25,7 +25,7 @@ pub(crate) use decode::{
 };
 
 pub(crate) use decode::optional_members;
-pub use diff::{Change, diff};
+pub use diff::{Change, diff, diff_until};
 pub use fingerprint::{Difference, Fingerprint, MEASURE_DECIMALS, Measure};
 pub(crate) use index::FeatureIndex;
 #[cfg(test)]

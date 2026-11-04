@@ -576,10 +576,13 @@ pub struct DiffChangeSchema {
     /// ID, other lists by place, from 0), down to the first value that's a number, a string,
     /// true or false, or absent on one side. A change set_field accepts is applied by
     /// set_field with its feature, field, and after. set_field doesn't accept: fingerprint
-    /// fields; `type`, `id`, and `v`; a sketch member added or removed; an item appended to a
-    /// list by place. Null for a change of the feature's place: added, removed, or moved
-    /// (its order among the features both revisions hold changed: one removed or added
-    /// moves none of the others).
+    /// fields; `type`, `id`, and `v` (and, with a feature's `type`, each field its new type
+    /// brings or takes away); a member only one side has below the feature's top level (a
+    /// sketch member added or removed, an item added to or removed from a list by place),
+    /// but for a sketch angle's `reversed`; and an extent's or a constraint's `type` changed
+    /// to one that takes other fields. Null for a change of the feature's place: added,
+    /// removed, or moved (its order among the features both revisions hold changed: one
+    /// removed or added moves none of the others).
     pub field: Option<String>,
     pub before: DiffValueSchema,
     pub after: DiffValueSchema,

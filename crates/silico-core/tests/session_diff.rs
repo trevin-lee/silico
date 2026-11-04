@@ -214,6 +214,127 @@ fn fields_come_in_canonical_key_order() {
     );
 }
 
+/// A sketch of the points `ids` alone, each at the origin.
+fn points(ids: &[&str]) -> String {
+    let points: Vec<String> = ids
+        .iter()
+        .map(|id| format!(r#"{{"id": "{id}", "x": 0, "y": 0, "construction": false}}"#))
+        .collect();
+    format!(
+        r#"{{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{}], "lines": [], "circles": [], "arcs": [], "constraints": []}}"#,
+        points.join(", ")
+    )
+}
+
+#[test]
+fn members_each_side_alone_has_come_in_id_order_as_the_writer_sorts_a_list() {
+    // From holds pa000001 and pa000003, to pa000001 and pa000002: the writer writes a list
+    // sorted by ID, so pa000002 (added) comes before pa000003 (removed), either way round.
+    let (from, to) = (
+        points(&["pa000001", "pa000003"]),
+        points(&["pa000001", "pa000002"]),
+    );
+    let point = |id: &str| format!(r#"{{"id": "{id}", "x": 0, "y": 0, "construction": false}}"#);
+    let change = |id: &str, before: &str, after: &str| {
+        format!(
+            r#"{{"feature": "s0000001", "name": "Sketch", "field": "points.{id}", "before": {before}, "after": {after}}}"#
+        )
+    };
+    assert_eq!(
+        diffed(&[&from], &[&to]),
+        [
+            change("pa000002", "null", &point("pa000002")),
+            change("pa000003", &point("pa000003"), "null"),
+        ]
+    );
+    assert_eq!(
+        diffed(&[&to], &[&from]),
+        [
+            change("pa000002", &point("pa000002"), "null"),
+            change("pa000003", "null", &point("pa000003")),
+        ]
+    );
+}
+
+/// A pad of the sketch s0000001, with `members` (a `suppressed`, a `base`) after its name.
+fn pad(members: &str) -> String {
+    format!(
+        r#"{{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", {members}"sketch": "s0000001", "extent": {{"type": "one_side", "length": 5, "reversed": false}}}}"#
+    )
+}
+
+#[test]
+fn top_level_members_each_side_alone_has_come_in_the_order_the_writer_gives_them() {
+    // From ends with a fingerprint, to with a note: the writer puts a note before a
+    // fingerprint (`silico fmt` writes id, type, v, name, suppressed, the operation's
+    // fields, note, fingerprint), so the note comes first, either way round.
+    let noted = BOX.replace("\"height\": 10}", "\"height\": 10, \"note\": \"n\"}");
+    let fingerprint = r#"{"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
+    let block = |field: &str, before: &str, after: &str| {
+        format!(
+            r#"{{"feature": "k7f2qx3m", "name": "Block", "field": "{field}", "before": {before}, "after": {after}}}"#
+        )
+    };
+    assert_eq!(
+        diffed(&[&fingerprinted("8000")], &[&noted]),
+        [
+            block("note", "null", r#""n""#),
+            block("fingerprint", fingerprint, "null"),
+        ]
+    );
+    assert_eq!(
+        diffed(&[&noted], &[&fingerprinted("8000")]),
+        [
+            block("note", r#""n""#, "null"),
+            block("fingerprint", "null", fingerprint),
+        ]
+    );
+    // A pad's `suppressed` and its `base`: the writer puts `suppressed` right after the
+    // name, before the operation's fields, of which `base` is the first.
+    let (suppressed, based) = (
+        pad(r#""suppressed": true, "#),
+        pad(r#""base": "b0000001", "#),
+    );
+    let of_pad = |field: &str, before: &str, after: &str| {
+        format!(
+            r#"{{"feature": "p0000001", "name": "Pad", "field": "{field}", "before": {before}, "after": {after}}}"#
+        )
+    };
+    assert_eq!(
+        diffed(&[&based], &[&suppressed]),
+        [
+            of_pad("suppressed", "null", "true"),
+            of_pad("base", r#""b0000001""#, "null"),
+        ]
+    );
+    assert_eq!(
+        diffed(&[&suppressed], &[&based]),
+        [
+            of_pad("suppressed", "true", "null"),
+            of_pad("base", "null", r#""b0000001""#),
+        ]
+    );
+    // That is the writer's order: a feature holding both members of each pair, written.
+    let both = [
+        (
+            BOX.replace(
+                "\"height\": 10}",
+                &format!(r#""height": 10, "note": "n", "fingerprint": {fingerprint}}}"#),
+            ),
+            ["\"note\"", "\"fingerprint\""],
+        ),
+        (
+            pad(r#""base": "b0000001", "suppressed": true, "#),
+            ["\"suppressed\"", "\"base\""],
+        ),
+    ];
+    for (feature, [first, second]) in both {
+        let text = document::write(&doc(&[&feature])).unwrap();
+        let at = |key: &str| text.find(key).unwrap();
+        assert!(at(first) < at(second), "{text}");
+    }
+}
+
 // --- Places: added, removed, moved, by rank among the features both hold. ---
 
 #[test]
@@ -457,6 +578,20 @@ fn each_field_change_set_through_set_field_gives_to_back_and_before_gives_from()
             vec![base.clone(), fillet("b0000001.box.Edge2")],
             vec![base.clone(), fillet("b0000001.box.Edge7")],
         ),
+        // A sketch angle's `reversed`, the one member below the top level that set_field
+        // adds and takes away: added, and (back) removed.
+        (vec![angled("")], vec![angled(r#""reversed": true, "#)]),
+        // A constraint's type changed to one that takes the same fields.
+        (vec![lined("horizontal")], vec![lined("vertical")]),
+        // A pad's `suppressed` and its `base`, members a feature may leave out.
+        (
+            vec![base.clone(), sketch("10", None), pad("")],
+            vec![
+                base.clone(),
+                sketch("10", None),
+                pad(r#""suppressed": true, "base": "b0000001", "#),
+            ],
+        ),
         // Several fields of several features at once, a note among them.
         (
             vec![BOX.to_owned(), cylinder("2.5"), sketch("10", None)],
@@ -481,6 +616,160 @@ fn each_field_change_set_through_set_field_gives_to_back_and_before_gives_from()
         let back = document::write(&doc(&from)).unwrap();
         assert_eq!(applied(&doc_text(&to), &changes, true), back, "{from:?}");
     }
+}
+
+/// A sketch of two lines from one point and the angle `ka000001` between them, with
+/// `reversed` (`"reversed": true, ` or nothing) after its `b`.
+fn angled(reversed: &str) -> String {
+    format!(
+        r#"{{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{{"id": "pa000001", "x": 0, "y": 0, "construction": false}}, {{"id": "pa000002", "x": 10, "y": 0, "construction": false}}, {{"id": "pa000003", "x": 0, "y": 10, "construction": false}}], "lines": [{{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}}, {{"id": "na000002", "from": "pa000001", "to": "pa000003", "construction": false}}], "circles": [], "arcs": [], "constraints": [{{"id": "ka000001", "type": "angle", "a": "na000001", "b": "na000002", {reversed}"value": 90, "driving": false}}]}}"#
+    )
+}
+
+/// [`sketch`], its constraint `ka000001` one of `kind` (`horizontal`, `vertical`) on its
+/// line.
+fn lined(kind: &str) -> String {
+    sketch("10", None).replace(
+        r#"{"id": "ka000001", "type": "distance", "a": "pa000001", "b": "pa000002", "value": 10, "driving": true}"#,
+        &format!(r#"{{"id": "ka000001", "type": "{kind}", "line": "na000001"}}"#),
+    )
+}
+
+/// Each of `changes` set alone through `set_field`, to its `after`, in a session on
+/// `from`'s text, inside a transaction: each refused, `invalid_input` naming the request's
+/// field or a path in the member it changes, the session's text and revision as they were. Then the first change's
+/// feature renamed, so the document is one set_field edits: what refused each was the
+/// change.
+fn refused_each(from: &str, changes: &[Change]) {
+    let f = sessions();
+    let s = f.open(from.as_bytes());
+    answer(f.sessions.begin(&s)).result.unwrap();
+    let text = || answer(f.sessions.text(&s, None)).result.unwrap().text;
+    let (was, at) = (text(), f.revision(&s));
+    for change in changes {
+        let field = change.field.clone().expect("a field change");
+        let set = answer(f.sessions.set_field(
+            &s,
+            at,
+            change.feature.clone(),
+            field.clone(),
+            node(&change.after),
+        ));
+        let Err(refused) = set.result else {
+            panic!("{field} was set to {:?}", change.after);
+        };
+        let e = &refused.errors()[0];
+        assert_eq!(e.code(), ErrorCode::InvalidInput, "{field}: {e:?}");
+        // Refused by set_field's path (`field`), or by the reader of what it would write,
+        // naming a path in the member the change is to.
+        let top = |path: &str| path.split('.').next().map(str::to_owned);
+        assert!(
+            e.parameter() == Some("field") || e.parameter().and_then(top) == top(&field),
+            "{field}: {e:?}"
+        );
+        assert_eq!(text(), was, "{field}");
+        assert_eq!(f.revision(&s), at, "{field}");
+    }
+    let renamed = answer(f.sessions.set_field(
+        &s,
+        at,
+        changes[0].feature.clone(),
+        "name".to_owned(),
+        json::read(br#""Renamed""#).unwrap(),
+    ));
+    assert!(renamed.result.is_ok(), "{:?}", renamed.result);
+}
+
+#[test]
+fn each_change_set_field_doesnt_accept_is_refused_by_it_and_nothing_is_written() {
+    // The kinds the design names: fingerprint fields; `type` (with the fields a feature's
+    // new type brings and takes away); a member one side alone has below the top level (a
+    // sketch's member, an item of a list by place); an extent's or a constraint's type
+    // changed to one that takes other fields. Each pair diffed, its fields written out by
+    // hand, then each change set through `set_field`.
+    let base = a_box("b0000001", "Base");
+    let one_edge = fillet("b0000001.box.Edge2").replace(r#", "b0000001.box.Edge2""#, "");
+    let cylinder_block = r#"{"id": "k7f2qx3m", "type": "cylinder", "v": 1, "name": "Block", "position": [0, 0, 0], "radius": 5, "height": 10}"#;
+    let symmetric = pad("").replace(
+        r#"{"type": "one_side", "length": 5, "reversed": false}"#,
+        r#"{"type": "symmetric", "length": 5}"#,
+    );
+    let cases: Vec<(Vec<String>, Vec<String>, Vec<&str>)> = vec![
+        (
+            vec![fingerprinted("8000")],
+            vec![fingerprinted("8000.5")],
+            vec!["fingerprint.volume"],
+        ),
+        (
+            vec![BOX.to_owned()],
+            vec![fingerprinted("8000")],
+            vec!["fingerprint"],
+        ),
+        (
+            vec![BOX.to_owned()],
+            vec![cylinder_block.to_owned()],
+            vec!["type", "length", "width", "radius"],
+        ),
+        (
+            vec![sketch("10", None)],
+            vec![sketch("10", Some(THIRD))],
+            vec!["points.pa000003"],
+        ),
+        (
+            vec![sketch("10", Some(THIRD))],
+            vec![sketch("10", None)],
+            vec!["points.pa000003"],
+        ),
+        (
+            vec![base.clone(), one_edge.clone()],
+            vec![base.clone(), fillet("b0000001.box.Edge2")],
+            vec!["edges.1"],
+        ),
+        (
+            vec![base.clone(), fillet("b0000001.box.Edge2")],
+            vec![base.clone(), one_edge.clone()],
+            vec!["edges.1"],
+        ),
+        (
+            vec![sketch("10", None), pad("")],
+            vec![sketch("10", None), symmetric],
+            vec!["extent.type", "extent.reversed"],
+        ),
+        (
+            vec![sketch("10", None)],
+            vec![lined("horizontal")],
+            vec![
+                "constraints.ka000001.type",
+                "constraints.ka000001.a",
+                "constraints.ka000001.b",
+                "constraints.ka000001.value",
+                "constraints.ka000001.driving",
+                "constraints.ka000001.line",
+            ],
+        ),
+    ];
+    for (from, to, fields) in cases {
+        let from: Vec<&str> = from.iter().map(String::as_str).collect();
+        let to: Vec<&str> = to.iter().map(String::as_str).collect();
+        let changes = document::diff(&doc(&from), &doc(&to)).unwrap();
+        let named: Vec<&str> = changes.iter().filter_map(|c| c.field.as_deref()).collect();
+        assert_eq!(named, fields);
+        refused_each(&doc_text(&from), &changes);
+    }
+    // `id` and `v`, which no diff names (features are paired by ID, and every feature is
+    // version 1), refused all the same.
+    let block = id("k7f2qx3m");
+    let made = |field: &str, value: &[u8]| Change {
+        feature: block.clone(),
+        name: Arc::from("Block"),
+        field: Some(field.to_owned()),
+        before: json::Plain::Null,
+        after: json::Plain::of(&json::read(value).unwrap()),
+    };
+    refused_each(
+        &doc_text(&[BOX]),
+        &[made("id", br#""k7f2qx3n""#), made("v", b"2")],
+    );
 }
 
 // --- The session: the revisions it holds, and the design's examples. ---
@@ -695,6 +984,37 @@ fn inside_a_transaction_its_base_is_held_until_it_ends() {
         refused.errors()[0].candidates(),
         [after.number().to_string()]
     );
+}
+
+#[test]
+fn committed_its_base_is_let_go_with_the_transaction() {
+    let f = sessions();
+    let s = f.open(doc_text(&[BOX]).as_bytes());
+    answer(f.sessions.begin(&s)).result.unwrap();
+    answer(f.sessions.set_field(
+        &s,
+        Revision::OPENED,
+        id("k7f2qx3m"),
+        "length".to_owned(),
+        json::read(b"50").unwrap(),
+    ))
+    .result
+    .unwrap();
+    // Held while the transaction is open.
+    assert_eq!(f.diff(&s, Some(1), None).result.unwrap().changes.len(), 1);
+    let committed = answer(f.sessions.commit(&s));
+    assert!(committed.result.unwrap().written);
+    let now = committed.session.unwrap().revision;
+    // Committed: the base is gone with the transaction, and the revision written is the
+    // one held.
+    let refused = f.diff(&s, Some(1), None).result.unwrap_err();
+    assert_eq!(refused.total(), 1);
+    let e = &refused.errors()[0];
+    assert_eq!(
+        (e.code(), e.parameter()),
+        (ErrorCode::InvalidInput, Some("from"))
+    );
+    assert_eq!(e.candidates(), [now.number().to_string()]);
 }
 
 #[test]

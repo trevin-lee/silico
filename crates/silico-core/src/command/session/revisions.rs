@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use super::cancel::{Ticket, cancelled};
 use super::transaction::Held;
 use super::{Gated, Problems, Revision, Session, SessionId};
 use crate::document::{self, Change, Document};
@@ -174,9 +175,11 @@ impl<C: Kernel + 'static> Session<C> {
 
     /// `diff`'s work: the changes from the revision `from` names to the one `to` names
     /// (`None` for the current revision), each one the session holds, each read as a
-    /// document. Refused with every reason: a side not held, or one that doesn't read.
+    /// document. Refused with every reason: a side not held, or one that doesn't read; and
+    /// stopped, `cancelled`, before the next feature is compared once `stop` is cancelled.
     pub(super) fn diff(
         &self,
+        stop: &Ticket,
         from: Option<Revision>,
         to: Option<Revision>,
     ) -> Result<DiffAnswer, Problems> {
@@ -202,10 +205,19 @@ impl<C: Kernel + 'static> Session<C> {
                             .with_suggestion(crate::worker::SILICO_BUG),
                     ));
                 };
+                // Stopped between features once cancelled, answering `cancelled`.
+                let go = || {
+                    #[cfg(test)]
+                    self.gate.pass();
+                    if stop.cancelled() {
+                        return Err(cancelled(stop.name()));
+                    }
+                    Ok(())
+                };
                 Ok(DiffAnswer {
                     from,
                     to,
-                    changes: document::diff(a, b)?,
+                    changes: document::diff_until(a, b, go)?,
                 })
             }
             (a, b) => Err(Problems::of(

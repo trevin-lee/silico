@@ -1451,8 +1451,8 @@ impl<P: Clients + 'static> Sessions<P> {
         from: Option<Revision>,
         to: Option<Revision>,
     ) -> Running<DiffAnswer> {
-        self.queued(session, SessionCommand::Diff, move |session, _, _| {
-            session.diff(from, to)
+        self.queued(session, SessionCommand::Diff, move |session, stop, _| {
+            session.diff(stop, from, to)
         })
     }
 
