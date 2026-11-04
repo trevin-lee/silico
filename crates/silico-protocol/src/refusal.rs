@@ -530,10 +530,10 @@ impl Refusal {
                     match op {
                         BooleanOp::Fuse => "OCCT lost both shapes: rebuild them, or move one slightly",
                         BooleanOp::Cut => {
-                            "OCCT found the tool removes all of the base: move or shrink the tool (if it doesn't, move it slightly)"
+                            "OCCT found the tool removes all of the base: move or shrink the tool (if it doesn't, move it slightly); a boolean is built to a millionth of its size, so what the tool leaves of the base must be thicker than that"
                         }
                         BooleanOp::Common => {
-                            "OCCT found no overlap: move the shapes so they overlap (if they already do, move one slightly)"
+                            "OCCT found no overlap: move the shapes so they overlap (if they already do, move one slightly); a boolean is built to a millionth of its size, so the overlap must be thicker than that"
                         }
                     }
                     .to_owned(),
@@ -1246,6 +1246,14 @@ mod tests {
         assert!(cut.contains("removes all of the base"), "{cut}");
         let common = said(BooleanOp::Common).unwrap();
         assert!(common.starts_with("OCCT found no overlap"), "{common}");
+        // The fuzzy value every boolean runs with: what's thinner than a millionth of the
+        // boolean's size is lost (docs/ports/booleans.md).
+        for words in [&cut, &common] {
+            assert!(
+                words.contains("built to a millionth of its size"),
+                "{words}"
+            );
+        }
     }
 
     #[test]
