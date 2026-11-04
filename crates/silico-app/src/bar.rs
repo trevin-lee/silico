@@ -480,11 +480,12 @@ mod tests {
         pub const X: f32 = 16.0;
         pub const X_RADIUS: u8 = 3;
         /// `.tt-title`'s `gap: 8px`; `.tt-desc`'s `margin-top: 2px`; `.kbd`: `height: 16px;
-        /// border-radius: 3px`.
+        /// border-radius: 3px`; `.keys`' `gap: 2px`.
         pub const TT_TITLE_GAP: f32 = 8.0;
         pub const TT_DESC_MARGIN: f32 = 2.0;
         pub const KBD_HEIGHT: f32 = 16.0;
         pub const KBD_RADIUS: u8 = 3;
+        pub const KEYS_GAP: f32 = 2.0;
     }
 
     /// `app` drawn in the app's theme, its icons loaded.
@@ -1062,6 +1063,13 @@ mod tests {
         for cap in &caps {
             assert!(near(cap.height(), css::KBD_HEIGHT), "{cap:?}");
             assert!(near(cap.center().y, title_middle), "{cap:?}");
+        }
+        // Each 2 beyond the one before it (`.keys`' `gap`).
+        for pair in caps.windows(2) {
+            assert!(
+                near(pair[1].left(), pair[0].right() + css::KEYS_GAP),
+                "{pair:?}"
+            );
         }
         for (cap, said) in caps.iter().zip(["Ctrl", "Shift", "Z"]) {
             assert!(cap.contains(text(&h, said).pos), "{said} in {cap:?}");
