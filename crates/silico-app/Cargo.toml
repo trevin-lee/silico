@@ -13,15 +13,23 @@ path = "src/main.rs"
 
 [dependencies]
 silico-core.workspace = true
+silico-protocol.workspace = true
+libm.workspace = true
 silico-font.workspace = true
 eframe.workspace = true
 egui_tiles.workspace = true
 # The backends eframe's renderer draws with (Metal, Vulkan), as the workspace chooses them.
 wgpu.workspace = true
+# The viewport's renderer (re_renderer's, one with agents' renders: M4.6's R1), drawn on
+# eframe's device.
+silico-render.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-egui_kittest.workspace = true
+# Its wgpu renderer: a test draws the viewport through silico-render on lavapipe.
+egui_kittest = { workspace = true, features = ["wgpu"] }
+# The bench's box mesh, drawn by that test.
+silico-render = { workspace = true, features = ["bench"] }
 silico-core = { workspace = true, features = ["fake"] }
 tempfile.workspace = true
 

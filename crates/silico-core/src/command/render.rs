@@ -432,7 +432,7 @@ pub(crate) fn camera_for(
                     .with_suggestion("give a camera on the bodies, or check the model's measures"),
                 ));
             }
-            let Some(bounds) = joined(bodies.iter().filter_map(|b| b.bounds)) else {
+            let Some(bounds) = crate::views::joined(bodies.iter().filter_map(|b| b.bounds)) else {
                 return Err(Problems::from(
                     Error::new(
                         ErrorCode::InvalidInput,
@@ -600,16 +600,6 @@ pub(crate) fn bodies(model: &Model) -> Vec<Body<'_>> {
             bounds: built.summary().and_then(|s| s.bounds),
         })
         .collect()
-}
-
-/// The box around `boxes`, if there are any.
-fn joined(boxes: impl Iterator<Item = [[f64; 3]; 2]>) -> Option<[[f64; 3]; 2]> {
-    boxes.reduce(|[low, high], [l, h]| {
-        [
-            [low[0].min(l[0]), low[1].min(l[1]), low[2].min(l[2])],
-            [high[0].max(h[0]), high[1].max(h[1]), high[2].max(h[2])],
-        ]
-    })
 }
 
 /// What a render highlights by name: a face or an edge, which have pixels of their own.

@@ -134,6 +134,17 @@ pub const NORMAL_CORNER_RADIUS: u8 = 6;
 /// Small controls' corners (`small_corner_radius`).
 pub const SMALL_CORNER_RADIUS: u8 = 4;
 
+/// The ViewCube's side, and its margin from the canvas's top right; the Home button sits
+/// above it, this high. Silico's own: Fusion publishes no sizes (docs/ux/fusion.md).
+pub const VIEW_CUBE_SIDE: f32 = 96.0;
+pub const VIEW_CUBE_MARGIN: f32 = 8.0;
+pub const VIEW_CUBE_HOME_HEIGHT: f32 = 20.0;
+
+/// The navigation bar's width and height, and its margin from the canvas's bottom.
+pub const NAVIGATION_BAR_WIDTH: f32 = 220.0;
+pub const NAVIGATION_BAR_HEIGHT: f32 = 26.0;
+pub const NAVIGATION_BAR_MARGIN: f32 = 8.0;
+
 /// The one font's name, as the fonts list it.
 pub const FONT: &str = "Inter";
 

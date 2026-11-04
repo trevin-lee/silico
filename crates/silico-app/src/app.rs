@@ -165,6 +165,8 @@ pub struct App<P: Clients + 'static> {
     /// Enter or Esc pressed this frame with a modal already open at its start: the modal's
     /// OK or Cancel, taken before anything else could read it.
     modal_key: Option<Key>,
+    /// What the viewport's renderer holds, and how its frames reach it (M5.6).
+    drawing: crate::viewport::Drawing,
 }
 
 impl<P: Clients + 'static> App<P> {
@@ -190,7 +192,35 @@ impl<P: Clients + 'static> App<P> {
             wakes: Arc::new(AtomicU64::new(0)),
             waker_set: false,
             modal_key: None,
+            drawing: crate::viewport::Drawing::default(),
         }
+    }
+
+    /// The app, its viewport's frames drawn through `present` (M5.6): egui's paint callback
+    /// on the GPU (`renderer::OnGpu`), or a test's own.
+    #[must_use]
+    pub fn presenting(mut self, present: Box<dyn crate::renderer::Present>) -> Self {
+        self.drawing = crate::viewport::Drawing::new(present);
+        self
+    }
+
+    /// The app with no renderer, for `why`: its viewport draws nothing, and says why.
+    #[must_use]
+    pub fn not_drawing(mut self, why: String) -> Self {
+        self.drawing = crate::viewport::Drawing::unavailable(why);
+        self
+    }
+
+    /// [`presenting`](Self::presenting), with `clock` saying the time the viewport waits on
+    /// (a refused read's retry): a test's, to move by hand.
+    #[must_use]
+    pub fn presenting_clocked(
+        mut self,
+        present: Box<dyn crate::renderer::Present>,
+        clock: silico_core::disk::Clock,
+    ) -> Self {
+        self.drawing = crate::viewport::Drawing::clocked(present, clock);
+        self
     }
 
     /// The last refusal said that isn't a tab's (an open's).
@@ -262,6 +292,7 @@ impl<P: Clients + 'static> App<P> {
                 tabs,
                 sessions,
                 name,
+                drawing,
                 ..
             } = self;
             let mut panes = Panes {
@@ -269,6 +300,7 @@ impl<P: Clients + 'static> App<P> {
                 sessions,
                 name,
                 started: &mut started,
+                drawing,
             };
             tree.ui(&mut panes, ui);
         });

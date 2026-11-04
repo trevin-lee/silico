@@ -21,7 +21,9 @@ deny = [
     # Only the crates that draw: the render worker and the app (M5 decision 13a). A crate
     # linking the renderer would load a GPU driver into its own process, so the core, the
     # MCP server, and the CLI never do (docs/design/m4.6-render.md).
-    { crate = "re_renderer", wrappers = ["silico-render", "silico-app"], reason = "only the crates that draw: the render worker and the app" },
+    # The app reaches it only through silico-render, so the viewport and agents' renders
+    # draw on one path (M4.6's R1).
+    { crate = "re_renderer", wrappers = ["silico-render"], reason = "only silico-render draws with re_renderer: the render worker, and the app through it" },
     # eframe depends on wgpu itself only for wasm32, and egui_kittest through its wgpu
     # feature (the app's tests'); the graph takes every target and feature, so both are
     # wgpu's direct parents in the app's tree, as egui-wgpu is.
