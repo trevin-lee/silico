@@ -74,8 +74,9 @@ fn a_fingerprint_survives_a_round_trip() {
     assert_eq!(
         hole.fingerprint,
         Some(Fingerprint {
-            volume: Measure::from_millionths(8_235_619_449),
-            area: Measure::from_millionths(3_027_765_467),
+            // HOLE's: 8000 − 62.5π and 2800 + (10/12) 72.5π.
+            volume: Measure::from_millionths(7_803_650_459),
+            area: Measure::from_millionths(2_989_804_556),
             bbox: Some([0, 0, -1_000_000, 40_000_000, 20_000_000, 11_000_000].map(Length::from_nm)),
             faces: 9,
             edges: 15,
@@ -108,9 +109,11 @@ fn an_edit_rewrites_exactly_the_fingerprints_it_changes() {
         .filter(|(a, b)| a != b)
         .map(|(a, b)| (a.to_owned(), b.to_owned()))
         .collect();
-    // π 3² 12 = 339.292007, 2π 3 12 + 2π 3² = 282.743339; the box 17 to 23, 7 to 13.
+    // π 3² 12 = 339.292007, 2π 3 12 + 2π 3² = 282.743339; the box 17 to 23, 7 to 13. The
+    // hole, the fake's cut: the block less 10/12 of the pin, 8000 − 90π = 7717.256661, its
+    // area 2800 + (10/12) 90π = 2800 + 75π = 3035.619449.
     let pin = r#""fingerprint": {"volume": 339.292007, "area": 282.743339, "bbox": [17, 7, -1, 23, 13, 11], "faces": 3, "edges": 3, "vertices": 2}"#;
-    let hole = r#""fingerprint": {"volume": 8339.292007, "area": 3082.743339, "bbox": [0, 0, -1, 40, 20, 11], "faces": 9, "edges": 15, "vertices": 10}"#;
+    let hole = r#""fingerprint": {"volume": 7717.256661, "area": 3035.619449, "bbox": [0, 0, -1, 40, 20, 11], "faces": 9, "edges": 15, "vertices": 10}"#;
     assert_eq!(
         changed,
         [

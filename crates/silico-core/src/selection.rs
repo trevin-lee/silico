@@ -1399,11 +1399,13 @@ mod tests {
             operation("qqqqqqqq", "fuse", "xxxxxxxx", "yyyyyyyy"),
             operation("ssssssss", "fuse", "rrrrrrrr", "qqqqqqqq"),
         ];
-        // The second fuse's tool is the first `qqqqqqqq` gives back: the 2 mm cube.
+        // The third fuse's tool is what `qqqqqqqq` gives back: the forged box, made where it
+        // is (`FakeKernel::resized`), where every box the document makes but the first is
+        // moved into place.
         let model = rebuilt(
             &features,
             forging(|tool| {
-                Some(if tool.contains("box(2,") {
+                Some(if tool.starts_with("box(") {
                     aliasing_fuse()
                 } else {
                     numbering_fuse()

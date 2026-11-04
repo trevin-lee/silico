@@ -1,9 +1,11 @@
 //! The council's round 3 (architecture's and robustness's proofs): a step's verdict gate
-//! was its first sharer's, but an M2 boolean and a sweep feature can share one step with
-//! different checks (step keys hold no IDs: a baseless reversed pad makes the pocket's
-//! prism). Each feature's verdict is now its own, and a step only refused features'
-//! descendants need isn't started; every outcome is the same fresh and warm, and nothing
-//! is ever reported as a step that wasn't run.
+//! was its first sharer's, but an M2 boolean and a sweep feature can share one step (step
+//! keys hold no IDs: a baseless reversed pad makes the pocket's prism). Each feature's
+//! verdict is its own, in its own words, and a step only refused features' descendants need
+//! isn't started; every outcome is the same fresh and warm, and nothing is ever reported as
+//! a step that wasn't run. Since M2 booleans take S7's rule, the two checks agree on a
+//! shared step: an M2 cut sharing a refused pocket's step is refused too, and what's made
+//! from either is blocked.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::model::WAIT;
@@ -39,8 +41,8 @@ fn features(cut_first: bool) -> Vec<String> {
     let pad = pad("pppppppp", None, "ssssssss", REVERSED);
     // The pocket misses its cube: refused, removes nothing.
     let pocket = pocket("qqqqqqqq", "bbbbbbbb", "ssssssss", TEN);
-    // An M2 cut of the twin cube by the pad: the same step as the pocket's cut, one solid,
-    // which M2 builds.
+    // An M2 cut of the twin cube by the pad: the same step as the pocket's cut, refused as
+    // it is, removing nothing (S7's rule, for M2 booleans too).
     let cut = r#"{"id": "kkkkkkkk", "type": "cut", "v": 1, "name": "K", "base": "cccccccc", "tool": "pppppppp"}"#.to_owned();
     let fillet = r#"{"id": "ffffffff", "type": "fillet", "v": 1, "name": "F", "base": "kkkkkkkk", "edges": ["cccccccc.box.Edge1"], "radius": 0.1}"#.to_owned();
     if cut_first {
@@ -50,60 +52,48 @@ fn features(cut_first: bool) -> Vec<String> {
     }
 }
 
-#[test]
-fn a_valid_m2_cut_sharing_a_refused_pockets_step_still_lets_its_fillet_build() {
-    let engine = engine();
-    let f = features(false);
-    let refs: Vec<&str> = f.iter().map(String::as_str).collect();
-    let model = published(&engine, &refs);
-    assert!(
-        matches!(
-            model.outcome(&id("qqqqqqqq")),
-            Some(FeatureOutcome::Failed(_))
+/// That `model`'s pocket and M2 cut, sharing a step, are each refused in its own words,
+/// naming itself, and the fillet of the cut is blocked on it.
+fn both_refused_and_the_fillet_blocked(model: &Model) {
+    for (feature, words) in [
+        (
+            "qqqqqqqq",
+            "pocket qqqqqqqq removes nothing from its base bbbbbbbb",
         ),
-        "pocket: {:?}",
-        model.outcome(&id("qqqqqqqq"))
-    );
-    assert!(
-        matches!(
-            model.outcome(&id("kkkkkkkk")),
-            Some(FeatureOutcome::Built { .. })
+        (
+            "kkkkkkkk",
+            "cut kkkkkkkk removes nothing from its base cccccccc",
         ),
-        "cut: {:?}",
-        model.outcome(&id("kkkkkkkk"))
-    );
-    assert!(
-        matches!(
-            model.outcome(&id("ffffffff")),
-            Some(FeatureOutcome::Built { .. })
-        ),
-        "fillet of a built cut: {:?}",
-        model.outcome(&id("ffffffff"))
+    ] {
+        let Some(FeatureOutcome::Failed(error)) = model.outcome(&id(feature)) else {
+            panic!("{feature}: {:?}", model.outcome(&id(feature)));
+        };
+        assert_eq!(error.feature(), Some(feature), "{error:?}");
+        assert!(error.message().starts_with(words), "{error:?}");
+    }
+    assert_eq!(
+        model.outcome(&id("ffffffff")),
+        Some(&FeatureOutcome::Blocked { on: id("kkkkkkkk") })
     );
 }
 
 #[test]
-fn a_valid_m2_cut_and_its_fillet_build_with_the_cut_first() {
+fn an_m2_cut_sharing_a_refused_pockets_step_is_refused_too_and_its_fillet_blocked() {
+    let engine = engine();
+    let f = features(false);
+    let refs: Vec<&str> = f.iter().map(String::as_str).collect();
+    both_refused_and_the_fillet_blocked(&published(&engine, &refs));
+    // Warm, every step kept: the same.
+    both_refused_and_the_fillet_blocked(&published(&engine, &refs));
+}
+
+#[test]
+fn an_m2_cut_and_its_fillet_with_the_cut_first_are_refused_and_blocked_alike() {
     let engine = engine();
     let f = features(true);
     let refs: Vec<&str> = f.iter().map(String::as_str).collect();
-    let model = published(&engine, &refs);
-    assert!(
-        matches!(
-            model.outcome(&id("kkkkkkkk")),
-            Some(FeatureOutcome::Built { .. })
-        ),
-        "cut: {:?}",
-        model.outcome(&id("kkkkkkkk"))
-    );
-    assert!(
-        matches!(
-            model.outcome(&id("ffffffff")),
-            Some(FeatureOutcome::Built { .. })
-        ),
-        "fillet of a built cut: {:?}",
-        model.outcome(&id("ffffffff"))
-    );
+    both_refused_and_the_fillet_blocked(&published(&engine, &refs));
+    both_refused_and_the_fillet_blocked(&published(&engine, &refs));
 }
 
 #[test]
@@ -144,10 +134,11 @@ fn nothing_is_built_on_a_refused_pocket_sharing_an_m2_cuts_step() {
 
 /// Robustness's proof: boxes B and D alike above the XY plane, a small box F inside B,
 /// sketch S, a baseless pad P reversed, a pocket Q on D (missing it: refused), the cut
-/// C = cut(B, P) (Q's step), and E = cut(C, F). E builds, fresh and warm, in either order of
-/// Q and C.
+/// C = cut(B, P) (Q's step: refused too, S7's rule), and E = cut(C, F). E is blocked on C,
+/// fresh and warm, in either order of Q and C: each user of the shared step sees its own
+/// base's verdict.
 #[test]
-fn robust_proof_an_m2_cuts_user_runs_whatever_pocket_shares_its_step() {
+fn robust_proof_an_m2_cuts_user_is_blocked_on_it_whatever_pocket_shares_its_step() {
     for q_first in [true, false] {
         let mut f = vec![
             box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0),
@@ -168,24 +159,23 @@ fn robust_proof_an_m2_cuts_user_runs_whatever_pocket_shares_its_step() {
         let engine = engine();
         for run in ["fresh", "warm"] {
             let model = published(&engine, &refs);
-            assert!(
-                matches!(
-                    model.outcome(&id("qqqqqqqq")),
-                    Some(FeatureOutcome::Failed(_))
-                ),
-                "{run}, q first {q_first}: {:?}",
-                model.outcome(&id("qqqqqqqq"))
-            );
-            for built in ["cccccccc", "eeeeeeee"] {
-                assert!(
-                    matches!(
-                        model.outcome(&id(built)),
-                        Some(FeatureOutcome::Built { .. })
-                    ),
-                    "{run}, q first {q_first}, {built}: {:?}",
-                    model.outcome(&id(built))
-                );
+            for (refused, words) in [
+                ("qqqqqqqq", "pocket qqqqqqqq removes nothing"),
+                ("cccccccc", "cut cccccccc removes nothing"),
+            ] {
+                let Some(FeatureOutcome::Failed(error)) = model.outcome(&id(refused)) else {
+                    panic!(
+                        "{run}, q first {q_first}, {refused}: {:?}",
+                        model.outcome(&id(refused))
+                    );
+                };
+                assert!(error.message().starts_with(words), "{run}: {error:?}");
             }
+            assert_eq!(
+                model.outcome(&id("eeeeeeee")),
+                Some(&FeatureOutcome::Blocked { on: id("cccccccc") }),
+                "{run}, q first {q_first}"
+            );
         }
     }
 }
@@ -291,12 +281,14 @@ fn a_verdict_that_lands_mid_recompute_stops_what_hasnt_started() {
 }
 
 #[test]
-fn a_step_a_live_feature_shares_with_a_dead_one_is_run() {
-    // The council's round 4: boxes B and C alike above XY, sketch S, a baseless reversed pad
-    // P (the pocket's prism), the M2 cut K = cut(C, P) (built: M2 checks only its solids),
-    // and the pocket Q on B (refused: it removes nothing; K's step). Then, on the same
-    // engine, the same reversed pocket G on Q and F on K: one cut step, which F (alive)
-    // needs and G (dead) doesn't. It's run once; G is blocked on Q, F built.
+fn a_step_only_dead_features_share_is_never_run() {
+    // The council's round 4, its premise moved by S7's rule for M2 booleans: boxes B and C
+    // alike above XY, sketch S, a baseless reversed pad P (the pocket's prism), the M2 cut
+    // K = cut(C, P) and the pocket Q on B, sharing one step, both refused (each removes
+    // nothing). Then, on the same engine, the same reversed pocket G on Q and F on K: one cut
+    // step, which both need and both are dead for, their bases refused. It's never run; G is
+    // blocked on Q, F on K. (A live feature sharing a step with a dead one no longer arises:
+    // a shared step's verdict is the same for every feature.)
     let engine = engine();
     let base = [
         box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0),
@@ -308,27 +300,26 @@ fn a_step_a_live_feature_shares_with_a_dead_one_is_run() {
     ];
     let refs: Vec<&str> = base.iter().map(String::as_str).collect();
     let model = published(&engine, &refs);
-    assert!(matches!(
-        model.outcome(&id("qqqqqqqq")),
-        Some(FeatureOutcome::Failed(_))
-    ));
+    for refused in ["qqqqqqqq", "kkkkkkkk"] {
+        assert!(
+            matches!(model.outcome(&id(refused)), Some(FeatureOutcome::Failed(_))),
+            "{refused}: {:?}",
+            model.outcome(&id(refused))
+        );
+    }
     let before = cuts(&engine);
     let g = pocket("gggggggg", "qqqqqqqq", "ssssssss", REVERSED);
     let f = pocket("ffffffff", "kkkkkkkk", "ssssssss", REVERSED);
     let mut more = refs.clone();
     more.extend([g.as_str(), f.as_str()]);
     let model = published(&engine, &more);
-    assert_eq!(cuts(&engine) - before, 1, "the shared cut, once");
+    assert_eq!(cuts(&engine) - before, 0, "the shared cut, never");
     assert_eq!(
         model.outcome(&id("gggggggg")),
         Some(&FeatureOutcome::Blocked { on: id("qqqqqqqq") })
     );
-    assert!(
-        matches!(
-            model.outcome(&id("ffffffff")),
-            Some(FeatureOutcome::Built { .. })
-        ),
-        "{:?}",
-        model.outcome(&id("ffffffff"))
+    assert_eq!(
+        model.outcome(&id("ffffffff")),
+        Some(&FeatureOutcome::Blocked { on: id("kkkkkkkk") })
     );
 }
