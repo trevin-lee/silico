@@ -66,9 +66,9 @@ fn main() -> ExitCode {
         options(silico_app::bar::TITLE_BAR_IS_APP_BAR),
         Box::new(move |creation| {
             silico_app::theme::apply(&creation.egui_ctx);
-            // Browse… opens the platform's own file dialogs.
+            // Open and Browse… open the platform's own file dialogs, on this window.
             let app = App::new(sessions)
-                .browsing(Box::new(silico_app::browse::Native))
+                .browsing(Box::new(silico_app::browse::Native::on(creation)))
                 .warming(warm)
                 .serving_with(silico);
             let app = match recents {

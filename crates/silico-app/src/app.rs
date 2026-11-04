@@ -27,7 +27,7 @@ use crate::panes::{self, Pane, Panes};
 use crate::recent::Recents;
 use crate::start::{self, Warm};
 use crate::tab::{DiskChoice, Tab, said};
-use crate::theme;
+use crate::theme::{self, FieldKind};
 use crate::toolbar;
 
 /// How long past [`DISK_CHECK_INTERVAL`] the idle frame comes: a comparison is due once the
@@ -96,6 +96,17 @@ enum Asking {
     Replace(SessionId, String),
     /// What to export of session's document, and where (M5.12): the form is `export`.
     Export(SessionId),
+}
+
+/// What a native dialog's answer goes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Browsed {
+    /// The path field of the question it was asked from (its Browse…), if that question is
+    /// still asked when it comes.
+    Field(Asking),
+    /// Open's own panel (File > Open…, Command+O, the start page's Open…): the file picked
+    /// is opened, whatever is asked meanwhile.
+    Open,
 }
 
 /// An open under way: its number, the order it was asked in, the path it was asked with, and
@@ -181,9 +192,9 @@ pub struct App<P: Clients + 'static> {
     /// What opens the native file dialogs, the Browse… buttons beside the path fields: none
     /// shown without it.
     browser: Option<Box<dyn Browse>>,
-    /// The native dialog open, for the question it was asked from: its answer goes to that
-    /// question, if it's still asked when it comes.
-    browsing: Option<Browsing<Asking>>,
+    /// The native dialog open, for what its answer goes to: the question it was asked from,
+    /// if it's still asked when it comes, or Open, which opens it.
+    browsing: Option<Browsing<Browsed>>,
     /// The folder of the last path a native dialog picked: where the next starts, if its
     /// document's folder isn't known.
     last_folder: Option<PathBuf>,
@@ -466,7 +477,7 @@ impl<P: Clients + 'static> App<P> {
         match act {
             start::Act::None => {}
             start::Act::New => self.asking = Some(Asking::Path { create: true }),
-            start::Act::Open => self.asking = Some(Asking::Path { create: false }),
+            start::Act::Open => self.ask_open(ui.ctx()),
             start::Act::Recent(path) => *started |= self.open_recent(&path),
             start::Act::CopyMcpConfig => ui.ctx().copy_text(self.mcp_config()),
         }
@@ -678,13 +689,18 @@ impl<P: Clients + 'static> App<P> {
             };
             return (escape || enter, None);
         }
-        // Ctrl+N and Ctrl+O: New's and Open's dialogs, as the File menu's and the start
-        // page's.
+        // Ctrl+N and Ctrl+O: New's dialog and Open's panel, as the File menu's and the
+        // start page's.
         for (key, create) in [(Key::N, true), (Key::O, false)] {
             if ui.input_mut(|input| {
                 input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, key))
             }) {
-                self.asking = Some(Asking::Path { create });
+                if create {
+                    self.asking = Some(Asking::Path { create });
+                } else {
+                    let ctx = ui.ctx().clone();
+                    self.ask_open(&ctx);
+                }
                 return (false, None);
             }
         }
@@ -842,11 +858,11 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// The native dialog's answer, if it has come, never waited for: a path picked fills the
-    /// path field of the question it was asked from (Open's opens it), if that question is
-    /// still asked; a cancel, or a question no longer asked, changes nothing, nor does
-    /// Export's while its export runs or asks whether to replace. Whether a command was
-    /// started.
+    /// The native dialog's answer, if it has come, never waited for: Open's panel's pick
+    /// opened; a path picked through Browse… filling the path field of the question it was
+    /// asked from (the typed-path Open's opens it), if that question is still asked; a
+    /// cancel, or a question no longer asked, changes nothing, nor does Export's while its
+    /// export runs or asks whether to replace. Whether a command was started.
     fn take_browsed(&mut self) -> bool {
         let Some(answer) = self.browsing.as_mut().and_then(Browsing::poll) else {
             return false;
@@ -863,9 +879,11 @@ impl<P: Clients + 'static> App<P> {
         {
             self.last_folder = Some(folder.to_path_buf());
         }
-        if self.asking.as_ref() != Some(&what) {
-            return false;
-        }
+        let what = match what {
+            Browsed::Field(what) if self.asking.as_ref() == Some(&what) => Some(what),
+            Browsed::Field(_) => return false,
+            Browsed::Open => None,
+        };
         let path = match path.into_os_string().into_string() {
             Ok(path) => path,
             Err(path) => {
@@ -876,6 +894,12 @@ impl<P: Clients + 'static> App<P> {
                 self.message_from = None;
                 return false;
             }
+        };
+        let Some(what) = what else {
+            // Open's panel: the file picked opened, as Browse…'s pick in the typed-path Open
+            // is, its tab and the recent documents following once it answers.
+            self.open(&path, false);
+            return true;
         };
         match what {
             Asking::Path { create: false } => {
@@ -912,11 +936,61 @@ impl<P: Clients + 'static> App<P> {
         self.browser.is_some() && browse::button(ui, self.browsing.is_none())
     }
 
-    /// The native dialog of `asking`'s path field, opened, its answer polled each frame.
+    /// Open (File > Open…, Command+O, the start page's Open…): the platform's own open panel
+    /// at once, the file picked opened when it answers ([`take_browsed`](Self::take_browsed)),
+    /// a cancel doing nothing. With no native dialogs, or one that won't open, or while
+    /// another native dialog is open (a Browse…'s), the typed-path Open asked instead; while
+    /// Open's own panel is open, nothing.
+    fn ask_open(&mut self, ctx: &egui::Context) {
+        let typed = Asking::Path { create: false };
+        match &self.browsing {
+            Some(browsing) if browsing.what == Browsed::Open => return,
+            Some(_) => {
+                self.asking = Some(typed);
+                return;
+            }
+            None => {}
+        }
+        let Some(ask) = self.ask_of(&typed) else {
+            return;
+        };
+        if !self.start_browsing(Browsed::Open, &ask, ctx) {
+            self.asking = Some(typed);
+        }
+    }
+
+    /// The native dialog of `asking`'s path field, opened, its answer polled each frame; if
+    /// none will open, said.
     fn browse(&mut self, asking: Asking, ctx: &egui::Context) {
         if self.browsing.is_some() {
             return;
         }
+        let Some(ask) = self.ask_of(&asking) else {
+            return;
+        };
+        if !self.start_browsing(Browsed::Field(asking), &ask, ctx) {
+            self.message = Some("The file dialog didn't open: type the path".to_owned());
+            self.message_from = None;
+        }
+    }
+
+    /// The native dialog `ask`, opened for `what`, its answer polled each frame: whether one
+    /// opened (none without native dialogs).
+    fn start_browsing(&mut self, what: Browsed, ask: &Ask, ctx: &egui::Context) -> bool {
+        let Some(answer) = self
+            .browser
+            .as_mut()
+            .and_then(|browser| browser.browse(ask))
+        else {
+            return false;
+        };
+        self.browsing = Some(Browsing::new(what, answer, ctx));
+        true
+    }
+
+    /// What the native dialog of `asking`'s path field is asked: where it starts, its
+    /// filters, and its title. None for a question with no path, or of a tab or form gone.
+    fn ask_of(&self, asking: &Asking) -> Option<Ask> {
         let tab = |id: SessionId| self.tabs.iter().find(|tab| tab.id == id);
         // The document's folder, or else the last a dialog picked in (else the platform's).
         let folder = |document: Option<&str>| {
@@ -924,7 +998,7 @@ impl<P: Clients + 'static> App<P> {
                 .and_then(browse::folder_of)
                 .or_else(|| self.last_folder.clone())
         };
-        let ask = match &asking {
+        let ask = match asking {
             Asking::Path { create } => {
                 let shown = self.active_place().and_then(|at| self.tabs.get(at));
                 Ask {
@@ -941,7 +1015,7 @@ impl<P: Clients + 'static> App<P> {
                 }
             }
             Asking::SaveAs(id) => {
-                let Some(tab) = tab(*id) else { return };
+                let tab = tab(*id)?;
                 Ask {
                     pick: Pick::Save,
                     title: format!("Save {} as", tab.name()),
@@ -951,10 +1025,8 @@ impl<P: Clients + 'static> App<P> {
                 }
             }
             Asking::Export(id) => {
-                let Some(tab) = tab(*id) else { return };
-                let Some(form) = self.export.as_ref().filter(|form| form.session == *id) else {
-                    return;
-                };
+                let tab = tab(*id)?;
+                let form = self.export.as_ref().filter(|form| form.session == *id)?;
                 Ask {
                     pick: Pick::Save,
                     title: format!("Export {}", tab.name()),
@@ -963,13 +1035,9 @@ impl<P: Clients + 'static> App<P> {
                     file_name: browse::file_name_of(&form.path),
                 }
             }
-            Asking::Close(_) | Asking::Quit | Asking::Replace(..) => return,
+            Asking::Close(_) | Asking::Quit | Asking::Replace(..) => return None,
         };
-        let Some(browser) = self.browser.as_mut() else {
-            return;
-        };
-        let answer = browser.browse(&ask);
-        self.browsing = Some(Browsing::new(asking, answer, ctx));
+        Some(ask)
     }
 
     /// The application bar (section 8; docs/design/m5-ui/DESIGN.md, *Layout*): Home, the
@@ -1091,7 +1159,8 @@ impl<P: Clients + 'static> App<P> {
             ui.close();
         }
         if ui.button("Open…").clicked() {
-            self.asking = Some(Asking::Path { create: false });
+            let ctx = ui.ctx().clone();
+            self.ask_open(&ctx);
             ui.close();
         }
         if ui
@@ -1332,8 +1401,15 @@ impl<P: Clients + 'static> App<P> {
                 });
                 ui.horizontal(|ui| {
                     let label = ui.label("Path");
-                    ui.add(egui::TextEdit::singleline(&mut self.open_path))
-                        .labelled_by(label.id);
+                    let edit = egui::TextEdit::singleline(&mut self.open_path);
+                    ui.add(theme::field(
+                        ui,
+                        edit,
+                        "open-path",
+                        FieldKind::Modify,
+                        false,
+                    ))
+                    .labelled_by(label.id);
                     browse = self.browse_button(ui);
                 });
                 ui.horizontal(|ui| {
@@ -1362,8 +1438,15 @@ impl<P: Clients + 'static> App<P> {
                 ));
                 ui.horizontal(|ui| {
                     let label = ui.label("Path");
-                    ui.add(egui::TextEdit::singleline(&mut self.save_as_path))
-                        .labelled_by(label.id);
+                    let edit = egui::TextEdit::singleline(&mut self.save_as_path);
+                    ui.add(theme::field(
+                        ui,
+                        edit,
+                        "save-as-path",
+                        FieldKind::Modify,
+                        false,
+                    ))
+                    .labelled_by(label.id);
                     browse = self.browse_button(ui);
                 });
                 ui.horizontal(|ui| {

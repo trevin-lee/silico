@@ -9294,34 +9294,41 @@ fn a_left_press_in_the_navigation_bars_padding_or_during_a_middle_pan_is_not_han
     assert_eq!(never_waits::waits(), 0);
 }
 
-// ---- Native file dialogs: Browse… beside each path field ----
+// ---- Native file dialogs: Open's panel, and Browse… beside each path field ----
 //
 // The platform's own dialog (rfd's, `browse::Native`) needs a window server and a person, so
 // it can't run headless: these drive a stand-in through the same `Browse` trait, which
 // records what each dialog was asked and answers when the test says, from a thread of its
-// own, as the platform's completion does.
+// own, as the platform's completion does; or, told to, opens none, as when the platform's
+// won't. Open goes straight to the panel; its typed-path question, which has a Browse… of
+// its own, is the fallback for a panel that won't open.
 
 use silico_app::browse::{self as browse_mod, Ask, Browse, Pick};
 
 /// The stand-in's state: what each dialog was asked, the answer the test gave (`None` until
-/// it does), the waker of the last poll, and how many polls there were.
+/// it does), the waker of the last poll, how many polls there were, and whether a dialog
+/// asked for opens none.
 #[derive(Default)]
 struct Dialogs {
     asked: Vec<Ask>,
     answer: Option<Option<PathBuf>>,
     waker: Option<std::task::Waker>,
     polls: u64,
+    refusing: bool,
 }
 
 #[derive(Clone, Default)]
 struct FakeBrowser(Arc<Mutex<Dialogs>>);
 
 impl Browse for FakeBrowser {
-    fn browse(&mut self, ask: &Ask) -> browse_mod::Answer {
+    fn browse(&mut self, ask: &Ask) -> Option<browse_mod::Answer> {
         let mut dialogs = self.0.lock().unwrap();
         dialogs.asked.push(ask.clone());
+        if dialogs.refusing {
+            return None;
+        }
         dialogs.answer = None;
-        Box::pin(FakeAnswer(Arc::clone(&self.0)))
+        Some(Box::pin(FakeAnswer(Arc::clone(&self.0))))
     }
 }
 
@@ -9368,6 +9375,11 @@ impl FakeBrowser {
         self.0.lock().unwrap().asked.clone()
     }
 
+    /// Each dialog asked for from now on opens none (`refusing`), or opens.
+    fn refusing(&self, refusing: bool) {
+        self.0.lock().unwrap().refusing = refusing;
+    }
+
     fn polls(&self) -> u64 {
         self.0.lock().unwrap().polls
     }
@@ -9401,6 +9413,40 @@ impl Fixture {
         });
         (h, path)
     }
+}
+
+/// File > `item` clicked.
+fn file_menu_item(h: &mut AppHarness, item: &str) {
+    h.get_by_label("File").click();
+    step(h);
+    step(h);
+    button_off_start(h, item).click();
+}
+
+/// Frames stepped until the native dialog has been asked for a `nth` time (from 1), none of
+/// them showing the typed-path Open: Open's panel asked at once, with no question first.
+#[track_caller]
+fn open_panel_asked(h: &mut AppHarness, browser: &FakeBrowser, nth: usize) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        step(h);
+        assert!(!anywhere(h, "Open document"), "the typed-path Open shown");
+        if browser.asked().len() >= nth {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the open panel never asked");
+    }
+    assert_eq!(browser.asked().len(), nth);
+    assert_eq!(browser.asked()[nth - 1].pick, Pick::Open);
+    assert_eq!(browser.asked()[nth - 1].title, "Open document");
+}
+
+/// File > Open…, with the panel refusing to open: the typed-path Open, its fallback, shown;
+/// the panel opening again afterwards.
+fn typed_open(h: &mut AppHarness, browser: &FakeBrowser) {
+    browser.refusing(true);
+    file_menu(h, "Open…", "Open document");
+    browser.refusing(false);
 }
 
 /// File > `item`, its dialog (headed `heading`) open.
@@ -9454,17 +9500,12 @@ fn with_no_native_dialogs_no_browse_button_is_shown() {
 }
 
 #[test]
-fn opens_browse_asks_for_a_silico_file_frames_climb_while_it_is_open_and_its_pick_opens() {
+fn opens_panel_asks_for_a_silico_file_frames_climb_while_it_is_open_and_its_pick_opens() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let mut h = f.app_browsing(&browser);
-    file_menu(&mut h, "Open…", "Open document");
-    // A path typed first, which the pick's open takes as a typed one's would.
-    h.get_by_role(Role::TextInput).focus();
-    step(&mut h);
-    h.get_by_role(Role::TextInput).type_text("typed.silico");
-    step(&mut h);
-    browse(&mut h, &browser);
+    file_menu_item(&mut h, "Open…");
+    open_panel_asked(&mut h, &browser, 1);
     // Polled in the frame it opened (rfd's portal starts its dialog on the first poll).
     assert_eq!(browser.polls(), 1);
     // Nothing open, no folder picked before: the platform's own start.
@@ -9479,18 +9520,21 @@ fn opens_browse_asks_for_a_silico_file_frames_climb_while_it_is_open_and_its_pic
         }]
     );
     assert_eq!(browse_mod::DOCUMENTS.extensions, ["silico"]);
-    // While it's open: frames climb, each polling it, never waiting; Browse… is off, so no
-    // second dialog opens over it.
+    // While it's open: frames climb, each polling it, never waiting; Open again asks no
+    // second panel over it, nor the typed-path question.
     let (frames, polls) = (h.state().frames(), browser.polls());
     for _ in 0..50 {
         step(&mut h);
     }
     assert_eq!(h.state().frames(), frames + 50);
     assert!(browser.polls() >= polls + 50, "{}", browser.polls());
-    assert!(browse_button(&h).accesskit_node().is_disabled());
-    browse_button(&h).click_accesskit();
-    step(&mut h);
+    file_menu_item(&mut h, "Open…");
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::O);
+    for _ in 0..5 {
+        step(&mut h);
+    }
     assert_eq!(browser.asked().len(), 1);
+    assert!(!anywhere(&h, "Open document"));
     assert!(h.state().tabs().is_empty());
     // Its answer, from another thread, asks egui for a frame at once: none asked for until
     // then (the click's own frames settled), so the one asked for is the answer's.
@@ -9504,11 +9548,45 @@ fn opens_browse_asks_for_a_silico_file_frames_climb_while_it_is_open_and_its_pic
     step_until(&mut h, "its tab", |h| anywhere(h, "picked.silico"));
     assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
     assert!(!anywhere(&h, "Open document"));
-    // Open again: its field emptied, and the shown document's folder is where it starts.
-    file_menu(&mut h, "Open…", "Open document");
-    assert_eq!(path_value(&h), "");
-    browse(&mut h, &browser);
+    // Open again: the shown document's folder is where it starts.
+    file_menu_item(&mut h, "Open…");
+    open_panel_asked(&mut h, &browser, 2);
     assert_eq!(browser.asked()[1].folder.as_deref(), Some(f.dir.path()));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_typed_path_opens_browse_asks_for_a_silico_file_and_its_pick_opens_as_typed() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    // The panel wouldn't open: Open asked it, then asked for a typed path.
+    typed_open(&mut h, &browser);
+    assert_eq!(browser.asked().len(), 1);
+    // A path typed first, which the pick's open takes as a typed one's would.
+    h.get_by_role(Role::TextInput).focus();
+    step(&mut h);
+    h.get_by_role(Role::TextInput).type_text("typed.silico");
+    step(&mut h);
+    browse(&mut h, &browser);
+    assert_eq!(browser.polls(), 1);
+    assert_eq!(browser.asked()[0], browser.asked()[1]);
+    assert_eq!(browser.asked()[1].pick, Pick::Open);
+    // While it's open, Browse… is off, so no second dialog opens over it.
+    step(&mut h);
+    assert!(browse_button(&h).accesskit_node().is_disabled());
+    browse_button(&h).click_accesskit();
+    step(&mut h);
+    assert_eq!(browser.asked().len(), 2);
+    assert!(h.state().tabs().is_empty());
+    let path = f.file("picked.silico", EXAMPLE);
+    browser.answer(Some(&path));
+    step_until(&mut h, "its tab", |h| anywhere(h, "picked.silico"));
+    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    assert!(!anywhere(&h, "Open document"));
+    // Open again, the panel refusing still: its field emptied.
+    typed_open(&mut h, &browser);
+    assert_eq!(path_value(&h), "");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -9517,8 +9595,23 @@ fn a_cancelled_browse_changes_nothing() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let (mut h, path) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
-    // Open, a path typed first: cancelled, the field holds what was typed and nothing opens.
-    file_menu(&mut h, "Open…", "Open document");
+    // Open's panel cancelled: nothing opens, nothing is asked or said.
+    file_menu_item(&mut h, "Open…");
+    open_panel_asked(&mut h, &browser, 1);
+    browser.answer(None);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(!anywhere(&h, "Open document"));
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(h.state().message(), None);
+    // And it can be asked again.
+    file_menu_item(&mut h, "Open…");
+    open_panel_asked(&mut h, &browser, 2);
+    browser.answer(None);
+    // The typed-path Open, a path typed first: cancelled, the field holds what was typed and
+    // nothing opens.
+    typed_open(&mut h, &browser);
     h.get_by_role(Role::TextInput).focus();
     step(&mut h);
     h.get_by_role(Role::TextInput).type_text("typed.silico");
@@ -10129,8 +10222,8 @@ fn news_browse_asks_where_to_save_and_starts_in_the_last_folder_picked() {
         .click_accesskit();
     step_until(&mut h, "the dialog gone", |h| !anywhere(h, "New document"));
     // No document open: the next starts in the folder last picked in.
-    file_menu(&mut h, "Open…", "Open document");
-    browse(&mut h, &browser);
+    file_menu_item(&mut h, "Open…");
+    open_panel_asked(&mut h, &browser, 2);
     assert_eq!(browser.asked()[1].folder.as_deref(), Some(sub.as_path()));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -10140,7 +10233,7 @@ fn a_pick_answering_after_its_dialog_closed_changes_nothing() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let mut h = f.app_browsing(&browser);
-    file_menu(&mut h, "Open…", "Open document");
+    typed_open(&mut h, &browser);
     browse(&mut h, &browser);
     // The app's dialog cancelled while the native one is open.
     h.get_by_role_and_label(Role::Button, "Cancel")
@@ -10153,7 +10246,7 @@ fn a_pick_answering_after_its_dialog_closed_changes_nothing() {
     }
     assert!(h.state().tabs().is_empty());
     // Nor does it go to the next question asked: a new Open's field is as it was.
-    file_menu(&mut h, "Open…", "Open document");
+    typed_open(&mut h, &browser);
     assert_eq!(path_value(&h), "");
     assert!(!browse_button(&h).accesskit_node().is_disabled());
     assert_eq!(never_waits::waits(), 0);
@@ -10164,8 +10257,9 @@ fn an_opens_pick_answering_while_save_as_is_asked_neither_opens_nor_fills_it() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let (mut h, path) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
-    // Open, a path typed, browsing; then cancelled, its native dialog still open.
-    file_menu(&mut h, "Open…", "Open document");
+    // The typed-path Open, a path typed, browsing; then cancelled, its native dialog still
+    // open.
+    typed_open(&mut h, &browser);
     h.get_by_role(Role::TextInput).focus();
     step(&mut h);
     h.get_by_role(Role::TextInput).type_text("typed.silico");
@@ -10193,12 +10287,33 @@ fn an_opens_pick_answering_while_save_as_is_asked_neither_opens_nor_fills_it() {
         !anywhere(h, "Save example.silico as")
     });
     // Open's field holds what was typed in it, and nothing more was opened.
-    file_menu(&mut h, "Open…", "Open document");
+    typed_open(&mut h, &browser);
     assert_eq!(path_value(&h), "typed.silico");
     for _ in 0..10 {
         step(&mut h);
     }
     assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn open_panels_pick_answering_while_save_as_is_asked_opens_it_and_leaves_save_as_alone() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let (mut h, path) = f.opened_browsing(&browser, "example.silico", EXAMPLE);
+    // Open's panel open (the portal's, on Linux, leaves the window to be used meanwhile).
+    file_menu_item(&mut h, "Open…");
+    open_panel_asked(&mut h, &browser, 1);
+    file_menu(&mut h, "Save As…", "Save example.silico as");
+    let picked = f.file("picked.silico", EXAMPLE);
+    browser.answer(Some(&picked));
+    step_until(&mut h, "its tab", |h| h.state().tabs().len() == 2);
+    assert_eq!(h.state().tabs()[1].path, picked.to_str().unwrap());
+    // Save As still asked of the first document, its field as it was.
+    assert!(anywhere(&h, "Save example.silico as"));
+    assert_eq!(path_value(&h), "");
+    assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
+    assert_eq!(h.state().tabs()[0].saves, 0);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -10287,16 +10402,26 @@ fn a_cancel_picks_no_folder() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let mut h = f.app_browsing(&browser);
-    file_menu(&mut h, "Open…", "Open document");
+    file_menu_item(&mut h, "Open…");
+    open_panel_asked(&mut h, &browser, 1);
+    browser.answer(None);
+    step(&mut h);
+    // No document open and nothing picked: the platform's own start again.
+    file_menu_item(&mut h, "Open…");
+    open_panel_asked(&mut h, &browser, 2);
+    assert_eq!(browser.asked()[1].folder, None);
+    // So too through Browse… (New's).
+    browser.answer(None);
+    step(&mut h);
+    file_menu(&mut h, "New…", "New document");
     browse(&mut h, &browser);
     browser.answer(None);
     step_until(&mut h, "Browse… on again", |h| {
         !browse_button(h).accesskit_node().is_disabled()
     });
-    // No document open and nothing picked: the platform's own start again.
     browse(&mut h, &browser);
-    assert_eq!(browser.asked().len(), 2);
-    assert_eq!(browser.asked()[1].folder, None);
+    assert_eq!(browser.asked().len(), 4);
+    assert_eq!(browser.asked()[3].folder, None);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -10305,7 +10430,7 @@ fn browse_while_a_dialog_is_open_is_off_and_says_why_when_hovered() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let mut h = f.app_browsing(&browser);
-    file_menu(&mut h, "Open…", "Open document");
+    file_menu(&mut h, "New…", "New document");
     let why = "A file dialog is already open";
     // On: hovered, it says nothing.
     browse_button(&h).hover();
@@ -10339,20 +10464,37 @@ fn a_pick_whose_path_isnt_utf8_is_said_and_neither_opens_nor_fills() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let mut h = f.app_browsing(&browser);
-    file_menu(&mut h, "Open…", "Open document");
-    browse(&mut h, &browser);
     let mut bytes = f.dir.path().as_os_str().as_bytes().to_vec();
     bytes.extend_from_slice(b"/\xff.silico");
     let path = PathBuf::from(std::ffi::OsStr::from_bytes(&bytes));
+    let said = format!("{} can't be used: its path isn't UTF-8", path.display());
+    // Open's panel: said, nothing opened, nothing asked.
+    file_menu_item(&mut h, "Open…");
+    open_panel_asked(&mut h, &browser, 1);
     browser.answer(Some(&path));
     step_until(&mut h, "said", |h| h.state().message().is_some());
-    assert_eq!(
-        h.state().message(),
-        Some(format!("{} can't be used: its path isn't UTF-8", path.display()).as_str())
-    );
+    assert_eq!(h.state().message(), Some(said.as_str()));
     for _ in 0..10 {
         step(&mut h);
     }
+    assert!(h.state().tabs().is_empty());
+    assert!(!anywhere(&h, "Open document"));
+    // The typed-path Open's Browse…, another such path picked: said, its field left empty,
+    // and it still asked.
+    let mut bytes = f.dir.path().as_os_str().as_bytes().to_vec();
+    bytes.extend_from_slice(b"/\xfe.silico");
+    let path = PathBuf::from(std::ffi::OsStr::from_bytes(&bytes));
+    let said = format!("{} can't be used: its path isn't UTF-8", path.display());
+    typed_open(&mut h, &browser);
+    browse(&mut h, &browser);
+    browser.answer(Some(&path));
+    step_until(&mut h, "said", |h| {
+        h.state().message() == Some(said.as_str())
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().message(), Some(said.as_str()));
     assert!(h.state().tabs().is_empty());
     assert!(anywhere(&h, "Open document"));
     assert_eq!(path_value(&h), "");
@@ -10371,15 +10513,16 @@ fn an_opens_pick_refused_at_once_asks_for_the_frame_that_says_so() {
         let path = f.dir.path().join(format!("held{n}.silico"));
         f.sessions.open(&path, true).wait().session.unwrap();
     }
-    file_menu(&mut h, "Open…", "Open document");
-    browse(&mut h, &browser);
+    // File > Open…: Open's panel asked at once, no question of the app's first.
+    file_menu_item(&mut h, "Open…");
+    open_panel_asked(&mut h, &browser, 1);
     quiet_wakes(&mut h);
     idle(&mut h);
     let path = f.file("picked.silico", EXAMPLE);
     browser.answer(Some(&path));
     let woken = h.state().wakes();
     // The frame the answer's waker asked for (egui gives each such request two frames): it
-    // takes the pick, the dialog closes, and the open is refused, not yet taken.
+    // takes the pick, asking no question, and the open is refused, not yet taken.
     step(&mut h);
     assert!(!anywhere(&h, "Open document"));
     assert_eq!(h.state().message(), None);
@@ -10566,6 +10709,316 @@ fn a_right_press_is_no_click_once_another_button_goes_between_the_focus_goes_or_
     secondary_taken(&seen);
     right_click(&mut h, at, at, none);
     assert_eq!(secondary_taken(&seen).len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// How Open is asked for: Command+O, File > Open…, or the start page's Open….
+const OPEN_ROUTES: [&str; 3] = ["Command+O", "File > Open…", "the start page's Open…"];
+
+/// Open asked for by `route`, one of [`OPEN_ROUTES`], from the start page.
+fn ask_open_by(h: &mut AppHarness, route: &str) {
+    match route {
+        "Command+O" => {
+            h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::O);
+        }
+        "File > Open…" => file_menu_item(h, "Open…"),
+        _ => start_page(h)
+            .get_by_role_and_label(Role::Button, "Open…")
+            .click(),
+    }
+}
+
+#[test]
+fn each_way_to_open_asks_the_panel_at_once_and_a_cancel_shows_nothing() {
+    let f = fixture();
+    for route in OPEN_ROUTES {
+        let browser = FakeBrowser::default();
+        let mut h = f.app_browsing(&browser);
+        step(&mut h);
+        assert!(start_shown(&h));
+        ask_open_by(&mut h, route);
+        if route == "Command+O" {
+            // The frame that takes the key asks it.
+            step(&mut h);
+            assert_eq!(browser.asked().len(), 1, "{route}");
+        }
+        open_panel_asked(&mut h, &browser, 1);
+        assert_eq!(
+            browser.asked()[0].filters,
+            [browse_mod::DOCUMENTS],
+            "{route}"
+        );
+        // Cancelled: nothing shown, opened, or said, and the start page stays.
+        browser.answer(None);
+        for _ in 0..10 {
+            step(&mut h);
+            assert!(!anywhere(&h, "Open document"), "{route}");
+        }
+        assert!(h.state().tabs().is_empty(), "{route}");
+        assert_eq!(h.state().message(), None, "{route}");
+        assert_eq!(browser.asked().len(), 1, "{route}");
+        assert!(start_shown(&h), "{route}");
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn each_way_to_open_opens_the_panels_pick() {
+    let f = fixture();
+    for (at, route) in OPEN_ROUTES.into_iter().enumerate() {
+        let browser = FakeBrowser::default();
+        let mut h = f.app_browsing(&browser);
+        step(&mut h);
+        ask_open_by(&mut h, route);
+        open_panel_asked(&mut h, &browser, 1);
+        let path = f.file(&format!("picked{at}.silico"), EXAMPLE);
+        browser.answer(Some(&path));
+        step_until(&mut h, "its tab", |h| !h.state().tabs().is_empty());
+        assert_eq!(h.state().tabs().len(), 1, "{route}");
+        assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap(), "{route}");
+        step_until(&mut h, "the start page left", |h| !start_shown(h));
+        assert!(!anywhere(&h, "Open document"), "{route}");
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn a_panel_that_wont_open_asks_for_a_typed_path_which_opens() {
+    let f = fixture();
+    for (at, route) in OPEN_ROUTES.into_iter().enumerate() {
+        let browser = FakeBrowser::default();
+        browser.refusing(true);
+        let mut h = f.app_browsing(&browser);
+        step(&mut h);
+        ask_open_by(&mut h, route);
+        step_until(&mut h, "the typed-path Open", |h| {
+            anywhere(h, "Open document")
+        });
+        // The panel was asked for first.
+        assert_eq!(browser.asked().len(), 1, "{route}");
+        assert_eq!(browser.asked()[0].pick, Pick::Open, "{route}");
+        let path = f.file(&format!("typed{at}.silico"), EXAMPLE);
+        h.get_by_role_and_label(Role::TextInput, "Path").focus();
+        step(&mut h);
+        h.get_by_role_and_label(Role::TextInput, "Path")
+            .type_text(path.to_str().unwrap());
+        step(&mut h);
+        h.key_press(eframe::egui::Key::Enter);
+        step_until(&mut h, "its tab", |h| !h.state().tabs().is_empty());
+        assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap(), "{route}");
+        step_until(&mut h, "the question gone", |h| {
+            !anywhere(h, "Open document")
+        });
+        assert_eq!(browser.asked().len(), 1, "{route}");
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn with_no_native_dialogs_each_way_to_open_asks_for_a_typed_path() {
+    let f = fixture();
+    for route in OPEN_ROUTES {
+        let mut h = f.app();
+        step(&mut h);
+        ask_open_by(&mut h, route);
+        step_until(&mut h, "the typed-path Open", |h| {
+            anywhere(h, "Open document")
+        });
+        assert!(
+            h.query_by_role_and_label(Role::TextInput, "Path").is_some(),
+            "{route}"
+        );
+        h.key_press(eframe::egui::Key::Escape);
+        step_until(&mut h, "it gone", |h| !anywhere(h, "Open document"));
+        assert!(h.state().tabs().is_empty(), "{route}");
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+/// Whether `pixel` is within `by` of `rgb` in each channel.
+fn pixel_near(pixel: [u8; 4], rgb: [u8; 3], by: u8) -> bool {
+    pixel[..3]
+        .iter()
+        .zip(rgb)
+        .all(|(&have, want)| have.abs_diff(want) <= by)
+}
+
+/// A field's frame as `pixel` reads a frame drawn: the pixels of the two columns its left
+/// edge crosses, at its mid-height (its 1-point border, antialiased over them).
+fn left_edge(
+    pixel: &dyn Fn(eframe::egui::Pos2) -> [u8; 4],
+    field: eframe::egui::Rect,
+) -> [[u8; 4]; 2] {
+    let y = field.center().y;
+    [
+        pixel(eframe::egui::pos2(field.left(), y)),
+        pixel(eframe::egui::pos2(field.left() + 1.0, y)),
+    ]
+}
+
+#[test]
+fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
+    on_lavapipe(
+        "text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe",
+        || {
+            let f = fixture();
+            let state = lavapipe_render_state();
+            let app = App::new(Arc::clone(&f.sessions));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            // As main.rs does, once at startup.
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            step(&mut h);
+            let ppp = h.ctx.pixels_per_point();
+            let (blue, red, gray_350) =
+                ([0x46, 0x76, 0xff], [0xff, 0x38, 0x65], [0x52, 0x51, 0x51]);
+
+            // A modal's field. No native dialogs: Open asks for a typed path, in a modal.
+            h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::O);
+            step_until(&mut h, "the typed-path Open", |h| {
+                anywhere(h, "Open document")
+            });
+            // Past the modal's fade-in (egui's animation time, a twelfth of a second).
+            for _ in 0..30 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            let field = h.get_by_role_and_label(Role::TextInput, "Path").rect();
+            assert!(field.width() > 40.0 && field.height() > 10.0, "{field:?}");
+            // Empty, unfocused, unhovered: inside, its fill, Gray.150 (styles.css,
+            // `.modify-box input`, the prototype's field on a floating surface).
+            assert_eq!(pixel(field.center()), [0x17, 0x17, 0x17, 0xff], "{field:?}");
+            assert_eq!(
+                pixel(field.right_center() + eframe::egui::vec2(-4.0, 0.0)),
+                [0x17, 0x17, 0x17, 0xff],
+                "{field:?}"
+            );
+            // Just outside it, above: the modal's own fill, Gray.200 (`.modal`), which the
+            // field's was, so it showed nothing.
+            assert_eq!(
+                pixel(field.center_top() + eframe::egui::vec2(0.0, -3.0)),
+                [0x21, 0x21, 0x21, 0xff],
+                "{field:?}"
+            );
+            // Its border: Gray.350's (antialiased, so near it, not exactly).
+            let edge = left_edge(&pixel, field);
+            assert!(
+                edge.iter().any(|&px| pixel_near(px, gray_350, 24)),
+                "{edge:?}"
+            );
+            // Focused: the focus blue's border (`.modify-box input:focus`), the only focus
+            // ring a framed field has (egui draws none of its own on one).
+            h.get_by_role_and_label(Role::TextInput, "Path").focus();
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            let edge = left_edge(&pixel, field);
+            assert!(edge.iter().any(|&px| pixel_near(px, blue, 48)), "{edge:?}");
+            assert!(
+                !edge.iter().any(|&px| pixel_near(px, gray_350, 24)),
+                "{edge:?}"
+            );
+            h.key_press(eframe::egui::Key::Escape);
+            step_until(&mut h, "it gone", |h| !anywhere(h, "Open document"));
+
+            // A panel's field: the Sphere's dialog's Radius, docked at the right.
+            let path = f.file("example.silico", EXAMPLE);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            step_until(&mut h, "the timeline read", |h| {
+                h.state()
+                    .tabs()
+                    .first()
+                    .is_some_and(|tab| tab.timeline.is_some())
+            });
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+            create(&mut h, "Sphere");
+            added(&mut h);
+            settled(&mut h);
+            // The pointer off it, on the dialog's title.
+            dialog(&h).get_by_label("SPHERE").hover();
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            let field = input(&h, "Radius").rect();
+            assert!(field.width() > 30.0 && field.height() > 10.0, "{field:?}");
+            // Inside it, clear of its text (at its left) and its border.
+            let inside = field.right_center() + eframe::egui::vec2(-4.0, 0.0);
+            // At rest: its fill Gray.200 (`.field`), on the panel's Gray.100 just above it.
+            assert_eq!(pixel(inside), [0x21, 0x21, 0x21, 0xff], "{field:?}");
+            assert_eq!(
+                pixel(field.center_top() + eframe::egui::vec2(0.0, -3.0)),
+                [0x0d, 0x0d, 0x0d, 0xff],
+                "{field:?}"
+            );
+            // Hovered: Gray.250 (`.field:hover`).
+            input(&h, "Radius").hover();
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            assert_eq!(pixel(inside), [0x27, 0x26, 0x26, 0xff], "{field:?}");
+            // A value that doesn't parse: the red border (`.field.bad`), focused or not.
+            type_into(&mut h, "Radius", "x");
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            // Its 5 and the x, in either order (where the caret was), parse as no number.
+            let typed = input(&h, "Radius").value().unwrap_or_default();
+            assert!(["x5", "5x"].contains(&typed.as_str()), "{typed}");
+            let image = h.render().unwrap();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            let edge = left_edge(&pixel, field);
+            assert!(edge.iter().any(|&px| pixel_near(px, red, 48)), "{edge:?}");
+            assert!(!edge.iter().any(|&px| pixel_near(px, blue, 48)), "{edge:?}");
+        },
+    );
+}
+
+#[test]
+fn open_while_a_browse_is_open_asks_for_a_typed_path_and_opens_no_second_dialog() {
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    // New's Browse…, its native dialog left open, and New cancelled.
+    file_menu(&mut h, "New…", "New document");
+    browse(&mut h, &browser);
+    h.get_by_role_and_label(Role::Button, "Cancel")
+        .click_accesskit();
+    step_until(&mut h, "New gone", |h| !anywhere(h, "New document"));
+    let asked = browser.asked().len();
+    // Open: the typed-path question, the platform's dialog not asked for again.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::O);
+    step_until(&mut h, "the typed-path Open", |h| {
+        anywhere(h, "Open document")
+    });
+    assert_eq!(browser.asked().len(), asked);
+    // Its Browse… is off while the other dialog is open.
+    assert!(browse_button(&h).accesskit_node().is_disabled());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -10796,22 +11249,30 @@ fn a_frames_left_events_and_right_clicks_are_numbered_in_their_order_together() 
 }
 
 #[test]
-fn the_start_pages_open_asks_as_file_open_does_and_its_browse_opens_the_pick() {
+fn the_start_pages_open_asks_the_panel_as_file_open_does_and_its_pick_opens_and_is_recent() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let path = f.file("example.silico", EXAMPLE);
-    let mut h = f.app_browsing(&browser);
+    let file = f.recents_file();
+    let mut h = f.app_made(|app| {
+        app.remembering(Recents::at(file))
+            .browsing(Box::new(browser.clone()))
+    });
+    recents_read(&mut h);
     step(&mut h);
     start_page(&h)
         .get_by_role_and_label(Role::Button, "Open…")
         .click();
-    step_until(&mut h, "Open's dialog", |h| anywhere(h, "Open document"));
-    browse(&mut h, &browser);
-    assert_eq!(browser.asked()[0].pick, Pick::Open);
+    open_panel_asked(&mut h, &browser, 1);
     browser.answer(Some(&path));
     step_until(&mut h, "its tab", |h| !h.state().tabs().is_empty());
     assert_eq!(h.state().tabs()[0].path, path.to_str().unwrap());
     step_until(&mut h, "the start page left", |h| !start_shown(h));
+    // Listed in Recent, as a typed path's open is.
+    home_button(&h).click();
+    step_until(&mut h, "listed", |h| {
+        start_shown(h) && recent_names(h) == ["example.silico"]
+    });
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -12375,6 +12836,16 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
             .is_some()
     });
     assert!(h.query_by_role_and_label(Role::Menu, "CREATE").is_none());
+    // Its preview built, as `status` says: with it still rebuilding, Esc would stop it,
+    // leaving the dialog open (esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_
+    // dialog_second).
+    step_until(&mut h, "the preview built", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.status.as_ref().is_some_and(|status| {
+            status.rebuild.revision == tab.revision
+                && status.rebuild.state == silico_core::command::RebuildState::Done
+        })
+    });
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| {
         h.query_by_role(Role::Dialog).is_none()

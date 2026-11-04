@@ -378,15 +378,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
             // An ID of its own, the document's and the feature's, so its cursor and focus
             // stay put however the panel above it changes.
             // Off while the tab closes: an edit then would be dropped (#298's review).
-            ui.add_enabled(
-                !tab.closing(),
-                egui::TextEdit::singleline(&mut text).id_salt((
-                    "name",
-                    tab.id.to_string(),
-                    entry.id.as_str(),
-                )),
-            )
-            .labelled_by(label.id);
+            let edit = egui::TextEdit::singleline(&mut text);
+            let salt = ("name", tab.id.to_string(), entry.id.as_str());
+            let edit = theme::field(ui, edit, salt, theme::FieldKind::Dialog, false);
+            ui.add_enabled(!tab.closing(), edit).labelled_by(label.id);
         });
         if text != typed {
             // Each change an edit, coalesced in the tab (section 3); an empty name too, for
