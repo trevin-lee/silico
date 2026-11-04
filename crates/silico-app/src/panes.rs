@@ -446,8 +446,8 @@ fn problems(ui: &mut Ui, tab: &Tab) {
 }
 
 /// The document's properties, with nothing selected (`docProps`): its head (its file's name
-/// over its path, or an untitled part's name over its having no file yet), its problems, its revision, units, features, save state, and file on
-/// disk, and its model.
+/// over its path, or an untitled part's name over its having no file yet), its problems,
+/// its revision, units, features, save state, and file on disk, and its model.
 ///
 /// SEAM: the model's measures (`docProps`' Volume, Area, Size, and Faces), which need a
 /// `mass_properties` read of its bodies the app doesn't make yet; its bodies are counted.

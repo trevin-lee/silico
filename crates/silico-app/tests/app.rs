@@ -15309,7 +15309,11 @@ fn under_the_sheet_no_shortcut_acts() {
     assert!(tab.hidden.is_empty());
     assert!(anywhere(&h, "example.silico *"));
     assert_eq!(view(&h).camera(), &camera);
-    assert!(!anywhere(&h, "New document"));
+    assert_eq!(
+        h.state().tabs().len(),
+        1,
+        "Ctrl+N made a part under the sheet"
+    );
     assert_eq!(
         f.kernel
             .calls()
@@ -17136,9 +17140,13 @@ fn a_second_untitled_parts_save_while_the_firsts_panel_is_open_asks_its_own_type
     h.get_by_label("Untitled 2 *").click();
     step(&mut h);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
-    step_until(&mut h, "Untitled 2's typed Save As", |h| {
-        anywhere(h, "Save Untitled 2 as")
-    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(
+        anywhere(&h, "Save Untitled 2 as"),
+        "Untitled 2's typed Save As"
+    );
     assert!(!anywhere(&h, "Save Untitled as"));
     assert_eq!(browser.asked().len(), 1);
     // Each saved to its own file: Untitled 2 to the path typed, Untitled to the panel's
@@ -17187,6 +17195,14 @@ fn a_quits_save_all_with_a_parts_panel_open_then_cancelled_stops_the_quit_asking
     // The panel the quit took on, cancelled: the part's close refused, so the quit stops,
     // said, and no second panel is asked for it.
     browser.answer(None);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(
+        browser.asked().len(),
+        1,
+        "a second panel asked for Untitled"
+    );
     step_until(&mut h, "the quit stopped", |h| {
         h.state().message() == Some("Quit stopped: Untitled wasn't closed")
     });
