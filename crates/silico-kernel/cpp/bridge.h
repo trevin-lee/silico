@@ -362,11 +362,12 @@ std::unique_ptr<Shape> sweep_revolution(const Shape &faces, Point3 origin, Point
                                         rust::Vec<HistoryEntry> &history);
 
 // Fuses, cuts, or intersects `base` and `tool` with OCCT's Boolean Operations, as FreeCAD
-// does (non-destructive, OCCT's default fuzzy value), but single-threaded. Appends the
-// history of `base` as input 0 and of `tool` as input 1, the names of the warnings OCCT
-// reported (BOPAlgo_AlertTooSmallEdge, ...) to `warnings`, and, two by two, each pair of
-// elements OCCT skipped intersecting (BOPAlgo_AlertIntersectionOfPairOfShapesFailed) to
-// `skipped`. Throws with OCCT's report if it fails.
+// 1.1.3 does (non-destructive, its automatic fuzzy value: 1e-6 of the diagonal of the box
+// round both), but single-threaded. Appends the history of `base` as input 0 and of `tool`
+// as input 1, the names of the warnings OCCT reported (BOPAlgo_AlertTooSmallEdge, ...) to
+// `warnings`, and, two by two, each pair of elements OCCT skipped intersecting
+// (BOPAlgo_AlertIntersectionOfPairOfShapesFailed) to `skipped`. Throws with OCCT's report
+// if it fails.
 std::unique_ptr<Shape> boolean(BooleanOp op, const Shape &base, const Shape &tool,
                                rust::Vec<HistoryEntry> &history,
                                rust::Vec<rust::String> &warnings,

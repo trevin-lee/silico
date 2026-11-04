@@ -3035,7 +3035,9 @@ mod tests {
         });
         assert_eq!(
             failed.suggestion(),
-            Some("check that the shapes are solids that overlap")
+            Some(
+                "check that the shapes are solids that overlap: a boolean is built to a millionth of its size, so a part thinner than that can't be"
+            )
         );
     }
 

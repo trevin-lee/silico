@@ -113,6 +113,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Booleans of identical shapes, coplanar touching faces, edge-only or vertex-only contact, an empty operand
 - Boolean operands offset by 1-3x `Precision::Confusion()` (1e-7, 2e-7) so parallel faces or curved surfaces nearly coincide: OCCT can miss the intersection and return a valid-looking wrong solid (check OCCT warnings such as `BOPAlgo_AlertAcquiredSelfIntersection`)
 - Booleans of two equal tori offset sideways, and other curved pairs (cone on a cylinder's base with axes 1e-7 apart): check volumes against an independent Monte Carlo point-membership model, since inclusion-exclusion holds even when OCCT treats distinct operands as one
+- Booleans at the fuzzy value's edges (1e-6 of the diagonal of the box round every input): a gap, overlap, foil, or tool just under and just over it, and a far part of one input (a second solid of the tool, a copy a kilometre off) growing it until a near feature merges, or comes apart from the solid it stood on
 - The same object passed as both operands, or operands sharing geometry (a shape and its moved copy), against the same shapes read separately from bytes: results and history must match
 - Revolve with an axis that crosses the profile, or angles of 0°, 360°, or more than 360°
 - Revolve a side leaning just off parallel to the axis (its length within 1e-7 of its length along the axis): OCCT makes a cylinder, not a cone, and calls the solid valid
