@@ -2756,6 +2756,8 @@ impl Tab {
     pub fn sketch_choose(&mut self, choice: Option<Choice>) {
         if let Some(mode) = self.sketch.as_mut() {
             mode.tools.choose(choice);
+            // The canvas menu was of the tool before.
+            mode.menu_at = None;
         }
     }
 

@@ -14012,3 +14012,201 @@ fn a_right_click_in_sketch_mode_opens_its_menu_whose_cancel_sketch_leaves_it() {
     assert_eq!(text_of(&f, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- The lean review of 453ccfd8 and f89d73c7 ----
+
+/// As [`counting`], but a length of 97 mm or 98 mm disagrees with the others (in conflict,
+/// the solve refused), whichever it is.
+fn counting_conflicting_97_98(f: &Fixture) {
+    use silico_protocol::{Solved, SolverConstraint, Tag};
+    f.sketches.answer(|system| {
+        let sent = FakeSketches::as_sent(system);
+        let equations = system
+            .constraints
+            .iter()
+            .filter(|c| c.tag().is_some())
+            .count();
+        let dofs = system.unknowns.len() as i32 - equations as i32;
+        let conflicting: Vec<Tag> = system
+            .constraints
+            .iter()
+            .filter_map(|c| match c {
+                SolverConstraint::Distance { tag, value, .. }
+                    if matches!(system.values.get(value.0 as usize), Some(&(97.0 | 98.0))) =>
+                {
+                    Some(*tag)
+                }
+                _ => None,
+            })
+            .collect();
+        Ok(Solved {
+            dofs,
+            conflicting,
+            free: if dofs > 0 {
+                system.unknowns.clone()
+            } else {
+                Vec::new()
+            },
+            ..sent
+        })
+    });
+}
+
+#[test]
+fn an_edit_on_a_sketch_already_refused_and_still_so_offers_nothing() {
+    use silico_core::sketch_states::ConstraintState;
+    let f = fixture();
+    counting_conflicting_97_98(&f);
+    // The bottom's length at 98, in conflict as opened: the solve refused already.
+    let (mut h, _) = f.opened(
+        "boxed.silico",
+        &BOXED_LENGTH.replace(r#""value": 40"#, r#""value": 98"#),
+    );
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    let length = silico_core::document::ElementId::new("ka000005").unwrap();
+    let read = sketch_mode(&h).unwrap().drawable().unwrap().clone();
+    assert_eq!(
+        read.states.constraints.get(&length),
+        Some(&ConstraintState::Conflicting)
+    );
+    assert!(read.states.solve_problem.is_some());
+    let state = read.states.state;
+    // 98 to 97: the same constraint in conflict, the solve refused before and after, the
+    // state the same. Nothing for the edit to answer for: no prompt once its read lands.
+    edit_length(&f, &mut h, "97");
+    step_until(&mut h, "the edit's read judged", |h| {
+        sketch_mode(h).is_some_and(|m| {
+            m.edited.is_none()
+                && m.drawable().is_some_and(|r| {
+                    r.members.constraints.iter().any(|c| {
+                        c.id.as_str() == "ka000005" && c.form.value_text().as_deref() == Some("97")
+                    })
+                })
+        })
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    let read = sketch_mode(&h).unwrap().drawable().unwrap().clone();
+    assert_eq!(
+        read.states.constraints.get(&length),
+        Some(&ConstraintState::Conflicting)
+    );
+    assert!(read.states.solve_problem.is_some());
+    assert_eq!(read.states.state, state);
+    assert!(sketch_mode(&h).unwrap().offer().is_none());
+    assert!(prompt(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Sketch mode's canvas menu, if it's shown.
+fn sketch_menu(h: &AppHarness) -> Option<egui_kittest::Node<'_>> {
+    h.query_by_role_and_label(Role::Menu, "Sketch menu")
+}
+
+/// A right-click at (`x`, `y`) on the plane, as the pane hands one over, and the menu shown.
+fn open_menu(f: &Fixture, h: &mut AppHarness, x: f64, y: f64) {
+    let event = pointer(silico_app::sketch::PointerAction::RightClick, x, y);
+    sketch_events(f, h, &[event]);
+    step_until(h, "the menu", |h| sketch_menu(h).is_some());
+    assert!(sketch_mode(h).unwrap().menu_at.is_some());
+}
+
+/// The left button pressed at `from` (screen points) and let go at `to`, a frame apart, as
+/// egui sees the window's pointer.
+fn press_away(h: &mut AppHarness, from: eframe::egui::Pos2, to: eframe::egui::Pos2) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    h.input_mut().events.push(Event::PointerMoved(from));
+    h.input_mut().events.push(Event::PointerButton {
+        pos: from,
+        button: PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::default(),
+    });
+    step(h);
+    h.input_mut().events.push(Event::PointerMoved(to));
+    step(h);
+    h.input_mut().events.push(Event::PointerButton {
+        pos: to,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::default(),
+    });
+    step(h);
+}
+
+#[test]
+fn the_canvas_menu_closes_on_esc_on_a_click_or_a_drag_away_from_it_and_on_a_tool_chosen() {
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    let canvas = the_viewport(&h);
+    // Esc closes it; sketch mode stays.
+    open_menu(&f, &mut h, 20.0, 20.0);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(sketch_menu(&h).is_none());
+    assert!(sketch_mode(&h).is_some_and(|m| m.menu_at.is_none()));
+    // A left click on the canvas away from it closes it; sketch mode stays.
+    open_menu(&f, &mut h, 20.0, 20.0);
+    let away = canvas.right_bottom() - eframe::egui::vec2(60.0, 60.0);
+    press_away(&mut h, away, away);
+    assert!(sketch_menu(&h).is_none());
+    assert!(sketch_mode(&h).is_some_and(|m| m.menu_at.is_none()));
+    // So does a drag begun away from it, at its press.
+    open_menu(&f, &mut h, 20.0, 20.0);
+    press_away(&mut h, away, away - eframe::egui::vec2(100.0, 100.0));
+    assert!(sketch_menu(&h).is_none());
+    assert!(sketch_mode(&h).is_some_and(|m| m.menu_at.is_none()));
+    // A tool chosen by its key closes it, the tool on.
+    open_menu(&f, &mut h, 20.0, 20.0);
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_some_and(|m| m.menu_at.is_none()));
+    assert!(sketch_menu(&h).is_none());
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(silico_app::sketch::tools::Choice::Draw(
+            silico_core::sketch_tools::ToolKind::Line
+        ))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_canvas_menus_end_chain_ends_a_chain_under_way_closes_the_menu_and_keeps_sketch_mode() {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    // A line's chain begun: its first click, at (70, 70), away from the box.
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(70.0, 70.0));
+    assert!(sketch_mode(&h).unwrap().tools.busy());
+    open_menu(&f, &mut h, 80.0, 60.0);
+    let end = sketch_menu(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "End chain")
+        .accesskit_node()
+        .is_disabled();
+    assert!(!end);
+    sketch_menu(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "End chain")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert!(sketch_menu(&h).is_none());
+    let mode = sketch_mode(&h).unwrap();
+    assert!(mode.menu_at.is_none());
+    assert!(!mode.tools.busy());
+    assert_eq!(mode.tools.choice(), Some(Choice::Draw(ToolKind::Line)));
+    assert_eq!(never_waits::waits(), 0);
+}

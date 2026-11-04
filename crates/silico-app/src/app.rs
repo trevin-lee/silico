@@ -1121,6 +1121,15 @@ impl<P: Clients + 'static> App<P> {
     /// prototype's): the sketch bar at the canvas's top centre, its Finish Sketch and Cancel
     /// taken, and the Sketch Palette at its right.
     fn sketch_canvas(&mut self, ui: &mut Ui, started: &mut bool) {
+        // A tab not shown has no menu open: it closes as the tab is hidden.
+        let shown_at = self.active_place();
+        for (at, tab) in self.tabs.iter_mut().enumerate() {
+            if Some(at) != shown_at
+                && let Some(mode) = tab.sketch.as_mut()
+            {
+                mode.menu_at = None;
+            }
+        }
         let sessions = &self.sessions;
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return;
@@ -1161,7 +1170,8 @@ impl<P: Clients + 'static> App<P> {
             *started = true;
         }
         // The canvas's right-click menu, at the click (the prototype's): what it asks done,
-        // and closed by it or by a click elsewhere.
+        // and closed by it, or by any button pressed outside it (a click, a drag, a right
+        // click, there or off the canvas).
         if let Some((at, busy)) = menu {
             let mut asked = sketch::bar::MenuAction::None;
             let shown = egui::Area::new(egui::Id::new(("sketch_menu", id.to_string())))
@@ -1183,9 +1193,13 @@ impl<P: Clients + 'static> App<P> {
                 sketch::bar::MenuAction::Finish => tab.finish_sketch(sessions, true),
                 sketch::bar::MenuAction::Cancel => tab.finish_sketch(sessions, false),
             }
-            // Not by the right-click that opened it, let go in this frame.
-            let away = shown.response.clicked_elsewhere()
-                && !ui.input(|i| i.pointer.button_released(egui::PointerButton::Secondary));
+            let menu_rect = shown.response.rect;
+            let away = ui.input(|i| {
+                i.pointer.any_pressed()
+                    && i.pointer
+                        .press_origin()
+                        .is_some_and(|origin| !menu_rect.contains(origin))
+            });
             if (asked != sketch::bar::MenuAction::None || away)
                 && let Some(mode) = tab.sketch.as_mut()
             {
