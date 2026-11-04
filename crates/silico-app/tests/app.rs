@@ -3742,6 +3742,66 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
 }
 
 #[test]
+fn an_edit_and_an_esc_in_one_frame_supersede_the_preview_then_cancel_the_dialog() {
+    // A keystroke and Esc in one pass of the frame, the preview rebuilding, as the frame
+    // takes them: the dialog's changes sent (`dialog_changed`), then its key
+    // (`dialog_escape`), on the `status` the pass's poll read. The edit supersedes the
+    // preview's read, which stops its rebuild (of a revision the edit makes old). That stop
+    // is the edit's: the Esc has no preview of its own to stop, and is the dialog's Cancel,
+    // never eaten as a second stop. (Driven on the tab: a keystroke and Esc given to one
+    // harness step reach the Esc's key with `status` already at the edit's revision, the
+    // edit sent in an earlier pass of the step, so the two never meet in one pass there.)
+    use silico_app::dialog::Value;
+    use silico_core::command::{RunningCommand, SessionCommand};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let before = text_of(&f, &h);
+    let id = h.state().tabs()[0].id;
+    let hold = f.kernel.hold(is_new_box);
+    create(&mut h, "Box");
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    until("the preview's read waiting", || {
+        f.sessions.status(&id).result.is_ok_and(|status| {
+            status.running == Some(RunningCommand::Command(SessionCommand::Timeline))
+        })
+    });
+    let tab = &mut h.state_mut().tabs_mut()[0];
+    tab.message = Some("an earlier refusal".to_owned());
+    // "3" typed before the width's 10.
+    let dialog = tab.dialog.as_mut().unwrap();
+    let width = dialog
+        .inputs
+        .iter_mut()
+        .find(|input| input.label == "Width")
+        .unwrap();
+    width.value = Value::Length("310".to_owned());
+    assert!(tab.dialog_changed(&f.sessions));
+    assert!(
+        tab.sent
+            .iter()
+            .any(|sent| matches!(sent, Sent::Edit(field) if field == "width")),
+        "{:?}",
+        tab.sent
+    );
+    // The pass's `status`, read before the edit, still says the preview rebuilds.
+    assert!(tab.preview_rebuilding());
+    assert!(
+        tab.dialog_escape(&f.sessions),
+        "the Esc was taken as a stop"
+    );
+    tab.close_dialog(&f.sessions, false);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn esc_in_a_dialog_whose_preview_was_built_since_status_said_it_rebuilt_is_its_cancel() {
     // `status`, read at the frame's start, says the preview rebuilds; its rebuild publishes
     // before Esc's stop reaches it. The stop finds nothing to stop: the Esc is the dialog's
