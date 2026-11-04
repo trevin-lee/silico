@@ -41,11 +41,12 @@ pub enum Kind {
     Pocket,
     Revolve,
     Groove,
+    Fillet,
 }
 
 impl Kind {
-    /// Every kind: the primitives, then the sweeps.
-    pub const ALL: [Kind; 9] = [
+    /// Every kind: the primitives, the sweeps, then the dressings of a body's edges.
+    pub const ALL: [Kind; 10] = [
         Kind::Box,
         Kind::Cylinder,
         Kind::Sphere,
@@ -55,6 +56,7 @@ impl Kind {
         Kind::Pocket,
         Kind::Revolve,
         Kind::Groove,
+        Kind::Fillet,
     ];
 
     /// The feature's `type`, as the document writes it.
@@ -69,6 +71,7 @@ impl Kind {
             Kind::Pocket => "pocket",
             Kind::Revolve => "revolve",
             Kind::Groove => "groove",
+            Kind::Fillet => "fillet",
         }
     }
 
@@ -84,6 +87,7 @@ impl Kind {
             Kind::Pocket => "Pocket",
             Kind::Revolve => "Revolve",
             Kind::Groove => "Groove",
+            Kind::Fillet => "Fillet",
         }
     }
 
@@ -105,6 +109,11 @@ impl Kind {
     /// Whether it cuts from a body, which it then must have.
     pub fn cuts(self) -> bool {
         matches!(self, Kind::Pocket | Kind::Groove)
+    }
+
+    /// Whether it dresses a body's edges (MODIFY's), which it then must have.
+    pub fn dresses(self) -> bool {
+        matches!(self, Kind::Fillet)
     }
 }
 
@@ -382,6 +391,17 @@ impl Dialog {
                     reversed,
                 ]
             }
+            // Its edges, from the selection (a fillet in the core rounds edges alone: its
+            // `edges` are edges' names, `references`), and FreeCAD's PartDesign Fillet's
+            // radius, 1 mm (FeatureFillet.cpp).
+            Kind::Fillet => vec![
+                Input {
+                    label: "Edges",
+                    part: Part::Names("edges"),
+                    value: Value::Names(Names::new(ElementKind::Edge, "fillet")),
+                },
+                length("Radius", Part::Number("radius"), "1"),
+            ],
             Kind::Revolve | Kind::Groove => vec![
                 sketch_input,
                 Input {
@@ -733,6 +753,12 @@ impl Dialog {
     /// or it's on another body than the box's names (a feature builds on one); each refusal
     /// said. An element of the dialog's own feature's body is of its base, as the preview
     /// built it from there.
+    ///
+    /// SEAM: SolidWorks rolls the model back to before the feature while its dialog is open,
+    /// so its edges are picked on its base. Here picks are read against the published model,
+    /// the feature built (an existing one's, under Edit Feature, or a new one's preview):
+    /// an edge the feature itself made is refused, as above, and one a later feature made is
+    /// left to the core's refusal, until the app can show the model rolled back.
     pub fn toggled(&mut self, toggled: &Toggled) -> Taken {
         let own = self.feature.clone();
         let Some(names) = self.names_mut() else {
@@ -815,7 +841,7 @@ impl Dialog {
     pub fn ui(
         &mut self,
         ui: &mut Ui,
-        said: &[String],
+        said: &[crate::tab::Said],
         preview: Option<properties::Preview>,
         named: &dyn Fn(&FeatureId) -> Option<String>,
         refused: &dyn Fn(&str) -> bool,
@@ -891,7 +917,19 @@ impl Dialog {
                         properties::preview(ui, preview, &rebuild);
                     }
                     for said in said {
-                        properties::card(ui, false, said, None);
+                        // Its cause and the elements it names under its message, as the
+                        // prototype's card has them (`errCard`'s message and Elements).
+                        let mut details: Vec<String> = said.cause.iter().cloned().collect();
+                        if !said.elements.is_empty() {
+                            details.push(format!("Elements: {}", said.elements.join(", ")));
+                        }
+                        properties::card_with(
+                            ui,
+                            false,
+                            &said.message,
+                            &details,
+                            said.suggestion.as_deref(),
+                        );
                     }
                 });
         });
@@ -1412,6 +1450,52 @@ mod tests {
             Some(
                 "The selected edges are on 3 bodies, k7f2qx3m and a91cw0de, among others: a \
                  fillet takes one body's edges"
+            )
+        );
+    }
+
+    #[test]
+    fn a_fillets_dialog_loads_its_edges_base_and_radius_and_refuses_edges_it_cant_read() {
+        let read = |text: &str| json::read(text.as_bytes()).unwrap();
+        let id = FeatureId::new("f0000001").unwrap();
+        let fillet = read(
+            r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"], "radius": 2.5}"#,
+        );
+        let dialog = Dialog::load(Kind::Fillet, id.clone(), &fillet, 1).unwrap();
+        let names = dialog.names().unwrap();
+        assert_eq!(names.names, ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+        assert_eq!(names.body, Some(FeatureId::new("k7f2qx3m").unwrap()));
+        assert_eq!(dialog.inputs[1].value, Value::Length("2.5".to_owned()));
+        // Loaded as the document holds it: nothing to send.
+        let mut loaded = dialog.clone();
+        assert!(loaded.changes().is_empty());
+        // An edge that isn't a string, or a base that isn't an ID: not a fillet it reads.
+        for bad in [
+            r#"{"type": "fillet", "base": "k7f2qx3m", "edges": [3], "radius": 1}"#,
+            r#"{"type": "fillet", "base": 7, "edges": ["k7f2qx3m.box.Edge3"], "radius": 1}"#,
+        ] {
+            assert!(
+                Dialog::load(Kind::Fillet, id.clone(), &read(bad), 1).is_none(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_fillet_adds_its_type_name_base_edges_and_radius_once_it_has_edges() {
+        let mut fillet = Dialog::new(Kind::Fillet, None, 1);
+        // No edges: nothing to add.
+        assert!(fillet.add().is_none());
+        fillet.toggled(&toggle(true, &edge("k7f2qx3m", 3), "k7f2qx3m"));
+        let members = fillet.add().unwrap();
+        let node = feature_node(Kind::Fillet, &members, None).unwrap();
+        assert_eq!(
+            json::Plain::of(&node),
+            json::Plain::of(
+                &json::read(
+                    br#"{"type": "fillet", "name": "Fillet", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "radius": 1}"#
+                )
+                .unwrap()
             )
         );
     }

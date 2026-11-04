@@ -23,12 +23,27 @@ use silico_core::timeline::{Entry, Health};
 use crate::changes::{self, Changes};
 use crate::dialog::{Dialog, Kind, feature_node};
 
-/// What a feature's mark says: its first problem's (or warning's) message, and its
-/// suggestion, from a `check` of the model the timeline's marks came from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a feature's mark says: its first problem's (or warning's) message, its cause and
+/// the elements it names, if it has them, and its suggestion, from a `check` of the model
+/// the timeline's marks came from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Said {
     pub message: String,
+    pub cause: Option<String>,
+    pub elements: Vec<String>,
     pub suggestion: Option<String>,
+}
+
+impl Said {
+    /// What `error` says.
+    pub fn of(error: &silico_core::Error) -> Self {
+        Said {
+            message: error.message().to_owned(),
+            cause: error.cause().map(str::to_owned),
+            elements: error.elements().to_vec(),
+            suggestion: error.suggestion().map(str::to_owned),
+        }
+    }
 }
 
 /// An edit of one field of one feature (`set_field`), as the person made it.
@@ -597,14 +612,7 @@ impl Tab {
             nothing_published: false,
             rebuild_out: false,
             said: BTreeMap::new(),
-            document_problems: problems
-                .errors()
-                .iter()
-                .map(|error| Said {
-                    message: error.message().to_owned(),
-                    suggestion: error.suggestion().map(str::to_owned),
-                })
-                .collect(),
+            document_problems: problems.errors().iter().map(Said::of).collect(),
             check_read: None,
             check_superseded: false,
             check_first: false,
@@ -2570,7 +2578,8 @@ impl Tab {
     }
 
     /// Whether a dialog of `kind` can open: none open or loading, the tab not closing, the
-    /// gate taking the document, and, for one that cuts, a body to cut from.
+    /// gate taking the document, and, for one that cuts or dresses edges, a body to cut
+    /// from or whose edges to dress.
     pub fn can_open(&self, kind: Kind) -> bool {
         self.dialog.is_none()
             && self.loading.is_none()
@@ -2579,7 +2588,7 @@ impl Tab {
                 .timeline
                 .as_ref()
                 .is_some_and(|timeline| timeline.problems == 0)
-            && (!kind.cuts() || self.tip().is_some())
+            && (!(kind.cuts() || kind.dresses()) || self.tip().is_some())
     }
 
     /// A new feature's dialog opened (section 9): its inputs at their defaults, a sweep's
@@ -2823,17 +2832,21 @@ impl Tab {
     }
 
     /// What the dialog says beneath its inputs: its feature's error (or warning), as the
-    /// preview's check gives it, then the tab's last refusal.
-    pub fn dialog_said(&self) -> Vec<String> {
+    /// preview's check gives it (its message, cause, elements, and suggestion), then the
+    /// tab's last refusal.
+    pub fn dialog_said(&self) -> Vec<Said> {
         let feature = self
             .dialog
             .as_ref()
             .and_then(|dialog| dialog.feature.as_ref());
         feature
             .and_then(|feature| self.said.get(feature.as_str()))
-            .map(|said| said.message.clone())
+            .cloned()
             .into_iter()
-            .chain(self.message.clone())
+            .chain(self.message.clone().map(|message| Said {
+                message,
+                ..Said::default()
+            }))
             .collect()
     }
 
@@ -2877,10 +2890,7 @@ impl Tab {
         let mut by_feature = BTreeMap::new();
         let mut document = Vec::new();
         for error in answer.problems.errors() {
-            let said = Said {
-                message: error.message().to_owned(),
-                suggestion: error.suggestion().map(str::to_owned),
-            };
+            let said = Said::of(error);
             if gate || error.feature().is_none() {
                 document.push(said.clone());
             }
@@ -2895,6 +2905,7 @@ impl Tab {
                     .or_insert_with(|| Said {
                         message: warning.message().to_owned(),
                         suggestion: warning.suggestion().map(str::to_owned),
+                        ..Said::default()
                     });
             }
         }
@@ -3277,7 +3288,7 @@ mod tests {
     fn a_timeline_unmarked_drops_the_features_text_and_one_the_gate_took_the_documents() {
         let said = || Said {
             message: "m".to_owned(),
-            suggestion: None,
+            ..Said::default()
         };
         let mut tab = tab();
         tab.said.insert("a0000001".to_owned(), said());

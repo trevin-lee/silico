@@ -14266,14 +14266,13 @@ fn the_toolbar_holds_solids_panels_their_buttons_in_the_prototypes_order_and_siz
         buttons_of(&panel("SELECT")),
         ["Faces", "Edges", "Vertices", "SELECT"]
     );
-    // On: every dialog (the example has a body, so the cuts too) and the drop-downs; off:
-    // Create Sketch, until sketch mode, and what isn't built.
+    // On: every dialog (the example has a body, so the cuts and the fillet too) and the
+    // drop-downs; off: Create Sketch, until sketch mode, and what isn't built.
     let mut on: Vec<&str> = CREATE_ROW[1..].to_vec();
     on.push("CREATE");
     assert_eq!(on_of(&panel("CREATE")), on);
-    for label in ["MODIFY", "INSPECT"] {
-        assert_eq!(on_of(&panel(label)), [label]);
-    }
+    assert_eq!(on_of(&panel("MODIFY")), ["Fillet", "MODIFY"]);
+    assert_eq!(on_of(&panel("INSPECT")), ["INSPECT"]);
     // SELECT's filters toggle the selection's filter (M5.7), each pressed while its kind is
     // taken: all three at first.
     assert_eq!(
@@ -14352,11 +14351,7 @@ fn each_toolbar_button_names_its_command_and_says_what_it_does_or_that_it_isnt_b
             "Create Sketch",
             vec!["Sketches on an origin plane. Not built yet"],
         ),
-        (
-            "MODIFY",
-            "Fillet",
-            vec!["Rounds the selected edges. Not built yet"],
-        ),
+        ("MODIFY", "Fillet", vec!["Rounds the selected edges"]),
         (
             "MODIFY",
             "Chamfer",
@@ -14457,7 +14452,7 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         h.query_by_role(Role::Dialog).is_none()
     });
     settled(&mut h);
-    // interact.js:171: the edge tools, and the booleans under a heading, none built.
+    // interact.js:171: the edge tools, and the booleans under a heading, the fillet built.
     open(&mut h, "MODIFY");
     let menu = h.get_by_role_and_label(Role::Menu, "MODIFY");
     assert_eq!(
@@ -14465,13 +14460,13 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         ["Fillet", "Chamfer", "Union", "Subtract", "Intersect"]
     );
     assert!(menu.query_by_label("COMBINE").is_some());
-    assert!(on_of(&menu).is_empty());
+    assert_eq!(on_of(&menu), ["Fillet"]);
     // An entry not built says so after the prototype's line, as its button does.
     h.get_by_role_and_label(Role::Menu, "MODIFY")
-        .get_by_label("Fillet")
+        .get_by_label("Chamfer")
         .hover();
     step_until(&mut h, "its tooltip", |h| {
-        h.query_by_role_and_label(Role::Label, "Rounds the selected edges. Not built yet")
+        h.query_by_role_and_label(Role::Label, "Bevels the selected edges. Not built yet")
             .is_some()
     });
     open(&mut h, "INSPECT");
@@ -20846,4 +20841,511 @@ fn a_press_after_the_camera_moved_under_a_still_pointer_isnt_decided_by_the_hove
         h.state().toast()
     );
     assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The fillet dialog (M5.8): its edges from the canvas selection ----
+
+/// MODIFY's `kind` clicked in its row, and its dialog open.
+fn modify(h: &mut AppHarness, kind: &str) {
+    h.get_by_role_and_label(Role::Toolbar, "MODIFY")
+        .get_by_label(kind)
+        .click();
+    step_until(h, "the dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, kind).is_some()
+    });
+}
+
+/// Edge `n` of body `body` found under the canvas's centre from now on, and clicked there,
+/// Ctrl held if `ctrl`.
+fn click_edge(h: &mut AppHarness, record: &Record, body: u32, n: u32, ctrl: bool) {
+    use silico_app::renderer::Element::Edge;
+    let at = the_viewport(h).center();
+    let centre = pixel_at(h, at);
+    answering(record, None, Some((body, Edge(n), centre)));
+    click_canvas(h, at, ctrl);
+}
+
+/// The names the open dialog's box of names holds.
+fn boxed(h: &AppHarness) -> Vec<String> {
+    h.state().tabs()[0]
+        .dialog
+        .as_ref()
+        .and_then(|dialog| dialog.names())
+        .map(|names| names.names.clone())
+        .unwrap_or_default()
+}
+
+#[track_caller]
+fn boxed_until(h: &mut AppHarness, want: &[&str]) {
+    step_until(h, &format!("{want:?} in the box"), |h| boxed(h) == want);
+}
+
+/// The line of `text` that holds the feature of type `kind`, as the document writes it,
+/// without its indent and its comma.
+fn feature_line(text: &str, kind: &str) -> String {
+    text.lines()
+        .find(|line| line.contains(&format!(r#""type": "{kind}""#)))
+        .unwrap()
+        .trim()
+        .trim_end_matches(',')
+        .to_owned()
+}
+
+/// `text` read as JSON.
+fn plain(text: &str) -> Plain {
+    Plain::of(&json::read(text.as_bytes()).unwrap())
+}
+
+/// The field `field` of the feature named `name`, as the session's document holds it.
+fn written(f: &Fixture, h: &AppHarness, name: &str, field: &str) -> Option<Plain> {
+    fields_of(&text_of(f, h), name)?
+        .into_iter()
+        .find(|(key, _)| key == field)
+        .map(|(_, value)| value)
+}
+
+/// The ID the open dialog's feature was given.
+fn dialog_feature(h: &AppHarness) -> String {
+    h.state().tabs()[0]
+        .dialog
+        .as_ref()
+        .and_then(|dialog| dialog.feature.as_ref())
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn a_fillet_dialog_fed_the_selection_of_two_edges_writes_a_fillet_naming_them() {
+    // M5.8's done test. Two of the box's edges selected in the canvas, then MODIFY's Fillet:
+    // its box takes them, listed by name, and its radius is FreeCAD's 1 mm; the feature it
+    // adds is the line below, written by hand, its ID the core's.
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let before = text_of(&f, &h);
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    click_edge(&mut h, &record, 1, 5, true);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    // Listed: the count in the box, each name under it with its remove button.
+    assert!(dialog(&h).query_by_label("2 edges").is_some());
+    for name in ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"] {
+        assert!(dialog(&h).query_by_label(name).is_some(), "{name}");
+        assert!(
+            dialog(&h)
+                .query_by_role_and_label(Role::Button, &format!("Remove {name}"))
+                .is_some(),
+            "{name}"
+        );
+    }
+    assert_eq!(input(&h, "Radius").value().as_deref(), Some("1"));
+    // The selection stays, the edges highlighted.
+    assert_eq!(
+        selected_names(&h),
+        ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]
+    );
+    let id = dialog_feature(&h);
+    assert!(ok_enabled(&h));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    let text = text_of(&f, &h);
+    // The feature as its JSON line, written by hand, but its ID and version, the core's.
+    assert_eq!(
+        fields_of(&text, "Fillet"),
+        Some(expected(
+            r#"{"type": "fillet", "name": "Fillet", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"], "radius": 1}"#
+        ))
+    );
+    // And the document's text, byte for byte, as the canonical writer lays it out (a line
+    // too long for one line is broken member by member), the box as it was.
+    let want = format!(
+        r#"{{
+  "silico": 1,
+  "units": {{"length": "mm", "resolution": "1nm"}},
+  "naming": 5,
+  "features": [
+    {{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
+    {{
+      "id": "{id}",
+      "type": "fillet",
+      "v": 1,
+      "name": "Fillet",
+      "base": "k7f2qx3m",
+      "edges": [
+        "k7f2qx3m.box.Edge3",
+        "k7f2qx3m.box.Edge5"
+      ],
+      "radius": 1
+    }}
+  ]
+}}
+"#
+    );
+    assert_eq!(text, want);
+    assert!(before.contains(feature_line(&text, "box").as_str()));
+    assert_eq!(h.state().tabs()[0].sent, [Sent::Begin, Sent::Add]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_the_fillet_dialog_a_ctrl_click_adds_an_edge_and_a_click_on_a_listed_edge_removes_it() {
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    click_edge(&mut h, &record, 1, 5, true);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    // Ctrl-click a third: added to the box and the selection, and written.
+    click_edge(&mut h, &record, 1, 7, true);
+    boxed_until(
+        &mut h,
+        &[
+            "k7f2qx3m.box.Edge3",
+            "k7f2qx3m.box.Edge5",
+            "k7f2qx3m.box.Edge7",
+        ],
+    );
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(
+            r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5", "k7f2qx3m.box.Edge7"]"#
+        ))
+    );
+    assert!(dialog(&h).query_by_label("3 edges").is_some());
+    // A plain click on a listed edge: removed from both, as SolidWorks' box takes a click.
+    click_edge(&mut h, &record, 1, 5, false);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]);
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]"#))
+    );
+    // A face under the pointer, no edge: the box takes edges alone, so nothing is picked;
+    // nor does a click on nothing clear the box.
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    answering(&record, None, None);
+    click_canvas(&mut h, at, false);
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]);
+    assert_eq!(
+        selected_names(&h),
+        ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]
+    );
+    // A listed edge's remove button: let go of from the box and the selection.
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Remove k7f2qx3m.box.Edge3")
+        .click();
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge7"]);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge7"]);
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge7"]"#))
+    );
+    // Closed, the canvas picks as before: a plain click replaces the selection.
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_fillet_dialog_refuses_an_unstable_selected_name_saying_why_and_writes_nothing() {
+    let f = fixture();
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: base.clone(),
+                history: numbering_fuse(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, record) = f.drawn("fused.silico", FUSED);
+    meshes_settled(&mut h);
+    let body = body_of(&h, "rrrrrrrr");
+    let before = text_of(&f, &h);
+    // The fuse's Edge1, which the fuse's history doesn't report (the base's first edge
+    // isn't kept, the tool's none): named by its number, unstable, and selectable.
+    click_edge(&mut h, &record, body, 1, false);
+    selected_until(&mut h, &["rrrrrrrr.fuse.Edge1"]);
+    // Refused as a fillet's reference refuses it, in references.rs's words (N3, by hand),
+    // at its place in the selection; and its suggestion, as the tab says a refusal.
+    let why = "selection.0, \"rrrrrrrr.fuse.Edge1\", names an edge, whose name is unstable (it \
+               came about as another element did, or is its number): an edit could make it \
+               another element";
+    let refusal = h.state().tabs()[0].selection().storable().unwrap_err();
+    assert_eq!(refusal.message(), why);
+    let said = match refusal.suggestion() {
+        Some(suggestion) => format!("{why} ({suggestion})"),
+        None => why.to_owned(),
+    };
+    modify(&mut h, "Fillet");
+    step_until(&mut h, "the refusal in the dialog", |h| {
+        dialog(h).query_by_label(&said).is_some()
+    });
+    // Nothing taken, nothing written; the selection let go, as the box holds nothing.
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert!(boxed(&h).is_empty());
+    assert!(!ok_enabled(&h));
+    assert!(
+        dialog(&h)
+            .query_by_label("Select edges in the canvas")
+            .is_some()
+    );
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert_eq!(h.state().tabs()[0].sent, []);
+    assert_eq!(text_of(&f, &h), before);
+    // Clicked again with the dialog open: refused the same way, at its place in the pick,
+    // and let go from the selection again.
+    click_edge(&mut h, &record, body, 1, true);
+    step_until(&mut h, "the refusal in the dialog", |h| {
+        dialog(h).query_by_label(&said).is_some()
+    });
+    for _ in 0..6 {
+        step(&mut h);
+    }
+    assert!(boxed(&h).is_empty());
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert_eq!(h.state().tabs()[0].sent, []);
+    assert_eq!(text_of(&f, &h), before);
+    // A stable edge, the base's Edge2, kept by the fuse: taken, the refusal gone.
+    click_edge(&mut h, &record, body, 2, true);
+    boxed_until(&mut h, &["aaaaaaaa.box.Edge2"]);
+    assert!(dialog(&h).query_by_label(&said).is_none());
+    added(&mut h);
+    settled(&mut h);
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(r#"["aaaaaaaa.box.Edge2"]"#))
+    );
+    assert_eq!(
+        written(&f, &h, "Fillet", "base"),
+        Some(plain(r#""rrrrrrrr""#))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_fillet_dialogs_cancel_after_earlier_unsaved_edits_leaves_the_text_as_before_it() {
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    // An edit before the dialog, in the transaction: the box renamed.
+    select(&mut h, "Block");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let before = text_of(&f, &h);
+    assert!(before.contains(r#""name": "KBlock""#));
+    let opened_at = h.state().tabs()[0].revision;
+    click_edge(&mut h, &record, 1, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    // Its radius typed (a 2 before the 1: 21), and a second edge taken: both written.
+    type_into(&mut h, "Radius", "2");
+    click_edge(&mut h, &record, 1, 5, true);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
+    settled(&mut h);
+    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("21")));
+    assert_eq!(
+        written(&f, &h, "Fillet", "edges"),
+        Some(plain(r#"["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]"#))
+    );
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), before);
+    let tab = &h.state().tabs()[0];
+    assert!(tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
+    assert!(!tab.sent.contains(&Sent::Rollback));
+    // The selection stays (the M5.0 design's Esc's order: Cancel leaves it).
+    assert_eq!(
+        selected_names(&h),
+        ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_fillet_too_large_shows_the_kernels_refusal_naming_its_edge_and_the_rest_still_draws() {
+    // The fake kernel refuses a fillet past 5 mm as OCCT refuses one it can't build, naming
+    // the edges it was asked for (`Refusal::EdgesFailed`).
+    let f = fixture();
+    meshes_a_real_box(&f);
+    f.kernel.refuse_as_worker(|op| match op {
+        Op::Fillet { edges, radius, .. } if *radius > 5.0 => Some(silico_protocol::Failure::new(
+            silico_protocol::Refusal::EdgesFailed {
+                dressing: silico_protocol::DressingKind::Fillet,
+                edges: edges.clone(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, record) = f.drawn("blocks.silico", TWO_BLOCKS);
+    meshes_settled(&mut h);
+    let block = body_of(&h, "k7f2qx3m");
+    click_edge(&mut h, &record, block, 3, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
+    modify(&mut h, "Fillet");
+    added(&mut h);
+    settled(&mut h);
+    // 1 mm builds.
+    assert_eq!(h.state().tabs()[0].errors(), 0);
+    // 31 mm (a 3 before the 1) doesn't: the kernel's refusal in the dialog, as the core
+    // gives it, its message, its cause naming the edge, the edge among its elements, and
+    // its suggestion (refusal.rs's and worker.rs's words, by hand). The fake kernel's
+    // errors name an edge by its number in the base (`Edge3`), as FreeCAD does; a worker's
+    // name it as the document does (`KernelRequest::with_edge_names`).
+    type_into(&mut h, "Radius", "3");
+    let lines = [
+        "Fillet failed",
+        "OCCT couldn't fillet Edge3",
+        "Elements: Edge3",
+        "if the fillet runs past a face beside the edge, try a smaller radius; if not, try \
+         another radius, or leave the edge out: OCCT can't fillet some edges at any size",
+    ];
+    step_until(&mut h, "the refusal in the dialog", |h| {
+        lines
+            .iter()
+            .all(|line| dialog(h).query_by_label(line).is_some())
+    });
+    assert_eq!(h.state().tabs()[0].errors(), 1);
+    // The rest of the model still draws: the other block's body, read with its meshes.
+    meshes_settled(&mut h);
+    step(&mut h);
+    let other = body_of(&h, "a91cw0de");
+    let drawn = record.lock().unwrap().frames.last().unwrap().bodies.clone();
+    assert!(drawn.contains(&other), "{drawn:?}");
+    // OK keeps it with its error, as SolidWorks saves a part with rebuild errors.
+    assert!(ok_enabled(&h));
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert_eq!(written(&f, &h, "Fillet", "radius"), Some(plain("31")));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_stay_lit() {
+    on_lavapipe(
+        "on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_stay_lit",
+        || {
+            use silico_app::renderer::Element::Edge;
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            h.set_render_every_step(true);
+            silico_app::theme::apply(&h.ctx);
+            let path = f.file("box.silico", A_BOX);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            // From the front, as the selection's lavapipe test looks: a point (x, 0, z) of
+            // the front face is seen (x − 20) mm right of the pane's centre and (z − 5) mm
+            // above it, a mm being the pane's height over 20.
+            view_mut(&mut h).set_camera(silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 20.0 },
+                eye: [20.0, -100.0, 5.0],
+                target: [20.0, 10.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            });
+            meshes_settled(&mut h);
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            let rect = the_viewport(&h);
+            let mm = rect.height() / 20.0;
+            let seen = |x: f32, z: f32| {
+                rect.center() + eframe::egui::vec2((x - 20.0) * mm, -(z - 5.0) * mm)
+            };
+            let select_at = |h: &mut AppHarness, at, ctrl, want: &[&str]| {
+                click_canvas(h, at, ctrl);
+                for _ in 0..12 {
+                    if selected_names(h) == want {
+                        break;
+                    }
+                    step(h);
+                }
+                assert_eq!(selected_names(h), want, "at {at:?}");
+            };
+            // The front face's top edge (z = 10) from 2 points below its line, and, Ctrl
+            // held, its bottom edge (z = 0) from 2 points above: inside the 3-point band
+            // of each, so each edge, not the face. Edge3 and Edge1 in the fixture's
+            // numbering (`silico_render::bench::box_mesh`: the front face's bottom, right,
+            // top, left first).
+            select_at(
+                &mut h,
+                seen(30.0, 10.0) + eframe::egui::vec2(0.0, 2.0),
+                false,
+                &["k7f2qx3m.box.Edge3"],
+            );
+            select_at(
+                &mut h,
+                seen(30.0, 0.0) - eframe::egui::vec2(0.0, 2.0),
+                true,
+                &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge1"],
+            );
+            modify(&mut h, "Fillet");
+            added(&mut h);
+            settled(&mut h);
+            meshes_settled(&mut h);
+            for _ in 0..3 {
+                step(&mut h);
+            }
+            // Listed in the box, and lit on the preview's body (the fake keeps every
+            // element of the box, so both edges are there by their names).
+            assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge1"]);
+            assert!(dialog(&h).query_by_label("2 edges").is_some());
+            let lit: Vec<silico_app::renderer::Element> = view(&h)
+                .highlights
+                .iter()
+                .map(|(_, element)| *element)
+                .collect();
+            assert_eq!(lit, [Edge(1), Edge(3)]);
+            if let Some(shot) = std::env::var_os("SILICO_APP_FILLET_SHOT") {
+                h.render().unwrap().save(shot).unwrap();
+            }
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
 }

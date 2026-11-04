@@ -452,11 +452,24 @@ pub(crate) fn outside_card(ui: &mut Ui, text: &str) -> bool {
 /// `suggestion` after an arrow, if it has one.
 ///
 /// SEAM: the rest of the prototype's card (DESIGN.md, *Agents as equal clients*; app.js's
-/// `errCard`): its code chip (`.ec-code`), its Feature, Elements, and Parameter rows
-/// (`.ec-kv`), Copy as JSON, and Edit and Show in timeline. The tab keeps only each
-/// problem's message and suggestion (`tab::Said`); with the structured error kept, each is
-/// a row or a button here.
+/// `errCard`): its code chip (`.ec-code`), its Feature and Parameter rows (`.ec-kv`; a
+/// dialog's card has its cause and Elements as lines, [`card_with`]), Copy as JSON, and Edit
+/// and Show in timeline. The tab keeps each problem's message, cause, elements, and
+/// suggestion (`tab::Said`); with the rest of the structured error kept, each is a row or a
+/// button here.
 pub(crate) fn card(ui: &mut Ui, warning: bool, message: &str, suggestion: Option<&str>) {
+    card_with(ui, warning, message, &[], suggestion);
+}
+
+/// [`card`], with `details` under its message, each a line of its own (`errCard`'s message
+/// and its Elements), before its suggestion.
+pub(crate) fn card_with(
+    ui: &mut Ui,
+    warning: bool,
+    message: &str,
+    details: &[String],
+    suggestion: Option<&str>,
+) {
     let (fill, border, head, icon) = if warning {
         (
             theme::WARNING_CARD_BG,
@@ -517,6 +530,10 @@ pub(crate) fn card(ui: &mut Ui, warning: bool, message: &str, suggestion: Option
                 .inner_margin(theme::ERROR_CARD_BODY_PADDING)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    for detail in details {
+                        ui.add(Label::new(words(detail)).wrap().selectable(false));
+                        ui.add_space(theme::ERROR_CARD_FIX_MARGIN);
+                    }
                     let Some(suggestion) = suggestion else {
                         return;
                     };
