@@ -231,4 +231,46 @@ mod tests {
         assert_eq!(names(true), ["STEP", "3MF"]);
         assert_eq!(export_filters(true)[0].extensions, ["step", "stp"]);
     }
+
+    /// A context drawn until it asks for no frame, and the delay of each frame asked of it
+    /// from then on.
+    fn settled() -> (
+        egui::Context,
+        Arc<std::sync::Mutex<Vec<std::time::Duration>>>,
+    ) {
+        let ctx = egui::Context::default();
+        for _ in 0..10 {
+            // Its textures dropped unpainted, as no painter takes them here.
+            ctx.run_ui(egui::RawInput::default(), |_| {})
+                .textures_delta
+                .clear();
+            if !ctx.has_requested_repaint() {
+                let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let recorded = Arc::clone(&asked);
+                ctx.set_request_repaint_callback(move |info| {
+                    recorded.lock().unwrap().push(info.delay);
+                });
+                return (ctx, asked);
+            }
+        }
+        panic!("the context never stopped asking for frames");
+    }
+
+    #[test]
+    fn a_dialogs_answer_woken_by_reference_asks_for_a_frame_at_once() {
+        let (ctx, asked) = settled();
+        let waker = Waker::from(Arc::new(Repaint(ctx.clone())));
+        waker.wake_by_ref();
+        assert!(ctx.has_requested_repaint());
+        assert_eq!(*asked.lock().unwrap(), [std::time::Duration::ZERO]);
+    }
+
+    #[test]
+    fn a_dialogs_answer_woken_by_value_asks_for_a_frame_at_once() {
+        let (ctx, asked) = settled();
+        let waker = Waker::from(Arc::new(Repaint(ctx.clone())));
+        waker.wake();
+        assert!(ctx.has_requested_repaint());
+        assert_eq!(*asked.lock().unwrap(), [std::time::Duration::ZERO]);
+    }
 }

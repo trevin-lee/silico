@@ -9588,3 +9588,44 @@ fn a_pick_whose_path_isnt_utf8_is_said_and_neither_opens_nor_fills() {
     assert_eq!(path_value(&h), "");
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn an_opens_pick_refused_at_once_asks_for_the_frame_that_says_so() {
+    // Every session the process may hold already open: the pick's open is refused at once,
+    // as it's asked, so no waker asks for the frame that takes the refusal; the frame that
+    // took the pick asks for it.
+    let f = fixture();
+    let browser = FakeBrowser::default();
+    let mut h = f.app_browsing(&browser);
+    for n in 0..silico_core::command::MAX_SESSIONS {
+        let path = f.dir.path().join(format!("held{n}.silico"));
+        f.sessions.open(&path, true).wait().session.unwrap();
+    }
+    file_menu(&mut h, "Open…", "Open document");
+    browse(&mut h, &browser);
+    quiet_wakes(&mut h);
+    idle(&mut h);
+    let path = f.file("picked.silico", EXAMPLE);
+    browser.answer(Some(&path));
+    let woken = h.state().wakes();
+    // The frame the answer's waker asked for (egui gives each such request two frames): it
+    // takes the pick, the dialog closes, and the open is refused, not yet taken.
+    step(&mut h);
+    assert!(!anywhere(&h, "Open document"));
+    assert_eq!(h.state().message(), None);
+    // Asked for at once by the frame before, nothing having woken it: the refusal said.
+    step(&mut h);
+    assert!(asked_at_once(&h));
+    assert_eq!(h.state().wakes(), woken);
+    let said = format!("{} sessions are open", silico_core::command::MAX_SESSIONS);
+    assert!(
+        h.state().message().is_some_and(|m| m.contains(&said)),
+        "{:?}",
+        h.state().message()
+    );
+    // And then nothing more at once.
+    step(&mut h);
+    assert!(!asked_at_once(&h));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
