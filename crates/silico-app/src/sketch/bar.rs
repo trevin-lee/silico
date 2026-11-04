@@ -12,6 +12,7 @@ use silico_core::sketch_tools::ToolKind;
 
 use super::style::*;
 use super::tools::{Choice, TrimMode};
+use crate::shortcuts::Command;
 
 /// The palette's layout: its title row's height; a section's heading's text size and its
 /// small text's; and a state's dot's radius, in points.
@@ -93,19 +94,15 @@ pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
                 {
                     action = BarAction::Cancel;
                 }
-                let finish = egui::Button::new(RichText::new("Finish Sketch").color(ON_SELECTION))
+                // Its name, keys, and line the registry's, as the toolbar's Finish Sketch
+                // and the shortcut sheet give them.
+                let command = Command::FinishSketch;
+                let finish = egui::Button::new(RichText::new(command.label()).color(ON_SELECTION))
                     .fill(accent);
-                let key = ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(
-                    egui::Modifiers::COMMAND,
-                    egui::Key::Enter,
-                ));
-                if ui
-                    .add_enabled(view.enabled, finish)
-                    .on_hover_text(format!(
-                        "Finish Sketch ({key}): keeps your changes and rebuilds"
-                    ))
-                    .clicked()
-                {
+                let response = ui.add_enabled(view.enabled, finish);
+                let keys = command.shown(ui.ctx());
+                let line = command.entry().description;
+                if crate::bar::tooltip(response, command.label(), keys, line).clicked() {
                     action = BarAction::Finish;
                 }
             });

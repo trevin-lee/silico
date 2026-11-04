@@ -402,6 +402,8 @@ const DIMENSION: Entry = entry(
     &[letter(Key::D)],
     Some("Pick a line, a circle, or two entities, then type the value"),
 );
+/// The palette's Construction. SEAM: the prototype's X toggles the selected curves between
+/// profile and construction, once a selection's curves can be set so.
 const CONSTRUCTION: Entry = entry(
     Command::Construction,
     "Construction",

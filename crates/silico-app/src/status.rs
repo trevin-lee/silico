@@ -2,10 +2,10 @@
 //! line*, *Layout*, and *egui mapping*; its `#status` and `.st-*` rules and `renderStatus`):
 //! the rebuild in words, with a dot or a spinner in its state's colour, and Stop and Rebuild
 //! beside it; then, in sketch mode, the sketch edited, the pointer's coordinates on its
-//! plane, and its state (`js/sketch.js`'s `statusText`), or what the person points at; then, at the right, the file changed on disk,
-//! whether the document is saved, its units, and the shortcut sheet's button (`crate::sheet`).
-//! With no document open,
-//! how the warm start stands (decision 10) in the rebuild's place.
+//! plane, and its state (`js/sketch.js`'s `statusText`), or what the person points at; then,
+//! at the right, the file changed on disk, whether the document is saved, its units, and the
+//! shortcut sheet's button (`crate::sheet`). With no document open, how the warm start
+//! stands (decision 10) in the rebuild's place.
 //!
 //! Left out, each for a reason, each a seam:
 //! - the rebuild's time (`· 84 ms`): `status.rebuild` gives no duration, and the app's own
@@ -295,6 +295,9 @@ fn middle(ui: &mut Ui, bar: &Bar) {
 fn sketch_line(ui: &mut Ui, line: &StatusLine) {
     item(ui, None, &line.editing, theme::STATUS_TEXT);
     separator(ui, 0.0);
+    // SEAM: the prototype's figures are tabular (`font-variant-numeric: tabular-nums`), so
+    // the coordinates' digits hold still as they change; egui lays out no OpenType
+    // features, so Inter's proportional figures are drawn, within the least width.
     let coordinates = line.coordinates.as_deref().unwrap_or("—");
     let shown = item(ui, None, coordinates, theme::STATUS_TEXT);
     let short = theme::STATUS_COORDINATES_WIDTH - shown.rect.width();

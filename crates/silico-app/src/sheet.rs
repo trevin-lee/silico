@@ -29,14 +29,12 @@ pub(crate) const FILTER_LABEL: &str = "Filter shortcuts";
 /// What the sheet says when the filter finds nothing.
 pub(crate) const NOTHING_FOUND: &str = "No shortcut matches.";
 
-/// The note under the columns: its strong words, then the rest.
-///
-/// SEAM(#351): sketch mode puts "ends a drag, then a sketch tool's chain, then" first, as
-/// the prototype's note has it, once Esc does those.
+/// The note under the columns (the prototype's, js/app.js's shortcut sheet): its strong
+/// words, then the rest.
 const NOTE: [&str; 2] = [
     "Esc does the nearest thing first:",
-    " stops a dialog's preview, then cancels the dialog, then clears the selection, then \
-     stops the rebuild.",
+    " ends a drag, then a sketch tool's chain, then stops a dialog's preview, then cancels \
+     the dialog, then clears the selection, then stops the rebuild.",
 ];
 
 /// The sheet while it's open: what's typed in its filter.
@@ -577,11 +575,15 @@ mod tests {
         let h = sheet("");
         let frame = frame_of(&h);
         assert!(near(frame.width(), css::SHEET_W), "{frame:?}");
-        // Centred, its corner on a whole point as egui places a window: its middle within
-        // half a point of the window's, whatever its height.
+        // Centred: across, exactly (920 and 1280 are both even); down, its top where egui
+        // puts a window, half the room left over it, on a whole point (its height is odd).
         let off = frame.center() - (WINDOW / 2.0).to_pos2();
-        assert!(off.x.abs() <= 0.5 && off.y.abs() <= 0.5, "{frame:?}");
-        assert_eq!(frame.min, frame.min.round(), "{frame:?}");
+        assert_eq!(off.x, 0.0, "{frame:?}");
+        assert_eq!(
+            frame.min.y,
+            (WINDOW.y / 2.0 - frame.height() / 2.0).round(),
+            "{frame:?}"
+        );
         let inside = frame.shrink(css::BORDER);
         // The head's middle: 12 under its top, half the filter's 24 down.
         let middle = inside.top() + css::HEAD_TOP + css::FILTER_H / 2.0;
@@ -839,6 +841,13 @@ mod tests {
             note.pos
         );
         font(&note, css::FS_SMALL, "the note");
+        // Its words, typed from js/app.js's `.note`.
+        assert_eq!(
+            note.galley.text(),
+            "Esc does the nearest thing first: ends a drag, then a sketch tool's chain, then \
+             stops a dialog's preview, then cancels the dialog, then clears the selection, then \
+             stops the rebuild."
+        );
         let sections = &note.galley.job.sections;
         assert_eq!(sections[0].format.color, css::G1000, "its strong words");
         assert_eq!(sections[1].format.color, css::G550, "the rest");

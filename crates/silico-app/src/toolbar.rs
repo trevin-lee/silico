@@ -279,6 +279,11 @@ const POINT: Command = keyed(
     shortcuts::Command::Point,
 );
 /// The drawing tools' curves drawn as construction, the palette's Construction.
+///
+/// SEAM: the prototype's Construction toggles the selected curves between profile and
+/// construction (its line: "Toggles the selected curves between profile and
+/// construction"), once a selection's curves can be set so; till then it's the palette's
+/// setting, and its line says that.
 const CONSTRUCTION: Command = keyed(
     command(
         "Construction",
@@ -775,35 +780,36 @@ fn tool_button(
             return response;
         }
         let corners = theme::TOOLBAR_BUTTON_CORNER_RADIUS;
-        // `.tb-btn:hover:not(:disabled)` outweighs `.on` and `.toggle-on`.
-        let color = if !enabled {
-            theme::TOOLBAR_BUTTON_DISABLED_ICON
-        } else if response.hovered() {
-            ui.painter()
-                .rect_filled(rect, corners, theme::TOOLBAR_BUTTON_HOVER_BG);
-            theme::TOOLBAR_BUTTON_HOVER_ICON
-        } else {
-            match pressed {
-                Some((Pressed::Tool, true)) => {
-                    ui.painter()
-                        .rect_filled(rect, corners, theme::TOOLBAR_BUTTON_ON_BG);
-                    theme::TOOLBAR_BUTTON_ON_ICON
-                }
-                Some((Pressed::Toggle, true)) => {
-                    ui.painter()
-                        .rect_filled(rect, corners, theme::TOOLBAR_BUTTON_TOGGLE_BG);
-                    // `box-shadow: inset 0 -2px 0`: the bottom of the button's own shape.
-                    let line = rect.with_min_y(rect.bottom() - theme::TOOLBAR_BUTTON_TOGGLE_LINE);
-                    ui.painter().with_clip_rect(line).rect_filled(
-                        rect,
-                        corners,
-                        theme::TOOLBAR_BUTTON_TOGGLE_LINE_COLOR,
-                    );
-                    theme::TOOLBAR_BUTTON_TOGGLE_ICON
-                }
-                Some((_, false)) | None => theme::TOOLBAR_BUTTON_ICON,
-            }
+        // `.tb-btn:hover:not(:disabled)` outweighs `.on`'s and `.toggle-on`'s background and
+        // colour, and leaves `.toggle-on`'s box-shadow as it is.
+        let (fill, color) = match (enabled, response.hovered(), pressed) {
+            (false, _, _) => (None, theme::TOOLBAR_BUTTON_DISABLED_ICON),
+            (true, true, _) => (
+                Some(theme::TOOLBAR_BUTTON_HOVER_BG),
+                theme::TOOLBAR_BUTTON_HOVER_ICON,
+            ),
+            (true, false, Some((Pressed::Tool, true))) => (
+                Some(theme::TOOLBAR_BUTTON_ON_BG),
+                theme::TOOLBAR_BUTTON_ON_ICON,
+            ),
+            (true, false, Some((Pressed::Toggle, true))) => (
+                Some(theme::TOOLBAR_BUTTON_TOGGLE_BG),
+                theme::TOOLBAR_BUTTON_TOGGLE_ICON,
+            ),
+            (true, false, Some((_, false)) | None) => (None, theme::TOOLBAR_BUTTON_ICON),
         };
+        if let Some(fill) = fill {
+            ui.painter().rect_filled(rect, corners, fill);
+        }
+        if pressed == Some((Pressed::Toggle, true)) {
+            // `box-shadow: inset 0 -2px 0`: the bottom of the button's own shape.
+            let line = rect.with_min_y(rect.bottom() - theme::TOOLBAR_BUTTON_TOGGLE_LINE);
+            ui.painter().with_clip_rect(line).rect_filled(
+                rect,
+                corners,
+                theme::TOOLBAR_BUTTON_TOGGLE_LINE_COLOR,
+            );
+        }
         theme::focus_ring(
             ui,
             &response,
@@ -1854,20 +1860,37 @@ mod tests {
             Pos2::new(construction.left(), construction.bottom() - 2.0),
             construction.max,
         );
-        let inset: Vec<ClippedShape> = clipped(&h)
-            .into_iter()
-            .filter(|shown| {
-                matches!(&shown.shape, Shape::Rect(rect)
-                    if near_rect(rect.rect, construction) && rect.fill == css::BLUE)
-            })
-            .collect();
-        assert_eq!(inset.len(), 1);
-        sized(inset[0].clip_rect, line, "the inset line's clip");
+        // Where the button's blue shape is painted, by its clip.
+        let inset = |h: &Harness<'_, bool>| -> Vec<Rect> {
+            clipped(h)
+                .into_iter()
+                .filter(|shown| {
+                    matches!(&shown.shape, Shape::Rect(rect)
+                        if near_rect(rect.rect, construction) && rect.fill == css::BLUE)
+                })
+                .map(|shown| shown.clip_rect)
+                .collect()
+        };
+        let clips = inset(&h);
+        assert_eq!(clips.len(), 1);
+        sized(clips[0], line, "the inset line's clip");
         assert_eq!(toggled(&h, "Construction"), Some(Toggled::True));
-        // Construction off: at rest, saying so.
+        // Hovered while on: `.tb-btn:hover` sets only the background and the colour,
+        // Gray.300 behind white, and `.toggle-on`'s box-shadow stays.
+        hover(&mut h, Role::Button, "Construction");
+        assert_eq!(
+            fill_at(&h, construction),
+            Some((css::G300, CornerRadius::same(css::R_SM)))
+        );
+        assert_eq!(icon_at(&h, icon(construction)), Some(css::G1000));
+        let clips = inset(&h);
+        assert_eq!(clips.len(), 1);
+        sized(clips[0], line, "the inset line's clip, hovered");
+        // Construction off: at rest, saying so, and no inset line.
         sketching.construction.set(false);
-        h.run_steps(2);
+        hover(&mut h, Role::Button, "Line");
         assert_eq!(fill_at(&h, construction), None);
+        assert!(inset(&h).is_empty());
         assert_eq!(icon_at(&h, icon(construction)), Some(css::G750));
         assert_eq!(toggled(&h, "Construction"), Some(Toggled::False));
         // Hovered (`.tb-btn:hover:not(:disabled)`, which outweighs `.on`): Gray.300 behind

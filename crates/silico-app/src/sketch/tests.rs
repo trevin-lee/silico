@@ -2774,6 +2774,46 @@ fn the_bar_and_the_palette_are_drawn_dark_on_a_window_showing_the_light_theme() 
 }
 
 #[test]
+fn the_bars_finish_sketch_tooltip_is_the_registrys_its_name_keys_and_line() {
+    use egui_kittest::kittest::Queryable;
+    let bar = mode_on(under(rectangle(Vec::new()))).bar_view("Sketch1", true);
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(vec2(800.0, 300.0))
+        .build_ui(move |ui| {
+            bar::sketch_bar(ui, &bar);
+        });
+    h.ctx.set_os(egui::os::OperatingSystem::Nix);
+    h.run_steps(2);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Finish Sketch")
+        .hover();
+    // The toolbar's Finish Sketch's words (js/app.js: `data-tipk="Mod Enter"`,
+    // `data-tipd="Keeps your changes and rebuilds"`), Mod Ctrl off macOS and Enter ↵.
+    let painted = |h: &egui_kittest::Harness<'_>| -> Vec<String> {
+        h.output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+    for _ in 0..60 {
+        h.run_steps(1);
+        if painted(&h)
+            .iter()
+            .any(|text| text == "Keeps your changes and rebuilds")
+        {
+            break;
+        }
+    }
+    let texts = painted(&h);
+    for want in ["Keeps your changes and rebuilds", "Ctrl", "↵"] {
+        assert!(texts.iter().any(|text| text == want), "{want}: {texts:?}");
+    }
+}
+
+#[test]
 fn a_profile_far_from_the_origin_fills_at_its_own_precision() {
     // A 10 mm square about (999 990, 999 990), a kilometre out, less a 29-gon of radius 2.5
     // about its middle. In f32 there, a coordinate is a sixteenth of a millimetre apart; the
