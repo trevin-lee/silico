@@ -116,6 +116,9 @@ pub struct ViewFrame {
     /// chosen takes none of its clicks. What a click does is the tab's mode's, and so is
     /// the menu it opens, if any (sketch mode's End chain, Finish, and Cancel): the pane
     /// opens none on the canvas.
+    ///
+    /// A click's `seq` places it among the frame's left events: a slow frame's left click
+    /// and the right click after it (the Line tool's click, then End chain) are told apart.
     pub secondary: Vec<SecondaryClick>,
 }
 
@@ -153,7 +156,7 @@ pub enum LeftKind {
 /// `at_px` is in physical pixels, not points, and may lie outside the viewport (a drag
 /// let go past its edge, the window's other panes): a consumer clamps it to the size
 /// before it makes a [`PixelRect`] of it. Every event of one frame has the frame's one
-/// `time`: egui gives its events no time of their own.
+/// `time`: egui gives its events no time of their own, so `seq` orders them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LeftEvent {
     pub kind: LeftKind,
@@ -162,6 +165,11 @@ pub struct LeftEvent {
     pub ctrl: bool,
     pub frame: u64,
     pub time: f64,
+    /// Its place among the frame's left events and right clicks together
+    /// ([`ViewFrame::left`] and [`ViewFrame::secondary`]), from 0, each once, in the order
+    /// egui gave the window's events: a Cancel a navigation tool forces first, a Cancel
+    /// just before the Press that forced it, a DoubleClick just after its Release.
+    pub seq: u32,
 }
 
 /// A right click on the canvas ([`ViewFrame::secondary`]): a press of the right button on
@@ -176,7 +184,8 @@ pub struct LeftEvent {
 /// viewport's top left, as [`LeftEvent::at_px`], and so up to the click distance outside
 /// the viewport for a press at its edge), the modifiers held then (Ctrl is Cmd on macOS,
 /// egui's `command`), the frame it came in, and egui's input time, as a [`LeftEvent`]'s.
-/// Several in one frame are handed on in their order, each with the frame's one `time`.
+/// Several in one frame are handed on in their order, each with the frame's one `time`;
+/// `seq` orders them among the frame's left events.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SecondaryClick {
     pub at_px: [f32; 2],
@@ -184,6 +193,9 @@ pub struct SecondaryClick {
     pub ctrl: bool,
     pub frame: u64,
     pub time: f64,
+    /// Its place among the frame's left events and right clicks together, as
+    /// [`LeftEvent::seq`].
+    pub seq: u32,
 }
 
 /// A press of one button, to judge its release a click as egui does: where and when it
@@ -868,7 +880,8 @@ impl View {
     /// the pane drags: the middle button's pan or orbit, or the cube's), the moves while it's
     /// held, its release or its cancel, and a double-click straight after the release that
     /// made it; none while a navigation tool makes a left drag navigate. `held` is the
-    /// pane's, which [`end_unshown`] has already ended if another tab's.
+    /// pane's, which [`end_unshown`] has already ended if another tab's. Each is placed by
+    /// the egui event that made it ([`Placed`]), its `seq` given by [`sequenced`].
     fn left_events(
         &self,
         button: &mut LeftButton,
@@ -877,7 +890,7 @@ impl View {
         rect: Rect,
         response: &egui::Response,
         frame: u64,
-    ) -> Vec<LeftEvent> {
+    ) -> Placed<LeftEvent> {
         let ppp = ui.ctx().pixels_per_point();
         let px = |at: Pos2| [(at.x - rect.left()) * ppp, (at.y - rect.top()) * ppp];
         let options = ui.ctx().options(|options| options.input_options);
@@ -891,20 +904,24 @@ impl View {
         // Read where the events are, not cloned out each frame.
         ui.input(|input| {
             let time = input.time;
-            let event = |kind, at_px, keys: egui::Modifiers| LeftEvent {
-                kind,
-                at_px,
-                shift: keys.shift,
-                ctrl: keys.command,
-                frame,
-                time,
+            let event = |place: usize, kind, at_px, keys: egui::Modifiers| {
+                let event = LeftEvent {
+                    kind,
+                    at_px,
+                    shift: keys.shift,
+                    ctrl: keys.command,
+                    frame,
+                    time,
+                    seq: 0,
+                };
+                (place, event)
             };
             if taken && let Some(was) = held.take() {
-                left.push(event(LeftKind::Cancel, was.at_px, input.modifiers));
+                left.push(event(0, LeftKind::Cancel, was.at_px, input.modifiers));
             }
             // Every left click is counted, the tool's and those off the canvas too, as egui
             // counts them; only a stream's are handed on.
-            for each in &input.events {
+            for (place, each) in (1..).zip(&input.events) {
                 match *each {
                     egui::Event::PointerButton {
                         pos,
@@ -916,11 +933,11 @@ impl View {
                         if pressable && rect.contains(pos) {
                             // A press whose release never came ends before this one begins.
                             if let Some(was) = held.take() {
-                                left.push(event(LeftKind::Cancel, was.at_px, modifiers));
+                                left.push(event(place, LeftKind::Cancel, was.at_px, modifiers));
                             }
                             let at_px = px(pos);
                             *held = Some(LeftHeld { session, at_px });
-                            left.push(event(LeftKind::Press, at_px, modifiers));
+                            left.push(event(place, LeftKind::Press, at_px, modifiers));
                         }
                     }
                     egui::Event::PointerButton {
@@ -931,9 +948,10 @@ impl View {
                     } => {
                         let double = clicks.released(pos, time, &options);
                         if held.take().is_some() {
-                            left.push(event(LeftKind::Release, px(pos), modifiers));
+                            left.push(event(place, LeftKind::Release, px(pos), modifiers));
                             if double {
-                                left.push(event(LeftKind::DoubleClick, px(pos), modifiers));
+                                let at = px(pos);
+                                left.push(event(place, LeftKind::DoubleClick, at, modifiers));
                             }
                         }
                     }
@@ -943,14 +961,16 @@ impl View {
                         }
                         if let Some(held) = held.as_mut() {
                             held.at_px = px(pos);
-                            left.push(event(LeftKind::Move, held.at_px, input.modifiers));
+                            let at = held.at_px;
+                            left.push(event(place, LeftKind::Move, at, input.modifiers));
                         }
                     }
                     // The pointer leaving the window keeps the drag (egui's drags, and
                     // SolidWorks's past the window's edge): its release ends it there.
                     egui::Event::WindowFocused(false) => {
                         if let Some(was) = held.take() {
-                            left.push(event(LeftKind::Cancel, was.at_px, input.modifiers));
+                            let at = was.at_px;
+                            left.push(event(place, LeftKind::Cancel, at, input.modifiers));
                         }
                     }
                     _ => {}
@@ -964,7 +984,8 @@ impl View {
     /// `session`, in physical pixels from `rect`'s top left, of frame `frame`
     /// ([`SecondaryClick`]): each from a press on the canvas (where the ViewCube and the
     /// bar, on top, aren't, and not while the pane drags), at its release. `held` is the
-    /// pane's: a press in another tab is no click in this one.
+    /// pane's: a press in another tab is no click in this one. Each is placed by the egui
+    /// event that made it, as [`left_events`](Self::left_events)'s are.
     fn secondary_clicks(
         &self,
         held: &mut Option<SecondaryHeld>,
@@ -973,7 +994,7 @@ impl View {
         rect: Rect,
         response: &egui::Response,
         frame: u64,
-    ) -> Vec<SecondaryClick> {
+    ) -> Placed<SecondaryClick> {
         let ppp = ui.ctx().pixels_per_point();
         let px = |at: Pos2| [(at.x - rect.left()) * ppp, (at.y - rect.top()) * ppp];
         let options = ui.ctx().options(|options| options.input_options);
@@ -981,7 +1002,7 @@ impl View {
         ui.input(|input| {
             let time = input.time;
             let mut clicks = Vec::new();
-            for each in &input.events {
+            for (place, each) in (1..).zip(&input.events) {
                 match *each {
                     egui::Event::PointerButton {
                         pos,
@@ -1004,20 +1025,21 @@ impl View {
                             && was.session == session
                             && was.pressed.clicked(pos, time, &options)
                         {
-                            clicks.push(SecondaryClick {
+                            let click = SecondaryClick {
                                 at_px: px(pos),
                                 shift: modifiers.shift,
                                 ctrl: modifiers.command,
                                 frame,
                                 time,
-                            });
+                                seq: 0,
+                            };
+                            clicks.push((place, click));
                         }
                     }
-                    // Another button pressed or let go, or the focus gone (its release may
-                    // never come): no click.
-                    egui::Event::PointerButton { .. } | egui::Event::WindowFocused(false) => {
-                        *held = None;
-                    }
+                    // Another button pressed or let go between: no click.
+                    egui::Event::PointerButton { .. } => *held = None,
+                    // The focus gone: its release may never come.
+                    egui::Event::WindowFocused(false) => *held = None,
                     egui::Event::PointerMoved(pos) => {
                         if let Some(held) = held.as_mut() {
                             held.pressed.moved(pos, &options);
@@ -1127,6 +1149,42 @@ impl View {
             self.fit(size_px);
         }
     }
+}
+
+/// A frame's button events, each with its place: 0 for a Cancel a navigation tool forces
+/// before the frame's events, `i + 1` for one the frame's `i`th egui event made.
+type Placed<T> = Vec<(usize, T)>;
+
+/// The frame's left events and right clicks, each given its `seq`: their order together,
+/// by place, from 0. Two of one place are of one list (a Cancel and the Press that forced
+/// it, a Release and its DoubleClick: one button's) and keep its order.
+fn sequenced(
+    left: Placed<LeftEvent>,
+    secondary: Placed<SecondaryClick>,
+) -> (Vec<LeftEvent>, Vec<SecondaryClick>) {
+    let mut lefts = left.into_iter().peekable();
+    let mut rights = secondary.into_iter().peekable();
+    let (mut left, mut secondary) = (Vec::new(), Vec::new());
+    let mut seq: u32 = 0;
+    loop {
+        let right_first = match (lefts.peek(), rights.peek()) {
+            (Some((l, _)), Some((r, _))) => r < l,
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+            (None, None) => break,
+        };
+        if right_first {
+            if let Some((_, mut click)) = rights.next() {
+                click.seq = seq;
+                secondary.push(click);
+            }
+        } else if let Some((_, mut event)) = lefts.next() {
+            event.seq = seq;
+            left.push(event);
+        }
+        seq = seq.saturating_add(1);
+    }
+    (left, secondary)
 }
 
 /// A pick asked: of the tab's session and its bodies table's generation, in the frame
@@ -1379,6 +1437,7 @@ pub fn show<P: Clients + 'static>(
         &response,
         drawing.frames,
     );
+    let (left, secondary) = sequenced(left, secondary);
     let size = read_size(size_px);
     let settled = view.drag.is_none() && view.last.as_ref() == Some(&(view.camera.clone(), size));
     if !settled {
@@ -1537,6 +1596,7 @@ pub fn end_unshown<P: Clients + 'static>(
         ctrl: keys.command,
         frame: drawing.frames,
         time,
+        seq: 0,
     }];
     let mut painter = egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::NOTHING);
     painter.set_invisible();
@@ -2740,6 +2800,16 @@ mod tests {
         let mut clicks = LeftClicks::default();
         assert!(!left_click(&mut clicks, at, 50.0));
         assert!(left_click(&mut clicks, egui::pos2(105.9, 100.0), 50.1));
+        // The delays' ends, at times exactly representable: clicks at 0.0 and 0.3 (egui's
+        // delay) aren't a double; at 0.0, 0.35, and 0.6, the third is a double, not a
+        // triple (0.3 · 2.0 is exactly 0.6).
+        let mut clicks = LeftClicks::default();
+        assert!(!left_click(&mut clicks, at, 0.0));
+        assert!(!left_click(&mut clicks, at, 0.3));
+        let mut clicks = LeftClicks::default();
+        assert!(!left_click(&mut clicks, at, 0.0));
+        assert!(!left_click(&mut clicks, at, 0.35));
+        assert!(left_click(&mut clicks, at, 0.6));
         // A drag between two quick clicks is no click, and leaves the count as it was:
         // the second is a double, as egui has it.
         let mut clicks = LeftClicks::default();

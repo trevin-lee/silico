@@ -10446,3 +10446,129 @@ fn a_right_press_in_one_tab_let_go_in_another_is_no_click_in_either() {
     assert_eq!(clicks[0].session, second);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn a_right_press_is_no_click_once_another_button_goes_between_the_focus_goes_or_it_strays() {
+    use eframe::egui::{Event, Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let at = rect.center() - vec2(100.0, 0.0);
+    let none = Modifiers::NONE;
+    let (left, right) = (PointerButton::Primary, PointerButton::Secondary);
+    let rest = |h: &mut AppHarness| {
+        for _ in 0..60 {
+            step(h);
+        }
+    };
+    left_taken(&seen);
+    // A left press and release between the right press and its release: no right click,
+    // and the left click is handed on.
+    h.hover_at(at);
+    button_event(&h, at, right, true, none);
+    button_event(&h, at, left, true, none);
+    button_event(&h, at, left, false, none);
+    button_event(&h, at, right, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let clicks = secondary_seen(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    let lefts = left_taken(&seen);
+    assert_eq!(kinds(&lefts), [Press, Release]);
+    assert!(lefts.iter().all(|seen| seen.event.at_px == at_px(rect, at)));
+    rest(&mut h);
+    // The window's focus going between them: none.
+    left_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, right, true, none);
+    h.event(Event::WindowFocused(false));
+    button_event(&h, at, right, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    h.event(Event::WindowFocused(true));
+    rest(&mut h);
+    // Gone 10 points away and back to the press before the release: none.
+    secondary_taken(&seen);
+    h.hover_at(at);
+    button_event(&h, at, right, true, none);
+    h.hover_at(at + vec2(10.0, 0.0));
+    h.hover_at(at);
+    button_event(&h, at, right, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let clicks = secondary_taken(&seen);
+    assert!(clicks.is_empty(), "{clicks:?}");
+    rest(&mut h);
+    // The same press and release with none of them: a click, so none above was missing
+    // for want of events.
+    secondary_taken(&seen);
+    right_click(&mut h, at, at, none);
+    assert_eq!(secondary_taken(&seen).len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_frames_left_events_and_right_clicks_are_numbered_in_their_order_together() {
+    use eframe::egui::{Event, Modifiers, PointerButton, vec2};
+    use silico_app::viewport::LeftKind::{DoubleClick, Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let rect = the_viewport(&h);
+    let a = rect.center() - vec2(100.0, 0.0);
+    let b = a + vec2(40.0, 0.0);
+    let button = |pos, button, pressed| Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    let (left, right) = (PointerButton::Primary, PointerButton::Secondary);
+    for _ in 0..60 {
+        step(&mut h);
+    }
+    left_taken(&seen);
+    // In one frame: a left click, a right click, and a second left click, the double.
+    h.input_mut().events.extend([
+        Event::PointerMoved(a),
+        button(a, left, true),
+        button(a, left, false),
+        Event::PointerMoved(b),
+        button(b, right, true),
+        button(b, right, false),
+        Event::PointerMoved(a),
+        button(a, left, true),
+        button(a, left, false),
+    ]);
+    step(&mut h);
+    let clicks = secondary_seen(&seen);
+    let lefts = left_taken(&seen);
+    assert_eq!(kinds(&lefts), [Press, Release, Press, Release, DoubleClick]);
+    let left_seqs: Vec<u32> = lefts.iter().map(|seen| seen.event.seq).collect();
+    assert_eq!(left_seqs, [0, 1, 3, 4, 5]);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(clicks[0].click.seq, 2);
+    assert_eq!(clicks[0].click.at_px, at_px(rect, b));
+    // All of one frame.
+    assert!(
+        lefts
+            .iter()
+            .all(|seen| seen.event.frame == clicks[0].click.frame)
+    );
+    // The next frame's are numbered from 0 again.
+    h.hover_at(b);
+    button_event(&h, b, right, true, Modifiers::NONE);
+    button_event(&h, b, right, false, Modifiers::NONE);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let clicks = secondary_taken(&seen);
+    assert_eq!(clicks.len(), 1, "{clicks:?}");
+    assert_eq!(clicks[0].click.seq, 0);
+    assert_eq!(never_waits::waits(), 0);
+}
