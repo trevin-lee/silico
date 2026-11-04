@@ -90,7 +90,7 @@ use adds::Adds;
 
 pub use dimension::{
     DimensionEvent, DimensionPreview, LEVEL, Offer, OfferChoice, OfferRequest, PARALLEL, Placement,
-    SmartDimension, offer,
+    PlacementKind, SmartDimension, TypedValue, offer, read_typed,
 };
 pub use infer::{ANGLE_TOLERANCE_DEGREES, CROSSING_CURVES, WAKE};
 
