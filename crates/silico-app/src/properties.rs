@@ -882,3 +882,64 @@ pub(crate) fn unit_width(ui: &Ui, unit: &str) -> f32 {
         .size()
         .x
 }
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
+    use egui::accesskit::Role;
+    use egui_kittest::Harness;
+
+    use super::*;
+    use crate::modal::tests::{
+        at_opacity, cap_border, kbd_border, near, rects, text_shape, widget,
+    };
+
+    /// styles.css: `.dlg-footer .btn { flex: 1; height: 26px }`; `.btn { gap: 6px }`;
+    /// `.btn .kbd { margin-left: 2px; opacity: .55 }`, its border and words the button's
+    /// (`.btn-secondary`'s Gray.750); `.kbd { height: 16px }`.
+    const BTN_GAP: f32 = 6.0;
+    const KBD_MARGIN: f32 = 2.0;
+    const KBD_H: f32 = 16.0;
+    const KBD_OPACITY: f32 = 0.55;
+    const G750: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcf);
+
+    #[test]
+    fn a_footer_buttons_key_cap_is_8_after_its_words_and_bordered_2_at_its_bottom() {
+        let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(150.0, 26.0));
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(240.0, 90.0))
+            .build_ui(move |ui| {
+                footer_button(ui, place, "Cancel", "Esc", Kind::Secondary, true);
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let button = widget(&h, Role::Button, "Cancel");
+        let words = text_shape(&h, "Cancel");
+        let boxed = rects(&h)
+            .into_iter()
+            .find(|shape| {
+                shape.fill == Color32::TRANSPARENT
+                    && near(shape.rect.height(), KBD_H)
+                    && button.contains_rect(shape.rect)
+            })
+            .expect("Esc's box");
+        assert!(boxed.stroke.is_empty(), "Esc's box: {:?}", boxed.stroke);
+        assert!(
+            near(
+                boxed.rect.left(),
+                words.pos.x + words.galley.size().x + BTN_GAP + KBD_MARGIN
+            ),
+            "Esc at {:?}, Cancel's words at {:?}, {:?} wide",
+            boxed.rect,
+            words.pos,
+            words.galley.size()
+        );
+        assert!(near(boxed.rect.center().y, button.center().y));
+        kbd_border(
+            &cap_border(&h, boxed.rect),
+            boxed.rect,
+            at_opacity(G750, KBD_OPACITY),
+            "Esc",
+        );
+    }
+}

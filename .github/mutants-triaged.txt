@@ -567,12 +567,14 @@ crates/silico-app/src/banner.rs | show | replace + with - | #381
 # The banner takes clicks and drags (#381): `Sense::CLICK` and `Sense::DRAG` are egui's
 # bits 0 and 1, apart, so their `^` is their `|`.
 crates/silico-app/src/banner.rs | show | replace | with ^ | #381
-# A modal's border, at each side (#381): `theme::BORDER_WIDTH` is 1, so `2.0 / 1.0` is
-# `2.0 * 1.0`, in the tallest the window allows and in the width inside the border.
-crates/silico-app/src/modal.rs | show | replace * with / | #381
-crates/silico-app/src/modal.rs | show | replace * with / | #381
 # A modal's border, at each side (#382, as #381's for `show`, which became `show_sized`):
 # `theme::BORDER_WIDTH` is 1, so `2.0 / 1.0` is `2.0 * 1.0`, in the tallest the window
 # allows and in the width inside the border.
 crates/silico-app/src/modal.rs | show_sized | replace * with / | #382
 crates/silico-app/src/modal.rs | show_sized | replace * with / | #382
+# A key cap's inner corner (#392) takes the ellipse's gradient for its normal only when both
+# its radii are more than none; `rx >= 0.0` for `rx > 0.0` differs only where rx is 0 and ry
+# more. Each corner's ry is the radius less its top or bottom border, rx the radius less its
+# side's, and no side is wider than the top or bottom (1 against 1 and 2), so ry > 0 makes
+# rx > 0: every cap's normal is the same.
+crates/silico-app/src/theme.rs | key_cap_border | replace > with >= | #392
