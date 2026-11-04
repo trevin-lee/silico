@@ -3703,6 +3703,16 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
         tab.selected = marked;
     }
     step_until(&mut h, "the check sent", |h| h.state().tabs()[0].checking());
+    // Queued: the read still waits on the rebuild, which the fake holds at the new box. The
+    // stop cancels the check, sent later, before the read: the read, cancelled, stops the
+    // rebuild and answers, and its session runs the check next, which, cancelled second,
+    // could start the rebuild again first (the tab's unit test
+    // `the_stop_cancels_the_tabs_read_sent_later_first_so_neither_starts_the_rebuild_again`
+    // forces that).
+    assert_eq!(
+        f.sessions.status(&id).result.unwrap().running,
+        Some(RunningCommand::Command(SessionCommand::Timeline))
+    );
     h.state_mut().tabs_mut()[0].message = Some("an earlier refusal".to_owned());
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
