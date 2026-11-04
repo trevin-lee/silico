@@ -20,6 +20,8 @@ eframe.workspace = true
 egui_tiles.workspace = true
 # Sketch mode's profile fill, its outline's polylines in triangles.
 lyon_tessellation.workspace = true
+# The icons, drawn from SVG (`icons`).
+egui_extras.workspace = true
 # The backends eframe's renderer draws with (Metal, Vulkan), as the workspace chooses them.
 wgpu.workspace = true
 # The viewport's renderer (re_renderer's, one with agents' renders: M4.6's R1), drawn on

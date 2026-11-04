@@ -1882,13 +1882,14 @@ mod tests {
 
     #[test]
     fn the_view_cube_sits_its_margin_in_from_the_canvass_top_right_under_home() {
-        // A canvas from (100, 50) to (900, 650): the cube's 96-point square 8 points in
-        // from its right edge, 900 − 8 − 96 = 796, and 8 points down past Home's 20-point
-        // row, 50 + 8 + 20 = 78.
+        // A canvas from (100, 50) to (900, 650): the cube's 92-point square (the prototype's
+        // `CUBE`) 16 points (`CUBE_M`) in from its right edge, 900 − 16 − 92 = 792 to
+        // 900 − 16 = 884, and 16 points down past Home's 20-point row, 50 + 16 + 20 = 86 to
+        // 86 + 92 = 178.
         let viewport = Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(900.0, 650.0));
         assert_eq!(
             view_cube_rect(viewport),
-            Rect::from_min_max(egui::pos2(796.0, 78.0), egui::pos2(892.0, 174.0))
+            Rect::from_min_max(egui::pos2(792.0, 86.0), egui::pos2(884.0, 178.0))
         );
     }
 
@@ -2308,6 +2309,48 @@ mod tests {
         let request = asked(&view, 4);
         view.took(request, false, refusal(ErrorCode::WorkerCrashed, None), at);
         assert!(matches!(view.notice.take(), Some(Notice::Refused(_))));
+    }
+
+    #[test]
+    fn a_read_answered_of_a_newer_revision_than_asked_is_not_asked_again() {
+        // A published read takes the newest model as its thread starts, not as it's sent:
+        // asked at revision 4 (the bodies of 3), it may answer of 5, published meanwhile.
+        // The bodies are then 5's, and 5 is read no more; 6 is. One answered of 4, as asked,
+        // with 5 published, leaves 5 to read.
+        let answer = |revision: u64| Response {
+            session: None,
+            model: Some(silico_core::command::ModelRead {
+                revision: Revision::from_number(revision).unwrap(),
+                of: ModelChoice::Published,
+                fault: None,
+            }),
+            result: Ok(MeshesRead {
+                camera: AnsweredCamera::of(&front(80.0)).unwrap(),
+                bodies: vec![meshed(1, 1, 0.03125, None)],
+                coarser: "height",
+            }),
+        };
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        let mesh = Arc::clone(&view.bodies[&1].mesh);
+        let request = asked(&view, 4);
+        view.took(request, false, answer(5), now());
+        assert_eq!(view.model(), revision(5));
+        assert!(Arc::ptr_eq(&view.bodies[&1].mesh, &mesh));
+        for settled in [false, true] {
+            assert_eq!(view.wanted(revision(5), [1000, 1000], settled, now()), None);
+        }
+        assert!(
+            view.wanted(revision(6), [1000, 1000], false, now())
+                .is_some()
+        );
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        let request = asked(&view, 4);
+        view.took(request, false, answer(4), now());
+        assert_eq!(view.model(), revision(4));
+        let again = view
+            .wanted(revision(5), [1000, 1000], false, now())
+            .unwrap();
+        assert_eq!(again.revision, Revision::from_number(5).unwrap());
     }
 
     #[test]
