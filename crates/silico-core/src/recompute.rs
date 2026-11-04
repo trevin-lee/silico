@@ -1043,8 +1043,9 @@ pub enum StepState {
     /// Not settled yet: none of its steps running (none started, or one built and the next
     /// not started yet), or the rebuild stopped before it settled; Rebuild resumes it.
     Queued,
-    /// A step it owns is running; a sketch, its solve (but a sketch on a face, which reads
-    /// queued until the round that places it says what it came to).
+    /// A step it owns is running; a sketch, its solve; a sketch on a face reads queued until
+    /// the round that places it, its solve included, then its outcome: its result is the
+    /// sketch placed on its face.
     Running,
     /// Its solid made (its last step settled with a result, or kept from before); a sketch,
     /// solved.
@@ -1181,6 +1182,9 @@ enum Settled {
     Made,
     /// It failed: its features' own failure, a kernel fault or not.
     Failed(StepState),
+    /// It panicked, a bug: its features faulted at once, and what uses them blocked, since
+    /// the recompute ends with the panic's error (no model to say otherwise).
+    Panicked,
     /// It will never run: an input failed, or only refused features' users need it.
     Unrun,
     /// A newer recompute superseded it, or it was cancelled: nothing came of it, and the
@@ -1209,6 +1213,29 @@ struct Counted {
     /// it's recorded. What [`StepCounter::changed_since`] waits on, so each change wakes the
     /// client once, whether or not it moved `done` or `steps`.
     changes: u64,
+    /// The features whose result's check ([`Check`]: a boolean's solids, a sweep's measures)
+    /// isn't decided yet, by place in the document: built, one may yet fail it.
+    unchecked: BTreeSet<usize>,
+    /// Each feature's own failure, by place, held while a feature it uses, all the way up,
+    /// may yet fail its check: the model says it's blocked then, whatever its own problem,
+    /// so it reads queued (or built, if it did) until the failure is said or it's blocked.
+    held: BTreeMap<usize, StepState>,
+    /// Whether each feature, by place, is firm: built, its check passed (or it has none),
+    /// and all it uses firm. A failure is said once all a feature uses is firm.
+    firm: Vec<bool>,
+}
+
+/// Each feature's state as a round's plan finds it ([`Plan::states`]), by place in the
+/// document, with the count's view of what may yet change it.
+#[derive(Debug, Default)]
+struct Found {
+    states: Vec<StepState>,
+    /// The features whose check isn't decided yet ([`Counted::unchecked`]).
+    unchecked: BTreeSet<usize>,
+    /// The failures held for what they use ([`Counted::held`]), each feature queued.
+    held: BTreeMap<usize, StepState>,
+    /// Which features are firm ([`Counted::firm`]).
+    firm: Vec<bool>,
 }
 
 impl StepCounter {
@@ -1266,22 +1293,29 @@ impl StepCounter {
 
     /// A round's plan made: `steps` steps, `settled` those of them settled already, each
     /// called as `labels` says, and each feature's state as the plan finds it, by its place
-    /// in the document (`states`: a feature not among them is left as it was). Neither count
-    /// goes back: a later round's plan holds the steps of the rounds before it (some settled
-    /// there without a result kept, never to run, which it counts unsettled), and a step is
-    /// counted once, by its key, whichever rounds settle it.
+    /// in the document (`found`: a feature not among its states is left as it was), with the
+    /// checks, held failures, and firmness the count goes on from. Neither count goes back: a
+    /// later round's plan holds the steps of the rounds before it (some settled there
+    /// without a result kept, never to run, which it counts unsettled), and a step is counted
+    /// once, by its key, whichever rounds settle it. (A plan holds a failure only on a check
+    /// of a result kept but not yet measured, which this round's plan is the first to plan:
+    /// each round ends with every check of its own decided, so no plan takes a feature back
+    /// from built.)
     fn planned(
         &self,
         steps: usize,
         settled: impl IntoIterator<Item = Key>,
         labels: BTreeMap<Key, String>,
-        states: &[StepState],
+        found: &Found,
     ) {
         self.change(|counted| {
             counted.settled.extend(settled);
-            for (place, state) in states.iter().enumerate() {
+            for (place, state) in found.states.iter().enumerate() {
                 counted.force(place, *state);
             }
+            counted.unchecked.clone_from(&found.unchecked);
+            counted.held.clone_from(&found.held);
+            counted.firm.clone_from(&found.firm);
             let Counted {
                 count,
                 settled,
@@ -1323,17 +1357,22 @@ impl StepCounter {
         self.change(|counted| counted.settle(key, outcome, plan));
     }
 
-    /// The features of `plan` at `failed` failed their result's checks, each as its state
-    /// says (a measure that faulted, faulted): each so, and what uses it blocked.
-    fn refused(&self, failed: &[(usize, StepState)], plan: &Plan) {
-        if failed.is_empty() {
+    /// The checks of the features of `plan` at `passed` passed, and those at `failed` failed,
+    /// each as its state says (a measure that faulted, faulted): each failure said, and what
+    /// uses it blocked, once all it uses is firm ([`Counted::fail`]); each that passed firm
+    /// if it's built, and what its firmness decides, decided ([`Counted::firm_up`]).
+    fn judged(&self, passed: &[usize], failed: &[(usize, StepState)], plan: &Plan) {
+        if passed.is_empty() && failed.is_empty() {
             return;
         }
         self.change(|counted| {
             for &(f, state) in failed {
-                if counted.set(f, state) {
-                    counted.block_users(f, plan);
-                }
+                counted.unchecked.remove(&f);
+                counted.fail(f, state, plan);
+            }
+            for &f in passed {
+                counted.unchecked.remove(&f);
+                counted.firm_up(f, plan);
             }
         });
     }
@@ -1429,13 +1468,14 @@ impl Counted {
                     if last != Some(&key) {
                         self.set(f, StepState::Queued);
                     } else if self.set(f, StepState::Built) {
-                        self.decide_refused_users(f, plan);
+                        self.firm_up(f, plan);
                     }
                 }
                 // The recompute is superseded, and ends: its end leaves what ran queued.
                 Settled::Superseded => {}
-                Settled::Failed(state) => {
-                    if self.set(f, state) {
+                Settled::Failed(state) => self.fail(f, state, plan),
+                Settled::Panicked => {
+                    if self.set(f, StepState::Faulted) {
                         self.block_users(f, plan);
                     }
                 }
@@ -1448,24 +1488,59 @@ impl Counted {
         }
     }
 
-    /// The feature at `place` built: each of its users the plan refused before any step
-    /// (its sketch's profile, its axis) failed, once all it uses is built, as the model has
-    /// it (blocked if an input didn't build; failed if all did).
-    fn decide_refused_users(&mut self, place: usize, plan: &Plan) {
-        for &user in plan.dependants.get(place).into_iter().flatten() {
-            let Some(planned) = plan.features.get(user) else {
-                continue;
-            };
-            let Some(error) = &planned.refused else {
-                continue;
-            };
-            let built = planned
+    /// The feature at `place` failed on its own, as `state` says (failed or faulted): said,
+    /// and what uses it blocked, if all it uses is firm. If not, held, the feature queued
+    /// (or left built): the model says it's blocked if what it uses fails its check, so a
+    /// failure said now could be taken back. [`firm_up`](Self::firm_up) says it later.
+    fn fail(&mut self, place: usize, state: StepState, plan: &Plan) {
+        if self.inputs_firm(place, plan) {
+            self.held.remove(&place);
+            if self.set(place, state) {
+                self.block_users(place, plan);
+            }
+        } else {
+            self.held.insert(place, state);
+            if self.state(place) == Some(StepState::Running) {
+                self.set(place, StepState::Queued);
+            }
+        }
+    }
+
+    /// Whether all the feature at `place` uses (its base, tool, sketch) is firm.
+    fn inputs_firm(&self, place: usize, plan: &Plan) -> bool {
+        plan.features.get(place).is_some_and(|planned| {
+            planned
                 .uses
                 .iter()
                 .chain(&planned.sweeps)
-                .all(|&u| self.state(u) == Some(StepState::Built));
-            if built && self.set(user, StepState::failed(error)) {
-                self.block_users(user, plan);
+                .all(|&u| self.firm.get(u) == Some(&true))
+        })
+    }
+
+    /// The feature at `place` built, or its check passed: if it's firm now, so may be what's
+    /// made from it, all the way down; and each user of a firm feature whose own failure
+    /// waits on what it uses (held, or the plan's refusal of its sketch's profile or axis)
+    /// says it once all it uses is firm, as the model has it (blocked if an input didn't
+    /// build or failed its check; failed if all did and passed).
+    fn firm_up(&mut self, place: usize, plan: &Plan) {
+        let mut stack = vec![place];
+        while let Some(f) = stack.pop() {
+            if self.firm.get(f) != Some(&false) || !self.inputs_firm(f, plan) {
+                continue;
+            }
+            let held = self.held.remove(&f).or_else(|| {
+                let refused = plan.features.get(f)?.refused.as_ref()?;
+                Some(StepState::failed(refused))
+            });
+            if let Some(state) = held {
+                if self.set(f, state) {
+                    self.block_users(f, plan);
+                }
+            } else if self.state(f) == Some(StepState::Built) && !self.unchecked.contains(&f) {
+                if let Some(firm) = self.firm.get_mut(f) {
+                    *firm = true;
+                }
+                stack.extend(plan.dependants.get(f).into_iter().flatten().copied());
             }
         }
     }
@@ -1528,7 +1603,7 @@ fn reported(document: &Checked, id: &FeatureId) -> Option<usize> {
     }
 }
 
-/// Features a check refused, each failed ([`StepCounter::refused`]).
+/// Features a check refused, each failed ([`StepCounter::judged`]).
 fn failed(refused: Vec<usize>) -> Vec<(usize, StepState)> {
     refused
         .into_iter()
@@ -3237,10 +3312,12 @@ impl Plan {
     /// so far, the features `refusals` holds, and the solids `unmeasured`. As the model words
     /// its outcomes, in timeline order: a sketch is placed, then solved (one whose face isn't
     /// resolved yet is queued); a feature using one that failed, faulted, or was blocked is
-    /// blocked; one that waits on a face queued; one the plan refused failed once all it
-    /// uses is built (queued until then); one a check refused failed; then by its own steps'
-    /// results, the first that failed failing it, its last one made building it (unless its
-    /// check failed for want of a measure); and otherwise queued.
+    /// blocked; one that waits on a face queued; then its own failure (the plan's refusal, a
+    /// check's, a measure's, or its steps' first) if it has one, said once all it uses is
+    /// firm (built, its check passed, and all it uses firm) and queued until then, since
+    /// the model says blocked if what it uses fails its check; then built once its last step
+    /// is made; and otherwise queued. With them, the checks not decided yet, the failures
+    /// held, and which features are firm, for the count to go on from ([`Found`]).
     fn states(
         &self,
         done: &BTreeMap<Key, StepResult>,
@@ -3248,8 +3325,11 @@ impl Plan {
         solved: &SketchResults,
         refusals: &Refusals,
         unmeasured: &BTreeMap<Key, Error>,
-    ) -> Vec<StepState> {
+    ) -> Found {
         let mut states: Vec<StepState> = Vec::with_capacity(self.features.len());
+        let mut firm: Vec<bool> = Vec::with_capacity(self.features.len());
+        let mut unchecked = BTreeSet::new();
+        let mut held = BTreeMap::new();
         for (i, planned) in self.features.iter().enumerate() {
             let inputs = || planned.uses.iter().chain(&planned.sweeps);
             let unbuilt = |u: &usize| {
@@ -3258,6 +3338,13 @@ impl Plan {
                     Some(StepState::Failed | StepState::Faulted | StepState::Blocked)
                 )
             };
+            let inputs_firm = inputs().all(|u| firm.get(*u) == Some(&true));
+            if planned.check.is_some()
+                && self.verdict(i, done).is_none()
+                && self.unmeasured_failure(i, done, unmeasured).is_none()
+            {
+                unchecked.insert(i);
+            }
             let state = if planned.suppressed {
                 StepState::Queued
             } else if let Some(key) = planned.sketch {
@@ -3278,31 +3365,55 @@ impl Plan {
                 StepState::Blocked
             } else if self.waits.contains(&i) {
                 StepState::Queued
-            } else if let Some(error) = &planned.refused {
-                if inputs().all(|u| states.get(*u) == Some(&StepState::Built)) {
-                    StepState::failed(error)
-                } else {
-                    StepState::Queued
-                }
-            } else if refusals.refused.contains(&i) {
-                StepState::Failed
-            } else if let Some(error) = self.unmeasured_failure(i, done, unmeasured) {
-                StepState::failed(error)
             } else {
-                let failed = planned.steps.iter().find_map(|key| match done.get(key) {
-                    Some(Err(error)) => Some(StepState::failed(error)),
-                    _ => None,
-                });
-                match (failed, planned.steps.last().map(|key| done.get(key))) {
-                    (Some(state), _) => state,
+                let own = if let Some(error) = &planned.refused {
+                    Some(StepState::failed(error))
+                } else if refusals.refused.contains(&i) {
+                    Some(StepState::Failed)
+                } else if let Some(error) = self.unmeasured_failure(i, done, unmeasured) {
+                    Some(StepState::failed(error))
+                } else {
+                    planned.steps.iter().find_map(|key| match done.get(key) {
+                        Some(Err(error)) => Some(StepState::failed(error)),
+                        _ => None,
+                    })
+                };
+                match (own, planned.steps.last().map(|key| done.get(key))) {
+                    (Some(state), _) if inputs_firm => state,
+                    // The plan's refusal is the count's to say, from the plan, once all it
+                    // uses is firm; any other failure is held for it.
+                    (Some(state), _) => {
+                        if planned.refused.is_none() {
+                            held.insert(i, state);
+                        }
+                        StepState::Queued
+                    }
                     _ if planned.steps.iter().any(|key| doomed.contains(key)) => StepState::Blocked,
                     (None, Some(Some(Ok(_)))) => StepState::Built,
                     (None, _) => StepState::Queued,
                 }
             };
+            firm.push(state == StepState::Built && inputs_firm && !unchecked.contains(&i));
             states.push(state);
         }
-        states
+        Found {
+            states,
+            unchecked,
+            held,
+            firm,
+        }
+    }
+
+    /// The features whose checks the result (or measure) of `key`, now that `done` holds it,
+    /// has passed.
+    fn passed(&self, key: &Key, done: &BTreeMap<Key, StepResult>) -> Vec<usize> {
+        self.judged_by
+            .get(key)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|&f| self.verdict(f, done) == Some(true))
+            .collect()
     }
 
     /// The features whose checks the measure of `key` decided they fail for want of a
@@ -4085,14 +4196,14 @@ impl<K: Kernel + 'static> Engine<K> {
             .iter()
             .filter(|key| schedule.done.contains_key(key) || doomed.contains(key))
             .copied();
-        let states = plan.states(
+        let found = plan.states(
             &schedule.done,
             &doomed,
             solutions,
             &schedule.refusals,
             &schedule.unmeasured,
         );
-        progress.planned(plan.order.len(), settled, plan.labels(document), &states);
+        progress.planned(plan.order.len(), settled, plan.labels(document), &found);
         let schedule = Mutex::new(schedule);
         let changed = Condvar::new();
         let threads = to_run.min(MOST_AT_ONCE);
@@ -4538,7 +4649,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 Err(panic) => {
                     // A bug's failure, as a fault's: its features faulted, and what uses them
                     // blocked, not left queued under a faulted rebuild.
-                    progress.settled(key, Settled::Failed(StepState::Faulted), plan);
+                    progress.settled(key, Settled::Panicked, plan);
                     s.running -= 1;
                     let said = panic
                         .downcast_ref::<&str>()
@@ -4603,7 +4714,8 @@ impl<K: Kernel + 'static> Engine<K> {
                     if made {
                         woken += release(&mut s, key);
                         let Schedule { done, refusals, .. } = &mut *s;
-                        progress.refused(&failed(plan.judge(&key, done, refusals)), plan);
+                        let refused = failed(plan.judge(&key, done, refusals));
+                        progress.judged(&plan.passed(&key, done), &refused, plan);
                         // A feature's solid is measured once it's made, by a job of its own:
                         // what uses it doesn't wait for that.
                         // This thread takes a job itself next (it has nothing to write: a
@@ -4633,7 +4745,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     let mut refused = failed(plan.judge(&key, done, refusals));
                     // Its base's measure refused, a sweep made from it fails its check.
                     refused.extend(plan.unmeasured_failures(&key, done, unmeasured));
-                    progress.refused(&refused, plan);
+                    progress.judged(&plan.passed(&key, done), &refused, plan);
                 }
                 Ran::Measured(Outcome::Done(Err(error))) => {
                     // A solid that couldn't be measured is kept on disk all the same, so the
@@ -4655,7 +4767,8 @@ impl<K: Kernel + 'static> Engine<K> {
                     s.unmeasured.insert(key, error);
                     // The checks that needed it fail now, as the model will say: its own
                     // sweep's, and those of the sweeps made from it.
-                    progress.refused(
+                    progress.judged(
+                        &[],
                         &plan.unmeasured_failures(&key, &s.done, &s.unmeasured),
                         plan,
                     );
@@ -5924,14 +6037,14 @@ mod tests {
             assert!(answer.recv_timeout(quiet).is_err(), "returned with {why}");
         };
         nothing("nothing changed");
-        counter.planned(2, [], BTreeMap::new(), &[]);
+        counter.planned(2, [], BTreeMap::new(), &Found::default());
         let (planned, one) = answer.recv_timeout(wait).unwrap();
         assert_eq!(
             (planned.done, planned.steps, planned.ended, one),
             (0, 2, false, 1)
         );
         nothing("nothing changed");
-        counter.refused(&[], &plan);
+        counter.judged(&[], &[], &plan);
         counter.sketch_started(None);
         counter.sketch_settled(None, StepState::Built);
         nothing("a refusal of nothing, or a solve not reported");
@@ -5970,11 +6083,11 @@ mod tests {
         // earlier's, so `steps` only grows; `done` stays at least what it was.
         let counter = StepCounter::default();
         let keys = |n: u8| (0..n).map(|k| Key([k; 32]));
-        counter.planned(5, keys(5), BTreeMap::new(), &[]);
+        counter.planned(5, keys(5), BTreeMap::new(), &Found::default());
         assert_eq!((counter.now().done, counter.now().steps), (5, 5));
-        counter.planned(8, keys(3), BTreeMap::new(), &[]);
+        counter.planned(8, keys(3), BTreeMap::new(), &Found::default());
         assert_eq!((counter.now().done, counter.now().steps), (5, 8));
-        counter.planned(7, keys(6), BTreeMap::new(), &[]);
+        counter.planned(7, keys(6), BTreeMap::new(), &Found::default());
         assert_eq!((counter.now().done, counter.now().steps), (6, 8));
         assert_eq!(counter.rounds(), 3);
     }
@@ -6077,10 +6190,10 @@ mod tests {
         let counter = StepCounter::default();
         let plan = empty_plan();
         let (a, b) = (Key([1; 32]), Key([2; 32]));
-        counter.planned(1, [], BTreeMap::new(), &[]);
+        counter.planned(1, [], BTreeMap::new(), &Found::default());
         counter.settled(a, Settled::Unrun, &plan);
         assert_eq!((counter.now().done, counter.now().steps), (1, 1));
-        counter.planned(2, [], BTreeMap::new(), &[]);
+        counter.planned(2, [], BTreeMap::new(), &Found::default());
         assert_eq!((counter.now().done, counter.now().steps), (1, 2));
         counter.started(b, &plan);
         counter.settled(a, Settled::Unrun, &plan);
@@ -6089,7 +6202,7 @@ mod tests {
         // again is counted once too.
         counter.settled(b, Settled::Made, &plan);
         assert_eq!((counter.now().done, counter.now().steps), (2, 2));
-        counter.planned(3, [a, b], BTreeMap::new(), &[]);
+        counter.planned(3, [a, b], BTreeMap::new(), &Found::default());
         counter.settled(b, Settled::Unrun, &plan);
         assert_eq!((counter.now().done, counter.now().steps), (2, 3));
     }
@@ -6305,6 +6418,269 @@ mod tests {
                 .any(|c| c.steps == 0 && c.features.get(&first) == Some(Queued)),
             "{copies:#?}"
         );
+    }
+
+    #[test]
+    fn a_sketch_on_a_planar_face_reads_queued_through_its_solve_then_built_in_its_round() {
+        // A box; a sketch on its top, padded onto it; and another on its top that nothing
+        // sweeps. The fake made to describe every face as the plane z = 10, so both faces are
+        // found planar and placed once the box is built: the first round builds the box, the
+        // second places both sketches and builds the pad. Each sketch on a face reads queued
+        // until the round that places it, its solve included (the padded one solved before
+        // any plan, the other beside the box's step), then built; never running, never
+        // back. Built in its round, not only at the end: whenever the pad reads running
+        // (copied as each of its requests is made) or built, both sketches read built.
+        let features = vec![
+            r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#
+                .to_owned(),
+            face_sketch("s0000001", "b0000001.box.Face6", 1.0),
+            face_sketch("s0000003", "b0000001.box.Face6", 3.0),
+            face_pad("p0000001", "b0000001", "s0000001"),
+        ];
+        let document = Arc::new(checked_of(&features));
+        let progress = StepCounter::default();
+        progress.listing(&document);
+        // Each copy with whether a solve was running as it was taken.
+        let copies: Arc<Mutex<Vec<(bool, StepCount)>>> = Arc::default();
+        let copy = {
+            let (copies, progress) = (Arc::clone(&copies), progress.clone());
+            move |solving: bool| {
+                let mut copies = lock(&copies);
+                copies.push((solving, progress.now()));
+            }
+        };
+        let kernel = crate::fake::FakeKernel::new(2).unwrap();
+        let on_request = copy.clone();
+        kernel.refuse(move |_| {
+            on_request(false);
+            None
+        });
+        kernel.answer_instead(|op| {
+            let crate::kernel::Op::DescribeAll { shape } = op else {
+                return None;
+            };
+            let mut description = crate::fake::FakeKernel::described(shape)?;
+            for face in &mut description.faces {
+                face.surface = silico_protocol::Surface::Plane {
+                    normal: [0.0, 0.0, 1.0],
+                    location: [0.0, 0.0, 10.0],
+                };
+            }
+            Some(silico_protocol::Reply::DescribedAll(description))
+        });
+        let sketches = crate::fake::FakeSketches::new();
+        let on_solve = copy.clone();
+        sketches.answer(move |system| {
+            on_solve(true);
+            Ok(crate::fake::FakeSketches::as_sent(system))
+        });
+        let engine = Recompute::new(kernel).with_sketches(sketches);
+        let generation = lock(&engine.engine.state).generation;
+        let waiter = {
+            let (progress, copy) = (progress.clone(), copy.clone());
+            std::thread::spawn(move || {
+                let mut seen = 0;
+                loop {
+                    let (count, changes) = progress.changed_since(seen);
+                    copy(false);
+                    if count.ended {
+                        break;
+                    }
+                    seen = changes;
+                }
+            })
+        };
+        let RunOutcome::Published(model) = engine
+            .engine
+            .run(&document, generation, &progress, Reads::Kept)
+            .unwrap()
+        else {
+            panic!("not published");
+        };
+        progress.ended(true);
+        waiter.join().unwrap();
+        copy(false);
+        assert_eq!(progress.rounds(), 2);
+        use StepState::{Built, Queued, Running};
+        let states = |counter: &StepCounter| -> Vec<StepState> {
+            counter.now().features.iter().map(|(_, s)| s).collect()
+        };
+        assert_eq!(states(&progress), [Built; 4]);
+        let told = StepCounter::default();
+        told.listing(&document);
+        told.concluded(&model);
+        assert_eq!(states(&told), [Built; 4]);
+        let copies = lock(&copies).clone();
+        never_back(&copies.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>());
+        let (s1, s3, pad) = (
+            FeatureId::new("s0000001").unwrap(),
+            FeatureId::new("s0000003").unwrap(),
+            FeatureId::new("p0000001").unwrap(),
+        );
+        let solves = copies.iter().filter(|(solving, _)| *solving).count();
+        assert_eq!(solves, 2, "{copies:#?}");
+        for (solving, copy) in &copies {
+            for sketch in [&s1, &s3] {
+                let state = copy.features.get(sketch);
+                assert_ne!(state, Some(Running), "{sketch}: {copies:#?}");
+                if *solving {
+                    assert_eq!(state, Some(Queued), "{sketch} while a solve ran");
+                }
+                if matches!(copy.features.get(&pad), Some(Running | Built)) {
+                    assert_eq!(state, Some(Built), "{sketch} with the pad begun");
+                }
+            }
+        }
+        assert!(
+            copies
+                .iter()
+                .any(|(_, c)| !c.ended && c.features.get(&pad) == Some(Running)),
+            "{copies:#?}"
+        );
+    }
+
+    /// Two unit boxes apart, `a0000001` and `a0000002`, fused (`f0000001`), and a pad
+    /// (`p0000001`) onto the fuse of a segment (`s0000001`), which makes no profile: the pad
+    /// is refused by its plan, before any step.
+    fn refused_pad_on_a_fuse() -> Vec<String> {
+        vec![
+            r#"{"id": "a0000001", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1}"#.to_owned(),
+            r#"{"id": "a0000002", "type": "box", "v": 1, "name": "B", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1}"#.to_owned(),
+            r#"{"id": "f0000001", "type": "fuse", "v": 1, "name": "F", "base": "a0000001", "tool": "a0000002"}"#.to_owned(),
+            r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "Segment", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 10, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#.to_owned(),
+            r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "P", "base": "f0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 1, "reversed": false}}"#.to_owned(),
+        ]
+    }
+
+    /// A fuse's reply of two solids, as a fuse of two boxes apart is: each box's elements
+    /// kept, the second's numbered after the first's.
+    fn split_fuse() -> impl Fn(&crate::kernel::Op) -> Option<silico_protocol::Reply> {
+        use crate::kernel::{ElementCounts, ElementFate, History, InputHistory, Topology};
+        let fates = |first: u32, n: u32| -> Vec<ElementFate> {
+            (first..first + n)
+                .map(|k| ElementFate {
+                    kept: Some(k),
+                    ..ElementFate::default()
+                })
+                .collect()
+        };
+        let split = History {
+            inputs: vec![
+                InputHistory {
+                    faces: fates(1, 6),
+                    edges: fates(1, 12),
+                    vertices: fates(1, 8),
+                },
+                InputHistory {
+                    faces: fates(7, 6),
+                    edges: fates(13, 12),
+                    vertices: fates(9, 8),
+                },
+            ],
+            result: ElementCounts {
+                faces: 12,
+                edges: 24,
+                vertices: 16,
+                solids: 2,
+            },
+            ends: Default::default(),
+            topology: Topology {
+                face_edges: vec![vec![]; 12],
+                outer_edges: vec![vec![]; 12],
+                edge_vertices: vec![vec![]; 24],
+                solid_faces: vec![(1..=6).collect(), (7..=12).collect()],
+            },
+        };
+        move |op| match op {
+            crate::kernel::Op::Boolean {
+                op: BooleanOp::Fuse,
+                base,
+                ..
+            } => Some(silico_protocol::Reply::Built(crate::kernel::BuiltData {
+                shape: base.clone(),
+                history: split.clone(),
+            })),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_pad_refused_by_its_plan_on_a_base_whose_check_then_fails_is_queued_then_blocked() {
+        // Round 2's major: the fuse of two boxes apart makes two solids, which its check
+        // refuses; the pad on it, of a segment, is refused by its plan. The model says the
+        // pad is blocked on the fuse. The fuse's step settles built before its check is
+        // judged (two changes of the count), and the pad read failed in between, then could
+        // never be blocked. Driven by hand, as the recompute's threads drive the count, on
+        // the plan of this document: the pad reads queued until the fuse's check is decided,
+        // then blocked, its model's outcome; nothing goes back.
+        let document = Arc::new(checked_of(&refused_pad_on_a_fuse()));
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+            .with_sketches(crate::fake::FakeSketches::new());
+        engine.kernel().answer_instead(split_fuse());
+        let generation = lock(&engine.engine.state).generation;
+        let RunOutcome::Published(model) = engine
+            .engine
+            .run(&document, generation, &StepCounter::default(), Reads::Kept)
+            .unwrap()
+        else {
+            panic!("not published");
+        };
+        let (fuse, pad) = (
+            FeatureId::new("f0000001").unwrap(),
+            FeatureId::new("p0000001").unwrap(),
+        );
+        assert!(
+            matches!(model.outcome(&pad), Some(FeatureOutcome::Blocked { on }) if *on == fuse),
+            "{:?}",
+            model.outcome(&pad)
+        );
+        let first = engine
+            .engine
+            .solve_swept(&document, generation, Reads::Kept, &StepCounter::default())
+            .unwrap()
+            .unwrap();
+        let plan = Plan::of(&document, &first.swept, &BTreeMap::new());
+        let at = |id: &FeatureId| document.place(id).unwrap();
+        let fuse_key = plan.features[at(&fuse)].key().unwrap();
+        let counter = StepCounter::default();
+        counter.listing(&document);
+        let found = plan.states(
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &first.solutions,
+            &Refusals::default(),
+            &BTreeMap::new(),
+        );
+        counter.planned(plan.order.len(), [], plan.labels(&document), &found);
+        let mut copies = vec![counter.now()];
+        for &key in &plan.order {
+            counter.started(key, &plan);
+            copies.push(counter.now());
+            counter.settled(key, Settled::Made, &plan);
+            copies.push(counter.now());
+            if key == fuse_key {
+                // Built, its check not yet judged: the pad waits on it.
+                assert_eq!(counter.now().features.get(&pad), Some(StepState::Queued));
+                counter.judged(&[], &[(at(&fuse), StepState::Failed)], &plan);
+                copies.push(counter.now());
+            }
+        }
+        never_back(&copies);
+        let want = StepState::of_outcome(model.outcome(&pad).unwrap());
+        assert_eq!(counter.now().features.get(&pad), want);
+        assert_eq!(want, Some(StepState::Blocked));
+        assert_eq!(counter.now().features.get(&fuse), Some(StepState::Failed));
+        // Its check passed instead, the pad says its own refusal at once.
+        let passing = StepCounter::default();
+        passing.listing(&document);
+        passing.planned(plan.order.len(), [], plan.labels(&document), &found);
+        for &key in &plan.order {
+            passing.started(key, &plan);
+            passing.settled(key, Settled::Made, &plan);
+        }
+        assert_eq!(passing.now().features.get(&pad), Some(StepState::Queued));
+        passing.judged(&[at(&fuse)], &[], &plan);
+        assert_eq!(passing.now().features.get(&pad), Some(StepState::Failed));
     }
 
     #[test]

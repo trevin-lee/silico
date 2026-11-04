@@ -275,7 +275,7 @@
           },
           {
             "const": "running",
-            "description": "A step of its is running; a sketch, its solve.",
+            "description": "A step of its is running; a sketch, its solve; a sketch on a face reads queued until\nthe round that places it, its solve included, then its outcome: its result is the\nsketch placed on its face.",
             "type": "string"
           },
           {

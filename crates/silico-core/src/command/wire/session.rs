@@ -613,7 +613,9 @@ pub enum StepStateSchema {
     /// Not settled yet: none of its steps running, or the rebuild stopped first (the next
     /// rebuild resumes it).
     Queued,
-    /// A step of its is running; a sketch, its solve.
+    /// A step of its is running; a sketch, its solve; a sketch on a face reads queued until
+    /// the round that places it, its solve included, then its outcome: its result is the
+    /// sketch placed on its face.
     Running,
     /// Built: its solid made, or kept from before; a sketch, solved.
     Built,
