@@ -248,13 +248,14 @@ impl ExportForm {
             }
         });
         let request = self.request(bodies);
+        let enter = crate::shortcuts::Command::Ok.keys_text(ui.ctx());
         let ([], [cancel, export]) = modal::foot(
             ui,
             [],
             [
                 Button::new("Cancel", Kind::Secondary),
                 Button::new("Export", Kind::Primary)
-                    .cap("↵")
+                    .cap(&enter)
                     .enabled(idle && request.is_some()),
             ],
         );

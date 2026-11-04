@@ -10,11 +10,12 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, FontId, KeyboardShortcut, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui,
-    Vec2, ViewportCommand, WidgetInfo, WidgetType, text::LayoutJob, text::TextWrapping,
+    self, FontId, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
+    ViewportCommand, WidgetInfo, WidgetType, text::LayoutJob, text::TextWrapping,
 };
 
 use crate::icons::{ICON_SIZE, Icon, IconSize};
+use crate::shortcuts::Chord;
 use crate::theme;
 
 /// Whether the window's content runs under its title bar, the app bar drawn there (macOS,
@@ -173,23 +174,19 @@ pub(crate) fn separator(ui: &mut Ui) {
 }
 
 /// `response` with a tooltip (`.tooltip`), on or off: `title`, the caps of `shortcut` after
-/// it if given, and `description` under it if given.
+/// it if given (as the registry names them: `crate::shortcuts::caps`), and `description`
+/// under it if given.
 pub(crate) fn tooltip(
     response: Response,
     title: &str,
-    shortcut: Option<KeyboardShortcut>,
+    shortcut: Option<Chord>,
     description: Option<&str>,
 ) -> Response {
     let show = |ui: &mut Ui| tooltip_ui(ui, title, shortcut, description);
     response.on_hover_ui(show).on_disabled_hover_ui(show)
 }
 
-fn tooltip_ui(
-    ui: &mut Ui,
-    title: &str,
-    shortcut: Option<KeyboardShortcut>,
-    description: Option<&str>,
-) {
+fn tooltip_ui(ui: &mut Ui, title: &str, shortcut: Option<Chord>, description: Option<&str>) {
     ui.spacing_mut().item_spacing.y = theme::TOOLTIP_DESCRIPTION_GAP;
     // As high as its text and its caps, not the height egui's `horizontal` assumes for a
     // row of controls.
@@ -199,7 +196,7 @@ fn tooltip_ui(
         ui.spacing_mut().item_spacing.x = theme::TOOLTIP_TITLE_GAP;
         ui.label(RichText::new(title).color(theme::TEXT_STRONG));
         if let Some(shortcut) = shortcut {
-            let caps = crate::start::caps(ui.ctx(), shortcut.modifiers, shortcut.logical_key);
+            let caps = crate::shortcuts::caps(ui.ctx(), shortcut);
             let width = crate::start::key_caps_width(ui, &caps);
             let (rect, _) =
                 ui.allocate_exact_size(Vec2::new(width, theme::KEY_CAP_HEIGHT), Sense::hover());
@@ -1034,10 +1031,10 @@ mod tests {
             tooltip_ui(
                 ui,
                 "Redo",
-                Some(KeyboardShortcut::new(
+                Some(Chord::Key(egui::KeyboardShortcut::new(
                     Modifiers::COMMAND | Modifiers::SHIFT,
                     Key::Z,
-                )),
+                ))),
                 Some("Unsaved edits"),
             );
         });

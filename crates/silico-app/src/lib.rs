@@ -20,6 +20,8 @@ mod panes;
 mod properties;
 pub mod recent;
 pub mod renderer;
+mod sheet;
+pub mod shortcuts;
 pub mod start;
 pub mod status;
 pub mod tab;

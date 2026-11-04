@@ -111,18 +111,30 @@ pub(crate) fn frame() -> Frame {
 /// [`theme::MODAL_WINDOW_MARGIN`], its border in that: `content` draws its head, body, and
 /// foot ([`head`], [`body`], [`foot`]). What `content` gives.
 pub(crate) fn show<R>(ctx: &egui::Context, id: egui::Id, content: impl FnOnce(&mut Ui) -> R) -> R {
+    show_sized(ctx, id, theme::MODAL_WIDTH, content).0
+}
+
+/// [`show`], `width` wide, its border in that, and as tall at most: what `content` gives,
+/// and whether the backdrop was clicked (`.backdrop`'s `closeModal`), which a modal with
+/// nothing to lose takes as its close.
+pub(crate) fn show_sized<R>(
+    ctx: &egui::Context,
+    id: egui::Id,
+    width: f32,
+    content: impl FnOnce(&mut Ui) -> R,
+) -> (R, bool) {
     let tallest =
         ctx.content_rect().height() - theme::MODAL_WINDOW_MARGIN - 2.0 * theme::BORDER_WIDTH;
-    egui::Modal::new(id)
+    let shown = egui::Modal::new(id)
         .backdrop_color(theme::MODAL_BACKDROP)
         .frame(frame())
         .show(ctx, |ui| {
-            ui.set_width(theme::MODAL_WIDTH - 2.0 * theme::BORDER_WIDTH);
+            ui.set_width(width - 2.0 * theme::BORDER_WIDTH);
             ui.set_max_height(tallest.max(0.0));
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             content(ui)
-        })
-        .inner
+        });
+    (shown.inner, shown.backdrop_response.clicked())
 }
 
 /// The modal's head (`.m-head`): `icon`, if it has one, and `title`, 14 high in Gray.1000,

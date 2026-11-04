@@ -518,3 +518,8 @@ crates/silico-app/src/banner.rs | show | replace | with ^ | #381
 # `2.0 * 1.0`, in the tallest the window allows and in the width inside the border.
 crates/silico-app/src/modal.rs | show | replace * with / | #381
 crates/silico-app/src/modal.rs | show | replace * with / | #381
+# A modal's border, at each side (#382, as #381's for `show`, which became `show_sized`):
+# `theme::BORDER_WIDTH` is 1, so `2.0 / 1.0` is `2.0 * 1.0`, in the tallest the window
+# allows and in the width inside the border.
+crates/silico-app/src/modal.rs | show_sized | replace * with / | #382
+crates/silico-app/src/modal.rs | show_sized | replace * with / | #382

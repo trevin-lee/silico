@@ -1125,6 +1125,49 @@ pub const MODAL_FOOT_GAP: f32 = 6.0;
 pub const MODAL_BUTTON_HEIGHT: f32 = DIALOG_BUTTON_HEIGHT;
 pub const MODAL_BUTTON_MIN_WIDTH: f32 = 76.0;
 
+// ---- The shortcut sheet (`.sheet`) ----
+
+/// The sheet's width, its border in it (`.sheet { width: 920px }`), at most the window's
+/// less this (`.modal { max-width: calc(100vw - 40px) }`).
+pub const SHEET_WIDTH: f32 = 920.0;
+pub const SHEET_WINDOW_MARGIN: f32 = 40.0;
+/// Its filter (the head's `.field`, `width: 220px; height: 24px`), its icon at its left and
+/// its text after it as a field's padding puts it (`.field input { padding: 0 6px }`).
+pub const SHEET_FILTER_WIDTH: f32 = 220.0;
+pub const SHEET_FILTER_HEIGHT: f32 = 24.0;
+/// Its columns (`.cols { columns: 3 260px; column-gap: 28px }`): three, each 260 wide at
+/// least, 28 apart.
+pub const SHEET_COLUMNS: usize = 3;
+pub const SHEET_COLUMN_MIN_WIDTH: f32 = 260.0;
+pub const SHEET_COLUMN_GAP: f32 = 28.0;
+/// A group (`.grp { margin-bottom: 14px }`), 14 above the next in its column.
+pub const SHEET_GROUP_GAP: f32 = 14.0;
+/// A group's title (`.grp-t`): 10.5 high capitals, spaced as the panels' ([`CAPITALS_LETTER_SPACING`]),
+/// in [`TEXT_SUBDUED`] on a line of the body's, its note beside it at its right; then 4,
+/// its 1 px [`PANEL_BORDER`] underline, and 4 more before its rows.
+pub const SHEET_GROUP_TITLE_SIZE: f32 = 10.5;
+pub const SHEET_GROUP_TITLE_TEXT: Color32 = TEXT_SUBDUED;
+pub const SHEET_GROUP_TITLE_PADDING: f32 = 4.0;
+pub const SHEET_GROUP_TITLE_BORDER: Color32 = PANEL_BORDER;
+pub const SHEET_GROUP_TITLE_MARGIN: f32 = 4.0;
+/// A command's row (`.sc-row`): 22 high, its name in [`TEXT_DEFAULT`] (`.d`), its caps at
+/// its right, 3 apart (`.sheet .sc-row .keys { gap: 3px }`), 8 from its name at the least.
+pub const SHEET_ROW_HEIGHT: f32 = 22.0;
+pub const SHEET_ROW_TEXT: Color32 = TEXT_DEFAULT;
+pub const SHEET_ROW_GAP: f32 = 8.0;
+pub const SHEET_KEY_CAP_GAP: f32 = 3.0;
+/// What the filter found in a name (`.sheet mark`): Blue.500 at 35% under white words.
+pub const SHEET_MATCH_BG: Color32 = with_alpha(SELECTION_BG, 89);
+pub const SHEET_MATCH_TEXT: Color32 = GRAY_1000;
+/// The notes (`.sheet .note`): `--fs-small` ([`HEADER_SIZE`]) in [`TEXT_SUBDUED`], their
+/// strong words (`.strong`) [`TEXT_STRONG`]. The note under the columns sits 6 under them,
+/// over a 1 px [`PANEL_BORDER`] rule, 8 above its words.
+pub const SHEET_NOTE_TEXT: Color32 = TEXT_SUBDUED;
+pub const SHEET_NOTE_STRONG: Color32 = TEXT_STRONG;
+pub const SHEET_NOTE_MARGIN: f32 = 6.0;
+pub const SHEET_NOTE_PADDING: f32 = 8.0;
+pub const SHEET_NOTE_BORDER: Color32 = PANEL_BORDER;
+
 // ---- Banners over the canvas (`.canvas-banner`) ----
 
 /// A banner's place over the canvas: 10 from its left and top, 148 from its right, clear of
@@ -1428,6 +1471,19 @@ pub fn field_with_room<'t>(
     invalid: bool,
     room: f32,
 ) -> egui::TextEdit<'t> {
+    field_with_rooms(ui, edit, id_salt, kind, invalid, [0.0, room])
+}
+
+/// [`field`], with `rooms[0]` more points inside its frame at its left, before its text
+/// (where an icon goes, which the caller paints there), and `rooms[1]` at its right.
+pub fn field_with_rooms<'t>(
+    ui: &egui::Ui,
+    edit: egui::TextEdit<'t>,
+    id_salt: impl egui::AsIdSalt,
+    kind: FieldKind,
+    invalid: bool,
+    rooms: [f32; 2],
+) -> egui::TextEdit<'t> {
     let id = ui.make_persistent_id(id_salt);
     let hovered = ui
         .ctx()
@@ -1435,10 +1491,9 @@ pub fn field_with_room<'t>(
         .is_some_and(|drawn| drawn.enabled() && ui.rect_contains_pointer(drawn.rect));
     let focused = ui.memory(|memory| memory.has_focus(id));
     let mut frame = field_frame(kind, hovered, focused, invalid);
-    frame.inner_margin.right = frame
-        .inner_margin
-        .right
-        .saturating_add(room.ceil().clamp(0.0, f32::from(i8::MAX)) as i8);
+    let room = |room: f32| room.ceil().clamp(0.0, f32::from(i8::MAX)) as i8;
+    frame.inner_margin.left = frame.inner_margin.left.saturating_add(room(rooms[0]));
+    frame.inner_margin.right = frame.inner_margin.right.saturating_add(room(rooms[1]));
     edit.id(id)
         .frame(frame)
         .text_color(if invalid { ERROR_TEXT } else { TEXT_STRONG })
