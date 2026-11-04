@@ -15,12 +15,12 @@
     "topology": "af1c5f38785884d3"
   },
   "barrel_across_angle_0_slotted": {
-    "brep": "5f0483c105070e13",
+    "brep": "4bd8c92d1ffe22aa",
     "cameras": "740d0bc3d3b0d475",
     "history": "dc6c2f7743cf901f",
-    "measures": "e7768515db01b8d5",
-    "mesh": "9775b86e0062ac78",
-    "summary": "271efa2a4a9b9b46",
+    "measures": "11c11a9114583dd0",
+    "mesh": "c05c324c2cbdb42d",
+    "summary": "7884743f31c994f2",
     "topology": "c21a22a465092904"
   },
   "box_10_20_30": {
@@ -125,13 +125,22 @@
   "collinear_edges_apart": {
     "answer": "01d2de216e4b5971"
   },
+  "common_above_fuzzy": {
+    "brep": "cfd9c002f3dec358",
+    "cameras": "ca71949430faffe7",
+    "history": "41c88ecc5a09df76",
+    "measures": "ec2995456089502a",
+    "mesh": "db07553adff88b2d",
+    "summary": "e6218a9c16575d4e",
+    "topology": "ae24dc315c987a43"
+  },
   "common_box_sphere": {
-    "brep": "579f170f1520496a",
+    "brep": "54acee7fe64b11b3",
     "cameras": "5447e88b59d7d770",
     "history": "95499cb170781b95",
-    "measures": "0a901ccf8b50e6f4",
-    "mesh": "748e67ef56ecb10c",
-    "summary": "adab56330c360189",
+    "measures": "e73de44b13869b37",
+    "mesh": "04365d246a70aec0",
+    "summary": "d818f3b514b3dc3f",
     "topology": "da6f8c9b80727eea"
   },
   "common_cylinder_bar": {
@@ -144,13 +153,7 @@
     "topology": "07d183765ab1560a"
   },
   "common_sliver": {
-    "brep": "ed9eb3280964a058",
-    "cameras": "d99b27d6ef187d65",
-    "history": "41c88ecc5a09df76",
-    "measures": "273e502f2d1f873c",
-    "mesh": "e42b3917bd783b0d",
-    "summary": "376df8827dd1fc68",
-    "topology": "ae24dc315c987a43"
+    "refused": "kernel_failed"
   },
   "concentric_rims": {
     "answer": "a15ffe54430ac9bb"
@@ -204,12 +207,12 @@
     "topology": "54f20cbcbcf041a0"
   },
   "cut_sphere_box": {
-    "brep": "d28b1d338e156cf5",
+    "brep": "0484f0c43ec47af2",
     "cameras": "524c915517d9ffb1",
     "history": "a6784f79c0170249",
-    "measures": "ea0ecf5bc6059a1d",
-    "mesh": "f23b7f8c1edb6ce9",
-    "summary": "5b84f88882a3e9fe",
+    "measures": "95b6eaf9a570f770",
+    "mesh": "16a32b6054bc28b1",
+    "summary": "0415b87ae9e70236",
     "topology": "dc8fef04bbc286cd"
   },
   "cylinder_5_10": {
@@ -221,7 +224,7 @@
   },
   "cylinder_hair": {
     "brep": "69e04794875ff8f4",
-    "cameras": "f11c1fe3d2c2d36f",
+    "cameras": "a9bc6fbc970c715f",
     "measures": "bfee767631242519",
     "mesh": "a6baaabbd1b36e15",
     "summary": "c85b53d6fd81e17b"
@@ -552,12 +555,12 @@
     "topology": "9fce4ba3083acf26"
   },
   "generated_20261010_30": {
-    "brep": "9c4ea1a8f678889d",
+    "brep": "ba0fd87db251a467",
     "cameras": "7def22a0b2fc79f2",
     "history": "07034c8254abbbfd",
-    "measures": "9632a71bc785b766",
-    "mesh": "b76e2963d3f31500",
-    "summary": "27ade1f88201ed6c",
+    "measures": "ff5d3de11d2ee0ab",
+    "mesh": "d9ee4efdb101de7d",
+    "summary": "5602f1f0affc1963",
     "topology": "37ab6928e413d3eb"
   },
   "generated_20261010_31": {
@@ -658,12 +661,12 @@
     "topology": "24e6ef92cb7923ed"
   },
   "generated_20261010_6": {
-    "brep": "69b2ca8bc2e2cb17",
+    "brep": "3d3889fc51868e19",
     "cameras": "b93cdd7a004d5789",
     "history": "2f40c1168a2cadbd",
-    "measures": "47d2074c87ee834b",
-    "mesh": "0abbf2d93727c41a",
-    "summary": "7874cbfcfae52d17",
+    "measures": "204efabb21554943",
+    "mesh": "26b027c9c54d27da",
+    "summary": "7dbdc55ce1a6b366",
     "topology": "f4a7fd95638fa710"
   },
   "generated_20261010_7": {
@@ -676,12 +679,12 @@
     "topology": "24e6ef92cb7923ed"
   },
   "generated_20261010_8": {
-    "brep": "d7004c97942575a4",
+    "brep": "e522ddcdc6a52626",
     "cameras": "0735f6752f0e315f",
     "history": "e70423ecb0b94407",
-    "measures": "e470aae179bf9528",
-    "mesh": "b407c2a3c65aa2fa",
-    "summary": "e1a8c6eb31f34b17",
+    "measures": "2856b4e4d01a865f",
+    "mesh": "9b423ec2e2efdf3e",
+    "summary": "0d288a02a110d330",
     "topology": "edb5169b37f67b4e"
   },
   "generated_20261010_9": {
@@ -910,7 +913,7 @@
     "topology": "4a10f6ed339f6714"
   },
   "groove_both_sides_180": {
-    "brep": "e8241fa5218eb8b2",
+    "brep": "30a5cab3723efbeb",
     "cameras": "41c8a37612f9a8c9",
     "history": "790a732e49045533",
     "measures": "391faa24afa7f8c9",
@@ -928,13 +931,13 @@
     "topology": "ee88d0c9fb4cf028"
   },
   "groove_both_sides_181": {
-    "brep": "6b1cb87a8a552b3c",
+    "brep": "2e4abac45982c30d",
     "cameras": "41c8a37612f9a8c9",
-    "history": "e66429ece43e6cbc",
-    "measures": "43f6baff991ac955",
-    "mesh": "e35e1c37ec7afae8",
-    "summary": "9d55b07f9f3b91bf",
-    "topology": "ec3da4307f28e144"
+    "history": "f91d0fc830059222",
+    "measures": "dd5b3b0505d04e81",
+    "mesh": "88c7f4bcc4f3f284",
+    "summary": "7a26ecedbfa7d3cd",
+    "topology": "a880a7faf7ee0be3"
   },
   "groove_both_sides_181_cylinder": {
     "brep": "d3102ee2a60ba3ff",
@@ -946,12 +949,12 @@
     "topology": "ee88d0c9fb4cf028"
   },
   "groove_both_sides_360": {
-    "brep": "3e749c8ab25270fc",
+    "brep": "8726ab25bd08afb9",
     "cameras": "41c8a37612f9a8c9",
     "history": "fc4500238ee24f63",
-    "measures": "28d942781b592774",
-    "mesh": "5c2da18ee7bfbeec",
-    "summary": "6fc6a22d0f1edc87",
+    "measures": "57c60d5ca3b9f93b",
+    "mesh": "4c2961b15c004660",
+    "summary": "6711939eb1eec2da",
     "topology": "76731bae17d04a4b"
   },
   "groove_both_sides_360_cylinder": {
@@ -964,7 +967,7 @@
     "topology": "ee88d0c9fb4cf028"
   },
   "groove_both_sides_mirrored_360": {
-    "brep": "7cb2d02cb9f28b1e",
+    "brep": "51fb03ecf37a4609",
     "cameras": "41c8a37612f9a8c9",
     "history": "1e149540a264c908",
     "measures": "bf7b12d14154fcc9",
@@ -982,7 +985,7 @@
     "topology": "ee88d0c9fb4cf028"
   },
   "groove_both_sides_near_270": {
-    "brep": "cbe5e1d8d44a90ba",
+    "brep": "c845b940c5a36ad2",
     "cameras": "41c8a37612f9a8c9",
     "history": "cfe1449e589fcf8c",
     "measures": "97c7d1e52a5c2b66",
@@ -1222,7 +1225,7 @@
     "topology": "96eff63e119f70a3"
   },
   "pocket_one_side_reversed_xy": {
-    "brep": "81c9d3f7e9bed38b",
+    "brep": "374c81541ae2ebbd",
     "cameras": "b219ad2abf1ab0c5",
     "history": "026d719541fb45ce",
     "measures": "6f16605ff5ba767f",
@@ -1231,7 +1234,7 @@
     "topology": "4f456ebe9bf9c965"
   },
   "pocket_one_side_reversed_xz": {
-    "brep": "ebfdaae2b7087880",
+    "brep": "648cd912b5632e82",
     "cameras": "1e7d3eed4455ae81",
     "history": "026d719541fb45ce",
     "measures": "3139f8d1f410a593",
@@ -1240,7 +1243,7 @@
     "topology": "4f456ebe9bf9c965"
   },
   "pocket_one_side_reversed_yz": {
-    "brep": "ac5a5bb13dde5895",
+    "brep": "c7c2602fc37dbcb0",
     "cameras": "29d982cb2124a6ad",
     "history": "e6992bcaa36174d0",
     "measures": "2ae37ead574a249a",
@@ -1249,7 +1252,7 @@
     "topology": "59ffd5d198e84217"
   },
   "pocket_one_side_xy": {
-    "brep": "9623caaac38b7c66",
+    "brep": "5709e359a9bb2af8",
     "cameras": "b219ad2abf1ab0c5",
     "history": "dca9d8c0c2d86eba",
     "measures": "e60830f757609595",
@@ -1258,7 +1261,7 @@
     "topology": "19dc2f9b892c4831"
   },
   "pocket_one_side_xz": {
-    "brep": "085b2362f095a370",
+    "brep": "42b0b3436307d2ee",
     "cameras": "1e7d3eed4455ae81",
     "history": "dca9d8c0c2d86eba",
     "measures": "6937b97da4ecbe78",
@@ -1267,7 +1270,7 @@
     "topology": "19dc2f9b892c4831"
   },
   "pocket_one_side_yz": {
-    "brep": "7a86689397d9a947",
+    "brep": "0a5248f3f9e7e6c6",
     "cameras": "29d982cb2124a6ad",
     "history": "2eef7b985394ccec",
     "measures": "1204b774bca21609",
@@ -1276,7 +1279,7 @@
     "topology": "2cba224b9b5aa6e3"
   },
   "pocket_symmetric_xy": {
-    "brep": "a36de6da02e3b792",
+    "brep": "ea488487dceafffc",
     "cameras": "b219ad2abf1ab0c5",
     "history": "dca9d8c0c2d86eba",
     "measures": "7b900de698f338ff",
@@ -1285,7 +1288,7 @@
     "topology": "19dc2f9b892c4831"
   },
   "pocket_symmetric_xz": {
-    "brep": "f2af2d87f63f89ca",
+    "brep": "32b7321d1c9f7324",
     "cameras": "1e7d3eed4455ae81",
     "history": "dca9d8c0c2d86eba",
     "measures": "883f2ea363533b35",
@@ -1294,7 +1297,7 @@
     "topology": "19dc2f9b892c4831"
   },
   "pocket_symmetric_yz": {
-    "brep": "acdbf1e74ea2d639",
+    "brep": "46ef4ca3a42c991c",
     "cameras": "29d982cb2124a6ad",
     "history": "2eef7b985394ccec",
     "measures": "e12f33cc08393a34",
@@ -1303,7 +1306,7 @@
     "topology": "2cba224b9b5aa6e3"
   },
   "pocket_through_all": {
-    "brep": "a58de8060c2c7dc4",
+    "brep": "ae518f8200f6a313",
     "cameras": "fd23ea1c65c76377",
     "history": "c5b253a539aac177",
     "measures": "712f837b149d9632",
@@ -1312,7 +1315,7 @@
     "topology": "eee280f71377b9e5"
   },
   "pocket_through_all_reversed_xy": {
-    "brep": "2bc9f475e05ead9f",
+    "brep": "e516d73f4f1c0b20",
     "cameras": "b219ad2abf1ab0c5",
     "history": "8ec2540204ade7f7",
     "measures": "6200084f59442971",
@@ -1321,7 +1324,7 @@
     "topology": "4b1be31d0139ddd9"
   },
   "pocket_through_all_reversed_xz": {
-    "brep": "bb7dc4875c089ff3",
+    "brep": "3ced6b293f5f255a",
     "cameras": "1e7d3eed4455ae81",
     "history": "0c37cd8b72ab74ec",
     "measures": "4ca8e6b319c8dc55",
@@ -1330,7 +1333,7 @@
     "topology": "b3832520eeb6673f"
   },
   "pocket_through_all_reversed_yz": {
-    "brep": "76f6dc43022abc58",
+    "brep": "2d75b6ac7a6c92c0",
     "cameras": "29d982cb2124a6ad",
     "history": "acdcafd43e747277",
     "measures": "8fab97e4cb3ce75f",
@@ -1339,7 +1342,7 @@
     "topology": "24fbc6974501c911"
   },
   "pocket_through_all_xy": {
-    "brep": "6043f2b257edac43",
+    "brep": "b24f7fe4c22863b0",
     "cameras": "b219ad2abf1ab0c5",
     "history": "fda8bfe0cbba2a5b",
     "measures": "39904446b0a229bd",
@@ -1348,7 +1351,7 @@
     "topology": "8081875604fea675"
   },
   "pocket_through_all_xz": {
-    "brep": "7969eb888dc22f77",
+    "brep": "fcae822299456c7f",
     "cameras": "1e7d3eed4455ae81",
     "history": "511af52cd8ce8205",
     "measures": "db02b0a6c1bfda16",
@@ -1357,7 +1360,7 @@
     "topology": "8bc30a5a68b26523"
   },
   "pocket_through_all_yz": {
-    "brep": "77294160d3079813",
+    "brep": "a040278b8c57185b",
     "cameras": "29d982cb2124a6ad",
     "history": "9da62e89e842c3af",
     "measures": "b2e5704209b10463",
@@ -1366,7 +1369,7 @@
     "topology": "f8900590359c72c3"
   },
   "pocket_two_sides_xy": {
-    "brep": "8df64e34e88d930c",
+    "brep": "d942250b36722f16",
     "cameras": "b219ad2abf1ab0c5",
     "history": "dca9d8c0c2d86eba",
     "measures": "11f2f3b01b914ba4",
@@ -1375,7 +1378,7 @@
     "topology": "19dc2f9b892c4831"
   },
   "pocket_two_sides_xz": {
-    "brep": "9ee52cd89cf0d2db",
+    "brep": "bb65e0d9b7bb5c85",
     "cameras": "1e7d3eed4455ae81",
     "history": "dca9d8c0c2d86eba",
     "measures": "6c938c56a8b1a6fd",
@@ -1384,7 +1387,7 @@
     "topology": "19dc2f9b892c4831"
   },
   "pocket_two_sides_yz": {
-    "brep": "0292ba1043640f3f",
+    "brep": "eff0b3fa02ade0da",
     "cameras": "29d982cb2124a6ad",
     "history": "2eef7b985394ccec",
     "measures": "d57dac924fc12b4f",
@@ -1510,7 +1513,7 @@
     "answer": "c733fbaa295765d2"
   },
   "through_rim": {
-    "brep": "05970ec0451a46d0",
+    "brep": "324bb03c25e9cb47",
     "cameras": "8f088cc8440a4e19",
     "history": "7fb6531c00ac5458",
     "measures": "6714d85e3567ad1a",

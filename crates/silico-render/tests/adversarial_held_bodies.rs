@@ -129,24 +129,31 @@ fn a_kilometre_rod_seen_close_at_its_end_draws_its_end_where_it_is() {
 
 #[test]
 fn a_kilometre_rod_at_the_least_orthographic_zoom_draws_its_end_where_it_is() {
-    // Was a break: as in perspective, the end moved 4.1 pixels: orthographic, the least view
-    // height the check allows for a reach of 1e6 (10 mm, 1e-5 of it), over 4096 rows: a
-    // pixel is 10/4096 = 2.44e-3 mm, so the end, 0.01 mm left of the target, is at column
-    // 32 − 4.1 = 27.9 of 64 by hand, and is drawn at 32 (the centre's offset from the
-    // target, 499999.99, is 500000 in f32), Edge4 at columns 31 and 32.
-    let rod = box_mesh([0.0; 3], [1e6, 1.0, 1.0]);
-    let scene = RenderScene {
+    // Was a break: as in perspective, the end moved 4.1 pixels: orthographic, M4.6's least
+    // view height for a reach of 1e6 (10 mm, 1e-5 of it), over 4096 rows: a pixel was
+    // 10/4096 = 2.44e-3 mm, the end, 0.01 mm left of the target, drawn at the centre (the
+    // centre's offset from the target, 499999.99, is 500000 in f32). That view is refused
+    // now: at 4096 rows the least for the reach is 4096 × 999992.18 / 2^19 = 7812.44 mm (by
+    // hand, the far corner (1e6, 1, −50) from (7.8217, 0, 0.5)). At 7814 mm (a pixel
+    // 1.9077 mm, the rod 100 mm high so the row crosses it), the end, 7.8217 mm left of the
+    // target, is at column 32 − 4.1 = 27.9 of 64 by hand.
+    let at_height = |view_height: f64, x: f64, rod: Mesh| RenderScene {
         bodies: vec![body(1, rod)],
         camera: Camera {
-            projection: Projection::Orthographic { view_height: 10.0 },
-            eye: [0.01, -50.0, 0.5],
-            target: [0.01, 0.0, 0.5],
+            projection: Projection::Orthographic { view_height },
+            eye: [x, -50.0, 0.5],
+            target: [x, 0.0, 0.5],
             up: [0.0, 0.0, 1.0],
         },
         width: 64,
         height: 4096,
         ids: true,
     };
+    let thin = box_mesh([0.0; 3], [1e6, 1.0, 1.0]);
+    let refused = at_height(10.0, 0.01, thin);
+    assert_eq!(refused.check().unwrap_err().parameter, "camera.view_height");
+    let rod = box_mesh([0.0, 0.0, -50.0], [1e6, 1.0, 100.0]);
+    let scene = at_height(7814.0, 4.1 * 7814.0 / 4096.0, rod);
     let (_, ids) = draw(&mut worker(), &scene);
     let row: Vec<PixelId> = (0..64).map(|c| at(&ids, 64, c, 2048)).collect();
     assert_eq!(at(&ids, 64, 25, 2048), BACKGROUND, "{row:?}");

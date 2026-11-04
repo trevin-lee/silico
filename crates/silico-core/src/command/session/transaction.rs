@@ -296,7 +296,7 @@ impl SaveTo<'_> {
                 format!("{} is this session's own file", shown_path(given)),
             )
             .with_parameter("path")
-            .with_suggestion("give path null to save to it, or another path"));
+            .with_suggestion(file::OWN_FILE_ADVICE));
         }
         if let Some(holder) = (self.holder)(&target) {
             return Err(held_elsewhere(&self.given, holder));

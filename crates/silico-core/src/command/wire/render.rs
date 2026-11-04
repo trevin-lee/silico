@@ -254,11 +254,11 @@ pub struct CameraSchema {
     /// Which way is up in the image: any vector with a part across the view, made
     /// perpendicular to the view and of unit length in a result.
     pub up: [f64; 3],
-    /// An orthographic camera's view's height, in mm, from 1e-6 to 1e12; null for a
-    /// perspective camera.
+    /// An orthographic camera's view's height, in mm, up to 1e12, its least by the image's
+    /// size: see the error; null for a perspective camera.
     pub view_height: Option<Length>,
-    /// A perspective camera's vertical angle, in degrees, from 0.001 to 179.999; null for
-    /// an orthographic camera.
+    /// A perspective camera's vertical angle, in degrees, its range by the image's size: see
+    /// the error; null for an orthographic camera.
     pub field_of_view: Option<Angle>,
 }
 
