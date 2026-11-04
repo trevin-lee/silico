@@ -381,6 +381,10 @@ pub struct View {
     /// while it's hovered.
     ///
     /// [`Name::feature`]: silico_core::naming::Name::feature
+    ///
+    /// SEAM: the prototype tints them with the maker's colour,
+    /// [`theme::VIEWPORT_FEATURE_HOVER_TINT`] (`#d4dbff` at 0.4), not the selection's; that
+    /// comes once the renderer has a second highlight style.
     pub linked: Option<FeatureId>,
     picking: Option<PixelRect>,
     picked: Option<Picking>,

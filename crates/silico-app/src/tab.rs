@@ -582,13 +582,32 @@ impl Tab {
                 .is_some_and(|transaction| transaction.redo > 0)
     }
 
-    /// Whether it holds unsaved edits: the document changed, an edit under way, or a
-    /// transaction open with anything of the tab's still to answer (an undo or a redo
-    /// queued or running among them). Only a tab with
+    /// Whether it holds unsaved edits: the document changed, an edit, a move, or an add under
+    /// way, or a transaction open with anything of the tab's still to answer (an undo or a
+    /// redo queued or running among them). Only a tab with
     /// none of these is closed without asking (rolled back first if a transaction is open).
     pub fn unsaved(&self) -> bool {
-        // A `begin` under way goes with the edit it was sent for (`edits.idle` is false).
-        self.changed() || !self.edits.idle() || (self.transaction && !self.quiet())
+        // A `begin` under way goes with the edit it was sent for (`edits.idle` is false), or
+        // with the move or the add it was sent for (`changing`).
+        self.changed()
+            || !self.edits.idle()
+            || self.changing()
+            || (self.transaction && !self.quiet())
+    }
+
+    /// Whether a move or a dialog's add is queued or running: each changes the document,
+    /// and may be under way before the transaction its `begin` opens is.
+    fn changing(&self) -> bool {
+        self.edits
+            .queue
+            .iter()
+            .any(|queued| matches!(queued, Queued::Move { .. } | Queued::Add { .. }))
+            || self.under.iter().any(|under| {
+                matches!(
+                    under,
+                    Under::Move { .. } | Under::Add { .. } | Under::Base { .. }
+                )
+            })
     }
 
     /// Save As (`commit` with a path, docs/design/m5.0-app.md §4): once everything asked

@@ -21,7 +21,7 @@ use eframe::egui::{
     self, Align, Color32, CornerRadius, Layout, Rect, Sense, Shape, Stroke, Ui, UiBuilder, Vec2,
     WidgetInfo, WidgetType, pos2, vec2,
 };
-use silico_core::command::{Rebuild, RebuildState, Sessions};
+use silico_core::command::{Rebuild, RebuildState, Revision, Sessions};
 use silico_core::document::FeatureId;
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
@@ -65,18 +65,49 @@ impl Step {
     }
 }
 
-/// What each of `entries` shows of `rebuild`, the session's, as `status` gives it.
+/// A feature's type in words, as the prototype says it (`FEATURE_KIND` in `js/app.js`) for
+/// the types it lists, and as the toolbar's commands name the rest (the primitives, and
+/// Union, Subtract, and Intersect for the booleans); the type as written for one neither
+/// names.
+pub fn kind_words(kind: &str) -> &str {
+    match kind {
+        "sketch" => "Sketch",
+        "pad" => "Pad",
+        "pocket" => "Pocket",
+        "fillet" => "Fillet",
+        "chamfer" => "Chamfer",
+        "revolve" => "Revolve",
+        "groove" => "Groove",
+        "box" => "Box",
+        "cylinder" => "Cylinder",
+        "sphere" => "Sphere",
+        "cone" => "Cone",
+        "torus" => "Torus",
+        "fuse" => "Union",
+        "cut" => "Subtract",
+        "common" => "Intersect",
+        other => other,
+    }
+}
+
+/// What each of `entries`, the document's features at revision `listed` (the timeline's
+/// `revision`), shows of `rebuild`, the session's, as `status` gives it. Nothing is shown
+/// built unless it certainly is.
 ///
 /// While it runs, `status` names one feature, the first of the step started last of those
-/// running (`Progress::running`, `4kq2m7vd pad`), and counts the rest: that feature runs,
-/// and every input it names, however far back, is built (a step starts only once its inputs
-/// settle). Every other feature is queued, until the rebuild ends: one on another branch may
-/// have built already, but `status` doesn't say which. SEAM: with the features each settled
-/// step was planned for (or each step's state) in `Progress`, every built item would show
-/// so, and every running one spin, the parallel branches too.
+/// running (`Progress::running`, `4kq2m7vd pad`), and counts the rest: that feature runs.
+/// If the rebuild is of the revision `entries` list, every input the running feature names
+/// there, however far back, is built (a step starts only once its inputs settle). If it's
+/// another revision's (a move or an edit answered, its timeline not read yet), the inputs
+/// listed may not be the ones rebuilt, so none is shown built. Every other feature is
+/// queued until the rebuild ends: one on another branch may have built already, but
+/// `status` doesn't say which. SEAM: with the features each settled step was planned for
+/// (or each step's state) in `Progress`, every built item would show so, and every running
+/// one spin, the parallel branches too.
 ///
-/// A suppressed feature is never rebuilt: it stays suppressed throughout.
-pub fn step_of_each(entries: &[Entry], rebuild: Option<&Rebuild>) -> Vec<Step> {
+/// A suppressed feature is never rebuilt: it stays suppressed throughout, if `entries` are
+/// the revision rebuilt.
+pub fn step_of_each(entries: &[Entry], listed: Revision, rebuild: Option<&Rebuild>) -> Vec<Step> {
     let settled = || {
         entries
             .iter()
@@ -97,8 +128,9 @@ pub fn step_of_each(entries: &[Entry], rebuild: Option<&Rebuild>) -> Vec<Step> {
         .and_then(|progress| progress.running.as_deref())
         .and_then(|label| label.split_whitespace().next())
         .and_then(|id| place.get(id).copied());
+    let same = rebuild.revision == listed;
     let mut built = vec![false; entries.len()];
-    if let Some(at) = running {
+    if let Some(at) = running.filter(|_| same) {
         let mut inputs: Vec<&FeatureId> = entries[at].inputs.iter().collect();
         while let Some(input) = inputs.pop() {
             if let Some(&input_at) = place.get(input.as_str())
@@ -113,7 +145,7 @@ pub fn step_of_each(entries: &[Entry], rebuild: Option<&Rebuild>) -> Vec<Step> {
         .iter()
         .enumerate()
         .map(|(at, entry)| {
-            if entry.suppressed || entry.health == Health::Suppressed {
+            if same && (entry.suppressed || entry.health == Health::Suppressed) {
                 Step::Settled(Health::Suppressed)
             } else if running == Some(at) {
                 Step::Running
@@ -321,7 +353,7 @@ fn features<P: Clients + 'static>(
             .fold(0u64, u64::saturating_add);
     let (track, summary_rect, said) = summary_at(ui, rect, summary(errors, entries.len()));
     let rebuild = tab.status.as_ref().map(|status| &status.rebuild);
-    let steps = step_of_each(entries, rebuild);
+    let steps = step_of_each(entries, timeline.revision, rebuild);
     let mut asked = Asked::default();
     if entries.is_empty() {
         words(
@@ -367,6 +399,37 @@ fn features<P: Clients + 'static>(
     }
 }
 
+/// Where the summary's parts go, from the right (`.tl-right`, `gap: 2px`): the count's
+/// left, `features` wide, flush with `right`; the errors' (`button.st-item`, `padding: 0
+/// 8px; gap: 6px`), `errors` wide, if there are any, their text's left and their icon's;
+/// and the summary's left edge, its button's padding included.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SummaryPlaces {
+    pub features: f32,
+    pub errors: Option<(f32, f32)>,
+    pub left: f32,
+}
+
+/// The summary's places, `right` its right edge, its count `features` wide and its errors
+/// `errors` wide, if there are any.
+pub fn summary_places(right: f32, errors: Option<f32>, features: f32) -> SummaryPlaces {
+    let count = right - features;
+    let Some(errors) = errors else {
+        return SummaryPlaces {
+            features: count,
+            errors: None,
+            left: count,
+        };
+    };
+    let text = count - theme::TIMELINE_SUMMARY_SPACING - theme::TIMELINE_SUMMARY_PADDING - errors;
+    let icon = text - theme::TIMELINE_SUMMARY_GAP - crate::icons::ICON_SIZE;
+    SummaryPlaces {
+        features: count,
+        errors: Some((text, icon)),
+        left: icon - theme::TIMELINE_SUMMARY_PADDING,
+    }
+}
+
 /// The summary drawn at `rect`'s right (`.tl-right`): its errors in the error's red with the
 /// error's icon, then its features: the rect left for the track, the summary's, and what
 /// it says, for its label in the accessibility tree ([`summary_label`]), added after the
@@ -378,28 +441,27 @@ fn summary_at(
 ) -> (Rect, Rect, String) {
     let font = egui::FontId::proportional(theme::HEADER_SIZE);
     let painter = ui.painter().clone();
-    let pad = theme::TIMELINE_SUMMARY_PADDING;
     let centre = rect.center().y;
-    let galley = painter.layout_no_wrap(features.clone(), font.clone(), theme::TIMELINE_SUMMARY);
-    let mut right = rect.right() - pad - galley.size().x;
-    let mut spans = vec![(right, galley, theme::TIMELINE_SUMMARY)];
-    right -= pad;
-    if let Some(errors) = &errors {
-        let galley = painter.layout_no_wrap(errors.clone(), font, theme::TIMELINE_SUMMARY_ERRORS);
-        right -= pad + galley.size().x;
-        let icon_at = right - theme::TIMELINE_SUMMARY_GAP - crate::icons::ICON_SIZE;
+    let count = painter.layout_no_wrap(features.clone(), font.clone(), theme::TIMELINE_SUMMARY);
+    let wrong = errors
+        .as_ref()
+        .map(|errors| painter.layout_no_wrap(errors.clone(), font, theme::TIMELINE_SUMMARY_ERRORS));
+    let places = summary_places(
+        rect.right(),
+        wrong.as_ref().map(|galley| galley.size().x),
+        count.size().x,
+    );
+    let mut spans = vec![(places.features, count, theme::TIMELINE_SUMMARY)];
+    if let (Some(galley), Some((text, icon))) = (wrong, places.errors) {
+        let side = crate::icons::ICON_SIZE;
         Icon::Error
             .image(IconSize::Small)
             .tint(theme::TIMELINE_SUMMARY_ERRORS)
             .paint_at(
                 ui,
-                Rect::from_center_size(
-                    pos2(icon_at + crate::icons::ICON_SIZE / 2.0, centre),
-                    Vec2::splat(crate::icons::ICON_SIZE),
-                ),
+                Rect::from_min_size(pos2(icon, centre - side / 2.0), Vec2::splat(side)),
             );
-        spans.push((right, galley, theme::TIMELINE_SUMMARY_ERRORS));
-        right = icon_at - pad;
+        spans.push((text, galley, theme::TIMELINE_SUMMARY_ERRORS));
     }
     let mut whole = Rect::NOTHING;
     for (x, galley, colour) in spans {
@@ -412,7 +474,7 @@ fn summary_at(
         None => features,
     };
     let track = Rect::from_x_y_ranges(
-        rect.left()..=(right - theme::TIMELINE_GAP).max(rect.left()),
+        rect.left()..=(places.left - theme::TIMELINE_GAP).max(rect.left()),
         rect.y_range(),
     );
     (track, whole, said)
@@ -436,7 +498,7 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
         let id = egui::Id::new(("timeline-item", entry.id.as_str()));
         let response = ui.interact(rect, id, Sense::click_and_drag());
         let selected = tab.selected.as_ref() == Some(&entry.id);
-        let description = format!("{} · {}", entry.kind, step.words());
+        let description = format!("{} · {}", kind_words(entry.kind), step.words());
         response.widget_info(|| {
             WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, &entry.name)
         });
@@ -448,12 +510,8 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
             asked.hovered = Some(entry.id.clone());
         }
         let sketch = entry.kind == "sketch";
-        paint(
-            ui,
-            rect,
-            Icon::of_kind(entry.kind),
-            &look(*step, sketch, hovered, selected),
-        );
+        let look = look(*step, sketch, hovered, selected);
+        paint(ui, rect, Icon::of_kind(entry.kind), &look);
         theme::focus_ring(
             ui,
             &response,
@@ -461,7 +519,7 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
             theme::TIMELINE_ITEM_CORNER_RADIUS,
             egui::StrokeKind::Inside,
         );
-        if let Step::Settled(health) = step {
+        if let Some(health) = look.badge {
             let said = tab.said.get(entry.id.as_str());
             let corner = pos2(
                 rect.right() - theme::TIMELINE_BADGE_INSET - theme::TIMELINE_BADGE_SIZE,
@@ -471,7 +529,7 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
                 ui,
                 id.with("mark"),
                 Rect::from_min_size(corner, Vec2::splat(theme::TIMELINE_BADGE_SIZE)),
-                *health,
+                health,
                 said.map(|said| said.message.as_str()),
                 MarkLook::Badge,
             );
@@ -514,6 +572,10 @@ fn items(ui: &mut Ui, tab: &Tab, entries: &[Entry], steps: &[Step], asked: &mut 
         && let Some(to) = drop_at(&centres, from, x)
     {
         if dropped.is_some() {
+            // SEAM: nothing is reordered here. The dropped item shows where it was until
+            // `move_feature` answers and the timeline is read again of the revision it made
+            // (the document's order, read beside the rebuild it starts, not after it); a
+            // move queued behind other commands waits for them first.
             let before = entries.get(to).map(|entry| entry.id.clone());
             asked.moved = Some((entries[from].id.clone(), before));
         } else {
@@ -609,7 +671,7 @@ fn spinner(ui: &Ui, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use silico_core::command::{Progress, Revision};
+    use silico_core::command::Progress;
 
     fn entry(id: &str, kind: &'static str, inputs: &[&str], health: Health) -> Entry {
         Entry {
@@ -636,28 +698,36 @@ mod tests {
         }
     }
 
-    /// A plate, a sketch on its own, a pad of the sketch on the plate, a pin off to the
-    /// side, a cut of the pad by the pin, and a suppressed fillet of the cut.
+    const LISTED: Revision = Revision::OPENED;
+
+    /// A plate, a sketch on its own, a pin off to the side, a pad of the sketch on the
+    /// plate, a cut of the pad by the pin, and a suppressed fillet of the cut. The pin is
+    /// before the pad but off its lineage: a pad running doesn't make it built.
     fn part() -> Vec<Entry> {
         vec![
             entry("b0000001", "box", &[], Health::Healthy),
             entry("s0000001", "sketch", &[], Health::Healthy),
+            entry("c0000001", "cylinder", &[], Health::Warning),
             entry(
                 "p0000001",
                 "pad",
                 &["b0000001", "s0000001"],
                 Health::Healthy,
             ),
-            entry("c0000001", "cylinder", &[], Health::Warning),
             entry("m0000001", "cut", &["p0000001", "c0000001"], Health::Error),
             entry("f0000001", "fillet", &["m0000001"], Health::Suppressed),
         ]
     }
 
+    /// `part`'s steps with `rebuild` of the revision it lists.
+    fn steps(rebuild: Option<&Rebuild>) -> Vec<Step> {
+        step_of_each(&part(), LISTED, rebuild)
+    }
+
     #[test]
     fn with_no_rebuild_running_each_item_is_its_health() {
         use Health::*;
-        let want = [Healthy, Healthy, Healthy, Warning, Error, Suppressed].map(Step::Settled);
+        let want = [Healthy, Healthy, Warning, Healthy, Error, Suppressed].map(Step::Settled);
         for state in [
             RebuildState::Idle,
             RebuildState::Done,
@@ -665,40 +735,35 @@ mod tests {
             RebuildState::Faulted,
         ] {
             assert_eq!(
-                step_of_each(&part(), Some(&rebuild(state, Some("p0000001 pad")))),
+                steps(Some(&rebuild(state, Some("p0000001 pad")))),
                 want,
                 "{state:?}"
             );
         }
-        assert_eq!(step_of_each(&part(), None), want);
+        assert_eq!(steps(None), want);
     }
 
     #[test]
     fn the_running_step_spins_its_inputs_are_built_and_the_rest_are_queued() {
         use Step::*;
         let suppressed = Settled(Health::Suppressed);
-        // The pad running: the plate and the sketch are its inputs, so built; the pin, off
-        // its lineage, and the cut after it are queued; the fillet stays suppressed.
+        // The pad running: the plate and the sketch are its inputs, so built; the pin, before
+        // it but off its lineage, and the cut after it are queued; the fillet stays
+        // suppressed.
         assert_eq!(
-            step_of_each(
-                &part(),
-                Some(&rebuild(RebuildState::Running, Some("p0000001 pad")))
-            ),
-            [Built, Built, Running, Queued, Queued, suppressed]
+            steps(Some(&rebuild(RebuildState::Running, Some("p0000001 pad")))),
+            [Built, Built, Queued, Running, Queued, suppressed]
         );
-        // The cut running: every input back to the plate built.
+        // The cut running: every input back to the plate built, the pin too.
         assert_eq!(
-            step_of_each(
-                &part(),
-                Some(&rebuild(RebuildState::Running, Some("m0000001 cut")))
-            ),
+            steps(Some(&rebuild(RebuildState::Running, Some("m0000001 cut")))),
             [Built, Built, Built, Built, Running, suppressed]
         );
         // Nothing running yet (its sketches solving, before its plan), or a feature the
         // timeline doesn't list (a newer revision's): every unsuppressed one queued.
         for running in [None, Some("z0000009 box"), Some("")] {
             assert_eq!(
-                step_of_each(&part(), Some(&rebuild(RebuildState::Running, running))),
+                steps(Some(&rebuild(RebuildState::Running, running))),
                 [Queued, Queued, Queued, Queued, Queued, suppressed],
                 "{running:?}"
             );
@@ -708,8 +773,50 @@ mod tests {
             ..rebuild(RebuildState::Running, None)
         };
         assert_eq!(
-            step_of_each(&part(), Some(&no_progress)),
+            steps(Some(&no_progress)),
             [Queued, Queued, Queued, Queued, Queued, suppressed]
+        );
+    }
+
+    #[test]
+    fn a_rebuild_of_another_revision_shows_nothing_built() {
+        use Step::*;
+        // The timeline lists revision 1; the rebuild runs revision 2 (a move answered, its
+        // timeline not read yet), whose inputs may not be these: the cut runs, every other
+        // feature queued, the fillet too (revision 2 may have unsuppressed it).
+        let newer = Rebuild {
+            revision: LISTED.next().unwrap(),
+            ..rebuild(RebuildState::Running, Some("m0000001 cut"))
+        };
+        assert_eq!(
+            steps(Some(&newer)),
+            [Queued, Queued, Queued, Queued, Running, Queued]
+        );
+        // And the other way: a rebuild of an older revision than the one listed.
+        let older = Rebuild {
+            revision: LISTED,
+            ..rebuild(RebuildState::Running, Some("m0000001 cut"))
+        };
+        assert_eq!(
+            step_of_each(&part(), LISTED.next().unwrap(), Some(&older)),
+            [Queued, Queued, Queued, Queued, Running, Queued]
+        );
+        // Ended, each item is its health whichever revision it was.
+        let done = Rebuild {
+            state: RebuildState::Done,
+            ..newer
+        };
+        assert_eq!(
+            steps(Some(&done)),
+            [
+                Health::Healthy,
+                Health::Healthy,
+                Health::Warning,
+                Health::Healthy,
+                Health::Error,
+                Health::Suppressed
+            ]
+            .map(Settled)
         );
     }
 
@@ -728,6 +835,7 @@ mod tests {
         assert_eq!(
             step_of_each(
                 &entries,
+                LISTED,
                 Some(&rebuild(RebuildState::Running, Some("a0000001 box")))
             ),
             [Step::Running, Step::Built]
@@ -818,5 +926,50 @@ mod tests {
         // The last dragged past the end: where it is.
         assert_eq!(drop_at(&centres, 3, 500.0), None);
         assert_eq!(drop_at(&centres, 3, 0.0), Some(0));
+    }
+    #[test]
+    fn the_summarys_errors_are_10_from_its_count_and_its_icon_6_from_its_errors() {
+        // `.tl-right { gap: 2px }`, `button.st-item { padding: 0 8px; gap: 6px }`: the count
+        // flush right; the errors' text 8 + 2 left of it; the icon (14) 6 left of that;
+        // the button's left 8 further.
+        let places = summary_places(500.0, Some(40.0), 60.0);
+        assert_eq!(places.features, 440.0);
+        assert_eq!(places.errors, Some((390.0, 370.0)));
+        assert_eq!(places.left, 362.0);
+        let (text, _) = places.errors.unwrap();
+        assert_eq!(places.features - (text + 40.0), 10.0);
+        assert_eq!(
+            summary_places(500.0, None, 60.0),
+            SummaryPlaces {
+                features: 440.0,
+                errors: None,
+                left: 440.0
+            }
+        );
+    }
+
+    #[test]
+    fn a_features_type_is_said_as_the_prototype_says_it() {
+        // `FEATURE_KIND` in js/app.js; the toolbar's names for the rest.
+        for (kind, words) in [
+            ("sketch", "Sketch"),
+            ("pad", "Pad"),
+            ("pocket", "Pocket"),
+            ("fillet", "Fillet"),
+            ("chamfer", "Chamfer"),
+            ("revolve", "Revolve"),
+            ("groove", "Groove"),
+            ("box", "Box"),
+            ("cylinder", "Cylinder"),
+            ("sphere", "Sphere"),
+            ("cone", "Cone"),
+            ("torus", "Torus"),
+            ("fuse", "Union"),
+            ("cut", "Subtract"),
+            ("common", "Intersect"),
+            ("helix", "helix"),
+        ] {
+            assert_eq!(kind_words(kind), words, "{kind}");
+        }
     }
 }

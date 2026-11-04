@@ -13862,7 +13862,7 @@ fn plate_raised(h: &mut AppHarness, f: &Fixture) {
 /// rebuild runs the pad's step, and holds it.
 fn ladder_rebuilding(f: &Fixture, h: &mut AppHarness) -> Hold {
     step_until(h, "the pocket's failure", |h| {
-        item_state(h, "Cut").as_deref() == Some("pocket · Error")
+        item_state(h, "Cut").as_deref() == Some("Pocket · Error")
     });
     let hold = f.kernel.hold(|op| {
         matches!(
@@ -13875,7 +13875,7 @@ fn ladder_rebuilding(f: &Fixture, h: &mut AppHarness) -> Hold {
     });
     plate_raised(h, f);
     step_until(h, "the pad's step running", |h| {
-        item_state(h, "Raised").as_deref() == Some("pad · Rebuilding")
+        item_state(h, "Raised").as_deref() == Some("Pad · Rebuilding")
     });
     hold
 }
@@ -13889,12 +13889,12 @@ fn the_timeline_lists_each_feature_in_order_and_shows_the_rebuild_running_along_
     assert_eq!(items(&h), ["Plate", "Triangle", "Raised", "Cut"]);
     // The pad's step runs: the plate and the triangle are its inputs, so built before it
     // started; the pocket, built from the pad, waits. No mark while it runs.
-    assert_eq!(item_state(&h, "Plate").as_deref(), Some("box · Built"));
+    assert_eq!(item_state(&h, "Plate").as_deref(), Some("Box · Built"));
     assert_eq!(
         item_state(&h, "Triangle").as_deref(),
-        Some("sketch · Built")
+        Some("Sketch · Built")
     );
-    assert_eq!(item_state(&h, "Cut").as_deref(), Some("pocket · Queued"));
+    assert_eq!(item_state(&h, "Cut").as_deref(), Some("Pocket · Queued"));
     assert!(timeline(&h).query_by_label("error").is_none());
     // A frame at once, for the spinner, while a step runs.
     step(&mut h);
@@ -13908,8 +13908,8 @@ fn the_timeline_lists_each_feature_in_order_and_shows_the_rebuild_running_along_
     // as their health is (the plate's and the pad's fingerprints aren't stored: warned).
     hold.release();
     step_until(&mut h, "the rebuild's end", |h| {
-        item_state(h, "Raised").is_some_and(|state| state != "pad · Rebuilding")
-            && item_state(h, "Cut").as_deref() == Some("pocket · Error")
+        item_state(h, "Raised").is_some_and(|state| state != "Pad · Rebuilding")
+            && item_state(h, "Cut").as_deref() == Some("Pocket · Error")
             && h.state().tabs()[0].timeline.as_ref().unwrap().revision
                 == h.state().tabs()[0]
                     .status
@@ -14166,7 +14166,7 @@ fn the_timeline_draws_a_selected_item_blue_and_a_failed_one_red_on_lavapipe() {
             h.state_mut().open(path.to_str().unwrap(), false);
             meshes_settled(&mut h);
             step_until(&mut h, "the pocket's failure", |h| {
-                item_state(h, "Cut").as_deref() == Some("pocket · Error")
+                item_state(h, "Cut").as_deref() == Some("Pocket · Error")
             });
             select(&mut h, "Plate");
             // The pointer away from the timeline, so no item is hovered.
@@ -14224,4 +14224,183 @@ fn the_timeline_draws_a_selected_item_blue_and_a_failed_one_red_on_lavapipe() {
             hold.release();
         },
     );
+}
+
+/// LADDER open, every feature settled.
+fn ladder_opened(f: &Fixture) -> AppHarness {
+    let (mut h, _) = f.opened("ladder.silico", LADDER);
+    step_until(&mut h, "its features settled", |h| {
+        items(h) == ["Plate", "Triangle", "Raised", "Cut"]
+            && item_state(h, "Cut").is_some_and(|state| {
+                state.starts_with("Pocket · ") && !state.ends_with("Not built")
+            })
+    });
+    h
+}
+
+#[test]
+fn after_a_move_nothing_is_shown_built_that_the_rebuild_running_may_not_have_built() {
+    // The pocket dragged before the pad: `move_feature` rewires it onto the plate, and the
+    // pad onto it. Its cut held, the pocket's step runs; the pad, after it now, isn't built.
+    let f = fixture();
+    let mut h = ladder_opened(&f);
+    let listed = h.state().tabs()[0].timeline.clone().unwrap();
+    let hold = f.kernel.hold(|op| {
+        matches!(
+            op,
+            Op::Boolean {
+                op: silico_protocol::BooleanOp::Cut,
+                ..
+            }
+        )
+    });
+    let raised = timeline(&h).get_by_label("Raised").rect();
+    drag_item(
+        &mut h,
+        "Cut",
+        raised.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    // The new order shows while the rebuild is held: the timeline is read of the revision
+    // the move made, beside its rebuild.
+    step_until(&mut h, "the pocket's step running in the new order", |h| {
+        items(h) == ["Plate", "Triangle", "Cut", "Raised"]
+            && item_state(h, "Cut").as_deref() == Some("Pocket · Rebuilding")
+    });
+    // Its inputs in the new order, the plate and the triangle, are built; the pad is not.
+    assert_eq!(item_state(&h, "Plate").as_deref(), Some("Box · Built"));
+    assert_eq!(
+        item_state(&h, "Triangle").as_deref(),
+        Some("Sketch · Built")
+    );
+    assert_eq!(item_state(&h, "Raised").as_deref(), Some("Pad · Queued"));
+    // The frames between the move's answer and its timeline's read: the tab still lists the
+    // revision before the move, where the pocket's inputs were the pad and the triangle.
+    // The rebuild is another revision's, so nothing is shown built, the pad least of all.
+    let rebuilding = h.state().tabs()[0]
+        .status
+        .as_ref()
+        .unwrap()
+        .rebuild
+        .revision;
+    assert_ne!(listed.revision, rebuilding);
+    h.state_mut().tabs_mut()[0].timeline = Some(listed);
+    step(&mut h);
+    assert_eq!(items(&h), ["Plate", "Triangle", "Raised", "Cut"]);
+    assert_eq!(
+        item_state(&h, "Cut").as_deref(),
+        Some("Pocket · Rebuilding")
+    );
+    for name in ["Plate", "Triangle", "Raised"] {
+        let state = item_state(&h, name).unwrap();
+        assert!(state.ends_with("Queued"), "{name}: {state}");
+    }
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn hovering_a_timeline_item_highlights_the_faces_named_as_its_features_not_its_bodys() {
+    // One body, the pocket's, made by the chain: hovering the plate highlights the faces
+    // named from the plate's (`b0000001.…`), the pad's those named from the pad's
+    // (`r0000002.…`), each by its name's text, never the body's other faces.
+    let f = fixture();
+    let (mut h, record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    let (number, names): (u32, Vec<String>) = {
+        let bodies = view(&h).bodies();
+        assert_eq!(bodies.len(), 1, "one body");
+        let (number, body) = bodies.iter().next().unwrap();
+        assert_eq!(body.feature.as_str(), "q0000003");
+        (
+            *number,
+            body.faces
+                .iter()
+                .map(|face| face.name.to_string())
+                .collect(),
+        )
+    };
+    let named = |prefix: &str| -> Vec<(u32, silico_app::renderer::Element)> {
+        names
+            .iter()
+            .zip(1u32..)
+            .filter(|(name, _)| name.starts_with(prefix))
+            .map(|(_, n)| (number, silico_app::renderer::Element::Face(n)))
+            .collect()
+    };
+    let plates = named("b0000001.");
+    let pads = named("r0000002.");
+    assert!(!plates.is_empty() && !pads.is_empty(), "{names:?}");
+    assert!(plates.len() + pads.len() < names.len(), "{names:?}");
+    let last = |record: &Record| {
+        record
+            .lock()
+            .unwrap()
+            .frames
+            .last()
+            .unwrap()
+            .highlights
+            .clone()
+    };
+    for (name, want) in [("Plate", &plates), ("Raised", &pads)] {
+        h.hover_at(timeline(&h).get_by_label(name).rect().center());
+        step(&mut h);
+        step(&mut h);
+        assert_eq!(&last(&record), want, "{name}: {names:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_move_is_undone_by_ctrl_z_and_the_file_is_never_touched() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let block = timeline(&h).get_by_label("Block").rect();
+    drag_item(
+        &mut h,
+        "Pin",
+        block.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    step_until(&mut h, "the pin moved", |h| {
+        items(h) == ["Pin", "Block", "Hole"] && anywhere(h, "example.silico *")
+    });
+    step_until(&mut h, "Undo offered", |h| offered(h, "Undo"));
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step_until(&mut h, "the move undone", |h| {
+        items(h) == ["Block", "Pin", "Hole"] && !anywhere(h, "example.silico *")
+    });
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_close_while_a_move_waits_before_its_transaction_opens_asks_first() {
+    // The session's queue held: the move, and the `begin` sent for it, wait behind it, so
+    // no transaction is open yet and the document hasn't changed. The move is still the
+    // person's edit: Close asks, as it does for an edit.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let block = timeline(&h).get_by_label("Block").rect();
+    drag_item(
+        &mut h,
+        "Pin",
+        block.left_center() + eframe::egui::vec2(3.0, 0.0),
+    );
+    step(&mut h);
+    assert!(h.state().tabs()[0].unsaved());
+    h.get_by_label("Close example.silico").click();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the move shown", |h| {
+        items(h) == ["Pin", "Block", "Hole"]
+    });
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
 }

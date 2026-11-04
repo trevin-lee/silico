@@ -812,6 +812,8 @@ pub const TIMELINE_EMPTY_PADDING: f32 = 4.0;
 pub const TIMELINE_SUMMARY: Color32 = TEXT_SUBDUED;
 pub const TIMELINE_SUMMARY_ERRORS: Color32 = ERROR_TEXT;
 pub const TIMELINE_SUMMARY_PADDING: f32 = 8.0;
+/// The space between the summary's parts (`.tl-right`'s `gap: 2px`).
+pub const TIMELINE_SUMMARY_SPACING: f32 = 2.0;
 pub const TIMELINE_SUMMARY_GAP: f32 = 6.0;
 
 // ---- Key caps (`.kbd`) ----
@@ -1676,6 +1678,8 @@ mod tests {
         assert_eq!(TIMELINE_EMPTY_PADDING, 4.0);
         assert_eq!(TIMELINE_SUMMARY_PADDING, 8.0);
         assert_eq!(TIMELINE_SUMMARY_GAP, 6.0);
+        // `.tl-right`: `gap: 2px`.
+        assert_eq!(TIMELINE_SUMMARY_SPACING, 2.0);
         for (name, color, hex) in [
             // `#timeline`, `--g150`; `.tl-label`, `.tl-empty`, `.tl-right`, `--g550`.
             ("BOTTOM_BAR_BG", BOTTOM_BAR_BG, 0x171717),
