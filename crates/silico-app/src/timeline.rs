@@ -972,4 +972,694 @@ mod tests {
             assert_eq!(kind_words(kind), words, "{kind}");
         }
     }
+
+    #[test]
+    fn a_feature_marked_suppressed_stays_suppressed_whatever_its_health_says() {
+        // The timeline marks a feature `suppressed` from the document, its health from the
+        // model read: either one says it's never rebuilt.
+        let flagged = Entry {
+            suppressed: true,
+            ..entry("a0000001", "box", &[], Health::Healthy)
+        };
+        let marked = Entry {
+            suppressed: false,
+            ..entry("b0000001", "box", &[], Health::Suppressed)
+        };
+        let running = rebuild(RebuildState::Running, Some("c0000001 box"));
+        assert_eq!(
+            step_of_each(
+                &[
+                    flagged,
+                    marked,
+                    entry("c0000001", "box", &[], Health::Healthy)
+                ],
+                LISTED,
+                Some(&running)
+            ),
+            [
+                Step::Settled(Health::Suppressed),
+                Step::Settled(Health::Suppressed),
+                Step::Running
+            ]
+        );
+    }
+
+    // ---- The timeline as drawn, against the prototype ----
+    //
+    // Each value below is typed from the approved prototype's stylesheet
+    // (docs/design/m5-ui/styles.css: `:root`'s tokens, `#timeline`, `.tl-*`, `.st-item`,
+    // `svg.i`), never from theme.rs, and compared with what the pane painted: each
+    // rectangle, circle, line, icon, and text from egui's shapes.
+
+    use eframe::egui::epaint::{CircleShape, ClippedShape, PathShape, RectShape, TextShape};
+    use eframe::egui::{Event, FontId, Modifiers, PointerButton, Pos2};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+    use silico_core::command::{Problems, SessionId, Status, TimelineAnswer};
+    use silico_core::fake::FakeKernel;
+
+    /// The prototype's tokens and geometry.
+    mod css {
+        use eframe::egui::Color32;
+
+        // `:root`'s greys and colours.
+        pub const G150: Color32 = Color32::from_rgb(0x17, 0x17, 0x17);
+        pub const G250: Color32 = Color32::from_rgb(0x27, 0x26, 0x26);
+        pub const G300: Color32 = Color32::from_rgb(0x2c, 0x2b, 0x2b);
+        pub const G550: Color32 = Color32::from_rgb(0x93, 0x90, 0x90);
+        pub const G600: Color32 = Color32::from_rgb(0x9f, 0x9f, 0x9f);
+        pub const G750: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcf);
+        pub const G1000: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
+        pub const BLUE: Color32 = Color32::from_rgb(0x18, 0x6a, 0xdd);
+        pub const BLUE_HI: Color32 = Color32::from_rgb(0x46, 0x76, 0xff);
+        pub const RED: Color32 = Color32::from_rgb(0xff, 0x38, 0x65);
+        pub const RED_FILL: Color32 = Color32::from_rgb(0xab, 0x01, 0x16);
+        pub const ORANGE: Color32 = Color32::from_rgb(0xff, 0x7a, 0x0c);
+        /// `--g750` at `.tl-item.queued`'s `opacity: .45` (207 × .45 = 93.15, 255 × .45 =
+        /// 114.75) and `.suppressed`'s `.35` (72.45, 89.25), premultiplied as egui paints.
+        pub const G750_QUEUED: Color32 = Color32::from_rgba_premultiplied(93, 93, 93, 115);
+        pub const G750_SUPPRESSED: Color32 = Color32::from_rgba_premultiplied(72, 72, 72, 89);
+
+        /// `--fs-small`, `--icon`, and `svg.i.lg`.
+        pub const FS_SMALL: f32 = 11.0;
+        pub const ICON: f32 = 14.0;
+        pub const ICON_LG: f32 = 20.0;
+        /// `#timeline`: `height: var(--timeline-h)` with its `border-top: 1px` inside it
+        /// (`* { box-sizing: border-box }`), `padding: 0 8px`, `gap: 8px`.
+        pub const TIMELINE_H: f32 = 40.0;
+        pub const BORDER: f32 = 1.0;
+        pub const PADDING: f32 = 8.0;
+        pub const GAP: f32 = 8.0;
+        /// `.tl-label`: `width: 68px`, `letter-spacing: .5px`.
+        pub const LABEL_W: f32 = 68.0;
+        pub const CAPITALS_SPACING: f32 = 0.5;
+        /// `.tl-track`'s `gap: 2px`; `.tl-item`: 30 square, `border-radius: var(--r-sm)`.
+        pub const TRACK_GAP: f32 = 2.0;
+        pub const ITEM: f32 = 30.0;
+        pub const R_SM: u8 = 4;
+        /// `.err`, `.warn`: `box-shadow: inset 0 -2px 0`.
+        pub const LINE: f32 = 2.0;
+        /// `.suppressed::after`: `left: 5px; right: 5px; height: 1.5px; rotate(-35deg)`.
+        pub const STRIKE_INSET: f32 = 5.0;
+        pub const STRIKE_W: f32 = 1.5;
+        /// cos 35° and sin 35°.
+        pub const COS_35: f32 = 0.819_152;
+        pub const SIN_35: f32 = 0.573_576;
+        /// `.building::before`: `inset: 2px; border: 2px`, `spin .7s`.
+        pub const SPIN_INSET: f32 = 2.0;
+        pub const SPIN_BORDER: f32 = 2.0;
+        pub const SPIN_SECONDS: f64 = 0.7;
+        /// `.badge`: `top: 1px; right: 1px; width: 9px; height: 9px`, `box-shadow: 0 0 0
+        /// 1.5px var(--g150)`.
+        pub const BADGE_INSET: f32 = 1.0;
+        pub const BADGE: f32 = 9.0;
+        pub const BADGE_RING: f32 = 1.5;
+        /// `.drop-before::before`: `left: -2px; top: 4px; bottom: 4px; width: 2px`.
+        pub const DROP_LEFT: f32 = -2.0;
+        pub const DROP_INSET: f32 = 4.0;
+        pub const DROP_W: f32 = 2.0;
+        /// `.tl-empty`: `padding-left: 4px`.
+        pub const EMPTY_PADDING: f32 = 4.0;
+        /// `.tl-right`: `gap: 2px`; `.st-item`: `padding: 0 8px; gap: 6px`.
+        pub const RIGHT_GAP: f32 = 2.0;
+        pub const ST_PADDING: f32 = 8.0;
+        pub const ST_GAP: f32 = 6.0;
+    }
+
+    /// Where the timeline's scope starts in the harness's window (away from the origin, so a
+    /// sum with it never reads as a product), and its size: the panel is its bottom.
+    const PANE: Pos2 = Pos2::new(40.0, 30.0);
+    const W: f32 = 800.0;
+    const HIGH: f32 = 100.0;
+
+    type Fake = Arc<FakeKernel>;
+
+    struct Shown {
+        tab: Option<Tab>,
+        sessions: Arc<Sessions<Fake>>,
+        started: bool,
+    }
+
+    /// `#timeline`'s box; below, its content's middle and its track's left edge, as the
+    /// prototype lays them out.
+    fn panel() -> Rect {
+        Rect::from_min_size(
+            PANE + Vec2::new(0.0, HIGH - css::TIMELINE_H),
+            Vec2::new(W, css::TIMELINE_H),
+        )
+    }
+
+    fn middle() -> f32 {
+        panel().top() + css::BORDER + (css::TIMELINE_H - css::BORDER) / 2.0
+    }
+
+    fn track_left() -> f32 {
+        panel().left() + css::PADDING + css::LABEL_W + css::GAP
+    }
+
+    /// The `at`th item's box on the track.
+    fn item(at: usize) -> Rect {
+        Rect::from_min_size(
+            Pos2::new(
+                track_left() + at as f32 * (css::ITEM + css::TRACK_GAP),
+                middle() - css::ITEM / 2.0,
+            ),
+            Vec2::splat(css::ITEM),
+        )
+    }
+
+    /// The tab of a document whose timeline lists `features`, with `problems` of its own.
+    fn tab_of(features: Option<&[Entry]>, problems: u64) -> Tab {
+        let none = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::Internal,
+            "unused",
+        ));
+        let mut tab = Tab::opened(
+            SessionId::parse("s1").unwrap(),
+            "/models/Part.silico".to_owned(),
+            &none,
+        );
+        tab.timeline = Some(TimelineAnswer {
+            revision: LISTED,
+            model: Some(LISTED),
+            problems,
+            features: features.map(<[Entry]>::to_vec),
+            bodies: Vec::new(),
+        });
+        tab
+    }
+
+    /// `tab`'s session running `rebuild`.
+    fn running(tab: &mut Tab, rebuild: Rebuild) {
+        tab.status = Some(Status {
+            features: None,
+            gated: true,
+            transaction: None,
+            running: None,
+            reads: Vec::new(),
+            rebuild,
+            drag: None,
+            disk: None,
+        });
+    }
+
+    fn drawn(tab: Tab) -> Harness<'static, Shown> {
+        let shown = Shown {
+            tab: Some(tab),
+            sessions: Arc::new(Sessions::with_cache_opener(
+                Arc::new(FakeKernel::new(1).unwrap()),
+                |dir| silico_core::cache::Cache::unsealed(dir),
+            )),
+            started: false,
+        };
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(PANE.x + W + 40.0, PANE.y + HIGH + 40.0))
+            .build_ui_state(
+                |ui, shown: &mut Shown| {
+                    let scope = Rect::from_min_size(PANE, Vec2::new(W, HIGH));
+                    ui.scope_builder(UiBuilder::new().max_rect(scope), |ui| {
+                        show(ui, shown.tab.as_mut(), &shown.sessions, &mut shown.started);
+                    });
+                },
+                shown,
+            );
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        h
+    }
+
+    /// Every shape the last frame painted, nested ones flattened, with its clip.
+    fn clipped<S>(h: &Harness<'_, S>) -> Vec<ClippedShape> {
+        fn flatten(clip: Rect, shape: &Shape, out: &mut Vec<ClippedShape>) {
+            match shape {
+                Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(clip, shape, out)),
+                shape => out.push(ClippedShape {
+                    clip_rect: clip,
+                    shape: shape.clone(),
+                }),
+            }
+        }
+        let mut out = Vec::new();
+        for shape in &h.output().shapes {
+            flatten(shape.clip_rect, &shape.shape, &mut out);
+        }
+        out
+    }
+
+    fn painted<S>(h: &Harness<'_, S>) -> Vec<Shape> {
+        clipped(h).into_iter().map(|shape| shape.shape).collect()
+    }
+
+    fn rects<S>(h: &Harness<'_, S>) -> Vec<RectShape> {
+        painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn circles<S>(h: &Harness<'_, S>, within: Rect) -> Vec<CircleShape> {
+        painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Circle(circle) if within.contains(circle.center) => Some(circle),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The one text `text` painted.
+    #[track_caller]
+    fn text<S>(h: &Harness<'_, S>, text: &str) -> TextShape {
+        let mut found: Vec<TextShape> = painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Text(shown) if shown.galley.text() == text => Some(shown),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "{text:?} painted {} times", found.len());
+        found.remove(0)
+    }
+
+    /// A text's colour as painted: its override, else its first section's, else the shape's
+    /// own for a placeholder.
+    fn colour(shown: &TextShape) -> Color32 {
+        let format = shown.galley.job.sections[0].format.color;
+        shown
+            .override_text_color
+            .unwrap_or(if format == Color32::PLACEHOLDER {
+                shown.fallback_color
+            } else {
+                format
+            })
+    }
+
+    /// The tint of the icon painted at `rect` (a rectangle filled with its texture), to half
+    /// a point: egui puts an image on the pixel grid.
+    fn icon_at<S>(h: &Harness<'_, S>, rect: Rect) -> Option<Color32> {
+        rects(h)
+            .into_iter()
+            .find(|shape| {
+                shape.brush.is_some()
+                    && (shape.rect.min - rect.min).abs().max_elem() <= 0.5
+                    && (shape.rect.max - rect.max).abs().max_elem() <= 0.5
+            })
+            .map(|shape| shape.fill)
+    }
+
+    /// The fills painted over the whole of `rect`, but transparent ones, and their corners.
+    fn fills_at<S>(h: &Harness<'_, S>, rect: Rect) -> Vec<(Color32, CornerRadius)> {
+        rects(h)
+            .into_iter()
+            .filter(|shape| {
+                shape.brush.is_none()
+                    && shape.fill != Color32::TRANSPARENT
+                    && near_rect(shape.rect, rect)
+            })
+            .map(|shape| (shape.fill, shape.corner_radius))
+            .collect()
+    }
+
+    /// Within egui's rounding of a widget's place, a 32nd of a point.
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() <= egui::emath::GUI_ROUNDING
+    }
+
+    fn near_pos(a: Pos2, b: Pos2) -> bool {
+        near(a.x, b.x) && near(a.y, b.y)
+    }
+
+    fn near_rect(a: Rect, b: Rect) -> bool {
+        near_pos(a.min, b.min) && near_pos(a.max, b.max)
+    }
+
+    #[track_caller]
+    fn at(got: Pos2, want: Pos2, what: &str) {
+        assert!(near_pos(got, want), "{what}: {got:?}, not {want:?}");
+    }
+
+    /// The text `words` drawn from `left`, its line's middle the content's, `--fs-small`,
+    /// in `ink`.
+    #[track_caller]
+    fn said_at<S>(h: &Harness<'_, S>, words: &str, left: f32, ink: Color32) -> Rect {
+        let shown = text(h, words);
+        let size = shown.galley.size();
+        at(shown.pos, Pos2::new(left, middle() - size.y / 2.0), words);
+        assert_eq!(
+            shown.galley.job.sections[0].format.font_id,
+            FontId::proportional(css::FS_SMALL),
+            "{words}"
+        );
+        assert_eq!(colour(&shown), ink, "{words}'s ink");
+        Rect::from_min_size(shown.pos, size)
+    }
+
+    #[test]
+    fn the_label_and_an_empty_track_are_drawn_as_tl_label_and_tl_empty() {
+        let h = drawn(tab_of(Some(&[]), 0));
+        // `#timeline`: `--g150` under its `border-top: 1px solid var(--g250)`.
+        let body = Rect::from_min_max(
+            Pos2::new(panel().left(), panel().top() + css::BORDER),
+            panel().max,
+        );
+        assert_eq!(fills_at(&h, body), [(css::G150, CornerRadius::ZERO)]);
+        let border: Vec<([Pos2; 2], Stroke)> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::LineSegment { points, stroke } => Some((points, stroke)),
+                _ => None,
+            })
+            .collect();
+        let y = panel().top() + css::BORDER / 2.0;
+        assert_eq!(
+            border,
+            [(
+                [Pos2::new(panel().left(), y), Pos2::new(panel().right(), y)],
+                Stroke::new(css::BORDER, css::G250)
+            )]
+        );
+        // `.tl-label`: `--pad` in, its line's middle the content's, 11 points in capitals .5
+        // apart, `--g550`.
+        let label = text(&h, "TIMELINE");
+        let size = label.galley.size();
+        at(
+            label.pos,
+            Pos2::new(panel().left() + css::PADDING, middle() - size.y / 2.0),
+            "the label",
+        );
+        let format = &label.galley.job.sections[0].format;
+        assert_eq!(format.font_id, FontId::proportional(css::FS_SMALL));
+        assert_eq!(format.extra_letter_spacing, css::CAPITALS_SPACING);
+        assert_eq!(colour(&label), css::G550);
+        // `.tl-empty`: on the track, 4 in.
+        said_at(
+            &h,
+            "Features appear here, in order, as you add them.",
+            track_left() + css::EMPTY_PADDING,
+            css::G550,
+        );
+    }
+
+    /// A block, a sketch, a pad of the sketch on the block (failed), a cylinder (warned),
+    /// and a fillet of the pad (suppressed).
+    fn features() -> Vec<Entry> {
+        vec![
+            entry("b0000001", "box", &[], Health::Healthy),
+            entry("s0000001", "sketch", &[], Health::Healthy),
+            entry("p0000001", "pad", &["b0000001", "s0000001"], Health::Error),
+            entry("c0000001", "cylinder", &[], Health::Warning),
+            entry("f0000001", "fillet", &["p0000001"], Health::Suppressed),
+        ]
+    }
+
+    /// The icon's place in an item: `svg.i.lg`, centred (`place-items: center`).
+    fn icon_of(item: Rect) -> Rect {
+        Rect::from_center_size(item.center(), Vec2::splat(css::ICON_LG))
+    }
+
+    /// The badge at `item`'s corner: its ring `--g150` 1.5 outside it, then its dot, `fill`.
+    #[track_caller]
+    fn badge(h: &Harness<'_, Shown>, item: Rect, fill: Color32, what: &str) {
+        let centre = Pos2::new(
+            item.right() - css::BADGE_INSET - css::BADGE / 2.0,
+            item.top() + css::BADGE_INSET + css::BADGE / 2.0,
+        );
+        let drawn: Vec<(Pos2, f32, Color32)> = circles(h, item)
+            .into_iter()
+            .map(|circle| (circle.center, circle.radius, circle.fill))
+            .collect();
+        assert_eq!(drawn.len(), 2, "{what}'s badge: {drawn:?}");
+        let ring = (css::BADGE / 2.0 + css::BADGE_RING, css::G150);
+        let dot = (css::BADGE / 2.0, fill);
+        for (got, (radius, colour)) in drawn.iter().zip([ring, dot]) {
+            assert!(
+                near_pos(got.0, centre) && near(got.1, radius) && got.2 == colour,
+                "{what}'s badge: {drawn:?}, not {radius} at {centre:?} in {colour:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_items_are_drawn_as_tl_item_in_each_state() {
+        let mut tab = tab_of(Some(&features()), 0);
+        tab.selected = Some(FeatureId::new("p0000001").unwrap());
+        let mut h = drawn(tab);
+        // `:hover`: the block hovered.
+        h.input_mut()
+            .events
+            .push(Event::PointerMoved(item(0).center()));
+        h.run_steps(2);
+
+        // `.tl-item`: 30 square, 2 apart along the track from its left, centred on the
+        // content's middle; its icon `svg.i.lg` at its centre. Hovered: `--g1000` on `--g300`.
+        assert_eq!(
+            fills_at(&h, item(0)),
+            [(css::G300, CornerRadius::same(css::R_SM))],
+            "the hovered block's fill"
+        );
+        assert_eq!(icon_at(&h, icon_of(item(0))), Some(css::G1000), "the block");
+        // `.sketch`: `--g600`, no fill.
+        assert_eq!(icon_at(&h, icon_of(item(1))), Some(css::G600), "the sketch");
+        assert_eq!(fills_at(&h, item(1)), [], "the sketch's fill");
+        // `.selected.err`: `--red` on `--blue`, its line along the bottom inside its
+        // corners, and its badge.
+        assert_eq!(
+            fills_at(&h, item(2)),
+            [(css::BLUE, CornerRadius::same(css::R_SM))],
+            "the selected pad's fill"
+        );
+        assert_eq!(icon_at(&h, icon_of(item(2))), Some(css::RED), "the pad");
+        let line =
+            |at: Rect| Rect::from_min_max(Pos2::new(at.left(), at.bottom() - css::LINE), at.max);
+        let under = CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: css::R_SM,
+            se: css::R_SM,
+        };
+        assert_eq!(fills_at(&h, line(item(2))), [(css::RED, under)]);
+        badge(&h, item(2), css::RED_FILL, "the pad");
+        // `.warn`: `--orange`, its line and its badge.
+        assert_eq!(
+            icon_at(&h, icon_of(item(3))),
+            Some(css::ORANGE),
+            "the cylinder"
+        );
+        assert_eq!(fills_at(&h, line(item(3))), [(css::ORANGE, under)]);
+        badge(&h, item(3), css::ORANGE, "the cylinder");
+        // `.suppressed`: `.35` of the whole, struck through: 5 in from each side, 1.5 wide,
+        // turned 35 degrees anticlockwise about the centre, in its icon's colour.
+        assert_eq!(
+            icon_at(&h, icon_of(item(4))),
+            Some(css::G750_SUPPRESSED),
+            "the fillet"
+        );
+        let half = css::ITEM / 2.0 - css::STRIKE_INSET;
+        let along = Vec2::new(css::COS_35, -css::SIN_35) * half;
+        let centre = item(4).center();
+        let strikes: Vec<([Pos2; 2], Stroke)> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::LineSegment { points, stroke } => Some((points, stroke)),
+                _ => None,
+            })
+            .filter(|(points, _)| item(4).contains(points[0]))
+            .collect();
+        assert_eq!(strikes.len(), 1, "the fillet's strike: {strikes:?}");
+        let ([from, to], stroke) = strikes[0];
+        let ends = [centre - along, centre + along];
+        assert!(
+            (from - ends[0]).length() < 1e-3 && (to - ends[1]).length() < 1e-3,
+            "the strike: {from:?} to {to:?}, not {ends:?}"
+        );
+        assert_eq!(stroke, Stroke::new(css::STRIKE_W, css::G750_SUPPRESSED));
+        // No other item has a badge, and none a line.
+        for at in [0, 1, 4] {
+            assert_eq!(circles(&h, item(at)).len(), 0, "item {at}'s badge");
+            assert_eq!(fills_at(&h, line(item(at))), [], "item {at}'s line");
+        }
+
+        // The pad rebuilding: `.building`'s ring on it, its inputs as at rest, the rest
+        // `.queued` (`.45`), and no badge while it runs.
+        let mut tab = tab_of(Some(&features()), 0);
+        running(
+            &mut tab,
+            Rebuild {
+                revision: LISTED,
+                state: RebuildState::Running,
+                progress: Some(Progress {
+                    done: 2,
+                    steps: 4,
+                    running: Some("p0000001 pad".to_owned()),
+                }),
+            },
+        );
+        let h = drawn(tab);
+        assert_eq!(icon_at(&h, icon_of(item(0))), Some(css::G750), "the block");
+        assert_eq!(icon_at(&h, icon_of(item(1))), Some(css::G600), "the sketch");
+        assert_eq!(icon_at(&h, icon_of(item(2))), Some(css::G750), "the pad");
+        assert_eq!(
+            icon_at(&h, icon_of(item(3))),
+            Some(css::G750_QUEUED),
+            "the cylinder"
+        );
+        for at in 0..5 {
+            assert_eq!(circles(&h, item(at)).len(), 0, "item {at}'s badge");
+        }
+        // The ring: `inset: 2px`, its `2px` border's middle 13 - 1 = 12 from the centre; its
+        // top and right borders, from the upper left (225 degrees round, y down) half a turn
+        // clockwise to the lower right, turned `t / .7s` of a turn on.
+        let time = h.ctx.input(|input| input.time);
+        assert!(time > 0.0, "the harness's clock: {time}");
+        let turned = (time / css::SPIN_SECONDS).fract() as f32 * std::f32::consts::TAU;
+        let radius = css::ITEM / 2.0 - css::SPIN_INSET - css::SPIN_BORDER / 2.0;
+        let rings: Vec<PathShape> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Path(path) => Some(path),
+                _ => None,
+            })
+            .filter(|path| path.points.iter().all(|point| item(2).contains(*point)))
+            .collect();
+        assert_eq!(rings.len(), 1, "the pad's spinner");
+        let ring = &rings[0];
+        assert!(!ring.closed);
+        assert_eq!(ring.stroke.width, css::SPIN_BORDER);
+        assert_eq!(
+            ring.stroke.color,
+            egui::epaint::ColorMode::Solid(css::G1000)
+        );
+        let centre = item(2).center();
+        let start = (-135.0f32).to_radians() + turned;
+        let point = |angle: f32| centre + Vec2::new(libm::cosf(angle), libm::sinf(angle)) * radius;
+        let first = ring.points[0];
+        let last = ring.points[ring.points.len() - 1];
+        assert!(
+            (first - point(start)).length() < 1e-3,
+            "the ring starts at {first:?}, not {:?}",
+            point(start)
+        );
+        assert!(
+            (last - point(start + std::f32::consts::PI)).length() < 1e-3,
+            "the ring ends at {last:?}, not {:?}",
+            point(start + std::f32::consts::PI)
+        );
+        for p in &ring.points {
+            assert!(
+                ((*p - centre).length() - radius).abs() < 1e-3,
+                "{p:?} is off the ring"
+            );
+        }
+        // Half a turn, evenly: each point a 32nd of it on from the last.
+        for pair in ring.points.windows(2) {
+            let step = (pair[1] - centre).angle() - (pair[0] - centre).angle();
+            let step = step.rem_euclid(std::f32::consts::TAU);
+            assert!(
+                (step - std::f32::consts::PI / 32.0).abs() < 1e-3,
+                "a step of {step}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_summary_is_drawn_as_tl_right_and_the_track_ends_a_gap_before_it() {
+        // Two errors, one of the document's own and the pad's, so 32 items overflow the track.
+        let mut many = features();
+        for n in 0..27 {
+            many.push(entry(&format!("x{n:07}"), "box", &[], Health::Healthy));
+        }
+        let h = drawn(tab_of(Some(&many), 1));
+        // `.tl-right`: flush with the content's right (the gear's left out); its count
+        // `--g550`, and 2 before it the errors' `button.st-item.err-text`, 8 of padding, the
+        // icon 14 square and 6 from its words, all `--red`.
+        let right = panel().right() - css::PADDING;
+        let count = text(&h, "32 features");
+        let count = said_at(&h, "32 features", right - count.galley.size().x, css::G550);
+        let errors = text(&h, "2 errors");
+        let errors = said_at(
+            &h,
+            "2 errors",
+            count.left() - css::RIGHT_GAP - css::ST_PADDING - errors.galley.size().x,
+            css::RED,
+        );
+        let icon = Rect::from_min_size(
+            Pos2::new(
+                errors.left() - css::ST_GAP - css::ICON,
+                middle() - css::ICON / 2.0,
+            ),
+            Vec2::splat(css::ICON),
+        );
+        assert_eq!(icon_at(&h, icon), Some(css::RED), "the errors' icon");
+        assert!(h.query_by_label("2 errors · 32 features").is_some());
+        // `.tl-track`: from after the label to `gap: 8px` before the summary's button, its
+        // items clipped to it.
+        let end = icon.left() - css::ST_PADDING - css::GAP;
+        let clips: Vec<Rect> = clipped(&h)
+            .into_iter()
+            .filter(|shape| match &shape.shape {
+                Shape::Rect(rect) => rect.brush.is_some() && item(0).contains(rect.rect.center()),
+                _ => false,
+            })
+            .map(|shape| shape.clip_rect)
+            .collect();
+        assert_eq!(clips.len(), 1, "the block's icon");
+        assert!(
+            near(clips[0].left(), track_left()) && near(clips[0].right(), end),
+            "the track: {:?}, not from {} to {end}",
+            clips[0],
+            track_left()
+        );
+    }
+
+    /// A drag from `from` to `to`, held: pressed at `from`, moved past the drag threshold,
+    /// then to `to`.
+    fn drag(h: &mut Harness<'_, Shown>, from: Pos2, to: Pos2) {
+        let input = h.input_mut();
+        input.events.push(Event::PointerMoved(from));
+        input.events.push(Event::PointerButton {
+            pos: from,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        h.run();
+        h.input_mut()
+            .events
+            .push(Event::PointerMoved(from + Vec2::new(0.0, 10.0)));
+        h.run();
+        h.input_mut().events.push(Event::PointerMoved(to));
+        h.run_steps(2);
+    }
+
+    #[test]
+    fn a_dragged_item_shows_where_it_drops_as_drop_before() {
+        let mut h = drawn(tab_of(Some(&features()), 0));
+        // The block dragged right of the pad's centre: before the cylinder.
+        drag(
+            &mut h,
+            item(0).center(),
+            item(2).center() + Vec2::new(4.0, 0.0),
+        );
+        let before = item(3);
+        let line = Rect::from_min_max(
+            Pos2::new(
+                before.left() + css::DROP_LEFT,
+                before.top() + css::DROP_INSET,
+            ),
+            Pos2::new(
+                before.left() + css::DROP_LEFT + css::DROP_W,
+                before.bottom() - css::DROP_INSET,
+            ),
+        );
+        assert_eq!(
+            fills_at(&h, line),
+            [(css::BLUE_HI, CornerRadius::ZERO)],
+            "the drop line"
+        );
+        // Nothing is moved until it's dropped.
+        assert!(!h.state().started);
+    }
 }
