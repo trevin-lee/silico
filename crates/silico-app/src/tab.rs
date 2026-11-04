@@ -500,8 +500,9 @@ pub struct Tab {
     pub prefixes: Prefixes,
     /// The dialogs' edits OK'd in this transaction, each one step for undo and redo.
     groups: Vec<Group>,
-    /// The state sketch mode's Finish ended at: Redo is off there till the next edit, so
-    /// what it undid isn't redone past its Finish.
+    /// The state sketch mode's Finish or Cancel ended at, or an over-defining dimension's
+    /// Cancel undid to: Redo is off there till the next edit, so what it undid isn't redone
+    /// past its Finish, nor the dimension Cancel refused.
     redo_fence: Option<Revision>,
     /// Whether an edit of the tab's was applied since the last dialog or sketch mode
     /// opened: whether a sketch mode's Finish or Cancel has anything of its own to fence.
@@ -749,7 +750,9 @@ impl Tab {
 
     /// Whether Redo can step: an edit undone, and none made since, as the status of the
     /// tab's newest revision counts them; never while a step is under way, nor while a
-    /// dialog is open or a drag is under way. In sketch mode, only what it undid itself.
+    /// dialog is open or a drag is under way. In sketch mode, only what it undid itself;
+    /// never at a state Redo is fenced off at (a sketch mode's Finish or Cancel, or an
+    /// over-defining dimension's Cancel, which leave nothing to redo).
     pub fn redoable(&self) -> bool {
         self.transaction
             && !self.in_dialog()
@@ -1102,6 +1105,12 @@ impl Tab {
                     if let (Ok(stepped), Some(session)) = (&response.result, &response.session) {
                         let state = self.state_of(stepped.restored);
                         self.restored.insert(session.revision, state);
+                        // An over-defining dimension's Cancel (SD7) leaves nothing to redo,
+                        // as SolidWorks' does: Redo is off at the state it undid to till the
+                        // next edit, so the conflicting dimension never comes back unasked.
+                        if offered && undo {
+                            self.redo_fence = Some(state);
+                        }
                     }
                     match response.result {
                         // Typing queued after it is applied next: the field keeps it.

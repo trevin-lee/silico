@@ -15287,3 +15287,66 @@ fn mid_drag_undo_and_redo_are_off_and_their_keys_send_nothing_and_once_it_ends_b
     assert_eq!(steps_sent(&h), sent);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn after_the_over_define_prompts_cancel_redo_is_off_and_its_key_sends_nothing_but_an_ordinary_undo_offers_it()
+ {
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (id, _, top) = fully_defined(&f, &mut h);
+    let before = text_of(&f, &h);
+    // A third length, over defining it, then the prompt's Cancel (Esc): its `undo`.
+    over_define(&f, &mut h, 65.0, "35", 9);
+    step_until(&mut h, "the prompt", |h| prompt(h).is_some());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    assert_eq!(text_of(&f, &h), before);
+    step_until(&mut h, "the prompt closed", |h| prompt(h).is_none());
+    // The session holds the dimension to redo, as a status of the undo's revision counts
+    // it; Redo stays off all the same, as SolidWorks' Cancel leaves nothing to redo.
+    step_until(&mut h, "a status of the undo", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.transaction().is_some_and(|t| t.redo == 1) && offered(h, "Undo")
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!offered(&h, "Redo"));
+        assert!(!h.state().tabs()[0].redoable());
+    }
+    let sent = steps_sent(&h);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(steps_sent(&h), sent);
+    assert_eq!(text_of(&f, &h), before);
+    // An ordinary undo (the top's length) offers Redo, which gives it back, and no further:
+    // the conflicting dimension never comes back.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(steps_sent(&h), sent + 1);
+    assert!(
+        lengths(&sketch_of_text(&f, &h, &id))
+            .iter()
+            .all(|l| l.1 != top)
+    );
+    step_until(&mut h, "Redo offered", |h| offered(h, "Redo"));
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(steps_sent(&h), sent + 2);
+    assert_eq!(text_of(&f, &h), before);
+    step_until(&mut h, "a status of the redo", |h| {
+        h.state().tabs()[0]
+            .transaction()
+            .is_some_and(|t| t.redo == 1)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!offered(&h, "Redo"));
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
