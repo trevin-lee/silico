@@ -171,7 +171,9 @@ pub enum Event {
     /// of it). What isn't the gesture's stays: the points the pointer woke (it was there),
     /// the adds already made and their tokens, and what the newest read settles (the
     /// gesture is found in it again, as at every event). It adds nothing, and leaves
-    /// nothing (`left` false). With no press in progress, it does nothing.
+    /// nothing (`left` false). With no press in progress, it does nothing. A centrepoint
+    /// arc's sweep is the gesture's: the sweep a cancelled drag made is lost, so the next
+    /// move turns the short way from the angle the pointer was at before the press.
     Cancel,
 }
 
@@ -341,8 +343,28 @@ pub struct PreviewArc {
     pub end: Xy,
 }
 
-/// What the viewport draws for the tool: where the pointer snapped; the entity under way;
-/// the relations the pointer shows; and the dotted inference lines.
+/// A length the preview measures, for the canvas to label: its value is the distance from
+/// `from` to `to`, which the canvas works out.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreviewMeasure {
+    pub from: Xy,
+    pub to: Xy,
+    pub kind: MeasureKind,
+}
+
+/// What a [`PreviewMeasure`] measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasureKind {
+    /// A line's length, or a rectangle's side.
+    Length,
+    /// A circle's or an arc's radius, from its centre to a point on it.
+    Radius,
+}
+
+/// What the viewport draws for the tool: where the pointer snapped; the entity under way
+/// (`points`, `lines`, `construction_points`, `circles`, and `arcs`: what the add would
+/// make); the relations the pointer shows; the guides, which are no entity; and what the
+/// entity under way measures.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Preview {
     pub pointer: Option<Xy>,
@@ -352,10 +374,26 @@ pub struct Preview {
     pub circles: Vec<(Xy, f64)>,
     pub arcs: Vec<PreviewArc>,
     pub shown: Vec<Shown>,
+    /// The segments drawn that are no entity, which the canvas draws in its guide style:
+    /// the dotted inference lines, from each point the one placed lines up with; and the
+    /// gesture's own, a centrepoint arc's radius from its centre to the start under way, a
+    /// 3-point arc's chord from its start to the end under way (or to its other end, its
+    /// three points in a line), and a tangent arc's straight line to an end straight ahead
+    /// or behind, where no arc passes.
     pub guides: Vec<[Xy; 2]>,
-    /// Whether the `lines`, `circles`, and `arcs` are construction, as the add will make
-    /// them ([`Context::construction`]): the canvas dashes them.
+    /// Whether the entity's `lines`, `circles`, and `arcs` are construction, as the add
+    /// will make them ([`Context::construction`]): the canvas dashes them. The guides are
+    /// guides whatever it says.
     pub construction: bool,
+    /// What the entity under way measures, for the canvas to label, and nothing else: a
+    /// line's length from its start to the pointer's end; a rectangle's width, then its
+    /// height (its first side, then its second); a circle's radius from its centre to the
+    /// rim the pointer sets; an arc's radius from its centre to the pointer's point on it
+    /// (a centrepoint arc's start or end under way; a 3-point arc's third point, once it
+    /// makes an arc, not while it's a chord; a tangent arc's end, where an arc passes).
+    /// Empty for a point, and wherever nothing's under way. *For construction* doesn't
+    /// change it.
+    pub measures: Vec<PreviewMeasure>,
 }
 
 /// Where a tool's new members' IDs come from: fresh ones, none `taken`, never one given

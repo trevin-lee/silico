@@ -11,7 +11,9 @@
 use super::build::Builder;
 use super::geometry::{add, distance, scale, sub};
 use super::infer::{Align, Placed, View};
-use super::{Event, Message, Outcome, Preview, Step, Xy, failed, within_reach};
+use super::{
+    Event, MeasureKind, Message, Outcome, Preview, PreviewMeasure, Step, Xy, failed, within_reach,
+};
 use crate::document::{Form, Reference};
 
 #[derive(Debug, Clone)]
@@ -255,6 +257,14 @@ impl Rectangle {
         let corners = self.corners(first.at, corner.at);
         for (i, from) in corners.iter().enumerate() {
             preview.lines.push([*from, corners[(i + 1) % 4]]);
+        }
+        // Its width, then its height: the first side, along x, then the second, along y.
+        for [from, to] in [[corners[0], corners[1]], [corners[1], corners[2]]] {
+            preview.measures.push(PreviewMeasure {
+                from,
+                to,
+                kind: MeasureKind::Length,
+            });
         }
         if self.centred {
             preview.construction_points.push(first.at);

@@ -1549,6 +1549,7 @@ fn a_cancelled_press_is_as_if_it_had_never_happened() {
             // The gesture and its preview as they were before the press; the press and
             // moves woke nothing the move before it hadn't.
             assert_eq!(d.tool.preview(), &preview, "{what}");
+            assert_eq!(d.tool.preview().measures, preview.measures, "{what}");
             assert_eq!(d.tool.busy(), busy, "{what}");
             assert_eq!(d.tool.woken, woken, "{what}");
             d.events(&s.after);
@@ -1719,15 +1720,80 @@ fn a_cancel_with_no_press_in_progress_does_nothing() {
             "line (10, 10)-(40, 30)"
         ])]
     );
-    // Enter mid-press ends the chain; a cancel after it doesn't bring the chain back.
+    // Enter, *End chain*, Esc, or a double-click mid-press ends the chain; a cancel after
+    // it doesn't bring the chain back.
+    for end in [
+        Event::Enter,
+        Event::EndChain,
+        Event::Escape,
+        Event::DoubleClick([40.0, 30.0]),
+    ] {
+        let mut d = Drive::new(ToolKind::Line, empty());
+        d.click(10.0, 10.0)
+            .press(40.0, 30.0)
+            .key(end)
+            .key(Event::Cancel);
+        assert!(!d.tool.busy(), "{end:?}");
+        d.release(40.0, 30.0).click(50.0, 50.0);
+        assert!(d.adds().is_empty(), "{end:?}");
+    }
+    // A cancel, a move, and a cancel again: the press was put back by the first, so the
+    // second has none, and the move's preview stays (the segment from (10, 10) to the
+    // pointer at (55, 70)).
     let mut d = Drive::new(ToolKind::Line, empty());
     d.click(10.0, 10.0)
         .press(40.0, 30.0)
-        .key(Event::Enter)
+        .to(45.0, 35.0)
+        .key(Event::Cancel)
+        .to(55.0, 70.0)
         .key(Event::Cancel);
-    assert!(!d.tool.busy());
-    d.release(40.0, 30.0).click(50.0, 50.0);
-    assert!(d.adds().is_empty());
+    assert_eq!(d.tool.preview().lines, [[[10.0, 10.0], [55.0, 70.0]]]);
+    assert!(d.tool.busy());
+}
+
+#[test]
+fn a_cancel_after_the_add_its_chain_names_was_refused_starts_afresh() {
+    // A chain clicked at (10, 10) and (40, 30) on a read that never catches up: its
+    // segment's add pending, the chain's last point (40, 30) one of its members. A press,
+    // then the core refuses that add, then the press is cancelled: the chain put back names
+    // a point no sketch has, so it ends there, and the next click begins a chain afresh,
+    // adding nothing; the click after it a segment from a new point at (60, 50), not
+    // (40, 30)'s.
+    let sketch = empty();
+    let sketch_id = sketch_id();
+    let context = Context {
+        sketch_id: &sketch_id,
+        revision: Revision::OPENED,
+        sketch: &sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+        construction: false,
+    };
+    let mut ids = Counter(0);
+    let keys = Modifiers::default();
+    let mut tool = SketchTool::new(ToolKind::Line);
+    let mut send = |tool: &mut SketchTool, event| tool.handle(&context, &mut ids, event, keys);
+    let mut click = |tool: &mut SketchTool, at: Xy| {
+        send(tool, Event::Move(at));
+        send(tool, Event::Press(at));
+        send(tool, Event::Release(at))
+    };
+    click(&mut tool, [10.0, 10.0]);
+    let token = click(&mut tool, [40.0, 30.0]).token.unwrap();
+    tool.handle(&context, &mut Counter(100), Event::Press([70.0, 5.0]), keys);
+    tool.refused(token);
+    let out = tool.handle(&context, &mut Counter(100), Event::Cancel, keys);
+    assert_eq!(out, Outcome::default());
+    assert!(!tool.busy());
+    assert_eq!(click(&mut tool, [60.0, 50.0]).add, None);
+    assert!(tool.busy());
+    let segment = click(&mut tool, [90.0, 55.0]).add.unwrap();
+    assert_eq!(segment.points.len(), 2, "{segment:?}");
+    assert_eq!(
+        segment.points[0].x.mm(),
+        60.0,
+        "the segment starts at its own new point"
+    );
 }
 
 #[test]
@@ -1922,11 +1988,27 @@ fn for_construction_each_tools_curves_are_construction_and_its_points_as_made() 
             p_off,
             "{kind:?}"
         );
-        if kind != ToolKind::Point {
-            assert!(
+        // The guides are guides either way: an arc's radius or chord under way, from its
+        // press at (-20, -20) to the pointer at (-5, -12), is no line.
+        assert_eq!(p_on.guides, p_off.guides, "{kind:?}");
+        assert_eq!(p_on.measures, p_off.measures, "{kind:?}");
+        // A point measures nothing, nor a 3-point arc's chord; the rest measure their
+        // figure under way.
+        assert_eq!(
+            p_on.measures.is_empty(),
+            matches!(kind, ToolKind::Point | ToolKind::ThreePointArc),
+            "{kind:?}"
+        );
+        match kind {
+            ToolKind::Point => {}
+            ToolKind::CenterpointArc | ToolKind::ThreePointArc => {
+                assert_eq!(p_on.guides, [[[-20.0, -20.0], [-5.0, -12.0]]], "{kind:?}");
+                assert!(p_on.lines.is_empty(), "{kind:?}");
+            }
+            _ => assert!(
                 !(p_on.lines.is_empty() && p_on.circles.is_empty() && p_on.arcs.is_empty()),
                 "{kind:?}: a figure under way"
-            );
+            ),
         }
     }
 }
@@ -2398,10 +2480,12 @@ mod property {
             events in prop::collection::vec(event(), 0..48),
             tolerance in prop::sample::select(vec![0.0, 1e-9, 0.5, 5.0, 1e3, f64::NAN, -1.0]),
             automatic in any::<bool>(),
+            construction in any::<bool>(),
         ) {
             let mut d = Drive::new(kind, busy());
             d.tolerance = tolerance;
             d.automatic = automatic;
+            d.construction = construction;
             for (event, keys) in events {
                 d.keys = keys;
                 d.send(event);

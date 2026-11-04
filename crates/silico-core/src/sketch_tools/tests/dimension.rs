@@ -2974,7 +2974,15 @@ fn a_cancel_puts_back_what_was_before_the_first_press_and_nothing_once_forgotten
     d.send(DimensionEvent::Press([40.0, 30.0]));
     d.tool.forget_pending();
     d.send(DimensionEvent::Cancel);
-    assert_eq!(d.tool.preview().pointer, Some([40.0, 30.0]));
+    assert_eq!(d.tool.preview().pointer, Some([40.0, 30.0])); // A cancel, a move, and a cancel again: the second has no press to put back, so the
+    // pointer stays where the move put it.
+    let mut d = Dim::new(two_points());
+    d.to(70.0, 70.0);
+    d.send(DimensionEvent::Press([40.0, 30.0]));
+    d.send(DimensionEvent::Cancel);
+    d.to(65.0, 15.0);
+    d.send(DimensionEvent::Cancel);
+    assert_eq!(d.tool.preview().pointer, Some([65.0, 15.0]));
 }
 
 #[test]

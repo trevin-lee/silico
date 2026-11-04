@@ -8,7 +8,9 @@
 use super::build::Builder;
 use super::geometry::distance;
 use super::infer::{Align, Along, Placed, View, along, one_place, onto};
-use super::{Event, Message, Outcome, Preview, Shown, Step, Xy, within_reach};
+use super::{
+    Event, MeasureKind, Message, Outcome, Preview, PreviewMeasure, Shown, Step, Xy, within_reach,
+};
 use crate::document::ElementId;
 use crate::document::sketch_edit::Members;
 
@@ -237,6 +239,11 @@ impl Line {
         };
         let end = end_of(step, &from, at);
         preview.lines.push([from.at(), end.placed.at]);
+        preview.measures.push(PreviewMeasure {
+            from: from.at(),
+            to: end.placed.at,
+            kind: MeasureKind::Length,
+        });
         if let Start::New(placed) = &from {
             preview.shown.extend(placed.shown());
         }

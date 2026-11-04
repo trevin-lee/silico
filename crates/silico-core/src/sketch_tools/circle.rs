@@ -7,7 +7,10 @@
 use super::build::Builder;
 use super::geometry::distance;
 use super::infer::{Align, Placed, Target, View};
-use super::{Event, Message, Outcome, Preview, Relation, Shown, Step, Xy, failed, within_reach};
+use super::{
+    Event, MeasureKind, Message, Outcome, Preview, PreviewMeasure, Relation, Shown, Step, Xy,
+    failed, within_reach,
+};
 use crate::document::{Form, Reference};
 
 #[derive(Debug, Clone, Default)]
@@ -158,6 +161,11 @@ impl Circle {
                 let (rim, through) = rim(step, centre, at);
                 preview.points.push(centre.at);
                 preview.circles.push((centre.at, distance(rim, centre.at)));
+                preview.measures.push(PreviewMeasure {
+                    from: centre.at,
+                    to: rim,
+                    kind: MeasureKind::Radius,
+                });
                 preview.shown.extend(centre.shown());
                 preview.pointer = Some(rim);
                 if let Some(through) = through {
