@@ -15,6 +15,8 @@ use silico_core::command::export::{DEFAULT_TOLERANCE, Export, ExportFormat};
 use silico_core::document::{FeatureId, Length};
 
 use crate::browse;
+use crate::modal::{self, Button, Kind};
+use crate::properties;
 use crate::tab::Row;
 use crate::theme::{self, FieldKind};
 
@@ -152,95 +154,116 @@ impl ExportForm {
         }
     }
 
-    /// The dialog drawn into `ui`, of `bodies`, showing `shown` of the tab's export.
+    /// The dialog's body and foot drawn into `ui`, a modal's (`crate::modal`), of `bodies`,
+    /// showing `shown` of the tab's export.
     pub fn ui(&mut self, ui: &mut Ui, bodies: &[Row], shown: &Shown<'_>) -> Action {
         let mut action = Action::None;
         let idle = !shown.running && shown.replacing.is_none();
         if let Some(path) = shown.replacing {
-            ui.label(format!("{} already exists. Replace it?", path.display()));
-            ui.horizontal(|ui| {
-                if ui.button("Replace").clicked() {
-                    action = Action::Replace;
-                }
-                if ui.button("Cancel").clicked() {
-                    action = Action::Cancel;
-                }
+            modal::body(ui, |ui| {
+                modal::text(
+                    ui,
+                    &format!("{} already exists. Replace it?", path.display()),
+                    theme::MODAL_TEXT,
+                );
             });
+            let ([], [cancel, replace]) = modal::foot(
+                ui,
+                [],
+                [
+                    Button::new("Cancel", Kind::Secondary),
+                    Button::new("Replace", Kind::Danger),
+                ],
+            );
+            if replace {
+                action = Action::Replace;
+            }
+            if cancel {
+                action = Action::Cancel;
+            }
             return action;
         }
-        ui.add_enabled_ui(idle, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Format");
-                for (step, word) in [(false, "3MF"), (true, "STEP")] {
-                    if ui
-                        .add(egui::Button::selectable(self.step == step, word))
-                        .clicked()
-                    {
-                        self.choose(step);
-                    }
+        modal::body(ui, |ui| {
+            ui.add_enabled_ui(idle, |ui| {
+                modal::label(ui, "Format");
+                let formats = ["3MF".to_owned(), "STEP".to_owned()];
+                if let Some(place) =
+                    properties::segmented(ui, &formats, usize::from(self.step), idle)
+                {
+                    self.choose(place == 1);
                 }
-            });
-            if !self.step {
-                ui.horizontal(|ui| {
-                    let label = ui.label("Tolerance");
+                if !self.step {
+                    let label = modal::label(ui, "Tolerance");
                     let red = unreadable(&self.tolerance);
-                    let edit = egui::TextEdit::singleline(&mut self.tolerance).desired_width(100.0);
-                    let edit = theme::field(ui, edit, "export-tolerance", FieldKind::Modify, red);
-                    ui.add(edit).labelled_by(label.id);
-                    ui.label("mm");
-                });
-            }
-            ui.checkbox(&mut self.all, "All bodies");
-            if !self.all {
-                for row in bodies {
-                    let mut on = self.chosen.contains(&row.id);
-                    if ui.checkbox(&mut on, &row.name).changed() {
-                        if on {
-                            self.chosen.insert(row.id.clone());
-                        } else {
-                            self.chosen.remove(&row.id);
+                    let unit_width = properties::unit_width(ui, "mm");
+                    let edit = theme::field_with_room(
+                        ui,
+                        egui::TextEdit::singleline(&mut self.tolerance),
+                        "export-tolerance",
+                        FieldKind::Modify,
+                        red,
+                        unit_width + theme::FIELD_UNIT_PADDING,
+                    );
+                    let (field, _) = modal::field(ui, edit, label.id, None);
+                    properties::unit(ui, field.rect, "mm");
+                }
+                ui.add_space(theme::MODAL_LABEL_MARGIN_TOP);
+                ui.spacing_mut().item_spacing.y = theme::MODAL_LABEL_MARGIN_BOTTOM;
+                ui.checkbox(&mut self.all, "All bodies");
+                if !self.all {
+                    for row in bodies {
+                        let mut on = self.chosen.contains(&row.id);
+                        if ui.checkbox(&mut on, &row.name).changed() {
+                            if on {
+                                self.chosen.insert(row.id.clone());
+                            } else {
+                                self.chosen.remove(&row.id);
+                            }
                         }
                     }
                 }
-            }
-            ui.horizontal(|ui| {
-                let label = ui.label("Path");
-                let edit = egui::TextEdit::singleline(&mut self.path);
-                ui.add(theme::field(
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let label = modal::label(ui, "Path");
+                let edit = theme::field(
                     ui,
-                    edit,
+                    egui::TextEdit::singleline(&mut self.path),
                     "export-path",
                     FieldKind::Modify,
                     false,
-                ))
-                .labelled_by(label.id);
-                if let Some(on) = shown.browse
-                    && browse::button(ui, on)
-                {
+                );
+                let (_, button) =
+                    modal::field(ui, edit, label.id, shown.browse.map(browse::button));
+                if button.is_some_and(browse::clicked) {
                     action = Action::Browse;
                 }
             });
-        });
-        if shown.running {
-            // Said, not animated: the app draws a frame only when something changed.
-            ui.label("Exporting…");
-        }
-        if let Some(said) = shown.said {
-            ui.colored_label(ui.visuals().error_fg_color, said);
-        }
-        ui.horizontal(|ui| {
-            let request = self.request(bodies);
-            if ui
-                .add_enabled(idle && request.is_some(), egui::Button::new("Export"))
-                .clicked()
-                && let Some(request) = request
-            {
-                action = Action::Export(request);
+            if shown.running {
+                // Said, not animated: the app draws a frame only when something changed.
+                ui.add_space(theme::MODAL_LABEL_MARGIN_TOP);
+                modal::text(ui, "Exporting…", theme::MODAL_TEXT);
             }
-            if ui.button("Cancel").clicked() {
-                action = Action::Cancel;
+            if let Some(said) = shown.said {
+                ui.add_space(theme::MODAL_LABEL_MARGIN_TOP);
+                modal::text(ui, said, theme::ERROR_TEXT);
             }
         });
+        let request = self.request(bodies);
+        let ([], [cancel, export]) = modal::foot(
+            ui,
+            [],
+            [
+                Button::new("Cancel", Kind::Secondary),
+                Button::new("Export", Kind::Primary)
+                    .cap("↵")
+                    .enabled(idle && request.is_some()),
+            ],
+        );
+        if export && let Some(request) = request {
+            action = Action::Export(request);
+        }
+        if cancel {
+            action = Action::Cancel;
+        }
         action
     }
 }

@@ -253,6 +253,14 @@ pub enum DiskChoice {
     Kept,
 }
 
+/// A reload of the session's own (section 4): the revision the tab had, and the one the
+/// file read gave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reloaded {
+    pub from: Revision,
+    pub to: Revision,
+}
+
 /// A row of the browser (section 8, *The browser*): a feature, by its ID and name, with the
 /// health it's marked with and the feature whose mark it is (a body's, the worst of its
 /// chain's).
@@ -350,6 +358,10 @@ pub struct Tab {
     /// A `begin` sent and not yet answered: the next edit begins none.
     beginning: bool,
     pub disk_choice: DiskChoice,
+    /// The session's last reload of its file, changed on disk while nothing was held (a
+    /// revision the tab didn't ask for), until the person dismisses its banner (DESIGN.md,
+    /// 6c).
+    pub reloaded: Option<Reloaded>,
     /// The feature selected in the timeline or the browser.
     pub selected: Option<FeatureId>,
     /// What the browser's eyes hide: the tab's state, never saved (open item 29).
@@ -463,6 +475,7 @@ impl Tab {
             resets: 0,
             beginning: false,
             disk_choice: DiskChoice::None,
+            reloaded: None,
             selected: None,
             hidden: std::collections::BTreeSet::new(),
             message: None,
@@ -661,6 +674,10 @@ impl Tab {
             if self.status.is_some() && session.revision != self.revision && self.quiet() {
                 self.resets += 1;
                 reloaded = true;
+                self.reloaded = Some(Reloaded {
+                    from: self.revision,
+                    to: session.revision,
+                });
             }
             self.revision = session.revision;
             self.transaction = session.transaction;

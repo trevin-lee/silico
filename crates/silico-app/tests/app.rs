@@ -570,6 +570,68 @@ fn an_agents_commit_reloads_with_no_edits_held_and_is_announced_with_edits_held(
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn a_reload_with_nothing_held_is_announced_in_purple_until_dismissed_or_overtaken() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let reloaded = "Reloaded example.silico: another program changed it on disk";
+    assert!(!anywhere(&h, reloaded));
+    // No edits held: the session reloads it itself, and the banner says so, from the
+    // revision it opened at (1) to the one its reload gave (2).
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Bore""#),
+    )
+    .unwrap();
+    step_until(&mut h, "the reload announced", |h| {
+        shows(h, "Timeline", "Bore") && anywhere(h, reloaded)
+    });
+    assert!(anywhere(
+        &h,
+        "Revision 1 → 2. You had no unsaved edits, so nothing of yours was lost."
+    ));
+    // It stays until it's dismissed.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, reloaded));
+    h.get_by_role_and_label(Role::Button, "Dismiss").click();
+    step_until(&mut h, "dismissed", |h| !anywhere(h, reloaded));
+    // Reloaded again, then changed on disk with an edit held: the amber banner takes its
+    // place, and once the edits are kept the purple one doesn't come back.
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Drill""#),
+    )
+    .unwrap();
+    step_until(&mut h, "the second reload announced", |h| {
+        shows(h, "Timeline", "Drill") && anywhere(h, reloaded)
+    });
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        anywhere(h, "example.silico *") && shows(h, "Timeline", "sPin")
+    });
+    std::fs::write(
+        &path,
+        EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#),
+    )
+    .unwrap();
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, changed));
+    assert!(!anywhere(&h, reloaded));
+    h.get_by_role_and_label(Role::Button, "Keep my edits")
+        .click();
+    step(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(!anywhere(&h, changed), "the amber banner came back");
+        assert!(!anywhere(&h, reloaded), "the purple banner came back");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// The session's own read of its file, as `silico_core::disk` reads it, for a test that
 /// compares with no interval.
 fn real(path: &Path) -> Found {

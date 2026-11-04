@@ -7,12 +7,14 @@
 //! also its Home tab, and the documents opened lately (`recent`).
 
 pub mod app;
+mod banner;
 pub mod bar;
 pub mod browse;
 pub mod dialog;
 pub mod export;
 pub mod icons;
 pub mod missing;
+mod modal;
 pub mod navigate;
 mod panes;
 mod properties;
