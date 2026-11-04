@@ -1334,6 +1334,54 @@ mod tests {
     }
 
     #[test]
+    fn caps_take_their_widths_and_one_gap_between_each_two() {
+        // `.keys { gap: 2px }` between caps, none outside them; each `.kbd` its text's width
+        // with 4 of padding and 1 of border at each side, 16 at least. One cap, two, and
+        // four, so no gap count n − 1 times 2 shares a value with n − 1 plus 2 (as three
+        // caps' would: 4 both ways).
+        let sets: [&[&str]; 3] = [&["I"], &["Ctrl", "N"], &["Ctrl", "Shift", "Alt", "Z"]];
+        let measured = std::cell::RefCell::new(Vec::new());
+        // Drawn, then dropped: the harness holds the closure's borrow of `measured`.
+        drop(drawn(|ui| {
+            let mut found = measured.borrow_mut();
+            found.clear();
+            for set in sets {
+                let caps: Vec<String> = set.iter().map(|cap| (*cap).to_owned()).collect();
+                let texts: Vec<f32> = set
+                    .iter()
+                    .map(|cap| {
+                        ui.painter()
+                            .layout_no_wrap(
+                                (*cap).to_owned(),
+                                FontId::proportional(css::KBD_SIZE),
+                                Color32::WHITE,
+                            )
+                            .size()
+                            .x
+                    })
+                    .collect();
+                found.push((texts, key_caps_width(ui, &caps)));
+            }
+        }));
+        let measured = measured.into_inner();
+        assert_eq!(measured.len(), sets.len());
+        let cap =
+            |text: f32| (text + 2.0 * (css::KBD_PADDING + css::KBD_BORDER)).max(css::KBD_MIN_WIDTH);
+        for (set, (texts, got)) in sets.iter().zip(&measured) {
+            let gaps = (set.len() - 1) as f32 * css::KEYS_GAP;
+            let want = texts.iter().map(|&text| cap(text)).sum::<f32>() + gaps;
+            assert!(near(*got, want), "{set:?}: {got}, not {want}");
+        }
+        // "I" is narrower than 6 points, so its cap is the least, 16, and one cap has no gap.
+        assert!(
+            measured[0].0[0] + 10.0 < css::KBD_MIN_WIDTH,
+            "{:?}",
+            measured[0].0
+        );
+        assert!(near(measured[0].1, css::KBD_MIN_WIDTH), "{}", measured[0].1);
+    }
+
+    #[test]
     fn the_shortcuts_caps_are_the_platforms_names_for_command() {
         // The prototype's KEYNAME: Mod is ⌘ on macOS, Ctrl elsewhere.
         let ctx = egui::Context::default();
