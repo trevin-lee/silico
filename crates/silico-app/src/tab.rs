@@ -3326,4 +3326,192 @@ mod tests {
             .filter(|call| matches!(call.op, Op::MakePrimitive(Primitive::Box { .. })))
             .count()
     }
+
+    // ---- #382's mutants: Rebuild everything's state, its problems, and nothing published ----
+
+    /// A document of one block, as the app's tests write one.
+    const BLOCK: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}, {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [2, 1, -1], "radius": 0.5, "height": 3}, {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"}]}"#;
+
+    type FakeSessions = Arc<Sessions<Arc<silico_core::fake::FakeKernel>>>;
+
+    /// Sessions on a fake kernel, `kernel` first told what to do, and `text` opened in a
+    /// tab: its directory (kept for the session's file), the sessions, and the tab.
+    fn opened_on(
+        text: &str,
+        kernel: impl FnOnce(&silico_core::fake::FakeKernel),
+    ) -> (tempfile::TempDir, FakeSessions, Tab) {
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("part.silico");
+        std::fs::write(&document, text).unwrap();
+        let fake = silico_core::fake::FakeKernel::new(1).unwrap();
+        kernel(&fake);
+        let kernel = Arc::new(fake);
+        let sessions = Arc::new(Sessions::with_cache_opener(Arc::clone(&kernel), |dir| {
+            silico_core::cache::Cache::unsealed(dir)
+        }));
+        let opened = sessions.open(&document, false).wait();
+        let id = opened.session.unwrap().id;
+        let tab = Tab::opened(
+            id,
+            document.to_str().unwrap().to_owned(),
+            &opened.result.unwrap().problems,
+        );
+        (dir, sessions, tab)
+    }
+
+    /// Answers taken until `done` holds, within a minute.
+    fn taken_until(tab: &mut Tab, sessions: &FakeSessions, done: impl Fn(&Tab) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !done(tab) {
+            tab.take_answers(sessions);
+            assert!(std::time::Instant::now() < deadline, "never answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// `tab`'s document read (its timeline, as `read_timeline` takes it), then Rebuild
+    /// everything sent and answered, what the tab said of the document before cleared.
+    fn rebuilt_everything(tab: &mut Tab, sessions: &FakeSessions) {
+        let timeline = sessions
+            .timeline(&tab.id, ModelChoice::Current)
+            .wait()
+            .result
+            .unwrap();
+        tab.took_timeline(timeline);
+        tab.document_problems.clear();
+        tab.rebuild_all(sessions);
+        assert_eq!(tab.rebuilds_all, 1, "sent");
+        taken_until(tab, sessions, |tab| tab.check_read.is_none());
+    }
+
+    #[test]
+    fn rebuild_everything_says_a_features_fault_as_the_features_never_the_documents() {
+        // The gate passes the document (its timeline counts no problem of the gate's); the
+        // block's build is refused, a problem of the block's: said once the block is opened
+        // (selected), as any feature's mark is, and nothing said of the document.
+        use silico_core::kernel::{Op, Primitive};
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |kernel| {
+            kernel.refuse(|op| {
+                matches!(op, Op::MakePrimitive(Primitive::Box { .. })).then(|| {
+                    silico_core::Error::new(ErrorCode::KernelFailed, "the block came apart")
+                })
+            });
+        });
+        rebuilt_everything(&mut tab, &sessions);
+        assert_eq!(tab.timeline.as_ref().map(|t| t.problems), Some(0));
+        assert_eq!(
+            tab.said.get("k7f2qx3m").map(|said| said.message.as_str()),
+            Some("the block came apart")
+        );
+        assert!(
+            tab.document_problems.is_empty(),
+            "{:?}",
+            tab.document_problems
+        );
+    }
+
+    #[test]
+    fn rebuild_everything_says_every_problem_of_a_document_the_gate_refused_as_the_documents() {
+        // A cut whose tool names no feature: the gate's one problem, of the cut. Every problem
+        // the check finds is the document's, the cut's too, as the property panel shows a
+        // refused document's.
+        let refused = BLOCK.replace(r#""tool": "a91cw0de""#, r#""tool": "zzzzzzzz""#);
+        let (_dir, sessions, mut tab) = opened_on(&refused, |_| {});
+        rebuilt_everything(&mut tab, &sessions);
+        assert_eq!(tab.timeline.as_ref().map(|t| t.problems), Some(1));
+        let cut = tab.said.get("m3tq8v0z").expect("the cut's problem").clone();
+        assert_eq!(tab.document_problems, [cut]);
+    }
+
+    #[test]
+    fn rebuild_everything_is_sent_only_with_the_document_read_no_dialog_no_close_and_no_check_out()
+    {
+        let sessions = Arc::new(Sessions::with_cache_opener(
+            Arc::new(silico_core::fake::FakeKernel::new(1).unwrap()),
+            |dir| silico_core::cache::Cache::unsealed(dir),
+        ));
+        let ready = || {
+            let mut tab = tab();
+            tab.timeline = Some(timeline(
+                0,
+                Some(Revision::OPENED),
+                vec![entry("a0000001", 0, 0)],
+            ));
+            tab
+        };
+        assert!(ready().can_rebuild_all());
+        // Each condition alone unmet.
+        let mut unread = ready();
+        unread.timeline = None;
+        let mut in_dialog = ready();
+        in_dialog.loading = Some(1);
+        let mut closing = ready();
+        closing
+            .edits
+            .queue
+            .push_back(Queued::Save { then_close: true });
+        let mut checking = ready();
+        checking.check_read = Some((false, sessions.check(&checking.id, CheckModel::Published)));
+        for (what, mut tab) in [
+            ("unread", unread),
+            ("in a dialog", in_dialog),
+            ("closing", closing),
+            ("a check out", checking),
+        ] {
+            assert!(!tab.can_rebuild_all(), "{what}");
+            tab.rebuild_all(&sessions);
+            assert_eq!(tab.rebuilds_all, 0, "{what}: sent");
+            assert!(!tab.fresh_out, "{what}: sent");
+        }
+        // All met: sent, once; a second waits for its answer.
+        let mut tab = ready();
+        tab.rebuild_all(&sessions);
+        assert_eq!(tab.rebuilds_all, 1);
+        assert!(!tab.can_rebuild_all());
+        tab.rebuild_all(&sessions);
+        assert_eq!(tab.rebuilds_all, 1);
+    }
+
+    #[test]
+    fn with_nothing_published_poll_after_poll_counts_no_model_and_the_first_published_once() {
+        // Every request of the kernel held: the rebuild publishes nothing, and the tab's count
+        // of the models it has seen published stays 0, poll after poll; once released, the
+        // model published counts once, and polls after it count nothing more.
+        let dir = tempfile::tempdir().unwrap();
+        let document = dir.path().join("part.silico");
+        std::fs::write(&document, BLOCK).unwrap();
+        let kernel = Arc::new(silico_core::fake::FakeKernel::new(1).unwrap());
+        let hold = kernel.hold(|_| true);
+        let sessions = Arc::new(Sessions::with_cache_opener(Arc::clone(&kernel), |dir| {
+            silico_core::cache::Cache::unsealed(dir)
+        }));
+        let opened = sessions.open(&document, false).wait();
+        let id = opened.session.unwrap().id;
+        let mut tab = Tab::opened(
+            id,
+            document.to_str().unwrap().to_owned(),
+            &opened.result.unwrap().problems,
+        );
+        // The first poll reads the timeline, which starts the rebuild.
+        tab.poll(&sessions);
+        assert!(kernel.wait_running(1, std::time::Duration::from_secs(60)));
+        assert_eq!(tab.published_models, 0);
+        for _ in 0..5 {
+            tab.poll(&sessions);
+            assert_eq!(tab.published, None);
+            assert_eq!(tab.published_models, 0);
+        }
+        hold.release();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while tab.published.is_none() {
+            tab.poll(&sessions);
+            assert!(std::time::Instant::now() < deadline, "never published");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(tab.published_models, 1);
+        for _ in 0..5 {
+            tab.poll(&sessions);
+            assert_eq!(tab.published_models, 1);
+        }
+    }
 }

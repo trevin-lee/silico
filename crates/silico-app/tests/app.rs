@@ -15968,3 +15968,172 @@ fn ctrl_shift_b_after_a_kept_fault_shows_the_model_it_built() {
     assert_eq!(h.state().tabs()[0].published, revision, "the same revision");
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- #382's mutants: a frame whose key acts asks for the next at once ----
+
+/// The line of app.rs on which a frame that started something, by a key or a control, asks
+/// for the next frame at once (`after_drawing`'s `request_repaint`), found in its source.
+fn started_line() -> u32 {
+    let source = include_str!("../src/app.rs");
+    let from = source.find("fn after_drawing").expect("after_drawing");
+    let at = from
+        + source[from..]
+            .find("ui.ctx().request_repaint();")
+            .expect("its ask for the next frame");
+    u32::try_from(source[..at].matches('\n').count() + 1).unwrap()
+}
+
+/// Whether the frame that takes `key`'s press, `modifiers` held, asks for the next at
+/// once itself, beyond egui's own ask after any input (`asked_from_app`): the app idle
+/// first, its idle frame asking no such thing. Each event its own frame, as the harness
+/// steps them, one pass each.
+fn asks_at_once_after(h: &mut AppHarness, modifiers: Modifiers, key: Key) -> bool {
+    // One pass a frame: a second, which egui runs when a layout asks it to, would take the
+    // causes the frame before asked for out of `repaint_causes`.
+    h.ctx
+        .options_mut(|options| options.max_passes = std::num::NonZeroUsize::MIN);
+    quiet_wakes(h);
+    idle(h);
+    step(h);
+    step(h);
+    assert!(
+        !asked_from_app(h).contains(&started_line()),
+        "an idle frame asked"
+    );
+    let event = |pressed| eframe::egui::Event::Key {
+        key,
+        pressed,
+        modifiers,
+        repeat: false,
+        physical_key: None,
+    };
+    h.event(eframe::egui::Event::ModifiersChanged(modifiers));
+    step(h);
+    // The key's frame; then the next, its release's, whose causes are the key frame's.
+    h.event(event(true));
+    step(h);
+    h.event(event(false));
+    step(h);
+    let asked = asked_from_app(h).contains(&started_line());
+    h.event(eframe::egui::Event::ModifiersChanged(Modifiers::NONE));
+    step(h);
+    asked
+}
+
+#[test]
+fn a_key_that_is_no_command_asks_for_no_frame_itself() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    settled(&mut h);
+    assert!(!asks_at_once_after(&mut h, Modifiers::NONE, Key::Q));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_s_alone_asks_for_the_next_frame_at_once() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    assert!(asks_at_once_after(&mut h, Modifiers::COMMAND, Key::S));
+    step_until(&mut h, "saved", |h| !anywhere(h, "example.silico *"));
+    assert_eq!(names_in(&path), ["Block", "KPin", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_z_alone_asks_for_the_next_frame_at_once() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    step_until(&mut h, "Undo offered", |h| {
+        h.state().tabs()[0].edits.idle() && offered(h, "Undo")
+    });
+    assert!(asks_at_once_after(&mut h, Modifiers::COMMAND, Key::Z));
+    step_until(&mut h, "undone", |h| shows(h, "Timeline", "Pin"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_y_alone_asks_for_the_next_frame_at_once() {
+    let f = fixture();
+    let (mut h, _) = undone_back(&f);
+    assert!(asks_at_once_after(&mut h, Modifiers::COMMAND, Key::Y));
+    step_until(&mut h, "redone", |h| shows(h, "Timeline", "xPin"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_alone_asks_for_the_next_frame_at_once() {
+    // A selection held: Esc clears it (section 3's order).
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    assert!(h.state().tabs()[0].selected.is_some());
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Escape));
+    assert_eq!(h.state().tabs()[0].selected, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_w_alone_asks_for_the_next_frame_at_once() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    settled(&mut h);
+    assert!(asks_at_once_after(&mut h, Modifiers::COMMAND, Key::W));
+    step_until(&mut h, "closed", |h| h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_alone_in_a_dialog_asks_for_the_next_frame_at_once() {
+    // The dialog's OK, which its pane asks the next frame for too, so this alone never
+    // tells `keys`' own `enter` from none (Ctrl+W's and Ctrl+B's tests do, beside it).
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::Enter));
+    step_until(&mut h, "the dialog's OK", |h| !dialog_open(h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_b_alone_asks_for_the_next_frame_at_once() {
+    let f = fixture();
+    let (mut h, hold) = first_rebuild_stopped(&f);
+    hold.release();
+    assert!(h.state().tabs()[0].can_rebuild());
+    assert!(asks_at_once_after(&mut h, Modifiers::COMMAND, Key::B));
+    assert_eq!(h.state().tabs()[0].rebuilds, 1);
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 0);
+    step_until(&mut h, "the timeline", |h| shows(h, "Timeline", "Hole"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_shift_b_alone_asks_for_the_next_frame_at_once() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    settled(&mut h);
+    assert!(asks_at_once_after(
+        &mut h,
+        Modifiers::COMMAND | Modifiers::SHIFT,
+        Key::B
+    ));
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 1);
+    assert_eq!(h.state().tabs()[0].rebuilds, 0);
+    assert_eq!(never_waits::waits(), 0);
+}

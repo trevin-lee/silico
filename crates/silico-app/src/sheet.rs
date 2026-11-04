@@ -433,7 +433,7 @@ mod tests {
 
     use super::*;
     use crate::modal::tests::{
-        at, colour, font, icon_at, near, painted, rects, rgba, text_shape, widget,
+        at, colour, font, icon_at, near, painted, rects, rgba, sized, text_shape, widget,
     };
     use eframe::egui::Color32;
 
@@ -497,6 +497,12 @@ mod tests {
         /// `.note`: `margin-top:6px; border-top:1px solid var(--g250); padding-top:8px`.
         pub const NOTE_TOP: f32 = 6.0;
         pub const NOTE_PAD: f32 = 8.0;
+        /// `.modal { max-width: calc(100vw - 40px) }`.
+        pub const MODAL_MARGIN: f32 = 40.0;
+        /// `.cols { columns: 3 260px }`: a column's least width.
+        pub const COLUMN_MIN_W: f32 = 260.0;
+        /// `.sheet .sc-row { gap: 8px }`: between a row's name and its keys.
+        pub const ROW_GAP: f32 = 8.0;
     }
 
     /// The text of `range` of `text`.
@@ -508,11 +514,16 @@ mod tests {
     const WINDOW: Vec2 = Vec2::new(1280.0, 800.0);
 
     fn sheet(filter: &str) -> Harness<'static, (Sheet, bool)> {
+        sheet_in(filter, WINDOW)
+    }
+
+    /// [`sheet`] in a window of `window`.
+    fn sheet_in(filter: &str, window: Vec2) -> Harness<'static, (Sheet, bool)> {
         let open = Sheet {
             filter: filter.to_owned(),
             focused: false,
         };
-        let mut h = Harness::builder().with_size(WINDOW).build_ui_state(
+        let mut h = Harness::builder().with_size(window).build_ui_state(
             |ui, (sheet, closed): &mut (Sheet, bool)| {
                 *closed |= show(ui.ctx(), sheet);
             },
@@ -868,6 +879,9 @@ mod tests {
         assert_eq!(balanced(&[100.0, 10.0, 10.0], 2), [0, 1, 1]);
         assert_eq!(balanced(&[], 3), Vec::<usize>::new());
         assert_eq!(balanced(&[5.0], 3), [0]);
+        // One column takes every group, however tall: two of 10 fill it to 34 exactly.
+        assert_eq!(balanced(&[10.0, 10.0], 1), [0, 0]);
+        assert_eq!(balanced(&[10.0, 20.0, 30.0], 1), [0, 0, 0]);
     }
 
     #[test]
@@ -897,5 +911,196 @@ mod tests {
         let job = marked("Open…", "n…");
         assert_eq!(part(&job.text, &job.sections[1].byte_range), "n…");
         assert_eq!(marked("Fit", "").sections.len(), 1);
+        // Found to its end: one section, marked, nothing after it (`<mark>Fit</mark>`).
+        let job = marked("Fit", "fit");
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(job.sections[0].format.background, rgba(css::MARK));
+        let job = marked("Save As…", "as…");
+        assert_eq!(
+            job.sections
+                .iter()
+                .map(|section| part(&job.text, &section.byte_range))
+                .collect::<Vec<_>>(),
+            ["Save ", "As…"]
+        );
+        assert!(marked("", "").sections.is_empty());
+    }
+
+    /// A window narrower than the sheet and its margins, tall enough for one column of
+    /// every group.
+    const NARROW: Vec2 = Vec2::new(500.0, 1400.0);
+
+    /// Each group's height, with `rows` commands, by hand: its title's 16 line, 4, its 1
+    /// underline, 4, and 22 a row.
+    fn group_tall(rows: f32) -> f32 {
+        css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H
+    }
+
+    #[test]
+    fn a_narrow_window_takes_the_sheet_40_narrower_and_every_group_in_one_column() {
+        // 460 of a 500 window.
+        let h = sheet_in("", NARROW);
+        let frame = frame_of(&h);
+        assert!(
+            near(frame.width(), NARROW.x - css::MODAL_MARGIN),
+            "{frame:?}"
+        );
+        at(
+            frame.center(),
+            Pos2::new(NARROW.x / 2.0, frame.center().y),
+            "the sheet's middle",
+        );
+        let inside = frame.shrink(css::BORDER);
+        let body = inside.shrink2(Vec2::new(css::BODY_SIDE, 0.0));
+        // 426 between the body's sides, short of the 548 two columns of 260 and their gap
+        // take: one column, every group in it in order, 14 apart.
+        assert!(body.width() < 2.0 * css::COLUMN_MIN_W + css::COLUMN_GAP);
+        let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
+        let mut down = 0.0;
+        for (name, rows) in [
+            ("FILE", 5.0),
+            ("EDIT", 2.0),
+            ("REBUILD", 3.0),
+            ("VIEW", 12.0),
+            ("SELECTION", 2.0),
+            ("DIALOGS", 2.0),
+            ("HELP", 1.0),
+        ] {
+            let shown = texts(&h, name);
+            assert_eq!(shown.len(), 1, "{name}");
+            at(shown[0].pos, Pos2::new(body.left(), top + down), name);
+            down += group_tall(rows) + css::GROUP_GAP;
+        }
+    }
+
+    #[test]
+    fn the_title_is_whole_where_it_fits_and_cut_short_8_before_the_filter_where_not() {
+        let h = sheet("");
+        let title = texts(&h, TITLE).remove(0);
+        assert!(!title.galley.elided, "the title cut short in a wide window");
+        // From 400 to 430 wide, a point at a time: the head's 16, the help icon's 14, 8, then
+        // 8, the filter's 220, 8, the ×'s 24, and 12 leave the title 48 to 78 of the 130 or
+        // so it needs. It's cut short, and ends no nearer the filter than the head's gap.
+        for width in 400..=430 {
+            let h = sheet_in("", Vec2::new(width as f32, 800.0));
+            let title = texts(&h, TITLE).remove(0);
+            let filter = widget(&h, Role::TextInput, FILTER_LABEL);
+            let right = title.pos.x + title.galley.size().x;
+            assert!(title.galley.elided, "{width} wide: the title whole");
+            assert!(
+                right <= filter.left() - css::HEAD_GAP + egui::emath::GUI_ROUNDING,
+                "{width} wide: the title ends at {right}, the filter starts at {}",
+                filter.left()
+            );
+        }
+    }
+
+    /// Each row's name painted (12, as `.sc-row`'s), and where the first of the caps on its
+    /// line starts, in the order painted.
+    fn row_names<S>(h: &Harness<'_, S>) -> Vec<(TextShape, f32)> {
+        let caps: Vec<Rect> = rects(h)
+            .into_iter()
+            .filter(|shape| near(shape.rect.height(), css::KBD_H) && shape.stroke.width > 0.0)
+            .map(|shape| shape.rect)
+            .collect();
+        painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                egui::Shape::Text(shown)
+                    if shown.galley.job.sections[0].format.font_id.size == css::FS
+                        && REGISTRY.iter().any(|entry| {
+                            !entry.keys.is_empty() && entry.label == shown.galley.text()
+                        }) =>
+                {
+                    let middle = shown.pos.y + shown.galley.size().y / 2.0;
+                    let first = caps
+                        .iter()
+                        .filter(|cap| near(cap.center().y, middle) && cap.left() > shown.pos.x)
+                        .map(|cap| cap.left())
+                        .fold(f32::INFINITY, f32::min);
+                    Some((shown, first))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_rows_name_is_whole_where_it_fits_and_cut_short_8_before_its_caps_where_not() {
+        let every = REGISTRY
+            .iter()
+            .filter(|entry| !entry.keys.is_empty())
+            .count();
+        let h = sheet("");
+        let shown = row_names(&h);
+        assert_eq!(shown.len(), every);
+        for (name, _) in &shown {
+            assert!(!name.galley.elided, "{:?} cut short", name.galley.text());
+        }
+        // 230 to 250 wide: the sheet 190 to 210, its one column 156 to 176 between the
+        // body's sides. A name too long for what its caps leave is cut short, never nearer
+        // them than the row's gap.
+        for width in [230.0, 240.0, 250.0] {
+            let h = sheet_in("", Vec2::new(width, 1400.0));
+            let shown = row_names(&h);
+            assert_eq!(shown.len(), every, "{width} wide");
+            assert!(
+                shown.iter().any(|(name, _)| name.galley.elided),
+                "{width} wide: no name cut short"
+            );
+            for (name, caps) in &shown {
+                let right = name.pos.x + name.galley.size().x;
+                assert!(
+                    right <= caps - css::ROW_GAP + egui::emath::GUI_ROUNDING,
+                    "{width} wide: {:?} ends at {right}, its caps start at {caps}",
+                    name.galley.text()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_rows_keys_are_one_label_over_its_caps() {
+        let h = sheet("");
+        let inside = frame_of(&h).shrink(css::BORDER);
+        let body = inside.shrink2(Vec2::new(css::BODY_SIDE, 0.0));
+        let column = (body.width() - 2.0 * css::COLUMN_GAP) / 3.0;
+        let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
+        let rows = top + css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN;
+        for (nth, said, count) in [(0.0, "Ctrl+N", 2), (3.0, "Ctrl+Shift+S", 3)] {
+            let row = Rect::from_min_size(
+                Pos2::new(body.left(), rows + nth * css::ROW_H),
+                Vec2::new(column, css::ROW_H),
+            );
+            let drawn = caps_at(&h, row.center().y - css::KBD_H / 2.0, row);
+            assert_eq!(drawn.len(), count, "{said}'s caps");
+            // From its first cap's left to the column's right, the caps' 16 high, centred
+            // on the row's 22.
+            let keys = Rect::from_min_max(
+                Pos2::new(drawn[0].rect.left(), row.center().y - css::KBD_H / 2.0),
+                Pos2::new(row.right(), row.center().y + css::KBD_H / 2.0),
+            );
+            sized(h.get_by_label(said).rect(), keys, said);
+        }
+    }
+
+    #[test]
+    fn selections_note_is_at_its_titles_right_as_the_prototype_writes_it() {
+        // The prototype's `notes`: Selection's "outside sketches", in the third column, at
+        // the right of its title's line, as written (no capitals, no spacing).
+        let h = sheet("");
+        let inside = frame_of(&h).shrink(css::BORDER);
+        let body = inside.shrink2(Vec2::new(css::BODY_SIDE, 0.0));
+        let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
+        let note = text_shape(&h, "outside sketches");
+        assert!(
+            near(note.pos.x + note.galley.size().x, body.right()),
+            "{:?}",
+            note.pos
+        );
+        assert!(near(note.pos.y, top));
+        font(&note, css::TITLE_FS, "Selection's note");
+        assert_eq!(colour(&note), css::G550);
+        assert_eq!(note.galley.job.sections[0].format.extra_letter_spacing, 0.0);
     }
 }
