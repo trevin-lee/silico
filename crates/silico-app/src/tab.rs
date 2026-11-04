@@ -253,6 +253,14 @@ pub enum DiskChoice {
     Kept,
 }
 
+/// A reload of the session's own (section 4): the revision the tab had, and the one the
+/// file read gave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reloaded {
+    pub from: Revision,
+    pub to: Revision,
+}
+
 /// A row of the browser (section 8, *The browser*): a feature, by its ID and name, with the
 /// health it's marked with and the feature whose mark it is (a body's, the worst of its
 /// chain's).
@@ -350,6 +358,15 @@ pub struct Tab {
     /// A `begin` sent and not yet answered: the next edit begins none.
     beginning: bool,
     pub disk_choice: DiskChoice,
+    /// The session's last reload of its file, changed on disk while nothing was held (a
+    /// revision the tab didn't ask for), until the person dismisses its banner (DESIGN.md,
+    /// 6c).
+    pub reloaded: Option<Reloaded>,
+    /// The person reverted while the file had changed on disk (Reload, or Revert after
+    /// keeping their edits): the session's reload that follows is theirs, not another
+    /// program's, so it shows no [`reloaded`](Self::reloaded) banner. Let go once the file
+    /// is as the session holds it again.
+    reload_asked: bool,
     /// The feature selected in the timeline or the browser.
     pub selected: Option<FeatureId>,
     /// What the browser's eyes hide: the tab's state, never saved (open item 29).
@@ -463,6 +480,8 @@ impl Tab {
             resets: 0,
             beginning: false,
             disk_choice: DiskChoice::None,
+            reloaded: None,
+            reload_asked: false,
             selected: None,
             hidden: std::collections::BTreeSet::new(),
             message: None,
@@ -661,13 +680,28 @@ impl Tab {
             if self.status.is_some() && session.revision != self.revision && self.quiet() {
                 self.resets += 1;
                 reloaded = true;
+                self.reloaded = if std::mem::take(&mut self.reload_asked) {
+                    None
+                } else {
+                    Some(Reloaded {
+                        from: self.revision,
+                        to: session.revision,
+                    })
+                };
             }
             self.revision = session.revision;
             self.transaction = session.transaction;
             self.status_revision = session.revision;
         }
         match status.result {
-            Ok(status) => self.status = Some(status),
+            Ok(status) => {
+                // The file as the session holds it, nothing of the tab's under way: no
+                // reload of the person's is still to come.
+                if self.quiet() && !matches!(status.disk, Some(Disk::Changed | Disk::Gone)) {
+                    self.reload_asked = false;
+                }
+                self.status = Some(status);
+            }
             // Its session isn't open any more: the tab goes.
             Err(_) => {
                 self.closed = true;
@@ -1387,6 +1421,15 @@ impl Tab {
     /// (section 4).
     pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
         self.message = None;
+        // The session reloads the file changed on disk once the edits are gone: at the
+        // person's asking.
+        if self
+            .status
+            .as_ref()
+            .is_some_and(|status| matches!(status.disk, Some(Disk::Changed | Disk::Gone)))
+        {
+            self.reload_asked = true;
+        }
         // The document goes back to the file's: a dialog open on it has nothing to edit.
         self.dialog = None;
         self.loading = None;
@@ -1664,12 +1707,16 @@ impl Tab {
 
     /// Esc with no dialog open (section 3's order): the selection cleared, or, with none, a
     /// rebuild running stopped quietly ([`stop_quietly`](Self::stop_quietly)); with
-    /// neither, nothing.
+    /// neither, the reload's banner dismissed, if one shows.
     pub fn escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if self.selected.is_some() {
             self.selected = None;
         } else if self.stoppable() {
             self.stop_quietly(sessions);
+        } else {
+            // Last, the purple banner dismissed (DESIGN.md, 6c; an amber or red one in its
+            // place has let it go already).
+            self.reloaded = None;
         }
     }
 

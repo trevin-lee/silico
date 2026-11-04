@@ -208,13 +208,19 @@ impl<T> Browsing<T> {
 /// What a Browse… button that's off says when hovered.
 pub const ALREADY_OPEN: &str = "A file dialog is already open";
 
-/// The Browse… button, drawn into `ui`: off unless `on` (off while a dialog is open), and
-/// then saying why when hovered. Whether it was clicked.
-pub fn button(ui: &mut egui::Ui, on: bool) -> bool {
-    let mut response = ui.add_enabled(on, egui::Button::new("Browse…"));
-    if !on {
-        response = response.on_disabled_hover_text(ALREADY_OPEN);
-    }
+/// The Browse… button beside a path field (`.btn-secondary`): off unless `on` (off while
+/// a dialog is open).
+pub(crate) fn button(on: bool) -> crate::modal::Button<'static> {
+    crate::modal::Button::new("Browse…", crate::modal::Kind::Secondary).enabled(on)
+}
+
+/// The Browse… button as drawn: saying why it's off when hovered. Whether it was clicked.
+pub(crate) fn clicked(response: egui::Response) -> bool {
+    let response = if response.enabled() {
+        response
+    } else {
+        response.on_disabled_hover_text(ALREADY_OPEN)
+    };
     response.clicked()
 }
 

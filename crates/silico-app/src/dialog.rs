@@ -633,13 +633,14 @@ impl Dialog {
             cancel_at,
             "Cancel",
             "Esc",
-            properties::Look::Secondary,
+            crate::modal::Kind::Secondary,
             enabled,
         );
         if cancel.clicked() {
             action = Action::Cancel;
         }
-        if properties::footer_button(ui, ok_at, "OK", "↵", properties::Look::Primary, ok).clicked()
+        if properties::footer_button(ui, ok_at, "OK", "↵", crate::modal::Kind::Primary, ok)
+            .clicked()
         {
             action = Action::Ok;
         }

@@ -16,10 +16,12 @@ use silico_core::command::{Opened, Response, Running, SessionId, Sessions};
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
 
+use crate::banner::{self, Banner, Tone};
 use crate::bar;
 use crate::browse::{self, Ask, Browse, Browsing, Pick};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
+use crate::modal::{self, Button, Kind};
 use crate::panes::{self, Pane, Panes};
 use crate::recent::Recents;
 use crate::start::{self, Warm};
@@ -472,7 +474,6 @@ impl<P: Clients + 'static> App<P> {
             &self.sessions,
             &mut started,
         );
-        self.disk_banner(ui, &mut started);
         egui::CentralPanel::default().show(ui, |ui| {
             let active = self.active_place();
             let shown = active.and_then(|at| self.tabs.get(at)).map(|tab| tab.id);
@@ -501,6 +502,13 @@ impl<P: Clients + 'static> App<P> {
                 dialog_key,
             };
             tree.ui(&mut panes, ui);
+            // Over the canvas, drawn after it, so it takes the pointer over its place.
+            let canvas = tree
+                .tiles
+                .find_pane(&Pane::Viewport)
+                .and_then(|viewport| tree.tiles.rect(viewport))
+                .unwrap_or_else(|| ui.max_rect());
+            self.disk_banner(ui, canvas, &mut started);
         });
         self.after_drawing(ui, started);
     }
@@ -812,7 +820,8 @@ impl<P: Clients + 'static> App<P> {
             (false, false) => None,
         };
         // Esc, with no dialog open: the selection cleared first, then a rebuild running
-        // stopped, as the stop does (section 3's order); with neither, nothing.
+        // stopped, as the stop does (section 3's order); with neither, the reload's banner
+        // dismissed.
         if stop && !in_dialog {
             tab.escape(sessions);
         }
@@ -910,9 +919,11 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The Browse… button beside a path field, if the app has native dialogs: off while one
-    /// is open. Whether it was clicked.
-    fn browse_button(&self, ui: &mut Ui) -> bool {
-        self.browser.is_some() && browse::button(ui, self.browsing.is_none())
+    /// is open.
+    fn browse_button(&self) -> Option<modal::Button<'static>> {
+        self.browser
+            .as_ref()
+            .map(|_| browse::button(self.browsing.is_none()))
     }
 
     /// Open (File > Open…, Command+O, the start page's Open…): the platform's own open panel
@@ -1300,41 +1311,101 @@ impl<P: Clients + 'static> App<P> {
             });
     }
 
-    /// A file changed on disk while edits are held (section 4): Reload (`rollback`, after
-    /// which the session reloads it) or keep the edits (a commit is then a conflict).
-    fn disk_banner(&mut self, ui: &mut Ui, started: &mut bool) {
+    /// The banner over the canvas (section 4; DESIGN.md's 6c and 6d): a file changed on
+    /// disk while edits are held, amber (gone, red), offering Reload (`rollback`, after which
+    /// the session reloads it) or to keep the edits (a commit is then a conflict); or else,
+    /// once the session has reloaded its file with nothing held, purple, saying so until
+    /// it's dismissed.
+    fn disk_banner(&mut self, ui: &mut Ui, canvas: egui::Rect, started: &mut bool) {
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return;
         };
-        let DiskChoice::Offered(disk) = tab.disk_choice else {
-            return;
-        };
-        egui::Panel::top("disk_banner").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let what = match disk {
-                    Disk::Gone => "is gone from disk",
-                    _ => "changed on disk",
-                };
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    format!("{} {what} while you have unsaved edits.", tab.name()),
-                );
-                // Off while the tab closes: its close drops the edits already.
-                if ui
-                    .add_enabled(!tab.closing(), egui::Button::new("Reload"))
-                    .clicked()
-                {
+        if let DiskChoice::Offered(disk) = tab.disk_choice {
+            // The newer news: the file changed again, with edits held now.
+            tab.reloaded = None;
+            let (tone, what, sub) = match disk {
+                Disk::Gone => (
+                    Tone::Error,
+                    "is gone from disk",
+                    &[(
+                        "The part is still open here, with your edits: keep them, or reload, \
+                         which drops them.",
+                        false,
+                    )][..],
+                ),
+                _ => (
+                    Tone::Warning,
+                    "changed on disk",
+                    &[
+                        ("Another program wrote the file: an agent through ", false),
+                        ("silico serve", true),
+                        (
+                            ", git, or an editor. Your edits are safe here, and Save won't \
+                             write over the change.",
+                            false,
+                        ),
+                    ][..],
+                ),
+            };
+            let title = format!("{} {what} while you have unsaved edits.", tab.name());
+            // The prototype's Show changes goes first, once the core can say what changed
+            // between two revisions (DESIGN.md, open item 1): it has no diff to show yet.
+            let clicked = banner::show(
+                ui,
+                canvas,
+                &Banner {
+                    tone,
+                    title: &title,
+                    sub,
+                    // Reload is off while the tab closes: its close drops the edits already.
+                    buttons: &[
+                        ("Reload, discard my edits", !tab.closing()),
+                        ("Keep my edits…", true),
+                    ],
+                    dismiss: false,
+                },
+            );
+            match clicked {
+                banner::Clicked::Button(0) => {
                     tab.revert(&self.sessions, false);
                     *started = true;
                 }
-                if ui.button("Keep my edits").clicked() {
-                    tab.disk_choice = DiskChoice::Kept;
-                }
-            });
-        });
+                banner::Clicked::Button(_) => tab.disk_choice = DiskChoice::Kept,
+                banner::Clicked::None | banner::Clicked::Dismiss => {}
+            }
+            return;
+        }
+        let Some(reloaded) = tab.reloaded else {
+            return;
+        };
+        let title = format!(
+            "Reloaded {}: another program changed it on disk",
+            tab.name()
+        );
+        let sub = format!(
+            "Revision {} → {}. You had no unsaved edits, so nothing of yours was lost.",
+            reloaded.from.number(),
+            reloaded.to.number()
+        );
+        // The prototype's list of what changed, its marks on the changed features, and its
+        // Restore my version wait on the core's diff (DESIGN.md, open item 1).
+        let clicked = banner::show(
+            ui,
+            canvas,
+            &Banner {
+                tone: Tone::Info,
+                title: &title,
+                sub: &[(&sub, false)],
+                buttons: &[],
+                dismiss: true,
+            },
+        );
+        if clicked == banner::Clicked::Dismiss {
+            tab.reloaded = None;
+        }
     }
 
-    /// What the app is asking, as a modal: a path, or whether to save.
+    /// What the app is asking, as a modal (`modal`): a path, or whether to save.
     fn ask(&mut self, ui: &mut Ui, started: &mut bool) {
         let Some(asking) = self.asking.clone() else {
             return;
@@ -1345,39 +1416,41 @@ impl<P: Clients + 'static> App<P> {
         let (enter, escape) = (key == Some(Key::Enter), key == Some(Key::Escape));
         let mut done = false;
         let mut browse = false;
-        egui::Modal::new(egui::Id::new("asking")).show(ui.ctx(), |ui| match asking {
+        modal::show(ui.ctx(), egui::Id::new("asking"), |ui| match asking {
             Asking::Path { create } => {
-                ui.heading(if create {
-                    "New document"
+                let (icon, title) = if create {
+                    (Icon::NewDoc, "New document")
                 } else {
-                    "Open document"
-                });
-                ui.horizontal(|ui| {
-                    let label = ui.label("Path");
+                    (Icon::Open, "Open document")
+                };
+                modal::head(ui, Some(icon), title);
+                let beside = self.browse_button();
+                modal::body(ui, |ui| {
+                    let label = modal::label(ui, "Path");
                     let edit = egui::TextEdit::singleline(&mut self.open_path);
-                    ui.add(theme::field(
-                        ui,
-                        edit,
-                        "open-path",
-                        FieldKind::Modify,
-                        false,
-                    ))
-                    .labelled_by(label.id);
-                    browse = self.browse_button(ui);
+                    let edit = theme::field(ui, edit, "open-path", FieldKind::Modify, false);
+                    let (_, button) = modal::field(ui, edit, label.id, beside);
+                    browse = button.is_some_and(browse::clicked);
                 });
-                ui.horizontal(|ui| {
-                    let word = if create { "Create" } else { "Open" };
-                    // The path as typed; only an empty one (spaces aside) opens nothing.
-                    if (ui.button(word).clicked() || enter) && !self.open_path.trim().is_empty() {
-                        let path = std::mem::take(&mut self.open_path);
-                        self.open(&path, create);
-                        *started = true;
-                        done = true;
-                    }
-                    if ui.button("Cancel").clicked() || escape {
-                        done = true;
-                    }
-                });
+                let word = if create { "Create" } else { "Open" };
+                let ([], [cancel, ok]) = modal::foot(
+                    ui,
+                    [],
+                    [
+                        Button::new("Cancel", Kind::Secondary),
+                        Button::new(word, Kind::Primary).cap("↵"),
+                    ],
+                );
+                // The path as typed; only an empty one (spaces aside) opens nothing.
+                if (ok || enter) && !self.open_path.trim().is_empty() {
+                    let path = std::mem::take(&mut self.open_path);
+                    self.open(&path, create);
+                    *started = true;
+                    done = true;
+                }
+                if cancel || escape {
+                    done = true;
+                }
             }
             Asking::SaveAs(id) => {
                 let name = self
@@ -1385,42 +1458,39 @@ impl<P: Clients + 'static> App<P> {
                     .iter()
                     .find(|tab| tab.id == id)
                     .map(|tab| tab.name().to_owned());
-                ui.heading(format!(
-                    "Save {} as",
-                    name.as_deref().unwrap_or("the document")
-                ));
-                ui.horizontal(|ui| {
-                    let label = ui.label("Path");
+                let title = format!("Save {} as", name.as_deref().unwrap_or("the document"));
+                modal::head(ui, Some(Icon::Save), &title);
+                let beside = self.browse_button();
+                modal::body(ui, |ui| {
+                    let label = modal::label(ui, "Path");
                     let edit = egui::TextEdit::singleline(&mut self.save_as_path);
-                    ui.add(theme::field(
-                        ui,
-                        edit,
-                        "save-as-path",
-                        FieldKind::Modify,
-                        false,
-                    ))
-                    .labelled_by(label.id);
-                    browse = self.browse_button(ui);
+                    let edit = theme::field(ui, edit, "save-as-path", FieldKind::Modify, false);
+                    let (_, button) = modal::field(ui, edit, label.id, beside);
+                    browse = button.is_some_and(browse::clicked);
                 });
-                ui.horizontal(|ui| {
-                    if (ui.button("Save").clicked() || enter)
-                        && !self.save_as_path.trim().is_empty()
-                    {
-                        let typed = std::mem::take(&mut self.save_as_path);
-                        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                            // A relative path is in the document's folder.
-                            let path = export::beside(&tab.path, &typed)
-                                .to_string_lossy()
-                                .into_owned();
-                            tab.save_as(&self.sessions, path, false);
-                        }
-                        *started = true;
-                        done = true;
+                let ([], [cancel, save]) = modal::foot(
+                    ui,
+                    [],
+                    [
+                        Button::new("Cancel", Kind::Secondary),
+                        Button::new("Save", Kind::Primary).cap("↵"),
+                    ],
+                );
+                if (save || enter) && !self.save_as_path.trim().is_empty() {
+                    let typed = std::mem::take(&mut self.save_as_path);
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                        // A relative path is in the document's folder.
+                        let path = export::beside(&tab.path, &typed)
+                            .to_string_lossy()
+                            .into_owned();
+                        tab.save_as(&self.sessions, path, false);
                     }
-                    if ui.button("Cancel").clicked() || escape {
-                        done = true;
-                    }
-                });
+                    *started = true;
+                    done = true;
+                }
+                if cancel || escape {
+                    done = true;
+                }
             }
             Asking::Export(id) => {
                 let sessions = &self.sessions;
@@ -1432,7 +1502,7 @@ impl<P: Clients + 'static> App<P> {
                     done = true;
                     return;
                 };
-                ui.heading(format!("Export {}", tab.name()));
+                modal::head(ui, None, &format!("Export {}", tab.name()));
                 let replacing = tab
                     .export_replacing
                     .as_ref()
@@ -1468,19 +1538,32 @@ impl<P: Clients + 'static> App<P> {
                 }
             }
             Asking::Replace(id, path) => {
-                ui.label(format!("{path} already exists. Replace it?"));
-                ui.horizontal(|ui| {
-                    if ui.button("Replace").clicked() {
-                        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                            tab.save_as(&self.sessions, path.clone(), true);
-                        }
-                        *started = true;
-                        done = true;
-                    }
-                    if ui.button("Cancel").clicked() || escape {
-                        done = true;
-                    }
+                modal::head(ui, Some(Icon::Warn), "Replace the file?");
+                modal::body(ui, |ui| {
+                    modal::text(
+                        ui,
+                        &format!("{path} already exists. Replace it?"),
+                        theme::MODAL_TEXT,
+                    );
                 });
+                let ([], [cancel, replace]) = modal::foot(
+                    ui,
+                    [],
+                    [
+                        Button::new("Cancel", Kind::Secondary),
+                        Button::new("Replace", Kind::Danger),
+                    ],
+                );
+                if replace {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                        tab.save_as(&self.sessions, path.clone(), true);
+                    }
+                    *started = true;
+                    done = true;
+                }
+                if cancel || escape {
+                    done = true;
+                }
             }
             Asking::Close(id) => {
                 let name = self
@@ -1488,30 +1571,44 @@ impl<P: Clients + 'static> App<P> {
                     .iter()
                     .find(|tab| tab.id == id)
                     .map(|tab| tab.name().to_owned());
-                ui.label(format!(
+                let title = format!(
                     "Save changes to {} before closing?",
                     name.as_deref().unwrap_or("the document")
-                ));
-                ui.horizontal(|ui| {
-                    let sessions = &self.sessions;
-                    if ui.button("Save").clicked() {
-                        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                            tab.save(sessions, true);
-                        }
-                        *started = true;
-                        done = true;
-                    }
-                    if ui.button("Don't save").clicked() {
-                        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                            tab.revert(sessions, true);
-                        }
-                        *started = true;
-                        done = true;
-                    }
-                    if ui.button("Cancel").clicked() || escape {
-                        done = true;
-                    }
+                );
+                modal::head(ui, Some(Icon::Save), &title);
+                modal::body(ui, |ui| {
+                    modal::text(
+                        ui,
+                        "It has unsaved edits. Closing without saving drops them.",
+                        theme::MODAL_TEXT,
+                    );
                 });
+                let ([drop], [cancel, save]) = modal::foot(
+                    ui,
+                    [Button::new("Don't save", Kind::Danger)],
+                    [
+                        Button::new("Cancel", Kind::Secondary),
+                        Button::new("Save", Kind::Primary),
+                    ],
+                );
+                let sessions = &self.sessions;
+                if save {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                        tab.save(sessions, true);
+                    }
+                    *started = true;
+                    done = true;
+                }
+                if drop {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+                        tab.revert(sessions, true);
+                    }
+                    *started = true;
+                    done = true;
+                }
+                if cancel || escape {
+                    done = true;
+                }
             }
             Asking::Quit => {
                 let names: Vec<&str> = self
@@ -1520,30 +1617,41 @@ impl<P: Clients + 'static> App<P> {
                     .filter(|tab| tab.unsaved())
                     .map(Tab::name)
                     .collect();
-                ui.label(format!(
-                    "Save changes before quitting? Unsaved: {}",
-                    names.join(", ")
-                ));
-                ui.horizontal(|ui| {
-                    let sessions = &self.sessions;
-                    let save = ui.button("Save all").clicked();
-                    let drop = ui.button("Don't save").clicked();
-                    if save || drop {
-                        for tab in &mut self.tabs {
-                            match (tab.unsaved(), save) {
-                                (true, true) => tab.save(sessions, true),
-                                (true, false) => tab.revert(sessions, true),
-                                (false, _) => tab.close(sessions),
-                            }
-                        }
-                        self.quitting = true;
-                        *started = true;
-                        done = true;
-                    }
-                    if ui.button("Cancel").clicked() || escape {
-                        done = true;
-                    }
+                modal::head(ui, Some(Icon::Save), "Save changes before quitting?");
+                modal::body(ui, |ui| {
+                    modal::text(
+                        ui,
+                        &format!(
+                            "Unsaved: {}. Quitting without saving drops their edits.",
+                            names.join(", ")
+                        ),
+                        theme::MODAL_TEXT,
+                    );
                 });
+                let ([drop], [cancel, save]) = modal::foot(
+                    ui,
+                    [Button::new("Don't save", Kind::Danger)],
+                    [
+                        Button::new("Cancel", Kind::Secondary),
+                        Button::new("Save all", Kind::Primary),
+                    ],
+                );
+                let sessions = &self.sessions;
+                if save || drop {
+                    for tab in &mut self.tabs {
+                        match (tab.unsaved(), save) {
+                            (true, true) => tab.save(sessions, true),
+                            (true, false) => tab.revert(sessions, true),
+                            (false, _) => tab.close(sessions),
+                        }
+                    }
+                    self.quitting = true;
+                    *started = true;
+                    done = true;
+                }
+                if cancel || escape {
+                    done = true;
+                }
             }
         });
         if browse
