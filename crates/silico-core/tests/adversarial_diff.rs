@@ -240,21 +240,24 @@ fn a_side_past_sixteen_mib_is_refused_naming_it_with_the_readers_message() {
 }
 
 #[test]
-fn a_megabyte_name_on_thousands_of_changes_is_shared_and_the_answer_refused_as_too_long() {
-    // A sketch named with a megabyte, 2,000 points each moved: 4,000 changes, each written
-    // with the name (8 GB of text in all), which the response's limit refuses as too long,
-    // never built whole in memory, the answer a structured refusal.
-    let name = "m".repeat(1 << 20);
+fn a_megabyte_name_on_thousands_of_changes_is_refused_saying_the_size_and_the_limit() {
+    // A sketch named with a megabyte, 2,000 points each moved in x and y: 4,000 changes,
+    // each written with the name, some 4 GiB in all. The changes share the name, and the
+    // answer is refused as too long, saying its size, counted by hand below, and the limit,
+    // never written whole.
+    const L: usize = 1 << 20;
+    let name = "m".repeat(L);
+    let point_id = |i: usize| {
+        let mut id = feature_id(i);
+        id.replace_range(0..1, "p");
+        id
+    };
     let points = |x: u32| -> String {
         (0..2000)
             .map(|i| {
                 format!(
                     r#"{{"id": "{}", "x": {x}, "y": {x}, "construction": false}}"#,
-                    {
-                        let mut id = feature_id(i);
-                        id.replace_range(0..1, "p");
-                        id
-                    }
+                    point_id(i)
                 )
             })
             .collect::<Vec<_>>()
@@ -276,20 +279,66 @@ fn a_megabyte_name_on_thousands_of_changes_is_shared_and_the_answer_refused_as_t
             .iter()
             .all(|c| Arc::ptr_eq(&c.name, &changes[0].name))
     );
-    let answer = Response {
-        session: None,
-        model: None,
-        result: Ok(DiffAnswer {
-            from: Revision::OPENED,
-            to: Revision::OPENED.next().unwrap(),
-            changes,
-        }),
+
+    // Through a session's call, as MCP's server makes it: the file rewritten outside,
+    // reloaded by the diff.
+    let f = sessions();
+    let _ = f.open(sketch(1).as_bytes());
+    f.write(sketch(2).as_bytes());
+    let answer = match f
+        .sessions
+        .call("diff", r#"{"session": "s1", "from": 1, "to": null}"#)
+    {
+        Call::Running(calling) => calling.wait(),
+        Call::Unknown => panic!("diff is a command"),
     };
-    let text = response_text(&answer, Layout::OneLine);
-    assert!(text.len() < MAX_RESPONSE_LEN);
-    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(!answer.ok);
+    assert!(answer.text.len() < 4096, "{}", answer.text.len());
+    // The answer it would have been, by hand: the envelope, then each change on one line,
+    // ", " between them, its name counted as L bytes.
+    let path = f.path().display().to_string();
+    let head = format!(
+        r#"{{"ok": true, "session": {{"id": "s1", "path": "{path}", "revision": 2, "transaction": false, "reloaded": true}}, "model": null, "result": {{"from": 1, "to": 2, "changes": ["#
+    );
+    let tail = "]}}";
+    let mut size = head.len() + tail.len() + 2 * (4000 - 1);
+    for i in 0..2000 {
+        for axis in ["x", "y"] {
+            let line = format!(
+                r#"{{"feature": "s0000001", "name": "", "field": "points.{}.{axis}", "before": 1, "after": 2}}"#,
+                point_id(i)
+            );
+            size += line.len() + L;
+        }
+    }
+    let value: serde_json::Value = serde_json::from_str(&answer.text).unwrap();
     assert_eq!(value["ok"], false);
-    assert_eq!(value["errors"][0]["code"], "invalid_input");
+    assert_eq!(value["session"]["revision"], 2);
+    let error = &value["errors"][0];
+    assert_eq!(error["code"], "invalid_input");
+    assert_eq!(
+        error["message"],
+        format!(
+            "the diff from revision 1 to revision 2 would be {size} bytes, more than the {MAX_RESPONSE_LEN} bytes a response may be"
+        )
+    );
+    assert_eq!(
+        error["cause"],
+        "it has 4000 changes, each written with its feature's name"
+    );
+    assert_eq!(
+        error["suggestion"],
+        "diff revisions nearer each other, or read the text of each side with text instead"
+    );
+    // Nearer revisions answer: the session at revision 2 with itself.
+    let answer = match f
+        .sessions
+        .call("diff", r#"{"session": "s1", "from": 2, "to": null}"#)
+    {
+        Call::Running(calling) => calling.wait(),
+        Call::Unknown => panic!("diff is a command"),
+    };
+    assert!(answer.ok, "{}", answer.text);
 }
 
 // --- Sides that aren't documents. ---

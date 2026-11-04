@@ -51,7 +51,8 @@ use super::wire::sketch_edits::{
 use super::wire::transaction::{CommitRequest, FormatRequest, SessionRequest, StepRequest};
 use super::wire::{self, Json, Layout, ToWire};
 use super::{
-    Problems, Progress, Response, Running, SessionId, SessionInfo, Sessions, Stopper, VERSION,
+    DiffAnswer, Problems, Progress, Response, Running, SessionId, SessionInfo, Sessions, Stopper,
+    VERSION,
 };
 use crate::document::json::{self, Cause, MAX_INPUT_LEN, Node, SyntaxError, Value};
 use crate::kernel::Clients;
@@ -498,6 +499,17 @@ fn meshed(response: Response<MeshesRead>) -> Answered {
     }
 }
 
+/// `diff`'s response as [`Answered`]: its envelope, or, past the bytes a response may be,
+/// its refusal saying the limit and the size (`wire::reads`).
+fn diffed(response: Response<DiffAnswer>) -> Answered {
+    let (ok, text) = wire::reads::diff_answer_text(&response, Layout::OneLine);
+    Answered {
+        ok,
+        text,
+        png: None,
+    }
+}
+
 /// The result of a request no reader took: it has none, so its response is only ever a
 /// refusal.
 enum Unread {}
@@ -766,9 +778,10 @@ impl<P: Clients + 'static> Sessions<P> {
             Command::Redo => typed(named, StepRequest::read(request), |r| {
                 self.redo(&r.session, r.revision, r.to)
             }),
-            Command::Diff => typed(named, DiffRequest::read(request), |r| {
-                self.diff(&r.session, r.from, r.to)
-            }),
+            Command::Diff => match DiffRequest::read(request) {
+                Ok(r) => Calling::waiting(self.diff(&r.session, r.from, r.to), diffed),
+                Err(problems) => Calling::refused(named, problems),
+            },
         }
     }
 }
