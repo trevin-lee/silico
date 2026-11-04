@@ -965,6 +965,17 @@ impl Tab {
     fn took_timeline(&mut self, timeline: TimelineAnswer) {
         if !marked(&timeline) {
             self.said.clear();
+        } else if timeline.problems == 0 {
+            // The gate took it: a feature's text kept only while this read still marks it,
+            // so one that healed (an undo, say) says nothing of what it was.
+            let still: std::collections::BTreeSet<&str> = timeline
+                .features
+                .iter()
+                .flatten()
+                .filter(|entry| entry.problems > 0 || entry.warnings > 0)
+                .map(|entry| entry.id.as_str())
+                .collect();
+            self.said.retain(|feature, _| still.contains(feature.as_str()));
         }
         if timeline.problems == 0 {
             self.document_problems.clear();
@@ -3523,6 +3534,42 @@ mod tests {
         tab.took_timeline(timeline(0, None, vec![entry("a0000001", 0, 0)]));
         assert!(tab.said.is_empty());
         assert!(tab.document_problems.is_empty());
+    }
+
+    #[test]
+    fn a_feature_this_timeline_no_longer_marks_says_nothing_though_another_is_still_marked() {
+        let said = |message: &str| Said {
+            message: message.to_owned(),
+            suggestion: None,
+        };
+        let mut tab = tab();
+        tab.said.insert("a0000001".to_owned(), said("warned"));
+        tab.said.insert("b0000001".to_owned(), said("in error"));
+        tab.said.insert("c0000001".to_owned(), said("warned too"));
+        // Marked still: the first by a warning, the third by an error; the second healed.
+        tab.took_timeline(timeline(
+            0,
+            None,
+            vec![
+                entry("a0000001", 0, 1),
+                entry("b0000001", 0, 0),
+                entry("c0000001", 1, 0),
+            ],
+        ));
+        let kept: Vec<(&str, &str)> = tab
+            .said
+            .iter()
+            .map(|(id, said)| (id.as_str(), said.message.as_str()))
+            .collect();
+        assert_eq!(kept, [("a0000001", "warned"), ("c0000001", "warned too")]);
+        // One the timeline no longer lists says nothing either.
+        tab.took_timeline(timeline(0, None, vec![entry("a0000001", 0, 1)]));
+        assert_eq!(tab.said.keys().collect::<Vec<_>>(), ["a0000001"]);
+        // Under a document the gate refused, every feature's text is kept (the gate's
+        // problems name features no timeline entry marks).
+        tab.said.insert("b0000001".to_owned(), said("the gate's"));
+        tab.took_timeline(timeline(1, None, vec![entry("a0000001", 0, 0)]));
+        assert_eq!(tab.said.len(), 2);
     }
 
     /// A timeline entry of feature `id`, of `kind`, suppressed or not, naming `inputs`.

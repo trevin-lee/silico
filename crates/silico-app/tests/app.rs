@@ -14788,3 +14788,77 @@ fn a_dimension_whose_text_is_under_the_palette_opens_its_modify_box_whole_in_the
     read_with_constraints(&mut h, 5);
     assert_eq!(never_waits::waits(), 0);
 }
+
+/// The boxed sketch beside a block with no fingerprint, whose warning marks the timeline
+/// whatever the sketch's state.
+const BOXED_BESIDE_A_BLOCK: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [-100, -100, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Box", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}]}
+  ]
+}
+"#;
+
+/// The problems and warnings the tab's newest timeline marks feature `id` with.
+fn marks(h: &AppHarness, id: &str) -> Option<(u64, u64)> {
+    h.state().tabs()[0]
+        .timeline
+        .as_ref()
+        .and_then(|timeline| timeline.features.as_ref())
+        .and_then(|features| features.iter().find(|e| e.id.as_str() == id))
+        .map(|entry| (entry.problems, entry.warnings))
+}
+
+#[test]
+fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_says_not_the_conflict()
+ {
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("boxed.silico", BOXED_BESIDE_A_BLOCK);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    step_until(&mut h, "the sketch in Properties", |h| {
+        shows(h, "Properties", "Type: sketch")
+    });
+    // The block's warning marks the timeline, so a read that marks nothing never clears
+    // what was said wholesale.
+    assert!(marks(&h, "k7f2qx3m").is_some_and(|(_, warnings)| warnings > 0));
+    // The right side's length as 99, which no sketch here takes: over defined, offered.
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(50.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(60.0, 20.0));
+    step_until(&mut h, "the Modify box open", |h| {
+        sketch_mode(h).and_then(|mode| mode.modify_view()).is_some()
+    });
+    modify(&f, &mut h, ModifyAction::Typed("99".to_owned()));
+    modify(&f, &mut h, ModifyAction::Accept);
+    settled(&mut h);
+    step_until(&mut h, "the prompt", |h| prompt(h).is_some());
+    step_until(&mut h, "Properties says the conflict", |h| {
+        showing(h, "Properties", "conflict").is_some()
+    });
+    // Cancel (Esc, the prompt's): `undo`, then the read of the revision it made.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    step_until(&mut h, "the sketch unmarked by the newest read", |h| {
+        marks(h, "s0000001") == Some((0, 0)) && prompt(h).is_none()
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    // The block still marked: the timeline marks something, the sketch nothing.
+    assert!(marks(&h, "k7f2qx3m").is_some_and(|(_, warnings)| warnings > 0));
+    assert!(shows(&h, "Properties", "Type: sketch"));
+    assert_eq!(showing(&h, "Properties", "conflict"), None);
+    assert!(!h.state().tabs()[0].said.contains_key("s0000001"));
+    assert_eq!(never_waits::waits(), 0);
+}
