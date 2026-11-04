@@ -2383,7 +2383,8 @@ impl Tab {
     /// never waited on: each add with its token (one whose members can't be written refused
     /// to the tool at once, and said), each trim, split, and extend of its sketch. A new
     /// edit drops what sketch mode undid, as Delete's does. Nothing while the tab closes,
-    /// whose queue takes no edit (the tool's adds refused, so it holds none).
+    /// whose queue takes no edit, or with no sketch known: the tool's adds refused, so it
+    /// holds none.
     fn sketch_requests<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let closing = self.closing();
         let Some(mode) = self.sketch.as_mut() else {
@@ -2394,6 +2395,13 @@ impl Tab {
             return;
         }
         let Some(sketch) = mode.sketch.clone() else {
+            // No sketch to send them to (never, as a tool works only on a read of one):
+            // each add refused to the tool, so it holds none it can't have answered.
+            for request in requests {
+                if let Request::Add { token, .. } = request {
+                    mode.tools.refused(token);
+                }
+            }
             return;
         };
         let serial = mode.serial;

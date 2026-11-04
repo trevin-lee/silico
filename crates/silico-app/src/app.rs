@@ -551,7 +551,10 @@ impl<P: Clients + 'static> App<P> {
         // Sketch mode's keys (the prototype's, DESIGN.md *Keyboard*), unless a field is being
         // typed in: a tool's letter chooses it, or leaves it if it's on; X Construction; and
         // Enter ends a chain.
-        let sketch_keys = in_sketch && !typing(ui);
+        // Only a plain letter: Shift or Alt with it is another key's.
+        let sketch_keys = in_sketch
+            && !typing(ui)
+            && ui.input(|input| !input.modifiers.shift && !input.modifiers.alt);
         let letter = sketch_keys
             .then(|| {
                 ui.input_mut(|input| {

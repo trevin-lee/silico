@@ -9712,3 +9712,175 @@ fn a_tools_add_undone_inside_sketch_mode_is_forgotten_once_a_read_without_it_arr
     assert_eq!(adds_sent(&h), 1);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn a_rectangle_then_another_clients_edit_are_both_undone_by_cancel() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    // An edit before sketch mode, which Cancel keeps.
+    select(&mut h, "Plate");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let before = text_of(&f, &h);
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::R);
+    step(&mut h);
+    sketch_events(&f, &mut h, &dragged([30.0, 30.0], [50.0, 40.0]));
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 7);
+    let moved = other_client_renames(&f, &h, "b0000002", "Spacer");
+    step_until(&mut h, "the other client's revision", |h| {
+        h.state().tabs()[0].revision == moved
+    });
+    assert!(text_of(&f, &h).contains(r#""name": "Spacer""#));
+    // Cancel: the rectangle gone, and the other client's edit with it; the rename before
+    // sketch mode kept.
+    leave_sketch(&mut h, false);
+    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_chain_clicked_while_its_reads_are_held_goes_on_from_each_segments_end() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    settled(&mut h);
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    // Every solve held: each add is applied, but no rebuild publishes it, so the read the
+    // tool works against stays the triangle's. Each segment's start is found from the add
+    // before it, kept until a read of the revision it made says otherwise.
+    f.sketches.hold();
+    let published = h.state().tabs()[0].published;
+    for [x, y] in [[30.0, 30.0], [40.0, 35.0], [50.0, 30.0], [60.0, 45.0]] {
+        sketch_events(&f, &mut h, &clicked(x, y));
+        settled(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].published, published);
+    assert_eq!(
+        sketch_mode(&h)
+            .unwrap()
+            .drawable()
+            .unwrap()
+            .members
+            .lines
+            .len(),
+        3
+    );
+    assert_eq!(adds_sent(&h), 3);
+    f.sketches.release();
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let [a, b, c, d] = [[30.0, 30.0], [40.0, 35.0], [50.0, 30.0], [60.0, 45.0]]
+        .map(|[x, y]| point_at(&sketch, x, y));
+    assert!(line_between(&sketch, &a, &b).is_some());
+    assert!(line_between(&sketch, &b, &c).is_some());
+    assert!(line_between(&sketch, &c, &d).is_some());
+    assert_eq!((sketch.points.len(), sketch.lines.len()), (7, 6));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_with_a_chain_under_way_and_a_rebuild_held_ends_the_chain_not_the_rebuild() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    settled(&mut h);
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    // A segment, whose rebuild the fake's held solve keeps running, and the chain going on.
+    f.sketches.hold();
+    sketch_events(&f, &mut h, &clicked(30.0, 30.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 35.0));
+    settled(&mut h);
+    step_until(&mut h, "the rebuild running", |h| {
+        h.state().tabs()[0].status.as_ref().is_some_and(|status| {
+            status.rebuild.state == silico_core::command::RebuildState::Running
+        })
+    });
+    assert!(sketch_mode(&h).unwrap().tools.busy());
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(sketch_mode(&h).unwrap().tools.choice(), None);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(!rebuild_stopped(&h));
+    assert!(h.state().tabs()[0].stoppable());
+    f.sketches.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tools_adds_with_no_sketch_to_send_them_to_are_refused_to_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    // A segment drawn by sketch mode's frame alone, its add left with the tool; then the
+    // sketch unknown when the tab takes it.
+    let events: Vec<_> = clicked(30.0, 30.0)
+        .into_iter()
+        .chain(clicked(40.0, 35.0))
+        .collect();
+    {
+        let mode = h.state_mut().tabs_mut()[0].sketch.as_mut().unwrap();
+        let ctx = eframe::egui::Context::default();
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            let input = silico_app::sketch::FrameInput {
+                events: &events,
+                pointer: None,
+                project: &to_screen,
+                to_plane: &to_sketch,
+            };
+            mode.frame(&ui.painter().clone(), &input);
+        });
+        output.textures_delta.clear();
+        mode.sketch = None;
+    }
+    step(&mut h);
+    assert_eq!(adds_sent(&h), 0);
+    // Refused to the tool: the chain's last point, the add's, is forgotten, so with the
+    // sketch known again the next click begins a chain and sends nothing.
+    h.state_mut().tabs_mut()[0].sketch.as_mut().unwrap().sketch = Some(sketch_id("s0000001"));
+    sketch_events(&f, &mut h, &clicked(50.0, 30.0));
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 0);
+    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tools_letter_with_shift_or_alt_chooses_nothing() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    for modifiers in [eframe::egui::Modifiers::SHIFT, eframe::egui::Modifiers::ALT] {
+        for key in [
+            eframe::egui::Key::L,
+            eframe::egui::Key::T,
+            eframe::egui::Key::X,
+        ] {
+            h.key_press_modifiers(modifiers, key);
+            step(&mut h);
+            let mode = sketch_mode(&h).unwrap();
+            assert_eq!(mode.tools.choice(), None, "{modifiers:?} {key:?}");
+            assert!(!mode.settings.construction, "{modifiers:?} {key:?}");
+        }
+    }
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    assert!(sketch_mode(&h).unwrap().tools.choice().is_some());
+    assert_eq!(never_waits::waits(), 0);
+}

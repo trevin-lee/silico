@@ -445,7 +445,8 @@ impl SketchMode {
     /// (through `to_plane`), each with the pick tolerance where it is; then the pointer, if
     /// it has moved since, as a hover, with the keys `held`. A press off the plane is none
     /// of the tool's; a release off it, or a press cancelled, ends the gesture with nothing
-    /// added; a double-click off it ends a chain. Nothing before the sketch is read.
+    /// added; a double-click off it ends a chain. With no read of the sketch to work
+    /// against, only a release or a cancel reaches the tool, ending its gesture.
     fn tool_events(&mut self, input: &FrameInput<'_>, held: Modifiers) {
         let on_plane =
             |at: Pos2| (input.to_plane)(at).filter(|p| p[0].is_finite() && p[1].is_finite());
@@ -459,7 +460,12 @@ impl SketchMode {
                 &self.settings,
                 tolerance(event.at),
             ) else {
-                return;
+                // No read to work against (none yet, or a failed one): a press's end still
+                // ends it, so none outlives its release.
+                if matches!(event.action, PointerAction::Release | PointerAction::Cancel) {
+                    self.tools.cancel(None);
+                }
+                continue;
             };
             let keys = Modifiers {
                 shift: event.shift,

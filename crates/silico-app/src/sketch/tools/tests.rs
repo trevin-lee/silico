@@ -58,6 +58,13 @@ fn ctrl(mut events: Vec<PointerEvent>) -> Vec<PointerEvent> {
     events
 }
 
+fn shift(mut events: Vec<PointerEvent>) -> Vec<PointerEvent> {
+    for event in &mut events {
+        event.shift = true;
+    }
+    events
+}
+
 fn empty() -> Sketch {
     Sketch {
         plane: OriginPlane::Xy.into(),
@@ -718,11 +725,26 @@ fn power_trim_trims_each_curve_a_drag_crosses_in_order_and_extends_one_dragged_a
             by: ExtendBy::Point([x, y])
         }]
     );
-    // A circle has no end: said, nothing sent.
+    // A drag from on the circle out across nothing else: a circle has no end to extend,
+    // so it's a sweep, which crosses the circle where it starts, (65, 0), and trims it
+    // there.
     desk.edits.clear();
+    desk.frame(&drag([65.0, 0.0], [70.0, 3.0]));
+    assert_eq!(
+        desk.edits,
+        [Request::Trim {
+            curve: id("ca000001"),
+            pick: [65.0, 0.0]
+        }]
+    );
+    // In Trim to closest, a drag from the circle is an extend, which it has no end for:
+    // said, nothing sent.
+    desk.edits.clear();
+    desk.mode.settings.trim = TrimMode::Closest;
     desk.frame(&drag([65.0, 0.0], [70.0, 3.0]));
     assert!(desk.edits.is_empty());
     assert_eq!(desk.said(), Some(NO_END_TO_EXTEND));
+    desk.mode.settings.trim = TrimMode::Power;
     // A click on nothing says so.
     desk.frame(&click(10.0, 30.0));
     assert!(desk.edits.is_empty());
@@ -1079,4 +1101,235 @@ fn the_canvas_menu_offers_end_chain_only_while_a_gesture_is_under_way() {
         h.run();
         assert_eq!(asked.get(), MenuAction::Cancel);
     }
+}
+
+#[test]
+fn a_power_trim_sweep_pressed_near_a_line_trims_it_where_it_crosses_and_extends_nothing() {
+    // Pressed 0.5 mm above na000001 at x = 30, within the pick, then swept down across it
+    // to (30, −5): no extend (it left the line's carrier, and ends past neither end), but
+    // the line's trim where the sweep crossed it, (30, 0).
+    let mut desk = Desk::new(Choice::Trim, crossed());
+    desk.frame(&drag([30.0, 0.5], [30.0, -5.0]));
+    let [Request::Trim { curve, pick }] = desk.edits.as_slice() else {
+        panic!("{:?}", desk.edits);
+    };
+    assert_eq!(curve, &id("na000001"));
+    assert!(near(*pick, [30.0, 0.0]), "{pick:?}");
+    // Along the line but short of its end, at (35, 0.2): no extend either; the sweep
+    // crossed the line where it was pressed, (30, 0), so it's trimmed there.
+    desk.edits.clear();
+    desk.frame(&drag([30.0, 0.0], [35.0, 0.2]));
+    assert!(matches!(
+        desk.edits.as_slice(),
+        [Request::Trim { curve, .. }] if *curve == id("na000001")
+    ));
+    // Out past its start, along it, to (−6, 0.3): its start extended to (−6, 0).
+    desk.edits.clear();
+    desk.frame(&drag([5.0, 0.0], [-6.0, 0.3]));
+    let x = silico_core::document::Coordinate::new(-6.0).unwrap();
+    let y = silico_core::document::Coordinate::new(0.0).unwrap();
+    assert_eq!(
+        desk.edits,
+        [Request::Extend {
+            curve: id("na000001"),
+            end: End::Start,
+            by: ExtendBy::Point([x, y])
+        }]
+    );
+    // Past its end but off its line on the way, through (45, 3): a sweep, which crosses
+    // nothing past where it was pressed.
+    desk.edits.clear();
+    desk.frame(&[
+        ev(PointerAction::Press, 35.0, 0.0),
+        ev(PointerAction::Move, 45.0, 3.0),
+        ev(PointerAction::Release, 45.0, 0.0),
+    ]);
+    assert!(
+        desk.edits
+            .iter()
+            .all(|r| !matches!(r, Request::Extend { .. })),
+        "{:?}",
+        desk.edits
+    );
+}
+
+/// The arc aa000001, a quarter of radius 10 about pa000001 (0, 0), counter-clockwise from
+/// pa000002 (10, 0) to pa000003 (0, 10).
+fn arced() -> Sketch {
+    let mut sketch = empty();
+    sketch.points = vec![
+        point("pa000001", 0.0, 0.0),
+        point("pa000002", 10.0, 0.0),
+        point("pa000003", 0.0, 10.0),
+    ];
+    sketch.arcs = vec![silico_core::document::SketchArc {
+        id: id("aa000001"),
+        center: id("pa000001"),
+        start: id("pa000002"),
+        end: id("pa000003"),
+        construction: false,
+    }];
+    sketch
+}
+
+/// (x, y) at `degrees` on the circle of radius 10 about the origin.
+fn on_ten(degrees: f64) -> [f64; 2] {
+    let a = degrees.to_radians();
+    [10.0 * libm::cos(a), 10.0 * libm::sin(a)]
+}
+
+#[test]
+fn trim_and_split_take_an_arc_where_its_clicked_crossed_or_dragged_past_its_end() {
+    let half = 10.0 / std::f64::consts::SQRT_2;
+    // Split: a click at (7.1, 7.1), 0.04 mm out, comes in to (10/√2, 10/√2), on it.
+    let mut desk = Desk::new(Choice::Split, arced());
+    desk.frame(&click(7.1, 7.1));
+    let [Request::Split { curve, at }] = desk.edits.as_slice() else {
+        panic!("{:?}", desk.edits);
+    };
+    assert_eq!(curve, &id("aa000001"));
+    assert!(near(at[0], [half, half]), "{at:?}");
+    assert_eq!(at.len(), 1);
+    // Trim to closest: a click on it at (8, 6.1), 0.06 mm out, trims it there.
+    let mut desk = Desk::new(Choice::Trim, arced());
+    desk.mode.settings.trim = TrimMode::Closest;
+    desk.frame(&click(8.0, 6.1));
+    assert_eq!(
+        desk.edits,
+        [Request::Trim {
+            curve: id("aa000001"),
+            pick: [8.0, 6.1]
+        }]
+    );
+    // Power trim: a sweep from (15, 5) to (5, 5) crosses it at (√75, 5), 30° round.
+    let mut desk = Desk::new(Choice::Trim, arced());
+    desk.frame(&drag([15.0, 5.0], [5.0, 5.0]));
+    let [Request::Trim { curve, pick }] = desk.edits.as_slice() else {
+        panic!("{:?}", desk.edits);
+    };
+    assert_eq!(curve, &id("aa000001"));
+    assert!(near(*pick, [75.0_f64.sqrt(), 5.0]), "{pick:?}");
+    // And a drag along it from 45° round past its end, through 80° to 110°: its end
+    // extended to 110°, on its circle.
+    desk.edits.clear();
+    let [a, b, c] = [on_ten(45.0), on_ten(80.0), on_ten(110.0)];
+    desk.frame(&[
+        ev(PointerAction::Press, a[0], a[1]),
+        ev(PointerAction::Move, b[0], b[1]),
+        ev(PointerAction::Release, c[0], c[1]),
+    ]);
+    let [
+        Request::Extend {
+            curve,
+            end: End::End,
+            by: ExtendBy::Point([x, y]),
+        },
+    ] = desk.edits.as_slice()
+    else {
+        panic!("{:?}", desk.edits);
+    };
+    assert_eq!(curve, &id("aa000001"));
+    // The release went through the hand projection's f32 points: within a micron.
+    let to = [x.mm(), y.mm()];
+    assert!((libm::hypot(to[0], to[1]) - 10.0).abs() < 1e-12, "{to:?}");
+    assert!(
+        (to[0] - c[0]).abs() < 1e-3 && (to[1] - c[1]).abs() < 1e-3,
+        "{to:?}"
+    );
+    // Back before its start, through −20°: its start.
+    desk.edits.clear();
+    let [a, b] = [on_ten(30.0), on_ten(-20.0)];
+    desk.frame(&[
+        ev(PointerAction::Press, a[0], a[1]),
+        ev(PointerAction::Move, on_ten(5.0)[0], on_ten(5.0)[1]),
+        ev(PointerAction::Release, b[0], b[1]),
+    ]);
+    assert!(matches!(
+        desk.edits.as_slice(),
+        [Request::Extend {
+            end: End::Start,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn construction_on_draws_an_arc_as_construction() {
+    let mut desk = Desk::new(Choice::Draw(ToolKind::ThreePointArc), empty());
+    desk.mode.settings.construction = true;
+    for [x, y] in [[10.0, 10.0], [30.0, 10.0], [20.0, 20.0]] {
+        desk.frame(&click(x, y));
+    }
+    let [arc] = desk.adds[0].arcs.as_slice() else {
+        panic!("{:?}", desk.adds);
+    };
+    assert!(arc.construction);
+}
+
+#[test]
+fn a_corner_rectangle_with_shift_held_is_a_square_on_the_farther_offset() {
+    // Dragged from (10, 10) to (50, 30) with Shift: 40 across, 20 up, so a 40 mm square
+    // from (10, 10) to (50, 50).
+    let mut desk = Desk::new(Choice::Draw(ToolKind::CornerRectangle), empty());
+    desk.frame(&shift(drag([10.0, 10.0], [50.0, 30.0])));
+    let add = desk.adds[0].clone();
+    let (a, b, c, d) = ([10.0, 10.0], [10.0, 50.0], [50.0, 10.0], [50.0, 50.0]);
+    assert_eq!(places(&desk, &add), [a, b, c, d]);
+    assert_eq!(sides(&desk, &add), [[a, b], [a, c], [b, d], [c, d]]);
+    assert_eq!(held(&desk, &add, true), [[a, c], [b, d]]);
+    assert_eq!(held(&desk, &add, false), [[a, b], [c, d]]);
+}
+
+#[test]
+fn a_failed_read_mid_gesture_still_ends_the_press_at_its_release() {
+    let mut desk = Desk::new(Choice::Draw(ToolKind::Line), empty());
+    desk.frame(&[ev(PointerAction::Press, 10.0, 10.0)]);
+    assert!(desk.mode.tools.busy());
+    // A read that failed: nothing to work against.
+    desk.mode.took(Read {
+        model: Some(desk.revision),
+        result: Err(silico_core::command::Problems::from(
+            silico_core::Error::new(silico_core::ErrorCode::InvalidInput, "a read that failed"),
+        )),
+    });
+    desk.frame(&[
+        ev(PointerAction::Move, 30.0, 25.0),
+        ev(PointerAction::Release, 30.0, 25.0),
+    ]);
+    assert!(!desk.mode.tools.busy());
+    // A good read, a hover, then a click at (40, 30): a chain begun there, nothing added
+    // from the old press at (10, 10).
+    desk.publish();
+    desk.frame_at(&[], Some(at(40.0, 30.0)));
+    desk.frame(&click(40.0, 30.0));
+    assert!(desk.adds.is_empty());
+    assert!(desk.mode.tools.busy());
+    // Trim and split likewise.
+    for choice in [Choice::Trim, Choice::Split] {
+        let mut desk = Desk::new(choice, crossed());
+        desk.frame(&[ev(PointerAction::Press, 10.0, 0.0)]);
+        assert!(desk.mode.tools.busy());
+        desk.mode.took(Read {
+            model: Some(desk.revision),
+            result: Err(silico_core::command::Problems::from(
+                silico_core::Error::new(silico_core::ErrorCode::InvalidInput, "a read that failed"),
+            )),
+        });
+        desk.frame(&[ev(PointerAction::Release, 10.0, 0.0)]);
+        assert!(!desk.mode.tools.busy());
+        desk.publish();
+        desk.frame(&[ev(PointerAction::Release, 10.0, 0.0)]);
+        assert!(desk.edits.is_empty());
+    }
+}
+
+#[test]
+fn a_long_power_trim_draws_only_its_trails_newest_places() {
+    let mut desk = Desk::new(Choice::Trim, empty());
+    let mut events = vec![ev(PointerAction::Press, 0.0, 0.0)];
+    events.extend((1..=1000).map(|i| ev(PointerAction::Move, f64::from(i) / 10.0, 5.0)));
+    desk.frame(&events);
+    let guides = &desk.mode.tools.preview().guides;
+    assert_eq!(guides.len(), TRAIL - 1);
+    assert_eq!(guides.last(), Some(&[[99.9, 5.0], [100.0, 5.0]]));
 }

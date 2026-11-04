@@ -113,9 +113,10 @@ enum Active {
 }
 
 /// Trim, between events: a press under way, with what it was on (a curve, its kind, and its
-/// geometry then), where it was, whether it has left the pick tolerance of there, the
-/// path's last place, and the curves the path has crossed so far, each with where it first
-/// crossed it.
+/// geometry then), where it was, whether it has left the pick tolerance of there, whether
+/// every place since has stayed within it of that curve's line or round, the path's last
+/// place and its trail (the last [`TRAIL`] places, for drawing), and the curves the path
+/// has crossed so far, each with where it first crossed it.
 #[derive(Debug, Default)]
 enum Trim {
     #[default]
@@ -124,10 +125,15 @@ enum Trim {
         on: Option<(ElementId, ElementKind, Curve)>,
         press: [f64; 2],
         dragged: bool,
-        path: Vec<[f64; 2]>,
+        along: bool,
+        last: [f64; 2],
+        trail: Vec<[f64; 2]>,
         crossed: Vec<(ElementId, [f64; 2])>,
     },
 }
+
+/// How many of a power trim's places its trail draws: the newest.
+pub const TRAIL: usize = 256;
 
 /// Split, between events: a press under way, and a circle's first place, the click that a
 /// second on the same circle splits it with.
@@ -171,7 +177,6 @@ pub const NOTHING_TO_SPLIT: &str = "nothing to split there: click a line, an arc
 pub const SECOND_ON_CIRCLE: &str =
     "a circle splits at two places: click a second place on the same circle";
 pub const NO_END_TO_EXTEND: &str = "a circle has no end to extend";
-pub const EXTEND_TOO_FAR: &str = "a sketch is drawn within a kilometre of its origin";
 
 impl Tools {
     /// The tool chosen, if one is.
@@ -275,24 +280,27 @@ impl Tools {
     }
 
     /// A press ended with no release (focus lost, a navigation tool taking the drag, the tab
-    /// hidden), or a release off the plane: the gesture under way ended with nothing added,
-    /// the tool kept. The core's tools end one only by Esc, which is sent, its leaving the
-    /// tool not taken.
+    /// hidden), or a release off the plane or with no read to give it: the gesture under
+    /// way ended with nothing added, the tool kept, so no press outlives its release. The
+    /// core's tools end one only by Esc, which is sent with `input`, its leaving the tool
+    /// not taken; with no read to give it, the tool is started afresh
+    /// ([`SketchTool::forget_pending`], which forgets its unanswered adds too: their points
+    /// are found again in the next read).
     pub fn cancel(&mut self, input: Option<&Input<'_>>) {
-        match &mut self.active {
-            Some(Active::Draw(tool)) => {
-                if let Some(input) = input {
-                    tool.handle(
-                        &input.context(),
-                        self.ids.as_mut(),
-                        Event::Escape,
-                        Modifiers::default(),
-                    );
-                }
+        match (&mut self.active, input) {
+            (Some(Active::Draw(tool)), Some(input)) => {
+                tool.handle(
+                    &input.context(),
+                    self.ids.as_mut(),
+                    Event::Escape,
+                    Modifiers::default(),
+                );
             }
-            Some(Active::Trim(trim)) => *trim = Trim::Idle,
-            Some(Active::Split(split)) => split.pressed = None,
-            None => {}
+            (Some(Active::Draw(tool)), None) => tool.forget_pending(),
+            (Some(Active::Trim(trim)), _) => *trim = Trim::Idle,
+            (Some(Active::Split(split)), Some(_)) => split.pressed = None,
+            (Some(Active::Split(split)), None) => *split = Split::default(),
+            (None, _) => {}
         }
         self.preview = Preview::default();
         self.last = None;
@@ -465,12 +473,9 @@ fn cross(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[1] - a[1] * b[0]
 }
 
-/// Trim's step: a press notes the curve under it; a drag from nowhere, in Power trim,
-/// gathers each curve its path crosses (the first crossing of each), trimmed at its
-/// release; a drag from a curve extends it, to the pointer in Power trim (its end nearer
-/// there, to the pointer put on its line or round) and to the next curve in Trim to closest
-/// (the end the drag heads toward); a click on a curve trims it there. What it says, if it
-/// says anything.
+/// Trim's step: a press notes the curve under it; a move follows the path, gathering in
+/// Power trim each curve it crosses (the first crossing of each, the pressed curve's too);
+/// the release decides (`released`). What it says, if it says anything.
 fn trim_event(
     trim: &mut Trim,
     input: &Input<'_>,
@@ -482,11 +487,14 @@ fn trim_event(
     let mut said = None;
     match event {
         Event::Press(at) => {
+            let on = curve_at(input.read, at, tolerance);
             *trim = Trim::Pressed {
-                on: curve_at(input.read, at, tolerance),
+                along: on.is_some(),
+                on,
                 press: at,
                 dragged: false,
-                path: vec![at],
+                last: at,
+                trail: vec![at],
                 crossed: Vec::new(),
             };
         }
@@ -495,18 +503,26 @@ fn trim_event(
                 on,
                 press,
                 dragged,
-                path,
+                along,
+                last,
+                trail,
                 crossed,
             } = trim
             {
                 if length(sub(at, *press)) > tolerance {
                     *dragged = true;
                 }
-                if on.is_none() && input.trim == TrimMode::Power {
-                    let from = path.last().copied().unwrap_or(*press);
-                    cross_path(input.read, from, at, crossed);
+                *along &= on
+                    .as_ref()
+                    .is_some_and(|(_, _, curve)| off_carrier(*curve, at) <= tolerance);
+                if input.trim == TrimMode::Power {
+                    cross_path(input.read, *last, at, crossed);
                 }
-                path.push(at);
+                *last = at;
+                trail.push(at);
+                if trail.len() > TRAIL {
+                    trail.drain(..trail.len() - TRAIL);
+                }
             }
             if let Event::Release(at) = event {
                 said = released(std::mem::take(trim), input, at, requests);
@@ -542,8 +558,11 @@ fn cross_path(
     crossed.extend(found.into_iter().map(|(_, id, at)| (id.clone(), at)));
 }
 
-/// What trim's release asks, the press `trim` held: the crossed curves trimmed, a curve
-/// extended, or the one clicked trimmed.
+/// What trim's release at `at` asks, the press `trim` held. A click trims the curve it's
+/// on there. In Power trim, a drag from a line or an arc that kept to its line or round
+/// and ends past one of its ends extends that end to the pointer, put on it; any other
+/// drag trims each curve it crossed, where it crossed it. In Trim to closest, a drag from a
+/// curve extends the end it heads toward to the next curve.
 fn released(
     trim: Trim,
     input: &Input<'_>,
@@ -554,15 +573,36 @@ fn released(
         on,
         press,
         dragged,
+        along,
         crossed,
         ..
     } = trim
     else {
         return None;
     };
-    match (on, dragged) {
-        (None, false) => Some(NOTHING_TO_TRIM),
-        (None, true) => {
+    if !dragged {
+        let Some((curve, _, _)) = on else {
+            return Some(NOTHING_TO_TRIM);
+        };
+        requests.push(Request::Trim { curve, pick: press });
+        return None;
+    }
+    match (input.trim, on) {
+        (TrimMode::Power, on) => {
+            let past = on.filter(|_| along).and_then(|(curve, _, geometry)| {
+                let end = past_end(geometry, at)?;
+                let to = onto(geometry, at)?;
+                let by = [Coordinate::new(to[0])?, Coordinate::new(to[1])?];
+                Some((curve, end, by))
+            });
+            if let Some((curve, end, by)) = past {
+                requests.push(Request::Extend {
+                    curve,
+                    end,
+                    by: ExtendBy::Point(by),
+                });
+                return None;
+            }
             if crossed.is_empty() {
                 return Some(NOTHING_TO_TRIM);
             }
@@ -573,38 +613,66 @@ fn released(
             );
             None
         }
-        (Some((curve, _, _)), false) => {
-            requests.push(Request::Trim { curve, pick: press });
-            None
-        }
-        (Some((_, ElementKind::Circle, _)), true) => Some(NO_END_TO_EXTEND),
-        (Some((curve, _, geometry)), true) => {
-            let (end, by) = match input.trim {
-                TrimMode::Power => {
-                    let Some(to) = onto(geometry, at) else {
-                        return Some(NOTHING_TO_TRIM);
-                    };
-                    let (Some(x), Some(y)) = (Coordinate::new(to[0]), Coordinate::new(to[1]))
-                    else {
-                        return Some(EXTEND_TOO_FAR);
-                    };
-                    (nearer_end(geometry, to), ExtendBy::Point([x, y]))
-                }
-                TrimMode::Closest => (headed(geometry, press, at), ExtendBy::NextCurve),
-            };
-            requests.push(Request::Extend { curve, end, by });
+        (TrimMode::Closest, None) => Some(NOTHING_TO_TRIM),
+        (TrimMode::Closest, Some((_, ElementKind::Circle, _))) => Some(NO_END_TO_EXTEND),
+        (TrimMode::Closest, Some((curve, _, geometry))) => {
+            requests.push(Request::Extend {
+                curve,
+                end: headed(geometry, press, at),
+                by: ExtendBy::NextCurve,
+            });
             None
         }
     }
 }
 
-/// The end of a line or an arc nearer `at`: its start on a tie.
-fn nearer_end(curve: Curve, at: [f64; 2]) -> End {
-    let (start, end) = ends(curve);
-    if length(sub(at, end)) < length(sub(at, start)) {
-        End::End
-    } else {
-        End::Start
+/// How far `at` is from `curve`'s carrier: a line's whole line, an arc's or a circle's
+/// round.
+fn off_carrier(curve: Curve, at: [f64; 2]) -> f64 {
+    match curve {
+        Curve::Line { from, to } => length(sub(at, foot(at, from, to))),
+        Curve::Round { centre, radius, .. } => (length(sub(at, centre)) - radius).abs(),
+    }
+}
+
+/// The end of a line or an arc that `at`, put on its carrier, lies past: a line's end
+/// beyond `to`, its start before `from`; an arc's, outside its sweep, the end nearer in
+/// angle. None within it, and for a circle, which has no end.
+fn past_end(curve: Curve, at: [f64; 2]) -> Option<End> {
+    match curve {
+        Curve::Line { from, to } => {
+            let d = sub(to, from);
+            let dd = dot(d, d);
+            if dd <= 0.0 || !dd.is_finite() {
+                return None;
+            }
+            let t = dot(sub(at, from), d) / dd;
+            if t > 1.0 {
+                Some(End::End)
+            } else if t < 0.0 {
+                Some(End::Start)
+            } else {
+                None
+            }
+        }
+        Curve::Round {
+            centre,
+            start,
+            sweep,
+            ..
+        } => {
+            if sweep >= TAU {
+                return None;
+            }
+            let turned = (angle(sub(at, centre)) - start).rem_euclid(TAU);
+            if turned <= sweep {
+                None
+            } else if turned - sweep < TAU - turned {
+                Some(End::End)
+            } else {
+                Some(End::Start)
+            }
+        }
     }
 }
 
@@ -619,22 +687,6 @@ fn headed(curve: Curve, from: [f64; 2], to: [f64; 2]) -> End {
     if ahead { End::End } else { End::Start }
 }
 
-/// A line's or an arc's start and end.
-fn ends(curve: Curve) -> ([f64; 2], [f64; 2]) {
-    match curve {
-        Curve::Line { from, to } => (from, to),
-        Curve::Round {
-            centre,
-            radius,
-            start,
-            sweep,
-        } => {
-            let at = |a: f64| add(centre, mul([libm::cos(a), libm::sin(a)], radius));
-            (at(start), at(start + sweep))
-        }
-    }
-}
-
 /// What trim draws: its path, dotted, and where it crosses each curve; the pointer.
 fn trim_preview(trim: &Trim, event: Event) -> Preview {
     let mut preview = Preview::default();
@@ -642,8 +694,8 @@ fn trim_preview(trim: &Trim, event: Event) -> Preview {
     {
         preview.pointer = Some(at);
     }
-    if let Trim::Pressed { path, crossed, .. } = trim {
-        preview.guides = path.windows(2).map(|pair| [pair[0], pair[1]]).collect();
+    if let Trim::Pressed { trail, crossed, .. } = trim {
+        preview.guides = trail.windows(2).map(|pair| [pair[0], pair[1]]).collect();
         preview.points = crossed.iter().map(|(_, at)| *at).collect();
     }
     preview
