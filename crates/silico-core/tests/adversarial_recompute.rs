@@ -1212,7 +1212,12 @@ impl Reference {
 
     /// Each feature's outcome, and every step the document has, with whether it runs and
     /// its own result's code.
-    fn evaluate(&mut self, kinds: &[Kind], values: &[Values]) -> (Vec<Expected>, Vec<Evaluated>) {
+    fn evaluate(
+        &mut self,
+        kinds: &[Kind],
+        values: &[Values],
+        known: &BTreeSet<String>,
+    ) -> (Vec<Expected>, Vec<Evaluated>) {
         let g = Generation(0);
         let mut outcomes: Vec<Expected> = Vec::new();
         let mut steps: Vec<Evaluated> = Vec::new();
@@ -1297,8 +1302,20 @@ impl Reference {
                         Expected::Blocked(_) => maybe.get(&u).map(|s| (s.clone(), true)),
                         Expected::Failed(_) => None,
                     };
-                    let runs = match (made(*base), made(*tool)) {
-                        (Some((_, false)), Some((_, false))) => Runs::Yes,
+                    // Whether an input's result is there for this step to start on: built, or
+                    // made but its refusal not yet known (its refused feature's step not kept
+                    // from an earlier rebuild, whose verdict the plan reads before anything
+                    // starts).
+                    let startable = |u: usize| match &outcomes[u] {
+                        Expected::Built { .. } => Some(false),
+                        Expected::Refused { .. } => (!known.contains(&last[u])).then_some(true),
+                        Expected::Blocked(on) => {
+                            (maybe.contains_key(&u) && !known.contains(&last[*on])).then_some(true)
+                        }
+                        Expected::Failed(_) => None,
+                    };
+                    let runs = match (startable(*base), startable(*tool)) {
+                        (Some(false), Some(false)) => Runs::Yes,
                         (Some(_), Some(_)) => Runs::Maybe,
                         _ => Runs::No,
                     };
@@ -1448,7 +1465,7 @@ proptest! {
         let mut previous_plan: BTreeSet<String> = BTreeSet::new();
         for values in &edits {
             let values = &values[..kinds.len()];
-            let (expected, steps) = reference.evaluate(&kinds, values);
+            let (expected, steps) = reference.evaluate(&kinds, values, &known);
             let before = engine.kernel().calls().len();
             let model = published(&engine, text_of(&kinds, values));
             check_model(&model, &kinds, &expected)?;
