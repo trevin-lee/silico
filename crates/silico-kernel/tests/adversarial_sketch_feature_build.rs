@@ -698,3 +698,79 @@ fn the_gates_advice_for_a_sketchs_edge_named_whole_resolves_on_a_through_pocket_
         );
     }
 }
+
+/// An M2 boolean `id` of `kind` (`fuse`, `cut`, `common`) on `base` and `tool`.
+fn m2(id: &str, kind: &str, base: &str, tool: &str) -> String {
+    format!(
+        r#"{{"id": "{id}", "type": "{kind}", "v": 1, "name": "B", "base": "{base}", "tool": "{tool}"}}"#
+    )
+}
+
+#[test]
+fn an_m2_boolean_that_changes_nothing_is_refused_naming_it_and_one_that_does_is_built() {
+    // S7's rule, for M2's fuse, cut, and common too (SolidWorks refuses a feature that
+    // changes nothing): each refused as kernel_failed, naming the feature, in S7's words.
+    let engine = engine();
+    let refused = |features: &[&str], said: &str| {
+        let model = publish(&engine, features);
+        let e = failed(&model, "kkkkkkkk");
+        assert_eq!(e.code(), ErrorCode::KernelFailed, "{e:?}");
+        assert_eq!(e.feature(), Some("kkkkkkkk"), "{e:?}");
+        assert!(e.message().starts_with(said), "{e:?}");
+        assert!(e.suggestion().is_some(), "{e:?}");
+    };
+    // A 1e-5 cube centred on a 1e5 cube's corner: under the fuzzy value (0.173 mm), OCCT
+    // takes it for nothing, and the cut is the big cube (FreeCAD 1.1.3's Part::Cut too).
+    refused(
+        &[
+            &box_at("bbbbbbbb", [0.0; 3], 1e5, 1e5, 1e5),
+            &box_at("tttttttt", [-5e-6; 3], 1e-5, 1e-5, 1e-5),
+            &m2("kkkkkkkk", "cut", "bbbbbbbb", "tttttttt"),
+        ],
+        "cut kkkkkkkk removes nothing from its base bbbbbbbb",
+    );
+    // A cut whose tool misses its base.
+    refused(
+        &[
+            &box_at("bbbbbbbb", [0.0; 3], 10.0, 10.0, 10.0),
+            &box_at("tttttttt", [20.0, 0.0, 0.0], 5.0, 5.0, 5.0),
+            &m2("kkkkkkkk", "cut", "bbbbbbbb", "tttttttt"),
+        ],
+        "cut kkkkkkkk removes nothing from its base bbbbbbbb",
+    );
+    // A fuse whose tool lies inside its base.
+    refused(
+        &[
+            &box_at("bbbbbbbb", [0.0; 3], 10.0, 10.0, 10.0),
+            &box_at("tttttttt", [2.0, 2.0, 2.0], 5.0, 5.0, 5.0),
+            &m2("kkkkkkkk", "fuse", "bbbbbbbb", "tttttttt"),
+        ],
+        "fuse kkkkkkkk adds nothing to its base bbbbbbbb",
+    );
+    // A common whose tool holds all of its base.
+    refused(
+        &[
+            &box_at("bbbbbbbb", [2.0, 2.0, 2.0], 5.0, 5.0, 5.0),
+            &box_at("tttttttt", [0.0; 3], 10.0, 10.0, 10.0),
+            &m2("kkkkkkkk", "common", "bbbbbbbb", "tttttttt"),
+        ],
+        "common kkkkkkkk removes nothing from its base bbbbbbbb",
+    );
+    // A real cut, fuse, and common still build: 1000 less, plus, and in common with the
+    // 5 mm cube half out of it, 62.5 mm³ (5 × 5 × 2.5).
+    for (kind, want) in [
+        ("cut", 1000.0 - 62.5),
+        ("fuse", 1000.0 + 62.5),
+        ("common", 62.5),
+    ] {
+        let model = publish(
+            &engine,
+            &[
+                &box_at("bbbbbbbb", [0.0; 3], 10.0, 10.0, 10.0),
+                &box_at("tttttttt", [7.5, 2.0, 2.0], 5.0, 5.0, 5.0),
+                &m2("kkkkkkkk", kind, "bbbbbbbb", "tttttttt"),
+            ],
+        );
+        assert_close(volume(&model, "kkkkkkkk"), want, 1e-9, kind);
+    }
+}

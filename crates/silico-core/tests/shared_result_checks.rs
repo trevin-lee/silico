@@ -36,8 +36,9 @@ fn cut(id: &str, base: &str, tool: &str) -> String {
     )
 }
 
-/// The same document's pocket is refused by a fresh engine, but built by one that ran an
-/// M2 cut of the same step first: the check never runs on a result already kept.
+/// The same document's pocket is refused by a fresh engine, and by one that ran an M2 cut
+/// of the same step first: the check runs on a result already kept, each feature's in its
+/// own words (the cut's refused in a cut's, by S7's rule for M2 booleans).
 #[test]
 fn a_pockets_check_holds_whatever_ran_before() {
     let cube_above = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
@@ -65,14 +66,7 @@ fn a_pockets_check_holds_whatever_ran_before() {
             &cut("cccccccc", "bbbbbbbb", "pppppppp"),
         ],
     );
-    assert!(
-        matches!(
-            first.outcome(&id("cccccccc")),
-            Some(FeatureOutcome::Built { .. })
-        ),
-        "{:?}",
-        first.features()
-    );
+    cut_refused_in_its_own_words(&first);
     let model = published(&warm, &pocket_doc);
     let warm_outcome = model.outcome(&id("qqqqqqqq")).cloned();
     assert!(
@@ -81,10 +75,25 @@ fn a_pockets_check_holds_whatever_ran_before() {
     );
 }
 
-/// An M2 cut that removes nothing builds, unless a pocket elsewhere in the document shares
-/// its step, when it fails in the pocket's words.
+/// That the M2 cut of the proofs, removing nothing, is refused in a cut's words, naming
+/// itself, never a pocket's.
+fn cut_refused_in_its_own_words(model: &Model) {
+    let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("cccccccc")) else {
+        panic!("{:?}", model.outcome(&id("cccccccc")));
+    };
+    assert_eq!(error.feature(), Some("cccccccc"), "{error:?}");
+    assert!(
+        error
+            .message()
+            .starts_with("cut cccccccc removes nothing from its base bbbbbbbb"),
+        "{error:?}"
+    );
+}
+
+/// An M2 cut that removes nothing is refused in its own words, alone and where a pocket
+/// elsewhere in the document shares its step and is refused in its.
 #[test]
-fn an_m2_cut_isnt_refused_by_an_unrelated_pockets_check() {
+fn an_m2_cut_sharing_a_pockets_step_is_refused_in_its_own_words() {
     let cube_above = box_at("bbbbbbbb", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
     let cube_twin = box_at("dddddddd", [-1.0, -1.0, 1.0], 10.0, 10.0, 10.0);
     let sketch = rectangle("ssssssss", "xy", [0.0, 0.0], 4.0, 2.0);
@@ -97,10 +106,7 @@ fn an_m2_cut_isnt_refused_by_an_unrelated_pockets_check() {
             &cut("cccccccc", "bbbbbbbb", "pppppppp"),
         ],
     );
-    assert!(matches!(
-        alone.outcome(&id("cccccccc")),
-        Some(FeatureOutcome::Built { .. })
-    ));
+    cut_refused_in_its_own_words(&alone);
     let with_pocket = published(
         &engine(),
         &[
@@ -112,16 +118,17 @@ fn an_m2_cut_isnt_refused_by_an_unrelated_pockets_check() {
             &pocket("qqqqqqqq", "dddddddd", "ssssssss", TEN),
         ],
     );
-    let outcome = with_pocket.outcome(&id("cccccccc")).cloned();
-    assert!(
-        matches!(outcome, Some(FeatureOutcome::Built { .. })),
-        "{outcome:?}"
-    );
-    // The premise: the pocket sharing the cut's step is refused, removing nothing.
+    cut_refused_in_its_own_words(&with_pocket);
+    // The pocket sharing the cut's step is refused in its own words, removing nothing.
     let Some(FeatureOutcome::Failed(error)) = with_pocket.outcome(&id("qqqqqqqq")) else {
         panic!("{:?}", with_pocket.outcome(&id("qqqqqqqq")));
     };
-    assert!(error.message().contains("removes nothing"), "{error:?}");
+    assert!(
+        error
+            .message()
+            .starts_with("pocket qqqqqqqq removes nothing from its base dddddddd"),
+        "{error:?}"
+    );
 }
 
 /// The pocket of the proofs, missing its cube: refused, its error said once, naming it.

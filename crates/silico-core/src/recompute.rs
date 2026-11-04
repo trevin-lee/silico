@@ -2139,7 +2139,8 @@ struct SweepCheck {
 }
 
 /// What a feature's result is checked for once it's built: a sweep feature's one solid and
-/// change of volume (design S5, S7), or an M2 boolean's one solid (D2). Each feature's own,
+/// change of volume (design S5, S7), or an M2 boolean's one solid (D2) and change of volume
+/// (S7's rule). Each feature's own,
 /// decided when its outcome is (`model`), from its solid's stored measures and history and
 /// its base's, however they were had (made, kept in memory, or read from the cache): a step
 /// is shared by every feature alike (its key holds no ID), so a check by step would be the
@@ -2809,26 +2810,34 @@ impl Plan {
             Some(Ok(built)) => built,
             _ => return None,
         };
-        match check {
-            Check::Boolean { .. } => {
-                Some(built.history.as_ref().map_or(1, |h| h.result.solids) <= 1)
+        // The base's measures: a sweep's and a boolean's base is its first input.
+        let before = || {
+            let base = planned
+                .uses
+                .first()
+                .and_then(|&b| self.features.get(b))
+                .and_then(Planned::key)?;
+            match done.get(&base) {
+                Some(Ok(base)) => measured_of(base),
+                _ => None,
             }
-            Check::Sweep(sweep) => {
-                let base = planned
-                    .uses
-                    .first()
-                    .and_then(|&b| self.features.get(b))
-                    .and_then(Planned::key)?;
-                let before = match done.get(&base) {
-                    Some(Ok(base)) => measured_of(base)?,
-                    _ => return None,
-                };
-                Some(crate::sweep::result_holds(
-                    sweep.kind,
-                    &before,
+        };
+        match check {
+            Check::Boolean { op, .. } => {
+                if built.history.as_ref().map_or(1, |h| h.result.solids) > 1 {
+                    return Some(false);
+                }
+                Some(crate::sweep::boolean_change_holds(
+                    *op,
+                    &before()?,
                     &measured_of(built)?,
                 ))
             }
+            Check::Sweep(sweep) => Some(crate::sweep::result_holds(
+                sweep.kind,
+                &before()?,
+                &measured_of(built)?,
+            )),
         }
     }
 
@@ -5168,40 +5177,47 @@ fn checked(
     let (FeatureOutcome::Built { key, built }, Some(check)) = (&outcome, &planned.check) else {
         return outcome;
     };
+    // Its base's measures and its own, or why they couldn't be had: a sweep's and a
+    // boolean's base is its first input.
+    let measures = || {
+        let base = planned
+            .uses
+            .first()
+            .and_then(|&b| features.get(b))
+            .and_then(|(_, outcome)| match outcome {
+                FeatureOutcome::Built { key, built } => Some((*key, built)),
+                _ => None,
+            });
+        let base_key = base.map(|(key, _)| key);
+        let base = base.and_then(|(_, built)| measured_of(built));
+        match (base, measured_of(built)) {
+            (Some(before), Some(after)) => Ok((before, after)),
+            _ => Err(unmeasured
+                .get(key)
+                .or_else(|| base_key.and_then(|k| unmeasured.get(&k)))
+                .cloned()
+                .unwrap_or_else(|| silico_bug("a feature's solid or its base's wasn't measured"))
+                .with_feature(planned.id.as_str())),
+        }
+    };
     let decided = match check {
         Check::Boolean { op, base, tool } => {
             let solids = built.history.as_ref().map_or(1, |h| h.result.solids);
-            crate::sweep::check_boolean_solids(&planned.id, *op, base, tool, solids)
+            // Its change judged where both solids were measured: an M2 boolean whose solid or
+            // base couldn't be is built, and says why (`unmeasured`), as before S7's rule
+            // reached it.
+            crate::sweep::check_boolean_solids(&planned.id, *op, base, tool, solids).and_then(
+                |()| match measures() {
+                    Ok((before, after)) => {
+                        crate::sweep::check_boolean_change(&planned.id, *op, base, &before, &after)
+                    }
+                    Err(_) => Ok(()),
+                },
+            )
         }
-        Check::Sweep(sweep) => {
-            let base = planned
-                .uses
-                .first()
-                .and_then(|&b| features.get(b))
-                .and_then(|(_, outcome)| match outcome {
-                    FeatureOutcome::Built { key, built } => Some((*key, built)),
-                    _ => None,
-                });
-            let base_key = base.map(|(key, _)| key);
-            let base = base.and_then(|(_, built)| measured_of(built));
-            match (base, measured_of(built)) {
-                (Some(before), Some(after)) => crate::sweep::check_result(
-                    &sweep.feature,
-                    sweep.kind,
-                    &sweep.base,
-                    &before,
-                    &after,
-                ),
-                _ => Err(unmeasured
-                    .get(key)
-                    .or_else(|| base_key.and_then(|k| unmeasured.get(&k)))
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        silico_bug("a sketch feature's solid or its base's wasn't measured")
-                    })
-                    .with_feature(planned.id.as_str())),
-            }
-        }
+        Check::Sweep(sweep) => measures().and_then(|(before, after)| {
+            crate::sweep::check_result(&sweep.feature, sweep.kind, &sweep.base, &before, &after)
+        }),
     };
     match decided {
         Ok(()) => outcome,

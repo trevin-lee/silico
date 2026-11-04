@@ -665,10 +665,145 @@ pub fn result_holds(kind: SweepFeature, before: &Measured, after: &Measured) -> 
     judged("", kind, "", before, after).is_ok()
 }
 
-/// [`check_result`], its feature and base by ID.
+/// What an M2 `fuse`, `cut`, or `common` feature's result must be, once
+/// [`check_boolean_solids`] has passed it: a change to its base's volume, by S7's rule and
+/// in its words, as [`check_result`] judges a sketch feature's (SolidWorks refuses a
+/// feature that changes nothing). A fuse adds to its base, and a cut and a common take from
+/// it, so a fuse whose tool lies inside its base, a cut whose tool misses it, and a common
+/// whose tool holds all of it are refused, `kernel_failed`, naming the feature; and so is
+/// one whose tool OCCT took for nothing under the fuzzy value every boolean runs with (a
+/// tool under a millionth of the boolean's size, docs/ports/booleans.md).
+pub fn check_boolean_change(
+    feature: &FeatureId,
+    op: silico_protocol::BooleanOp,
+    base: &FeatureId,
+    before: &Measured,
+    after: &Measured,
+) -> Result<(), Error> {
+    judged(feature.as_str(), op, base.as_str(), before, after)
+}
+
+/// Whether [`check_boolean_change`] passes a result, as [`result_holds`] is for a sketch
+/// feature's.
+pub fn boolean_change_holds(
+    op: silico_protocol::BooleanOp,
+    before: &Measured,
+    after: &Measured,
+) -> bool {
+    judged("", op, "", before, after).is_ok()
+}
+
+/// What changes a base's volume and is judged for it (S7): a sketch feature, or an M2
+/// boolean. Its word, whether it adds, and what to try when it changes nothing.
+trait Changes: Copy {
+    /// The `type` the file writes for it.
+    fn word(self) -> &'static str;
+    /// Whether it adds to its base (a fuse), rather than taking from it (a cut).
+    fn adds(self) -> bool;
+    /// What to try when the result is no solid.
+    fn when_lost(self) -> &'static str;
+    /// What to try when the result is several solids.
+    fn when_parted(self) -> String;
+    /// What to try when the change is above 0 but within the measure's precision.
+    fn when_too_small(self) -> String;
+    /// What to try when the result's volume is the base's.
+    fn when_unchanged(self) -> String;
+}
+
+impl Changes for SweepFeature {
+    fn word(self) -> &'static str {
+        SweepFeature::word(self)
+    }
+
+    fn adds(self) -> bool {
+        SweepFeature::adds(self)
+    }
+
+    fn when_lost(self) -> &'static str {
+        if self.adds() {
+            "OCCT lost both shapes: move the sketch slightly"
+        } else {
+            "move the sketch or shorten the cut, so it leaves some of its base"
+        }
+    }
+
+    fn when_parted(self) -> String {
+        let word = self.word();
+        if self.adds() {
+            format!("move the sketch or lengthen the {word}, or {word} it with no base")
+        } else {
+            format!("move the sketch or shorten the {word}")
+        }
+    }
+
+    fn when_too_small(self) -> String {
+        format!(
+            "make the {} larger, or make it on a smaller part; if it has a thin wall flush with a face of the base, OCCT can lose it (docs/ports/sketch-features.md): thicken it",
+            self.word()
+        )
+    }
+
+    fn when_unchanged(self) -> String {
+        let word = self.word();
+        if self.adds() {
+            format!(
+                "if the {word} points into its base, reverse it; if it lies inside it, move its sketch; if neither, OCCT lost it: a thin wall of its profile flush with a face of the base can do this (docs/ports/sketch-features.md), so thicken it"
+            )
+        } else {
+            format!(
+                "if the {word} points away from its base, reverse it; if it misses it, move its sketch; if neither, OCCT lost it: a thin wall of its profile flush with a face of the base can do this (docs/ports/sketch-features.md), so thicken it"
+            )
+        }
+    }
+}
+
+/// What every boolean's change refusal says beside its own advice: the fuzzy value.
+const MILLIONTH: &str = "a boolean is built to a millionth of its size, so a tool that reaches less than that past or into its base is lost";
+
+impl Changes for silico_protocol::BooleanOp {
+    fn word(self) -> &'static str {
+        silico_protocol::BooleanOp::word(self)
+    }
+
+    fn adds(self) -> bool {
+        self == silico_protocol::BooleanOp::Fuse
+    }
+
+    fn when_lost(self) -> &'static str {
+        "move or shrink the tool, so the result keeps some of its base"
+    }
+
+    fn when_parted(self) -> String {
+        "move the tool so the result is one piece".to_owned()
+    }
+
+    fn when_too_small(self) -> String {
+        format!(
+            "make the tool larger, or the {} on a smaller part",
+            self.word()
+        )
+    }
+
+    fn when_unchanged(self) -> String {
+        use silico_protocol::BooleanOp;
+        match self {
+            BooleanOp::Fuse => format!(
+                "if its tool lies inside its base, move it so it reaches out of it; {MILLIONTH}"
+            ),
+            BooleanOp::Cut => {
+                format!("if its tool misses its base, move it so they overlap; {MILLIONTH}")
+            }
+            BooleanOp::Common => format!(
+                "if its tool holds all of its base, the common is its base: move or shrink the tool, or remove the common; {MILLIONTH}"
+            ),
+        }
+    }
+}
+
+/// [`check_result`] and [`check_boolean_change`], the feature and base by ID.
 fn judged(
     id: &str,
-    kind: SweepFeature,
+    kind: impl Changes,
     base_id: &str,
     before: &Measured,
     after: &Measured,
@@ -683,11 +818,7 @@ fn judged(
         0 => {
             return failed(
                 format!("{word} {id} leaves nothing of its base {base_id}: the result is no solid"),
-                if kind.adds() {
-                    "OCCT lost both shapes: move the sketch slightly"
-                } else {
-                    "move the sketch or shorten the cut, so it leaves some of its base"
-                },
+                kind.when_lost(),
             );
         }
         1 => {}
@@ -697,7 +828,7 @@ fn judged(
                     format!(
                         "{word} {id} doesn't reach its base {base_id}: the result is {n} solids"
                     ),
-                    &format!("move the sketch or lengthen the {word}, or {word} it with no base"),
+                    &kind.when_parted(),
                 )
             } else {
                 failed(
@@ -705,7 +836,7 @@ fn judged(
                         "{word} {id} cuts its base {base_id} in {}: the result is {n} solids",
                         pieces(n)
                     ),
-                    &format!("move the sketch or shorten the {word}"),
+                    &kind.when_parted(),
                 )
             };
         }
@@ -749,20 +880,10 @@ fn judged(
                     format_number(significant(change)),
                     format_number(significant(limit))
                 ),
-                &format!(
-                    "make the {word} larger, or make it on a smaller part; if it has a thin wall flush with a face of the base, OCCT can lose it (docs/ports/sketch-features.md): thicken it"
-                ),
+                &kind.when_too_small(),
             );
         }
-        let suggestion = if kind.adds() {
-            format!(
-                "if the {word} points into its base, reverse it; if it lies inside it, move its sketch; if neither, OCCT lost it: a thin wall of its profile flush with a face of the base can do this (docs/ports/sketch-features.md), so thicken it"
-            )
-        } else {
-            format!(
-                "if the {word} points away from its base, reverse it; if it misses it, move its sketch; if neither, OCCT lost it: a thin wall of its profile flush with a face of the base can do this (docs/ports/sketch-features.md), so thicken it"
-            )
-        };
+        let suggestion = kind.when_unchanged();
         return failed(
             format!(
                 "{word} {id} {verb} nothing {preposition} its base {base_id}: the result's volume is the base's, {} mm³ ({counts})",
