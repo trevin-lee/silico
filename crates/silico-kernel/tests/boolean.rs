@@ -635,7 +635,7 @@ def solid(spec, at):
 a = solid({base}, {base_at:?})
 b = solid({tool}, {tool_at:?})
 doc.recompute()
-r = a.Shape.{method}(b.Shape)
+r = a.Shape.{method}([b.Shape], -1.0)
 tags = {{format(a.Shape.Tag, "x"): 0, format(b.Shape.Tag, "x"): 1}}
 EL = r"([A-Za-z]+[0-9]+)"
 kept = re.compile(EL + r";:H([0-9a-f]+),[FEV]")
@@ -713,7 +713,7 @@ def solid(spec, at):
 a = solid({cone}, [0.0, 0.0, 0.0])
 b = solid({cylinder}, {offset:?})
 doc.recompute()
-r = a.Shape.fuse(b.Shape)
+r = a.Shape.fuse([b.Shape], -1.0)
 box = r.optimalBoundingBox(False, False)
 out = {{"volume": r.Volume, "area": r.Area, "solids": len(r.Solids),
         "center": list(r.Solids[0].CenterOfMass),
