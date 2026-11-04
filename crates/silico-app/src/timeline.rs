@@ -346,12 +346,7 @@ fn features<P: Clients + 'static>(
         tab.view.linked = None;
         return;
     };
-    let errors = timeline.problems
-        + entries
-            .iter()
-            .map(|entry| entry.problems)
-            .fold(0u64, u64::saturating_add);
-    let (track, summary_rect, said) = summary_at(ui, rect, summary(errors, entries.len()));
+    let (track, summary_rect, said) = summary_at(ui, rect, summary(tab.errors(), entries.len()));
     let rebuild = tab.status.as_ref().map(|status| &status.rebuild);
     let steps = step_of_each(entries, timeline.revision, rebuild);
     let mut asked = Asked::default();

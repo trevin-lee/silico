@@ -10963,10 +10963,12 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
             assert!(field.width() > 30.0 && field.height() > 10.0, "{field:?}");
             // Inside it, clear of its text (at its left) and its border.
             let inside = field.right_center() + eframe::egui::vec2(-4.0, 0.0);
-            // At rest: its fill Gray.200 (`.field`), on the panel's Gray.100 just above it.
+            // At rest: its fill Gray.200 (`.field`), on the panel's Gray.100 just above it
+            // (a 22-high field in a 24-high `.prop` row: a point clear of it, between it and
+            // the field of the row above).
             assert_eq!(pixel(inside), [0x21, 0x21, 0x21, 0xff], "{field:?}");
             assert_eq!(
-                pixel(field.center_top() + eframe::egui::vec2(0.0, -3.0)),
+                pixel(field.center_top() + eframe::egui::vec2(0.0, -1.0)),
                 [0x0d, 0x0d, 0x0d, 0xff],
                 "{field:?}"
             );
@@ -12835,6 +12837,9 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
         h.query_by_role_and_label(Role::Dialog, "Cylinder")
             .is_some()
     });
+    // The dialog shows in the click's own frame, docked in Properties; egui closes a popup
+    // at its frame's end, so the menu is gone the frame after.
+    step(&mut h);
     assert!(h.query_by_role_and_label(Role::Menu, "CREATE").is_none());
     // Its preview built, as `status` says: with it still rebuilding, Esc would stop it,
     // leaving the dialog open (esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_
@@ -14402,5 +14407,328 @@ fn a_close_while_a_move_waits_before_its_transaction_opens_asks_first() {
     });
     assert_eq!(h.state().tabs().len(), 1);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The property panel's four jobs, and the status bar ----
+
+/// The value on the property panel's row whose key is `key` (`.prop`): the label at its
+/// right, on its line.
+fn property(h: &AppHarness, key: &str) -> Option<String> {
+    let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+    let key = pane
+        .query_all_by_role(Role::Label)
+        .find(|node| node.accesskit_node().value().as_deref() == Some(key))?
+        .rect();
+    pane.query_all_by_role(Role::Label).find_map(|node| {
+        let rect = node.rect();
+        ((rect.center().y - key.center().y).abs() < 1.0 && rect.left() > key.right())
+            .then(|| node.accesskit_node().value())
+            .flatten()
+    })
+}
+
+/// The status bar's words that start with `start`, if it shows any (it's no pane: its
+/// labels are the window's).
+fn status_said(h: &AppHarness, start: &str) -> Option<String> {
+    h.query_all_by_label_contains(start).find_map(|node| {
+        let node = node.accesskit_node();
+        let said = node.value().or_else(|| node.label())?;
+        said.starts_with(start).then_some(said)
+    })
+}
+
+#[test]
+fn with_nothing_selected_the_property_panel_shows_the_documents_properties() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    step_until(&mut h, "its file compared", |h| {
+        property(h, "File on disk").as_deref() == Some("Unchanged")
+    });
+    // The document's: opened at revision 1, its header's units, its three features, saved,
+    // and its one body (the cut consumes the block and the pin).
+    assert_eq!(property(&h, "Revision").as_deref(), Some("1"));
+    assert_eq!(
+        property(&h, "Units").as_deref(),
+        Some("mm · 1 nm resolution")
+    );
+    assert_eq!(property(&h, "Features").as_deref(), Some("3"));
+    assert_eq!(property(&h, "Saved").as_deref(), Some("Yes"));
+    assert_eq!(property(&h, "Bodies").as_deref(), Some("1"));
+    for section in ["PROPERTIES", "DOCUMENT", "MODEL"] {
+        assert!(shows(&h, "Properties", section), "{section}");
+    }
+    // A feature selected: its properties instead; Esc clears it, and the document's are back.
+    select(&mut h, "Hole");
+    assert_eq!(property(&h, "Revision"), None);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the document's again", |h| {
+        property(h, "Revision").as_deref() == Some("1")
+    });
+    // An edit of the pin's name: unsaved, at a later revision, the model's the one built.
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| anywhere(h, "example.silico *"));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the edit shown", |h| {
+        property(h, "Saved").as_deref() == Some("Unsaved edits")
+            && property(h, "Revision").is_some_and(|said| said != "1")
+    });
+    // Another program writes the file: changed on disk, said in the panel and the bar.
+    std::fs::write(&path, EXAMPLE.replace("Clearance", "Room")).unwrap();
+    step_until(&mut h, "the change found", |h| {
+        property(h, "File on disk").as_deref() == Some("Changed by another program")
+    });
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Changed on disk")
+            .is_some()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_selected_features_properties_are_its_name_health_and_id() {
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, Op::Boolean { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "the cut came apart"))
+    });
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    // The pin built, warned of its missing fingerprint (the document stores none:
+    // `fingerprint_missing`).
+    select(&mut h, "Pin");
+    assert_eq!(property(&h, "State").as_deref(), Some("Warning"));
+    assert_eq!(property(&h, "ID").as_deref(), Some("a91cw0de"));
+    assert!(shows(&h, "Properties", "HEALTH"));
+    // The failed cut: its health, and its error's text in its card, as the core's check
+    // says it.
+    select(&mut h, "Hole");
+    assert_eq!(property(&h, "State").as_deref(), Some("Error"));
+    assert_eq!(property(&h, "ID").as_deref(), Some("m3tq8v0z"));
+    let want = core_says(&f, EXAMPLE, "m3tq8v0z");
+    step_until(&mut h, "its error's text", |h| {
+        shows(h, "Properties", &want)
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_open_dialog_takes_the_property_panels_place_and_cancel_gives_it_back() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    // The dialog is in the panel (one right panel), the document's properties gone.
+    let panel = h.get_by_role_and_label(Role::Pane, "Properties");
+    assert!(panel.query_by_role_and_label(Role::Dialog, "Box").is_some());
+    assert!(panel.query_by_label("INPUTS").is_some());
+    assert_eq!(property(&h, "Revision"), None);
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    step_until(&mut h, "the document's properties", |h| {
+        property(h, "Revision").is_some()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_status_bar_says_the_rebuild_running_stopped_and_rebuilt_with_stop_and_rebuild() {
+    let f = fixture();
+    let hold = f.kernel.hold(is_box);
+    let path = f.file("example.silico", EXAMPLE);
+    let mut h = f.app();
+    h.state_mut().open(path.to_str().unwrap(), false);
+    // Running: how far it's got, as `status` counts its plan's steps.
+    let progress = |h: &AppHarness| {
+        h.state()
+            .tabs()
+            .first()
+            .and_then(|tab| tab.status.as_ref())
+            .and_then(|status| status.rebuild.progress.clone())
+    };
+    step_until(&mut h, "the rebuild's progress", |h| {
+        progress(h).is_some_and(|p| {
+            status_said(h, "Rebuilding").as_deref()
+                == Some(format!("Rebuilding · {} of {}", p.done, p.steps).as_str())
+        })
+    });
+    let stop = h.get_by_role_and_label(Role::Button, "Stop");
+    assert!(!stop.accesskit_node().is_disabled());
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Rebuild")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // Stopped: said so, as far as it got, and Rebuild on.
+    h.get_by_role_and_label(Role::Button, "Stop").click();
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    step_until(&mut h, "the stop said", |h| {
+        progress(h).is_some_and(|p| {
+            status_said(h, "Rebuild stopped").as_deref()
+                == Some(format!("Rebuild stopped at {} of {}", p.done, p.steps).as_str())
+        })
+    });
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Stop")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(
+        !h.get_by_role_and_label(Role::Button, "Rebuild")
+            .accesskit_node()
+            .is_disabled()
+    );
+    hold.release();
+    h.get_by_role_and_label(Role::Button, "Rebuild").click();
+    // Rebuilt: revision 1, the one it opened at, with no error.
+    step_until(&mut h, "rebuilt", |h| {
+        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
+    });
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Rebuild")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(status_said(&h, "Saved").is_some());
+    assert!(status_said(&h, "mm").is_some());
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Shortcuts")
+            .is_some()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_status_bar_says_a_rebuild_with_errors_and_an_edit_unsaved() {
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, Op::Boolean { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "the cut came apart"))
+    });
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    // The cut failed: one error, the document's one problem.
+    step_until(&mut h, "rebuilt with its error", |h| {
+        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt with 1 error")
+    });
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "unsaved", |h| {
+        status_said(h, "Unsaved").as_deref() == Some("Unsaved")
+    });
+    assert!(status_said(&h, "Saved").is_none());
+    // A dialog open: its edits are its own until OK.
+    create(&mut h, "Box");
+    step_until(&mut h, "the dialog said", |h| {
+        status_said(h, "Unsaved").as_deref() == Some("Unsaved · dialog open")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_changed_on_disk_chip_offers_again_the_choice_the_edits_were_kept_over() {
+    let f = fixture_reading(Some(Arc::new(real)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Changed on disk")
+            .is_none()
+    );
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| anywhere(h, "example.silico *"));
+    std::fs::write(&path, EXAMPLE.replace("Clearance", "Room")).unwrap();
+    let said = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the change announced", |h| anywhere(h, said));
+    h.get_by_role_and_label(Role::Button, "Keep my edits")
+        .click();
+    step_until(&mut h, "the banner gone", |h| !anywhere(h, said));
+    // The chip stays while the file differs; a click on it offers the choice again.
+    let chip = h.get_by_role_and_label(Role::Button, "Changed on disk");
+    chip.click();
+    step_until(&mut h, "the choice offered again", |h| anywhere(h, said));
+    assert!(h.query_by_role_and_label(Role::Button, "Reload").is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_dialogs_close_button_cancels_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create(&mut h, "Box");
+    added(&mut h);
+    settled(&mut h);
+    assert!(shows(&h, "Timeline", "Box"));
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Close the dialog")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    // Cancel's: the box it added is taken away again.
+    step_until(&mut h, "the box gone", |h| {
+        shows(h, "Timeline", "Hole") && !shows(h, "Timeline", "Box")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let hold = f.kernel.hold(is_box);
+    create(&mut h, "Box");
+    added(&mut h);
+    // Running: what stops it said beside it.
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+            && dialog(h)
+                .query_by_label_contains("Rebuilding the preview")
+                .is_some()
+    });
+    assert!(dialog(&h).query_by_label("Esc stops it").is_some());
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the preview stopped", |h| {
+        dialog(h)
+            .query_by_label_contains("Preview stopped. Rebuild ")
+            .is_some()
+    });
+    assert!(dialog_open(&h));
+    hold.release();
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    // A box the kernel refuses: the preview's error, and that OK keeps the feature with it.
+    f.kernel
+        .refuse(|op| is_box(op).then(|| Error::new(ErrorCode::KernelFailed, "the box came apart")));
+    create(&mut h, "Box");
+    added(&mut h);
+    step_until(&mut h, "the preview's errors", |h| {
+        dialog(h)
+            .query_by_label_contains("OK keeps the feature with them.")
+            .is_some_and(|node| {
+                node.accesskit_node()
+                    .label()
+                    .or_else(|| node.accesskit_node().value())
+                    .is_some_and(|said| said.starts_with("The preview has "))
+            })
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn shortcuts_is_off_saying_the_sheet_comes_later() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let shortcuts = h.get_by_role_and_label(Role::Button, "Shortcuts");
+    assert!(shortcuts.accesskit_node().is_disabled());
+    shortcuts.hover();
+    step_until(&mut h, "its tooltip", |h| {
+        anywhere(h, "The shortcut sheet comes later")
+    });
     assert_eq!(never_waits::waits(), 0);
 }
