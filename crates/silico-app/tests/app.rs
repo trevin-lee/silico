@@ -15207,3 +15207,83 @@ fn in_a_short_window_the_sketch_palette_stays_inside_the_viewport_and_its_last_s
     );
     assert_eq!(never_waits::waits(), 0);
 }
+
+/// How many undos and redos the tab has sent.
+fn steps_sent(h: &AppHarness) -> usize {
+    h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Undo(_) | Sent::Redo(_)))
+        .count()
+}
+
+/// Ctrl+Z, then Ctrl+Y, each its own frame.
+fn undo_redo_keys(h: &mut AppHarness) {
+    for key in [eframe::egui::Key::Z, eframe::egui::Key::Y] {
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+        step(h);
+    }
+}
+
+#[test]
+fn mid_drag_undo_and_redo_are_off_and_their_keys_send_nothing_and_once_it_ends_both_are_back() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    counting(&f);
+    let mut h = boxed(&f);
+    // Two corners dragged, each one edit, and the second undone: an edit to undo and one
+    // to redo, both offered.
+    for (from, to) in [([50.0, 30.0], [52.0, 32.0]), ([10.0, 10.0], [12.0, 12.0])] {
+        sketch_events(
+            &f,
+            &mut h,
+            &[
+                pointer(Press, from[0], from[1]),
+                pointer(Move, to[0], to[1]),
+            ],
+        );
+        drag_frames(&mut h, 1);
+        sketch_events(&f, &mut h, &[pointer(Release, to[0], to[1])]);
+        settled(&mut h);
+        step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    }
+    step_until(&mut h, "Undo offered", |h| offered(h, "Undo"));
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "both offered", |h| {
+        offered(h, "Undo") && offered(h, "Redo")
+    });
+    // The second corner, back at (10, 10), pressed and dragged: neither is offered, by
+    // button or key, while the drag is under way.
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 10.0, 10.0), pointer(Move, 14.0, 14.0)],
+    );
+    drag_frames(&mut h, 1);
+    assert!(the_drag(&h).is_some_and(|d| d.in_flight()));
+    let sent = steps_sent(&h);
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!offered(&h, "Undo") && !offered(&h, "Redo"));
+        let tab = &h.state().tabs()[0];
+        assert!(!tab.undoable() && !tab.redoable());
+    }
+    undo_redo_keys(&mut h);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(steps_sent(&h), sent);
+    assert!(the_drag(&h).is_some_and(|d| d.in_flight()));
+    // Esc ends it from its begin state: nothing changed, and both are back.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    step_until(&mut h, "both offered again", |h| {
+        offered(h, "Undo") && offered(h, "Redo")
+    });
+    assert_eq!(steps_sent(&h), sent);
+    assert_eq!(never_waits::waits(), 0);
+}

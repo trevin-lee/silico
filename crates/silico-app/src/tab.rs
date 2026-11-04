@@ -731,11 +731,13 @@ impl Tab {
     /// Whether Undo can step: an edit still to answer (the undo waits behind it), or an
     /// edit to undo as the status of the tab's newest revision counts them; never while
     /// another step is under way, whose answer moves the counts, nor while a dialog is open,
-    /// whose Cancel undoes its edits. In sketch mode, as SolidWorks allows, but never past
-    /// the state it opened at.
+    /// whose Cancel undoes its edits, nor while sketch mode's drag is under way (from its
+    /// press to the read of its edit), whose end lands an edit of its own. In sketch mode,
+    /// as SolidWorks allows, but never past the state it opened at.
     pub fn undoable(&self) -> bool {
         self.transaction
             && !self.in_dialog()
+            && self.drag.is_none()
             && self.sketch_lets_undo()
             && !self.stepping()
             && (!self.edits.idle()
@@ -747,10 +749,11 @@ impl Tab {
 
     /// Whether Redo can step: an edit undone, and none made since, as the status of the
     /// tab's newest revision counts them; never while a step is under way, nor while a
-    /// dialog is open. In sketch mode, only what it undid itself.
+    /// dialog is open or a drag is under way. In sketch mode, only what it undid itself.
     pub fn redoable(&self) -> bool {
         self.transaction
             && !self.in_dialog()
+            && self.drag.is_none()
             && self.sketch.as_ref().is_none_or(|mode| mode.undone > 0)
             && self
                 .redo_fence
