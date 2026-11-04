@@ -192,7 +192,8 @@ pub struct View {
     picked: Option<Picking>,
     frame: Option<ViewFrame>,
     /// The pane's height in pixels, as its last frame had it: an orthographic view's least
-    /// is the renderer's at that height (`views::least_view_height`).
+    /// is the renderer's at that height (`views::least_view_height`). 1 before the first
+    /// frame, so a camera clamped then takes the 1-row floor until that frame re-clamps it.
     rows: u32,
 }
 
@@ -626,6 +627,8 @@ impl View {
     fn zoom(&mut self, scroll: f64, cursor: [f64; 2], height: f64) {
         let mut scroll = scroll;
         if let Projection::Orthographic { view_height } = self.camera.projection {
+            // The last frame's rows, not `height` (points): for the one frame after a resize
+            // the floor is the old pane's, and the next frame's clamp raises it.
             let least = silico_core::views::least_view_height(
                 self.rows,
                 silico_core::views::reach(self.camera.target, self.drawn_boxes()),

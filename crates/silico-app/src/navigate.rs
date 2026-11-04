@@ -5,7 +5,9 @@
 //! reaches a document (section 11). Each control gives the camera it makes, or none when
 //! that camera makes no frame ([`Camera::frame`]: non-finite, or past the least or the most
 //! a camera may be; its angle's range at a size is the frame's own check, and the app's
-//! perspective angle, [`PERSPECTIVE_FIELD_OF_VIEW`], is inside it at any pane's), so the view
+//! perspective angle, [`PERSPECTIVE_FIELD_OF_VIEW`], is inside it at any pane but a sliver
+//! (the narrowest angle a pane allows is 2·atan((W² + H²)/(H·2²⁰)): 30.3° at 3840 × 52, so
+//! a pane under about 52 rows at 4K width refuses it, its frame not drawn), so the view
 //! stays as it was; a fit or a named view, which has the pane's size, takes the whole check
 //! at it. [`drawable`] says whether a renderer draws a camera's view of the bodies (an
 //! orthographic view no smaller than their reach allows at the pane's height in pixels),
