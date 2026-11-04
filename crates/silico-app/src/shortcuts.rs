@@ -11,11 +11,14 @@
 //! written there), and nothing here matches them; the sheet lists them as the prototype
 //! does.
 //!
+//! Sketch mode's group, `Sketch` (*while a sketch is open*), comes between Dialogs and Help
+//! as the prototype orders them: L line, R rectangle, C circle, A arc, P point, T trim,
+//! D Smart Dimension, X construction, and Ctrl+Enter Finish Sketch, each its SKETCH tab's
+//! button's (`crate::toolbar`); the app takes them only while a sketch is open.
+//!
 //! Only what the app does today is here. Left out, each a seam:
-//! - SEAM(#351): sketch mode adds its group, `Sketch` (*while a sketch is open*): L line,
-//!   R rectangle, C circle, A arc, P point, T trim, D Smart Dimension, X construction, hold
-//!   Ctrl for no relations, and Ctrl+Enter Finish Sketch (whose tooltip names its key in
-//!   `crate::toolbar` until then), between Dialogs and Help as the prototype orders them.
+//! - SEAM: hold Ctrl for no relations (the prototype's *Sketch without relations*), a held
+//!   modifier the sketch tools read from the pointer's events, no key's press.
 //! - SEAM: Ctrl+8 Look At, once the app can turn the view square to a face or a sketch.
 //! - SEAM(M5.7): the selection filters (X faces, E edges, V vertices) and Select Other
 //!   (right-click), picking's.
@@ -54,6 +57,15 @@ pub enum Command {
     Hide,
     Ok,
     Cancel,
+    Line,
+    Rectangle,
+    Circle,
+    Arc,
+    Point,
+    Trim,
+    Dimension,
+    Construction,
+    FinishSketch,
     Shortcuts,
 }
 
@@ -66,17 +78,19 @@ pub enum Group {
     View,
     Selection,
     Dialogs,
+    Sketch,
     Help,
 }
 
 /// Every group, in the sheet's order.
-pub const GROUPS: [Group; 7] = [
+pub const GROUPS: [Group; 8] = [
     Group::File,
     Group::Edit,
     Group::Rebuild,
     Group::View,
     Group::Selection,
     Group::Dialogs,
+    Group::Sketch,
     Group::Help,
 ];
 
@@ -90,6 +104,7 @@ impl Group {
             Group::View => "View",
             Group::Selection => "Selection",
             Group::Dialogs => "Dialogs",
+            Group::Sketch => "Sketch",
             Group::Help => "Help",
         }
     }
@@ -98,6 +113,7 @@ impl Group {
     pub fn note(self) -> Option<&'static str> {
         match self {
             Group::Selection => Some("outside sketches"),
+            Group::Sketch => Some("while a sketch is open"),
             Group::View => Some("Fusion’s mouse"),
             _ => None,
         }
@@ -337,6 +353,69 @@ const HIDE: Entry = entry(
 );
 const OK: Entry = entry(Command::Ok, "OK", Group::Dialogs, &[bare(Key::Enter)], None);
 const CANCEL: Entry = entry(Command::Cancel, "Cancel", Group::Dialogs, &[ESCAPE], None);
+/// A sketch tool's letter: only the letter, freshly pressed (Shift or Alt with it is another
+/// key's, and a letter held down chooses once).
+const fn letter(key: Key) -> Chord {
+    Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, key))
+}
+
+const LINE: Entry = entry(
+    Command::Line,
+    "Line",
+    Group::Sketch,
+    &[letter(Key::L)],
+    Some("Click, click: a chain of lines. Double-click ends it"),
+);
+const RECTANGLE: Entry = entry(
+    Command::Rectangle,
+    "Rectangle",
+    Group::Sketch,
+    &[letter(Key::R)],
+    None,
+);
+const CIRCLE: Entry = entry(
+    Command::Circle,
+    "Circle",
+    Group::Sketch,
+    &[letter(Key::C)],
+    None,
+);
+const ARC: Entry = entry(Command::Arc, "Arc", Group::Sketch, &[letter(Key::A)], None);
+const POINT: Entry = entry(
+    Command::Point,
+    "Point",
+    Group::Sketch,
+    &[letter(Key::P)],
+    None,
+);
+const TRIM: Entry = entry(
+    Command::Trim,
+    "Trim",
+    Group::Sketch,
+    &[letter(Key::T)],
+    None,
+);
+const DIMENSION: Entry = entry(
+    Command::Dimension,
+    "Smart Dimension",
+    Group::Sketch,
+    &[letter(Key::D)],
+    Some("Pick a line, a circle, or two entities, then type the value"),
+);
+const CONSTRUCTION: Entry = entry(
+    Command::Construction,
+    "Construction",
+    Group::Sketch,
+    &[letter(Key::X)],
+    Some("Draws the tools' curves as construction, or as profile again"),
+);
+const FINISH_SKETCH: Entry = entry(
+    Command::FinishSketch,
+    "Finish Sketch",
+    Group::Sketch,
+    &[command(Key::Enter)],
+    Some("Keeps your changes and rebuilds"),
+);
 const SHORTCUTS: Entry = entry(
     Command::Shortcuts,
     "Keyboard shortcuts",
@@ -346,7 +425,7 @@ const SHORTCUTS: Entry = entry(
 );
 
 /// Every command, in the order the sheet lists each group's.
-pub const REGISTRY: [Entry; 27] = [
+pub const REGISTRY: [Entry; 36] = [
     NEW,
     OPEN,
     SAVE,
@@ -373,6 +452,15 @@ pub const REGISTRY: [Entry; 27] = [
     HIDE,
     OK,
     CANCEL,
+    LINE,
+    RECTANGLE,
+    CIRCLE,
+    ARC,
+    POINT,
+    TRIM,
+    DIMENSION,
+    CONSTRUCTION,
+    FINISH_SKETCH,
     SHORTCUTS,
 ];
 
@@ -406,6 +494,15 @@ impl Command {
             Command::Hide => &HIDE,
             Command::Ok => &OK,
             Command::Cancel => &CANCEL,
+            Command::Line => &LINE,
+            Command::Rectangle => &RECTANGLE,
+            Command::Circle => &CIRCLE,
+            Command::Arc => &ARC,
+            Command::Point => &POINT,
+            Command::Trim => &TRIM,
+            Command::Dimension => &DIMENSION,
+            Command::Construction => &CONSTRUCTION,
+            Command::FinishSketch => &FINISH_SKETCH,
             Command::Shortcuts => &SHORTCUTS,
         }
     }
@@ -617,6 +714,51 @@ mod tests {
         assert_eq!(Command::RebuildAll.caps(&ctx), ["Ctrl", "Shift", "B"]);
         assert_eq!(Command::Hide.caps(&ctx), ["H"]);
         assert_eq!(Command::Shortcuts.caps(&ctx), ["?"]);
+    }
+
+    #[test]
+    fn the_sketch_group_is_the_prototypes_letters_and_ctrl_enter_between_dialogs_and_help() {
+        // js/app.js's `CMD`: sLine L, sRect R, sCircle C, sArc A, sPoint P, sTrim T, sDim D,
+        // sConstruction X, finishSketch Mod Enter, all `group: 'Sketch'`; its sheet's `order`
+        // puts Sketch after Dialogs, before Help, noted "while a sketch is open".
+        let sketch: Vec<(Command, &[Chord])> = REGISTRY
+            .iter()
+            .filter(|entry| entry.group == Group::Sketch)
+            .map(|entry| (entry.command, entry.keys))
+            .collect();
+        let exact = |key| Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, key));
+        assert_eq!(
+            sketch,
+            [
+                (Command::Line, &[exact(Key::L)][..]),
+                (Command::Rectangle, &[exact(Key::R)]),
+                (Command::Circle, &[exact(Key::C)]),
+                (Command::Arc, &[exact(Key::A)]),
+                (Command::Point, &[exact(Key::P)]),
+                (Command::Trim, &[exact(Key::T)]),
+                (Command::Dimension, &[exact(Key::D)]),
+                (Command::Construction, &[exact(Key::X)]),
+                (
+                    Command::FinishSketch,
+                    &[Chord::Key(KeyboardShortcut::new(
+                        Modifiers::COMMAND,
+                        Key::Enter
+                    ))]
+                ),
+            ]
+        );
+        let at = |group| GROUPS.iter().position(|each| *each == group);
+        assert_eq!(at(Group::Sketch), Some(6));
+        assert_eq!(at(Group::Dialogs), Some(5));
+        assert_eq!(at(Group::Help), Some(7));
+        assert_eq!(Group::Sketch.name(), "Sketch");
+        assert_eq!(Group::Sketch.note(), Some("while a sketch is open"));
+        let mac = on(OperatingSystem::Mac);
+        let nix = on(OperatingSystem::Nix);
+        assert_eq!(Command::FinishSketch.caps(&mac), ["⌘", "↵"]);
+        assert_eq!(Command::FinishSketch.keys_text(&nix), "Ctrl+↵");
+        assert_eq!(Command::Dimension.caps(&nix), ["D"]);
+        assert_eq!(Command::Dimension.label(), "Smart Dimension");
     }
 
     #[test]

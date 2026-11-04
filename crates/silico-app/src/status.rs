@@ -1,7 +1,8 @@
 //! The status bar along the window's bottom (docs/design/m5-ui/DESIGN.md, *The idea in one
 //! line*, *Layout*, and *egui mapping*; its `#status` and `.st-*` rules and `renderStatus`):
 //! the rebuild in words, with a dot or a spinner in its state's colour, and Stop and Rebuild
-//! beside it; then what the person points at; then, at the right, the file changed on disk,
+//! beside it; then, in sketch mode, the sketch edited, the pointer's coordinates on its
+//! plane, and its state (`js/sketch.js`'s `statusText`), or what the person points at; then, at the right, the file changed on disk,
 //! whether the document is saved, its units, and the shortcut sheet's button (`crate::sheet`).
 //! With no document open,
 //! how the warm start stands (decision 10) in the rebuild's place.
@@ -12,8 +13,7 @@
 //! - the edits' count (`Unsaved · 2 edits`): the core's undo stack counts edits, but the
 //!   app's Undo steps over a dialog's edits as one, so neither count is the person's. SEAM:
 //!   the tab's count of its own undo steps.
-//! - the hover, the selection, and the pointer's coordinates in the middle: SEAM(M5.7),
-//!   picking's, and SEAM(#351), sketch mode's (see [`middle`]).
+//! - the hover and the selection in the middle: SEAM(M5.7), picking's (see [`middle`]).
 //! - What's Wrong, which `Rebuilt with 2 errors` opens in the prototype: not built yet.
 
 use eframe::egui::text::{LayoutJob, TextFormat};
@@ -27,6 +27,7 @@ use silico_core::document::Units;
 
 use crate::icons::{Icon, IconSize};
 use crate::shortcuts::Command;
+use crate::sketch::bar::StatusLine;
 use crate::start::{self, Warming};
 use crate::tab::Tab;
 use crate::theme;
@@ -108,6 +109,8 @@ pub struct Bar {
     pub disk: Option<Disk>,
     /// Whether the document is saved; none with no document.
     pub saved: Option<Saved>,
+    /// In sketch mode, what the bar says of the sketch.
+    pub sketch: Option<StatusLine>,
 }
 
 /// What the person asked of the bar this frame.
@@ -159,6 +162,10 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
         messages: message.into_iter().chain(tab.message.clone()).collect(),
         disk: status.and_then(|status| status.disk),
         saved: Some(saved),
+        sketch: tab
+            .sketch
+            .as_ref()
+            .map(|mode| mode.status(&tab.sketch_name())),
     }
 }
 
@@ -170,6 +177,7 @@ pub fn unopened(warming: Option<Warming>, message: Option<String>) -> Bar {
         messages: message.into_iter().collect(),
         disk: None,
         saved: None,
+        sketch: None,
     }
 }
 
@@ -267,16 +275,35 @@ fn left_parts(ui: &mut Ui, bar: &Bar, asked: &mut Asked) {
     middle(ui, bar);
 }
 
-/// The middle: what the person points at, or the refusals said.
+/// The middle: in sketch mode, the sketch's line; then the refusals said.
 ///
-/// SEAM(#351): in sketch mode, the pointer's coordinates and the sketch's state, as
-/// `if tab.in_sketch() { crate::sketch::bar::status_ui(ui, &mode.status(&tab.sketch_name())) }`
-/// draws them, in place of what follows.
-/// SEAM(M5.7): what's hovered in the canvas (`Face6 · Planar · Pad`), or how many elements
-/// are selected, once picking names them.
+/// SEAM(M5.7): outside sketch mode, what's hovered in the canvas (`Face6 · Planar · Pad`),
+/// or how many elements are selected, once picking names them.
 fn middle(ui: &mut Ui, bar: &Bar) {
+    if let Some(line) = &bar.sketch {
+        sketch_line(ui, line);
+    }
     for message in &bar.messages {
         item(ui, None, message, theme::ERROR_TEXT);
+    }
+}
+
+/// The sketch's line (`statusText`): `Editing` the sketch, a separator, the pointer's
+/// coordinates on its plane (a dash off it) in an item at least
+/// [`theme::STATUS_COORDINATES_WIDTH`] wide, so the state after it holds still as they
+/// change, and, once the sketch is read, a separator and its state, in its colour.
+fn sketch_line(ui: &mut Ui, line: &StatusLine) {
+    item(ui, None, &line.editing, theme::STATUS_TEXT);
+    separator(ui, 0.0);
+    let coordinates = line.coordinates.as_deref().unwrap_or("—");
+    let shown = item(ui, None, coordinates, theme::STATUS_TEXT);
+    let short = theme::STATUS_COORDINATES_WIDTH - shown.rect.width();
+    if short > 0.0 {
+        ui.add_space(short);
+    }
+    if let Some(state) = &line.state {
+        separator(ui, 0.0);
+        item(ui, None, &state.words, state.colour);
     }
 }
 
@@ -921,7 +948,100 @@ mod tests {
             messages: Vec::new(),
             disk,
             saved: Some(saved),
+            sketch: None,
         }
+    }
+
+    #[test]
+    fn in_sketch_mode_the_middle_is_editing_the_pointers_coordinates_and_the_state() {
+        use crate::sketch::bar::StateShown;
+        // `statusText` (js/sketch.js): `.st-item` Editing, `.st-sep`, `.st-item` the
+        // coordinates, `min-width: 150px`, `.st-sep`, and `.st-item` the state in its colour;
+        // after the separator Stop and Rebuild end with, each part 2 from the last.
+        let under = Color32::from_rgb(0x2e, 0x9c, 0xff);
+        let mut shown = bar_of(
+            Said::Rebuilt {
+                revision: 3,
+                errors: 0,
+            },
+            (false, false),
+            Saved::Unsaved,
+            None,
+        );
+        shown.messages = vec!["The sketch couldn't be written".to_owned()];
+        shown.sketch = Some(StatusLine {
+            editing: "Editing Sketch1".to_owned(),
+            coordinates: Some("x 12.500 · y -3.000 mm".to_owned()),
+            state: Some(StateShown {
+                words: "Under defined · 6 DOF".to_owned(),
+                colour: under,
+            }),
+        });
+        let mut h = drawn(shown);
+        let after_buttons = |h: &Harness<'_, Bar>| {
+            let rebuild = widget(h, Role::Button, "Rebuild");
+            rebuild.right() + css::GAP + css::SEP_MARGIN + css::BORDER + css::SEP_MARGIN + css::GAP
+        };
+        let left = after_buttons(&h);
+        let editing = said_at(&h, "Editing Sketch1", left + css::ITEM_PADDING, css::G550);
+        let sep = editing + css::ITEM_PADDING + css::GAP;
+        let coordinates = separator_at(&h, sep, 0.0) + css::GAP;
+        let words = said_at(
+            &h,
+            "x 12.500 · y -3.000 mm",
+            coordinates + css::ITEM_PADDING,
+            css::G550,
+        );
+        // The coordinates' item no narrower than 150, however short its words.
+        let item = (words + css::ITEM_PADDING - coordinates).max(150.0);
+        let sep = coordinates + item + css::GAP;
+        let state = separator_at(&h, sep, 0.0) + css::GAP;
+        let state_words = said_at(
+            &h,
+            "Under defined · 6 DOF",
+            state + css::ITEM_PADDING,
+            under,
+        );
+        // Then the refusals said, after the sketch's line.
+        said_at(
+            &h,
+            "The sketch couldn't be written",
+            state_words + css::ITEM_PADDING + css::GAP + css::ITEM_PADDING,
+            css::RED,
+        );
+        // Off the canvas, a dash in the same 150; before the sketch is read, no state and
+        // no separator for it.
+        if let Some(line) = h.state_mut().sketch.as_mut() {
+            line.coordinates = None;
+            line.state = None;
+        }
+        h.run_steps(2);
+        let editing = said_at(&h, "Editing Sketch1", left + css::ITEM_PADDING, css::G550);
+        let coordinates = separator_at(&h, editing + css::ITEM_PADDING + css::GAP, 0.0) + css::GAP;
+        said_at(&h, "—", coordinates + css::ITEM_PADDING, css::G550);
+        assert!(vlines(&h, coordinates + 150.0 + css::GAP + css::BORDER / 2.0).is_empty());
+        said_at(
+            &h,
+            "The sketch couldn't be written",
+            coordinates + 150.0 + css::GAP + css::ITEM_PADDING,
+            css::RED,
+        );
+        // Outside sketch mode, none of it.
+        h.state_mut().sketch = None;
+        h.run_steps(2);
+        let painted_text = |h: &Harness<'_, Bar>, words: &str| {
+            painted(h)
+                .into_iter()
+                .any(|shape| matches!(shape, Shape::Text(shown) if shown.galley.text() == words))
+        };
+        assert!(!painted_text(&h, "Editing Sketch1"));
+        assert!(!painted_text(&h, "—"));
+        said_at(
+            &h,
+            "The sketch couldn't be written",
+            after_buttons(&h) + css::ITEM_PADDING,
+            css::RED,
+        );
     }
 
     #[test]

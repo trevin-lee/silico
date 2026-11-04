@@ -545,22 +545,11 @@ fn state_dot(ui: &mut Ui, colour: Color32) {
 
 /// What the status bar says of an open sketch (docs/ux/solidworks.md, §2: the pointer's
 /// coordinates, the state, and "Editing"): what's edited, the pointer on the plane by its
-/// axes' letters (none off the canvas), and the state.
+/// axes' letters (none off the canvas), and the state. The status bar draws it
+/// (`crate::status`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusLine {
     pub editing: String,
     pub coordinates: Option<String>,
     pub state: Option<StateShown>,
-}
-
-/// The status bar's sketch content, for the status bar to place: what's edited, the
-/// coordinates (a dash without them), and the state, in its colour.
-pub fn status_ui(ui: &mut Ui, line: &StatusLine) {
-    ui.label(&line.editing);
-    ui.separator();
-    ui.label(line.coordinates.as_deref().unwrap_or("—"));
-    if let Some(state) = &line.state {
-        ui.separator();
-        ui.label(RichText::new(&state.words).color(state.colour));
-    }
 }

@@ -84,20 +84,20 @@ fn enter_is_ok(ui: &mut Ui) -> bool {
     })
 }
 
-/// Sketch mode's tools' keys (the prototype's, DESIGN.md *Keyboard*): L line, R rectangle,
-/// C circle, A arc (the 3-point arc, Fusion's first), P point, T trim, and D Smart
-/// Dimension.
-const SKETCH_KEYS: [(Key, sketch::tools::Choice); 7] = {
+/// Sketch mode's tools' commands in the registry (the prototype's keys, DESIGN.md
+/// *Keyboard*: L line, R rectangle, C circle, A arc, P point, T trim, and D Smart
+/// Dimension), each the tool its SKETCH tab's button chooses (`crate::toolbar`).
+const SKETCH_TOOLS: [(Command, sketch::tools::Choice); 7] = {
     use silico_core::sketch_tools::ToolKind;
     use sketch::tools::Choice;
     [
-        (Key::L, Choice::Draw(ToolKind::Line)),
-        (Key::R, Choice::Draw(ToolKind::CornerRectangle)),
-        (Key::C, Choice::Draw(ToolKind::Circle)),
-        (Key::A, Choice::Draw(ToolKind::ThreePointArc)),
-        (Key::P, Choice::Draw(ToolKind::Point)),
-        (Key::T, Choice::Trim),
-        (Key::D, Choice::Dimension),
+        (Command::Line, Choice::Draw(ToolKind::Line)),
+        (Command::Rectangle, Choice::Draw(ToolKind::CornerRectangle)),
+        (Command::Circle, Choice::Draw(ToolKind::Circle)),
+        (Command::Arc, Choice::Draw(ToolKind::ThreePointArc)),
+        (Command::Point, Choice::Draw(ToolKind::Point)),
+        (Command::Trim, Choice::Trim),
+        (Command::Dimension, Choice::Dimension),
     ]
 };
 
@@ -848,39 +848,31 @@ impl<P: Clients + 'static> App<P> {
             .active_place()
             .and_then(|at| self.tabs.get(at))
             .is_some_and(Tab::in_sketch);
-        // Ctrl+Enter (⌘↵) finishes the sketch (the prototype's key, as the toolbar's Finish
-        // Sketch names it).
-        let finish = in_sketch
-            && ui.input_mut(|input| {
-                input.consume_shortcut(&egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter))
-            });
+        // Ctrl+Enter (⌘↵) finishes the sketch, as the toolbar's Finish Sketch does.
+        let finish = in_sketch && shortcuts::take(ui, Command::FinishSketch);
         let delete = in_sketch
             && !typing
             && ui.input_mut(|input| {
                 input.consume_key(Modifiers::NONE, Key::Delete)
                     | input.consume_key(Modifiers::NONE, Key::Backspace)
             });
-        // Sketch mode's keys (the prototype's, DESIGN.md *Keyboard*), unless a field is being
-        // typed in: a tool's letter chooses it, or leaves it if it's on; X Construction; and
-        // Enter ends a chain.
-        // Only a plain letter: Shift or Alt with it is another key's.
-        let sketch_keys = in_sketch
-            && !typing
-            && ui.input(|input| !input.modifiers.shift && !input.modifiers.alt);
+        // Sketch mode's keys (the registry's Sketch group), unless a field is being typed in:
+        // a tool's letter chooses it, or leaves it if it's on, as its button does; X
+        // Construction, as its button; and Enter ends a chain.
+        let sketch_keys = in_sketch && !typing;
         let letter = sketch_keys
             .then(|| {
-                ui.input_mut(|input| {
-                    SKETCH_KEYS
-                        .iter()
-                        .find(|(key, _)| input.consume_key(Modifiers::NONE, *key))
-                        .map(|(_, choice)| *choice)
-                })
+                SKETCH_TOOLS
+                    .iter()
+                    .find(|(command, _)| shortcuts::take(ui, *command))
+                    .map(|(_, choice)| *choice)
             })
             .flatten();
-        let construction =
-            sketch_keys && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::X));
-        let sketch_enter =
-            sketch_keys && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
+        let construction = sketch_keys && shortcuts::take(ui, Command::Construction);
+        // Only a plain Enter: Shift or Alt with it is another key's.
+        let sketch_enter = sketch_keys
+            && ui.input(|input| !input.modifiers.shift && !input.modifiers.alt)
+            && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return (false, None);
         };
@@ -891,14 +883,11 @@ impl<P: Clients + 'static> App<P> {
             tab.view.ask(ask);
         }
         let sessions = &self.sessions;
-        if let Some(choice) = letter
-            && let Some(mode) = tab.sketch.as_ref()
-        {
-            let on = mode.tools.choice() == Some(choice);
-            tab.sketch_choose((!on).then_some(choice));
+        if let Some(choice) = letter {
+            tab.sketch_toggle(choice);
         }
-        if construction && let Some(mode) = tab.sketch.as_mut() {
-            mode.settings.construction = !mode.settings.construction;
+        if construction {
+            tab.sketch_toggle_construction();
         }
         if sketch_enter {
             tab.sketch_enter(sessions);
@@ -1349,7 +1338,8 @@ impl<P: Clients + 'static> App<P> {
     /// The toolbar (section 8; `toolbar`): the Design workspace's SOLID tab and its panels,
     /// CREATE's tools each opening its feature's dialog (M5.8): the primitives, and the
     /// features that sweep a sketch's profile (those that cut, only with a body to cut); and
-    /// SELECT's Clear selection.
+    /// SELECT's Clear selection. In a sketch, SKETCH's: a tool chosen, or left if it's on,
+    /// Construction turned on or off, as their keys do, and Finish Sketch.
     fn toolbar(&mut self, ui: &mut Ui, started: &mut bool) {
         let mut tab = self
             .active
@@ -1364,6 +1354,12 @@ impl<P: Clients + 'static> App<P> {
                     create_sketch: Some(shown.is_some_and(Tab::can_sketch)),
                     can_open: &can_open,
                     selected: shown.is_some_and(|tab| tab.selected.is_some() && !tab.in_dialog()),
+                    tool: shown
+                        .and_then(|tab| tab.sketch.as_ref())
+                        .and_then(|mode| mode.tools.choice()),
+                    construction: shown
+                        .and_then(|tab| tab.sketch.as_ref())
+                        .is_some_and(|mode| mode.settings.construction),
                 },
             )
         };
@@ -1384,6 +1380,8 @@ impl<P: Clients + 'static> App<P> {
                 tab.finish_sketch(&self.sessions, true);
                 *started = true;
             }
+            Some(toolbar::Act::SketchTool(choice)) => tab.sketch_toggle(choice),
+            Some(toolbar::Act::Construction) => tab.sketch_toggle_construction(),
             None => {}
         }
     }

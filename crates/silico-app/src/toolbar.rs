@@ -5,25 +5,30 @@
 //! blue; under it the tab's panels, each a row of icon buttons over its capital label, a
 //! drop-down; and, in SKETCH, a blue Finish Sketch at the row's right end.
 //!
-//! Only what the app can do is on: the feature dialogs (M5.8), and clearing the selection.
+//! Only what the app can do is on: the feature dialogs (M5.8), clearing the selection, and,
+//! in SKETCH, sketch mode's tools (the drawing tools, trim, split, and Smart Dimension, the
+//! one on drawn on, `.tb-btn.on`) and Construction (drawn pressed while on, `.toggle-on`).
 //! The prototype's other commands keep their places, drawn off, their tooltips saying they
 //! aren't built yet. What the toolbar shows comes in a [`Shown`], and what was clicked goes
 //! back as an [`Act`], so a test drives it with a stub, and sketch mode's state (whether a
-//! sketch is open, whether Create Sketch can open) and its actions (Create Sketch on a plane,
-//! Finish Sketch) are the caller's to wire.
+//! sketch is open, whether Create Sketch can open, the tool on, Construction) and its actions
+//! (Create Sketch on a plane, a tool, Construction, Finish Sketch) are the caller's to wire.
+//! A button the registry (`crate::shortcuts`) gives keys names them in its tooltip.
 
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, Align, Color32, FontId, Galley, Key, KeyboardShortcut, Layout, Modifiers, Pos2, Rect,
-    Response, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
-    accesskit::Role, text::LayoutJob,
+    self, Align, Color32, FontId, Galley, Layout, Pos2, Rect, Response, RichText, Sense, Stroke,
+    StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, accesskit::Role, text::LayoutJob,
 };
 use silico_core::document::OriginPlane;
+use silico_core::sketch_tools::ToolKind;
 
 use crate::bar;
 use crate::dialog::Kind;
 use crate::icons::{self, ICON_SIZE, Icon, IconSize, TOOLBAR_ICON_SIZE};
+use crate::shortcuts;
+use crate::sketch::tools::Choice;
 use crate::theme;
 
 /// What the toolbar shows: the caller's state, which a test stubs.
@@ -37,6 +42,10 @@ pub struct Shown<'a> {
     pub can_open: &'a dyn Fn(Kind) -> bool,
     /// Whether anything is selected, for SELECT's Clear selection.
     pub selected: bool,
+    /// In a sketch, the tool on, if one is.
+    pub tool: Option<Choice>,
+    /// In a sketch, whether Construction is on.
+    pub construction: bool,
 }
 
 /// What was clicked.
@@ -48,6 +57,10 @@ pub enum Act {
     CreateSketch(OriginPlane),
     /// Finish Sketch.
     FinishSketch,
+    /// A sketch tool's button: the tool chosen, or left if it's on.
+    SketchTool(Choice),
+    /// Construction's button: Construction turned on or off.
+    Construction,
     /// SELECT's Clear selection.
     ClearSelection,
 }
@@ -91,18 +104,24 @@ enum Does {
     Dialog(Kind),
     /// Opens Create Sketch's planes.
     CreateSketch,
+    /// Chooses a sketch tool, or leaves it if it's on.
+    Tool(Choice),
+    /// Turns Construction on or off.
+    Construction,
     /// Nothing yet: drawn off.
     NotBuilt,
 }
 
 /// A command as the toolbar offers it: its name (its button's label and its tooltip's
-/// title), its icon, the prototype's line on it, and what it does.
+/// title), its icon, the prototype's line on it, what it does, and the registry's command
+/// whose keys its tooltip names, if it has one.
 #[derive(Debug, Clone, Copy)]
 struct Command {
     label: &'static str,
     icon: Icon,
     description: Option<&'static str>,
     does: Does,
+    key: Option<shortcuts::Command>,
 }
 
 const fn command(
@@ -116,6 +135,15 @@ const fn command(
         icon,
         description,
         does,
+        key: None,
+    }
+}
+
+/// A command the registry's `key` reaches too, its tooltip naming its keys.
+const fn keyed(command: Command, key: shortcuts::Command) -> Command {
+    Command {
+        key: Some(key),
+        ..command
     }
 }
 
@@ -203,30 +231,83 @@ const VERTICES: Command = command(
     Some("Toggles whether vertices can be selected"),
     Does::NotBuilt,
 );
-const LINE: Command = command(
-    "Line",
-    Icon::Line,
-    Some("Click, click: a chain of lines. Double-click ends it"),
+const LINE: Command = keyed(
+    command(
+        "Line",
+        Icon::Line,
+        Some("Click, click: a chain of lines. Double-click ends it"),
+        Does::Tool(Choice::Draw(ToolKind::Line)),
+    ),
+    shortcuts::Command::Line,
+);
+/// The corner rectangle, Fusion's and SolidWorks' first.
+const RECTANGLE: Command = keyed(
+    command(
+        "Rectangle",
+        Icon::Rect,
+        None,
+        Does::Tool(Choice::Draw(ToolKind::CornerRectangle)),
+    ),
+    shortcuts::Command::Rectangle,
+);
+const CIRCLE: Command = keyed(
+    command(
+        "Circle",
+        Icon::Circle,
+        None,
+        Does::Tool(Choice::Draw(ToolKind::Circle)),
+    ),
+    shortcuts::Command::Circle,
+);
+/// The 3-point arc, Fusion's first, as A chooses it.
+const ARC: Command = keyed(
+    command(
+        "Arc",
+        Icon::Arc,
+        None,
+        Does::Tool(Choice::Draw(ToolKind::ThreePointArc)),
+    ),
+    shortcuts::Command::Arc,
+);
+const POINT: Command = keyed(
+    command(
+        "Point",
+        Icon::Point,
+        None,
+        Does::Tool(Choice::Draw(ToolKind::Point)),
+    ),
+    shortcuts::Command::Point,
+);
+/// The drawing tools' curves drawn as construction, the palette's Construction.
+const CONSTRUCTION: Command = keyed(
+    command(
+        "Construction",
+        Icon::Construction,
+        Some("Draws the tools' curves as construction, or as profile again"),
+        Does::Construction,
+    ),
+    shortcuts::Command::Construction,
+);
+const TRIM: Command = keyed(
+    command("Trim", Icon::Trim, None, Does::Tool(Choice::Trim)),
+    shortcuts::Command::Trim,
+);
+/// No tool of its own: Trim's drag along a curve extends it.
+const EXTEND: Command = command(
+    "Extend",
+    Icon::Extend,
+    Some("Trim extends a curve dragged along"),
     Does::NotBuilt,
 );
-const RECTANGLE: Command = command("Rectangle", Icon::Rect, None, Does::NotBuilt);
-const CIRCLE: Command = command("Circle", Icon::Circle, None, Does::NotBuilt);
-const ARC: Command = command("Arc", Icon::Arc, None, Does::NotBuilt);
-const POINT: Command = command("Point", Icon::Point, None, Does::NotBuilt);
-const CONSTRUCTION: Command = command(
-    "Construction",
-    Icon::Construction,
-    Some("Toggles the selected curves between profile and construction"),
-    Does::NotBuilt,
-);
-const TRIM: Command = command("Trim", Icon::Trim, None, Does::NotBuilt);
-const EXTEND: Command = command("Extend", Icon::Extend, None, Does::NotBuilt);
-const SPLIT: Command = command("Split", Icon::Split, None, Does::NotBuilt);
-const DIMENSION: Command = command(
-    "Smart Dimension",
-    Icon::Dimension,
-    Some("Pick a line, a circle, or two entities, then type the value"),
-    Does::NotBuilt,
+const SPLIT: Command = command("Split", Icon::Split, None, Does::Tool(Choice::Split));
+const DIMENSION: Command = keyed(
+    command(
+        "Smart Dimension",
+        Icon::Dimension,
+        Some("Pick a line, a circle, or two entities, then type the value"),
+        Does::Tool(Choice::Dimension),
+    ),
+    shortcuts::Command::Dimension,
 );
 
 /// A constraint's button (app.js:387): its name, and the prototype's line on them all.
@@ -366,14 +447,34 @@ impl Command {
         match self.does {
             Does::Dialog(kind) => (shown.can_open)(kind),
             Does::CreateSketch => shown.create_sketch == Some(true),
+            Does::Tool(_) | Does::Construction => shown.in_sketch,
             Does::NotBuilt => false,
+        }
+    }
+
+    /// Whether it stays pressed, and if so whether it is: the tool on, or Construction.
+    fn pressed(&self, shown: &Shown<'_>) -> Option<(Pressed, bool)> {
+        match self.does {
+            Does::Tool(choice) => Some((Pressed::Tool, shown.tool == Some(choice))),
+            Does::Construction => Some((Pressed::Toggle, shown.construction)),
+            Does::Dialog(_) | Does::CreateSketch | Does::NotBuilt => None,
+        }
+    }
+
+    /// What its click asks, if it asks anything but to open a menu.
+    fn act(&self) -> Option<Act> {
+        match self.does {
+            Does::Dialog(kind) => Some(Act::Dialog(kind)),
+            Does::Tool(choice) => Some(Act::SketchTool(choice)),
+            Does::Construction => Some(Act::Construction),
+            Does::CreateSketch | Does::NotBuilt => None,
         }
     }
 
     /// Whether the app has it.
     fn built(&self, shown: &Shown<'_>) -> bool {
         match self.does {
-            Does::Dialog(_) => true,
+            Does::Dialog(_) | Does::Tool(_) | Does::Construction => true,
             Does::CreateSketch => shown.create_sketch.is_some(),
             Does::NotBuilt => false,
         }
@@ -616,23 +717,48 @@ fn panel(ui: &mut Ui, panel: &Panel, last: bool, shown: &Shown<'_>, act: &mut Op
     }
 }
 
-/// A command's button in a panel's row, with its tooltip; a click opens its dialog, or, for
-/// Create Sketch, its planes.
+/// A command's button in a panel's row, with its tooltip, its keys named if the registry
+/// gives it any; a click opens its dialog, or, for Create Sketch, its planes; or chooses its
+/// tool, or turns Construction on or off.
 fn row_button(ui: &mut Ui, command: &Command, shown: &Shown<'_>, act: &mut Option<Act>) {
-    let response = tool_button(ui, command.icon, command.label, command.enabled(shown));
+    let response = tool_button(
+        ui,
+        command.icon,
+        command.label,
+        command.enabled(shown),
+        command.pressed(shown),
+    );
     let said = command.said(shown);
-    let response = bar::tooltip(response, command.label, None, said.as_deref());
-    match command.does {
-        Does::Dialog(kind) if response.clicked() => *act = Some(Act::Dialog(kind)),
-        Does::CreateSketch => bar::menu(&response, |ui| {
+    let keys = command.key.and_then(|key| key.shown(ui.ctx()));
+    let response = bar::tooltip(response, command.label, keys, said.as_deref());
+    if command.does == Does::CreateSketch {
+        bar::menu(&response, |ui| {
             menu_node(ui, command.label, |ui| planes(ui, act));
-        }),
-        Does::Dialog(_) | Does::NotBuilt => {}
+        });
+    } else if response.clicked()
+        && let Some(asked) = command.act()
+    {
+        *act = Some(asked);
     }
 }
 
-/// A toolbar button (`.tb-btn`): `icon`, labelled `label`, off unless `enabled`.
-fn tool_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Response {
+/// How a button that stays pressed shows it is: a tool on (`.tb-btn.on`), or a toggle on
+/// (`.tb-btn.toggle-on`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pressed {
+    Tool,
+    Toggle,
+}
+
+/// A toolbar button (`.tb-btn`): `icon`, labelled `label`, off unless `enabled`; and, if
+/// it stays pressed, which way and whether it is, shown so to a screen reader too.
+fn tool_button(
+    ui: &mut Ui,
+    icon: Icon,
+    label: &str,
+    enabled: bool,
+    pressed: Option<(Pressed, bool)>,
+) -> Response {
     // Painted at the toolbar's opacity, not faded further when off: `.tb-btn:disabled` is
     // Gray.400 itself.
     let opacity = ui.opacity();
@@ -641,21 +767,42 @@ fn tool_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Response 
         let size = Vec2::splat(theme::TOOLBAR_BUTTON_SIZE);
         let (rect, response) = ui.allocate_exact_size(size, Sense::click());
         let enabled = ui.is_enabled();
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
+        response.widget_info(|| match pressed {
+            Some((_, on)) => WidgetInfo::selected(WidgetType::Button, enabled, on, label),
+            None => WidgetInfo::labeled(WidgetType::Button, enabled, label),
+        });
         if !ui.is_rect_visible(rect) {
             return response;
         }
+        let corners = theme::TOOLBAR_BUTTON_CORNER_RADIUS;
+        // `.tb-btn:hover:not(:disabled)` outweighs `.on` and `.toggle-on`.
         let color = if !enabled {
             theme::TOOLBAR_BUTTON_DISABLED_ICON
         } else if response.hovered() {
-            ui.painter().rect_filled(
-                rect,
-                theme::TOOLBAR_BUTTON_CORNER_RADIUS,
-                theme::TOOLBAR_BUTTON_HOVER_BG,
-            );
+            ui.painter()
+                .rect_filled(rect, corners, theme::TOOLBAR_BUTTON_HOVER_BG);
             theme::TOOLBAR_BUTTON_HOVER_ICON
         } else {
-            theme::TOOLBAR_BUTTON_ICON
+            match pressed {
+                Some((Pressed::Tool, true)) => {
+                    ui.painter()
+                        .rect_filled(rect, corners, theme::TOOLBAR_BUTTON_ON_BG);
+                    theme::TOOLBAR_BUTTON_ON_ICON
+                }
+                Some((Pressed::Toggle, true)) => {
+                    ui.painter()
+                        .rect_filled(rect, corners, theme::TOOLBAR_BUTTON_TOGGLE_BG);
+                    // `box-shadow: inset 0 -2px 0`: the bottom of the button's own shape.
+                    let line = rect.with_min_y(rect.bottom() - theme::TOOLBAR_BUTTON_TOGGLE_LINE);
+                    ui.painter().with_clip_rect(line).rect_filled(
+                        rect,
+                        corners,
+                        theme::TOOLBAR_BUTTON_TOGGLE_LINE_COLOR,
+                    );
+                    theme::TOOLBAR_BUTTON_TOGGLE_ICON
+                }
+                Some((_, false)) | None => theme::TOOLBAR_BUTTON_ICON,
+            }
         };
         theme::focus_ring(
             ui,
@@ -754,6 +901,13 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
             let item = egui::Button::image_and_text(icons::icon(command.icon), command.label);
             let enabled = command.enabled(shown);
             match command.does {
+                Does::Tool(_) | Does::Construction => {
+                    let on = command.pressed(shown).is_some_and(|(_, on)| on);
+                    if ui.add_enabled(enabled, item.selected(on)).clicked() {
+                        *act = command.act();
+                        ui.close();
+                    }
+                }
                 Does::CreateSketch => {
                     let (button, _) = ui
                         .add_enabled_ui(enabled, |ui| {
@@ -765,9 +919,9 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                         button.on_disabled_hover_text(said);
                     }
                 }
-                Does::Dialog(kind) => {
+                Does::Dialog(_) => {
                     if ui.add_enabled(enabled, item).clicked() {
-                        *act = Some(Act::Dialog(kind));
+                        *act = command.act();
                         ui.close();
                     }
                 }
@@ -847,23 +1001,25 @@ fn finish(ui: &mut Ui, row: Rect) -> Response {
         rect.center().y - galley.size().y / 2.0,
     );
     ui.painter().galley(at, galley, theme::TOOLBAR_FINISH_TEXT);
+    let finish = shortcuts::Command::FinishSketch;
     bar::tooltip(
         response,
         label,
-        Some(crate::shortcuts::Chord::Key(KeyboardShortcut::new(
-            Modifiers::COMMAND,
-            Key::Enter,
-        ))),
-        Some("Keeps your changes and rebuilds"),
+        finish.shown(ui.ctx()),
+        finish.entry().description,
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use eframe::egui::accesskit::Toggled;
     use eframe::egui::epaint::{ClippedShape, RectShape, TextShape};
     use eframe::egui::{CornerRadius, Shape, TextFormat};
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
 
@@ -976,19 +1132,41 @@ mod tests {
     /// The toolbar across a window, in the app's theme, a sketch open if the state says so;
     /// Pocket's dialog the one that can't open, and Create Sketch on.
     fn drawn(in_sketch: bool) -> Harness<'static, bool> {
+        drawn_with(in_sketch, &Sketching::default())
+    }
+
+    /// In a sketch, the tool on and whether Construction is, which a test changes between
+    /// frames, and what the toolbar was last asked.
+    #[derive(Default)]
+    struct Sketching {
+        tool: Rc<Cell<Option<Choice>>>,
+        construction: Rc<Cell<bool>>,
+        asked: Rc<Cell<Option<Act>>>,
+    }
+
+    fn drawn_with(in_sketch: bool, sketching: &Sketching) -> Harness<'static, bool> {
+        let (tool, construction, asked) = (
+            sketching.tool.clone(),
+            sketching.construction.clone(),
+            sketching.asked.clone(),
+        );
         let mut h = Harness::builder()
             .with_size(Vec2::new(WIDTH, 200.0))
             .build_ui_state(
-                |ui, in_sketch: &mut bool| {
+                move |ui, in_sketch: &mut bool| {
                     let can_open = |kind: Kind| kind != Kind::Pocket;
                     let shown = Shown {
                         in_sketch: *in_sketch,
                         create_sketch: Some(true),
                         can_open: &can_open,
                         selected: false,
+                        tool: tool.get(),
+                        construction: construction.get(),
                     };
                     let window = UiBuilder::new().max_rect(ui.ctx().content_rect());
-                    ui.scope_builder(window, |ui| show(ui, &shown));
+                    if let Some(act) = ui.scope_builder(window, |ui| show(ui, &shown)).inner {
+                        asked.set(Some(act));
+                    }
                 },
                 in_sketch,
             );
@@ -1540,5 +1718,212 @@ mod tests {
             fill_at(&h, finish),
             Some((css::FINISH_HOVER, CornerRadius::same(css::R_SM)))
         );
+    }
+
+    /// SKETCH's buttons and what each does: a tool chosen (the rectangle the corner one,
+    /// the arc the 3-point one, as their keys choose them), Construction turned on or off,
+    /// or nothing yet.
+    const SKETCH_DOES: [(&str, Option<Act>); 21] = [
+        ("Line", Some(Act::SketchTool(Choice::Draw(ToolKind::Line)))),
+        (
+            "Rectangle",
+            Some(Act::SketchTool(Choice::Draw(ToolKind::CornerRectangle))),
+        ),
+        (
+            "Circle",
+            Some(Act::SketchTool(Choice::Draw(ToolKind::Circle))),
+        ),
+        (
+            "Arc",
+            Some(Act::SketchTool(Choice::Draw(ToolKind::ThreePointArc))),
+        ),
+        (
+            "Point",
+            Some(Act::SketchTool(Choice::Draw(ToolKind::Point))),
+        ),
+        ("Construction", Some(Act::Construction)),
+        ("Trim", Some(Act::SketchTool(Choice::Trim))),
+        ("Extend", None),
+        ("Split", Some(Act::SketchTool(Choice::Split))),
+        ("Smart Dimension", Some(Act::SketchTool(Choice::Dimension))),
+        ("Horizontal", None),
+        ("Vertical", None),
+        ("Coincident", None),
+        ("Tangent", None),
+        ("Equal", None),
+        ("Parallel", None),
+        ("Perpendicular", None),
+        ("Midpoint", None),
+        ("Symmetric", None),
+        ("Fix", None),
+        ("Measure", None),
+    ];
+
+    #[test]
+    fn each_sketch_button_asks_its_tool_or_construction_and_what_isnt_built_is_off() {
+        let sketching = Sketching::default();
+        let mut h = drawn_with(true, &sketching);
+        let laid = laid(&h, &SKETCH_PANELS, true);
+        let icon = |rect: Rect| Rect::from_center_size(rect.center(), Vec2::splat(css::ICON_LG));
+        let buttons: Vec<(&str, Rect)> = laid
+            .iter()
+            .flat_map(|panel| panel.buttons.iter().copied())
+            .collect();
+        assert_eq!(buttons.len(), SKETCH_DOES.len());
+        for ((label, rect), (named, does)) in buttons.iter().zip(SKETCH_DOES) {
+            assert_eq!(*label, named);
+            // Gray.750 on, Gray.400 off (`:disabled`); none drawn pressed with no tool on
+            // and Construction off, each that can be pressed saying it isn't.
+            let ink = if does.is_some() { css::G750 } else { css::G400 };
+            assert_eq!(icon_at(&h, icon(*rect)), Some(ink), "{label}'s icon");
+            assert_eq!(fill_at(&h, *rect), None, "{label}'s fill");
+            let node = h.get_by_role_and_label(Role::Button, label);
+            assert_eq!(
+                node.accesskit_node().is_disabled(),
+                does.is_none(),
+                "{label}"
+            );
+            let pressed = node.accesskit_node().toggled();
+            assert_eq!(pressed.is_some(), does.is_some(), "{label} pressable");
+        }
+        for (label, does) in SKETCH_DOES {
+            sketching.asked.set(None);
+            h.get_by_role_and_label(Role::Button, label).click();
+            h.run_steps(2);
+            assert_eq!(sketching.asked.get(), does, "{label}");
+        }
+    }
+
+    #[test]
+    fn the_tool_on_is_drawn_as_tb_btn_on_and_construction_on_as_toggle_on_hover_over_both() {
+        let sketching = Sketching::default();
+        sketching
+            .tool
+            .set(Some(Choice::Draw(ToolKind::CornerRectangle)));
+        sketching.construction.set(true);
+        let mut h = drawn_with(true, &sketching);
+        let laid = laid(&h, &SKETCH_PANELS, true);
+        let rect_of = |label: &str| {
+            laid.iter()
+                .flat_map(|panel| panel.buttons.iter())
+                .find(|(name, _)| *name == label)
+                .map(|(_, rect)| *rect)
+                .unwrap()
+        };
+        let icon = |rect: Rect| Rect::from_center_size(rect.center(), Vec2::splat(css::ICON_LG));
+        let toggled = |h: &Harness<'_, bool>, label: &str| {
+            h.get_by_role_and_label(Role::Button, label)
+                .accesskit_node()
+                .toggled()
+        };
+        // `.tb-btn.on`: `--blue` behind `--blue-text`, its corners `--r-sm`.
+        let rectangle = rect_of("Rectangle");
+        assert_eq!(
+            fill_at(&h, rectangle),
+            Some((css::BLUE, CornerRadius::same(css::R_SM)))
+        );
+        assert_eq!(icon_at(&h, icon(rectangle)), Some(css::BLUE_TEXT));
+        assert_eq!(toggled(&h, "Rectangle"), Some(Toggled::True));
+        // The other tools at rest, saying they're not on.
+        for label in [
+            "Line",
+            "Circle",
+            "Arc",
+            "Point",
+            "Trim",
+            "Split",
+            "Smart Dimension",
+        ] {
+            assert_eq!(fill_at(&h, rect_of(label)), None, "{label}");
+            assert_eq!(
+                icon_at(&h, icon(rect_of(label))),
+                Some(css::G750),
+                "{label}"
+            );
+            assert_eq!(toggled(&h, label), Some(Toggled::False), "{label}");
+        }
+        // `.tb-btn.toggle-on`: `--g250` behind white, and `inset 0 -2px 0 var(--blue)`: the
+        // button's own shape in blue, seen only in its last 2.
+        let construction = rect_of("Construction");
+        assert_eq!(
+            fill_at(&h, construction),
+            Some((css::G250, CornerRadius::same(css::R_SM)))
+        );
+        assert_eq!(icon_at(&h, icon(construction)), Some(css::G1000));
+        let line = Rect::from_min_max(
+            Pos2::new(construction.left(), construction.bottom() - 2.0),
+            construction.max,
+        );
+        let inset: Vec<ClippedShape> = clipped(&h)
+            .into_iter()
+            .filter(|shown| {
+                matches!(&shown.shape, Shape::Rect(rect)
+                    if near_rect(rect.rect, construction) && rect.fill == css::BLUE)
+            })
+            .collect();
+        assert_eq!(inset.len(), 1);
+        sized(inset[0].clip_rect, line, "the inset line's clip");
+        assert_eq!(toggled(&h, "Construction"), Some(Toggled::True));
+        // Construction off: at rest, saying so.
+        sketching.construction.set(false);
+        h.run_steps(2);
+        assert_eq!(fill_at(&h, construction), None);
+        assert_eq!(icon_at(&h, icon(construction)), Some(css::G750));
+        assert_eq!(toggled(&h, "Construction"), Some(Toggled::False));
+        // Hovered (`.tb-btn:hover:not(:disabled)`, which outweighs `.on`): Gray.300 behind
+        // white.
+        hover(&mut h, Role::Button, "Rectangle");
+        assert_eq!(
+            fill_at(&h, rectangle),
+            Some((css::G300, CornerRadius::same(css::R_SM)))
+        );
+        assert_eq!(icon_at(&h, icon(rectangle)), Some(css::G1000));
+        // Another tool on: Rectangle at rest, Split drawn on.
+        sketching.tool.set(Some(Choice::Split));
+        hover(&mut h, Role::Button, "Line");
+        assert_eq!(fill_at(&h, rectangle), None);
+        assert_eq!(toggled(&h, "Rectangle"), Some(Toggled::False));
+        assert_eq!(
+            fill_at(&h, rect_of("Split")),
+            Some((css::BLUE, CornerRadius::same(css::R_SM)))
+        );
+    }
+
+    /// A button the registry gives keys is the registry's command, under its name and its
+    /// line, so its tooltip and the sheet say the same: the keys that reach it do what it
+    /// does.
+    #[test]
+    fn each_keyed_sketch_button_is_its_registry_commands_under_its_name() {
+        let commands: Vec<&Command> = SKETCH.iter().flat_map(|panel| panel.row.iter()).collect();
+        for command in &commands {
+            if let Some(key) = command.key {
+                assert_eq!(
+                    command.description,
+                    key.entry().description,
+                    "{}",
+                    command.label
+                );
+            }
+        }
+        let keyed: Vec<(&str, shortcuts::Command)> = commands
+            .iter()
+            .filter_map(|command| command.key.map(|key| (command.label, key)))
+            .collect();
+        assert_eq!(
+            keyed,
+            [
+                ("Line", shortcuts::Command::Line),
+                ("Rectangle", shortcuts::Command::Rectangle),
+                ("Circle", shortcuts::Command::Circle),
+                ("Arc", shortcuts::Command::Arc),
+                ("Point", shortcuts::Command::Point),
+                ("Construction", shortcuts::Command::Construction),
+                ("Trim", shortcuts::Command::Trim),
+                ("Smart Dimension", shortcuts::Command::Dimension),
+            ]
+        );
+        for (label, key) in keyed {
+            assert_eq!(key.label(), label);
+        }
     }
 }

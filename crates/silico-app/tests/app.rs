@@ -13231,6 +13231,8 @@ struct ToolbarStub {
     create_sketch: Option<bool>,
     off: Vec<silico_app::dialog::Kind>,
     selected: bool,
+    tool: Option<silico_app::sketch::tools::Choice>,
+    construction: bool,
     acts: Vec<silico_app::toolbar::Act>,
 }
 
@@ -13241,6 +13243,8 @@ impl ToolbarStub {
             create_sketch: None,
             off: Vec::new(),
             selected: false,
+            tool: None,
+            construction: false,
             acts: Vec::new(),
         }
     }
@@ -13265,6 +13269,8 @@ fn toolbar_with(
                     create_sketch: stub.create_sketch,
                     can_open: &can_open,
                     selected: stub.selected,
+                    tool: stub.tool,
+                    construction: stub.construction,
                 };
                 // The whole window, as the app's frame has it, not the harness's panel inside
                 // its margin.
@@ -13317,7 +13323,8 @@ fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
     );
     assert!(h.query_by_label("Finish Sketch").is_none());
     // A sketch open (#351's `tab.in_sketch()`): SKETCH after SOLID, and shown; its panels
-    // (app.js:384), none of their tools built in the toolbar yet; Finish Sketch, on.
+    // (app.js:384), sketch mode's tools and Construction on, the rest not built yet;
+    // Finish Sketch, on.
     h.state_mut().in_sketch = true;
     h.step();
     h.step();
@@ -13363,12 +13370,23 @@ fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
         ]
     );
     assert_eq!(panel(&h, "INSPECT"), ["Measure", "INSPECT"]);
-    for label in ["CREATE", "MODIFY", "CONSTRAINTS", "INSPECT"] {
-        assert_eq!(
-            on_of(&h.get_by_role_and_label(Role::Toolbar, label)),
-            [label]
-        );
-    }
+    let on =
+        |h: &ToolbarHarness, label: &str| on_of(&h.get_by_role_and_label(Role::Toolbar, label));
+    assert_eq!(
+        on(&h, "CREATE"),
+        [
+            "Line",
+            "Rectangle",
+            "Circle",
+            "Arc",
+            "Point",
+            "Construction",
+            "CREATE"
+        ]
+    );
+    assert_eq!(on(&h, "MODIFY"), ["Trim", "Split", "MODIFY"]);
+    assert_eq!(on(&h, "CONSTRAINTS"), ["Smart Dimension", "CONSTRAINTS"]);
+    assert_eq!(on(&h, "INSPECT"), ["INSPECT"]);
     // `.tb-finish`: at the panels' right end, inside `.tb-panels`' 6 and its own 8; 30
     // high, centred in the 52 of panels under the 24 of tabs.
     let finish = h.get_by_role_and_label(Role::Button, "Finish Sketch");
@@ -15614,6 +15632,70 @@ fn same_view(command: Command, part: impl Fn(&AppHarness) -> egui_kittest::Node<
     }
 }
 
+/// SKETCHED's Triangle, opened in sketch mode from the browser, and read.
+fn triangle_opened(f: &Fixture) -> AppHarness {
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    h
+}
+
+/// The SKETCH tab's button labelled `label`, in its panels.
+fn sketch_button<'h>(h: &'h AppHarness, label: &'h str) -> egui_kittest::Node<'h> {
+    ["CREATE", "MODIFY", "CONSTRAINTS"]
+        .into_iter()
+        .find_map(|panel| {
+            h.query_by_role_and_label(Role::Toolbar, panel)?
+                .query_by_role_and_label(Role::Button, label)
+        })
+        .unwrap_or_else(|| panic!("no {label} in SKETCH's panels"))
+}
+
+/// The toolbar's Finish Sketch, at the panels' right (the sketch bar's is in the canvas,
+/// below it).
+fn toolbar_finish(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.query_all_by_role_and_label(Role::Button, "Finish Sketch")
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+}
+
+/// In sketch mode, what the SKETCH button labelled `label` turns on, by `chords` and by the
+/// button: from off, on, then off again, each way; `on` saying whether it is, and the button
+/// shown pressed or not with it.
+fn same_toggle(
+    h: &mut AppHarness,
+    label: &str,
+    chords: Vec<Chord>,
+    on: impl Fn(&AppHarness) -> bool,
+) {
+    let pressed = |h: &AppHarness| toggled(&sketch_button(h, label));
+    assert_eq!(
+        (on(h), pressed(h)),
+        (false, Some(false)),
+        "{label} at first"
+    );
+    for chord in chords {
+        for by_keys in [true, false] {
+            for want in [true, false] {
+                if by_keys {
+                    press_chord(h, chord);
+                } else {
+                    sketch_button(h, label).click();
+                }
+                step(h);
+                step(h);
+                assert_eq!(on(h), want, "{label}, by its keys: {by_keys}");
+                assert_eq!(
+                    pressed(h),
+                    Some(want),
+                    "{label} drawn, by its keys: {by_keys}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
     for entry in REGISTRY {
@@ -15871,6 +15953,75 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                         assert_eq!(boxes(&h), kept, "{command:?}, by its keys: {by_keys}");
                     }
                 }
+            }
+            Command::Line
+            | Command::Rectangle
+            | Command::Circle
+            | Command::Arc
+            | Command::Point
+            | Command::Trim
+            | Command::Dimension => {
+                use silico_app::sketch::tools::Choice;
+                use silico_core::sketch_tools::ToolKind;
+                // The prototype's tools (app.js's `CMD`, interact.js's `setTool`): the
+                // rectangle the corner one and the arc the 3-point one, Fusion's first.
+                let choice = match command {
+                    Command::Line => Choice::Draw(ToolKind::Line),
+                    Command::Rectangle => Choice::Draw(ToolKind::CornerRectangle),
+                    Command::Circle => Choice::Draw(ToolKind::Circle),
+                    Command::Arc => Choice::Draw(ToolKind::ThreePointArc),
+                    Command::Point => Choice::Draw(ToolKind::Point),
+                    Command::Trim => Choice::Trim,
+                    _ => Choice::Dimension,
+                };
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                let tool = |h: &AppHarness| sketch_mode(h).unwrap().tools.choice();
+                same_toggle(&mut h, entry.label, keys_of(command), |h| {
+                    tool(h)
+                        .map(|chosen| assert_eq!(chosen, choice, "{command:?}"))
+                        .is_some()
+                });
+                assert_eq!(never_waits::waits(), 0);
+            }
+            Command::Construction => {
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                same_toggle(&mut h, entry.label, keys_of(command), |h| {
+                    sketch_mode(h).unwrap().settings.construction
+                });
+                assert_eq!(never_waits::waits(), 0);
+            }
+            Command::FinishSketch => {
+                use silico_app::sketch::tools::Choice;
+                use silico_core::sketch_tools::ToolKind;
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                let points = |h: &AppHarness| sketch_of_text(&f, h, "s0000001").points.len();
+                for chord in keys_of(command) {
+                    for by_keys in [true, false] {
+                        // A point added, so Finish (it's kept) differs from Cancel (it's
+                        // dropped).
+                        let before = points(&h);
+                        h.state_mut().tabs_mut()[0].sketch_toggle(Choice::Draw(ToolKind::Point));
+                        sketch_events(&f, &mut h, &clicked(30.0 + before as f64, 5.0));
+                        settled(&mut h);
+                        assert_eq!(points(&h), before + 1);
+                        if by_keys {
+                            press_chord(&mut h, chord);
+                        } else {
+                            toolbar_finish(&h).click();
+                        }
+                        step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+                        settled(&mut h);
+                        assert_eq!(points(&h), before + 1, "kept, by its keys: {by_keys}");
+                        // Open again, for the next.
+                        let sessions = Arc::clone(&f.sessions);
+                        h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &sketch_id("s0000001"));
+                        sketch_read(&mut h);
+                    }
+                }
+                assert_eq!(never_waits::waits(), 0);
             }
             Command::Shortcuts => {
                 let f = fixture();
@@ -17528,6 +17679,46 @@ fn a_line_chain_ends_by_enter_esc_leaves_the_tool_then_the_selection_and_its_let
     // Nothing more was added: the click Esc ended was a chain's first.
     settled(&mut h);
     assert_eq!(adds_sent(&h), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether a label `words` is in the status bar: on the line of its Shortcuts button.
+fn in_status_bar(h: &AppHarness, words: &str) -> bool {
+    let bar = h.get_by_role_and_label(Role::Button, "Shortcuts").rect();
+    h.query_all_by_label(words)
+        .any(|node| bar.y_range().contains(node.rect().center().y))
+}
+
+#[test]
+fn in_sketch_mode_the_status_bar_says_the_sketch_the_pointer_on_it_and_its_state_and_none_of_it_outside()
+ {
+    let f = fixture();
+    let mut h = triangle_opened(&f);
+    // The fixture's fake solver answers each sketch as sent with no freedoms
+    // (`FakeSketches::as_sent`'s `dofs: 0`): fully defined.
+    let state = "Fully defined";
+    step_until(&mut h, "its line", |h| {
+        in_status_bar(h, "Editing Triangle") && in_status_bar(h, state)
+    });
+    // Off the canvas: a dash.
+    assert!(in_status_bar(&h, "—"));
+    // The pointer over the canvas, the view as `to_screen` draws it: its place on XY.
+    hand_camera(&mut h);
+    step(&mut h);
+    let at = the_viewport(&h).center().round();
+    h.hover_at(at);
+    step(&mut h);
+    step(&mut h);
+    let [x, y] = to_sketch(at).unwrap();
+    let words = format!("x {x:.3} · y {y:.3} mm");
+    assert!(in_status_bar(&h, &words), "{words}");
+    assert!(!in_status_bar(&h, "—"));
+    // Finished: none of it.
+    leave_sketch(&mut h, true);
+    step(&mut h);
+    for gone in ["Editing Triangle", state, words.as_str(), "—"] {
+        assert!(!in_status_bar(&h, gone), "{gone}");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 

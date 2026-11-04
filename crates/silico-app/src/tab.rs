@@ -3094,6 +3094,24 @@ impl Tab {
         }
     }
 
+    /// A tool's button or its key in sketch mode: the tool chosen, or left if it's the one
+    /// on, as SolidWorks' tool buttons and the prototype's `setTool` do. Nothing outside
+    /// sketch mode.
+    pub fn sketch_toggle(&mut self, choice: Choice) {
+        if let Some(mode) = self.sketch.as_ref() {
+            let on = mode.tools.choice() == Some(choice);
+            self.sketch_choose((!on).then_some(choice));
+        }
+    }
+
+    /// Construction's button or X in sketch mode: the palette's Construction turned on or
+    /// off. Nothing outside sketch mode.
+    pub fn sketch_toggle_construction(&mut self) {
+        if let Some(mode) = self.sketch.as_mut() {
+            mode.settings.construction = !mode.settings.construction;
+        }
+    }
+
     /// One frame of the viewport's in sketch mode ([`SketchMode::frame`]): its left
     /// button's events given to the tool on, or to the selection, and the sketch drawn with
     /// `painter`; then what the tool asked sent, through the queue.
