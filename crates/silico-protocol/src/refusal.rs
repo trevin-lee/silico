@@ -530,10 +530,10 @@ impl Refusal {
                     match op {
                         BooleanOp::Fuse => "OCCT lost both shapes: rebuild them, or move one slightly",
                         BooleanOp::Cut => {
-                            "OCCT found the tool removes all of the base: move or shrink the tool (if it doesn't, move it slightly)"
+                            "OCCT found the tool removes all of the base: move or shrink the tool (if it doesn't, move it slightly); a boolean is built to a millionth of its size, so what the tool leaves of the base must be thicker than that"
                         }
                         BooleanOp::Common => {
-                            "OCCT found no overlap: move the shapes so they overlap (if they already do, move one slightly)"
+                            "OCCT found no overlap: move the shapes so they overlap (if they already do, move one slightly); a boolean is built to a millionth of its size, so the overlap must be thicker than that"
                         }
                     }
                     .to_owned(),
@@ -840,6 +840,9 @@ impl DressingKind {
     }
 }
 
+/// What to try when OCCT couldn't build a boolean.
+const BOOLEAN_ADVICE: &str = "check that the shapes are solids that overlap: a boolean is built to a millionth of its size, so a part thinner than that can't be";
+
 /// What to try when OCCT threw doing `operation`.
 fn occt_advice(
     operation: &Operation,
@@ -849,9 +852,8 @@ fn occt_advice(
 ) -> Option<String> {
     match operation {
         Operation::Extrusion | Operation::Revolve => sweep_advice(operation),
-        Operation::Boolean { .. } => {
-            Some("check that the shapes are solids that overlap".to_owned())
-        }
+        // The fuzzy value every boolean runs with (docs/ports/booleans.md).
+        Operation::Boolean { .. } => Some(BOOLEAN_ADVICE.to_owned()),
         Operation::Dressing { dressing } => {
             // OCCT's "ChFi3d_Builder:only 2 faces", thrown only while taking an edge that
             // ends, or whose chain ends, on one joining more than two faces (where solids
@@ -1244,6 +1246,14 @@ mod tests {
         assert!(cut.contains("removes all of the base"), "{cut}");
         let common = said(BooleanOp::Common).unwrap();
         assert!(common.starts_with("OCCT found no overlap"), "{common}");
+        // The fuzzy value every boolean runs with: what's thinner than a millionth of the
+        // boolean's size is lost (docs/ports/booleans.md).
+        for words in [&cut, &common] {
+            assert!(
+                words.contains("built to a millionth of its size"),
+                "{words}"
+            );
+        }
     }
 
     #[test]
@@ -1467,7 +1477,7 @@ mod tests {
         assert_eq!(said(occt(Operation::Tessellate)), UNUSABLE_GEOMETRY);
         assert_eq!(
             said(occt(Operation::Boolean { op: BooleanOp::Cut })),
-            "check that the shapes are solids that overlap"
+            "check that the shapes are solids that overlap: a boolean is built to a millionth of its size, so a part thinner than that can't be"
         );
         assert_eq!(
             said(invalid(Operation::Boolean { op: BooleanOp::Cut })),

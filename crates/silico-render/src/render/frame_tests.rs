@@ -10,14 +10,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use silico_protocol::{Camera, Mesh, Projection};
+use silico_protocol::{Camera, MIN_EYE_DISTANCE, Mesh, Projection};
 
 use super::tests::on_lavapipe;
 use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjection};
 
 use super::{
     BACKGROUND, Element, Frame, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, PendingPick,
-    Pick, Picking, PixelRect, RenderFailure, Renderer,
+    Pick, Picking, PixelRect, RenderFailure, Renderer, project, ray,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -49,8 +49,12 @@ fn frame<'a>(
         bodies,
         highlights,
         picking,
+        background: VIEWPORT_BG,
     }
 }
+
+/// The app's viewport's background, #000000 (its theme's `VIEWPORT_BG`).
+const VIEWPORT_BG: [u8; 4] = [0, 0, 0, 255];
 
 fn rect(min: [i32; 2], size: [u32; 2]) -> PixelRect {
     PixelRect { min, size }
@@ -250,8 +254,9 @@ fn a_body_forgotten_is_drawn_no_more_and_one_replaced_is_uploaded_again() {
             let found = hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE)));
             assert_eq!(found, Some((1, Element::Face(3), [32, 26])));
             // The same mesh again, by its Arc or an equal one, uploads nothing; another, the
-            // box moved 100 mm right (out of view: from column 32 + 79 × 12/11 = 118), is
-            // uploaded again and drawn where it now is.
+            // box moved 100 mm right (out of view: from column 32 + 79 × 12/11 = 118), drops
+            // the old meshes, and isn't placed where the view can't see it: nothing uploaded
+            // until a view does.
             let before = r.uploads();
             let mesh = the_box();
             r.upload(1, &mesh).unwrap();
@@ -264,7 +269,7 @@ fn a_body_forgotten_is_drawn_no_more_and_one_replaced_is_uploaded_again() {
             )
             .unwrap();
             assert_eq!(hit(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE))), None);
-            assert_eq!(r.uploads(), before + 6);
+            assert_eq!(r.uploads(), before);
         },
     );
 }
@@ -495,12 +500,10 @@ fn a_frame_is_composited_into_the_pass_and_a_refused_one_not_at_all() {
             let commands = r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
             let pixels = composited(r, Some(commands));
             let at = |x: u32, y: u32| pixels[usize::try_from(y * WIDTH + x).unwrap()];
-            // The corner is the background, opaque; the centre is the front face, not it.
-            let [red, green, blue] = BACKGROUND;
+            // The corner is the frame's background, opaque; the centre is the front face, not
+            // it.
             let corner = at(1, 1);
-            for (got, want) in corner.iter().zip([red, green, blue, 255]) {
-                assert!(got.abs_diff(want) <= 2, "{corner:?}");
-            }
+            assert_eq!(corner, VIEWPORT_BG);
             assert_ne!(at(32, 26), corner);
             assert_eq!(at(32, 26)[3], 255);
             // Composited again, without another frame: the same frame.
@@ -510,6 +513,63 @@ fn a_frame_is_composited_into_the_pass_and_a_refused_one_not_at_all() {
             broken.eye = broken.target;
             assert!(r.prepare(&frame(&broken, &[1], &[], None)).is_err());
             assert!(composited(r, None).iter().all(|p| *p == [0, 0, 0, 0]));
+        },
+    );
+}
+
+#[test]
+fn a_frames_background_is_the_colour_it_gives_and_a_renders_its_own() {
+    on_lavapipe(
+        "render::frame_tests::a_frames_background_is_the_colour_it_gives_and_a_renders_its_own",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            // Each colour at the corner, off the box, to 1 of 255 (sRGB to linear and back);
+            // the box's front face at the centre the same whatever's behind it.
+            let mut centres = vec![];
+            for background in [
+                VIEWPORT_BG,
+                [255, 255, 255, 255],
+                [12, 200, 77, 255],
+                [230, 233, 237, 255],
+            ] {
+                let commands = r
+                    .prepare(&Frame {
+                        background,
+                        ..frame(&camera, &[1], &[], None)
+                    })
+                    .unwrap();
+                let pixels = composited(r, Some(commands));
+                let at = |x: u32, y: u32| pixels[usize::try_from(y * WIDTH + x).unwrap()];
+                for (x, y) in [(1, 1), (62, 46), (32, 5)] {
+                    let got = at(x, y);
+                    for k in 0..4 {
+                        assert!(
+                            got[k].abs_diff(background[k]) <= 1,
+                            "{background:?} at ({x}, {y}): {got:?}"
+                        );
+                    }
+                }
+                centres.push(at(32, 26));
+            }
+            assert!(centres.windows(2).all(|w| w[0] == w[1]), "{centres:?}");
+            // One not opaque is refused, naming it: the frame is composited opaque.
+            for alpha in [0, 128, 254] {
+                let translucent = Frame {
+                    background: [12, 200, 77, alpha],
+                    ..frame(&camera, &[1], &[], None)
+                };
+                assert_eq!(refused(r, &translucent), "background");
+            }
+            // A render keeps its own, the light grey.
+            let [red, green, blue] = BACKGROUND;
+            let rendered = r.render(&front_of_a_box(WIDTH, HEIGHT)).unwrap();
+            let mut reader = png::Decoder::new(std::io::Cursor::new(rendered.png))
+                .read_info()
+                .unwrap();
+            let mut rgb = vec![0; reader.output_buffer_size().unwrap()];
+            reader.next_frame(&mut rgb).unwrap();
+            assert_eq!(rgb[..3], [red, green, blue]);
         },
     );
 }
@@ -869,6 +929,478 @@ fn a_perspective_picks_point_is_the_pixels_centre_on_the_face() {
             ];
             assert!((want[0] - 21.3791).abs() < 1e-4 && (want[2] - 5.1043).abs() < 1e-4);
             assert_point(&found, want, [1e-3, 1e-3, 1e-3]);
+        },
+    );
+}
+
+/// `a`'s length.
+fn norm(a: [f64; 3]) -> f64 {
+    a.iter().map(|c| c * c).sum::<f64>().sqrt()
+}
+
+/// Where the ray `(origin, direction)` meets the plane where coordinate `k` is `at`.
+fn meets((origin, direction): ([f64; 3], [f64; 3]), k: usize, at: f64) -> [f64; 3] {
+    let t = (at - origin[k]) / direction[k];
+    std::array::from_fn(|i| origin[i] + direction[i] * t)
+}
+
+/// `p`'s distance from the line of the ray `(origin, direction)`, its direction of unit
+/// length.
+fn off_the_ray(p: [f64; 3], (origin, direction): ([f64; 3], [f64; 3])) -> f64 {
+    let d: [f64; 3] = std::array::from_fn(|k| p[k] - origin[k]);
+    let t: f64 = (0..3).map(|k| d[k] * direction[k]).sum();
+    norm(std::array::from_fn(|k| d[k] - direction[k] * t))
+}
+
+fn assert_near(got: [f64; 3], want: [f64; 3], relative: f64) {
+    let off = norm(std::array::from_fn(|k| got[k] - want[k]));
+    assert!(
+        off <= relative * norm(want),
+        "{got:?} against {want:?}: {off:e} off"
+    );
+}
+
+/// The front camera in perspective, 40° high.
+fn front_in_perspective() -> Camera {
+    Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        ..front()
+    }
+}
+
+/// From above, in front, and to the right of the box, looking at (20, 10, 5).
+fn from_the_corner(projection: Projection) -> Camera {
+    Camera {
+        projection,
+        eye: [70.0, -45.0, 55.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    }
+}
+
+#[test]
+fn the_ray_through_the_images_centre_is_the_view_axis() {
+    // The image's centre is half its size, (32, 24): the ray from the eye toward the target
+    // in perspective; orthographic, from the target along the view. The way, by hand, from
+    // the eye to the target.
+    let size = [WIDTH, HEIGHT];
+    let centre = [32.0, 24.0];
+    let ortho = Projection::Orthographic { view_height: 60.0 };
+    let wide = Projection::Perspective {
+        field_of_view: 60.0,
+    };
+    for camera in [
+        front(),
+        front_in_perspective(),
+        from_the_corner(ortho),
+        from_the_corner(wide),
+    ] {
+        let (origin, direction) = ray(&camera, size, centre).unwrap();
+        let way: [f64; 3] = std::array::from_fn(|k| camera.target[k] - camera.eye[k]);
+        let way = way.map(|c| c / norm(way));
+        assert_near(direction, way, 1e-15);
+        assert!((norm(direction) - 1.0).abs() <= 1e-15);
+        let want = match camera.projection {
+            Projection::Perspective { .. } => camera.eye,
+            Projection::Orthographic { .. } => camera.target,
+        };
+        assert_near(origin, want, 1e-15);
+    }
+    // The front view's, exactly: along +y.
+    let (_, direction) = ray(&front(), size, centre).unwrap();
+    assert_eq!(direction.map(|c| c + 0.0), [0.0, 1.0, 0.0]);
+}
+
+#[test]
+fn a_ray_through_a_pixel_meets_the_face_where_its_worked_by_hand() {
+    // The ray is the GPU's projection, whose matrix is f32 (each entry to 6e-8 of it), so it
+    // meets the hand's worked points to 6e-8 of their offsets across the view (a few mm
+    // here): to 1e-8 of the points, which are 20 mm and more from the origin.
+    let size = [WIDTH, HEIGHT];
+    // Orthographic, from the front: through pixel (32, 26)'s centre, (32.5, 26.5), parallel
+    // to the view (+y), from the target's plane (y = 10), so meeting the front face (y = 0)
+    // at (21 + 0.5 × 11/12, 0, 7 − 2.5 × 11/12).
+    let (origin, direction) = ray(&front(), size, [32.5, 26.5]).unwrap();
+    assert_eq!(direction.map(|c| c + 0.0), [0.0, 1.0, 0.0]);
+    assert_near(origin, [21.0 + 5.5 / 12.0, 10.0, 7.0 - 27.5 / 12.0], 1e-8);
+    assert_near(meets((origin, direction), 1, 0.0), CENTRE_OF_32_26, 1e-8);
+    // In perspective, 40° high from (21, −50, 7): from the eye, meeting the face 50 mm
+    // along the view at x = 21 + 50 × (1/64) × tan 20° × 4/3, z = 7 − 50 × (5/48) × tan 20°.
+    let camera = front_in_perspective();
+    let (origin, direction) = ray(&camera, size, [32.5, 26.5]).unwrap();
+    assert_eq!(origin, camera.eye);
+    let tan = libm::tan(20f64.to_radians());
+    let want = [
+        21.0 + 50.0 / 64.0 * tan * 4.0 / 3.0,
+        0.0,
+        7.0 - 50.0 * 5.0 / 48.0 * tan,
+    ];
+    assert_near(meets((origin, direction), 1, 0.0), want, 1e-8);
+    // The image's corner (0, 0), by hand: up tan 20° and left tan 20° × 4/3 for each mm;
+    // its offsets across the view are about half its length, so to 5e-8.
+    let (_, corner) = ray(&camera, size, [0.0, 0.0]).unwrap();
+    let way = [-tan * 4.0 / 3.0, 1.0, tan];
+    assert_near(corner, way.map(|c| c / norm(way)), 5e-8);
+}
+
+#[test]
+fn a_ray_is_none_for_a_camera_or_size_the_checks_refuse() {
+    let pixel = [1.0, 1.0];
+    assert_eq!(ray(&front(), [0, HEIGHT], pixel), None);
+    assert_eq!(ray(&front(), [WIDTH, 0], pixel), None);
+    for bad in [f64::NAN, f64::INFINITY] {
+        assert_eq!(ray(&front(), [WIDTH, HEIGHT], [bad, 1.0]), None);
+        assert_eq!(ray(&front(), [WIDTH, HEIGHT], [1.0, bad]), None);
+    }
+    let at_the_target = Camera {
+        eye: front().target,
+        ..front()
+    };
+    let no_up = Camera {
+        up: [0.0, 1.0, 0.0],
+        ..front()
+    };
+    let flat = Camera {
+        projection: Projection::Orthographic { view_height: 0.0 },
+        ..front()
+    };
+    let no_angle = Camera {
+        projection: Projection::Perspective { field_of_view: 0.0 },
+        ..front()
+    };
+    let nan_eye = Camera {
+        eye: [f64::NAN, -50.0, 7.0],
+        ..front()
+    };
+    for camera in [at_the_target, no_up, flat, no_angle, nan_eye] {
+        assert!(camera.check(WIDTH, HEIGHT).is_err());
+        assert_eq!(ray(&camera, [WIDTH, HEIGHT], pixel), None, "{camera:?}");
+    }
+    // A pixel outside the image is a ray all the same.
+    assert!(ray(&front(), [WIDTH, HEIGHT], [-10.0, 1e6]).is_some());
+}
+
+#[test]
+fn a_ray_through_a_pixel_far_off_the_image_is_finite_or_none() {
+    // Pixels out to f64's largest, on each side, of a small image of a tall orthographic
+    // view (so a pixel's offset across it is the most), from the front and from the corner
+    // (where the view's right and up add on one axis), and in perspective: each ray given
+    // is finite, its direction of unit length; and those past f64 are none.
+    let tall = Projection::Orthographic { view_height: 1e9 };
+    let wide = Projection::Perspective {
+        field_of_view: 60.0,
+    };
+    let huge = [1e300, 1e306, 1e307, 4e307, 1e308, f64::MAX];
+    let mut nones = 0;
+    for camera in [
+        Camera {
+            projection: tall,
+            ..front()
+        },
+        from_the_corner(tall),
+        from_the_corner(wide),
+    ] {
+        for &x in &huge {
+            for &y in &huge {
+                for [sx, sy] in [[1.0, 1.0], [1.0, -1.0], [-1.0, 1.0], [-1.0, -1.0]] {
+                    match ray(&camera, [2, 2], [sx * x, sy * y]) {
+                        Some((origin, direction)) => {
+                            assert!(
+                                origin.iter().chain(&direction).all(|c| c.is_finite()),
+                                "{camera:?} at ({x}, {y}): {origin:?} {direction:?}"
+                            );
+                            assert!((norm(direction) - 1.0).abs() <= 1e-15);
+                        }
+                        None => nones += 1,
+                    }
+                }
+            }
+        }
+    }
+    assert!(nones > 0);
+    // An orthographic origin past f64 though its offsets across the view aren't: from the
+    // corner, 0.99 of f64's largest right and as much down (half the view, 5e8 mm, for each
+    // unit of the image's device coordinates, which are the pixel less 1 across and 1 less
+    // it up), whose sum on the document's x (the view's right 0.740 of it, its up −0.375)
+    // is 1.10 of it: none, where it was an origin of infinity.
+    let corner = from_the_corner(tall);
+    let d = 0.99 * f64::MAX / 5e8;
+    assert_eq!(ray(&corner, [2, 2], [1.0 + d, 1.0 + d]), None);
+    // And inside, 0.8 of it each way (0.89 on x): finite.
+    let d = 0.8 * f64::MAX / 5e8;
+    let (origin, _) = ray(&corner, [2, 2], [1.0 + d, 1.0 + d]).unwrap();
+    assert!(origin.iter().all(|c| c.is_finite()), "{origin:?}");
+}
+
+/// `got` within `within` pixels of `want`, on each axis.
+fn assert_pixel(got: Option<[f64; 2]>, want: [f64; 2], within: f64) {
+    let got = got.expect("not projected");
+    assert!(
+        (0..2).all(|k| (got[k] - want[k]).abs() <= within),
+        "{got:?} against {want:?}"
+    );
+}
+
+#[test]
+fn the_projection_is_the_cameras_with_its_near_plane_half_the_least_eye_distance() {
+    // By the design (docs/design/m4.6-render.md, *A given camera*): what's drawn is cut to
+    // depth MIN_EYE_DISTANCE and more, and the near plane is half that, so no triangle drawn
+    // crosses it. The angle in radians and the image's aspect, f32, as the GPU takes them.
+    let ViewProjection::Perspective {
+        vertical_fov,
+        near_plane_distance,
+        aspect_ratio,
+    } = super::view_projection(
+        Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        [WIDTH, HEIGHT],
+        0.0,
+    )
+    else {
+        panic!("not a perspective");
+    };
+    assert_eq!(near_plane_distance, 5e-7f32);
+    assert_eq!(aspect_ratio, 4.0f32 / 3.0);
+    assert_eq!(vertical_fov, 40f64.to_radians() as f32);
+    let ViewProjection::Orthographic {
+        camera_mode,
+        vertical_world_size,
+        far_plane_distance,
+    } = super::view_projection(
+        Projection::Orthographic { view_height: 44.0 },
+        [WIDTH, HEIGHT],
+        3.5,
+    )
+    else {
+        panic!("not orthographic");
+    };
+    assert!(matches!(
+        camera_mode,
+        OrthographicCameraMode::NearPlaneCenter
+    ));
+    assert_eq!((vertical_world_size, far_plane_distance), (44.0, 3.5));
+}
+
+#[test]
+fn a_box_corner_projects_to_the_pixel_worked_by_hand() {
+    // The corner (0, 0, 10), its top front left. From the front, orthographic: column
+    // 32 + (0 − 21) × 12/11, row 24 − (10 − 7) × 12/11. To 2e-6 of a pixel: the GPU's
+    // matrix is f32, its entries to 6e-8 of them, and the offsets are some 20 pixels.
+    let size = [WIDTH, HEIGHT];
+    let corner = [0.0, 0.0, 10.0];
+    let want: [f64; 2] = [32.0 - 21.0 * 12.0 / 11.0, 24.0 - 3.0 * 12.0 / 11.0];
+    assert!((want[0] - 9.0909).abs() < 1e-4 && (want[1] - 20.7273).abs() < 1e-4);
+    assert_pixel(project(&front(), size, corner), want, 2e-6);
+    // In perspective, 40° high from (21, −50, 7): 50 mm along the view, 21 left and 3 up,
+    // so tan 20° of half the height (24 rows) for each unit, and tan 20° × 4/3 of half the
+    // width (32 columns).
+    let tan = libm::tan(20f64.to_radians());
+    let want = [
+        32.0 - 21.0 / 50.0 / (tan * 4.0 / 3.0) * 32.0,
+        24.0 - 3.0 / 50.0 / tan * 24.0,
+    ];
+    assert_pixel(project(&front_in_perspective(), size, corner), want, 2e-6);
+    // A point off the image lands off it: (−100, 0, 7), 121 mm left, from the front.
+    assert_pixel(
+        project(&front(), size, [-100.0, 0.0, 7.0]),
+        [32.0 - 121.0 * 12.0 / 11.0, 24.0],
+        1e-5,
+    );
+}
+
+#[test]
+fn a_point_on_a_pixels_ray_projects_back_to_the_pixel() {
+    // Pixels across the image and off it, at depths along each ray from a micrometre to
+    // ten metres (and before the view's plane, orthographic): back to the pixel, to 1e-9
+    // of it.
+    let size = [WIDTH, HEIGHT];
+    let ortho = Projection::Orthographic { view_height: 60.0 };
+    let wide = Projection::Perspective {
+        field_of_view: 60.0,
+    };
+    let pixels = [
+        [0.0, 0.0],
+        [0.5, 0.5],
+        [32.0, 24.0],
+        [63.5, 47.5],
+        [64.0, 48.0],
+        [13.25, 40.75],
+        [-20.0, 70.0],
+    ];
+    for camera in [
+        front(),
+        front_in_perspective(),
+        from_the_corner(ortho),
+        from_the_corner(wide),
+    ] {
+        let perspective = matches!(camera.projection, Projection::Perspective { .. });
+        for pixel in pixels {
+            let (origin, direction) = ray(&camera, size, pixel).unwrap();
+            let mut along = vec![1e-3, 1.0, 37.5, 1e4];
+            if !perspective {
+                along.extend([0.0, -50.0]);
+            }
+            for t in along {
+                let p: [f64; 3] = std::array::from_fn(|k| origin[k] + direction[k] * t);
+                let got = project(&camera, size, p).unwrap();
+                let length = |[x, y]: [f64; 2]| (x * x + y * y).sqrt();
+                let scale = length(pixel).max(1.0);
+                let off = length([got[0] - pixel[0], got[1] - pixel[1]]);
+                assert!(
+                    off <= 1e-9 * scale,
+                    "{camera:?} {pixel:?} at {t}: {got:?}, {off:e} off"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn project_is_none_behind_the_eye_where_the_drawing_cuts_and_for_what_the_checks_refuse() {
+    let size = [WIDTH, HEIGHT];
+    // From the origin along +y: a point MIN_EYE_DISTANCE along the view projects (the
+    // drawing's pyramid holds depth ≥ MIN_EYE_DISTANCE), one an ulp nearer doesn't, nor the
+    // eye, nor what's behind it.
+    let at_the_origin = Camera {
+        projection: Projection::Perspective {
+            field_of_view: 40.0,
+        },
+        eye: [0.0; 3],
+        target: [0.0, 10.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    };
+    let nearer = f64::from_bits(MIN_EYE_DISTANCE.to_bits() - 1);
+    assert_pixel(
+        project(&at_the_origin, size, [0.0, MIN_EYE_DISTANCE, 0.0]),
+        [32.0, 24.0],
+        1e-9,
+    );
+    for y in [nearer, 0.0, -1.0, -1e9] {
+        assert_eq!(project(&at_the_origin, size, [0.0, y, 0.0]), None, "{y}");
+    }
+    // Orthographic has no behind: from the front, a point 1 km behind the eye projects.
+    assert_pixel(
+        project(&front(), size, [21.0, -1e6, 7.0]),
+        [32.0, 24.0],
+        1e-9,
+    );
+    // Not finite, in or out.
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for k in 0..3 {
+            let mut p = [20.0, 0.0, 5.0];
+            p[k] = bad;
+            assert_eq!(project(&front(), size, p), None);
+            assert_eq!(project(&front_in_perspective(), size, p), None);
+        }
+    }
+    let narrow = Camera {
+        projection: Projection::Orthographic { view_height: 1e-3 },
+        ..front()
+    };
+    assert!(project(&narrow, size, [1e300, 0.0, 7.0]).is_some());
+    assert_eq!(project(&narrow, size, [f64::MAX, 0.0, 7.0]), None);
+    // A camera or size the checks refuse.
+    let at_the_target = Camera {
+        eye: front().target,
+        ..front()
+    };
+    assert_eq!(project(&at_the_target, size, [20.0, 0.0, 5.0]), None);
+    assert_eq!(project(&front(), [0, HEIGHT], [20.0, 0.0, 5.0]), None);
+    assert_eq!(project(&front(), [WIDTH, 0], [20.0, 0.0, 5.0]), None);
+    // In perspective a height of 0 passes the camera's check (its corner's sec² and its
+    // pyramid's slope both infinite), and the projection's x scale is then 0 and its y
+    // pixels 0 high: a pixel (32, 0) of nothing, if the size weren't refused first.
+    let at = [21.0, 0.0, 7.0];
+    assert!(front_in_perspective().check(WIDTH, 0).is_ok());
+    assert_eq!(project(&front_in_perspective(), [WIDTH, 0], at), None);
+    assert_eq!(project(&front_in_perspective(), [0, HEIGHT], at), None);
+}
+
+#[test]
+fn a_faces_projected_centre_is_that_face_in_a_frames_picking() {
+    on_lavapipe(
+        "render::frame_tests::a_faces_projected_centre_is_that_face_in_a_frames_picking",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            // Close enough that each face seen is many pixels across, its centre clear of its
+            // edges' 2-pixel strokes.
+            let ortho = Projection::Orthographic { view_height: 40.0 };
+            let wide = Projection::Perspective {
+                field_of_view: 30.0,
+            };
+            // The box's faces' centres: x high (Face2), y low (Face3), z high (Face6). From
+            // the front only Face3 is seen; from the corner all three.
+            let centres = [
+                (2, [40.0, 10.0, 5.0]),
+                (3, [20.0, 0.0, 5.0]),
+                (6, [20.0, 10.0, 10.0]),
+            ];
+            for (camera, seen) in [
+                (front(), &[3][..]),
+                (front_in_perspective(), &[3][..]),
+                (from_the_corner(ortho), &[2, 3, 6][..]),
+                (from_the_corner(wide), &[2, 3, 6][..]),
+            ] {
+                for &(face, centre) in centres.iter().filter(|(f, _)| seen.contains(f)) {
+                    let at = project(&camera, [WIDTH, HEIGHT], centre).unwrap();
+                    let pixel = at.map(|c| c.floor() as i32);
+                    let found = hit(r, &frame(&camera, &[1], &[], Some(rect(pixel, [1, 1]))));
+                    assert_eq!(
+                        found.map(|(body, element, _)| (body, element)),
+                        Some((1, Element::Face(face))),
+                        "{camera:?}: Face{face}'s centre at {at:?}"
+                    );
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn a_ray_passes_through_the_point_a_frames_picking_finds_at_its_pixel() {
+    on_lavapipe(
+        "render::frame_tests::a_ray_passes_through_the_point_a_frames_picking_finds_at_its_pixel",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let centre = Some(rect([32, 24], [1, 1]));
+            let ortho = Projection::Orthographic { view_height: 60.0 };
+            let wide = Projection::Perspective {
+                field_of_view: 60.0,
+            };
+            // The front face's pixel (32, 26) from the front, both ways, and the image's
+            // centre from the corner, both ways: the ID buffer's face, and its point on the
+            // pixel's ray, off it by at most 1e-9 of its distance from the origin (along the
+            // ray, the point is the GPU's f32 depth).
+            for (camera, picking, face) in [
+                (front(), Some(ON_THE_FACE), 3),
+                (front_in_perspective(), Some(ON_THE_FACE), 3),
+                (from_the_corner(ortho), centre, 6),
+                (from_the_corner(wide), centre, 6),
+            ] {
+                let found = pick(r, &frame(&camera, &[1], &[], picking)).hit.unwrap();
+                assert_eq!(
+                    (found.body, found.hit),
+                    (1, Element::Face(face)),
+                    "{camera:?}"
+                );
+                let pixel = found.pixel.map(|c| f64::from(c) + 0.5);
+                let line = ray(&camera, [WIDTH, HEIGHT], pixel).unwrap();
+                let point = found.point.unwrap();
+                let off = off_the_ray(point, line);
+                assert!(
+                    off <= 1e-9 * norm(point),
+                    "{camera:?}: {point:?} {off:e} off"
+                );
+                // And where the ray meets the face's plane is that point, to the depth's f32.
+                let on_the_face = match face {
+                    3 => meets(line, 1, 0.0),
+                    _ => meets(line, 2, 10.0),
+                };
+                assert_near(on_the_face, point, 1e-5);
+            }
         },
     );
 }
@@ -1271,7 +1803,13 @@ fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bod
             assert!(r.pending.contains_key(&id));
             r.failed(Some(id));
             assert!(r.pending.is_empty());
-            // The next frame uploads all six faces again, and no answer comes.
+            // The next frame is refused, backing off ([`Backoff`]); the one after it uploads
+            // all six faces again, and no answer comes.
+            assert!(matches!(
+                r.prepare(&frame(&camera, &[1], &[], None)),
+                Err(RenderFailure::BackingOff { frames: 1 })
+            ));
+            assert_eq!(r.uploads(), 6);
             draw(r, &frame(&camera, &[1], &[], None));
             assert_eq!(r.uploads(), 12);
             assert_eq!(r.take_picking(), None);
@@ -1284,18 +1822,197 @@ fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bod
     );
 }
 
+/// What one frame did: drawn, failed as the GPU fails one, or refused backing off, with the
+/// frames refused from it on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Drawn,
+    Failed,
+    Refused(u32),
+}
+
+/// `frame` prepared, and submitted if it was built, and what it did.
+fn outcome(r: &mut Renderer, frame: &Frame<'_>) -> Outcome {
+    match r.prepare(frame) {
+        Ok(commands) => {
+            r.ctx.queue.submit([commands]);
+            wait(r);
+            Outcome::Drawn
+        }
+        Err(RenderFailure::Failed(_)) => Outcome::Failed,
+        Err(RenderFailure::BackingOff { frames }) => Outcome::Refused(frames),
+        Err(other) => panic!("{other}"),
+    }
+}
+
+#[test]
+fn after_the_gpu_fails_a_frame_the_next_back_off_doubling_until_one_succeeds() {
+    on_lavapipe(
+        "render::frame_tests::after_the_gpu_fails_a_frame_the_next_back_off_doubling_until_one_succeeds",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            assert_eq!(outcome(r, &plain), Drawn);
+            assert_eq!(r.uploads(), 6);
+            // Four tries in a row fail: after each, 1, 2, 4, then 8 frames refused at once,
+            // each uploading nothing; each try after the first uploads the six faces again
+            // (a failure drops them); the fifth try draws.
+            r.fail_frames = 4;
+            let mut want = vec![];
+            for refused in [1, 2, 4, 8] {
+                want.push((Failed, if want.is_empty() { 0 } else { 6 }));
+                want.extend((1..=refused).rev().map(|left| (Refused(left), 0)));
+            }
+            want.push((Drawn, 6));
+            let got: Vec<(Outcome, u64)> = want
+                .iter()
+                .map(|_| {
+                    let before = r.uploads();
+                    let done = outcome(r, &plain);
+                    (done, r.uploads() - before)
+                })
+                .collect();
+            assert_eq!(got, want);
+            // A success ended it: the next failure refuses one frame again, not 16.
+            r.fail_frames = 1;
+            let got: Vec<Outcome> = (0..3).map(|_| outcome(r, &plain)).collect();
+            assert_eq!(got, [Failed, Refused(1), Drawn]);
+        },
+    );
+}
+
+#[test]
+fn a_frame_refused_backing_off_asks_nothing_is_checked_for_nothing_and_caps_at_64() {
+    on_lavapipe(
+        "render::frame_tests::a_frame_refused_backing_off_asks_nothing_is_checked_for_nothing_and_caps_at_64",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            r.fail_frames = 1;
+            assert_eq!(outcome(r, &plain), Failed);
+            // Refused before its checks (body 2 isn't uploaded) and asking for no picking.
+            let readback = r.readback;
+            assert_eq!(
+                outcome(r, &frame(&camera, &[2], &[], Some(ON_THE_FACE))),
+                Refused(1)
+            );
+            assert_eq!((r.readback, r.pending.len()), (readback, 0));
+            assert_eq!(outcome(r, &plain), Drawn);
+            assert_eq!(
+                RenderFailure::BackingOff { frames: 3 }.to_string(),
+                "the GPU failed a recent frame: backing off, 3 frame(s) refused before the next try"
+            );
+            // Nine failures in a row: the runs refused after them, 1, 2, 4, … doubling to 64,
+            // and no further.
+            r.fail_frames = 9;
+            let mut runs: Vec<u32> = vec![];
+            loop {
+                match outcome(r, &plain) {
+                    Failed => runs.push(0),
+                    Refused(_) => *runs.last_mut().unwrap() += 1,
+                    Drawn => break,
+                }
+            }
+            assert_eq!(runs, [1, 2, 4, 8, 16, 32, 64, 64, 64]);
+        },
+    );
+}
+
+#[test]
+fn a_new_mesh_has_the_next_frame_tried_but_keeps_the_doubling() {
+    on_lavapipe(
+        "render::frame_tests::a_new_mesh_has_the_next_frame_tried_but_keeps_the_doubling",
+        |r| {
+            use Outcome::{Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            // Fail, refuse one, fail (refusing two), a new mesh (the next frame tried), fail:
+            // four refused, not one, as an edit made during a shortage would otherwise have
+            // every other frame upload the model.
+            r.fail_frames = 3;
+            assert_eq!(outcome(r, &plain), Failed);
+            assert_eq!(outcome(r, &plain), Refused(1));
+            assert_eq!(outcome(r, &plain), Failed);
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [40.0, 20.0, 11.0])))
+                .unwrap();
+            assert_eq!(outcome(r, &plain), Failed);
+            assert_eq!(outcome(r, &plain), Refused(4));
+        },
+    );
+}
+
+#[test]
+fn forgetting_a_body_leaves_a_backoff_as_it_was() {
+    on_lavapipe(
+        "render::frame_tests::forgetting_a_body_leaves_a_backoff_as_it_was",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            r.upload(
+                2,
+                &Arc::new(box_mesh([0.0, -30.0, 0.0], [40.0, 20.0, 10.0])),
+            )
+            .unwrap();
+            let camera = front();
+            r.fail_frames = 2;
+            assert_eq!(outcome(r, &frame(&camera, &[1, 2], &[], None)), Failed);
+            assert_eq!(outcome(r, &frame(&camera, &[1, 2], &[], None)), Refused(1));
+            assert_eq!(outcome(r, &frame(&camera, &[1, 2], &[], None)), Failed);
+            // Refusing two; forgetting body 2 (and one never uploaded) refuses them still.
+            r.forget(2);
+            r.forget(9);
+            let one = frame(&camera, &[1], &[], None);
+            assert_eq!(outcome(r, &one), Refused(2));
+            assert_eq!(outcome(r, &one), Refused(1));
+            assert_eq!(outcome(r, &one), Drawn);
+        },
+    );
+}
+
+#[test]
+fn a_new_mesh_ends_a_backoff_and_the_same_one_again_doesnt() {
+    on_lavapipe(
+        "render::frame_tests::a_new_mesh_ends_a_backoff_and_the_same_one_again_doesnt",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            let held = the_box();
+            r.upload(1, &held).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            r.fail_frames = 2;
+            assert_eq!(outcome(r, &plain), Failed);
+            assert_eq!(outcome(r, &plain), Refused(1));
+            assert_eq!(outcome(r, &plain), Failed);
+            // Refusing two now. The same mesh again changes nothing, so the backoff stays.
+            r.upload(1, &held).unwrap();
+            r.upload(1, &the_box()).unwrap();
+            assert_eq!(outcome(r, &plain), Refused(2));
+            // Another mesh ends it: the next frame is tried, and draws.
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [40.0, 20.0, 11.0])))
+                .unwrap();
+            assert_eq!(outcome(r, &plain), Drawn);
+        },
+    );
+}
+
 #[test]
 fn an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allows() {
     on_lavapipe(
         "render::frame_tests::an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allows",
         |r| {
             r.upload(1, &the_box()).unwrap();
-            // The box's reach from the target, by its box's farthest corner: from (21, 10,
-            // 7), the corner (0, 0, 0) on x, y, and z alike (21, 10, 7 away), √590; from
-            // (5, 4, 3), the corner (40, 20, 10) (35, 16, 7 away), √1530. The least height is
-            // that times MIN_VIEW_HEIGHT_OF_REACH: drawn at it, refused just under it.
+            // The box's reach from the target, its farthest corner: from (21, 10, 7), the
+            // corner (0, 0, 0) on x, y, and z alike (21, 10, 7 away), √590; from (5, 4, 3),
+            // the corner (40, 20, 10) (35, 16, 7 away), √1530. The least height at 48 rows is
+            // 48 times that over 2^19, as a scene's check takes it (0.00222 and 0.00358 mm):
+            // drawn at it, refused just under it.
             for (target, squared) in [([21.0, 10.0, 7.0], 590.0f64), ([5.0, 4.0, 3.0], 1530.0)] {
-                let least = squared.sqrt() * silico_protocol::MIN_VIEW_HEIGHT_OF_REACH;
+                let least = 48.0 * squared.sqrt() / 524_288.0;
                 let at = |view_height: f64| Camera {
                     projection: Projection::Orthographic { view_height },
                     eye: [target[0], target[1] - 60.0, target[2]],
@@ -1309,6 +2026,167 @@ fn an_orthographic_view_is_drawn_down_to_the_least_height_its_bodies_reach_allow
                     refused(r, &frame(&camera, &[1], &[], None)),
                     "camera.view_height",
                     "{target:?}"
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn a_perspective_frame_takes_the_angles_a_scenes_check_does_at_its_size_and_any_eye() {
+    on_lavapipe(
+        "render::frame_tests::a_perspective_frame_takes_the_angles_a_scenes_check_does_at_its_size_and_any_eye",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let at = |distance: f64, field_of_view: f64| Camera {
+                projection: Projection::Perspective { field_of_view },
+                eye: [21.0, -distance, 7.0],
+                target: [21.0, 10.0, 7.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            // Any eye: 0.1 mm before the front face (its corners 221 times as far across the
+            // view as along it at 1°, past the pyramid's 190.6 over 48 rows: cut), in its
+            // plane, or inside the box: each drawn, what's outside the pyramid cut away.
+            for (distance, field_of_view) in [(0.2, 1.0), (0.1, 1.0), (0.0, 60.0), (-1.0, 60.0)] {
+                let camera = at(distance, field_of_view);
+                r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
+            }
+            // The angle at the frame's size: at 64 by 48, from 0.005246° (by hand, the
+            // quadratic's root): 0.001° is refused, 0.006° drawn.
+            let camera = at(1e5, 0.001);
+            assert_eq!(
+                refused(r, &frame(&camera, &[1], &[], None)),
+                "camera.field_of_view"
+            );
+            let camera = at(1e5, 0.006);
+            r.prepare(&frame(&camera, &[1], &[], None)).unwrap();
+        },
+    );
+}
+
+/// Every pixel's ID of `camera`'s frame of `bodies`, `size` pixels (at most 256 a side), as
+/// its picking reads them back: the body's number and the element's, as the worker's ID
+/// buffer writes them.
+fn frame_ids(r: &mut Renderer, camera: &Camera, bodies: &[u32], size: [u32; 2]) -> Vec<[u32; 2]> {
+    frame_ids_at(r, camera, bodies, size, 1.0)
+}
+
+/// [`frame_ids`] at `pixels_per_point`.
+fn frame_ids_at(
+    r: &mut Renderer,
+    camera: &Camera,
+    bodies: &[u32],
+    size: [u32; 2],
+    pixels_per_point: f32,
+) -> Vec<[u32; 2]> {
+    let asking = Frame {
+        size_px: size,
+        picking: Some(rect([0, 0], size)),
+        pixels_per_point,
+        ..frame(camera, bodies, &[], None)
+    };
+    pick(r, &asking);
+    // `pick` took the answer's hit; the frame again, and its readback read whole.
+    draw(r, &asking);
+    draw(
+        r,
+        &Frame {
+            serial: asking.serial.wrapping_add(1),
+            picking: None,
+            ..asking
+        },
+    );
+    r.harvest();
+    let answer = r.picked.take().expect("no answer");
+    answer
+        .ids
+        .iter()
+        .map(|id| {
+            [
+                u32::try_from(id.object.0).unwrap(),
+                u32::try_from(id.instance.0).unwrap(),
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn an_edge_past_the_frames_side_by_less_than_its_stroke_at_two_pixels_a_point_is_drawn() {
+    on_lavapipe(
+        "render::frame_tests::an_edge_past_the_frames_side_by_less_than_its_stroke_at_two_pixels_a_point_is_drawn",
+        |r| {
+            // Orthographic about the origin from −y, 48 mm over 48 rows, 64 wide: a pixel a
+            // millimetre, the frame's right side at x = 32. At 2 pixels a point an edge's
+            // 2-point stroke is 4 pixels, reaching 2 past its line: one along z at x = 33.25,
+            // 1.25 past the side, reaches the last column's centres (1.75 from it), by hand
+            // rows 16 to 32; at one pixel a point (a reach of 1) it doesn't reach the frame.
+            let edge = Arc::new(Mesh {
+                positions: vec![],
+                normals: vec![],
+                triangles: vec![],
+                face_triangles: vec![],
+                edge_points: vec![[33.25, 0.0, -10.0], [33.25, 0.0, 10.0]],
+                edge_point_counts: vec![2],
+                valid: None,
+            });
+            r.upload(1, &edge).unwrap();
+            let camera = Camera {
+                projection: Projection::Orthographic { view_height: 48.0 },
+                eye: [0.0, -10.0, 0.0],
+                target: [0.0; 3],
+                up: [0.0, 0.0, 1.0],
+            };
+            let id = [1, 0x8000_0001];
+            let ids = frame_ids_at(r, &camera, &[1], [64, 48], 2.0);
+            for row in 16..=32 {
+                assert_eq!(ids[row * 64 + 63], id, "row {row}");
+            }
+            let ids = frame_ids_at(r, &camera, &[1], [64, 48], 1.0);
+            assert!(ids.iter().all(|id| *id == [0, 0]));
+        },
+    );
+}
+
+#[test]
+fn a_box_seen_from_inside_draws_in_a_frame_as_the_workers_render_draws_it() {
+    on_lavapipe(
+        "render::frame_tests::a_box_seen_from_inside_draws_in_a_frame_as_the_workers_render_draws_it",
+        |r| {
+            // The bench's box with the eye at its centre, in a wall's plane (x = 0), and 1 mm
+            // from it, looking along +y at 90°: its walls beside and behind the eye cut to the
+            // view's pyramid, as a frame and the worker's render cut them, pixel for pixel.
+            for eye in [[20.0, 10.0, 5.0], [0.0, 10.0, 5.0], [1.0, 10.0, 5.0]] {
+                let camera = Camera {
+                    projection: Projection::Perspective {
+                        field_of_view: 90.0,
+                    },
+                    eye,
+                    target: [eye[0], 20.0, eye[2]],
+                    up: [0.0, 0.0, 1.0],
+                };
+                let scene = silico_protocol::RenderScene {
+                    bodies: vec![silico_protocol::RenderBody {
+                        body: 1,
+                        mesh: Mesh::clone(&the_box()),
+                        highlight_faces: vec![],
+                        highlight_edges: vec![],
+                    }],
+                    camera: camera.clone(),
+                    width: WIDTH,
+                    height: HEIGHT,
+                    ids: true,
+                };
+                scene.check().unwrap();
+                let rendered = r.render(&scene).unwrap().ids.unwrap();
+                assert!(
+                    rendered.contains(&[1, 4]),
+                    "{eye:?}: the far wall isn't drawn"
+                );
+                r.upload(1, &the_box()).unwrap();
+                let framed = frame_ids(r, &camera, &[1], [WIDTH, HEIGHT]);
+                assert!(
+                    framed == rendered,
+                    "{eye:?}: the frame differs from the render"
                 );
             }
         },

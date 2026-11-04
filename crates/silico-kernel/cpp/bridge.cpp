@@ -1650,10 +1650,15 @@ std::unique_ptr<BRepAlgoAPI_BooleanOperation> boolean_maker(BooleanOp op) {
   }
 }
 
-// Runs `maker` on `arguments` and `tools`, non-destructive and single-threaded, throwing
-// with OCCT's report if it fails, and appends the names of the warnings OCCT reported to
-// `warnings` and, two by two, each pair of elements it skipped intersecting to `skipped`,
-// each element by its place among `inputs`.
+// FreeCAD 1.1.3's `BooleanFuzzy` preference, its default (AppPart.cpp): a boolean's fuzzy
+// value is this many times Precision::Confusion() for each millimetre of its box's diagonal.
+constexpr double BooleanFuzzy = 10.0;
+
+// Runs `maker` on `arguments` and `tools`, non-destructive and single-threaded, with
+// FreeCAD 1.1.3's automatic fuzzy value, throwing with OCCT's report if it fails, and
+// appends the names of the warnings OCCT reported to `warnings` and, two by two, each pair
+// of elements it skipped intersecting to `skipped`, each element by its place among
+// `inputs`.
 void run_boolean(BRepAlgoAPI_BooleanOperation &maker,
                  const NCollection_List<TopoDS_Shape> &arguments,
                  const NCollection_List<TopoDS_Shape> &tools,
@@ -1661,6 +1666,16 @@ void run_boolean(BRepAlgoAPI_BooleanOperation &maker,
                  rust::Vec<SkippedElement> &skipped) {
   maker.SetArguments(arguments);
   maker.SetTools(tools);
+  // FreeCAD 1.1.3's automatic fuzzy value (FCBRepAlgoAPIHelper::setAutoFuzzy): 1e-6 of the
+  // diagonal of the box round every argument and tool, in list order. Without
+  // triangulation, so the box is the geometry's alone (docs/ports/booleans.md).
+  Bnd_Box box;
+  for (const NCollection_List<TopoDS_Shape> *list : {&arguments, &tools}) {
+    for (const TopoDS_Shape &shape : *list) {
+      BRepBndLib::Add(shape, box, false);
+    }
+  }
+  maker.SetFuzzyValue(BooleanFuzzy * std::sqrt(box.SquareExtent()) * Precision::Confusion());
   // Leave the inputs' sub-shapes as they are, so history reports changed elements as
   // modified (docs/ports/booleans.md). Single-threaded, so the result is deterministic.
   maker.SetNonDestructive(true);

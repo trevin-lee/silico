@@ -985,14 +985,28 @@ fn the_barrel_fused_to_a_box_and_filleted_where_they_meet_is_valid_and_pinned() 
         added > 0.0 && added < r * r * (1.0 - PI / 4.0) * length * 1.05,
         "added {added}, the seam {length}"
     );
-    // FreeCAD's integration on the same B-rep agrees to 1.1e-10 (534.6524054584669).
+    // FreeCAD 1.1.3 building the same, its barrel through three points, `fuse([box], -1.0)`
+    // (the fuzzy value Silico's booleans run with), and `makeFillet(0.3, ...)` on the same
+    // six edges: 534.6523831590220 by its default integration, Silico's the same to 1e-14
+    // (534.6523831590249), and this precise volume within 1.3e-9 of it.
     let default = k.measure_as_freecad(&filleted).unwrap();
+    assert_close(
+        "FreeCAD 1.1.3's",
+        default.volume,
+        FREECADS_FILLETED_VOLUME,
+        1e-12,
+    );
     assert_close("against the default", default.volume, s.volume, 2.0 * ASKED);
     assert_close("pinned", s.volume, PINNED_FILLETED_VOLUME, 1e-12);
 }
 
-/// The filleted fusion's volume as measured (macOS ARM, 2026-10-25).
-const PINNED_FILLETED_VOLUME: f64 = 534.652_405_400_704_3;
+/// FreeCAD 1.1.3's own: its barrel through three points, `fuse([box], -1.0)`, and
+/// `makeFillet(0.3, ...)` of the six edges, measured by its default integration (`Volume`).
+const FREECADS_FILLETED_VOLUME: f64 = 534.652_383_159_022;
+
+/// The filleted fusion's volume as measured, its fuse with FreeCAD 1.1.3's fuzzy value
+/// (macOS ARM, 2026-11-04).
+const PINNED_FILLETED_VOLUME: f64 = 534.652_382_476_456_6;
 
 // ---- Barrels of every proportion ----
 

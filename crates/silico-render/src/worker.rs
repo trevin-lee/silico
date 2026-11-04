@@ -89,6 +89,8 @@ fn refused(failure: RenderFailure) -> Failure {
             message: invalid.message,
         }),
         RenderFailure::Failed(what) => internal(what),
+        // A frame's, never a render's: the worker's renders don't back off.
+        failure @ RenderFailure::BackingOff { .. } => internal(failure.to_string()),
     }
 }
 
