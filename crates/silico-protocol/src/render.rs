@@ -635,7 +635,9 @@ impl ViewRegion {
     }
 
     /// The pyramid of a perspective view from `eye` (its `frame`) whose slope is `b`
-    /// ([`pyramid_slope`]): P = { depth ≥ [`MIN_EYE_DISTANCE`], |x| + |y| ≤ b × depth }.
+    /// ([`pyramid_slope`]): P = { depth ≥ [`MIN_EYE_DISTANCE`], |x| + |y| ≤ b × depth }. Its
+    /// sides, in order: its floor, depth − MIN_EYE_DISTANCE; then b × depth − x − y, b ×
+    /// depth − x + y, b × depth + x − y, and b × depth + x + y.
     pub fn pyramid(eye: [f64; 3], frame: &Frame, b: f64) -> ViewRegion {
         let side = |sx: f64, sy: f64| HalfSpace {
             normal: [-sx, -sy, b],
@@ -912,6 +914,23 @@ impl RenderBody {
 #[cfg(test)]
 mod tests {
     use super::{length_and_unit, to_six_decimals};
+
+    #[test]
+    fn a_bound_a_step_past_its_millionth_steps_to_the_next_millionth_its_way() {
+        // Where `x × 1e6` rounds to a whole number N though `x` isn't N / 1e6 (by hand,
+        // 7.500000000000001e-05, an ulp over 75e-6, times 1e6 is 75.0; 4.9999999999999996e-06,
+        // an ulp under 5e-6, is 5.0), the ceiling (floor) is a step short: the next millionth
+        // up (down) is given, 76e-6 (4e-6), not the bound itself nor the one short of it.
+        let over = 75e-6f64.next_up();
+        assert_eq!(over * 1e6, 75.0);
+        assert_eq!(to_six_decimals(over, true), 76e-6);
+        let under = 5e-6f64.next_down();
+        assert_eq!(under * 1e6, 5.0);
+        assert_eq!(to_six_decimals(under, false), 4e-6);
+        // The other way round each is its millionth at once.
+        assert_eq!(to_six_decimals(over, false), 75e-6);
+        assert_eq!(to_six_decimals(under, true), 5e-6);
+    }
 
     #[test]
     fn a_bound_given_to_six_decimals_is_on_its_side_and_six_decimals_long() {

@@ -294,11 +294,12 @@ fn a_grid_of_overlapping_copies_fuses_into_their_union_and_cuts_it_out() {
 fn copies_that_land_on_each_other_or_on_the_seed_fuse_into_one() {
     // Two placements alike: two copies in one place, one copy's volume (OCCT fuses tools
     // that coincide; no guard is needed). A cylinder turned about its own axis: every copy
-    // is the seed. A move of a hair: 1e-6 off the seed, the union of the two exactly;
-    // 1.1e-7 off, past the check's 1e-7 but within the two copies' tolerances together
-    // (2e-7), OCCT takes the copy for the seed, and the fuse changes nothing, valid (as
-    // FreeCAD's 359.9999999° copy fuses into its original): the 1.8e-6 mm³ sliver of the
-    // exact union is OCCT's to lose, within its tolerance.
+    // is the seed. A move of a hair: under the boolean's fuzzy value, 1e-6 of the diagonal
+    // of the box round the plate, the pin, and the copy (√825 mm: 2.87e-5), OCCT takes the
+    // copy for the seed and the fuse changes nothing, valid: 1.1e-7 (past the check's
+    // 1e-7), 1e-6, and 2e-5 off. Above it, 5e-5 and 1e-4 off, the union of the two exactly.
+    // FreeCAD 1.1.3's LinearPattern of the same pin on the same plate, a hair long, two
+    // occurrences: nothing added up to 2e-5, the union from 3e-5 (8e-4 more at 5e-5).
     let mut k = kernel();
     let plate = at(&mut k, block(20.0, 20.0, 1.0), [-10.0, -10.0, -1.0]);
     let pin = k
@@ -328,7 +329,13 @@ fn copies_that_land_on_each_other_or_on_the_seed_fuse_into_one() {
     assert_close("spun", volume(&mut k, &made.shape), one, PRECISE);
     // The union of two discs r 2 whose centres are `hair` apart is π·4 + 4·hair to first
     // order (the rest under 1e-12), 4 tall.
-    for (hair, more) in [(1e-6, 4.0 * 4.0 * 1e-6), (1.1e-7, 0.0)] {
+    for (hair, more) in [
+        (1.1e-7, 0.0),
+        (1e-6, 0.0),
+        (2e-5, 0.0),
+        (5e-5, 4.0 * 4.0 * 5e-5),
+        (1e-4, 4.0 * 4.0 * 1e-4),
+    ] {
         let made = copied(
             &mut k,
             CopiesOp::Fuse,
@@ -345,6 +352,57 @@ fn copies_that_land_on_each_other_or_on_the_seed_fuse_into_one() {
             1e-12,
         );
     }
+}
+
+#[test]
+fn a_copy_spread_far_grows_the_fuzzy_value_and_parts_a_near_one_from_the_plate() {
+    // The pin r 2, 4 tall on the 20 × 20 plate, copied 1e-3 along x: the box round the
+    // plate and the copies is √825 mm, f = 2.87e-5, and the copy adds its sliver of the
+    // union, 16 × 1e-3, one solid. With one more copy a kilometre off, the box is a
+    // kilometre and f about 1 mm: the pin and its near copy, a millimetre's thousandth
+    // apart, are one, and the volume is right, the plate, one pin, and the far pin, 400 +
+    // 32π; but the pin comes apart from the plate it stood on: three solids, the plate's 6
+    // faces and two pins' 3, where the true union is two. FreeCAD 1.1.3 does the same, by
+    // `fuse([near, far], -1.0)` and by a MultiTransform of two LinearPatterns (three
+    // solids, 400 + 32π). Found by break-it on the fuzzy value; a spec question for the
+    // pattern feature, which reads each result solid's faces to say which copies lie off
+    // the base (docs/ports/patterns.md): here the seed's own pin is a solid apart.
+    let mut k = kernel();
+    let plate = at(&mut k, block(20.0, 20.0, 1.0), [-10.0, -10.0, -1.0]);
+    let pin = k
+        .make(Primitive::Cylinder {
+            radius: 2.0,
+            height: 4.0,
+        })
+        .unwrap();
+    let base = k.boolean(BooleanOp::Fuse, &plate, &pin).unwrap().shape;
+    let one = 400.0 + 16.0 * PI;
+    let near = moved([1e-3, 0.0, 0.0]);
+    let made = copied(&mut k, CopiesOp::Fuse, &base, &pin, &[near]).unwrap();
+    assert_eq!(made.history.result.solids, 1);
+    assert_close(
+        "near",
+        volume(&mut k, &made.shape),
+        one + 16.0 * 1e-3,
+        1e-12,
+    );
+    let far = moved([1e6, 0.0, 0.0]);
+    let made = copied(&mut k, CopiesOp::Fuse, &base, &pin, &[near, far]).unwrap();
+    assert_eq!(made.shape.valid(), Some(true));
+    let faces: Vec<usize> = made
+        .history
+        .topology
+        .solid_faces
+        .iter()
+        .map(Vec::len)
+        .collect();
+    assert_eq!(faces, [3, 6, 3]);
+    assert_close(
+        "near and far",
+        volume(&mut k, &made.shape),
+        one + 16.0 * PI,
+        1e-12,
+    );
 }
 
 #[test]

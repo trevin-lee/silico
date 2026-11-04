@@ -335,31 +335,32 @@ fn a_symmetric_whole_turn_is_the_whole_turn_named_as_one_side_names_it() {
 }
 
 #[test]
-fn a_pad_one_nanometre_long_onto_a_cube_adds_its_sliver() {
-    // The shortest pad the gate admits, 1 nm (ten times OCCT's tolerance), onto the cube's
-    // top: it adds 4 × 2 × 1e-6 = 8e-6 mm³, above S7's 1e-9 × 1000 = 1e-6, so it isn't a
-    // no-op; built, its volume 1000.000008 to the measure's precision.
-    let engine = engine();
-    let model = publish(
-        &engine,
-        &[
-            &cube_below(),
-            &rect(),
-            &pad(
-                "pppppppp",
-                Some("bbbbbbbb"),
-                "ssssssss",
-                &one_side("0.000001"),
-            ),
-        ],
-    );
-    assert_close(
-        volume(&model, "pppppppp"),
-        1000.000008,
-        1e-9,
-        "the 1 nm pad",
-    );
-    assert_named_apart(&model, "pppppppp");
+fn a_pad_thinner_than_the_fuzzy_value_onto_a_cube_is_refused_and_a_thicker_one_built() {
+    // Pads onto the cube's top, the 4 × 2 rectangle. Their fuse runs with FreeCAD 1.1.3's
+    // fuzzy value, 1e-6 of the diagonal of the box round both, about √300 mm: 1.73e-5. A pad
+    // of 1e-6 (the shortest the gate admits) or 1e-5, under it, can't be built, and is
+    // refused as the kernel's failure, naming the pad, as FreeCAD 1.1.3's Pad of each goes
+    // Invalid. A pad of 2e-5, above it, adds its 8 × 2e-5 = 1.6e-4 mm³, as FreeCAD 1.1.3's
+    // Pad does: 1000.00016 to the measure's precision.
+    for (length, built) in [("0.000001", false), ("0.00001", false), ("0.00002", true)] {
+        let engine = engine();
+        let model = publish(
+            &engine,
+            &[
+                &cube_below(),
+                &rect(),
+                &pad("pppppppp", Some("bbbbbbbb"), "ssssssss", &one_side(length)),
+            ],
+        );
+        if built {
+            assert_close(volume(&model, "pppppppp"), 1000.00016, 1e-9, length);
+            assert_named_apart(&model, "pppppppp");
+        } else {
+            let e = failed(&model, "pppppppp");
+            assert_eq!(e.code(), ErrorCode::KernelFailed, "{length}: {e:?}");
+            assert_eq!(e.feature(), Some("pppppppp"), "{e:?}");
+        }
+    }
 }
 
 #[test]
