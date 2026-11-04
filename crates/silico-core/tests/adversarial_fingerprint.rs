@@ -1,4 +1,4 @@
-//! /break-it on M2.6 fingerprints: hostile fingerprints in a file, measures at the edges of
+//! /break-it on M2.6 fingerprints (and their centre): hostile fingerprints in a file, measures at the edges of
 //! their rounding and range, documents the gate admits whose solids can't be fingerprinted,
 //! drift against loose spellings, and a recompute superseded between a step and its
 //! summary. Expected values come from an exact rounding written here from an f64's bits (no
@@ -28,7 +28,7 @@ fn doc(features: &[&str]) -> String {
 }
 
 const BLOCK: &str = r#"{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10"#;
-const GOOD: &str = r#""volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8"#;
+const GOOD: &str = r#""volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8"#;
 
 /// The block with `fingerprint` as its fingerprint's text (the object, braces and all).
 fn block_with(fingerprint: &str) -> String {
@@ -205,7 +205,7 @@ fn any_fingerprint() -> impl Strategy<Value = Fingerprint> {
         any::<i128>().prop_filter("i128::MIN has no magnitude", |&m| m != i128::MIN),
         any::<i64>().prop_map(i128::from)
     ];
-    // A bounding box's lengths, as far as a document holds them: at most i64::MAX nm
+    // A centre's and a bounding box's lengths, as far as a document holds them: at most i64::MAX nm
     // either way (i64::MIN, which only code can make, the reader refuses).
     let wide = prop_oneof![
         Just(-i64::MAX),
@@ -219,19 +219,23 @@ fn any_fingerprint() -> impl Strategy<Value = Fingerprint> {
     (
         measure.clone(),
         measure,
+        prop::option::of(prop::array::uniform3(wide.clone())),
         prop::option::of(prop::array::uniform6(wide)),
         count.clone(),
         count.clone(),
         count,
     )
-        .prop_map(|(volume, area, bbox, faces, edges, vertices)| Fingerprint {
-            volume: Measure::from_millionths(volume),
-            area: Measure::from_millionths(area),
-            bbox: bbox.map(|b| b.map(Length::from_nm)),
-            faces,
-            edges,
-            vertices,
-        })
+        .prop_map(
+            |(volume, area, center, bbox, faces, edges, vertices)| Fingerprint {
+                volume: Measure::from_millionths(volume),
+                area: Measure::from_millionths(area),
+                center: center.map(|c| c.map(Length::from_nm)),
+                bbox: bbox.map(|b| b.map(Length::from_nm)),
+                faces,
+                edges,
+                vertices,
+            },
+        )
 }
 
 fn with_fingerprint(fingerprint: Option<Fingerprint>) -> Document {
@@ -275,7 +279,7 @@ proptest! {
 
 #[test]
 fn a_fingerprint_spelled_loosely_reads_as_the_canonical_one_and_isnt_drift() {
-    let loose = r#"{"vertices": 8, "edges": 1.2e1, "faces": 6, "bbox": [0e5, 0.0, -0, 4e1, 2.000000e1, 100e-1], "area": 2.8E3, "volume": 8000.000000}"#;
+    let loose = r#"{"vertices": 8, "edges": 1.2e1, "faces": 6, "bbox": [0e5, 0.0, -0, 4e1, 2.000000e1, 100e-1], "center": [2e1, 10.000000, 0.5e1], "area": 2.8E3, "volume": 8000.000000}"#;
     // -0 in the box: zero written with a minus sign, as for every length (the box is read
     // before the counts).
     let err = refused(&block_with(loose));
@@ -371,6 +375,198 @@ fn a_box_of_the_wrong_shape_is_refused_naming_it() {
 }
 
 #[test]
+fn a_centre_of_the_wrong_shape_is_refused_naming_it() {
+    for (center, parameter, says) in [
+        (
+            "[]",
+            "fingerprint.center",
+            "fingerprint.center has 0 values, not 3",
+        ),
+        (
+            "[20, 10]",
+            "fingerprint.center",
+            "fingerprint.center has 2 values, not 3",
+        ),
+        (
+            "[20, 10, 5, 0]",
+            "fingerprint.center",
+            "fingerprint.center has 4 values, not 3",
+        ),
+        // The box's six where the centre's three go.
+        (
+            "[0, 0, 0, 40, 20, 10]",
+            "fingerprint.center",
+            "fingerprint.center has 6 values, not 3",
+        ),
+        (
+            "[[20, 10, 5]]",
+            "fingerprint.center",
+            "fingerprint.center has 1 values, not 3",
+        ),
+        (
+            "[[20], [10], [5]]",
+            "fingerprint.center.0",
+            "fingerprint.center.0 is an array",
+        ),
+        (
+            r#"[20, 10, "NaN"]"#,
+            "fingerprint.center.2",
+            "fingerprint.center.2 is a string",
+        ),
+        (
+            r#"[20, "Infinity", 5]"#,
+            "fingerprint.center.1",
+            "fingerprint.center.1 is a string",
+        ),
+        (
+            "[20, 10, null]",
+            "fingerprint.center.2",
+            "fingerprint.center.2 is null",
+        ),
+        (
+            "[true, 10, 5]",
+            "fingerprint.center.0",
+            "fingerprint.center.0 is true or false",
+        ),
+        ("null", "fingerprint.center", "fingerprint.center is null"),
+        (
+            r#""[20, 10, 5]""#,
+            "fingerprint.center",
+            "fingerprint.center is a string",
+        ),
+        (
+            r#"{"x": 20, "y": 10, "z": 5}"#,
+            "fingerprint.center",
+            "fingerprint.center is an object",
+        ),
+        ("20", "fingerprint.center", "fingerprint.center is a number"),
+        // Zero with a minus sign, as for every length.
+        (
+            "[20, -0, 5]",
+            "fingerprint.center.1",
+            "fingerprint.center.1",
+        ),
+        (
+            "[20, 10, 5.0000001]",
+            "fingerprint.center.2",
+            "fingerprint.center.2 5.0000001 has more than 6 decimals",
+        ),
+        // One past i64 nanometres either way, and a number past an f64.
+        (
+            "[9223372036854.775808, 10, 5]",
+            "fingerprint.center.0",
+            "fingerprint.center.0 9223372036854.775808 is too large",
+        ),
+        (
+            "[-9223372036854.775808, 10, 5]",
+            "fingerprint.center.0",
+            "fingerprint.center.0",
+        ),
+        (
+            "[20, 1e400, 5]",
+            "fingerprint.center.1",
+            "fingerprint.center.1",
+        ),
+    ] {
+        let text = block_with(&format!(
+            r#"{{"volume": 8000, "area": 2800, "center": {center}, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#
+        ));
+        let err = refused(&text);
+        assert_eq!(err.feature(), Some("k7f2qx3m"), "{center}: {err}");
+        assert_eq!(err.parameter(), Some(parameter), "{center}: {err}");
+        assert!(err.message().starts_with(says), "{center}: {err}");
+    }
+    // A JSON reader's own refusals: NaN and Infinity aren't JSON, nor is a centre written twice.
+    for fingerprint in [
+        r#"{"volume": 8000, "area": 2800, "center": [NaN, 10, 5], "faces": 6, "edges": 12, "vertices": 8}"#,
+        r#"{"volume": 8000, "area": 2800, "center": [20, Infinity, 5], "faces": 6, "edges": 12, "vertices": 8}"#,
+        r#"{"volume": 8000, "area": 2800, "center": [20, 10, 5], "center": [20, 10, 5], "faces": 6, "edges": 12, "vertices": 8}"#,
+    ] {
+        refused(&block_with(fingerprint));
+    }
+    // Just inside i64 nanometres either way, it reads (and is drift, not a refusal).
+    for x in ["9223372036854.775807", "-9223372036854.775807"] {
+        let text = block_with(&format!(
+            r#"{{"volume": 8000, "area": 2800, "center": [{x}, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#
+        ));
+        let (_, model) = rebuilt(&text);
+        let drift = model.drift();
+        assert_eq!(drift.len(), 1, "{x}: {drift:?}");
+        assert_eq!(drift[0].parameter(), Some("fingerprint.center"), "{x}");
+        assert!(
+            drift[0]
+                .message()
+                .ends_with(&format!("center [{x}, 10, 5] → [20, 10, 5]")),
+            "{x}: {}",
+            drift[0]
+        );
+    }
+}
+
+#[test]
+fn a_centre_stored_as_a_solid_with_nothing_in_it_stores_it_is_drift_not_a_refusal() {
+    // A solid with nothing in it stores neither a centre nor a box. A file that stores a
+    // centre without a box, or a box without a centre, reads (the reader checks each field
+    // as written, not what a kernel would measure), and the rebuild names what moved.
+    for (fingerprint, field, said) in [
+        (
+            r#"{"volume": 8000, "area": 2800, "center": [20, 10, 5], "faces": 6, "edges": 12, "vertices": 8}"#,
+            "fingerprint.bbox",
+            "bbox none → [0, 0, 0, 40, 20, 10]",
+        ),
+        (
+            r#"{"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#,
+            "fingerprint.center",
+            "center none → [20, 10, 5]",
+        ),
+        // Nothing at all where a block is: both, in the file's order.
+        (
+            r#"{"volume": 0, "area": 0, "faces": 0, "edges": 0, "vertices": 0}"#,
+            "fingerprint.volume",
+            "center none → [20, 10, 5], bbox none → [0, 0, 0, 40, 20, 10]",
+        ),
+    ] {
+        let (_, model) = rebuilt(&block_with(fingerprint));
+        let drift = model.drift();
+        assert_eq!(drift.len(), 1, "{fingerprint}: {drift:?}");
+        assert_eq!(drift[0].parameter(), Some(field), "{fingerprint}");
+        assert!(
+            drift[0].message().contains(said),
+            "{fingerprint}: {}",
+            drift[0]
+        );
+    }
+}
+
+#[test]
+fn the_schema_and_the_reader_agree_on_a_centres_shape() {
+    let with_naming = |text: String| text.replacen(r#""units": "#, r#""naming": 5, "units": "#, 1);
+    let with_center = |center: &str| {
+        with_naming(block_with(&format!(
+            "{{{}}}",
+            GOOD.replacen("[20, 10, 5]", center, 1)
+        )))
+    };
+    for center in ["[20, 10, 5]", "[-20, 10.5, 0.000001]"] {
+        let text = with_center(center);
+        assert!(read(text.as_bytes()).is_ok(), "{text}");
+        assert!(schema_valid(&text), "the schema refuses {text}");
+    }
+    for center in ["[20, 10]", "[20, 10, 5, 5]", r#"[20, 10, "5"]"#, "[]"] {
+        let text = with_center(center);
+        assert!(read(text.as_bytes()).is_err(), "{text}");
+        assert!(!schema_valid(&text), "the schema takes {text}");
+    }
+    // Without one, as a file saved before the centre was measured: both take it.
+    let text = with_naming(block_with(&format!(
+        "{{{}}}",
+        GOOD.replacen(r#""center": [20, 10, 5], "#, "", 1)
+    )));
+    assert!(read(text.as_bytes()).is_ok(), "{text}");
+    assert!(schema_valid(&text), "the schema refuses {text}");
+}
+
+#[test]
 fn a_huge_number_or_key_in_a_fingerprint_makes_a_short_error() {
     let digits = "9".repeat(1 << 20);
     for fingerprint in [
@@ -387,6 +583,12 @@ fn a_huge_number_or_key_in_a_fingerprint_makes_a_short_error() {
         format!(r#"{{{GOOD}, "{}": 1}}"#, "k".repeat(1 << 20)),
         format!(
             r#"{{"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, {digits}], "faces": 6, "edges": 12, "vertices": 8}}"#
+        ),
+        format!(
+            r#"{{"volume": 8000, "area": 2800, "center": [20, 10, {digits}], "faces": 6, "edges": 12, "vertices": 8}}"#
+        ),
+        format!(
+            r#"{{"volume": 8000, "area": 2800, "center": [20, 10, 0.{digits}], "faces": 6, "edges": 12, "vertices": 8}}"#
         ),
     ] {
         let err = refused(&block_with(&fingerprint));
@@ -573,19 +775,26 @@ fn the_fakes_primitives_measure_as_their_formulas_where_the_document_puts_them()
     let (_, model) = rebuilt(&text);
     let m = |s: &str| model.fingerprint(&id(s)).unwrap();
     let nm = |v: [i64; 6]| Some(v.map(Length::from_nm));
-    // Sphere r 3: 36π = 113.097336 for both.
+    let centre = |x: i64, y: i64, z: i64| Some([x, y, z].map(Length::from_nm));
+    // Sphere r 3: 36π = 113.097336 for both; its centre where it's placed.
     let s = m("s0000000");
+    assert_eq!(s.center, centre(1_000_000, 2_000_000, 3_000_000));
     assert_eq!(s.volume.to_string(), "113.097336");
     assert_eq!(s.area.to_string(), "113.097336");
     assert_eq!(s.bbox, nm([-2, -1, 0, 4, 5, 6].map(|v| v * 1_000_000)));
     // Cone 3 to 0 over 4: V = π 9 4 / 3 = 12π = 37.699112; slant 5, A = 15π + 9π = 24π.
+    // Its centroid a quarter of its height up from its base: z = 3 + 1.
     let c = m("c0000000");
+    assert_eq!(c.center, centre(1_000_000, 2_000_000, 4_000_000));
     assert_eq!(c.volume.to_string(), "37.699112");
     assert_eq!(c.area.to_string(), "75.398224");
     assert_eq!(c.bbox, nm([-2, -1, 3, 4, 5, 7].map(|v| v * 1_000_000)));
     // Frustum 1 to 2 over 3: V = π 3 (1 + 2 + 4) / 3 = 7π = 21.991149; slant √10,
     // A = 3π√10 + π + 4π = 29.802307 + 15.707963 = 45.510270 (π(3√10 + 5) = 45.51027...).
+    // A frustum's centroid is h (a² + 2ab + 3b²) / (4 (a² + ab + b²)) up from its base:
+    // 3 (1 + 4 + 12) / (4 · 7) = 51/28 = 1.82142857..., so z = 4.821428571 (4.821429).
     let d = m("d0000000");
+    assert_eq!(d.center, centre(1_000_000, 2_000_000, 4_821_429));
     assert_eq!(d.volume.to_string(), "21.991149");
     assert_eq!(
         d.area.millionths(),
@@ -594,6 +803,7 @@ fn the_fakes_primitives_measure_as_their_formulas_where_the_document_puts_them()
     assert_eq!(d.bbox, nm([-1, 0, 3, 3, 4, 6].map(|v| v * 1_000_000)));
     // Torus 5, 1: V = 2π² 5 = 10π² = 98.696044; A = 4π² 5 = 20π² = 197.392088.
     let t = m("t0000000");
+    assert_eq!(t.center, centre(1_000_000, 2_000_000, 3_000_000));
     assert_eq!(t.volume.to_string(), "98.696044");
     assert_eq!(t.area.to_string(), "197.392088");
     assert_eq!(t.bbox, nm([-5, -4, 2, 7, 8, 4].map(|v| v * 1_000_000)));

@@ -465,8 +465,12 @@ fn fingerprint(node: Node, feature: Option<&str>) -> Result<Fingerprint, Error> 
         Fields::of(node, feature, Some("fingerprint"), "fingerprint")?.under("fingerprint");
     let volume = measure(&mut fields, "volume")?;
     let area = measure(&mut fields, "area")?;
+    let center = match fields.optional("center") {
+        Some(node) => Some(lengths(&node, fields.feature(), "center", CENTER)?),
+        None => None,
+    };
     let bbox = match fields.optional("bbox") {
-        Some(node) => Some(bbox(&node, fields.feature())?),
+        Some(node) => Some(lengths(&node, fields.feature(), "bbox", BBOX)?),
         None => None,
     };
     let faces = count(&mut fields, "faces")?;
@@ -476,6 +480,7 @@ fn fingerprint(node: Node, feature: Option<&str>) -> Result<Fingerprint, Error> 
     Ok(Fingerprint {
         volume,
         area,
+        center,
         bbox,
         faces,
         edges,
@@ -525,25 +530,37 @@ fn count(fields: &mut Fields, key: &str) -> Result<u32, Error> {
     })
 }
 
-fn bbox(node: &Node, feature: Option<&str>) -> Result<[Length; 6], Error> {
-    let want = "an array of six lengths, [x, y, z, x, y, z]";
+/// A fingerprint's centre: what it holds and how to write it.
+const CENTER: &str = "an array of three lengths, [x, y, z]";
+/// A fingerprint's box.
+const BBOX: &str = "an array of six lengths, [x, y, z, x, y, z]";
+
+/// A fingerprint's centre or box: `N` lengths, each named `fingerprint.<key>.<i>` in its
+/// errors.
+fn lengths<const N: usize>(
+    node: &Node,
+    feature: Option<&str>,
+    key: &str,
+    want: &str,
+) -> Result<[Length; N], Error> {
+    let name = format!("fingerprint.{key}");
     let Value::Array(items) = &node.value else {
-        return Err(wrong_kind(feature, "fingerprint.bbox", node, want));
+        return Err(wrong_kind(feature, &name, node, want));
     };
-    let [a, b, c, d, e, f] = items.as_slice() else {
+    if items.len() != N {
         return Err(refuse(
             feature,
-            "fingerprint.bbox",
+            &name,
             node.at,
-            format!("fingerprint.bbox has {} values, not 6", items.len()),
-            format!("write fingerprint.bbox as {want}"),
+            format!("{name} has {} values, not {N}", items.len()),
+            format!("write {name} as {want}"),
         ));
-    };
-    let mut corners = [Length::default(); 6];
-    for (i, (corner, item)) in corners.iter_mut().zip([a, b, c, d, e, f]).enumerate() {
-        *corner = length_value(item, feature, &format!("fingerprint.bbox.{i}"))?;
     }
-    Ok(corners)
+    let mut lengths = [Length::default(); N];
+    for (i, (length, item)) in lengths.iter_mut().zip(items).enumerate() {
+        *length = length_value(item, feature, &format!("{name}.{i}"))?;
+    }
+    Ok(lengths)
 }
 
 fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {

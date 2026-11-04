@@ -858,7 +858,7 @@ fn a_pocket_on_a_pad_is_blocked_on_the_pad() {
     );
 }
 
-const FINGERPRINT: &str = r#""fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
+const FINGERPRINT: &str = r#""fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#;
 
 #[test]
 fn format_keeps_a_sweeps_stored_fingerprint_and_says_why() {
@@ -873,7 +873,7 @@ fn format_keeps_a_sweeps_stored_fingerprint_and_says_why() {
     assert!(
         formatted
             .text
-            .contains(r#""fingerprint": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#),
+            .contains(r#""fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}"#),
         "{}",
         formatted.text
     );

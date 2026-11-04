@@ -16,11 +16,13 @@ use crate::calls::{BOX, Fixture, OUTSIDE, envelope, fixture};
 use crate::sessions::{answer, refusal};
 
 /// The box in canonical form, `length` long (20 wide, 10 high), with the fingerprint the
-/// fake measures, by formula: volume 200·length, area 2·(20·length + 10·length + 200).
+/// fake measures, by formula: volume 200·length, area 2·(20·length + 10·length + 200), and
+/// its centre its middle, (length/2, 10, 5).
 pub(crate) fn canonical(length: u32) -> String {
     let (volume, area) = (200 * length, 2 * (30 * length + 200));
+    let x = f64::from(length) / 2.0;
     format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n    {{\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": {length},\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {{\"volume\": {volume}, \"area\": {area}, \"bbox\": [0, 0, 0, {length}, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}}\n    }}\n  ]\n}}\n"
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n    {{\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": {length},\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {{\"volume\": {volume}, \"area\": {area}, \"center\": [{x}, 10, 5], \"bbox\": [0, 0, 0, {length}, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}}\n    }}\n  ]\n}}\n"
     )
 }
 
