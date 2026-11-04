@@ -19,7 +19,7 @@ use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, ElementKind, Form, Reference};
 use silico_core::kernel::SketchPlane;
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
-use silico_core::sketch_tools::{DimensionPreview, Preview, Relation};
+use silico_core::sketch_tools::{DimensionPreview, MeasureKind, Preview, Relation};
 
 use super::style::*;
 
@@ -41,15 +41,16 @@ pub const MAX_FILL_VERTICES: usize = 200_000;
 pub const MIN_FILL_SEGMENTS: usize = 4;
 
 /// The layout's own rules, the prototype's: a line's glyph a share of its way along it;
-/// glyphs on one member this far apart; a glyph box's corner; a shown relation's glyph and a
-/// tool's label from the pointer; the crosshair's arms and a snap's ring; how far extension
+/// glyphs on one member this far apart; a glyph box's corner; a shown relation's glyph from
+/// the pointer, and a measure's label from its segment's middle; the crosshair's arms and a
+/// snap's ring; how far extension
 /// lines run past a dimension's line; and a dimension's line's width and a grid line's, in
 /// points.
 const GLYPH_ALONG: f64 = 0.28;
 const GLYPH_STEP: f32 = 18.0;
 const GLYPH_RADIUS: u8 = 3;
 const SHOWN_AT: Vec2 = Vec2::new(18.0, -16.0);
-const TOOL_LABEL_AT: Vec2 = Vec2::new(14.0, 12.0);
+const MEASURE_LABEL_OFFSET: f32 = 12.0;
 const CROSSHAIR_ARM: f32 = 8.0;
 const SNAP_RADIUS: f32 = 6.0;
 const EXTENSION_PAST: f32 = 5.0;
@@ -143,12 +144,17 @@ pub enum GlyphKind {
 /// axis, a tool's entity under way, an inference line, or the pointer's crosshair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StrokeKind {
-    Curve { dashed: bool },
+    Curve {
+        dashed: bool,
+    },
     Dimension,
     GridMinor,
     GridMajor,
     Axis,
-    Preview,
+    /// A tool's entity under way, its `construction` as the add will make it.
+    Preview {
+        construction: bool,
+    },
     Guide,
     Crosshair,
 }
@@ -1283,7 +1289,8 @@ fn walk(
 /// What's drawn of a tool's preview (the core's `sketch_tools::Preview`), seen through
 /// `view`: the entity under way dashed, its points, the dotted inference lines, the
 /// relations the pointer shows as glyphs beside it (a snap onto a point as a ring), the
-/// pointer's crosshair, and the length of the line under way beside it.
+/// pointer's crosshair, and each length and radius it measures, labelled beside the middle
+/// of its segment.
 pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
     let mut drawn = Vec::new();
     let stroke = |points: Vec<Option<Pos2>>, kind, colour, drawn: &mut Vec<Drawn>| {
@@ -1308,7 +1315,9 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
     for line in &preview.lines {
         stroke(
             line.iter().map(|&p| view.at(p)).collect(),
-            StrokeKind::Preview,
+            StrokeKind::Preview {
+                construction: preview.construction,
+            },
             SKETCH_PREVIEW_STROKE.color,
             &mut drawn,
         );
@@ -1325,7 +1334,9 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
         );
         stroke(
             points,
-            StrokeKind::Preview,
+            StrokeKind::Preview {
+                construction: preview.construction,
+            },
             SKETCH_PREVIEW_STROKE.color,
             &mut drawn,
         );
@@ -1345,7 +1356,9 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
         );
         stroke(
             points,
-            StrokeKind::Preview,
+            StrokeKind::Preview {
+                construction: preview.construction,
+            },
             SKETCH_PREVIEW_STROKE.color,
             &mut drawn,
         );
@@ -1401,16 +1414,24 @@ pub fn preview(preview: &Preview, view: &View<'_>) -> Vec<Drawn> {
                 &mut drawn,
             );
         }
-        if let Some([from, to]) = preview.lines.last() {
-            drawn.push(Drawn::Label {
-                of: None,
-                kind: LabelKind::Tool,
-                at: pointer + TOOL_LABEL_AT,
-                text: format!("{:.2} mm", length(sub(*to, *from))),
-                colour: SKETCH_DIMENSION_TEXT,
-                selected: false,
-            });
-        }
+    }
+    for measure in &preview.measures {
+        let (Some(from), Some(to)) = (view.at(measure.from), view.at(measure.to)) else {
+            continue;
+        };
+        let value = length(sub(measure.to, measure.from));
+        let text = match measure.kind {
+            MeasureKind::Length => format!("{value:.2} mm"),
+            MeasureKind::Radius => format!("R {value:.2} mm"),
+        };
+        drawn.push(Drawn::Label {
+            of: None,
+            kind: LabelKind::Tool,
+            at: from + (to - from) / 2.0 + aside(to - from) * MEASURE_LABEL_OFFSET,
+            text,
+            colour: SKETCH_DIMENSION_TEXT,
+            selected: false,
+        });
     }
     drawn
 }
@@ -1629,6 +1650,22 @@ pub fn ghost(begun: &[Drawn], begin: &SketchRead, now: &SketchRead) -> Vec<Drawn
         .collect()
 }
 
+/// The screen's unit direction square to `along`, on its lower side (to the right of a
+/// segment going up, below one across); straight down for none.
+fn aside(along: Vec2) -> Vec2 {
+    let normal = Vec2::new(-along.y, along.x);
+    let length = normal.length();
+    if length <= 0.0 || !length.is_finite() {
+        return Vec2::new(0.0, 1.0);
+    }
+    let normal = normal / length;
+    if normal.y < 0.0 || (normal.y == 0.0 && normal.x < 0.0) {
+        -normal
+    } else {
+        normal
+    }
+}
+
 /// The polyline of a circle or an arc about `centre`, of `radius`, from the angle `start`
 /// through `sweep`, its vertices on the curve and its chords within `tolerance` screen
 /// points of it: as many segments as that needs at the projection's largest stretch about
@@ -1755,7 +1792,9 @@ pub fn to_shapes(painter: &Painter, drawn: &[Drawn]) -> Vec<Shape> {
                     StrokeKind::Dimension => (DIMENSION_LINE_WIDTH, None),
                     StrokeKind::GridMinor | StrokeKind::GridMajor => (GRID_LINE_WIDTH, None),
                     StrokeKind::Axis => (VIEWPORT_GRID_AXIS_WIDTH, None),
-                    StrokeKind::Preview => {
+                    // Dashed as construction is, construction or not (the prototype's): the
+                    // preview's dash and construction's are one.
+                    StrokeKind::Preview { .. } => {
                         (SKETCH_PREVIEW_STROKE.width, Some(SKETCH_CONSTRUCTION_DASH))
                     }
                     StrokeKind::Guide => (SKETCH_GUIDE_STROKE.width, Some(SKETCH_GUIDE_DASH)),

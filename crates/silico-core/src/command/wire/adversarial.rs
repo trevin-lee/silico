@@ -61,7 +61,7 @@ fn accepted(node: &Node, read: impl FnOnce(&mut RequestFields<'_>)) {
 fn session(path: &str) -> SessionInfo {
     SessionInfo {
         id: SessionId::parse("s1").unwrap(),
-        path: path.to_owned(),
+        path: Some(path.to_owned()),
         revision: Revision::OPENED,
         transaction: false,
         reloaded: false,

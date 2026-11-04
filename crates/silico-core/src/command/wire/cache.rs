@@ -24,7 +24,9 @@ impl ToWire for CacheCleared {
 
 /// `cache_clear`'s request: remove every entry of the rebuild cache beside the session's
 /// document. The cache is the directory's, shared by every document in it, and an entry
-/// removed is only a miss: the next rebuild of each step makes it again.
+/// removed is only a miss: the next rebuild of each step makes it again. An untitled
+/// session (opened with `path` null) keeps no cache until its first save gives it the one
+/// beside its file: its clear is refused, naming `session`.
 #[derive(JsonSchema)]
 #[schemars(rename = "CacheClearRequest", transform = wire_shape)]
 pub struct CacheClearRequestSchema {

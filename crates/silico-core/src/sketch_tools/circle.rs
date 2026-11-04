@@ -7,7 +7,10 @@
 use super::build::Builder;
 use super::geometry::distance;
 use super::infer::{Align, Placed, Target, View};
-use super::{Event, Message, Outcome, Preview, Relation, Shown, Step, Xy, failed, within_reach};
+use super::{
+    Event, MeasureKind, Message, Outcome, Preview, PreviewMeasure, Relation, Shown, Step, Xy,
+    failed, within_reach,
+};
 use crate::document::{Form, Reference};
 
 #[derive(Debug, Clone, Default)]
@@ -145,7 +148,7 @@ impl Circle {
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
         let at = match event {
             Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => at,
-            Event::EndChain | Event::Escape | Event::Enter => return,
+            Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         match &self.state {
             State::Idle => {
@@ -158,6 +161,11 @@ impl Circle {
                 let (rim, through) = rim(step, centre, at);
                 preview.points.push(centre.at);
                 preview.circles.push((centre.at, distance(rim, centre.at)));
+                preview.measures.push(PreviewMeasure {
+                    from: centre.at,
+                    to: rim,
+                    kind: MeasureKind::Radius,
+                });
                 preview.shown.extend(centre.shown());
                 preview.pointer = Some(rim);
                 if let Some(through) = through {
@@ -189,7 +197,7 @@ fn finish(step: &mut Step<'_, '_, '_>, centre: &Placed, at: Xy) -> Outcome {
     if radius > silico_protocol::MAX_LENGTH {
         return Outcome::said(Message::TooFar);
     }
-    let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+    let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
     let built = (|| -> Result<(), crate::Error> {
         let c = builder.point(centre, false)?;
         let circle = builder.circle(&c, radius)?;

@@ -88,7 +88,7 @@ impl<C: Kernel + 'static> Session<C> {
                 let reloaded = held
                     .last_reload
                     .filter(|reloaded| *reloaded > revision)
-                    .map(|_| held.path.as_str());
+                    .and_then(|_| held.file.as_ref().map(|file| file.path.as_str()));
                 return Err(Problems::from(stale(
                     Stale::Edit,
                     revision,

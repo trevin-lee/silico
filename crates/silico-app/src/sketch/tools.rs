@@ -96,6 +96,7 @@ impl Input<'_> {
             sketch: &self.read.members,
             tolerance: self.tolerance,
             automatic_relations: self.automatic_relations,
+            construction: self.construction,
         }
     }
 
@@ -352,20 +353,17 @@ impl Tools {
             (None, Some(_)) => self.modify_at = None,
             _ => {}
         }
-        self.took(outcome, false);
+        self.took(outcome);
     }
 
     /// A tool's outcome: what it said kept; what it added queued as a request (a drawing
     /// tool's curves marked as construction if `construction`), letting go of what it said;
     /// and the tool left if it was.
-    fn took(&mut self, outcome: Outcome, construct: bool) {
+    fn took(&mut self, outcome: Outcome) {
         if let Some(message) = &outcome.message {
             self.said = Some(message.text());
         }
-        if let (Some(mut members), Some(token)) = (outcome.add, outcome.token) {
-            if construct {
-                construction(&mut members);
-            }
+        if let (Some(members), Some(token)) = (outcome.add, outcome.token) {
             self.said = None;
             self.requests.push(Request::Add { token, members });
         }
@@ -419,32 +417,26 @@ impl Tools {
     }
 
     /// A press ended with no release (focus lost, a navigation tool taking the drag, the tab
-    /// hidden), or a release off the plane or with no read to give it: the gesture under
-    /// way ended with nothing added, the tool kept, so no press outlives its release. The
-    /// core's tools end one only by Esc, which is sent with `input`, its leaving the tool
-    /// not taken; with no read to give it, the tool is started afresh
-    /// ([`SketchTool::forget_pending`], which forgets its unanswered adds too: a click finds
-    /// their points again only once a read holds them, so until then one at their place
-    /// makes a point of its own).
+    /// hidden), or a release off the plane or with no read to give it: the press dropped
+    /// as if never made, the tool kept, so no press outlives its release. With `input`, the
+    /// tool is sent [`Event::Cancel`], which puts its gesture back as it was before the
+    /// press (a chain's placed points, and the points the pointer woke, kept); with no read
+    /// to give it, the tool is started afresh ([`SketchTool::forget_pending`], which
+    /// forgets its unanswered adds too: a click finds their points again only once a read
+    /// holds them, so until then one at their place makes a point of its own).
     pub fn cancel(&mut self, input: Option<&Input<'_>>) {
-        match (&mut self.active, input) {
-            (Some(Active::Draw(tool)), Some(input)) => {
-                tool.handle(
-                    &input.context(),
-                    self.ids.as_mut(),
-                    Event::Escape,
-                    Modifiers::default(),
-                );
-            }
-            (Some(Active::Draw(tool)), None) => tool.forget_pending(),
-            // Until #365's `DimensionEvent::Cancel`, nothing: Smart Dimension's press is
-            // only a flag, which the next press sets again and its release clicks, so a
-            // cancelled one never clicks (Esc would undo a pick, which a cancel mustn't).
-            (Some(Active::Dimension(_)), _) => {}
-            (Some(Active::Trim(trim)), _) => *trim = Trim::Idle,
-            (Some(Active::Split(split)), Some(_)) => split.pressed = None,
-            (Some(Active::Split(split)), None) => *split = Split::default(),
-            (None, _) => {}
+        if let Some(input) = input {
+            self.handle(input, Event::Cancel, Modifiers::default());
+            return;
+        }
+        match &mut self.active {
+            Some(Active::Draw(tool)) => tool.forget_pending(),
+            // With no read to give it, nothing: its press is a flag, which the next press
+            // sets again, so the cancelled one never clicks, and its picks stay.
+            Some(Active::Dimension(_)) => {}
+            Some(Active::Trim(trim)) => *trim = Trim::Idle,
+            Some(Active::Split(split)) => *split = Split::default(),
+            None => {}
         }
         self.preview = Preview::default();
         self.last = None;
@@ -468,7 +460,7 @@ impl Tools {
             Some(Active::Draw(tool)) => {
                 let outcome = tool.handle(&input.context(), self.ids.as_mut(), event, keys);
                 self.preview = tool.preview().clone();
-                self.took(outcome, input.construction);
+                self.took(outcome);
             }
             Some(Active::Dimension(_)) => {
                 let event = match event {
@@ -477,6 +469,8 @@ impl Tools {
                     Event::Release(at) => DimensionEvent::Release(at),
                     Event::Enter | Event::EndChain => DimensionEvent::Enter,
                     Event::Escape => DimensionEvent::Escape,
+                    // A press ended with no release: dropped, its picks kept (#365).
+                    Event::Cancel => DimensionEvent::Cancel,
                     // Its second click's press and release were its own.
                     Event::DoubleClick(_) => return,
                 };
@@ -505,20 +499,6 @@ impl Tools {
         } else if self.requests.len() > asked {
             self.said = None;
         }
-    }
-}
-
-/// `members`' curves drawn as construction (the palette's Construction, X): what the person
-/// asked of the tool, which #335's tools have no setting for. Their points stay as made.
-fn construction(members: &mut Members) {
-    for line in &mut members.lines {
-        line.construction = true;
-    }
-    for circle in &mut members.circles {
-        circle.construction = true;
-    }
-    for arc in &mut members.arcs {
-        arc.construction = true;
     }
 }
 
@@ -678,7 +658,7 @@ fn trim_event(
                 said = released(std::mem::take(trim), input, at, requests);
             }
         }
-        Event::Escape => *trim = Trim::Idle,
+        Event::Escape | Event::Cancel => *trim = Trim::Idle,
         Event::DoubleClick(_) | Event::EndChain | Event::Enter => {}
     }
     *preview = trim_preview(trim, event);
@@ -886,6 +866,8 @@ fn split_event(
             }
         }
         Event::Escape => *split = Split::default(),
+        // The press dropped; a circle's first place, clicked before it, kept.
+        Event::Cancel => split.pressed = None,
         Event::Move(_) | Event::DoubleClick(_) | Event::EndChain | Event::Enter => {}
     }
     let mut drawn = Preview::default();

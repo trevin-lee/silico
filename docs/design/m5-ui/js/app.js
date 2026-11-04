@@ -12,7 +12,7 @@
 
   // ───────── Commands: one registry for menus, tooltips, the shortcut sheet, and search ─────────
   const CMD = {
-    newDoc: { label: 'New part…', keys: ['Mod', 'N'], group: 'File', icon: 'newDoc', desc: 'Asks where to save it, then opens it' },
+    newDoc: { label: 'New part', keys: ['Mod', 'N'], group: 'File', icon: 'newDoc', desc: 'Opens an untitled part' },
     open: { label: 'Open…', keys: ['Mod', 'O'], group: 'File', icon: 'open' },
     save: { label: 'Save', keys: ['Mod', 'S'], group: 'File', icon: 'save', desc: 'Writes your edits to the file' },
     saveAs: { label: 'Save As…', keys: ['Mod', 'Shift', 'S'], group: 'File' },
@@ -272,6 +272,8 @@
     const d = doc(); if (!d) return;
     if (d.disk === 'changed') { S.modal = { type: 'saveConflict' }; render(); return; }
     if (d.disk === 'gone') { S.modal = { type: 'saveAs' }; render(); return; }
+    // An untitled part's first save asks for a name (the system's save panel in the app).
+    if (d.untitled) { S.modal = { type: 'saveAs' }; render(); return; }
     if (!dirty(d)) { toast('Nothing to save: ' + d.file + ' matches the file.'); return; }
     d.saved = snap(d); d.undo = []; d.redo = [];
     toast('Saved ' + d.file + ' (revision ' + d.rev + ')', 'check');
@@ -828,16 +830,6 @@
   function renderModal() {
     const M = S.modal; const d = doc();
     if (M.type === 'shortcuts') return renderShortcuts(M);
-    if (M.type === 'new') {
-      const name = M.name ?? 'Untitled-1';
-      return `<div class="backdrop" data-act="closeModal"><div class="modal" role="dialog" aria-modal="true" aria-label="New part" data-stop="1">
-        <div class="m-head">${icon('newDoc')}<span>New part</span><span class="grow"></span><button class="ab-btn" data-act="closeModal" aria-label="Close">${icon('close')}</button></div>
-        <div class="m-body"><div class="lbl">Name</div><div class="field"><input data-key="new-name" data-input="newName" value="${esc(name)}" aria-label="Name"><span class="unit">.silico</span></div>
-        <div class="lbl">Folder</div><div style="display:flex;gap:6px"><button class="field select" style="flex:1;height:26px" data-act="noop">~/Documents/Silico ${icon('down')}</button><button class="btn btn-secondary" style="height:26px" data-act="noop">Choose…</button></div>
-        <div class="lbl">Creates</div><div class="mono" style="color:var(--g750)">~/Documents/Silico/${esc(name)}.silico</div>
-        <div class="hint-block" style="margin:12px 0 0">Silico asks where to save first, so the part is a file from the start: agents and git see the same file you do.</div></div>
-        <div class="m-foot"><button class="btn btn-secondary" data-act="closeModal">Cancel <span class="kbd">Esc</span></button><button class="btn btn-primary" data-act="createNew">Create <span class="kbd">↵</span></button></div></div></div>`;
-    }
     if (M.type === 'whatswrong') {
       return `<div class="backdrop" data-act="closeModal"><div class="modal" style="width:560px" role="dialog" aria-modal="true" aria-label="What's wrong" data-stop="1">
         <div class="m-head">${icon('error')}<span>What's wrong in ${esc(d.file)}</span><span class="grow"></span><button class="ab-btn" data-act="closeModal" aria-label="Close">${icon('close')}</button></div>
@@ -860,8 +852,8 @@
     if (M.type === 'saveAs') {
       return `<div class="backdrop" data-act="closeModal"><div class="modal" role="dialog" aria-modal="true" data-stop="1">
         <div class="m-head">${icon('save')}<span>Save As</span></div>
-        <div class="m-body"><div class="lbl">Name</div><div class="field"><input data-key="saveas" value="${esc(d.file.replace('.silico', ''))}-mine" aria-label="Name"><span class="unit">.silico</span></div>
-        <div class="hint-block" style="margin:12px 0 0">The tab then holds the new file. The original stays as the other program left it.</div></div>
+        <div class="m-body"><div class="lbl">Name</div><div class="field"><input data-key="saveas" value="${esc(d.untitled ? d.file : d.file.replace('.silico', '') + '-mine')}" aria-label="Name"><span class="unit">.silico</span></div>
+        <div class="hint-block" style="margin:12px 0 0">${d.untitled ? 'The part is written to disk for the first time; the tab then holds that file.' : 'The tab then holds the new file. The original stays as the other program left it.'}</div></div>
         <div class="m-foot"><button class="btn btn-secondary" data-act="closeModal">Cancel</button><button class="btn btn-primary" data-act="doSaveAs">Save <span class="kbd">↵</span></button></div></div></div>`;
     }
     if (M.type === 'diff') {

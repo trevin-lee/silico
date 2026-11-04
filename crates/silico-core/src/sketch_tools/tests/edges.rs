@@ -230,6 +230,7 @@ fn a_refused_add_mid_chain_is_forgotten_with_the_chain() {
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SketchTool::new(ToolKind::Line);
     let mut ids = Counter(0);
@@ -299,6 +300,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
             sketch: &first,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -313,6 +315,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
         sketch: &first,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut ids = Counter(0);
     line.handle(&context(&sid), &mut ids, Event::Press([1.0, 2.0]), keys);
@@ -379,6 +382,7 @@ fn a_sketch_at_the_gates_limits_builds_each_shape_once_and_tries_few_crossings()
         sketch: &s,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SketchTool::new(ToolKind::Point);
     let mut ids = Counter(0);
@@ -1085,6 +1089,7 @@ fn an_id_source_that_gives_a_taken_id_is_caught() {
         sketch: &s,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let mut tool = SketchTool::new(ToolKind::Point);
     let keys = Modifiers::default();
@@ -1141,6 +1146,149 @@ fn each_tools_preview_draws_its_entity_under_way() {
             end: [20.0, 20.0],
         }]
     );
+}
+
+#[test]
+fn each_tools_preview_measures_its_entity_under_way_and_nothing_else() {
+    let length = |from: Xy, to: Xy| PreviewMeasure {
+        from,
+        to,
+        kind: MeasureKind::Length,
+    };
+    let radius = |from: Xy, to: Xy| PreviewMeasure {
+        from,
+        to,
+        kind: MeasureKind::Radius,
+    };
+    // A line pressed at (10, 10), the pointer at (40, 25): its length from its start to
+    // the pointer. Idle, before the press: nothing.
+    let mut d = Drive::new(ToolKind::Line, empty());
+    d.to(10.0, 10.0);
+    assert!(d.tool.preview().measures.is_empty());
+    d.press(10.0, 10.0).to(40.0, 25.0);
+    assert_eq!(
+        d.tool.preview().measures,
+        [length([10.0, 10.0], [40.0, 25.0])]
+    );
+    // A corner rectangle from (10, 10) to (40, 30): its width, (10, 10) to (40, 10), then
+    // its height, (40, 10) to (40, 30).
+    let mut d = Drive::new(ToolKind::CornerRectangle, empty());
+    d.press(10.0, 10.0).to(40.0, 30.0);
+    assert_eq!(
+        d.tool.preview().measures,
+        [
+            length([10.0, 10.0], [40.0, 10.0]),
+            length([40.0, 10.0], [40.0, 30.0])
+        ]
+    );
+    // A centre rectangle about (20, 10), its corner at (30, 15): the opposite corner
+    // 2·(20, 10) − (30, 15) = (10, 5), so its width (10, 5) to (30, 5), its height (30, 5)
+    // to (30, 15).
+    let mut d = Drive::new(ToolKind::CenterRectangle, empty());
+    d.press(20.0, 10.0).to(30.0, 15.0);
+    assert_eq!(
+        d.tool.preview().measures,
+        [
+            length([10.0, 5.0], [30.0, 5.0]),
+            length([30.0, 5.0], [30.0, 15.0])
+        ]
+    );
+    // A circle about (10, 10), its rim at (13, 14): its radius, 5.
+    let mut d = Drive::new(ToolKind::Circle, empty());
+    d.press(10.0, 10.0).to(13.0, 14.0);
+    assert_eq!(
+        d.tool.preview().measures,
+        [radius([10.0, 10.0], [13.0, 14.0])]
+    );
+    // A centrepoint arc about (50, 50): its start under way at (60, 55), the radius to it;
+    // the start set at (60, 50), the pointer toward (50, 58): the end on the circle,
+    // (50, 60), the radius to it.
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.press(50.0, 50.0).to(60.0, 55.0);
+    assert_eq!(
+        d.tool.preview().measures,
+        [radius([50.0, 50.0], [60.0, 55.0])]
+    );
+    d.release(60.0, 50.0).to(55.0, 55.0).to(50.0, 58.0);
+    assert_eq!(
+        d.tool.preview().measures,
+        [radius([50.0, 50.0], [50.0, 60.0])]
+    );
+    // A 3-point arc: while it's a chord, from (10, 10) to the pointer, nothing; its ends
+    // (10, 10) and (30, 10) and the pointer at (20, 20): the circle through them about
+    // (20, 10), its radius to the pointer; the pointer in line at (20, 10): nothing.
+    let mut d = Drive::new(ToolKind::ThreePointArc, empty());
+    d.press(10.0, 10.0).to(30.0, 20.0);
+    assert!(d.tool.preview().measures.is_empty());
+    let mut d = Drive::new(ToolKind::ThreePointArc, empty());
+    d.click(10.0, 10.0).click(30.0, 10.0).to(20.0, 20.0);
+    assert_eq!(
+        d.tool.preview().measures,
+        [radius([20.0, 10.0], [20.0, 20.0])]
+    );
+    d.to(20.0, 10.0);
+    assert!(d.tool.preview().measures.is_empty());
+    // A tangent arc from the line's end (20, 10), leaving along +x, to (20, 20): about
+    // (20, 15), its radius to its end; to (35, 10), straight ahead, no arc: nothing.
+    let mut d = Drive::new(ToolKind::TangentArc, one_line());
+    d.press(20.0, 10.0).to(20.0, 20.0);
+    assert_eq!(
+        d.tool.preview().measures,
+        [radius([20.0, 15.0], [20.0, 20.0])]
+    );
+    d.to(35.0, 10.0);
+    assert!(d.tool.preview().measures.is_empty());
+    // A point: nothing, pressed or not.
+    let mut d = Drive::new(ToolKind::Point, empty());
+    d.to(12.0, 34.0);
+    assert!(d.tool.preview().measures.is_empty());
+    d.press(12.0, 34.0);
+    assert!(d.tool.preview().measures.is_empty());
+}
+
+#[test]
+fn each_gestures_guides_are_drawn_apart_from_its_entity() {
+    // What's drawn that the add won't make is a guide, not a line: a centrepoint arc's
+    // radius from its centre (50, 50) to the start under way (60, 55); a 3-point arc's chord
+    // from its start (10, 10) to the end under way (30, 20), and from start to end, (10, 10)
+    // to (30, 10), with the pointer at (20, 10) in line with them (no arc through three
+    // points in a line); a tangent arc's straight line from the line's end (20, 10) to
+    // (35, 10), straight ahead along it (no arc). Nothing is woken that lines up, so those
+    // are the only guides.
+    let mut d = Drive::new(ToolKind::CenterpointArc, empty());
+    d.press(50.0, 50.0).to(60.0, 55.0);
+    let preview = d.tool.preview();
+    assert_eq!(preview.guides, [[[50.0, 50.0], [60.0, 55.0]]]);
+    assert!(preview.lines.is_empty());
+    assert_eq!(preview.points, [[50.0, 50.0]]);
+    // Once the start is set, the arc under way, and no guide.
+    d.release(60.0, 50.0).to(55.0, 55.0);
+    let preview = d.tool.preview();
+    assert!(preview.guides.is_empty() && preview.lines.is_empty());
+    assert_eq!(preview.arcs.len(), 1);
+    let mut d = Drive::new(ToolKind::ThreePointArc, empty());
+    d.press(10.0, 10.0).to(30.0, 20.0);
+    assert_eq!(d.tool.preview().guides, [[[10.0, 10.0], [30.0, 20.0]]]);
+    assert!(d.tool.preview().lines.is_empty());
+    let mut d = Drive::new(ToolKind::ThreePointArc, empty());
+    d.click(10.0, 10.0).click(30.0, 10.0).to(20.0, 10.0);
+    let preview = d.tool.preview();
+    assert_eq!(preview.guides, [[[10.0, 10.0], [30.0, 10.0]]]);
+    assert!(preview.lines.is_empty() && preview.arcs.is_empty());
+    let mut d = Drive::new(ToolKind::TangentArc, one_line());
+    d.press(20.0, 10.0).to(35.0, 10.0);
+    let preview = d.tool.preview();
+    assert_eq!(preview.guides, [[[20.0, 10.0], [35.0, 10.0]]]);
+    assert!(preview.lines.is_empty() && preview.arcs.is_empty());
+    // A line's segment and a rectangle's sides are the entity: lines, no guide.
+    let mut d = Drive::new(ToolKind::Line, empty());
+    d.press(10.0, 10.0).to(40.0, 25.0);
+    assert_eq!(d.tool.preview().lines, [[[10.0, 10.0], [40.0, 25.0]]]);
+    assert!(d.tool.preview().guides.is_empty());
+    let mut d = Drive::new(ToolKind::CornerRectangle, empty());
+    d.press(10.0, 10.0).to(40.0, 30.0);
+    assert_eq!(d.tool.preview().lines.len(), 4);
+    assert!(d.tool.preview().guides.is_empty());
 }
 
 // --- Round 2, item 1: the tangent wins over an axis it isn't on ---------------------------
@@ -1359,6 +1507,7 @@ fn each_add_is_answered_by_its_token_whatever_the_order() {
             sketch,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -1588,6 +1737,7 @@ fn another_tools_token_answers_nothing() {
             sketch: &none,
             tolerance: TOLERANCE,
             automatic_relations: true,
+            construction: false,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -2066,6 +2216,7 @@ fn what_a_tool_added_keeps_its_ids_taken_before_a_read_shows_them() {
         sketch: &sketch,
         tolerance: TOLERANCE,
         automatic_relations: true,
+        construction: false,
     };
     let keys = Modifiers::default();
     for (kind, clicks) in [

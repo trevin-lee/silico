@@ -193,7 +193,7 @@ fn open_gate(gate: &Gate) {
 #[track_caller]
 fn told(f: &Fixture) {
     let deadline = Instant::now() + WAIT;
-    while f.session().disk.changed_told() == 0 {
+    while f.session().disk.get().unwrap().changed_told() == 0 {
         assert!(Instant::now() < deadline, "no comparison told the session");
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -913,7 +913,7 @@ fn a_part_written_file_reads_changed_and_is_never_reloaded() {
     let f = opened(STORED);
     f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
     let old = f.path.with_file_name(".a.silico.fmt-1");
-    f.session().held.session_changing().part_written = Some(old);
+    *f.session().held.session_changing().part_written_mut() = Some(old);
     std::fs::write(&f.path, "part written").unwrap();
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
     f.status_stays(Duration::from_millis(300), |status, revision| {
@@ -1226,11 +1226,15 @@ fn a_comparison_the_session_read_past_before_it_told_queues_no_reload() {
     let (release, released) = mpsc::channel::<()>();
     let released = Arc::new(Mutex::new(released));
     let at_hold = Mutex::new(at_hold);
-    f.session().disk.before_changed(Arc::new(move || {
-        let _ = lock(&at_hold).send(());
-        // Until the test lets it go (its sender dropped).
-        let _ = lock(&released).recv();
-    }));
+    f.session()
+        .disk
+        .get()
+        .unwrap()
+        .before_changed(Arc::new(move || {
+            let _ = lock(&at_hold).send(());
+            // Until the test lets it go (its sender dropped).
+            let _ = lock(&released).recv();
+        }));
     // A reload, if one is queued, held where the test can see it start.
     let (reload_started, through) = shut(&f.session().reloading);
     std::fs::write(&f.path, SPHERE).unwrap();
@@ -1249,7 +1253,7 @@ fn a_comparison_the_session_read_past_before_it_told_queues_no_reload() {
     // Let go: its telling done, it queued nothing.
     drop(release);
     let deadline = Instant::now() + WAIT;
-    while f.session().disk.changed_told() == 0 {
+    while f.session().disk.get().unwrap().changed_told() == 0 {
         assert!(
             Instant::now() < deadline,
             "the comparison never told the session"
@@ -1261,4 +1265,76 @@ fn a_comparison_the_session_read_past_before_it_told_queues_no_reload() {
     assert_eq!(f.at(), Revision(2));
     open_gate(&f.session().reloading);
     drop(through);
+}
+
+// ---- #354's mutants: each guard of `reload_wanted` alone ----
+
+/// `f`'s file written as `bytes` by another program, and `status` asked until a comparison
+/// has found it and told the session (its own reload's gate shut first): whether a reload
+/// was queued for it, read at once (a queued reload waits at the gate, `queued` still
+/// set), and whether one reached the gate. The gate is opened again after.
+fn queued_for(f: &Fixture, bytes: &str) -> (bool, bool) {
+    let (reload_started, through) = shut(&f.session().reloading);
+    std::fs::write(&f.path, bytes).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while f.session().disk.get().unwrap().changed_told() == 0 {
+        f.status();
+        assert!(Instant::now() < deadline, "no comparison told the session");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let queued = lock(&f.session().reloads).queued;
+    let started = reload_started.try_recv().is_ok();
+    open_gate(&f.session().reloading);
+    drop(through);
+    (queued, started)
+}
+
+#[test]
+fn a_change_found_inside_a_transaction_with_nothing_part_written_queues_no_reload() {
+    // Inside a transaction, only `commit` reads the file (decision 2): a change found on
+    // disk queues no reload of its own, whatever else holds.
+    let f = opened(BOX);
+    f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
+    f.begin();
+    assert_eq!(f.session().held.read().part_written(), None);
+    assert_eq!(queued_for(&f, SPHERE), (false, false));
+    assert_eq!(f.at(), Revision::OPENED);
+    assert_eq!(f.held_text(), BOX);
+}
+
+#[test]
+fn a_change_to_a_part_written_file_with_no_transaction_queues_no_reload() {
+    // The session's own save left the file part written: the next save says where its old
+    // text is, so no reload takes the half-written file, even with no transaction open.
+    let f = opened(BOX);
+    f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
+    *f.session().held.session_changing().part_written_mut() =
+        Some(f.path.with_file_name(".a.silico.fmt-1"));
+    assert!(f.session().held.read().transaction.is_none());
+    assert_eq!(queued_for(&f, "part written"), (false, false));
+    assert_eq!(f.at(), Revision::OPENED);
+}
+
+#[test]
+fn a_change_with_neither_queues_the_sessions_own_reload() {
+    // The two above's control: with no transaction and nothing part written, the same
+    // finding queues the reload, which waits at the gate.
+    let f = opened(BOX);
+    f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
+    let (reload_started, through) = shut(&f.session().reloading);
+    std::fs::write(&f.path, SPHERE).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while f.session().disk.get().unwrap().changed_told() == 0 {
+        f.status();
+        assert!(Instant::now() < deadline, "no comparison told the session");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(lock(&f.session().reloads).queued);
+    reload_started.recv_timeout(WAIT).unwrap();
+    open_gate(&f.session().reloading);
+    drop(through);
+    f.status_reaches(|status, revision| {
+        revision == Revision(2) && status.disk == Some(Disk::Unchanged)
+    });
+    assert_eq!(f.held_text(), SPHERE);
 }

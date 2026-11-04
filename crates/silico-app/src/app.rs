@@ -6,6 +6,7 @@
 //! files on disk.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -18,6 +19,7 @@ use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::document::OriginPlane;
 use silico_core::kernel::Clients;
 
+use crate::browse::{self, Ask, Browse, Browsing, Pick};
 use crate::dialog::{Action, Kind};
 use crate::export::{self, ExportForm, Shown};
 use crate::panes::{self, Pane, Panes};
@@ -206,6 +208,15 @@ pub struct App<P: Clients + 'static> {
     canvas: Option<egui::Rect>,
     /// What the viewport's renderer holds, and how its frames reach it (M5.6).
     drawing: crate::viewport::Drawing,
+    /// What opens the native file dialogs, the Browse… buttons beside the path fields: none
+    /// shown without it.
+    browser: Option<Box<dyn Browse>>,
+    /// The native dialog open, for the question it was asked from: its answer goes to that
+    /// question, if it's still asked when it comes.
+    browsing: Option<Browsing<Asking>>,
+    /// The folder of the last path a native dialog picked: where the next starts, if its
+    /// document's folder isn't known.
+    last_folder: Option<PathBuf>,
 }
 
 impl<P: Clients + 'static> App<P> {
@@ -233,7 +244,18 @@ impl<P: Clients + 'static> App<P> {
             modal_key: None,
             canvas: None,
             drawing: crate::viewport::Drawing::default(),
+            browser: None,
+            browsing: None,
+            last_folder: None,
         }
+    }
+
+    /// The app, a Browse… button beside each path field opening `browser`'s file dialog:
+    /// the platform's own ([`browse::Native`]), or a test's.
+    #[must_use]
+    pub fn browsing(mut self, browser: Box<dyn Browse>) -> Self {
+        self.browser = Some(browser);
+        self
     }
 
     /// The app, its viewport's frames drawn through `present` (M5.6): egui's paint callback
@@ -320,6 +342,7 @@ impl<P: Clients + 'static> App<P> {
         }
         self.poll();
         let (mut started, dialog_key) = self.keys(ui);
+        started |= self.take_browsed();
         self.app_bar(ui, &mut started);
         self.toolbar(ui, &mut started);
         self.status_bar(ui, &mut started);
@@ -327,6 +350,15 @@ impl<P: Clients + 'static> App<P> {
         self.dialog_panel(ui, &mut started, dialog_key);
         egui::CentralPanel::default().show(ui, |ui| {
             let active = self.active_place();
+            let shown = active.and_then(|at| self.tabs.get(at)).map(|tab| tab.id);
+            // A left drag held in a tab no longer shown ends there, before the pane draws.
+            crate::viewport::end_unshown(
+                ui.ctx(),
+                &self.sessions,
+                &mut self.drawing,
+                shown,
+                &mut self.tabs,
+            );
             let App {
                 tree,
                 tabs,
@@ -635,7 +667,8 @@ impl<P: Clients + 'static> App<P> {
     /// The open dialog, docked at the right (open item 27): drawn, what's changed in it sent,
     /// and its OK or Cancel taken, or `key`: Enter is OK, if OK is on; Esc goes to the first
     /// of these there is (section 3), a dialog's preview rebuilding, which it stops, the
-    /// dialog left open, or the dialog, which it cancels (one still being read too).
+    /// dialog left open, or the dialog, which it cancels (one still being read too;
+    /// [`Tab::dialog_escape`]).
     fn dialog_panel(&mut self, ui: &mut Ui, started: &mut bool, key: Option<Key>) {
         let sessions = &self.sessions;
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
@@ -681,8 +714,7 @@ impl<P: Clients + 'static> App<P> {
         *started |= tab.dialog_changed(sessions);
         match key {
             Some(Key::Enter) if tab.can_ok() => action = Action::Ok,
-            Some(Key::Escape) if tab.preview_rebuilding() => tab.stop_quietly(sessions),
-            Some(Key::Escape) => action = Action::Cancel,
+            Some(Key::Escape) if tab.dialog_escape(sessions) => action = Action::Cancel,
             _ => {}
         }
         match action {
@@ -703,6 +735,136 @@ impl<P: Clients + 'static> App<P> {
         } else {
             tab.close(&self.sessions);
         }
+    }
+
+    /// The native dialog's answer, if it has come, never waited for: a path picked fills the
+    /// path field of the question it was asked from (Open's opens it), if that question is
+    /// still asked; a cancel, or a question no longer asked, changes nothing, nor does
+    /// Export's while its export runs or asks whether to replace. Whether a command was
+    /// started.
+    fn take_browsed(&mut self) -> bool {
+        let Some(answer) = self.browsing.as_mut().and_then(Browsing::poll) else {
+            return false;
+        };
+        let Some(Browsing { what, .. }) = self.browsing.take() else {
+            return false;
+        };
+        let Some(path) = answer else {
+            return false;
+        };
+        if let Some(folder) = path
+            .parent()
+            .filter(|folder| !folder.as_os_str().is_empty())
+        {
+            self.last_folder = Some(folder.to_path_buf());
+        }
+        if self.asking.as_ref() != Some(&what) {
+            return false;
+        }
+        let path = match path.into_os_string().into_string() {
+            Ok(path) => path,
+            Err(path) => {
+                self.message = Some(format!(
+                    "{} can't be used: its path isn't UTF-8",
+                    std::path::Path::new(&path).display()
+                ));
+                self.message_from = None;
+                return false;
+            }
+        };
+        match what {
+            Asking::Path { create: false } => {
+                self.open(&path, false);
+                // As a typed path's open takes it.
+                self.open_path.clear();
+                self.asking = None;
+                return true;
+            }
+            Asking::Path { create: true } => self.open_path = path,
+            Asking::SaveAs(_) => self.save_as_path = path,
+            Asking::Export(id) => {
+                // Its path field is off while the export runs or asks whether to replace.
+                let idle = self
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.id == id && !tab.exporting() && tab.export_replacing.is_none());
+                if let Some(form) = self
+                    .export
+                    .as_mut()
+                    .filter(|form| idle && form.session == id)
+                {
+                    form.browsed(path);
+                }
+            }
+            Asking::Close(_) | Asking::Quit | Asking::Replace(..) => {}
+        }
+        false
+    }
+
+    /// The Browse… button beside a path field, if the app has native dialogs: off while one
+    /// is open. Whether it was clicked.
+    fn browse_button(&self, ui: &mut Ui) -> bool {
+        self.browser.is_some() && browse::button(ui, self.browsing.is_none())
+    }
+
+    /// The native dialog of `asking`'s path field, opened, its answer polled each frame.
+    fn browse(&mut self, asking: Asking, ctx: &egui::Context) {
+        if self.browsing.is_some() {
+            return;
+        }
+        let tab = |id: SessionId| self.tabs.iter().find(|tab| tab.id == id);
+        // The document's folder, or else the last a dialog picked in (else the platform's).
+        let folder = |document: Option<&str>| {
+            document
+                .and_then(browse::folder_of)
+                .or_else(|| self.last_folder.clone())
+        };
+        let ask = match &asking {
+            Asking::Path { create } => {
+                let shown = self.active_place().and_then(|at| self.tabs.get(at));
+                Ask {
+                    pick: if *create { Pick::Save } else { Pick::Open },
+                    title: if *create {
+                        "New document"
+                    } else {
+                        "Open document"
+                    }
+                    .to_owned(),
+                    filters: vec![browse::DOCUMENTS],
+                    folder: folder(shown.map(|tab| tab.path.as_str())),
+                    file_name: None,
+                }
+            }
+            Asking::SaveAs(id) => {
+                let Some(tab) = tab(*id) else { return };
+                Ask {
+                    pick: Pick::Save,
+                    title: format!("Save {} as", tab.name()),
+                    filters: vec![browse::DOCUMENTS],
+                    folder: folder(Some(&tab.path)),
+                    file_name: browse::file_name_of(&tab.path),
+                }
+            }
+            Asking::Export(id) => {
+                let Some(tab) = tab(*id) else { return };
+                let Some(form) = self.export.as_ref().filter(|form| form.session == *id) else {
+                    return;
+                };
+                Ask {
+                    pick: Pick::Save,
+                    title: format!("Export {}", tab.name()),
+                    filters: browse::export_filters(form.step),
+                    folder: folder(Some(&tab.path)),
+                    file_name: browse::file_name_of(&form.path),
+                }
+            }
+            Asking::Close(_) | Asking::Quit | Asking::Replace(..) => return,
+        };
+        let Some(browser) = self.browser.as_mut() else {
+            return;
+        };
+        let answer = browser.browse(&ask);
+        self.browsing = Some(Browsing::new(asking, answer, ctx));
     }
 
     /// The application bar (section 8): the File menu, Save, Undo and Redo, and the open
@@ -1049,6 +1211,7 @@ impl<P: Clients + 'static> App<P> {
         let key = self.modal_key.take();
         let (enter, escape) = (key == Some(Key::Enter), key == Some(Key::Escape));
         let mut done = false;
+        let mut browse = false;
         egui::Modal::new(egui::Id::new("asking")).show(ui.ctx(), |ui| match asking {
             Asking::Path { create } => {
                 ui.heading(if create {
@@ -1060,6 +1223,7 @@ impl<P: Clients + 'static> App<P> {
                     let label = ui.label("Path");
                     ui.add(egui::TextEdit::singleline(&mut self.open_path))
                         .labelled_by(label.id);
+                    browse = self.browse_button(ui);
                 });
                 ui.horizontal(|ui| {
                     let word = if create { "Create" } else { "Open" };
@@ -1089,6 +1253,7 @@ impl<P: Clients + 'static> App<P> {
                     let label = ui.label("Path");
                     ui.add(egui::TextEdit::singleline(&mut self.save_as_path))
                         .labelled_by(label.id);
+                    browse = self.browse_button(ui);
                 });
                 ui.horizontal(|ui| {
                     if (ui.button("Save").clicked() || enter)
@@ -1130,6 +1295,7 @@ impl<P: Clients + 'static> App<P> {
                     running: tab.exporting(),
                     replacing: replacing.as_deref(),
                     said: said.as_deref(),
+                    browse: self.browser.as_ref().map(|_| self.browsing.is_none()),
                 };
                 let action = match form.ui(ui, &tab.browser.bodies, &shown) {
                     export::Action::None if escape => export::Action::Cancel,
@@ -1138,6 +1304,7 @@ impl<P: Clients + 'static> App<P> {
                 };
                 match action {
                     export::Action::None => {}
+                    export::Action::Browse => browse = true,
                     export::Action::Export(request) => {
                         tab.export(sessions, request);
                         *started = true;
@@ -1232,6 +1399,12 @@ impl<P: Clients + 'static> App<P> {
                 });
             }
         });
+        if browse
+            && !done
+            && let Some(asking) = self.asking.clone()
+        {
+            self.browse(asking, ui.ctx());
+        }
         if done {
             if matches!(self.asking, Some(Asking::Export(_))) {
                 self.export = None;

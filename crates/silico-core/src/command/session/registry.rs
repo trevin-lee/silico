@@ -9,7 +9,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 
 #[cfg(doc)]
 use super::MAX_SESSIONS;
@@ -17,7 +17,7 @@ use super::cancel::Ticket;
 use super::holding::Holding;
 use super::rebuilds::{Newest, Rebuilds};
 use super::threads::{Reads, Threads};
-use super::transaction::{Held, not_reloaded, of_file, put_back, too_long};
+use super::transaction::{Held, HeldFile, not_reloaded, of_file, put_back, too_long};
 use super::waking::Waker;
 use super::{
     Gated, Job, Opened, Problems, Response, Revision, Session, SessionId, Turn, closing, shown_path,
@@ -216,11 +216,11 @@ pub(super) struct Started<C: Kernel + 'static> {
 /// (`ticket`) before the session is recorded open, it answers `cancelled`, leaving no
 /// session and no file it made. If it doesn't open, every command sent to it while it
 /// opened is refused as naming no session open ([`Turn::Closed`]), once the open has
-/// answered.
+/// answered. With no `path`, an untitled session: no file, so none claimed or watched.
 pub(super) fn start<P: Clients + 'static>(
     registry: Arc<Registry<P>>,
     id: SessionId,
-    path: &str,
+    path: Option<&str>,
     create: bool,
     ticket: &Ticket,
     reply: &mpsc::SyncSender<Response<Opened>>,
@@ -243,33 +243,6 @@ pub(super) fn start<P: Clients + 'static>(
         );
         // From here it opens, unless it was cancelled first (the file it made goes as above).
         ticket.settle()?;
-        // Against the bytes it read (or made), at the path they were read from; the client
-        // woken as its finding changes.
-        // Held weakly: a comparison stuck on its read outlives the sessions, and mustn't
-        // keep the client's waker (and what it holds) alive past them.
-        let told = Arc::downgrade(&registry.waker);
-        let notify: crate::notify::Notify = Arc::new(move || {
-            if let Some(waker) = told.upgrade() {
-                waker.wake();
-            }
-        });
-        let disk = match &registry.disk_stand_in {
-            None => DiskWatch::new(
-                held.resolved.clone(),
-                registry.workspace.clone(),
-                Arc::clone(&held.bytes),
-                registry.disk_interval,
-                Some(notify),
-            ),
-            Some((read, now)) => DiskWatch::clocked(
-                held.resolved.clone(),
-                Arc::clone(&held.bytes),
-                registry.disk_interval,
-                Some(notify),
-                Arc::clone(read),
-                Arc::clone(now),
-            ),
-        };
         let session = Arc::new(Session {
             id,
             workspace: registry.workspace.clone(),
@@ -277,8 +250,7 @@ pub(super) fn start<P: Clients + 'static>(
             held: Holding::new(held),
             queue: Mutex::new(Some(queue)),
             rebuilds: Mutex::new(Rebuilds {
-                engine: registry.engine(cache.clone()),
-                cache,
+                engine: registry.engine(cache),
                 running: None,
                 published: None,
                 ended: None,
@@ -294,7 +266,7 @@ pub(super) fn start<P: Clients + 'static>(
             command: Mutex::new(None),
             newest,
             logs,
-            disk,
+            disk: OnceLock::new(),
             reloads: Mutex::default(),
             drags: Mutex::default(),
             waker: Arc::clone(&registry.waker),
@@ -319,12 +291,9 @@ pub(super) fn start<P: Clients + 'static>(
             .remove(&id)
             .map(|opening| opening.reads)
             .unwrap_or_default();
-        // A change found on disk from here, with no transaction open, is reloaded on its
-        // own thread (A3).
-        session.disk.when_changed(super::reloader(
-            Arc::downgrade(&registry),
-            Arc::downgrade(&session),
-        ));
+        // Its file, if it has one, watched on disk from here, against the bytes it read (or
+        // made), at the path they were read from.
+        watch_file(&registry, &session, false);
         book.sessions.insert(id, Arc::clone(&session));
         for read in reads {
             read(Turn::Run(&session));
@@ -383,6 +352,104 @@ pub(super) fn start<P: Clients + 'static>(
     }
 }
 
+/// Session `session`'s file, if it has one and isn't watched yet, watched on disk from now
+/// on (docs/design/m5.0-app.md, section 4): compared against the bytes the session holds,
+/// at the path it holds, the client woken as the finding changes, and a change found with no
+/// transaction open reloaded on the session's own thread (A3). With `written`, the bytes
+/// are what the session just wrote there, so the watch is made already finding the file
+/// `unchanged`, as a Save As's moved watch does, before it's published: no comparison can
+/// run against it first. Without, as `open` makes one, it finds nothing until its first
+/// comparison ends. Whether it set the watch: not for an untitled session, which has no
+/// file to watch, nor for one watched already. Set at `open` for a file, and for an untitled
+/// session at its first save ([`watch_saved`]); one session's watch is set once, and moved,
+/// never replaced, by a Save As after.
+pub(super) fn watch_file<P: Clients + 'static>(
+    registry: &Arc<Registry<P>>,
+    session: &Arc<Session<P::Client>>,
+    written: bool,
+) -> bool {
+    if session.disk.get().is_some() {
+        return false;
+    }
+    let (resolved, bytes) = {
+        let held = session.held.read();
+        let Some(file) = &held.file else {
+            return false;
+        };
+        (file.resolved.clone(), Arc::clone(&held.bytes))
+    };
+    // Held weakly: a comparison stuck on its read outlives the sessions, and mustn't keep
+    // the client's waker (and what it holds) alive past them.
+    let told = Arc::downgrade(&registry.waker);
+    let notify: crate::notify::Notify = Arc::new(move || {
+        if let Some(waker) = told.upgrade() {
+            waker.wake();
+        }
+    });
+    let disk = match &registry.disk_stand_in {
+        None => DiskWatch::new(
+            resolved,
+            registry.workspace.clone(),
+            Arc::clone(&bytes),
+            registry.disk_interval,
+            Some(notify),
+        ),
+        Some((read, now)) => DiskWatch::clocked(
+            resolved,
+            Arc::clone(&bytes),
+            registry.disk_interval,
+            Some(notify),
+            Arc::clone(read),
+            Arc::clone(now),
+        ),
+    };
+    if written {
+        // Not published yet, so nothing has compared, nor can before this.
+        disk.held(bytes);
+    }
+    if session.disk.set(disk).is_err() {
+        return false;
+    }
+    if let Some(disk) = session.disk.get() {
+        disk.when_changed(super::reloader(
+            Arc::downgrade(registry),
+            Arc::downgrade(session),
+        ));
+    }
+    true
+}
+
+/// After a Save As of `session`, run on its thread after the save has written, before the
+/// commit answers: if it was untitled until then (its first save), what `open` of the file
+/// it wrote would have given it, so from now on it's as a session opened on that file. Its
+/// file watched on disk ([`watch_file`]), found unchanged from the start, since it holds
+/// what it just wrote (as a Save As finds the file it moved to); and its engine's steps kept
+/// in the cache beside the file, shared with every session on a document there, as `open`
+/// opens it. A session that had a file keeps its watch, moved by the save, and its cache,
+/// the one beside the file it opened (M5.4, as built).
+pub(super) fn watch_saved<P: Clients + 'static>(
+    registry: &Arc<Registry<P>>,
+    session: &Arc<Session<P::Client>>,
+) {
+    if !watch_file(registry, session, true) {
+        return;
+    }
+    let _span = tracing::info_span!("first_save").entered();
+    let Some(resolved) = session
+        .held
+        .read()
+        .file
+        .as_ref()
+        .map(|file| file.resolved.clone())
+    else {
+        return;
+    };
+    // Opened with no lock held: the cache reads the user's secret.
+    let cache = registry.cache(&file::cache_directory(&resolved));
+    lock(&session.rebuilds).engine.keep_in(cache);
+    tracing::info!(session = %session.id, "the untitled session's first save: its file is watched, and its rebuilds kept in the cache beside it");
+}
+
 /// The empty document `open` made: removed when dropped, unless kept for the session that
 /// opened it, if it's still what was made (nothing else has written it since), so an open
 /// that ends in no session, refused or by a panic, leaves no file it made.
@@ -421,13 +488,17 @@ pub(super) fn serve<C: Kernel + 'static>(session: &Arc<Session<C>>, jobs: &Recei
 
 /// The file at `path` read (or, with `create`, made) and through the gate, claimed for
 /// session `id`; what the session holds, `open`'s answer, the cache of its directory, and
-/// the file it made, if it made one.
+/// the file it made, if it made one. With no `path`, an untitled session's: the empty
+/// document, as `create` would have written it, and no file, claim, or cache.
 fn open<P: Clients + 'static>(
     registry: &Registry<P>,
     id: SessionId,
-    given: &str,
+    given: Option<&str>,
     create: bool,
-) -> Result<(Held, Opened, Cache, Option<MadeFile>), Problems> {
+) -> Result<(Held, Opened, Option<Cache>, Option<MadeFile>), Problems> {
+    let Some(given) = given else {
+        return untitled(id);
+    };
     let path = Path::new(given);
     let workspace = registry.workspace.as_ref();
     let (resolved, text, made) = if create {
@@ -450,10 +521,31 @@ fn open<P: Clients + 'static>(
         claim(registry, opened, &resolved, &resolved, id).map_err(|e| e.opening(path))?;
         (resolved, text, None)
     };
+    let cache = registry.cache(&file::cache_directory(&resolved));
+    let file = HeldFile {
+        path: given.to_owned(),
+        resolved,
+        part_written: None,
+    };
+    let (held, opened) = held(id, Some(file), text, create);
+    Ok((held, opened, Some(cache), made))
+}
+
+/// What an untitled session `id` holds as it opens, and `open`'s answer: the empty
+/// document, in canonical form, the bytes `open` with `create` writes to a file.
+fn untitled(id: SessionId) -> Result<(Held, Opened, Option<Cache>, Option<MadeFile>), Problems> {
+    let _span = tracing::info_span!("untitled").entered();
+    let (held, opened) = held(id, None, empty_document()?, true);
+    Ok((held, opened, None, None))
+}
+
+/// What session `id` holds as it opens, its file `file` (none, untitled) holding `text`, and
+/// `open`'s answer, `create` saying whether the document was made.
+fn held(id: SessionId, file: Option<HeldFile>, text: Vec<u8>, create: bool) -> (Held, Opened) {
     let gated = Gated::of(&text);
     let opened = Opened {
         session: id,
-        path: given.to_owned(),
+        path: file.as_ref().map(|file| file.path.clone()),
         created: create,
         features: gated.document().ok().map(|d| d.features.len()),
         bodies: gated
@@ -464,19 +556,28 @@ fn open<P: Clients + 'static>(
     };
     let text = Arc::new(text);
     let held = Held {
-        path: given.to_owned(),
-        resolved,
+        file,
         bytes: Arc::clone(&text),
         text,
         gated: Arc::new(gated),
         revision: Revision::OPENED,
         carried: Arc::new(BTreeSet::new()),
         transaction: None,
-        part_written: None,
         last_reload: None,
     };
-    let cache = registry.cache(&file::cache_directory(&held.resolved));
-    Ok((held, opened, cache, made))
+    (held, opened)
+}
+
+/// The empty document in canonical form: what `open` with `create` writes, and what an
+/// untitled session opens holding.
+fn empty_document() -> Result<Vec<u8>, Error> {
+    let empty = Document {
+        silico: FormatVersion,
+        units: Units,
+        naming: NamingScheme,
+        features: Vec::new(),
+    };
+    Ok(document::write(&empty)?.into_bytes())
 }
 
 /// A new, empty document made at `path` (relative to the workspace, if there's one: its
@@ -513,13 +614,7 @@ fn made<P: Clients + 'static>(
             Unresolved::Unreachable(e) => uncreatable(e),
         })?
         .join(name);
-    let text = document::write(&Document {
-        silico: FormatVersion,
-        units: Units,
-        naming: NamingScheme,
-        features: Vec::new(),
-    })?
-    .into_bytes();
+    let text = empty_document()?;
     let made = match create_new(&resolved, &text) {
         Ok(made) => made,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -794,10 +889,15 @@ pub(super) fn moved<P: Clients + 'static>(
 
 impl<P: Clients + 'static> Registry<P> {
     /// A new session's engine: on its own client of the kernel, keeping its steps in
-    /// `cache`, and solving sketches with the registry's solvers, which every session
-    /// shares.
-    fn engine(&self, cache: Cache) -> Recompute<P::Client> {
-        Recompute::with_cache(self.kernel.client(), cache).with_solvers(self.sketches.clone())
+    /// `cache` (none for an untitled session, until its first save), and solving sketches
+    /// with the registry's solvers, which every session shares.
+    fn engine(&self, cache: Option<Cache>) -> Recompute<P::Client> {
+        let kernel = self.kernel.client();
+        match cache {
+            Some(cache) => Recompute::with_cache(kernel, cache),
+            None => Recompute::new(kernel),
+        }
+        .with_solvers(self.sketches.clone())
     }
 
     /// The cache in `dir`: the one value its sessions share, opened the first time; one

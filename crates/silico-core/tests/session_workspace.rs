@@ -106,9 +106,9 @@ fn a_relative_path_is_opened_made_and_saved_in_the_workspace_and_named_as_given(
     f.file("part.silico", BOX);
     let response = answer(f.sessions.open("part.silico", false));
     let opened = response.result.as_ref().unwrap();
-    assert_eq!(opened.path, "part.silico");
+    assert_eq!(opened.path.as_deref(), Some("part.silico"));
     let session = response.session.unwrap();
-    assert_eq!(session.path, "part.silico");
+    assert_eq!(session.path.as_deref(), Some("part.silico"));
     // An edit outside a transaction saves the file in the workspace, not one in the working
     // directory.
     let set = answer(f.sessions.set_field(
@@ -507,7 +507,7 @@ fn without_a_workspace_paths_resolve_as_the_system_resolves_them() {
     let relative = relative_to_working_directory(&work.join("own.silico"));
     let given = relative.to_str().unwrap().to_owned();
     let response = answer(sessions.open(&relative, false));
-    assert_eq!(response.result.unwrap().path, given);
+    assert_eq!(response.result.unwrap().path, Some(given));
     let response = answer(sessions.open(work.join("link.silico"), false));
     let s = response.session.unwrap().id;
     assert!(

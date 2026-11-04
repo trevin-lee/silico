@@ -25,6 +25,8 @@ wgpu.workspace = true
 # The viewport's renderer (re_renderer's, one with agents' renders: M4.6's R1), drawn on
 # eframe's device.
 silico-render.workspace = true
+# Native file dialogs, on their async API (`browse`).
+rfd.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

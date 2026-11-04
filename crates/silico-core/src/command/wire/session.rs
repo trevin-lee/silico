@@ -22,6 +22,7 @@ use crate::command::{
 };
 use crate::document::json::Node;
 use crate::document::{FeatureId, Length, PROBLEMS_LISTED};
+use crate::{Error, ErrorCode};
 
 /// A `version` request: it has no fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,23 +42,37 @@ impl ToWire for VersionRequest {
     }
 }
 
-/// An `open` request: the document's path, UTF-8 (a response names it exactly), and whether
-/// to make a new, empty document there.
+/// An `open` request: the document's path, UTF-8 (a response names it exactly), or none for
+/// an untitled document, and whether to make a new, empty document there (with no path,
+/// always: an untitled document is a new one).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenRequest {
-    pub path: String,
+    pub path: Option<String>,
     pub create: bool,
 }
 
 impl OpenRequest {
-    /// The request `node` holds, or every reason its shape is refused.
+    /// The request `node` holds, or every reason its shape is refused: as well as each
+    /// field's own, `path` null with `create` false, which opens nothing, as fields that
+    /// must agree are refused.
     pub fn read(node: &Node) -> Result<Self, Problems> {
         RequestFields::read(node, |f| {
-            let path = f.string("path");
+            let path = f.nullable_string("path");
             let create = f.bool("create");
+            let (path, create) = (path?, create?);
+            if path.is_none() && !create {
+                f.refuse(
+                    Error::new(ErrorCode::InvalidInput, "path null opens nothing")
+                        .with_parameter("path")
+                        .with_suggestion(
+                            "give a path to open, or create: true for an untitled document",
+                        ),
+                );
+                return None;
+            }
             Some(OpenRequest {
-                path: path?.to_owned(),
-                create: create?,
+                path: path.map(str::to_owned),
+                create,
             })
         })
     }
@@ -67,7 +82,7 @@ impl ToWire for OpenRequest {
     /// The request as a client writes it, every field in the shape's order.
     fn to_wire(&self) -> Json<'_> {
         Json::object([
-            ("path", Json::str(&self.path)),
+            ("path", Json::or_null(self.path.as_deref(), Json::str)),
             ("create", Json::bool(self.create)),
         ])
     }
@@ -200,12 +215,13 @@ impl ToWire for Version {
 }
 
 impl ToWire for Opened {
-    /// `open`'s result: the path as given, whether it was made, the number of features
-    /// (`null` if the text doesn't read as a document), the bodies, and the gate's problems.
+    /// `open`'s result: the path as given (`null` for an untitled document), whether it was
+    /// made, the number of features (`null` if the text doesn't read as a document), the
+    /// bodies, and the gate's problems.
     fn to_wire(&self) -> Json<'_> {
         let (problems, problems_total) = problems(&self.problems);
         Json::object([
-            ("path", Json::str(&self.path)),
+            ("path", Json::or_null(self.path.as_deref(), Json::str)),
             ("created", Json::bool(self.created)),
             ("features", Json::or_null(self.features, Json::count)),
             ("bodies", Json::ids(&self.bodies)),
@@ -464,17 +480,21 @@ pub struct VersionResultSchema {
     pub limits: LimitsSchema,
 }
 
-/// `open`'s request: open a document's file as a session, or make a new, empty one. A
-/// document the gate refuses still opens, its problems in the result, so it can be mended
-/// with `replace_text`.
+/// `open`'s request: open a document's file as a session, or make a new, empty one, at a
+/// path or, with `path` null, untitled. A document the gate refuses still opens, its
+/// problems in the result, so it can be mended with `replace_text`.
 #[derive(JsonSchema)]
 #[schemars(rename = "OpenRequest", transform = wire_shape)]
 pub struct OpenRequestSchema {
     /// The document's path, as every response names the session's: a regular file, if it
     /// isn't to be made. A file this process holds open in another session, by any name, is
-    /// refused.
-    pub path: String,
+    /// refused. Null, with `create` true, for an untitled document: an empty one with no
+    /// file, nothing written until a `commit` gives it a path (Save As). Outside a
+    /// transaction an edit is saved as it's made, so an untitled document's edits are made
+    /// inside one.
+    pub path: Option<String>,
     /// Whether to make a new, empty document at the path: refused if anything is there.
+    /// Must be true when `path` is null.
     pub create: bool,
 }
 
@@ -482,8 +502,8 @@ pub struct OpenRequestSchema {
 #[derive(JsonSchema)]
 #[schemars(rename = "OpenResult", transform = wire_shape)]
 pub struct OpenResultSchema {
-    /// The path, as given.
-    pub path: String,
+    /// The path, as given: null for an untitled document.
+    pub path: Option<String>,
     /// Whether the document was made (`create`).
     pub created: bool,
     /// How many features the document has: null if its text doesn't read as a document.

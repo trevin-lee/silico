@@ -26,18 +26,23 @@
     if (S.active === uid) { const n = S.docs[S.docs.length - 1]; if (n) activate(n); else { S.active = null; S.view = 'start'; VP.setModel(null); } }
     S.modal = null; A.render();
   }
-  function newDoc(name) {
-    const d = A.makeDoc('empty', name + '.silico', '~/Documents/Silico/' + name + '.silico');
+  // Untitled parts are named "Untitled", then "Untitled 2", "Untitled 3", from one counter
+  // never reused in a run (macOS's rule).
+  let untitledSeq = 0;
+  function newDoc() {
+    untitledSeq++;
+    const name = untitledSeq === 1 ? 'Untitled' : 'Untitled ' + untitledSeq;
+    const d = A.makeDoc('empty', name, 'Not saved yet');
+    d.untitled = true;
     S.docs.push(d); S.modal = null; activate(d);
     VP.fitBox(VP.modelBox(), VP.VIEWS.iso);
-    A.toast('Created ' + d.path, 'check');
   }
 
   // ───────── Commands ─────────
   function runCmd(id) {
     const d = doc();
     switch (id) {
-      case 'newDoc': S.modal = { type: 'new', name: 'Untitled-' + (S.docs.length + 1) }; A.render(); setTimeout(() => { const i = $('[data-key="new-name"]'); if (i) { i.focus(); i.select(); } }, 0); return;
+      case 'newDoc': newDoc(); return;
       case 'open': A.toast("The system's Open dialog appears here. This prototype opens bracket.silico."); openBracket(); return;
       case 'save': A.save(); return;
       case 'saveAs': if (d) { S.modal = { type: 'saveAs' }; A.render(); } return;
@@ -153,7 +158,7 @@
     fileMenu(el) {
       const d = doc(); const r = el.getBoundingClientRect();
       menu(r.left, r.bottom + 2, [
-        { label: 'New part…', icon: 'newDoc', keys: ['Mod', 'N'], run: () => runCmd('newDoc') },
+        { label: 'New part', icon: 'newDoc', keys: ['Mod', 'N'], run: () => runCmd('newDoc') },
         { label: 'Open…', icon: 'open', keys: ['Mod', 'O'], run: () => runCmd('open') },
         { label: 'Open recent', sub: 'bracket.silico', run: () => openBracket() },
         'sep',
@@ -215,9 +220,8 @@
     keepMine() { S.modal = { type: 'keepMine' }; A.render(); },
     keepMineConfirm() { S.modal = null; S.banner = null; A.render(); A.toast('Working on your version. Save is held until you reload or Save As.', 'warn'); },
     saveAsCmd() { S.modal = { type: 'saveAs' }; A.render(); setTimeout(() => { const i = $('[data-key="saveas"]'); i && (i.focus(), i.select()); }, 0); },
-    doSaveAs() { const d = doc(); const n = ($('[data-key="saveas"]').value || 'copy').trim(); d.file = n + '.silico'; d.path = d.path.replace(/[^/]+$/, d.file); d.saved = A.snap(d); d.undo = []; d.redo = []; d.disk = 'unchanged'; d.pendingDisk = null; S.banner = null; S.modal = null; A.render(); A.toast('Saved as ' + d.path + '. The tab now holds that file.', 'check'); },
+    doSaveAs() { const d = doc(); const n = ($('[data-key="saveas"]').value || 'copy').trim(); d.file = n + '.silico'; d.path = d.untitled ? '~/Documents/Silico/' + d.file : d.path.replace(/[^/]+$/, d.file); d.untitled = false; d.saved = A.snap(d); d.undo = []; d.redo = []; d.disk = 'unchanged'; d.pendingDisk = null; S.banner = null; S.modal = null; A.render(); A.toast('Saved as ' + d.path + '. The tab now holds that file.', 'check'); },
     closeModal(el, e) { if (e.target.closest('[data-stop]') && !el.closest('[data-stop]')) return; if (S.modal && S.modal.type === 'overdefine') return; S.modal = null; A.syncHighlight(); A.render(); },
-    createNew() { const n = (S.modal.name || 'Untitled').trim() || 'Untitled'; newDoc(n); },
     closeDiscard(el) { closeDoc(el.dataset.id, true); },
     closeSave(el) { const d = S.docs.find((x) => x.uid === el.dataset.id); d.saved = A.snap(d); d.undo = []; closeDoc(d.uid, true); A.toast('Saved and closed ' + d.file); },
     odChoice(el) { SK.overdefineChoice(el.dataset.v); },
@@ -277,7 +281,6 @@
   document.addEventListener('input', (e) => {
     const k = e.target.dataset.input; if (!k) return;
     if (k === 'dist' || k === 'rad' || k === 'name') A.dialogInput(k, e.target.value);
-    else if (k === 'newName') { S.modal.name = e.target.value; A.render(); }
     else if (k === 'scq') { S.modal.q = e.target.value; A.render(); }
     else if (k === 'palq') { S.palette.q = e.target.value; S.palette.idx = 0; A.render(); }
     else if (k === 'skmod') SK.modifyInput(e.target.value);
@@ -510,8 +513,7 @@
       if (key === 'Escape') { e.preventDefault(); if (S.modal.type === 'overdefine') SK.overdefineChoice('cancel'); else { S.modal = null; A.syncHighlight(); A.render(); } return; }
       if (S.modal.type === 'overdefine' && (key === '1' || key === '2')) { SK.overdefineChoice(key === '1' ? 'driven' : 'driving'); return; }
       if (key === 'Enter') {
-        if (S.modal.type === 'new') { e.preventDefault(); ACT.createNew(); }
-        else if (S.modal.type === 'saveAs') { e.preventDefault(); ACT.doSaveAs(); }
+        if (S.modal.type === 'saveAs') { e.preventDefault(); ACT.doSaveAs(); }
         else if (S.modal.type === 'closeDirty') { e.preventDefault(); ACT.closeSave({ dataset: { id: S.modal.uid } }); }
       }
       return;
