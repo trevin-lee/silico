@@ -1083,6 +1083,58 @@ fn a_ray_is_none_for_a_camera_or_size_the_checks_refuse() {
 }
 
 #[test]
+fn a_ray_through_a_pixel_far_off_the_image_is_finite_or_none() {
+    // Pixels out to f64's largest, on each side, of a small image of a tall orthographic
+    // view (so a pixel's offset across it is the most), from the front and from the corner
+    // (where the view's right and up add on one axis), and in perspective: each ray given
+    // is finite, its direction of unit length; and those past f64 are none.
+    let tall = Projection::Orthographic { view_height: 1e9 };
+    let wide = Projection::Perspective {
+        field_of_view: 60.0,
+    };
+    let huge = [1e300, 1e306, 1e307, 4e307, 1e308, f64::MAX];
+    let mut nones = 0;
+    for camera in [
+        Camera {
+            projection: tall,
+            ..front()
+        },
+        from_the_corner(tall),
+        from_the_corner(wide),
+    ] {
+        for &x in &huge {
+            for &y in &huge {
+                for [sx, sy] in [[1.0, 1.0], [1.0, -1.0], [-1.0, 1.0], [-1.0, -1.0]] {
+                    match ray(&camera, [2, 2], [sx * x, sy * y]) {
+                        Some((origin, direction)) => {
+                            assert!(
+                                origin.iter().chain(&direction).all(|c| c.is_finite()),
+                                "{camera:?} at ({x}, {y}): {origin:?} {direction:?}"
+                            );
+                            assert!((norm(direction) - 1.0).abs() <= 1e-15);
+                        }
+                        None => nones += 1,
+                    }
+                }
+            }
+        }
+    }
+    assert!(nones > 0);
+    // An orthographic origin past f64 though its offsets across the view aren't: from the
+    // corner, 0.99 of f64's largest right and as much down (half the view, 5e8 mm, for each
+    // unit of the image's device coordinates, which are the pixel less 1 across and 1 less
+    // it up), whose sum on the document's x (the view's right 0.740 of it, its up −0.375)
+    // is 1.10 of it: none, where it was an origin of infinity.
+    let corner = from_the_corner(tall);
+    let d = 0.99 * f64::MAX / 5e8;
+    assert_eq!(ray(&corner, [2, 2], [1.0 + d, 1.0 + d]), None);
+    // And inside, 0.8 of it each way (0.89 on x): finite.
+    let d = 0.8 * f64::MAX / 5e8;
+    let (origin, _) = ray(&corner, [2, 2], [1.0 + d, 1.0 + d]).unwrap();
+    assert!(origin.iter().all(|c| c.is_finite()), "{origin:?}");
+}
+
+#[test]
 fn a_ray_passes_through_the_point_a_frames_picking_finds_at_its_pixel() {
     on_lavapipe(
         "render::frame_tests::a_ray_passes_through_the_point_a_frames_picking_finds_at_its_pixel",
@@ -1641,6 +1693,58 @@ fn a_frame_refused_backing_off_asks_nothing_is_checked_for_nothing_and_caps_at_6
                 }
             }
             assert_eq!(runs, [1, 2, 4, 8, 16, 32, 64, 64, 64]);
+        },
+    );
+}
+
+#[test]
+fn a_new_mesh_has_the_next_frame_tried_but_keeps_the_doubling() {
+    on_lavapipe(
+        "render::frame_tests::a_new_mesh_has_the_next_frame_tried_but_keeps_the_doubling",
+        |r| {
+            use Outcome::{Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain = frame(&camera, &[1], &[], None);
+            // Fail, refuse one, fail (refusing two), a new mesh (the next frame tried), fail:
+            // four refused, not one, as an edit made during a shortage would otherwise have
+            // every other frame upload the model.
+            r.fail_frames = 3;
+            assert_eq!(outcome(r, &plain), Failed);
+            assert_eq!(outcome(r, &plain), Refused(1));
+            assert_eq!(outcome(r, &plain), Failed);
+            r.upload(1, &Arc::new(box_mesh([0.0; 3], [40.0, 20.0, 11.0])))
+                .unwrap();
+            assert_eq!(outcome(r, &plain), Failed);
+            assert_eq!(outcome(r, &plain), Refused(4));
+        },
+    );
+}
+
+#[test]
+fn forgetting_a_body_leaves_a_backoff_as_it_was() {
+    on_lavapipe(
+        "render::frame_tests::forgetting_a_body_leaves_a_backoff_as_it_was",
+        |r| {
+            use Outcome::{Drawn, Failed, Refused};
+            r.upload(1, &the_box()).unwrap();
+            r.upload(
+                2,
+                &Arc::new(box_mesh([0.0, -30.0, 0.0], [40.0, 20.0, 10.0])),
+            )
+            .unwrap();
+            let camera = front();
+            r.fail_frames = 2;
+            assert_eq!(outcome(r, &frame(&camera, &[1, 2], &[], None)), Failed);
+            assert_eq!(outcome(r, &frame(&camera, &[1, 2], &[], None)), Refused(1));
+            assert_eq!(outcome(r, &frame(&camera, &[1, 2], &[], None)), Failed);
+            // Refusing two; forgetting body 2 (and one never uploaded) refuses them still.
+            r.forget(2);
+            r.forget(9);
+            let one = frame(&camera, &[1], &[], None);
+            assert_eq!(outcome(r, &one), Refused(2));
+            assert_eq!(outcome(r, &one), Refused(1));
+            assert_eq!(outcome(r, &one), Drawn);
         },
     );
 }

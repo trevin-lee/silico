@@ -117,7 +117,9 @@ pub enum RenderFailure {
     Failed(String),
     /// The GPU failed a recent frame, so this one wasn't tried: [`Renderer::prepare`] backs
     /// off, refusing `frames` more frames (this one among them) before it uploads and draws
-    /// again. Nothing was drawn or changed.
+    /// again. Nothing was drawn or changed. Only frames count the backoff down, so the pane
+    /// must keep asking for them (egui repaints an idle window only when asked): a repaint
+    /// requested for each frame refused so, or the view is never tried again.
     BackingOff { frames: u32 },
 }
 
@@ -294,7 +296,9 @@ pub struct Renderer {
 /// come again (out of memory, a lost device) isn't met by every later frame uploading every
 /// face again and failing again. After a failure the next `refuse` frames are refused at
 /// once, then one is tried; each failure in a row doubles the frames refused after it, from
-/// 1 to [`MAX_BACKOFF_FRAMES`]. A frame that succeeds, or a new mesh uploaded, ends it.
+/// 1 to [`MAX_BACKOFF_FRAMES`]. A frame that succeeds ends it; a new mesh uploaded has the
+/// next frame tried, but keeps the doubling, so a failure that persists through edits still
+/// backs off to the most.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Backoff {
     /// How many more frames are refused.
@@ -305,6 +309,11 @@ struct Backoff {
 
 impl Backoff {
     const NONE: Backoff = Backoff { refuse: 0, next: 1 };
+
+    /// The next frame tried, the doubling kept: what a new mesh does.
+    fn try_next(&mut self) {
+        self.refuse = 0;
+    }
 
     /// Another failure: its frames to refuse, and the next failure's doubled.
     fn failed(&mut self) {
@@ -376,8 +385,9 @@ impl Renderer {
     /// [`View::anchor`]). The same mesh again (the same `Arc`, or an equal mesh) changes
     /// nothing; another replaces the body's, so its faces are uploaded again. A mesh that
     /// fails [`check_render_mesh`], or a body numbered 0 (the background's), is refused,
-    /// and the body is as it was. A new mesh taken ends a backoff ([`Renderer::prepare`]):
-    /// the next frame is tried.
+    /// and the body is as it was. A new mesh taken has the next frame tried, through a
+    /// backoff ([`Renderer::prepare`]), but keeps its doubling: if that frame fails too,
+    /// the frames refused after it are twice the last.
     pub fn upload(&mut self, body: u32, mesh: &Arc<Mesh>) -> Result<(), RenderFailure> {
         let _span =
             tracing::debug_span!("upload_body", body, faces = mesh.face_triangles.len()).entered();
@@ -398,7 +408,7 @@ impl Renderer {
         let mut uploaded = Uploaded::new(Arc::clone(mesh)).map_err(RenderFailure::Failed)?;
         uploaded.generation = self.next_generation();
         self.bodies.insert(body, uploaded);
-        self.backoff = Backoff::NONE;
+        self.backoff.try_next();
         Ok(())
     }
 
@@ -437,7 +447,9 @@ impl Renderer {
     /// met by every frame uploading every face again: the next frame is refused at once
     /// ([`RenderFailure::BackingOff`], before its checks, asking for no picking), then one is
     /// tried; each failure in a row doubles the frames refused after it, 1, 2, 4, … up to
-    /// [`MAX_BACKOFF_FRAMES`]. A frame that succeeds, or a new mesh uploaded, ends it.
+    /// [`MAX_BACKOFF_FRAMES`]. A frame that succeeds ends it; a new mesh uploaded has the
+    /// next frame tried, its doubling kept. [`Renderer::forget`] changes nothing of it. The
+    /// pane must keep asking for frames while it backs off ([`RenderFailure::BackingOff`]).
     pub fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, RenderFailure> {
         let _span = tracing::debug_span!(
             "prepare",
@@ -1438,8 +1450,8 @@ fn unproject(
 ///   too (its camera is set past the scene), so a pick meets the whole line, not only what's
 ///   ahead of its origin.
 ///
-/// None for a camera [`Camera::check`] refuses at this size, a size of 0 on a side, or a pixel
-/// that isn't finite.
+/// None for a camera [`Camera::check`] refuses at this size, a size of 0 on a side, a pixel
+/// that isn't finite, or one so far off the image that the ray's origin or direction isn't.
 pub fn ray(camera: &Camera, size_px: [u32; 2], pixel: [f64; 2]) -> Option<([f64; 3], [f64; 3])> {
     let [width, height] = size_px;
     if width == 0 || height == 0 || !pixel.iter().all(|c| c.is_finite()) {
@@ -1462,8 +1474,12 @@ pub fn ray(camera: &Camera, size_px: [u32; 2], pixel: [f64; 2]) -> Option<([f64;
             let projection = view_projection(camera.projection, size_px, 1.0);
             let [x, y, _] = unproject(projection, size_px, pixel, 0.5)?;
             let across = into_document([x, y, 0.0]);
-            let origin = std::array::from_fn(|k| camera.target[k] + across[k]);
-            Some((origin, frame.back.map(|c| -c)))
+            let origin: [f64; 3] = std::array::from_fn(|k| camera.target[k] + across[k]);
+            // A pixel far enough off the image puts the origin past f64: none.
+            origin
+                .iter()
+                .all(|c| c.is_finite())
+                .then(|| (origin, frame.back.map(|c| -c)))
         }
     }
 }
