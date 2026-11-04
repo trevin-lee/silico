@@ -15,8 +15,8 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, Align, FontId, Galley, Key, KeyboardShortcut, Layout, Modifiers, Pos2, Rect, Response,
-    RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
+    self, Align, Color32, FontId, Galley, Key, KeyboardShortcut, Layout, Modifiers, Pos2, Rect,
+    Response, RichText, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
     accesskit::Role, text::LayoutJob,
 };
 use silico_core::document::OriginPlane;
@@ -420,7 +420,8 @@ fn tabs_row(ui: &mut Ui, rect: Rect, in_sketch: bool) {
     });
 }
 
-/// `text` in the toolbar's capitals, `size` points, on a `line` high line.
+/// `text` in the toolbar's capitals, `size` points, on a `line` high line, in the colour it's
+/// painted with.
 fn capitals(ui: &Ui, text: &str, size: f32, line: Option<f32>) -> Arc<Galley> {
     let job = LayoutJob::single_section(
         text.to_owned(),
@@ -428,15 +429,15 @@ fn capitals(ui: &Ui, text: &str, size: f32, line: Option<f32>) -> Arc<Galley> {
             font_id: FontId::proportional(size),
             extra_letter_spacing: theme::CAPITALS_LETTER_SPACING,
             line_height: line,
-            color: theme::TEXT_DEFAULT,
+            color: Color32::PLACEHOLDER,
             ..Default::default()
         },
     );
     ui.painter().layout_job(job)
 }
 
-/// The workspace's name, DESIGN (`.tb-ws`): the row's height, its text at its bottom, a
-/// border at its right.
+/// The workspace's name, DESIGN (`.tb-ws`): the row's height, its text at its bottom, centred
+/// in its line (`--lh`) as a browser centres it, a border at its right.
 fn workspace(ui: &mut Ui) {
     let galley = capitals(ui, "DESIGN", theme::HEADER_SIZE, None);
     let width = theme::TOOLBAR_WORKSPACE_PADDING_LEFT
@@ -448,10 +449,12 @@ fn workspace(ui: &mut Ui) {
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, "DESIGN"));
     let at = Pos2::new(
         rect.left() + theme::TOOLBAR_WORKSPACE_PADDING_LEFT,
-        rect.bottom() - theme::TOOLBAR_WORKSPACE_PADDING_BOTTOM - galley.size().y,
+        rect.bottom()
+            - theme::TOOLBAR_WORKSPACE_PADDING_BOTTOM
+            - (theme::BODY_LINE_HEIGHT + galley.size().y) / 2.0,
     );
     let painter = ui.painter();
-    painter.galley_with_override_text_color(at, galley, theme::TOOLBAR_WORKSPACE_TEXT);
+    painter.galley(at, galley, theme::TOOLBAR_WORKSPACE_TEXT);
     painter.vline(
         rect.right() - 0.5,
         rect.y_range(),
@@ -499,7 +502,7 @@ fn tab(ui: &mut Ui, label: &str, active: bool, context: bool) {
         painter.rect_filled(rect, corners, fill);
     }
     let at = rect.center() - galley.size() / 2.0;
-    painter.galley_with_override_text_color(at, galley, text);
+    painter.galley(at, galley, text);
 }
 
 // ---- The panels (`.tb-panels`) ----
@@ -630,7 +633,11 @@ fn row_button(ui: &mut Ui, command: &Command, shown: &Shown<'_>, act: &mut Optio
 
 /// A toolbar button (`.tb-btn`): `icon`, labelled `label`, off unless `enabled`.
 fn tool_button(ui: &mut Ui, icon: Icon, label: &str, enabled: bool) -> Response {
+    // Painted at the toolbar's opacity, not faded further when off: `.tb-btn:disabled` is
+    // Gray.400 itself.
+    let opacity = ui.opacity();
     ui.add_enabled(enabled, |ui: &mut Ui| {
+        ui.set_opacity(opacity);
         let size = Vec2::splat(theme::TOOLBAR_BUTTON_SIZE);
         let (rect, response) = ui.allocate_exact_size(size, Sense::click());
         let enabled = ui.is_enabled();
@@ -696,8 +703,7 @@ fn drop_down_label(ui: &mut Ui, label: &str, galley: Arc<Galley>) -> Response {
         ),
         Vec2::splat(theme::TOOLBAR_LABEL_ARROW_SIZE),
     );
-    ui.painter()
-        .galley_with_override_text_color(text, galley, color);
+    ui.painter().galley(text, galley, color);
     Icon::Down
         .image(IconSize::Small)
         .fit_to_exact_size(arrow.size())
@@ -849,6 +855,11 @@ fn finish(ui: &mut Ui, row: Rect) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use eframe::egui::epaint::{ClippedShape, RectShape, TextShape};
+    use eframe::egui::{CornerRadius, Shape, TextFormat};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
     use super::*;
 
     /// A dialog's command is labelled with its kind's title, which the dialog's heading
@@ -875,5 +886,654 @@ mod tests {
                 .count();
             assert_eq!(in_row, usize::from(kind.sweeps()), "{kind:?}");
         }
+    }
+
+    // ---- The toolbar as drawn, against the prototype ----
+    //
+    // Each value below is typed from the approved prototype's stylesheet
+    // (docs/design/m5-ui/styles.css: `:root`'s tokens, `svg.i`, `#toolbar`, `.tb-*`, and
+    // `.btn-finish`) and js/app.js's renderToolbar, never from theme.rs, and compared with
+    // what the toolbar painted: each rectangle, line, icon, and text from egui's shapes, and
+    // each widget's bounds from the accessibility tree.
+
+    /// The prototype's tokens and geometry.
+    mod css {
+        use eframe::egui::Color32;
+
+        // `:root`'s greys and colours.
+        pub const G100: Color32 = Color32::from_rgb(0x0d, 0x0d, 0x0d);
+        pub const G200: Color32 = Color32::from_rgb(0x21, 0x21, 0x21);
+        pub const G250: Color32 = Color32::from_rgb(0x27, 0x26, 0x26);
+        pub const G300: Color32 = Color32::from_rgb(0x2c, 0x2b, 0x2b);
+        pub const G400: Color32 = Color32::from_rgb(0x64, 0x63, 0x63);
+        pub const G550: Color32 = Color32::from_rgb(0x93, 0x90, 0x90);
+        pub const G750: Color32 = Color32::from_rgb(0xcf, 0xcf, 0xcf);
+        pub const G800: Color32 = Color32::from_rgb(0xe0, 0xdf, 0xdf);
+        pub const G1000: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
+        pub const BLUE: Color32 = Color32::from_rgb(0x18, 0x6a, 0xdd);
+        pub const BLUE_TEXT: Color32 = Color32::from_rgb(0xf0, 0xf2, 0xff);
+        /// `.btn-finish:hover`'s `background: #2a78e8`.
+        pub const FINISH_HOVER: Color32 = Color32::from_rgb(0x2a, 0x78, 0xe8);
+
+        /// `--fs`, `--lh`, `--fs-small`, `--icon` (`svg.i`), `svg.i.lg`, `--r-sm`.
+        pub const FS: f32 = 12.0;
+        pub const LH: f32 = 16.0;
+        pub const FS_SMALL: f32 = 11.0;
+        pub const ICON: f32 = 14.0;
+        pub const ICON_LG: f32 = 20.0;
+        pub const R_SM: u8 = 4;
+        /// `--toolbar-tabs-h`, `--toolbar-h`; `#toolbar`'s and `.tb-tabs`' `border-bottom:
+        /// 1px` (`border-box`, `*`'s).
+        pub const TABS_H: f32 = 24.0;
+        pub const PANELS_H: f32 = 52.0;
+        pub const BORDER: f32 = 1.0;
+        /// `.tb-tabs`: `padding-left: 8px; gap: 2px`.
+        pub const TABS_PADDING: f32 = 8.0;
+        pub const TABS_GAP: f32 = 2.0;
+        /// `.tb-ws`: `padding: 0 10px 5px 4px; margin-right: 6px`; its and `.tb-tab`'s and
+        /// `.tb-label`'s `letter-spacing: .5px`.
+        pub const WS_PADDING_LEFT: f32 = 4.0;
+        pub const WS_PADDING_RIGHT: f32 = 10.0;
+        pub const WS_PADDING_BOTTOM: f32 = 5.0;
+        pub const WS_MARGIN: f32 = 6.0;
+        pub const CAPITALS_SPACING: f32 = 0.5;
+        /// `.tb-tab`: `padding: 0 10px; height: 22px`.
+        pub const TAB_PADDING: f32 = 10.0;
+        pub const TAB_H: f32 = 22.0;
+        /// `.tb-panels`: `padding: 0 6px`; `.tb-panel`: `padding: 4px 6px 0`.
+        pub const PANELS_PADDING: f32 = 6.0;
+        pub const PANEL_PADDING_TOP: f32 = 4.0;
+        pub const PANEL_PADDING_SIDE: f32 = 6.0;
+        /// `.tb-row { gap: 1px }`; `.tb-btn`: 30 square.
+        pub const ROW_GAP: f32 = 1.0;
+        pub const BTN: f32 = 30.0;
+        /// `.tb-label`: `font-size: 10px; line-height: 14px; gap: 2px; padding: 1px 4px;
+        /// border-radius: 3px; margin-top: 1px`, its arrow (`svg`) 8 square.
+        pub const LABEL_FS: f32 = 10.0;
+        pub const LABEL_LH: f32 = 14.0;
+        pub const LABEL_GAP: f32 = 2.0;
+        pub const LABEL_PADDING_Y: f32 = 1.0;
+        pub const LABEL_PADDING_X: f32 = 4.0;
+        pub const LABEL_RADIUS: u8 = 3;
+        pub const LABEL_MARGIN: f32 = 1.0;
+        pub const LABEL_ARROW: f32 = 8.0;
+        /// `.tb-finish`: `padding: 0 8px`; `.btn-finish`: `height: 30px; padding: 0 12px;
+        /// gap: 6px`.
+        pub const FINISH_MARGIN: f32 = 8.0;
+        pub const FINISH_H: f32 = 30.0;
+        pub const FINISH_PADDING: f32 = 12.0;
+        pub const FINISH_GAP: f32 = 6.0;
+    }
+
+    /// The window's width.
+    const WIDTH: f32 = 1280.0;
+
+    /// The toolbar across a window, in the app's theme, a sketch open if the state says so;
+    /// Pocket's dialog the one that can't open, and Create Sketch on.
+    fn drawn(in_sketch: bool) -> Harness<'static, bool> {
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(WIDTH, 200.0))
+            .build_ui_state(
+                |ui, in_sketch: &mut bool| {
+                    let can_open = |kind: Kind| kind != Kind::Pocket;
+                    let shown = Shown {
+                        in_sketch: *in_sketch,
+                        create_sketch: Some(true),
+                        can_open: &can_open,
+                        selected: false,
+                    };
+                    let window = UiBuilder::new().max_rect(ui.ctx().content_rect());
+                    ui.scope_builder(window, |ui| show(ui, &shown));
+                },
+                in_sketch,
+            );
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        h
+    }
+
+    /// Every shape the last frame painted, nested ones flattened, each with its clip.
+    fn clipped(h: &Harness<'_, bool>) -> Vec<ClippedShape> {
+        fn flatten(clip: Rect, shape: &Shape, out: &mut Vec<ClippedShape>) {
+            match shape {
+                Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(clip, shape, out)),
+                shape => out.push(ClippedShape {
+                    clip_rect: clip,
+                    shape: shape.clone(),
+                }),
+            }
+        }
+        let mut out = Vec::new();
+        for shown in &h.output().shapes {
+            flatten(shown.clip_rect, &shown.shape, &mut out);
+        }
+        out
+    }
+
+    fn rects(h: &Harness<'_, bool>) -> Vec<RectShape> {
+        clipped(h)
+            .into_iter()
+            .filter_map(|shown| match shown.shape {
+                Shape::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The one text painted whose text is `text`.
+    #[track_caller]
+    fn text(h: &Harness<'_, bool>, text: &str) -> TextShape {
+        let mut found: Vec<TextShape> = clipped(h)
+            .into_iter()
+            .filter_map(|shown| match shown.shape {
+                Shape::Text(shown) if shown.galley.text() == text => Some(shown),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "{text:?} painted {} times", found.len());
+        found.remove(0)
+    }
+
+    /// A text's colour as painted: its override, else its first section's, else the
+    /// shape's own for a placeholder.
+    fn colour(shown: &TextShape) -> Color32 {
+        let format = shown.galley.job.sections[0].format.color;
+        shown
+            .override_text_color
+            .unwrap_or(if format == Color32::PLACEHOLDER {
+                shown.fallback_color
+            } else {
+                format
+            })
+    }
+
+    fn format(shown: &TextShape) -> &TextFormat {
+        &shown.galley.job.sections[0].format
+    }
+
+    /// The toolbar's capitals: `size` points, `.5px` apart, on a `line` high line.
+    #[track_caller]
+    fn capitals(shown: &TextShape, size: f32, line: Option<f32>) {
+        let format = format(shown);
+        assert_eq!(format.font_id, FontId::proportional(size));
+        assert_eq!(format.extra_letter_spacing, css::CAPITALS_SPACING);
+        assert_eq!(format.line_height, line);
+    }
+
+    /// The tint of the icon painted at `rect` (a rectangle filled with its texture), to
+    /// half a point: egui puts an image on the pixel grid.
+    fn icon_at(h: &Harness<'_, bool>, rect: Rect) -> Option<Color32> {
+        rects(h)
+            .into_iter()
+            .find(|shape| {
+                shape.brush.is_some()
+                    && (shape.rect.min - rect.min).abs().max_elem() <= 0.5
+                    && (shape.rect.max - rect.max).abs().max_elem() <= 0.5
+            })
+            .map(|shape| shape.fill)
+    }
+
+    /// The fill painted over the whole of `rect`, if any but a transparent one is, and its
+    /// corners.
+    fn fill_at(h: &Harness<'_, bool>, rect: Rect) -> Option<(Color32, CornerRadius)> {
+        rects(h)
+            .into_iter()
+            .find(|shape| {
+                shape.brush.is_none()
+                    && shape.fill != Color32::TRANSPARENT
+                    && near_rect(shape.rect, rect)
+            })
+            .map(|shape| (shape.fill, shape.corner_radius))
+    }
+
+    /// The lines painted from `from` to `to`, by their strokes.
+    fn lines(h: &Harness<'_, bool>, from: Pos2, to: Pos2) -> Vec<Stroke> {
+        clipped(h)
+            .into_iter()
+            .filter_map(|shown| match shown.shape {
+                Shape::LineSegment { points, stroke }
+                    if near_pos(points[0], from) && near_pos(points[1], to) =>
+                {
+                    Some(stroke)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The vertical lines painted right of `x`.
+    fn lines_right_of(h: &Harness<'_, bool>, x: f32) -> usize {
+        clipped(h)
+            .into_iter()
+            .filter(|shown| {
+                matches!(shown.shape, Shape::LineSegment { points, .. }
+                    if near(points[0].x, points[1].x) && points[0].x > x)
+            })
+            .count()
+    }
+
+    /// Within egui's rounding of a widget's place, a 32nd of a point.
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() <= egui::emath::GUI_ROUNDING
+    }
+
+    fn near_pos(a: Pos2, b: Pos2) -> bool {
+        near(a.x, b.x) && near(a.y, b.y)
+    }
+
+    fn near_rect(a: Rect, b: Rect) -> bool {
+        near_pos(a.min, b.min) && near_pos(a.max, b.max)
+    }
+
+    #[track_caller]
+    fn at(got: Pos2, want: Pos2, what: &str) {
+        assert!(near_pos(got, want), "{what}: {got:?}, not {want:?}");
+    }
+
+    #[track_caller]
+    fn sized(got: Rect, want: Rect, what: &str) {
+        assert!(
+            near_rect(got, want),
+            "{what}: {:?}, not {:?}",
+            [got.min.x, got.min.y, got.max.x, got.max.y],
+            [want.min.x, want.min.y, want.max.x, want.max.y]
+        );
+    }
+
+    fn widget(h: &Harness<'_, bool>, role: Role, label: &str) -> Rect {
+        h.get_by_role_and_label(role, label).rect()
+    }
+
+    fn hover(h: &mut Harness<'_, bool>, role: Role, label: &str) {
+        h.get_by_role_and_label(role, label).hover();
+        h.run_steps(2);
+    }
+
+    /// A panel as the prototype lays it out: its box, its border, its row of buttons, and
+    /// its label.
+    struct Laid {
+        name: &'static str,
+        rect: Rect,
+        border: bool,
+        buttons: Vec<(&'static str, Rect)>,
+        label: Rect,
+    }
+
+    /// `panels`, each its name and its buttons, laid out from `.tb-panels`' left as
+    /// `.tb-panel`, `.tb-row`, and `.tb-label` have them, the last with no border unless
+    /// `finish` comes after it.
+    fn laid(
+        h: &Harness<'_, bool>,
+        panels: &[(&'static str, &[&'static str])],
+        finish: bool,
+    ) -> Vec<Laid> {
+        let mut left = css::PANELS_PADDING;
+        let mut out = Vec::new();
+        for (at, (name, buttons)) in panels.iter().enumerate() {
+            let label_text = text(h, name).galley.size().x;
+            let label = Vec2::new(
+                css::LABEL_PADDING_X
+                    + label_text
+                    + css::LABEL_GAP
+                    + css::LABEL_ARROW
+                    + css::LABEL_PADDING_X,
+                css::LABEL_PADDING_Y + css::LABEL_LH + css::LABEL_PADDING_Y,
+            );
+            let count = buttons.len() as f32;
+            let row = count * css::BTN + (count - 1.0) * css::ROW_GAP;
+            let inside = css::PANEL_PADDING_SIDE + row.max(label.x) + css::PANEL_PADDING_SIDE;
+            let border = finish || at + 1 < panels.len();
+            let rect = Rect::from_min_size(
+                Pos2::new(left, css::TABS_H),
+                Vec2::new(
+                    inside + if border { css::BORDER } else { 0.0 },
+                    css::PANELS_H,
+                ),
+            );
+            let middle = left + inside / 2.0;
+            let top = css::TABS_H + css::PANEL_PADDING_TOP;
+            let buttons = buttons
+                .iter()
+                .enumerate()
+                .map(|(k, button)| {
+                    let x = middle - row / 2.0 + k as f32 * (css::BTN + css::ROW_GAP);
+                    (
+                        *button,
+                        Rect::from_min_size(Pos2::new(x, top), Vec2::splat(css::BTN)),
+                    )
+                })
+                .collect();
+            let label = Rect::from_min_size(
+                Pos2::new(middle - label.x / 2.0, top + css::BTN + css::LABEL_MARGIN),
+                label,
+            );
+            out.push(Laid {
+                name,
+                rect,
+                border,
+                buttons,
+                label,
+            });
+            left = rect.right();
+        }
+        out
+    }
+
+    /// SOLID's panels and their buttons (app.js's renderToolbar).
+    const SOLID_PANELS: [(&str, &[&str]); 4] = [
+        (
+            "CREATE",
+            &["Create Sketch", "Pad", "Pocket", "Revolve", "Groove"],
+        ),
+        (
+            "MODIFY",
+            &["Fillet", "Chamfer", "Union", "Subtract", "Intersect"],
+        ),
+        ("INSPECT", &["Measure"]),
+        ("SELECT", &["Faces", "Edges", "Vertices"]),
+    ];
+
+    /// SKETCH's.
+    const SKETCH_PANELS: [(&str, &[&str]); 4] = [
+        (
+            "CREATE",
+            &[
+                "Line",
+                "Rectangle",
+                "Circle",
+                "Arc",
+                "Point",
+                "Construction",
+            ],
+        ),
+        ("MODIFY", &["Trim", "Extend", "Split"]),
+        (
+            "CONSTRAINTS",
+            &[
+                "Smart Dimension",
+                "Horizontal",
+                "Vertical",
+                "Coincident",
+                "Tangent",
+                "Equal",
+                "Parallel",
+                "Perpendicular",
+                "Midpoint",
+                "Symmetric",
+                "Fix",
+            ],
+        ),
+        ("INSPECT", &["Measure"]),
+    ];
+
+    /// Each panel at its place, labelled with its label, with a border of Gray.200 down its
+    /// right unless it has none, and none past it.
+    #[track_caller]
+    fn panels_placed(h: &Harness<'_, bool>, laid: &[Laid]) {
+        for panel in laid {
+            let x = panel.rect.right() - css::BORDER / 2.0;
+            let border = lines(
+                h,
+                Pos2::new(x, panel.rect.top()),
+                Pos2::new(x, panel.rect.bottom()),
+            );
+            if panel.border {
+                assert_eq!(
+                    border,
+                    [Stroke::new(css::BORDER, css::G200)],
+                    "{}",
+                    panel.name
+                );
+            } else {
+                assert_eq!(
+                    lines_right_of(h, panel.rect.left()),
+                    0,
+                    "{}'s border",
+                    panel.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_tabs_are_drawn_as_tb_tabs_tb_ws_and_tb_tab() {
+        let mut h = drawn(false);
+        // `#toolbar`: Gray.100, the tabs' 24 and the panels' 52 over its border, 1 of
+        // Gray.250 along its last point; `.tb-tabs`' border, 1 of Gray.200 along theirs.
+        let height = css::TABS_H + css::PANELS_H + css::BORDER;
+        assert_eq!(
+            fill_at(
+                &h,
+                Rect::from_min_size(Pos2::ZERO, Vec2::new(WIDTH, height))
+            ),
+            Some((css::G100, CornerRadius::ZERO))
+        );
+        for (y, ink) in [
+            (height - css::BORDER / 2.0, css::G250),
+            (css::TABS_H - css::BORDER / 2.0, css::G200),
+        ] {
+            assert_eq!(
+                lines(&h, Pos2::new(0.0, y), Pos2::new(WIDTH, y)),
+                [Stroke::new(css::BORDER, ink)],
+                "the border at {y}"
+            );
+        }
+        // `.tb-ws`: 8 in, the row's height above the border; 4, DESIGN, 10, and a border of
+        // Gray.250 at its right; its text Gray.550 on a 16 line (`--lh`) 5 above its bottom.
+        let row = css::TABS_H - css::BORDER;
+        let design = text(&h, "DESIGN");
+        capitals(&design, css::FS_SMALL, None);
+        assert_eq!(colour(&design), css::G550);
+        let ws = Rect::from_min_max(
+            Pos2::new(css::TABS_PADDING, 0.0),
+            Pos2::new(
+                css::TABS_PADDING
+                    + css::WS_PADDING_LEFT
+                    + design.galley.size().x
+                    + css::WS_PADDING_RIGHT
+                    + css::BORDER,
+                row,
+            ),
+        );
+        sized(widget(&h, Role::Label, "DESIGN"), ws, "DESIGN");
+        at(
+            design.pos,
+            Pos2::new(
+                ws.left() + css::WS_PADDING_LEFT,
+                row - css::WS_PADDING_BOTTOM - css::LH / 2.0 - design.galley.size().y / 2.0,
+            ),
+            "DESIGN",
+        );
+        let x = ws.right() - css::BORDER / 2.0;
+        assert_eq!(
+            lines(&h, Pos2::new(x, 0.0), Pos2::new(x, row)),
+            [Stroke::new(css::BORDER, css::G250)]
+        );
+        // `.tb-tab`, the gap and the workspace's margin on: 10, its name, and 10; 22 high at
+        // the row's bottom; its name centred.
+        let tab = |h: &Harness<'_, bool>, label: &str, left: f32| {
+            let shown = text(h, label);
+            capitals(&shown, css::FS_SMALL, None);
+            let rect = Rect::from_min_max(
+                Pos2::new(left, row - css::TAB_H),
+                Pos2::new(
+                    left + css::TAB_PADDING + shown.galley.size().x + css::TAB_PADDING,
+                    row,
+                ),
+            );
+            sized(widget(h, Role::Tab, label), rect, label);
+            at(shown.pos, rect.center() - shown.galley.size() / 2.0, label);
+            (rect, colour(&shown))
+        };
+        let top = CornerRadius {
+            nw: css::R_SM,
+            ne: css::R_SM,
+            sw: 0,
+            se: 0,
+        };
+        // SOLID shown (`.active`): Gray.200 behind white, its top corners `--r-sm`.
+        let left = ws.right() + css::TABS_GAP + css::WS_MARGIN;
+        let (solid, ink) = tab(&h, "SOLID", left);
+        assert_eq!(fill_at(&h, solid), Some((css::G200, top)));
+        assert_eq!(ink, css::G1000);
+        // A sketch open: SOLID Gray.550 on nothing (`.tb-tab`), Gray.800 hovered; SKETCH
+        // after it, `.ctx.active`: blue behind Blue.900, hovered or not.
+        *h.state_mut() = true;
+        h.run_steps(4);
+        let (solid, ink) = tab(&h, "SOLID", left);
+        assert_eq!(fill_at(&h, solid), None);
+        assert_eq!(ink, css::G550);
+        let (sketch, ink) = tab(&h, "SKETCH", solid.right() + css::TABS_GAP);
+        assert_eq!(fill_at(&h, sketch), Some((css::BLUE, top)));
+        assert_eq!(ink, css::BLUE_TEXT);
+        hover(&mut h, Role::Tab, "SOLID");
+        assert_eq!(tab(&h, "SOLID", left).1, css::G800);
+        assert_eq!(fill_at(&h, solid), None);
+        hover(&mut h, Role::Tab, "SKETCH");
+        assert_eq!(tab(&h, "SKETCH", sketch.left()).1, css::BLUE_TEXT);
+        assert_eq!(fill_at(&h, sketch), Some((css::BLUE, top)));
+    }
+
+    #[test]
+    fn the_panels_and_their_buttons_are_drawn_as_tb_panel_and_tb_btn() {
+        let mut h = drawn(false);
+        // `.tb-panels`' 6 in, each `.tb-panel` its row or its label, whichever is wider, in
+        // its 6 at each side, and its border; SELECT, the last, with none.
+        let laid = laid(&h, &SOLID_PANELS, false);
+        panels_placed(&h, &laid);
+        // Each button 30 square, 1 apart, centred under the panel's 4; its 20 point icon
+        // (`svg.i.lg`) centred, Gray.750 (`.tb-btn`), or Gray.400 off (`:disabled`): Pocket,
+        // whose dialog can't open, and what isn't built.
+        let on = ["Create Sketch", "Pad", "Revolve", "Groove"];
+        let icon = |rect: Rect| Rect::from_center_size(rect.center(), Vec2::splat(css::ICON_LG));
+        for (label, rect) in laid.iter().flat_map(|panel| panel.buttons.iter()) {
+            sized(widget(&h, Role::Button, label), *rect, label);
+            let ink = if on.contains(label) {
+                css::G750
+            } else {
+                css::G400
+            };
+            assert_eq!(icon_at(&h, icon(*rect)), Some(ink), "{label}'s icon");
+            assert_eq!(fill_at(&h, *rect), None, "{label}'s fill");
+        }
+        // Hovered (`.tb-btn:hover:not(:disabled)`): Gray.300 behind white, its corners
+        // `--r-sm`; Pocket, off, unchanged.
+        let pad = laid[0].buttons[1].1;
+        hover(&mut h, Role::Button, "Pad");
+        assert_eq!(
+            fill_at(&h, pad),
+            Some((css::G300, CornerRadius::same(css::R_SM)))
+        );
+        assert_eq!(icon_at(&h, icon(pad)), Some(css::G1000));
+        let pocket = laid[0].buttons[2].1;
+        hover(&mut h, Role::Button, "Pocket");
+        assert_eq!(fill_at(&h, pocket), None);
+        assert_eq!(icon_at(&h, icon(pocket)), Some(css::G400));
+    }
+
+    #[test]
+    fn the_drop_downs_labels_are_drawn_as_tb_label() {
+        let mut h = drawn(false);
+        // Each label centred under its row, 1 below it: 4, its name, 2, its 8 point arrow,
+        // and 4, on a 14 line in 1 above and below; its name 10 points, Gray.550, its arrow
+        // too, centred on the label's middle.
+        let laid = laid(&h, &SOLID_PANELS, false);
+        let check = |h: &Harness<'_, bool>, panel: &Laid, ink: Color32| {
+            let rect = h
+                .get_by_role_and_label(Role::Toolbar, panel.name)
+                .get_by_role_and_label(Role::Button, panel.name)
+                .rect();
+            sized(rect, panel.label, panel.name);
+            let shown = text(h, panel.name);
+            capitals(&shown, css::LABEL_FS, Some(css::LABEL_LH));
+            assert_eq!(colour(&shown), ink, "{}", panel.name);
+            at(
+                shown.pos,
+                panel.label.min + Vec2::new(css::LABEL_PADDING_X, css::LABEL_PADDING_Y),
+                panel.name,
+            );
+            assert_eq!(shown.galley.size().y, css::LABEL_LH, "{}", panel.name);
+            let arrow = Rect::from_min_size(
+                Pos2::new(
+                    shown.pos.x + shown.galley.size().x + css::LABEL_GAP,
+                    panel.label.center().y - css::LABEL_ARROW / 2.0,
+                ),
+                Vec2::splat(css::LABEL_ARROW),
+            );
+            assert_eq!(icon_at(h, arrow), Some(ink), "{}'s arrow", panel.name);
+        };
+        for panel in &laid {
+            check(&h, panel, css::G550);
+            assert_eq!(fill_at(&h, panel.label), None, "{}", panel.name);
+        }
+        // Hovered (`.tb-label:hover`): Gray.250 behind white, its corners 3.
+        h.get_by_role_and_label(Role::Toolbar, "MODIFY")
+            .get_by_role_and_label(Role::Button, "MODIFY")
+            .hover();
+        h.run_steps(2);
+        check(&h, &laid[1], css::G1000);
+        assert_eq!(
+            fill_at(&h, laid[1].label),
+            Some((css::G250, CornerRadius::same(css::LABEL_RADIUS)))
+        );
+    }
+
+    #[test]
+    fn the_sketch_tabs_panels_and_finish_sketch_are_drawn_as_tb_panel_and_btn_finish() {
+        let mut h = drawn(true);
+        // SKETCH's panels, INSPECT's border kept: Finish Sketch comes after it.
+        let laid = laid(&h, &SKETCH_PANELS, true);
+        panels_placed(&h, &laid);
+        for (label, rect) in laid.iter().flat_map(|panel| panel.buttons.iter()) {
+            sized(widget(&h, Role::Button, label), *rect, label);
+        }
+        // `.tb-finish`: at the panels' right, in `.tb-panels`' 6 and its own 8, 30 high on
+        // the panels' middle; `.btn-finish`: 12, the check (`svg.i`, 14), 6, its name in
+        // 12 points, and 12; blue behind white, its corners `--r-sm`.
+        let name = text(&h, "Finish Sketch");
+        assert_eq!(format(&name).font_id, FontId::proportional(css::FS));
+        assert_eq!(colour(&name), css::G1000);
+        let right = WIDTH - css::PANELS_PADDING - css::FINISH_MARGIN;
+        let width = css::FINISH_PADDING
+            + css::ICON
+            + css::FINISH_GAP
+            + name.galley.size().x
+            + css::FINISH_PADDING;
+        let middle = css::TABS_H + css::PANELS_H / 2.0;
+        let finish = Rect::from_min_max(
+            Pos2::new(right - width, middle - css::FINISH_H / 2.0),
+            Pos2::new(right, middle + css::FINISH_H / 2.0),
+        );
+        sized(
+            widget(&h, Role::Button, "Finish Sketch"),
+            finish,
+            "Finish Sketch",
+        );
+        assert_eq!(
+            fill_at(&h, finish),
+            Some((css::BLUE, CornerRadius::same(css::R_SM)))
+        );
+        let check = Rect::from_min_size(
+            Pos2::new(
+                finish.left() + css::FINISH_PADDING,
+                middle - css::ICON / 2.0,
+            ),
+            Vec2::splat(css::ICON),
+        );
+        assert_eq!(icon_at(&h, check), Some(css::G1000));
+        at(
+            name.pos,
+            Pos2::new(
+                check.right() + css::FINISH_GAP,
+                middle - name.galley.size().y / 2.0,
+            ),
+            "Finish Sketch",
+        );
+        // Hovered (`.btn-finish:hover`): #2a78e8.
+        hover(&mut h, Role::Button, "Finish Sketch");
+        assert_eq!(
+            fill_at(&h, finish),
+            Some((css::FINISH_HOVER, CornerRadius::same(css::R_SM)))
+        );
     }
 }

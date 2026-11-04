@@ -471,3 +471,7 @@ crates/silico-core/src/views.rs | fit_along | replace == with != | #341
 # (This mutant went untested in #371's own run, whose shard 0 baseline failed; #376's run
 # on main tested it and found it equivalent.)
 crates/silico-app/src/viewport.rs | sequenced | replace < with <= | #376
+# The toolbar (#362): a panel's row is its buttons and the gaps between them, each gap
+# `.tb-row`'s 1px (`TOOLBAR_BUTTON_GAP`). The gaps' count times 1 and divided by 1 are the
+# same width, bit for bit, so nothing drawn tells them apart; any other gap's would.
+crates/silico-app/src/toolbar.rs | panel | replace * with / | #362
