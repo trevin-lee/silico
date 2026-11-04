@@ -51,6 +51,7 @@ fn session(kernel: &FakeKernel) -> (Arc<Session<FakeClient>>, Receiver<Job<FakeC
             carried: Arc::new(BTreeSet::new()),
             transaction: None,
             last_reload: None,
+            reloaded_over: None,
         }),
         queue: Mutex::new(Some(sender)),
         rebuilds: Mutex::new(Rebuilds {
@@ -4201,6 +4202,11 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
     queued.push((
         SessionCommand::Redo,
         Box::new(|| erased(s.redo(at, Revision::OPENED, None))),
+    ));
+    // `diff`, Fable's of 2026-11-04, last.
+    queued.push((
+        SessionCommand::Diff,
+        Box::new(|| erased(s.diff(at, None, None))),
     ));
     // M5.3's queued drag commands, after `timeline`, as the design lists them: `drag_move`
     // runs beside the queue, on the drag, and its cancel is the drag's tests'.

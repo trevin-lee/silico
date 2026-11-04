@@ -1,11 +1,12 @@
-//! `text`, `outline`, `check`, and `timeline`'s wire types (docs/design/m4.1-command-api.md,
-//! section 7; docs/design/m5.0-app.md, section 7, for `timeline`): their requests, read
-//! strictly ([`TextRequest`], [`CheckRequest`], [`TimelineRequest`], and the
+//! `text`, `outline`, `check`, `timeline`, and `diff`'s wire types
+//! (docs/design/m4.1-command-api.md, section 7; docs/design/m5.0-app.md, section 7, for
+//! `timeline`; Fable's decision of 2026-11-04, section 1, for `diff`): their requests, read
+//! strictly ([`TextRequest`], [`CheckRequest`], [`TimelineRequest`], [`DiffRequest`], and the
 //! [`SessionRequest`](super::transaction::SessionRequest) `outline` takes); their results,
 //! written field for field ([`ToWire`]: [`TextAnswer`], [`OutlineAnswer`], [`CheckAnswer`],
-//! and [`TimelineAnswer`], what the session's commands give); and the mirrors their
-//! snapshots, `commands/text.json`, `outline.json`, `check.json`, and `timeline.json`, are
-//! generated from. A timeline entry's health is written as [`Health::word`] gives it, and its
+//! [`TimelineAnswer`], and [`DiffAnswer`], what the session's commands give); and the
+//! mirrors their snapshots, `commands/text.json`, `outline.json`, `check.json`,
+//! `timeline.json`, and `diff.json`, are generated from. A timeline entry's health is written as [`Health::word`] gives it, and its
 //! snapshot's words are [`Health::ALL`]'s.
 //!
 //! `check`'s `fresh` (M4.3: the current revision rebuilt with every step built anew) is
@@ -20,11 +21,11 @@ use super::elements::ModelChoiceSchema;
 use super::{ErrorSchema, Json, RequestFields, ToWire, WarningSchema, problems, wire_shape, words};
 use crate::command::session::SESSION_ID_PATTERN;
 use crate::command::{
-    CheckAnswer, CheckModel, ModelChoice, OutlineAnswer, Problems, SessionId, TextAnswer,
-    TimelineAnswer,
+    CheckAnswer, CheckModel, DiffAnswer, ModelChoice, OutlineAnswer, Problems, Revision, SessionId,
+    TextAnswer, TimelineAnswer,
 };
 use crate::document::json::Node;
-use crate::document::{FeatureId, PROBLEMS_LISTED};
+use crate::document::{Change, FeatureId, PROBLEMS_LISTED};
 use crate::timeline::{Entry, Health};
 use crate::{Error, ErrorCode};
 
@@ -209,6 +210,74 @@ impl ToWire for OutlineAnswer {
     }
 }
 
+/// A `diff` request: the session, and the two revisions to compare, each `None` for the
+/// session's revision now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffRequest {
+    pub session: SessionId,
+    pub from: Option<Revision>,
+    pub to: Option<Revision>,
+}
+
+impl DiffRequest {
+    /// The request `node` holds, or every reason its shape is refused.
+    pub fn read(node: &Node) -> Result<Self, Problems> {
+        RequestFields::read(node, |f| {
+            let session = f.session();
+            let from = f.nullable_revision("from");
+            let to = f.nullable_revision("to");
+            Some(DiffRequest {
+                session: session?,
+                from: from?,
+                to: to?,
+            })
+        })
+    }
+}
+
+impl ToWire for DiffRequest {
+    /// The request as a client writes it, every field in the shape's order.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("session", self.session.to_wire()),
+            ("from", Json::or_null(self.from.as_ref(), ToWire::to_wire)),
+            ("to", Json::or_null(self.to.as_ref(), ToWire::to_wire)),
+        ])
+    }
+}
+
+impl ToWire for Change {
+    /// A change: the feature and its name, the field's path (`null` for its place), and
+    /// the values before and after, a field's laid out as the document lays it out.
+    fn to_wire(&self) -> Json<'_> {
+        let value = |value| match &self.field {
+            Some(field) => Json::field(field, value),
+            None => Json::plain(value),
+        };
+        Json::object([
+            ("feature", self.feature.to_wire()),
+            ("name", Json::str(&self.name)),
+            ("field", Json::or_null(self.field.as_deref(), Json::str)),
+            ("before", value(&self.before)),
+            ("after", value(&self.after)),
+        ])
+    }
+}
+
+impl ToWire for DiffAnswer {
+    /// The revisions compared, and each change, in order.
+    fn to_wire(&self) -> Json<'_> {
+        Json::object([
+            ("from", self.from.to_wire()),
+            ("to", self.to.to_wire()),
+            (
+                "changes",
+                Json::array(self.changes.iter().map(ToWire::to_wire)),
+            ),
+        ])
+    }
+}
+
 impl ToWire for CheckAnswer {
     /// The problems, the first 100 and how many, and the warnings, likewise.
     fn to_wire(&self) -> Json<'_> {
@@ -358,6 +427,79 @@ pub struct TimelineEntrySchema {
     pub problems: u64,
     /// How many warnings the model has on it, whose text `check` gives.
     pub warnings: u64,
+}
+
+/// `diff`'s request: what changed between two revisions the session holds.
+#[derive(JsonSchema)]
+#[schemars(rename = "DiffRequest", transform = wire_shape)]
+pub struct DiffRequestSchema {
+    /// The session's ID, as `open` gave it.
+    #[schemars(regex(pattern = SESSION_ID_PATTERN))]
+    pub session: String,
+    /// The revision to compare from, or null for the document now. A session holds the
+    /// text of its revision now, of the one its last reload replaced (after a response that
+    /// says `reloaded`), and, inside a transaction, of the one it began at; any other is
+    /// refused, the revisions it holds its candidates.
+    #[schemars(range(min = 1))]
+    pub from: Option<u64>,
+    /// The revision to compare to, or null for the document now, held as `from` is.
+    #[schemars(range(min = 1))]
+    pub to: Option<u64>,
+}
+
+/// `diff`'s result.
+#[derive(JsonSchema)]
+#[schemars(rename = "DiffResult", transform = wire_shape)]
+pub struct DiffResultSchema {
+    /// The revision compared from: the request's, or, for null, the session's then.
+    #[schemars(range(min = 1))]
+    pub from: u64,
+    /// The revision compared to, likewise.
+    #[schemars(range(min = 1))]
+    pub to: u64,
+    /// Each change from `from` to `to`, in `to`'s timeline order (a feature's change of
+    /// place first, then its fields in the order the document writes them), then each
+    /// feature removed, in `from`'s order. Empty if the two documents are the same.
+    pub changes: Vec<DiffChangeSchema>,
+}
+
+/// One change between two revisions: a feature's place in the timeline, or one of its
+/// fields.
+#[derive(JsonSchema)]
+#[schemars(rename = "DiffChange", transform = wire_shape)]
+pub struct DiffChangeSchema {
+    /// The feature, by ID.
+    pub feature: FeatureId,
+    /// Its name: as `to` has it, or, for a feature removed, as `from` had it.
+    pub name: String,
+    /// The path to the field that changed, as `set_field` names one (a sketch's members by
+    /// ID, other lists by place, from 0), down to the first value that's a number, a string,
+    /// true or false, or absent on one side: so `set_field` of `after` there makes the
+    /// change, and of `before` reverts it, where `set_field` can set that field. Null for a
+    /// change of the feature's place: added, removed, or moved (its order among the
+    /// features both revisions hold changed: one removed or added moves none of the others).
+    pub field: Option<String>,
+    pub before: DiffValueSchema,
+    pub after: DiffValueSchema,
+}
+
+/// A change's value on one side.
+pub struct DiffValueSchema;
+
+impl JsonSchema for DiffValueSchema {
+    fn schema_name() -> Cow<'static, str> {
+        "DiffValue".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "description": "With a field, its value on that side, as the document writes \
+                            that field: a number, a string, true or false, a list, an object, \
+                            or null where the feature hasn't the field (or isn't there). With \
+                            field null, the feature's place in that side's timeline, from 0, \
+                            as remove_feature gives a place: null where it isn't there."
+        })
+    }
 }
 
 /// A feature's health, in Fusion's states ([`Health::ALL`], each as [`Health::word`] writes

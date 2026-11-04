@@ -95,6 +95,7 @@ mod edits;
 mod holding;
 mod rebuilds;
 mod registry;
+mod revisions;
 mod sketch_edits;
 mod threads;
 mod transaction;
@@ -134,6 +135,7 @@ use registry::{
     Book, CacheOpener, Opening, Registry, Release, Started, claim, holder, moved, reclaim, reserve,
     serve, start, unreserve, watch_saved,
 };
+pub use revisions::DiffAnswer;
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
 use transaction::{Claim, Held, Open, Reload, Rereads, SaveTo, transaction_open, untitled_cache};
@@ -1432,6 +1434,25 @@ impl<P: Clients + 'static> Sessions<P> {
             Ok(OutlineAnswer {
                 outline: super::outline(document),
             })
+        })
+    }
+
+    /// The changes from the revision `from` names to the one `to` names, each `None` for the
+    /// session's revision now (Fable's decision of 2026-11-04, section 1): each feature
+    /// added, removed, or moved, and each field that changed, with its value before and
+    /// after ([`document::diff`]). A read of texts the session holds, needing no model and
+    /// rebuilding nothing: its current revision's, the one its last reload replaced, and,
+    /// inside a transaction, the one `begin` saw. Refused, naming `from` or `to`, for a
+    /// revision it doesn't hold (the ones it does as candidates), and for a text that
+    /// doesn't read as a document (the reader's message as the cause).
+    pub fn diff(
+        &self,
+        session: &SessionId,
+        from: Option<Revision>,
+        to: Option<Revision>,
+    ) -> Running<DiffAnswer> {
+        self.queued(session, SessionCommand::Diff, move |session, _, _| {
+            session.diff(from, to)
         })
     }
 

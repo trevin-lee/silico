@@ -1674,6 +1674,7 @@
               "sketch_join",
               "undo",
               "redo",
+              "diff",
               "reload"
             ],
             "type": "string"
@@ -1979,6 +1980,7 @@
               "sketch_join",
               "undo",
               "redo",
+              "diff",
               "rebuild"
             ],
             "type": "string"
@@ -2285,6 +2287,7 @@
               "sketch_join",
               "undo",
               "redo",
+              "diff",
               "rebuild"
             ],
             "type": "string"
@@ -26742,6 +26745,409 @@
         "type": "object"
       },
       "title": "Redo"
+    },
+    {
+      "annotations": {
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Changes between revisions"
+      },
+      "description": "What changed between two revisions the session holds (`null` for the document now): each feature added, removed, or moved (`field` null, `before` and `after` its place in the timeline), and each field that changed, by the path `set_field` names it by, with its value before and after. The session holds its revision now, the one its last reload replaced, and inside a transaction the one it began at: after a response that says `reloaded`, diff from the revision you last saw to `null` to learn what changed outside the session.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "description": "`diff`'s request: what changed between two revisions the session holds.",
+        "properties": {
+          "from": {
+            "description": "The revision to compare from, or null for the document now. A session holds the\ntext of its revision now, of the one its last reload replaced (after a response that\nsays `reloaded`), and, inside a transaction, of the one it began at; any other is\nrefused, the revisions it holds its candidates.",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "session": {
+            "description": "The session's ID, as `open` gave it.",
+            "pattern": "^s[1-9][0-9]*$",
+            "type": "string"
+          },
+          "to": {
+            "description": "The revision to compare to, or null for the document now, held as `from` is.",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "from",
+          "session",
+          "to"
+        ],
+        "title": "DiffRequest",
+        "type": "object"
+      },
+      "name": "diff",
+      "outputSchema": {
+        "$defs": {
+          "DiffChange": {
+            "additionalProperties": false,
+            "description": "One change between two revisions: a feature's place in the timeline, or one of its\nfields.",
+            "properties": {
+              "after": {
+                "$ref": "#/$defs/DiffValue"
+              },
+              "before": {
+                "$ref": "#/$defs/DiffValue"
+              },
+              "feature": {
+                "$ref": "#/$defs/FeatureId",
+                "description": "The feature, by ID."
+              },
+              "field": {
+                "description": "The path to the field that changed, as `set_field` names one (a sketch's members by\nID, other lists by place, from 0), down to the first value that's a number, a string,\ntrue or false, or absent on one side: so `set_field` of `after` there makes the\nchange, and of `before` reverts it, where `set_field` can set that field. Null for a\nchange of the feature's place: added, removed, or moved (its order among the\nfeatures both revisions hold changed: one removed or added moves none of the others).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "description": "Its name: as `to` has it, or, for a feature removed, as `from` had it.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "after",
+              "before",
+              "feature",
+              "field",
+              "name"
+            ],
+            "type": "object"
+          },
+          "DiffValue": {
+            "description": "With a field, its value on that side, as the document writes that field: a number, a string, true or false, a list, an object, or null where the feature hasn't the field (or isn't there). With field null, the feature's place in that side's timeline, from 0, as remove_feature gives a place: null where it isn't there."
+          },
+          "Error": {
+            "additionalProperties": false,
+            "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+            "properties": {
+              "advice": {
+                "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+                "enum": [
+                  "change_the_values",
+                  "simplify_or_wait",
+                  "try_again",
+                  "try_once_more",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "candidates": {
+                "description": "What might have been meant, such as the names nearest one that found nothing.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "cause": {
+                "description": "What lay under it, such as the kernel's own failure, if known.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+                "enum": [
+                  "invalid_input",
+                  "kernel_failed",
+                  "worker_crashed",
+                  "worker_timeout",
+                  "protocol_error",
+                  "internal",
+                  "invalid_result",
+                  "resource_exhausted",
+                  "drift",
+                  "io_failed",
+                  "reference_broken",
+                  "over_constrained",
+                  "solve_failed",
+                  "conflict",
+                  "worker_unavailable",
+                  "cancelled"
+                ],
+                "type": "string"
+              },
+              "elements": {
+                "description": "The elements at fault, by name: the first of them, if there are many.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "elements_total": {
+                "description": "How many elements are at fault, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "feature": {
+                "description": "The ID of the feature at fault, if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "description": "What went wrong, in a sentence.",
+                "type": "string"
+              },
+              "parameter": {
+                "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "suggestion": {
+                "description": "What to do about it, if Silico can say.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "advice",
+              "candidates",
+              "cause",
+              "code",
+              "elements",
+              "elements_total",
+              "feature",
+              "message",
+              "parameter",
+              "suggestion"
+            ],
+            "type": "object"
+          },
+          "FeatureId": {
+            "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+            "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+            "type": "string"
+          },
+          "Model": {
+            "additionalProperties": false,
+            "description": "The model the command read.",
+            "properties": {
+              "fault": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Error"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The kernel fault the model's rebuild met, if it met one: null if none."
+              },
+              "of": {
+                "$ref": "#/$defs/ModelOf"
+              },
+              "revision": {
+                "description": "The revision the model was rebuilt from.",
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "fault",
+              "of",
+              "revision"
+            ],
+            "type": "object"
+          },
+          "ModelOf": {
+            "description": "Which model was read: the session's current revision's (`current`), or the newest one\npublished (`published`), which may be an older revision's.",
+            "enum": [
+              "current",
+              "published"
+            ],
+            "type": "string"
+          },
+          "Refused": {
+            "additionalProperties": false,
+            "description": "A command refused, or one that couldn't run: `ok` is false, and `errors` gives every\nreason, in the order found.",
+            "properties": {
+              "errors": {
+                "description": "The reasons, in the order found: the first 100.",
+                "items": {
+                  "$ref": "#/$defs/Error"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": false,
+                "type": "boolean"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session, a\nsession that isn't open, a request whose session can't be read, or a call the server\nrefused before the core read it."
+              },
+              "total": {
+                "description": "How many reasons there are, listed or not.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "errors",
+              "model",
+              "ok",
+              "session",
+              "total"
+            ],
+            "type": "object"
+          },
+          "Session": {
+            "additionalProperties": false,
+            "description": "The session as the command left it.",
+            "properties": {
+              "id": {
+                "description": "The session's ID, `s1`, `s2`, ...: give it in each request to the session.",
+                "type": "string"
+              },
+              "path": {
+                "description": "The document's path, as `open` was given it, or, after a Save As, as the `commit`\nwas. Null while the session is untitled (opened with `path` null), until a `commit`\nwith a path saves it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reloaded": {
+                "description": "Whether the session read its file again before the command, finding it changed on\ndisk.",
+                "type": "boolean"
+              },
+              "revision": {
+                "description": "The session's revision: 1 at `open`, and one more for each change to its document.",
+                "minimum": 1,
+                "type": "integer"
+              },
+              "transaction": {
+                "description": "Whether a transaction is open.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "path",
+              "reloaded",
+              "revision",
+              "transaction"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "description": "A command that ran: `ok` is true, and `result` is the command's own result.",
+            "properties": {
+              "model": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Model"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The model the command read: null if it read none."
+              },
+              "ok": {
+                "const": true,
+                "type": "boolean"
+              },
+              "result": {
+                "additionalProperties": false,
+                "description": "`diff`'s result.",
+                "properties": {
+                  "changes": {
+                    "description": "Each change from `from` to `to`, in `to`'s timeline order (a feature's change of\nplace first, then its fields in the order the document writes them), then each\nfeature removed, in `from`'s order. Empty if the two documents are the same.",
+                    "items": {
+                      "$ref": "#/$defs/DiffChange"
+                    },
+                    "type": "array"
+                  },
+                  "from": {
+                    "description": "The revision compared from: the request's, or, for null, the session's then.",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "to": {
+                    "description": "The revision compared to, likewise.",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "changes",
+                  "from",
+                  "to"
+                ],
+                "type": "object"
+              },
+              "session": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Session"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The session as the command left it: null for a command that takes no session."
+              }
+            },
+            "required": [
+              "model",
+              "ok",
+              "result",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/$defs/Refused"
+          }
+        ],
+        "type": "object"
+      },
+      "title": "Changes between revisions"
     }
   ]
 }

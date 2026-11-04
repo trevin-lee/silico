@@ -34,7 +34,7 @@
 //! `status`, and `cancel`; [`transaction`], for `begin`, `commit`, `rollback`, `format`,
 //! `undo`, and `redo`;
 //! [`edits`], for `add_feature`, `set_field`, `remove_feature`, `replace_text`, and
-//! `move_feature`; [`reads`], for `text`, `outline`, `check`, and `timeline`; [`cache`], for `cache_clear`;
+//! `move_feature`; [`reads`], for `text`, `outline`, `check`, `timeline`, and `diff`; [`cache`], for `cache_clear`;
 //! [`elements`], for `elements` and `query`; [`schema`]; [`measure`], for `mass_properties`,
 //! `distance`, and `angle`; [`render`]; [`export`]; [`drag`], for `drag_begin`,
 //! `drag_move`, and `drag_end`; [`meshes`]; [`sketch`]; and [`sketch_edits`], for `sketch_add`,
@@ -1934,6 +1934,7 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
         Command::Redo => {
             command_schema::<transaction::RedoRequestSchema, transaction::RedoResultSchema>
         }
+        Command::Diff => command_schema::<reads::DiffRequestSchema, reads::DiffResultSchema>,
     }
 }
 

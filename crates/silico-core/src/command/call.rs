@@ -39,7 +39,7 @@ use super::wire::export::ExportRequest;
 use super::wire::logs::ReadLogsRequest;
 use super::wire::measure::{MassPropertiesRequest, PairRequest};
 use super::wire::meshes::MeshesRequest;
-use super::wire::reads::{CheckRequest, TextRequest, TimelineRequest};
+use super::wire::reads::{CheckRequest, DiffRequest, TextRequest, TimelineRequest};
 use super::wire::render::RenderRequest;
 use super::wire::schema::SchemaRequest;
 use super::wire::session::{CancelRequest, OpenRequest, VersionRequest};
@@ -105,12 +105,13 @@ pub enum Command {
     SketchJoin,
     Undo,
     Redo,
+    Diff,
 }
 
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
-    /// 7).
-    pub const ALL: [Command; 44] = [
+    /// 7), then `diff` (Fable's decision of 2026-11-04).
+    pub const ALL: [Command; 45] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -155,6 +156,7 @@ impl Command {
         Command::SketchJoin,
         Command::Undo,
         Command::Redo,
+        Command::Diff,
     ];
 
     /// The command's name, as requests and tools give it.
@@ -204,6 +206,7 @@ impl Command {
             Command::SketchJoin => "sketch_join",
             Command::Undo => "undo",
             Command::Redo => "redo",
+            Command::Diff => "diff",
         }
     }
 
@@ -264,7 +267,8 @@ impl Command {
             | Command::SketchExtend
             | Command::SketchJoin
             | Command::Undo
-            | Command::Redo => false,
+            | Command::Redo
+            | Command::Diff => false,
         }
     }
 }
@@ -761,6 +765,9 @@ impl<P: Clients + 'static> Sessions<P> {
             }),
             Command::Redo => typed(named, StepRequest::read(request), |r| {
                 self.redo(&r.session, r.revision, r.to)
+            }),
+            Command::Diff => typed(named, DiffRequest::read(request), |r| {
+                self.diff(&r.session, r.from, r.to)
             }),
         }
     }

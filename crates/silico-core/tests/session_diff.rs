@@ -1,0 +1,761 @@
+//! `diff` (Fable's decision of 2026-11-04, the three core gaps, section 1): the changes
+//! between two revisions a session holds, `document::diff` beneath it. Each case a pair of
+//! documents built by hand, its changes written out by hand (paths, values as the file
+//! writes them, places counted by hand); the session's held revisions (its current one, the
+//! one its last reload replaced, a transaction's base) read through reloads made by writing
+//! the file outside the session; and, as an independent check on the paths, each field
+//! change applied through `set_field` to `from` giving `to` back. The design's examples
+//! (docs/design/m4.1-command-api.md, `diff`) are its own blocks and the session's answers.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use silico_core::ErrorCode;
+use silico_core::cache::Cache;
+use silico_core::command::wire::reads::DiffRequest;
+use silico_core::command::wire::{Layout, ToWire, response_text, write};
+use silico_core::command::{DiffAnswer, Response, Revision, SessionId, Sessions};
+use silico_core::document::json::{self, Node};
+use silico_core::document::{self, Change, Document};
+use silico_core::fake::{FakeKernel, FakeSketches};
+use silico_core::sketch::SketchSolver;
+use tempfile::TempDir;
+
+use crate::sessions::{answer, id};
+
+/// A document's header and its features, given as JSON objects, on one line.
+fn doc_text(features: &[&str]) -> String {
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    )
+}
+
+fn doc(features: &[&str]) -> Document {
+    document::read(doc_text(features).as_bytes()).unwrap()
+}
+
+/// Each change, as the API writes it on one line.
+fn lines(changes: &[Change]) -> Vec<String> {
+    changes
+        .iter()
+        .map(|c| write(&c.to_wire(), Layout::OneLine).unwrap())
+        .collect()
+}
+
+/// The changes from `from` to `to`, each on one line.
+fn diffed(from: &[&str], to: &[&str]) -> Vec<String> {
+    lines(&document::diff(&doc(from), &doc(to)).unwrap())
+}
+
+const BOX: &str = r#"{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#;
+
+fn a_box(id: &str, name: &str) -> String {
+    format!(
+        r#"{{"id": "{id}", "type": "box", "v": 1, "name": "{name}", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}}"#
+    )
+}
+
+fn cylinder(radius: &str) -> String {
+    format!(
+        r#"{{"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": {radius}, "height": 12}}"#
+    )
+}
+
+/// A sketch of two points, a line, and a distance of `value`; with a third point, if
+/// `third` is given, put first (the reader takes a list in any order; canonical form sorts
+/// it by ID).
+fn sketch(value: &str, third: Option<&str>) -> String {
+    let points = [
+        third.map(str::to_owned),
+        Some(r#"{"id": "pa000001", "x": 0, "y": 0, "construction": false}"#.to_owned()),
+        Some(r#"{"id": "pa000002", "x": 10, "y": 0, "construction": false}"#.to_owned()),
+    ];
+    let points: Vec<String> = points.into_iter().flatten().collect();
+    format!(
+        r#"{{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{}], "lines": [{{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}}], "circles": [], "arcs": [], "constraints": [{{"id": "ka000001", "type": "distance", "a": "pa000001", "b": "pa000002", "value": {value}, "driving": true}}]}}"#,
+        points.join(", ")
+    )
+}
+
+const THIRD: &str = r#"{"id": "pa000003", "x": 1, "y": 2, "construction": false}"#;
+
+fn fillet(second: &str) -> String {
+    format!(
+        r#"{{"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "b0000001", "edges": ["b0000001.box.Edge1", "{second}"], "radius": 1}}"#
+    )
+}
+
+fn fingerprinted(volume: &str) -> String {
+    format!(
+        r#"{{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {{"volume": {volume}, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}}}"#
+    )
+}
+
+// --- Field changes, each pair by hand. ---
+
+#[test]
+fn a_radius_changed_is_its_field_with_the_texts_before_and_after() {
+    assert_eq!(
+        diffed(&[&cylinder("5")], &[&cylinder("3")]),
+        [r#"{"feature": "a91cw0de", "name": "Pin", "field": "radius", "before": 5, "after": 3}"#]
+    );
+    // A number is its text as the file writes it, never through a float.
+    assert_eq!(
+        diffed(&[&cylinder("2.5")], &[&cylinder("0.000001")]),
+        [
+            r#"{"feature": "a91cw0de", "name": "Pin", "field": "radius", "before": 2.5, "after": 0.000001}"#
+        ]
+    );
+}
+
+#[test]
+fn a_position_changed_is_its_item_by_place() {
+    let moved = BOX.replace("[0, 0, 0]", "[0, 0, 5]");
+    assert_eq!(
+        diffed(&[BOX], &[&moved]),
+        [
+            r#"{"feature": "k7f2qx3m", "name": "Block", "field": "position.2", "before": 0, "after": 5}"#
+        ]
+    );
+}
+
+#[test]
+fn a_constraints_value_is_named_by_the_constraints_id() {
+    assert_eq!(
+        diffed(&[&sketch("10", None)], &[&sketch("12.5", None)]),
+        [
+            r#"{"feature": "s0000001", "name": "Sketch", "field": "constraints.ka000001.value", "before": 10, "after": 12.5}"#
+        ]
+    );
+}
+
+#[test]
+fn a_point_added_is_its_id_path_with_the_whole_point_after() {
+    assert_eq!(
+        diffed(&[&sketch("10", None)], &[&sketch("10", Some(THIRD))]),
+        [
+            r#"{"feature": "s0000001", "name": "Sketch", "field": "points.pa000003", "before": null, "after": {"id": "pa000003", "x": 1, "y": 2, "construction": false}}"#
+        ]
+    );
+    // And removed, the other way.
+    assert_eq!(
+        diffed(&[&sketch("10", Some(THIRD))], &[&sketch("10", None)]),
+        [
+            r#"{"feature": "s0000001", "name": "Sketch", "field": "points.pa000003", "before": {"id": "pa000003", "x": 1, "y": 2, "construction": false}, "after": null}"#
+        ]
+    );
+}
+
+#[test]
+fn a_fillets_second_edge_is_edges_1() {
+    let base = a_box("b0000001", "Base");
+    assert_eq!(
+        diffed(
+            &[&base, &fillet("b0000001.box.Edge2")],
+            &[&base, &fillet("b0000001.box.Edge7")]
+        ),
+        [
+            r#"{"feature": "f0000001", "name": "Round", "field": "edges.1", "before": "b0000001.box.Edge2", "after": "b0000001.box.Edge7"}"#
+        ]
+    );
+}
+
+#[test]
+fn a_fingerprints_volume_is_a_field_like_any_other() {
+    assert_eq!(
+        diffed(&[&fingerprinted("8000")], &[&fingerprinted("8000.5")]),
+        [
+            r#"{"feature": "k7f2qx3m", "name": "Block", "field": "fingerprint.volume", "before": 8000, "after": 8000.5}"#
+        ]
+    );
+    // A fingerprint written where there was none is one field, whole.
+    assert_eq!(
+        diffed(&[BOX], &[&fingerprinted("8000")]),
+        [
+            r#"{"feature": "k7f2qx3m", "name": "Block", "field": "fingerprint", "before": null, "after": {"volume": 8000, "area": 2800, "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}"#
+        ]
+    );
+}
+
+#[test]
+fn a_name_changed_is_name_and_the_change_carries_the_new_name() {
+    let renamed = BOX.replace("\"Block\"", "\"Base\"");
+    assert_eq!(
+        diffed(&[BOX], &[&renamed]),
+        [
+            r#"{"feature": "k7f2qx3m", "name": "Base", "field": "name", "before": "Block", "after": "Base"}"#
+        ]
+    );
+}
+
+#[test]
+fn fields_come_in_canonical_key_order() {
+    // The changes come as the document writes its keys (id, type, v, name, the
+    // operation's fields: a sketch's plane, then its lists; then the note, then the
+    // fingerprint), whatever order the text gave them in.
+    let from = sketch("10", None);
+    let to = sketch("11", Some(THIRD))
+        .replace(
+            "\"name\": \"Sketch\"",
+            "\"name\": \"Profile\", \"note\": \"moved\"",
+        )
+        .replace("\"plane\": \"xy\"", "\"plane\": \"xz\"");
+    assert_eq!(
+        diffed(&[&from], &[&to]),
+        [
+            r#"{"feature": "s0000001", "name": "Profile", "field": "name", "before": "Sketch", "after": "Profile"}"#,
+            r#"{"feature": "s0000001", "name": "Profile", "field": "plane", "before": "xy", "after": "xz"}"#,
+            r#"{"feature": "s0000001", "name": "Profile", "field": "points.pa000003", "before": null, "after": {"id": "pa000003", "x": 1, "y": 2, "construction": false}}"#,
+            r#"{"feature": "s0000001", "name": "Profile", "field": "constraints.ka000001.value", "before": 10, "after": 11}"#,
+            r#"{"feature": "s0000001", "name": "Profile", "field": "note", "before": null, "after": "moved"}"#,
+        ]
+    );
+}
+
+// --- Places: added, removed, moved, by rank among the features both hold. ---
+
+#[test]
+fn a_feature_added_is_its_place_after_and_moves_none_of_the_others() {
+    let (a, b, c) = (
+        a_box("a0000001", "A"),
+        a_box("b0000001", "B"),
+        a_box("c0000001", "C"),
+    );
+    // C put between A and B: B's place goes 1 to 2, its rank among A and B stays 1.
+    assert_eq!(
+        diffed(&[&a, &b], &[&a, &c, &b]),
+        [r#"{"feature": "c0000001", "name": "C", "field": null, "before": null, "after": 1}"#]
+    );
+}
+
+#[test]
+fn a_feature_removed_is_its_place_before_listed_after_tos_features_and_shifts_nothing() {
+    let (a, b, c, d, e) = (
+        a_box("a0000001", "A"),
+        a_box("b0000001", "B"),
+        a_box("c0000001", "C"),
+        a_box("d0000001", "D"),
+        a_box("e0000001", "E"),
+    );
+    // B removed from place 1: C and D each move up a place, but keep their ranks.
+    assert_eq!(
+        diffed(&[&a, &b, &c], &[&a, &c]),
+        [r#"{"feature": "b0000001", "name": "B", "field": null, "before": 1, "after": null}"#]
+    );
+    // One removed and one added: the added in `to`'s order, then the removed in `from`'s.
+    assert_eq!(
+        diffed(&[&a, &b, &c, &d], &[&a, &c, &d, &e]),
+        [
+            r#"{"feature": "e0000001", "name": "E", "field": null, "before": null, "after": 3}"#,
+            r#"{"feature": "b0000001", "name": "B", "field": null, "before": 1, "after": null}"#,
+        ]
+    );
+    // Two removed, in `from`'s order.
+    assert_eq!(
+        diffed(&[&a, &b, &c, &d], &[&c]),
+        [
+            r#"{"feature": "a0000001", "name": "A", "field": null, "before": 0, "after": null}"#,
+            r#"{"feature": "b0000001", "name": "B", "field": null, "before": 1, "after": null}"#,
+            r#"{"feature": "d0000001", "name": "D", "field": null, "before": 3, "after": null}"#,
+        ]
+    );
+}
+
+#[test]
+fn a_feature_moved_changes_the_ranks_of_each_it_passed() {
+    let (a, b, c, d) = (
+        a_box("a0000001", "A"),
+        a_box("b0000001", "B"),
+        a_box("c0000001", "C"),
+        a_box("d0000001", "D"),
+    );
+    // B moved from 1 to the end: ranks A0 B1 C2 D3 become A0 C1 D2 B3. C, D, and B moved,
+    // in `to`'s order.
+    assert_eq!(
+        diffed(&[&a, &b, &c, &d], &[&a, &c, &d, &b]),
+        [
+            r#"{"feature": "c0000001", "name": "C", "field": null, "before": 2, "after": 1}"#,
+            r#"{"feature": "d0000001", "name": "D", "field": null, "before": 3, "after": 2}"#,
+            r#"{"feature": "b0000001", "name": "B", "field": null, "before": 1, "after": 3}"#,
+        ]
+    );
+    // C moved to the front: every feature it passed moves too.
+    assert_eq!(
+        diffed(&[&a, &b, &c], &[&c, &a, &b]),
+        [
+            r#"{"feature": "c0000001", "name": "C", "field": null, "before": 2, "after": 0}"#,
+            r#"{"feature": "a0000001", "name": "A", "field": null, "before": 0, "after": 1}"#,
+            r#"{"feature": "b0000001", "name": "B", "field": null, "before": 1, "after": 2}"#,
+        ]
+    );
+    // A move and a field change of one feature: its place first, then the field.
+    let b_longer = b.replace("\"length\": 4", "\"length\": 6");
+    assert_eq!(
+        diffed(&[&a, &b], &[&b_longer, &a]),
+        [
+            r#"{"feature": "b0000001", "name": "B", "field": null, "before": 1, "after": 0}"#,
+            r#"{"feature": "b0000001", "name": "B", "field": "length", "before": 4, "after": 6}"#,
+            r#"{"feature": "a0000001", "name": "A", "field": null, "before": 0, "after": 1}"#,
+        ]
+    );
+}
+
+#[test]
+fn a_hand_written_document_diffs_empty_against_its_canonical_text() {
+    // Keys out of the canonical order, a sketch's lists out of ID order, numbers spelled
+    // as canonical form doesn't spell them: the same document as its canonical text.
+    let hand = r#"{"naming": 5, "features": [
+        {"name": "Sketch", "v": 1, "type": "sketch", "id": "s0000001", "plane": "xy",
+         "constraints": [{"value": 1.50, "id": "ka000002", "type": "distance", "a": "pa000002", "b": "pa000003", "driving": true},
+                         {"id": "ka000001", "type": "distance", "a": "pa000001", "b": "pa000002", "value": 10, "driving": true}],
+         "points": [{"y": 0, "x": 1e1, "id": "pa000002", "construction": false},
+                    {"id": "pa000003", "x": 1, "y": 2, "construction": false},
+                    {"id": "pa000001", "x": 0, "y": 0, "construction": false}],
+         "lines": [{"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+                   {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}],
+         "circles": [], "arcs": []},
+        {"height": 10, "width": 20, "length": 40.0, "position": [0, 0, 0], "name": "Block", "v": 1, "type": "box", "id": "k7f2qx3m"}
+    ], "units": {"resolution": "1nm", "length": "mm"}, "silico": 1}"#;
+    let read = document::read(hand.as_bytes()).unwrap();
+    let canonical = document::write(&read).unwrap();
+    assert_ne!(canonical, hand);
+    let again = document::read(canonical.as_bytes()).unwrap();
+    assert_eq!(document::diff(&read, &again).unwrap(), []);
+    assert_eq!(document::diff(&again, &read).unwrap(), []);
+}
+
+#[test]
+fn the_same_pair_gives_the_same_changes_byte_for_byte() {
+    let (a, b, c) = (
+        a_box("a0000001", "A"),
+        a_box("b0000001", "B"),
+        a_box("c0000001", "C"),
+    );
+    let from = doc(&[&a, &b, &sketch("10", None), BOX]);
+    let to = doc(&[&sketch("12", Some(THIRD)), &c, &a, &fingerprinted("1")]);
+    let first = lines(&document::diff(&from, &to).unwrap());
+    assert!(!first.is_empty());
+    for _ in 0..3 {
+        assert_eq!(lines(&document::diff(&from, &to).unwrap()), first);
+    }
+}
+
+// --- The paths, applied through `set_field`: an independent check. ---
+
+/// Sessions on the fake kernel and fake sketches, in a directory of their own.
+struct Fixture {
+    dir: TempDir,
+    sessions: Sessions<Arc<FakeKernel>>,
+}
+
+fn sessions() -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    let sketches = FakeSketches::new();
+    let sessions = Sessions::with_stand_ins(
+        kernel,
+        move |cache| Cache::with_secret(cache, &secret),
+        move || Ok(Box::new(sketches.clone()) as Box<dyn SketchSolver>),
+    );
+    Fixture { dir, sessions }
+}
+
+impl Fixture {
+    fn path(&self) -> PathBuf {
+        self.dir.path().join("bracket.silico")
+    }
+
+    /// `text` written to the session's file, outside the session.
+    fn write(&self, text: &[u8]) {
+        std::fs::write(self.path(), text).unwrap();
+    }
+
+    /// The session on `text`, opened.
+    fn open(&self, text: &[u8]) -> SessionId {
+        self.write(text);
+        answer(self.sessions.open(self.path(), false))
+            .session
+            .unwrap()
+            .id
+    }
+
+    fn revision(&self, s: &SessionId) -> Revision {
+        self.sessions.status(s).session.unwrap().revision
+    }
+
+    /// Once the session has reloaded its file itself, `status` stepped until its revision
+    /// is past `from`: its new revision.
+    #[track_caller]
+    fn reloads(&self, s: &SessionId, from: Revision) -> Revision {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let revision = self.revision(s);
+            if revision > from {
+                return revision;
+            }
+            assert!(Instant::now() < deadline, "never reloaded past {from:?}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn diff(&self, s: &SessionId, from: Option<u64>, to: Option<u64>) -> Response<DiffAnswer> {
+        answer(self.sessions.diff(
+            s,
+            from.map(|n| Revision::from_number(n).unwrap()),
+            to.map(|n| Revision::from_number(n).unwrap()),
+        ))
+    }
+}
+
+/// A value as the request's reader reads it, from its text as the API writes it.
+fn node(value: &json::Plain) -> Node {
+    let text = write(
+        &silico_core::command::wire::Json::plain(value),
+        Layout::OneLine,
+    )
+    .unwrap();
+    json::read(text.as_bytes()).unwrap()
+}
+
+/// `from`'s text in a session, inside a transaction, with each of `changes`' fields set to
+/// its `after` (or, `back`, its `before`) through `set_field`: the session's text then, in
+/// canonical form.
+fn applied(from: &str, changes: &[Change], back: bool) -> String {
+    let f = sessions();
+    let s = f.open(from.as_bytes());
+    answer(f.sessions.begin(&s)).result.unwrap();
+    for change in changes {
+        let field = change.field.clone().expect("a field change");
+        let value = if back { &change.before } else { &change.after };
+        let set = answer(f.sessions.set_field(
+            &s,
+            f.revision(&s),
+            change.feature.clone(),
+            field.clone(),
+            node(value),
+        ));
+        assert!(set.result.is_ok(), "{field}: {:?}", set.result);
+    }
+    let text = answer(f.sessions.text(&s, None)).result.unwrap().text;
+    document::write(&document::read(text.as_bytes()).unwrap()).unwrap()
+}
+
+#[test]
+fn each_field_change_set_through_set_field_gives_to_back_and_before_gives_from() {
+    let base = a_box("b0000001", "Base");
+    let renamed = BOX.replace("\"Block\"", "\"Base\"");
+    let moved = BOX.replace("[0, 0, 0]", "[0, 0, 5]");
+    let cases: Vec<(Vec<String>, Vec<String>)> = vec![
+        (vec![cylinder("5")], vec![cylinder("3")]),
+        (vec![BOX.to_owned()], vec![moved]),
+        (vec![BOX.to_owned()], vec![renamed.clone()]),
+        (vec![sketch("10", None)], vec![sketch("12.5", None)]),
+        (
+            vec![base.clone(), fillet("b0000001.box.Edge2")],
+            vec![base.clone(), fillet("b0000001.box.Edge7")],
+        ),
+        // Several fields of several features at once, a note among them.
+        (
+            vec![BOX.to_owned(), cylinder("2.5"), sketch("10", None)],
+            vec![
+                renamed.replace("\"length\": 40", "\"length\": 41"),
+                cylinder("2.75").replace(
+                    "\"name\": \"Pin\"",
+                    "\"name\": \"Pin\", \"note\": \"press fit\"",
+                ),
+                sketch("9", None).replace("\"plane\": \"xy\"", "\"plane\": \"yz\""),
+            ],
+        ),
+    ];
+    for (from, to) in cases {
+        let from: Vec<&str> = from.iter().map(String::as_str).collect();
+        let to: Vec<&str> = to.iter().map(String::as_str).collect();
+        let changes = document::diff(&doc(&from), &doc(&to)).unwrap();
+        assert!(!changes.is_empty());
+        assert!(changes.iter().all(|c| c.field.is_some()), "{changes:?}");
+        let want = document::write(&doc(&to)).unwrap();
+        assert_eq!(applied(&doc_text(&from), &changes, false), want, "{to:?}");
+        let back = document::write(&doc(&from)).unwrap();
+        assert_eq!(applied(&doc_text(&to), &changes, true), back, "{from:?}");
+    }
+}
+
+// --- The session: the revisions it holds, and the design's examples. ---
+
+fn contract(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/contract")
+        .join(name)
+}
+
+fn example(name: &str) -> String {
+    let path = contract(&format!("commands/examples/{name}.json"));
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// The design's JSON code blocks between the headings `from` and `to`, in order.
+fn design(from: &str, to: &str) -> Vec<String> {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/design/m4.1-command-api.md");
+    let doc = std::fs::read_to_string(&path).unwrap();
+    let section = &doc[doc.find(from).unwrap()..doc.find(to).unwrap()];
+    section
+        .split("```json\n")
+        .skip(1)
+        .map(|block| block.split("\n```").next().unwrap().to_owned())
+        .collect()
+}
+
+/// `value` as the API writes it, and a newline, as each example file holds it.
+fn written<T: ToWire>(value: &T) -> String {
+    write(&value.to_wire(), Layout::Canonical).unwrap() + "\n"
+}
+
+/// The design's bracket's first three features (a block, a pin, the cut between them), in
+/// canonical form, as `outline`'s example has them.
+fn bracket() -> String {
+    let text = std::fs::read_to_string(contract("naming-scheme-5.silico")).unwrap();
+    let mut read = document::read(text.as_bytes()).unwrap();
+    read.features.truncate(3);
+    document::write(&read).unwrap()
+}
+
+/// The bracket changed as the design's example has it, outside the session: the pin's
+/// radius 2.5 to 3, the cut renamed, a box appended.
+fn bracket_changed() -> String {
+    let text = bracket()
+        .replace("\"radius\": 2.5,", "\"radius\": 3,")
+        .replace("\"name\": \"Hole\"", "\"name\": \"Bolt hole\"");
+    let boss = r#"{"id": "b0000001", "type": "box", "v": 1, "name": "Boss", "position": [0, 0, 10], "length": 10, "width": 10, "height": 5}"#;
+    let end = text.rfind("\n  ]\n}").unwrap();
+    format!("{},\n    {boss}{}", &text[..end], &text[end..])
+}
+
+#[test]
+fn the_examples_are_the_designs_text_and_the_sessions_answers() {
+    let blocks = design("### `diff` (M5", "## 8. Versioning");
+    assert_eq!(blocks.len(), 3);
+    for (block, name) in blocks.iter().zip(["request", "result", "refused-not-held"]) {
+        assert_eq!(
+            format!("{block}\n"),
+            example(&format!("diff/{name}")),
+            "{name}"
+        );
+    }
+    let mut files: Vec<String> = std::fs::read_dir(contract("commands/examples/diff"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        ["refused-not-held.json", "request.json", "result.json"]
+    );
+
+    // The request, read and written back.
+    let text = example("diff/request");
+    let request = DiffRequest::read(&json::read(text.as_bytes()).unwrap()).unwrap();
+    assert_eq!(
+        request,
+        DiffRequest {
+            session: SessionId::parse("s1").unwrap(),
+            from: Revision::from_number(1),
+            to: None,
+        }
+    );
+    assert_eq!(written(&request), text);
+
+    // The bracket opened at revision 1, changed outside, `status` stepped until the
+    // session reloads it (revision 2), then the request: the design's result.
+    let f = sessions();
+    let s = f.open(bracket().as_bytes());
+    f.write(bracket_changed().as_bytes());
+    let two = f.reloads(&s, Revision::OPENED);
+    assert_eq!(two.number(), 2);
+    let diffed = answer(f.sessions.diff(&s, request.from, request.to));
+    assert!(!diffed.session.as_ref().unwrap().reloaded);
+    assert_eq!(written(&diffed.result.unwrap()), example("diff/result"));
+
+    // Changed again, reloaded again (revision 3): revision 1's text is gone, the design's
+    // refusal, the revisions held its candidates; revision 2's is the one now replaced.
+    f.write(
+        bracket_changed()
+            .replace("\"radius\": 3,", "\"radius\": 4,")
+            .as_bytes(),
+    );
+    assert_eq!(f.reloads(&s, two).number(), 3);
+    let refused = f.diff(&s, Some(1), None);
+    let problems = refused.result.unwrap_err();
+    assert_eq!(problems.total(), 1);
+    assert_eq!(
+        written(&problems.errors()[0]),
+        example("diff/refused-not-held")
+    );
+    assert_eq!(problems.errors()[0].candidates(), ["2", "3"]);
+    // And from 2: the second change alone.
+    let second = f.diff(&s, Some(2), None).result.unwrap();
+    assert_eq!((second.from.number(), second.to.number()), (2, 3));
+    assert_eq!(
+        lines(&second.changes),
+        [r#"{"feature": "a91cw0de", "name": "Pin", "field": "radius", "before": 3, "after": 4}"#]
+    );
+    // Its reverse, `to` the replaced one.
+    let back = f.diff(&s, None, Some(2)).result.unwrap();
+    assert_eq!((back.from.number(), back.to.number()), (3, 2));
+    assert_eq!(
+        lines(&back.changes),
+        [r#"{"feature": "a91cw0de", "name": "Pin", "field": "radius", "before": 4, "after": 3}"#]
+    );
+}
+
+#[test]
+fn a_diff_sent_after_a_change_outside_reloads_first_and_reads_the_text_replaced() {
+    // No `status`: the diff's own reread reloads (its response says so), and revision 1 is
+    // then the one the reload replaced.
+    let f = sessions();
+    let s = f.open(bracket().as_bytes());
+    f.write(bracket_changed().as_bytes());
+    let diffed = f.diff(&s, Some(1), None);
+    let session = diffed.session.unwrap();
+    assert!(session.reloaded);
+    assert_eq!(session.revision.number(), 2);
+    let result = diffed.result.unwrap();
+    assert_eq!((result.from.number(), result.to.number()), (1, 2));
+    assert_eq!(result.changes.len(), 3);
+}
+
+#[test]
+fn a_hand_written_file_reloaded_as_its_canonical_text_diffs_empty() {
+    // The reloaded-over side read from its text (the session keeps no model of it), the
+    // current one from what the gate found: both as canonical form writes them.
+    let hand = doc_text(&[&sketch("10", Some(THIRD)), BOX]);
+    let f = sessions();
+    let s = f.open(hand.as_bytes());
+    let canonical = document::write(&document::read(hand.as_bytes()).unwrap()).unwrap();
+    assert_ne!(canonical, hand);
+    f.write(canonical.as_bytes());
+    let diffed = f.diff(&s, Some(1), None);
+    assert!(diffed.session.unwrap().reloaded);
+    let result = diffed.result.unwrap();
+    assert_eq!((result.from.number(), result.to.number()), (1, 2));
+    assert_eq!(result.changes, []);
+}
+
+#[test]
+fn inside_a_transaction_its_base_is_held_until_it_ends() {
+    let f = sessions();
+    let s = f.open(doc_text(&[BOX]).as_bytes());
+    // Nothing to compare yet: the document now with itself.
+    let same = f.diff(&s, None, None).result.unwrap();
+    assert_eq!(
+        (same.from.number(), same.to.number(), same.changes.len()),
+        (1, 1, 0)
+    );
+    answer(f.sessions.begin(&s)).result.unwrap();
+    let set = answer(f.sessions.set_field(
+        &s,
+        Revision::OPENED,
+        id("k7f2qx3m"),
+        "length".to_owned(),
+        json::read(b"50").unwrap(),
+    ));
+    let now = set.session.unwrap().revision;
+    assert_eq!(now.number(), 2);
+    let base = f.diff(&s, Some(1), None).result.unwrap();
+    assert_eq!((base.from.number(), base.to.number()), (1, 2));
+    assert_eq!(
+        lines(&base.changes),
+        [
+            r#"{"feature": "k7f2qx3m", "name": "Block", "field": "length", "before": 40, "after": 50}"#
+        ]
+    );
+    // A revision the transaction passed through isn't held: its base and now are.
+    answer(f.sessions.set_field(
+        &s,
+        now,
+        id("k7f2qx3m"),
+        "width".to_owned(),
+        json::read(b"30").unwrap(),
+    ))
+    .result
+    .unwrap();
+    let refused = f.diff(&s, Some(2), None).result.unwrap_err();
+    assert_eq!(refused.errors()[0].parameter(), Some("from"));
+    assert_eq!(refused.errors()[0].candidates(), ["1", "3"]);
+    // Rolled back: the base is gone with the transaction.
+    let rolled = answer(f.sessions.rollback(&s));
+    let after = rolled.session.unwrap().revision;
+    let refused = f.diff(&s, None, Some(1)).result.unwrap_err();
+    assert_eq!(refused.errors()[0].parameter(), Some("to"));
+    assert_eq!(refused.errors()[0].code(), ErrorCode::InvalidInput);
+    assert_eq!(
+        refused.errors()[0].candidates(),
+        [after.number().to_string()]
+    );
+}
+
+#[test]
+fn an_untitled_session_and_one_never_reloaded_hold_their_revision_alone() {
+    let f = sessions();
+    let s = answer(f.sessions.open_untitled()).session.unwrap().id;
+    let same = f.diff(&s, Some(1), None).result.unwrap();
+    assert_eq!(
+        (same.from.number(), same.to.number(), same.changes.len()),
+        (1, 1, 0)
+    );
+    for (from, to, parameter) in [(Some(2), None, "from"), (None, Some(7), "to")] {
+        let refused = f.diff(&s, from, to).result.unwrap_err();
+        assert_eq!(refused.total(), 1);
+        let e = &refused.errors()[0];
+        assert_eq!(e.parameter(), Some(parameter));
+        assert_eq!(e.candidates(), ["1"]);
+    }
+    // Both sides not held: both refused, `from` first.
+    let refused = f.diff(&s, Some(5), Some(6)).result.unwrap_err();
+    let named: Vec<_> = refused.errors().iter().map(|e| e.parameter()).collect();
+    assert_eq!(named, [Some("from"), Some("to")]);
+}
+
+#[test]
+fn a_side_that_doesnt_read_as_a_document_is_refused_with_the_readers_message() {
+    let f = sessions();
+    let s = f.open(b"not json");
+    let reader = document::read(b"not json").unwrap_err();
+    let refused = f.diff(&s, None, None).result.unwrap_err();
+    assert_eq!(refused.total(), 2);
+    for (e, side) in refused.errors().iter().zip(["from", "to"]) {
+        assert_eq!(e.code(), ErrorCode::InvalidInput);
+        assert_eq!(e.parameter(), Some(side));
+        assert_eq!(e.cause(), Some(reader.message()));
+        assert_eq!(
+            e.message(),
+            format!("{side}, revision 1, doesn't read as a document, so it can't be compared")
+        );
+    }
+    // Mended outside: the side now reads, the one replaced still doesn't.
+    f.write(doc_text(&[BOX]).as_bytes());
+    let refused = f.diff(&s, Some(1), None).result.unwrap_err();
+    assert_eq!(refused.total(), 1);
+    assert_eq!(refused.errors()[0].parameter(), Some("from"));
+    assert_eq!(refused.errors()[0].cause(), Some(reader.message()));
+    assert_eq!(f.diff(&s, Some(2), Some(2)).result.unwrap().changes, []);
+}
+
+#[test]
+fn the_sessions_answer_is_the_same_bytes_every_time() {
+    let f = sessions();
+    let s = f.open(bracket().as_bytes());
+    f.write(bracket_changed().as_bytes());
+    f.reloads(&s, Revision::OPENED);
+    let first = response_text(&f.diff(&s, Some(1), None), Layout::OneLine);
+    assert!(first.contains("\"ok\": true"), "{first}");
+    for _ in 0..3 {
+        assert_eq!(
+            response_text(&f.diff(&s, Some(1), None), Layout::OneLine),
+            first
+        );
+    }
+}

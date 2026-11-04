@@ -55,6 +55,11 @@ pub(super) struct Held {
     /// The newest revision a reload of the file gave (decision 2): an edit made against a
     /// revision before it is stale because the file changed, which its refusal says.
     pub(super) last_reload: Option<Revision>,
+    /// The revision the session's last reload replaced, and its text (Fable's decision of
+    /// 2026-11-04, section 1): what `diff` compares the reloaded document with, so a client
+    /// can say what changed outside the session. The text's `Arc` shared, never copied, and
+    /// dropped by the next reload, which keeps the one it replaces.
+    pub(super) reloaded_over: Option<(Revision, Arc<Vec<u8>>)>,
 }
 
 /// A session's file ([`Held::file`]): its path and where it leads, both there or neither.
@@ -179,6 +184,12 @@ impl crate::document::undo::Extra for Arc<Formatted> {
 }
 
 impl Snapshot {
+    /// Its text, and the reader's and the gate's finding of it: what `diff` and `text` read
+    /// of the transaction's base.
+    pub(super) fn held(&self) -> (Arc<Vec<u8>>, Arc<Gated>) {
+        (Arc::clone(&self.text), Arc::clone(&self.gated))
+    }
+
     /// What `format` has put into the transaction's document: `formatted` (an undo or a
     /// redo restoring a state's).
     pub(super) fn set_formatted(&mut self, formatted: Arc<Formatted>) {
@@ -1597,6 +1608,8 @@ impl<C: Kernel + 'static> Session<C> {
         // The session's own change, not the command's: it stands whatever the command comes
         // to (a cancel after it too), and the response says `reloaded`.
         let mut held = self.held.session_changing();
+        // What the reload replaces, kept for `diff` until the next reload.
+        held.reloaded_over = Some((held.revision, Arc::clone(&held.text)));
         // Nothing carried: a reloaded session is as a fresh `open`.
         held.change(next, Arc::clone(&now), gated, Arc::new(BTreeSet::new()));
         held.bytes = Arc::clone(&now);
