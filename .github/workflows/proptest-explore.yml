@@ -1,0 +1,163 @@
+# Property tests with new seeds, on idle runners. The gate and mutants fix proptest's seed
+# (PROPTEST_RNG_SEED=20261021, pixi.toml's test and mutants tasks), so a gate meets the same
+# cases every run and never fails on one no gate met before. This looks for those cases
+# instead, every four hours: the committed tree of the branch it runs on (main, when
+# scheduled), in up to four rounds, each with a new random u64 seed, said in the log and the
+# summary (tests/proptest-explore.sh). Each property takes its own case count each round, so
+# four rounds meet four times its cases; not PROPTEST_CASES, which proptest lets override
+# every test's own count, so a property that takes 32 costly cases would take the
+# variable's count, and one that takes 20,000 fewer. About an hour in all, the build
+# included, as a filler mutants shard: rounds start only in its first 45 minutes, and the
+# last is cut off at its end, which is no failure.
+#
+# What runs: every workspace test but those tests/mutants.sh leaves out for holding to a wall
+# clock or GiBs. No filter picks out a property's tests (they share binaries with the rest),
+# and the rest ignore the seed.
+#
+# A property that fails, giving proptest's shrunk input, is run again alone at its seed; one
+# that fails again opens an issue titled "Proptest exploration failed: <binary> <test>",
+# assigned to the repository's owner, or comments on the open one: its seed, the shrunk
+# input, the commit, and the command that runs it again
+# (`PROPTEST_RNG_SEED=<seed> pixi run cargo nextest run -p <crate> ...`). At most five so a
+# run: every other failed test (a timeout, one giving no input, one that passed alone, or all
+# of them when more than five properties failed, as a starved or broken run would) is a line
+# of one issue, "... unconfirmed" (tests/proptest-failures.py, .github/proptest-report.sh).
+# A run that failed with no test to name (the build) opens or comments on "... setup", which
+# the next green run closes.
+# Only scheduled runs report, as only the oracle sweep's scheduled nights do: a run started
+# by hand reports to whoever started it.
+#
+# It's filler (filler.yml): its title starts "filler", it runs on a runner labelled filler at
+# the idle scheduling class, with filler's Cargo home and build (target-filler/), and real
+# work cancels it (.github/cancel-filler.sh), without a report. A scheduled run starts only
+# while there's room for it (.github/proptest-room.sh: no bench or oracle sweep going or
+# filler's sweep due, no real mutants run starting or waiting for a runner, a free runner
+# labelled filler, more than a fifth of the VM's CPUs idle); the filler waits for one going
+# before it starts a sweep.
+#
+#   gh workflow run proptest-explore.yml --ref main                 (new seeds)
+#   gh workflow run proptest-explore.yml --ref main -f seed=SEED    (one round at SEED, to repeat it)
+name: proptest-explore
+run-name: "filler proptest exploration${{ inputs.seed && format(', seed {0}', inputs.seed) || '' }}"
+
+on:
+  schedule:
+    - cron: "41 */4 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "A seed to repeat (a u64, in decimal): one round at it (empty: new seeds, in up to four rounds)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# One exploration at a time.
+concurrency:
+  group: proptest-explore
+
+env:
+  # As filler mutants build (mutants.yml), in the same target directory, so the two share
+  # one build.
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # A scheduled run starts only where filler would start filler.
+  room:
+    if: ${{ github.event_name == 'schedule' }}
+    # On a runner labelled control (silico-13, -14), for short jobs only.
+    runs-on: [self-hosted, linux, x64, control]
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      go: ${{ steps.room.outputs.go }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github
+      - id: room
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: bash .github/proptest-room.sh
+
+  explore:
+    needs: room
+    if: ${{ !cancelled() && (github.event_name != 'schedule' || needs.room.outputs.go == 'true') }}
+    # Only on the runners labelled filler (silico-5 to -12, -22, and -23), which take no gates.
+    runs-on: [self-hosted, linux, x64, filler]
+    # The exploration's hour (the build in it), a quarter hour for a failure's runs alone,
+    # and a margin past the step's own limit, for the steps after it.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - name: Toolchains
+        run: bash .github/tools.sh
+      - name: Test scratch
+        run: bash .github/scratch.sh start
+      - name: Explore
+        # Within the job's limit, so a run past it still uploads what it found, and its report
+        # reads it as cut off mid-round, not as a setup failure (its outcome, below).
+        timeout-minutes: 80
+        env:
+          # Through the environment, so the input is never read as the script's text.
+          SEED: ${{ inputs.seed }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # A real shard's claim this runner's last job left, if it died before releasing it
+          # (.github/shard-threads.sh), as a filler shard does.
+          bash .github/shard-threads.sh release
+          # As a filler mutants shard runs (mutants.yml): a quarter of the VM, at the idle
+          # scheduling class for the CPU and for I/O, on a runner at the idle CPU weight, so it
+          # can't slow a gate; with filler's Cargo home, so a starved build never holds the
+          # package cache's lock every other build shares; and in filler's target directory,
+          # without debug info, beside the gate's in its worktree (tests/committed-tree.sh).
+          share=$(( $(nproc) / 4 > 2 ? $(nproc) / 4 : 2 ))
+          export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share
+          export CARGO_HOME=$HOME/.cargo-filler
+          export CARGO_PROFILE_DEV_DEBUG=0 SILICO_TARGET=target-filler SILICO_TARGET_LIMIT_GIB=6
+          chrt --idle 0 ionice -c 3 nice -n 19 pixi run proptest-explore -- "$RUNNER_TEMP/explore" ${SEED:+"$SEED"}
+      # Even when a round failed: its report and the failures' issues are in it.
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: proptest-explore
+          path: ${{ runner.temp }}/explore
+          if-no-files-found: ignore
+      - name: Remove the test scratch
+        if: ${{ always() }}
+        run: bash .github/scratch.sh end
+
+  report:
+    needs: explore
+    # Scheduled runs that passed or failed: not those real work cancelled, nor those with no
+    # room (skipped).
+    if: ${{ always() && github.event_name == 'schedule' && (needs.explore.result == 'success' || needs.explore.result == 'failure') }}
+    runs-on: [self-hosted, linux, x64, control]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github
+      # None if the exploration stopped before it wrote anything: the report says so.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: proptest-explore
+          path: explore
+      - name: Report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RESULT: ${{ needs.explore.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DIR: explore
+        run: bash .github/proptest-report.sh

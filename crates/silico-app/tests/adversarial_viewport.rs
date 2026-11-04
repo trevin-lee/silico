@@ -937,7 +937,12 @@ fn a_revision_published_mid_read_is_read_after_it_and_the_last_answer_is_the_new
     let reads = view(&h).reads();
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
     set(&f, b"60");
-    step_until(&mut h, "the first edit's read held", |h| view(h).reading());
+    step_until(&mut h, "the first edit's read sent", |h| view(h).reading());
+    // Held at its tessellation, so it has taken the first edit's model: a published read
+    // takes the newest model as its thread starts, not as it's sent, and one that started
+    // only after the second edit published would answer that one's at once (one read, not
+    // two: `a_read_answered_of_a_newer_revision_than_asked_is_not_asked_again`).
+    assert!(f.kernel.wait_running(1, WAIT));
     set(&f, b"70");
     let newest = f.sessions.status(&id).session.unwrap().revision;
     step_until(&mut h, "the second edit published", |h| {

@@ -8,7 +8,9 @@
 use super::build::Builder;
 use super::geometry::distance;
 use super::infer::{Align, Along, Placed, View, along, one_place, onto};
-use super::{Event, Message, Outcome, Preview, Shown, Step, Xy, within_reach};
+use super::{
+    Event, MeasureKind, Message, Outcome, Preview, PreviewMeasure, Shown, Step, Xy, within_reach,
+};
 use crate::document::ElementId;
 use crate::document::sketch_edit::Members;
 
@@ -223,7 +225,7 @@ impl Line {
     fn draw(&self, step: &Step<'_, '_, '_>, event: Event, preview: &mut Preview) {
         let at = match event {
             Event::Press(at) | Event::Move(at) | Event::Release(at) | Event::DoubleClick(at) => at,
-            Event::EndChain | Event::Escape | Event::Enter => return,
+            Event::EndChain | Event::Escape | Event::Enter | Event::Cancel => return,
         };
         let from = match &self.state {
             State::Idle => {
@@ -237,6 +239,11 @@ impl Line {
         };
         let end = end_of(step, &from, at);
         preview.lines.push([from.at(), end.placed.at]);
+        preview.measures.push(PreviewMeasure {
+            from: from.at(),
+            to: end.placed.at,
+            kind: MeasureKind::Length,
+        });
         if let Start::New(placed) = &from {
             preview.shown.extend(placed.shown());
         }
@@ -309,7 +316,7 @@ fn segment(step: &mut Step<'_, '_, '_>, start: &Start, at: Xy) -> Click {
     if end.placed.shared().is_none() && !within_reach(end.placed.at) {
         return Click::Refused(Message::TooFar);
     }
-    let mut builder = Builder::new(&mut *step.ids, step.pointer.view);
+    let mut builder = Builder::new(&mut *step.ids, step.pointer.view, step.construction);
     let built = (|| -> Result<ElementId, crate::Error> {
         let a = match start {
             Start::New(placed) => builder.point(placed, false)?,

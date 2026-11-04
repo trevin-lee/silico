@@ -18,11 +18,17 @@ libm.workspace = true
 silico-font.workspace = true
 eframe.workspace = true
 egui_tiles.workspace = true
+# The icons, drawn from SVG (`icons`).
+egui_extras.workspace = true
 # The backends eframe's renderer draws with (Metal, Vulkan), as the workspace chooses them.
 wgpu.workspace = true
 # The viewport's renderer (re_renderer's, one with agents' renders: M4.6's R1), drawn on
 # eframe's device.
 silico-render.workspace = true
+# Native file dialogs, on their async API (`browse`).
+rfd.workspace = true
+# Where the list of recent documents is kept: the platform's app-data folder (`recent`).
+directories.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

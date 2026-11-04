@@ -66,12 +66,22 @@ wgpu = { version = "30", default-features = false, features = ["vulkan", "vulkan
 # The app's window, docking, and tests (docs/study/toolkit.md; M5 decision 11), at the
 # versions re_ui 0.38.1 pins, so one wgpu serves the viewport and the UI. eframe's own wgpu
 # features off (wgpu_no_default_features): the workspace's wgpu above chooses the backends.
-# Its default fonts off too: Inter (silico-font) is the one font.
+# Its default fonts off too: the app's fonts are silico-font's, Inter and JetBrains Mono.
 eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "wgpu_no_default_features", "wayland", "x11"] }
 egui_tiles = "=0.17.1"
+# Its SVG loader alone (resvg, offline, no text): the app's icons.
+egui_extras = { version = "=0.36.2", default-features = false, features = ["svg"] }
 # Drives the app through its accessibility tree in tests, with no GPU (dev only).
 egui_kittest = "=0.36.2"
 silico-font = { path = "crates/silico-font" }
+# The app's native file dialogs (Open, Save As, Export's path): macOS's NSOpenPanel and
+# NSSavePanel, and on Linux the XDG desktop portal over D-Bus (libdbus loaded when it's
+# used, zenity if it isn't there), never GTK. Its async API only, so the UI thread never
+# waits on one. Wayland's window identifiers off: no dialog is given a parent window.
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+# The platform's folder for an app's own data (the app's list of recent documents), the
+# version Rerun already brings.
+directories = "6.0"
 glam = "0.30"
 macaw = "0.30"
 pollster = "0.4"

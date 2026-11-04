@@ -14,7 +14,9 @@ use silico_core::command::SessionId;
 use silico_core::command::export::{DEFAULT_TOLERANCE, Export, ExportFormat};
 use silico_core::document::{FeatureId, Length};
 
+use crate::browse;
 use crate::tab::Row;
+use crate::theme::{self, FieldKind};
 
 /// What the dialog holds while it's open: the format, the 3MF's tolerance as typed, the
 /// bodies, and the path, of the document of session `session`.
@@ -44,6 +46,8 @@ pub enum Action {
     Replace,
     /// Cancel: the export running stopped (`cancel export`), and the dialog closed.
     Cancel,
+    /// Browse…: the native dialog asked for the path.
+    Browse,
 }
 
 /// What the dialog shows of the tab's export: running, the file at the path to ask about,
@@ -52,6 +56,9 @@ pub struct Shown<'a> {
     pub running: bool,
     pub replacing: Option<&'a Path>,
     pub said: Option<&'a str>,
+    /// The Browse… button beside the path, if the app has native dialogs, and whether it's
+    /// on (off while one is open).
+    pub browse: Option<bool>,
 }
 
 impl ExportForm {
@@ -81,21 +88,20 @@ impl ExportForm {
         if self.step == step {
             return;
         }
-        let other = Path::new(&self.path)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| {
-                let extension = extension.to_ascii_lowercase();
-                if step {
-                    extension == "3mf"
-                } else {
-                    extension == "step" || extension == "stp"
-                }
-            });
+        let other = format_of(&self.path) == Some(!step);
         self.step = step;
         if other {
             self.path = with_extension(&self.path, self.extension());
         }
+    }
+
+    /// The path the native dialog picked, in the path field: the format follows its
+    /// extension, if it's a format's (a `.step` picked while 3MF is chosen is a STEP).
+    pub fn browsed(&mut self, path: String) {
+        if let Some(step) = format_of(&path) {
+            self.step = step;
+        }
+        self.path = path;
     }
 
     /// The tolerance typed, if it reads as a length: the core checks its range.
@@ -178,12 +184,8 @@ impl ExportForm {
                 ui.horizontal(|ui| {
                     let label = ui.label("Tolerance");
                     let red = unreadable(&self.tolerance);
-                    let mut edit = egui::TextEdit::singleline(&mut self.tolerance)
-                        .id_salt("export-tolerance")
-                        .desired_width(100.0);
-                    if red {
-                        edit = edit.text_color(ui.visuals().error_fg_color);
-                    }
+                    let edit = egui::TextEdit::singleline(&mut self.tolerance).desired_width(100.0);
+                    let edit = theme::field(ui, edit, "export-tolerance", FieldKind::Modify, red);
                     ui.add(edit).labelled_by(label.id);
                     ui.label("mm");
                 });
@@ -203,8 +205,20 @@ impl ExportForm {
             }
             ui.horizontal(|ui| {
                 let label = ui.label("Path");
-                ui.add(egui::TextEdit::singleline(&mut self.path).id_salt("export-path"))
-                    .labelled_by(label.id);
+                let edit = egui::TextEdit::singleline(&mut self.path);
+                ui.add(theme::field(
+                    ui,
+                    edit,
+                    "export-path",
+                    FieldKind::Modify,
+                    false,
+                ))
+                .labelled_by(label.id);
+                if let Some(on) = shown.browse
+                    && browse::button(ui, on)
+                {
+                    action = Action::Browse;
+                }
             });
         });
         if shown.running {
@@ -240,6 +254,17 @@ pub fn beside(document: &str, typed: &str) -> PathBuf {
     match Path::new(document).parent() {
         Some(folder) => folder.join(typed),
         None => typed.to_path_buf(),
+    }
+}
+
+/// The format `path`'s extension names, in any case: STEP (`.step`, `.stp`) is `true`, 3MF
+/// (`.3mf`) `false`; none if it names neither.
+fn format_of(path: &str) -> Option<bool> {
+    let extension = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "step" | "stp" => Some(true),
+        "3mf" => Some(false),
+        _ => None,
     }
 }
 

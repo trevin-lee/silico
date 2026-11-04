@@ -2020,9 +2020,21 @@ fn a_perspective_frame_takes_the_angles_a_scenes_check_does_at_its_size_and_any_
 /// its picking reads them back: the body's number and the element's, as the worker's ID
 /// buffer writes them.
 fn frame_ids(r: &mut Renderer, camera: &Camera, bodies: &[u32], size: [u32; 2]) -> Vec<[u32; 2]> {
+    frame_ids_at(r, camera, bodies, size, 1.0)
+}
+
+/// [`frame_ids`] at `pixels_per_point`.
+fn frame_ids_at(
+    r: &mut Renderer,
+    camera: &Camera,
+    bodies: &[u32],
+    size: [u32; 2],
+    pixels_per_point: f32,
+) -> Vec<[u32; 2]> {
     let asking = Frame {
         size_px: size,
         picking: Some(rect([0, 0], size)),
+        pixels_per_point,
         ..frame(camera, bodies, &[], None)
     };
     pick(r, &asking);
@@ -2048,6 +2060,43 @@ fn frame_ids(r: &mut Renderer, camera: &Camera, bodies: &[u32], size: [u32; 2]) 
             ]
         })
         .collect()
+}
+
+#[test]
+fn an_edge_past_the_frames_side_by_less_than_its_stroke_at_two_pixels_a_point_is_drawn() {
+    on_lavapipe(
+        "render::frame_tests::an_edge_past_the_frames_side_by_less_than_its_stroke_at_two_pixels_a_point_is_drawn",
+        |r| {
+            // Orthographic about the origin from −y, 48 mm over 48 rows, 64 wide: a pixel a
+            // millimetre, the frame's right side at x = 32. At 2 pixels a point an edge's
+            // 2-point stroke is 4 pixels, reaching 2 past its line: one along z at x = 33.25,
+            // 1.25 past the side, reaches the last column's centres (1.75 from it), by hand
+            // rows 16 to 32; at one pixel a point (a reach of 1) it doesn't reach the frame.
+            let edge = Arc::new(Mesh {
+                positions: vec![],
+                normals: vec![],
+                triangles: vec![],
+                face_triangles: vec![],
+                edge_points: vec![[33.25, 0.0, -10.0], [33.25, 0.0, 10.0]],
+                edge_point_counts: vec![2],
+                valid: None,
+            });
+            r.upload(1, &edge).unwrap();
+            let camera = Camera {
+                projection: Projection::Orthographic { view_height: 48.0 },
+                eye: [0.0, -10.0, 0.0],
+                target: [0.0; 3],
+                up: [0.0, 0.0, 1.0],
+            };
+            let id = [1, 0x8000_0001];
+            let ids = frame_ids_at(r, &camera, &[1], [64, 48], 2.0);
+            for row in 16..=32 {
+                assert_eq!(ids[row * 64 + 63], id, "row {row}");
+            }
+            let ids = frame_ids_at(r, &camera, &[1], [64, 48], 1.0);
+            assert!(ids.iter().all(|id| *id == [0, 0]));
+        },
+    );
 }
 
 #[test]
