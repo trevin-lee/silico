@@ -2,7 +2,9 @@
 # on request: round 1 of a review's tests lens (.claude/skills/review-tests). Each shard
 # runs its share of the mutants in its runner's gate worktree, which keeps the gate's
 # build; the summary gathers every shard's caught, missed, timed-out, and unviable mutants
-# into the run's summary and one artifact, and fails if any mutant was missed.
+# into the run's summary and one artifact, and fails if any mutant was missed, or if a
+# shard tested fewer mutants than it planned (INCOMPLETE, listed in the artifact's
+# incomplete.txt), so a run whose shard's baseline failed never reads as clean.
 #
 #   gh workflow run mutants.yml --ref main -f ref=<branch> -f base=main -f packages="silico-core"
 #   gh workflow run mutants.yml --ref main -f files="crates/silico-core/src/cache/*.rs crates/silico-core/src/naming/*.rs"
@@ -412,6 +414,34 @@ jobs:
           # A shard that finished writes its marker; a stopped one uploads what it reached
           # without it.
           reported=$(find shards -mindepth 2 -maxdepth 2 -name shard 2>/dev/null | wc -l)
+          # Each shard's outcomes against the mutants it planned (cargo-mutants' mutants.json):
+          # a shard whose baseline failed tests none of them and reports no miss, so a run
+          # with no misses is complete only if every shard tested all it planned. The
+          # incomplete ones are listed in all/incomplete.txt, which a merge's watcher reads.
+          planned_of() {
+            jq length "$1" 2>/dev/null ||
+              python3 -I -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$1" 2>/dev/null
+          }
+          : >all/incomplete.txt
+          for dir in $(printf '%s\n' shards/mutants-shard-* | sort -V); do
+            [ -d "$dir" ] || continue
+            shard=${dir#shards/mutants-shard-}
+            if [ ! -s "$dir/mutants.json" ]; then
+              # A shard with no mutants writes no list; one that never started has no threads.
+              [ -s "$dir/threads" ] || echo "shard $shard never started" >>all/incomplete.txt
+              continue
+            fi
+            planned=$(planned_of "$dir/mutants.json") || {
+              echo "::warning::shard $shard's mutants.json can't be read: its count isn't checked"
+              continue
+            }
+            outcomes=$(cat "$dir"/{caught,missed,timeout,unviable}.txt 2>/dev/null | grep -c . || true)
+            if [ "$outcomes" -lt "$planned" ]; then
+              why=""
+              [ "$outcomes" -eq 0 ] && why=" (its baseline failed, or it stopped before a mutant)"
+              echo "shard $shard tested $outcomes of $planned$why" >>all/incomplete.txt
+            fi
+          done
           # The missed and timed-out mutants .github/mutants-triaged.txt doesn't account for.
           # Its lines are "file | function | description | #PR", one per mutant argued
           # equivalent or unreachable, keyed without the line and column, which move. A key
@@ -457,6 +487,11 @@ jobs:
             echo "| Caught | Missed | Timed out | Unviable | New misses | Shards reported |"
             echo "|---|---|---|---|---|---|"
             echo "| $(count caught) | $(count missed) | $(count timeout) | $(count unviable) | $(count new) | $reported of $SHARDS |"
+            if [ -s all/incomplete.txt ]; then
+              echo
+              echo "### INCOMPLETE: not every mutant was tested, so no miss count here is a verdict"
+              sed 's/^/- /' all/incomplete.txt
+            fi
             # Each shard's threads, as it chose them (.github/shard-threads.sh).
             if compgen -G 'shards/*/threads' >/dev/null; then
               echo
@@ -499,9 +534,13 @@ jobs:
             fi
             exit 0
           fi
+          if [ -s all/incomplete.txt ]; then
+            while read -r line; do echo "::error::INCOMPLETE: $line"; done <all/incomplete.txt
+            exit 1
+          fi
           if [ "$SHARD_RESULT" != success ] || [ "$reported" -ne "$SHARDS" ]; then
             # A shard stopped mid-mutant may list that mutant as caught by a test it killed.
-            echo "::error::a shard failed or didn't report: the results are incomplete, and a stopped shard's caught list may hold a mutant whose tests were killed"
+            echo "::error::INCOMPLETE: a shard failed or didn't report, and a stopped shard's caught list may hold a mutant whose tests were killed"
             exit 1
           fi
           # cargo-mutants passes a run that finds no mutants: a misspelt file or regex would
