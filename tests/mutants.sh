@@ -65,6 +65,15 @@ render_scale=(
   adversarial_render::ten_thousand_highlighted_faces_draw_within_half_the_limit
   worker::the_largest_render_is_the_box_from_the_front_too
 )
+# The render worker's two random close looks at long slabs (silico-render): a thousand cases
+# each, every view drawn and cast against by hand, some 357 s each unloaded. On a loaded
+# shard they push the unmutated baseline past the 1800 s a test may take, and a shard whose
+# baseline fails tests no mutant. They stay in the gate; a mutant only they would catch shows
+# here as a miss, to be killed by a fast targeted test or triaged.
+slow_proptests=(
+  adversarial_face_anchors::random_close_looks_at_long_slabs_draw_every_clear_pixel_as_a_ray_cast_by_hand_sees_it
+  adversarial_face_anchors::random_close_perspective_looks_at_long_slabs_draw_every_clear_face_pixel_as_a_ray_cast_sees_it
+)
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
 tests_of() {
   local package=$1 tests="" t
@@ -72,7 +81,7 @@ tests_of() {
   for t in "$@"; do tests="${tests:+$tests | }test(=$t)"; done
   echo "package($package) & ($tests)"
 }
-filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}") | $(tests_of silico-render "${render_scale[@]}"))"
+filter="not ($(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}") | $(tests_of silico-render "${render_scale[@]}") | $(tests_of silico-render "${slow_proptests[@]}"))"
 
 # tests/proptest-explore.sh leaves out the same tests, for the same reason: it sources this
 # file for $filter alone, and returns here, before the tree's checkout.
