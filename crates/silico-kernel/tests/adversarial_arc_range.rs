@@ -757,14 +757,6 @@ impl Barrel {
         let diagonal = (dx * dx + dy * dy + dz * dz).sqrt();
         THROUGH_ALL_FACTOR * diagonal
     }
-
-    /// The fuzzy value its booleans with [`beyond_of`]'s box `half` run with, by hand:
-    /// 1e-6 of the diagonal of the box round both, from (−half, −x, −half) to (half, half,
-    /// half), x its farthest reach.
-    fn fuzzy(&self, half: f64) -> f64 {
-        let x = self.c + self.r;
-        1e-6 * (8.0 * half * half + (half + x) * (half + x)).sqrt()
-    }
 }
 
 fn barrels() -> impl Strategy<Value = Barrel> {
@@ -855,20 +847,13 @@ proptest! {
         // from elsewhere.
         let start = if turn == TAU { start } else { 0.0 };
         let regions = barrel.regions();
-        // The box at the barrel's own scale, holding all of it. The cut and the common to
-        // 5e-7, as before the fuzzy value: no face of the barrel is within it of the box's
-        // (FreeCAD 1.1.3's `-1.0` and `0.0` cuts of 120 such barrels at this box agree
-        // exactly). The fuse, whose volume is the box's, within the fuzzy value times its
-        // area: every edge OCCT makes is within the fuzzy value of the true intersection, so
-        // no face moves farther (docs/ports/booleans.md), tighter here than 5e-7 of the box.
+        // The box at the barrel's own scale, holding all of it. Each boolean to 5e-7, as
+        // before the fuzzy value: no face of the barrel is within it of the box's (FreeCAD
+        // 1.1.3's `-1.0` and `0.0` cuts of 120 such barrels at this box agree exactly).
         let half = barrel.half();
         let [x0, _, z0, x1, _, z1] = barrel.bounds();
         prop_assert!(half > x1.max(-x0).max(z1.abs()).max(z0.abs()).max(Y0), "{barrel:?}");
-        let fuzzy = barrel.fuzzy(half);
-        let within = |op: BooleanOp, want: f64, area: f64| match op {
-            BooleanOp::Fuse => fuzzy * area,
-            _ => 5e-7 * want.abs(),
-        };
+        let within = |_op: BooleanOp, want: f64, _area: f64| 5e-7 * want.abs();
         let wrong = with_worker(|k| {
             let against = Against { half, allowed: &within };
             let mut wrong = misses_against(k, &format!("{barrel:?} from {start}"), &regions, Z_AXIS, start, turn, against);
