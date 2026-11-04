@@ -355,6 +355,57 @@ fn copies_that_land_on_each_other_or_on_the_seed_fuse_into_one() {
 }
 
 #[test]
+fn a_copy_spread_far_grows_the_fuzzy_value_and_parts_a_near_one_from_the_plate() {
+    // The pin r 2, 4 tall on the 20 × 20 plate, copied 1e-3 along x: the box round the
+    // plate and the copies is √825 mm, f = 2.87e-5, and the copy adds its sliver of the
+    // union, 16 × 1e-3, one solid. With one more copy a kilometre off, the box is a
+    // kilometre and f about 1 mm: the pin and its near copy, a millimetre's thousandth
+    // apart, are one, and the volume is right, the plate, one pin, and the far pin, 400 +
+    // 32π; but the pin comes apart from the plate it stood on: three solids, the plate's 6
+    // faces and two pins' 3, where the true union is two. FreeCAD 1.1.3 does the same, by
+    // `fuse([near, far], -1.0)` and by a MultiTransform of two LinearPatterns (three
+    // solids, 400 + 32π). Found by break-it on the fuzzy value; a spec question for the
+    // pattern feature, which reads each result solid's faces to say which copies lie off
+    // the base (docs/ports/patterns.md): here the seed's own pin is a solid apart.
+    let mut k = kernel();
+    let plate = at(&mut k, block(20.0, 20.0, 1.0), [-10.0, -10.0, -1.0]);
+    let pin = k
+        .make(Primitive::Cylinder {
+            radius: 2.0,
+            height: 4.0,
+        })
+        .unwrap();
+    let base = k.boolean(BooleanOp::Fuse, &plate, &pin).unwrap().shape;
+    let one = 400.0 + 16.0 * PI;
+    let near = moved([1e-3, 0.0, 0.0]);
+    let made = copied(&mut k, CopiesOp::Fuse, &base, &pin, &[near]).unwrap();
+    assert_eq!(made.history.result.solids, 1);
+    assert_close(
+        "near",
+        volume(&mut k, &made.shape),
+        one + 16.0 * 1e-3,
+        1e-12,
+    );
+    let far = moved([1e6, 0.0, 0.0]);
+    let made = copied(&mut k, CopiesOp::Fuse, &base, &pin, &[near, far]).unwrap();
+    assert_eq!(made.shape.valid(), Some(true));
+    let faces: Vec<usize> = made
+        .history
+        .topology
+        .solid_faces
+        .iter()
+        .map(Vec::len)
+        .collect();
+    assert_eq!(faces, [3, 6, 3]);
+    assert_close(
+        "near and far",
+        volume(&mut k, &made.shape),
+        one + 16.0 * PI,
+        1e-12,
+    );
+}
+
+#[test]
 fn every_value_the_check_refuses_the_worker_refuses_too_naming_it() {
     // Sent past the core's own check, as a raw operation: the worker checks again and
     // refuses each, naming the placement and its field, and goes on working.

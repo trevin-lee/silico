@@ -1153,3 +1153,87 @@ fn a_torus_cut_by_a_larger_torus_occt_turns_inside_out_is_right_or_refused() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// The fuzzy value at the edges of scale (break-it on FreeCAD 1.1.3's automatic fuzzy value,
+// docs/ports/booleans.md, What the fuzzy value merges): f = 1e-6 × the diagonal of the box
+// round both inputs, by hand; FreeCAD 1.1.3's `-1.0` booleans of each give the same.
+
+#[test]
+fn a_kilometre_bar_keeps_a_corner_cube_above_the_fuzzy_value_and_merges_one_under_it() {
+    // A 1 km × 10 × 10 bar and a cube centred on its corner: f ≈ 1e-6 × 1e6 = 1 mm. A 5 mm
+    // cube, above it, is right: an eighth inside, 15.625; the fuse 1e8 + 125 − 15.625, the
+    // cut 1e8 − 15.625. A 0.1 mm cube, under it, merges away: the cut is the bar, 6 faces,
+    // the common empty (refused), and the fuse two solids, the bar and the whole small cube
+    // overlapping it, which every feature refuses as more than one solid (S5).
+    let bar = make(&Primitive::Box {
+        dx: 1e6,
+        dy: 10.0,
+        dz: 10.0,
+    })
+    .unwrap();
+    let five = at(cube(5.0), [-2.5; 3]);
+    sound("5 mm", BooleanOp::Fuse, &bar, &five, 1e8 + 125.0 - 15.625);
+    sound("5 mm", BooleanOp::Cut, &bar, &five, 1e8 - 15.625);
+    sound("5 mm", BooleanOp::Common, &bar, &five, 15.625);
+    let tenth = at(cube(0.1), [-0.05; 3]);
+    let cut = boolean(BooleanOp::Cut, &bar, &tenth).unwrap();
+    let s = summarize(&cut.shape).unwrap();
+    assert!(
+        s.valid && s.faces == 6 && close(s.volume, 1e8, 1e-12),
+        "{s:?}"
+    );
+    refused_empty("0.1 mm", BooleanOp::Common, &bar, &tenth);
+    let fused = boolean(BooleanOp::Fuse, &bar, &tenth).unwrap();
+    assert_eq!(fused.history.result.solids, 2);
+}
+
+#[test]
+fn a_far_part_of_the_tool_grows_the_fuzzy_value_and_merges_a_sliver() {
+    // 10 mm cubes overlapping by 1e-4: f = 2.45e-5, and the sliver is right, the common
+    // 1e-2, the cut 1000 − 1e-2. The same tool fused first with a 1 mm cube a kilometre
+    // off: the box round both is a kilometre, f about 1 mm, and the sliver is under it: the
+    // common is empty (refused) and the cut removes nothing. The fuzzy value is the box's,
+    // not each part's (FreeCAD 1.1.3: the same).
+    let a = make(&cube(10.0)).unwrap();
+    let near = at(cube(10.0), [9.9999, 0.0, 0.0]);
+    sound("alone", BooleanOp::Common, &a, &near, 1e-2);
+    sound("alone", BooleanOp::Cut, &a, &near, 1000.0 - 1e-2);
+    let far = at(cube(1.0), [1e6, 0.0, 0.0]);
+    let tool = boolean(BooleanOp::Fuse, &near, &far).unwrap().shape;
+    refused_empty("with a far part", BooleanOp::Common, &a, &tool);
+    sound("with a far part", BooleanOp::Cut, &a, &tool, 1000.0);
+}
+
+#[test]
+fn a_foil_thinner_than_the_fuzzy_value_is_refused_and_a_thicker_one_is_right() {
+    // A 10 × 10 foil t thick, half under a 10 mm cube standing across it: f = 1e-6 ×
+    // √(15² + 10² + 10²) = 2.06e-5. At t = 1e-6 and 1e-5, under it, the foil's own faces
+    // are within f of each other: the cut is refused as an invalid result (FreeCAD 1.1.3's
+    // is invalid, 10 faces), the common as empty, and the fuse is two solids, which every
+    // feature refuses (S5). At 1e-4 each is right: the half outside, 5e-3, the half inside,
+    // 5e-3, and the fuse 1000 + 5e-3.
+    let half = at(cube(10.0), [5.0, 0.0, -5.0]);
+    let foil = |t: f64| {
+        make(&Primitive::Box {
+            dx: 10.0,
+            dy: 10.0,
+            dz: t,
+        })
+        .unwrap()
+    };
+    for t in [1e-6, 1e-5] {
+        let f = foil(t);
+        let what = format!("{t:e}");
+        let e = boolean(BooleanOp::Cut, &f, &half).err().unwrap();
+        assert_eq!(e.kind(), KernelErrorKind::InvalidResult, "{what}: {e}");
+        assert!(e.suggestion().is_some(), "{what}");
+        refused_empty(&what, BooleanOp::Common, &f, &half);
+        let fused = boolean(BooleanOp::Fuse, &f, &half).unwrap();
+        assert_eq!(fused.history.result.solids, 2, "{what}");
+    }
+    let f = foil(1e-4);
+    sound("1e-4", BooleanOp::Cut, &f, &half, 5e-3);
+    sound("1e-4", BooleanOp::Common, &f, &half, 5e-3);
+    sound("1e-4", BooleanOp::Fuse, &f, &half, 1000.0 + 5e-3);
+}
