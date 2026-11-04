@@ -357,6 +357,8 @@ pub struct Tab {
     exported: bool,
     /// The export out was sent from a dialog since cancelled, not the one open now.
     export_disowned: bool,
+    /// The viewport's camera, meshes, and `meshes` read (M5.6).
+    pub view: crate::viewport::View,
 }
 
 /// What a refusal says to the person: its first error's message and suggestion.
@@ -428,6 +430,7 @@ impl Tab {
             export_replacing: None,
             exported: false,
             export_disowned: false,
+            view: crate::viewport::View::default(),
         }
     }
 

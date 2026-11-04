@@ -131,63 +131,101 @@ impl NamedView {
     /// [`camera`](Self::camera), and which of the image's sides bound the fit, `"height"`
     /// or `"width"`: the side whose pixels a view's pixel is, so fewer of them make it
     /// coarser (the extent along `up` over `height`, or along the right over `width`; the
-    /// height where they're equal).
-    pub fn fit(
-        self,
-        [low, high]: [[f64; 3]; 2],
-        width: u32,
-        height: u32,
-    ) -> (Camera, &'static str) {
-        let dir = self.direction();
-        let up = self.up();
-        let right = cross(up, dir);
-        let target = [
-            (low[0] + high[0]) / 2.0,
-            (low[1] + high[1]) / 2.0,
-            (low[2] + high[2]) / 2.0,
-        ];
-        let mut along_up = (f64::INFINITY, f64::NEG_INFINITY);
-        let mut along_right = (f64::INFINITY, f64::NEG_INFINITY);
-        for i in 0..8 {
-            let corner = [
-                if i & 1 == 0 { low[0] } else { high[0] },
-                if i & 2 == 0 { low[1] } else { high[1] },
-                if i & 4 == 0 { low[2] } else { high[2] },
-            ];
-            let (u, r) = (dot(corner, up), dot(corner, right));
-            along_up = (along_up.0.min(u), along_up.1.max(u));
-            along_right = (along_right.0.min(r), along_right.1.max(r));
-        }
-        let extent_up = along_up.1 - along_up.0;
-        let extent_right = (along_right.1 - along_right.0) * f64::from(height) / f64::from(width);
-        let half_diagonal = {
-            let d = sub(high, low);
-            dot(d, d).sqrt() / 2.0
-        };
-        // Never under what the render draws of the box's reach from its centre (its half
-        // diagonal: a rod seen end on), with a hundredth to spare.
-        let least = half_diagonal * silico_protocol::MIN_VIEW_HEIGHT_OF_REACH * 1.01;
-        let view_height = (1.1 * extent_up.max(extent_right)).max(least);
-        let side = if extent_up >= extent_right {
-            "height"
-        } else {
-            "width"
-        };
-        let eye = [
-            target[0] + dir[0] * 2.0 * half_diagonal,
-            target[1] + dir[1] * 2.0 * half_diagonal,
-            target[2] + dir[2] * 2.0 * half_diagonal,
-        ];
-        (
-            Camera {
-                projection: Projection::Orthographic { view_height },
-                eye,
-                target,
-                up,
-            },
-            side,
-        )
+    /// height where they're equal). The view's [`fit_along`] its direction and up.
+    pub fn fit(self, bounds: [[f64; 3]; 2], width: u32, height: u32) -> (Camera, &'static str) {
+        fit_along(self.direction(), self.up(), bounds, width, height)
     }
+}
+
+/// The orthographic camera that fits a tight box, `[low, high]`, into an image `width` by
+/// `height`, looking along `direction` (a unit vector from the target to the eye) with `up`
+/// (a unit vector across it), and which side bound the fit, as [`NamedView::fit`] gives
+/// them for its own direction and up: the box's centre its target, its eye two half
+/// diagonals back, and its view height 1.1 times the larger of the box's corners' extent
+/// along `up` and their extent along the image's right (`up × direction`) times `height /
+/// width`, never under [`least_view_height`] of its half diagonal. Any client's fit (the
+/// app's, its view's direction kept) is this one.
+pub fn fit_along(
+    direction: [f64; 3],
+    up: [f64; 3],
+    [low, high]: [[f64; 3]; 2],
+    width: u32,
+    height: u32,
+) -> (Camera, &'static str) {
+    let dir = direction;
+    let right = cross(up, dir);
+    let target = [
+        (low[0] + high[0]) / 2.0,
+        (low[1] + high[1]) / 2.0,
+        (low[2] + high[2]) / 2.0,
+    ];
+    let mut along_up = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut along_right = (f64::INFINITY, f64::NEG_INFINITY);
+    for i in 0..8 {
+        let corner = [
+            if i & 1 == 0 { low[0] } else { high[0] },
+            if i & 2 == 0 { low[1] } else { high[1] },
+            if i & 4 == 0 { low[2] } else { high[2] },
+        ];
+        let (u, r) = (dot(corner, up), dot(corner, right));
+        along_up = (along_up.0.min(u), along_up.1.max(u));
+        along_right = (along_right.0.min(r), along_right.1.max(r));
+    }
+    let extent_up = along_up.1 - along_up.0;
+    let extent_right = (along_right.1 - along_right.0) * f64::from(height) / f64::from(width);
+    let half_diagonal = {
+        let d = sub(high, low);
+        dot(d, d).sqrt() / 2.0
+    };
+    // Never under what the render draws of the box's reach from its centre (its half
+    // diagonal: a rod seen end on).
+    let least = least_view_height(half_diagonal);
+    let view_height = (1.1 * extent_up.max(extent_right)).max(least);
+    let side = if extent_up >= extent_right {
+        "height"
+    } else {
+        "width"
+    };
+    let eye = [
+        target[0] + dir[0] * 2.0 * half_diagonal,
+        target[1] + dir[1] * 2.0 * half_diagonal,
+        target[2] + dir[2] * 2.0 * half_diagonal,
+    ];
+    (
+        Camera {
+            projection: Projection::Orthographic { view_height },
+            eye,
+            target,
+            up,
+        },
+        side,
+    )
+}
+
+/// The least height an orthographic view draws bodies reaching `reach` mm from its target
+/// at: a renderer drawing in f32 refuses a view under `MIN_VIEW_HEIGHT_OF_REACH` of the
+/// reach, and this leaves a hundredth to spare.
+pub fn least_view_height(reach: f64) -> f64 {
+    reach * silico_protocol::MIN_VIEW_HEIGHT_OF_REACH * 1.01
+}
+
+/// How far from `from` the farthest corner of any of `boxes` is: the bodies' reach, as a
+/// renderer measures it from an orthographic view's target. 0 for no box.
+pub fn reach(from: [f64; 3], boxes: impl IntoIterator<Item = [[f64; 3]; 2]>) -> f64 {
+    boxes.into_iter().fold(0.0, |far, [low, high]| {
+        let d = [0, 1, 2].map(|k| (low[k] - from[k]).abs().max((high[k] - from[k]).abs()));
+        far.max(dot(d, d).sqrt())
+    })
+}
+
+/// The smallest box holding every one of `boxes`, if there are any.
+pub fn joined(boxes: impl IntoIterator<Item = [[f64; 3]; 2]>) -> Option<[[f64; 3]; 2]> {
+    boxes.into_iter().reduce(|[low, high], [l, h]| {
+        [
+            [low[0].min(l[0]), low[1].min(l[1]), low[2].min(l[2])],
+            [high[0].max(h[0]), high[1].max(h[1]), high[2].max(h[2])],
+        ]
+    })
 }
 
 /// Half a pixel of `camera`'s image, `height` pixels high, in mm, at `depth` along the view
@@ -333,7 +371,8 @@ pub fn sees(camera: &Camera, width: u32, height: u32, [low, high]: [[f64; 3]; 2]
 #[cfg(test)]
 mod tests {
     use super::{
-        NAMED_VIEWS, NamedView, cross, depth_of_box, dot, half_pixel_at, meshing_depth, sees,
+        NAMED_VIEWS, NamedView, cross, depth_of_box, dot, fit_along, half_pixel_at, joined,
+        least_view_height, meshing_depth, reach, sees,
     };
     use silico_protocol::{Camera, Projection};
 
@@ -822,5 +861,65 @@ mod tests {
             assert_eq!(sees(&perspective, 300, 300, on), Some(true), "{which}");
             assert_eq!(sees(&perspective, 300, 300, off), Some(false), "{which}");
         }
+    }
+
+    #[test]
+    fn a_fit_along_any_direction_is_the_named_views_fit_along_theirs() {
+        // Home's direction on a 20 mm cube, square: up (−1, 1, 2)/√6 spans 80/√6 of the
+        // cube (its corners (0, 20, 20) and (20, 0, 0)), so 1.1 · 80/√6 = 35.926 high.
+        let cube = [[0.0; 3], [20.0; 3]];
+        let (camera, side) = fit_along(
+            NamedView::TopFrontRight.direction(),
+            NamedView::TopFrontRight.up(),
+            cube,
+            400,
+            400,
+        );
+        let Projection::Orthographic { view_height } = camera.projection else {
+            panic!("orthographic")
+        };
+        assert!((view_height - 1.1 * 80.0 / 6f64.sqrt()).abs() < 1e-12);
+        assert_eq!(side, "height");
+        for view in NAMED_VIEWS {
+            assert_eq!(
+                view.fit(BLOCK, 640, 480),
+                fit_along(view.direction(), view.up(), BLOCK, 640, 480)
+            );
+        }
+        // A needle 500,000 mm long seen end on: 1 mm across, so 1.1 mm by its extent, but
+        // its half diagonal's least, 250,000 · 1e-5 · 1.01 = 2.525, binds.
+        let needle = [[0.0; 3], [1.0, 500_000.0, 1.0]];
+        let (end_on, _) = fit_along([0.0, -1.0, 0.0], [0.0, 0.0, 1.0], needle, 400, 400);
+        let Projection::Orthographic { view_height } = end_on.projection else {
+            panic!("orthographic")
+        };
+        assert!((view_height - 2.525).abs() < 1e-6, "{view_height}");
+    }
+
+    #[test]
+    fn the_reach_is_the_farthest_corner_and_the_least_height_a_hundredth_over_its_share() {
+        // From the origin, the block's farthest corner is (40, 20, 10): √2100.
+        assert_eq!(reach([0.0; 3], [BLOCK]), 2100f64.sqrt());
+        // From its centre, half its diagonal; a second box farther off wins.
+        assert_eq!(reach([20.0, 10.0, 5.0], [BLOCK]), 525f64.sqrt());
+        let far = [[100.0, 0.0, 0.0], [101.0, 1.0, 1.0]];
+        assert_eq!(
+            reach([0.0; 3], [BLOCK, far]),
+            (101.0f64 * 101.0 + 2.0).sqrt()
+        );
+        assert_eq!(reach([0.0; 3], []), 0.0);
+        // A box off the origin, (1, 2, 3) to (5, 6, 7), from (4, 4, 4): its farthest
+        // corner is 3 back along x, 2 either way along y, and 3 on along z: √22. From
+        // (6, 6, 6), at or past its high side in x and y, its low corner is farthest: 5, 4,
+        // and 3 back, √50.
+        let off = [[1.0, 2.0, 3.0], [5.0, 6.0, 7.0]];
+        assert_eq!(reach([4.0; 3], [off]), 22f64.sqrt());
+        assert_eq!(reach([6.0; 3], [off]), 50f64.sqrt());
+        assert_eq!(least_view_height(1e5), 1.01);
+        assert_eq!(
+            joined([BLOCK, far]),
+            Some([[0.0, 0.0, 0.0], [101.0, 20.0, 10.0]])
+        );
+        assert_eq!(joined([]), None);
     }
 }
