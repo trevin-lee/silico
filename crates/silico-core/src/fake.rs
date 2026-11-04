@@ -27,8 +27,11 @@
 //! (`Measured::less`), and a common's that share of its tool (`Measured::within`), so a pad
 //! adds, a pocket and a cut remove, and a cut or common whose tool lies outside its base's
 //! box changes nothing, as the real kernel's booleans of shapes apart do (and S7's rule
-//! refuses them, M2's too). An M2 cut's and common's box is still both inputs' together, a
-//! pocket's its base's. Faces made from a profile's
+//! refuses them, M2's too). The model's limits: a fuse still adds both inputs' volumes,
+//! however they overlap (so it never adds nothing); a share of a box is exact only for
+//! boxes (a sphere is spread through its box as if it filled it); a cut takes at most all of
+//! its base, leaving no volume, never less; and an M2 cut's and common's box is still both
+//! inputs' together (a pocket's its base's). Faces made from a profile's
 //! regions are numbered and kept as the kernel keeps them (each curve its edge, each point
 //! its vertex), with their area by formula and the box around their curves. A sweep of
 //! faces (a prism, through all or not, or a revolution) reports each element as the kernel
@@ -2451,7 +2454,9 @@ impl Measured {
     /// evenly through its own box and the shape filled its: its volume and moment less the
     /// tool's in proportion to the share of the tool's box inside the shape's, its area
     /// more by that share of the tool's, its box its own. Exact for a prism of a rectangle
-    /// cut square into a box (a pocket); the fake's own model otherwise.
+    /// cut square into a box (a pocket), and for a box in a box; the fake's own model
+    /// otherwise, and never below no volume: a tool whose share outweighs the shape (a sphere
+    /// cut by a box round it) leaves 0, as if it took all of it.
     fn less(self, tool: Measured) -> Self {
         let ([a_low, a_high], [b_low, b_high]) = (self.bounds, tool.bounds);
         let size = |low: [f64; 3], high: [f64; 3]| -> f64 {
@@ -2464,7 +2469,7 @@ impl Measured {
         let whole = size(b_low, b_high);
         let share = if whole > 0.0 { inside / whole } else { 0.0 };
         Measured {
-            volume: self.volume - share * tool.volume,
+            volume: (self.volume - share * tool.volume).max(0.0),
             area: self.area + share * tool.area,
             moment: [0, 1, 2].map(|i| self.moment[i] - share * tool.moment[i]),
             bounds: self.bounds,

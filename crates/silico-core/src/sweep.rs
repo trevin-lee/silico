@@ -788,13 +788,13 @@ impl Changes for silico_protocol::BooleanOp {
         use silico_protocol::BooleanOp;
         match self {
             BooleanOp::Fuse => format!(
-                "if its tool lies inside its base, move it so it reaches out of it; {MILLIONTH}"
+                "if its tool lies inside its base, move it so it reaches out of it, or remove or suppress the fuse; {MILLIONTH}"
             ),
-            BooleanOp::Cut => {
-                format!("if its tool misses its base, move it so they overlap; {MILLIONTH}")
-            }
+            BooleanOp::Cut => format!(
+                "if its tool misses its base, move it so they overlap, or remove or suppress the cut; {MILLIONTH}"
+            ),
             BooleanOp::Common => format!(
-                "if its tool holds all of its base, the common is its base: move or shrink the tool, or remove the common; {MILLIONTH}"
+                "if its tool holds all of its base, the common is its base: move or shrink the tool, or remove or suppress the common; {MILLIONTH}"
             ),
         }
     }
@@ -884,10 +884,28 @@ fn judged(
             );
         }
         let suggestion = kind.when_unchanged();
+        // No change, or one the wrong way: a result that measures less than its base for
+        // what adds, or more for what takes away, says both volumes.
+        let said = if change < 0.0 {
+            let than = if after.volume < before.volume {
+                "less"
+            } else {
+                "more"
+            };
+            format!(
+                "the result's volume, {} mm³, is {than} than the base's, {} mm³",
+                format_number(after.volume),
+                format_number(before.volume)
+            )
+        } else {
+            format!(
+                "the result's volume is the base's, {} mm³",
+                format_number(after.volume)
+            )
+        };
         return failed(
             format!(
-                "{word} {id} {verb} nothing {preposition} its base {base_id}: the result's volume is the base's, {} mm³ ({counts})",
-                format_number(after.volume)
+                "{word} {id} {verb} nothing {preposition} its base {base_id}: {said} ({counts})"
             ),
             &suggestion,
         );

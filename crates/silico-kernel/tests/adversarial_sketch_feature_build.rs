@@ -709,16 +709,28 @@ fn m2(id: &str, kind: &str, base: &str, tool: &str) -> String {
 #[test]
 fn an_m2_boolean_that_changes_nothing_is_refused_naming_it_and_one_that_does_is_built() {
     // S7's rule, for M2's fuse, cut, and common too (SolidWorks refuses a feature that
-    // changes nothing): each refused as kernel_failed, naming the feature, in S7's words.
+    // changes nothing): each refused as kernel_failed, naming the feature, in S7's words,
+    // with its own advice, word for word.
+    let millionth = "a boolean is built to a millionth of its size, so a tool that reaches less than that past or into its base is lost";
+    let cut_advice = format!(
+        "if its tool misses its base, move it so they overlap, or remove or suppress the cut; {millionth}"
+    );
+    let fuse_advice = format!(
+        "if its tool lies inside its base, move it so it reaches out of it, or remove or suppress the fuse; {millionth}"
+    );
+    let common_advice = format!(
+        "if its tool holds all of its base, the common is its base: move or shrink the tool, or remove or suppress the common; {millionth}"
+    );
     let engine = engine();
-    let refused = |features: &[&str], said: &str| {
+    let refused = |features: &[&str], said: &str, advice: &str| {
         let model = publish(&engine, features);
         let e = failed(&model, "kkkkkkkk");
         assert_eq!(e.code(), ErrorCode::KernelFailed, "{e:?}");
         assert_eq!(e.feature(), Some("kkkkkkkk"), "{e:?}");
         assert!(e.message().starts_with(said), "{e:?}");
-        assert!(e.suggestion().is_some(), "{e:?}");
+        assert_eq!(e.suggestion(), Some(advice), "{e:?}");
     };
+    let unchanged = ": the result's volume is the base's";
     // A 1e-5 cube centred on a 1e5 cube's corner: under the fuzzy value (0.173 mm), OCCT
     // takes it for nothing, and the cut is the big cube (FreeCAD 1.1.3's Part::Cut too).
     refused(
@@ -727,7 +739,8 @@ fn an_m2_boolean_that_changes_nothing_is_refused_naming_it_and_one_that_does_is_
             &box_at("tttttttt", [-5e-6; 3], 1e-5, 1e-5, 1e-5),
             &m2("kkkkkkkk", "cut", "bbbbbbbb", "tttttttt"),
         ],
-        "cut kkkkkkkk removes nothing from its base bbbbbbbb",
+        &format!("cut kkkkkkkk removes nothing from its base bbbbbbbb{unchanged}"),
+        &cut_advice,
     );
     // A cut whose tool misses its base.
     refused(
@@ -736,7 +749,8 @@ fn an_m2_boolean_that_changes_nothing_is_refused_naming_it_and_one_that_does_is_
             &box_at("tttttttt", [20.0, 0.0, 0.0], 5.0, 5.0, 5.0),
             &m2("kkkkkkkk", "cut", "bbbbbbbb", "tttttttt"),
         ],
-        "cut kkkkkkkk removes nothing from its base bbbbbbbb",
+        &format!("cut kkkkkkkk removes nothing from its base bbbbbbbb{unchanged}"),
+        &cut_advice,
     );
     // A fuse whose tool lies inside its base.
     refused(
@@ -745,7 +759,8 @@ fn an_m2_boolean_that_changes_nothing_is_refused_naming_it_and_one_that_does_is_
             &box_at("tttttttt", [2.0, 2.0, 2.0], 5.0, 5.0, 5.0),
             &m2("kkkkkkkk", "fuse", "bbbbbbbb", "tttttttt"),
         ],
-        "fuse kkkkkkkk adds nothing to its base bbbbbbbb",
+        &format!("fuse kkkkkkkk adds nothing to its base bbbbbbbb{unchanged}"),
+        &fuse_advice,
     );
     // A common whose tool holds all of its base.
     refused(
@@ -754,7 +769,8 @@ fn an_m2_boolean_that_changes_nothing_is_refused_naming_it_and_one_that_does_is_
             &box_at("tttttttt", [0.0; 3], 10.0, 10.0, 10.0),
             &m2("kkkkkkkk", "common", "bbbbbbbb", "tttttttt"),
         ],
-        "common kkkkkkkk removes nothing from its base bbbbbbbb",
+        &format!("common kkkkkkkk removes nothing from its base bbbbbbbb{unchanged}"),
+        &common_advice,
     );
     // A real cut, fuse, and common still build: 1000 less, plus, and in common with the
     // 5 mm cube half out of it, 62.5 mm³ (5 × 5 × 2.5).
@@ -773,4 +789,66 @@ fn an_m2_boolean_that_changes_nothing_is_refused_naming_it_and_one_that_does_is_
         );
         assert_close(volume(&model, "kkkkkkkk"), want, 1e-9, kind);
     }
+}
+
+#[test]
+fn an_m2_cut_on_a_metre_cube_is_refused_under_its_limit_and_built_over_it() {
+    // S7's limit, 1e-9 of the base's volume, for M2 booleans (Fable's decision, 2026-11-04):
+    // on a 1000 mm cube, 1e9 mm³, 1 mm³ by hand. A cube in its corner, 0.9 mm: 0.729 mm³
+    // removed, no more than the limit: refused, the message naming the change and the
+    // limit, with the boolean's advice. A 1.1 mm cube: 1.331 mm³, over it: built, valid,
+    // 1e9 − 1.331 = 999999998.669 mm³; the cube's 6 faces and the notch's 3, 9; the cube's
+    // 12 edges (the three at the corner shortened), 2 more on each notched face, and the 3
+    // where the notch's faces meet, 21; the cube's 7 other corners, one where each shortened
+    // edge now ends, one at each notched face's inner corner, and the notch's own, 14. Both
+    // tools are hundreds
+    // of times the fuzzy value (1e-6 × √3 × 1000 = 1.73e-3 mm), so OCCT builds both right.
+    // The equality case (1 mm³) isn't pinned: 1e9 isn't exact in a sum of face integrals.
+    let engine = engine();
+    let corner = |size: f64| {
+        publish(
+            &engine,
+            &[
+                &box_at("bbbbbbbb", [0.0; 3], 1000.0, 1000.0, 1000.0),
+                &box_at("tttttttt", [0.0; 3], size, size, size),
+                &m2("kkkkkkkk", "cut", "bbbbbbbb", "tttttttt"),
+            ],
+        )
+    };
+    let model = corner(0.9);
+    let e = failed(&model, "kkkkkkkk");
+    assert_eq!(e.code(), ErrorCode::KernelFailed, "{e:?}");
+    assert_eq!(e.feature(), Some("kkkkkkkk"), "{e:?}");
+    assert!(
+        e.message().starts_with(
+            "cut kkkkkkkk removes nothing from its base bbbbbbbb that its volume can tell: the 0.729"
+        ),
+        "{e:?}"
+    );
+    assert!(
+        e.message()
+            .contains(" mm³ it removes is no more than the 1 mm³ (1e-9 of the base's volume)"),
+        "{e:?}"
+    );
+    assert_eq!(
+        e.suggestion(),
+        Some("make the tool larger, or the cut on a smaller part"),
+        "{e:?}"
+    );
+    let model = corner(1.1);
+    let Some(FeatureOutcome::Built { built, .. }) = model.outcome(&id("kkkkkkkk")) else {
+        panic!("{:?}", model.outcome(&id("kkkkkkkk")));
+    };
+    let summary = built.summary().unwrap();
+    assert!(
+        (summary.volume - 999_999_998.669).abs() < 1e-6,
+        "{}",
+        summary.volume
+    );
+    assert_eq!(
+        (summary.faces, summary.edges, summary.vertices),
+        (9, 21, 14),
+        "{summary:?}"
+    );
+    assert!(summary.valid, "{summary:?}");
 }

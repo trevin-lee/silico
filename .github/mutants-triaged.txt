@@ -343,6 +343,14 @@ crates/silico-app/src/main.rs | options | delete field renderer from struct efra
 crates/silico-app/src/main.rs | options | delete field viewport from struct eframe::NativeOptions expression | #298
 crates/silico-app/src/app.rs | <impl eframe::App for App<P>>::ui | replace <impl eframe::App for App<P>>::ui with () | #298
 crates/silico-app/src/missing.rs | <impl eframe::App for Missing>::ui | replace <impl eframe::App for Missing>::ui with () | #298
+# The app bar as macOS's title bar (#361): `TITLE_BAR_IS_APP_BAR` is false off macOS, where
+# CI runs these, so `inset` never reads full screen and `move_window` returns before its
+# body (its other `delete !`, of that return's test, sends commands, and is killed there).
+# On macOS bar.rs's tests kill each: the inset full screen or not, and the window's drag,
+# zoom, and unzoom.
+crates/silico-app/src/bar.rs | inset | delete ! | #361
+crates/silico-app/src/bar.rs | move_window | replace move_window with () | #361
+crates/silico-app/src/bar.rs | move_window | delete ! | #361
 # `keys`' answer only asks egui for the next frame at once, which egui asks for itself
 # after any input event (each key press is one), so no frame comes later for it (#298).
 crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
@@ -463,3 +471,33 @@ crates/silico-core/src/views.rs | fit_along | replace == with != | #341
 # (This mutant went untested in #371's own run, whose shard 0 baseline failed; #376's run
 # on main tested it and found it equivalent.)
 crates/silico-app/src/viewport.rs | sequenced | replace < with <= | #376
+# The toolbar (#362): a panel's row is its buttons and the gaps between them, each gap
+# `.tb-row`'s 1px (`TOOLBAR_BUTTON_GAP`). The gaps' count times 1 and divided by 1 are the
+# same width, bit for bit, so nothing drawn tells them apart; any other gap's would.
+crates/silico-app/src/toolbar.rs | panel | replace * with / | #362
+# The native file dialog (#363). `browse::Native` is made only from eframe's CreationContext,
+# which only `eframe::run_native` gives, with the app's real window, and its `browse` opens
+# the platform's own panel (rfd: an NSOpenPanel sheet on macOS, the XDG portal on Linux).
+# No headless test can make one or drive its panel, so these are unreachable from tests;
+# every test of Open and Browse… goes through the `Browse` trait's stand-in. The real
+# panel was checked in the running app on macOS (#363's body): ⌘O brought the Open sheet
+# up on Silico's own window, in front, with the .silico filter. `on`'s `&&` only decides
+# whether a warning is logged for a missing window. `browse` replaced with None is the
+# panel never opening, which the stand-in's tests of the typed fallback cover in kind.
+# The Focus condition's `&&` and `!=` decide whether the app's window is brought to the
+# front when the sheet begins, observable only in a real window manager.
+crates/silico-app/src/browse.rs | Native::on | replace && with || | #363
+crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace <impl Browse for Native>::browse -> Option<Answer> with None | #363
+crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace && with || | #363
+crates/silico-app/src/browse.rs | <impl Browse for Native>::browse | replace != with == | #363
+# The timeline's track (#369) turns off egui's drag-to-scroll, which egui's default turns on
+# only on a touch screen, and only for a press its hit test gives the track's background.
+# The track scrolls only once its items overflow it, and then every point of it is within
+# 4.5 points of an item (`.tl-item`, 30 high in the 39-high track, 2 apart), inside egui's
+# 5-point `interact_radius`: egui 0.36's hit test (hit_test.rs, `hit_test_on_close`) gives a
+# press there to the item, which senses click and drag, "a smaller thing on a big
+# background", never to the background. A drag from an item, from over the items' top
+# margin, and from between two items, of 40 items, was checked with the field deleted on a
+# touch screen and with drag-to-scroll forced on (`DragScroll::Always`): the track never
+# moved, and the wheel scrolled it. Unreachable.
+crates/silico-app/src/timeline.rs | features | delete field drag from struct egui::scroll_area::ScrollSource expression | #369

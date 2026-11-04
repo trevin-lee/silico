@@ -224,7 +224,7 @@ fn a_dimension_that_over_defines_the_sketch_is_applied_and_its_conflict_reported
         f.problem_of("s0000001"),
         json!({
             "code": "over_constrained",
-            "message": "the sketch's constraints conflict: these 2 can't all hold",
+            "message": "the sketch's constraints conflict: the ones named can't all hold",
             "feature": "s0000001",
             "elements": ["ka000009", "ka00000d"],
             "elements_total": 2,

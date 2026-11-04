@@ -1,7 +1,10 @@
 //! break-it for OCCT's skipped-pair warning, which the kernel logs and doesn't refuse
 //! (docs/ports/booleans.md): a document a user could write, a pointed cone with a padded rod
 //! resting on its tip, cut, for which OCCT raises it with a right result. The rod touches
-//! the cone at one point and nowhere else, so the cut is the cone whole: 125π/3 =
+//! the cone at one point and nowhere else: the rod is x² + (z − 7)² ≤ 4 (its axis along y
+//! through (0, 7) in xz), so z ≥ 7 − √(4 − x²) ≥ 5, equal only at x = 0, and the cone
+//! (apex (0, 0, 5)) has z ≤ 5, at 5 only at its apex; they share the point (0, 0, 5) alone,
+//! an overlap of volume 0, so the cut is the cone whole: 125π/3 =
 //! 130.899694 (by hand; FreeCAD 1.1.3, on the same OCCT, gives 130.8996939 for the same
 //! solids), which removes nothing: the cut is refused by S7's rule, which M2 booleans take
 //! (docs/ports/booleans.md), in its words, never the warning's. Exit codes from
