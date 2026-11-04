@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use super::cancel::{Interrupt, Ticket, Why, cancelled};
 use super::sketch_edits::judged;
+use super::transaction::untitled_save;
 use super::{
     DragBegun, DragEnded, DragFrame, DragGrab, DragOpen, FrameEnd, Gated, Problems, Response,
     Revision, Running, Session, SessionCommand, SessionId, SessionInfo, Sessions, command_span,
@@ -405,6 +406,12 @@ impl<C: Kernel + 'static> Session<C> {
     ) -> Result<DragBegun, Problems> {
         let (revision, gated) = {
             let held = self.held.read();
+            // Outside a transaction a drag's end is an edit saved as it's made, which an
+            // untitled session has no file for: refused now, before a worker is started,
+            // not at the drag's end.
+            if held.file.is_none() && held.transaction.is_none() {
+                return Err(Problems::from(untitled_save(self.id)));
+            }
             (held.revision, Arc::clone(&held.gated))
         };
         let replaced = {
@@ -652,7 +659,9 @@ impl<P: Clients + 'static> Sessions<P> {
     /// edge as the begin state draws it (naming `press`: the app projects its pick, which lies
     /// on a tessellation, onto the exact curve); a part of more than
     /// `MAX_DRAG_UNKNOWNS` unknowns (naming `point`, or `curve`); a sketch whose constraints
-    /// conflict (`over_constrained`, naming them); and a worker that failed (its error).
+    /// conflict (`over_constrained`, naming them); a worker that failed (its error); and,
+    /// before any of these, an untitled session outside a transaction (naming `session`):
+    /// the drag's end would be an edit saved as it's made, and it has no file to save to.
     pub fn drag_begin(
         &self,
         session: &SessionId,

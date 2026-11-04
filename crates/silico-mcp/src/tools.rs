@@ -205,6 +205,9 @@ pub const IN_A_TRANSACTION: &str = "Edit inside a transaction: `begin`, the edit
 pub const READ_CURRENT: &str = "After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.";
 pub const NAMES_FROM_ELEMENTS: &str =
     "Name a face, edge, or vertex only as `elements` or `query` gives it; never make a name up.";
+/// That a part can be made with no file (an untitled one), said in `initialize`'s
+/// instructions and in `open`'s description, as the three above are in theirs.
+pub const UNTITLED: &str = "For a part with no file yet, open with `path: null` and `create: true`: an untitled part, nothing on disk, its edits made inside a transaction, and its first `commit` given a path to save it there.";
 
 /// `command`'s title and description, for an agent: every command matched.
 fn words(command: Command) -> (&'static str, String) {
@@ -291,7 +294,7 @@ fn words(command: Command) -> (&'static str, String) {
         ),
         Command::DragBegin => (
             "Begin a drag",
-            "Begin dragging one sketch's point (`point`), or a curve's edge (`curve`, and `press`, where on it the press landed, in the sketch's coordinates), the other null: a line's edge moves the line whole, a circle's or an arc's sizes it through the cursor. Every point dragged is pinned below every constraint, so dimensions hold. The result lists the points of the part that moves. One drag is open in a session at once; it ends at `drag_end`, at any edit, undo, or reload of the session, or if its worker fails. A sketch whose constraints conflict can't be dragged.",
+            "Begin dragging one sketch's point (`point`), or a curve's edge (`curve`, and `press`, where on it the press landed, in the sketch's coordinates), the other null: a line's edge moves the line whole, a circle's or an arc's sizes it through the cursor. Every point dragged is pinned below every constraint, so dimensions hold. The result lists the points of the part that moves. One drag is open in a session at once; it ends at `drag_end`, at any edit, undo, or reload of the session, or if its worker fails. A sketch whose constraints conflict can't be dragged. An untitled session (opened with `path: null`) drags only inside a transaction: outside one, `drag_end` would save an edit it has no file for, so `drag_begin` is refused.",
         ),
         Command::DragMove => (
             "Move a drag",
@@ -412,11 +415,11 @@ fn words(command: Command) -> (&'static str, String) {
         | Command::Sketch
         | Command::Undo
         | Command::Redo => &[READ_CURRENT],
+        Command::Open => &[UNTITLED],
         Command::Elements | Command::Query | Command::Distance | Command::Angle => {
             &[READ_CURRENT, NAMES_FROM_ELEMENTS]
         }
         Command::Version
-        | Command::Open
         | Command::Close
         | Command::Status
         | Command::ReadLogs

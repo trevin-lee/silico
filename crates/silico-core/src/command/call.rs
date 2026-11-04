@@ -617,8 +617,10 @@ impl<P: Clients + 'static> Sessions<P> {
                     result: Ok(VERSION),
                 }
             }),
-            Command::Open => typed(named, OpenRequest::read(request), |r| {
-                self.open(r.path, r.create)
+            // A request with path null is create's (the reader refuses one without).
+            Command::Open => typed(named, OpenRequest::read(request), |r| match r.path {
+                Some(path) => self.open(path, r.create),
+                None => self.open_untitled(),
             }),
             Command::Close => typed(named, SessionRequest::read(request), |r| {
                 self.close(&r.session)

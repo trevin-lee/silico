@@ -17,7 +17,7 @@ use crate::sessions::{answer, refusal};
 
 /// The box in canonical form, `length` long (20 wide, 10 high), with the fingerprint the
 /// fake measures, by formula: volume 200·length, area 2·(20·length + 10·length + 200).
-fn canonical(length: u32) -> String {
+pub(crate) fn canonical(length: u32) -> String {
     let (volume, area) = (200 * length, 2 * (30 * length + 200));
     format!(
         "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n    {{\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": {length},\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {{\"volume\": {volume}, \"area\": {area}, \"bbox\": [0, 0, 0, {length}, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}}\n    }}\n  ]\n}}\n"

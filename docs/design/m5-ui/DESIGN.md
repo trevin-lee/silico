@@ -34,7 +34,7 @@ Also built: the command search (`S`), File menu, context menus on the canvas, ti
 Both are built so Trevin can compare (1 and 1b). **Recommended: the start page**, because:
 
 - With no document, no command in the toolbar can act. A canvas full of disabled tools reads as broken, which is today's problem with nicer paint.
-- New asks for the path first (open item 30), so a blank canvas can't really be "drawn on" before a file exists. The start page puts New, Open, and Recent first, the three things that can happen next.
+- ~~New asks for the path first (open item 30), so a blank canvas can't really be "drawn on" before a file exists.~~ *Overturned by Trevin (2026-11-01):* New opens an untitled part at once, with nothing on disk until its first save asks for a name (open item 30, overturned). The start page still puts New, Open, and Recent first, the three things that can happen next.
 - It earns its place later too: it's the **Home** tab (app bar, far left), so recent parts stay one click away with documents open, as Fusion's Home and Onshape's documents page are.
 - It's honest about warm start (decision 10): the status bar says *Starting the kernel and sketch solver…* then *ready*.
 - It tells a new user the one non-obvious thing about Silico: agents edit the same files through `silico serve`, and there's a *Copy MCP config* button.
@@ -192,7 +192,7 @@ The sheet (`?`) is generated from the same command registry as menus, tooltips a
 10. **Docked browser** instead of Fusion's floating one over the canvas. Agree?
 11. **A permanent properties panel** (296 px) when no dialog is open. Fusion has none; it's where errors, measures and names live here. Keep it (collapsible)?
 12. **Lighting** (§10's veto line): with `simple_lighting` fixed to the camera, faces turned away read as dark as 0.2 (see the upright's outer face from the back). Acceptable, or raise the ambient?
-13. **New part**: the prototype's own dialog (name + folder, path shown) or the system's save panel (`rfd`)? Both satisfy open item 30.
+13. ~~**New part**: the prototype's own dialog (name + folder, path shown) or the system's save panel (`rfd`)? Both satisfy open item 30.~~ *Settled by Trevin's decision (2026-11-01), which overturns open item 30:* New asks nothing, opening an "Untitled" part at once; its first Save, and every Save As, opens the system's save panel (`rfd`). The prototype's New dialog is gone.
 14. **Timeline labels**: icons only (Fusion), names on hover. Add an option to show names under the icons?
 
 ## Files
