@@ -49,10 +49,12 @@ enum Queued {
     Save {
         then_close: bool,
     },
-    /// Save As (`commit` with a path): to `path`, replacing a file there if `replace`.
+    /// Save As (`commit` with a path): to `path`, replacing a file there if `replace`; then,
+    /// if `then_close`, close (an untitled part's Save, asked by Close or Quit).
     SaveAs {
         path: String,
         replace: bool,
+        then_close: bool,
     },
     Revert {
         then_close: bool,
@@ -208,12 +210,14 @@ enum Under {
         running: Running<Moved>,
     },
     /// A Save As, the path it was given, which the tab asks to replace if a file is
-    /// there, and whether the tab began the transaction it commits (rolled back if it's
-    /// refused, so no empty transaction stays open).
+    /// there, whether the tab began the transaction it commits (rolled back if it's
+    /// refused, so no empty transaction stays open), and whether it closes the tab once
+    /// it has saved.
     SaveAs {
         running: Running<Committed>,
         path: String,
         began: bool,
+        then_close: bool,
     },
     Close(Running<Closed>),
     /// A dialog's add, of the dialog numbered `serial`, as it was sent.
@@ -298,8 +302,12 @@ enum OwnRead {
 /// One open document.
 pub struct Tab {
     pub id: SessionId,
-    /// The path, as it was opened.
-    pub path: String,
+    /// The path, as it was opened or as its last Save As gave it: none while it's an
+    /// untitled part, which has no file until its first save.
+    pub path: Option<String>,
+    /// The name it's shown by while untitled ("Untitled", "Untitled 2", ...): empty for a
+    /// tab opened on a file.
+    untitled: String,
     /// The session's revision and whether a transaction is open, as last answered: never
     /// moved back by an answer that comes after a newer one.
     pub revision: Revision,
@@ -389,8 +397,9 @@ pub struct Tab {
     /// waiting on it stops ([`take_close_refused`](Self::take_close_refused)).
     close_refused: bool,
     /// A Save As found a file at the path it was given, and wasn't to replace it: the path,
-    /// for the window to ask whether to ([`take_replace_asked`](Self::take_replace_asked)).
-    replace_asked: Option<String>,
+    /// and whether the Save As was to close the tab, for the window to ask whether to
+    /// ([`take_replace_asked`](Self::take_replace_asked)).
+    replace_asked: Option<(String, bool)>,
     /// A Save As that began its own transaction was refused: it's rolled back next.
     roll_back: bool,
     /// The session has closed: the tab goes.
@@ -456,9 +465,21 @@ pub fn said(problems: &Problems) -> String {
 impl Tab {
     /// The tab of a session `open` opened, with the gate's problems it found.
     pub fn opened(id: SessionId, path: String, problems: &Problems) -> Self {
+        Self::of(id, Some(path), String::new(), problems)
+    }
+
+    /// The tab of an untitled part (`open` with no path), shown as `name` until its first
+    /// save gives it a file.
+    pub fn untitled(id: SessionId, name: String, problems: &Problems) -> Self {
+        Self::of(id, None, name, problems)
+    }
+
+    /// The tab of a session, its file at `path` (none while untitled, shown as `untitled`).
+    fn of(id: SessionId, path: Option<String>, untitled: String, problems: &Problems) -> Self {
         Tab {
             id,
             path,
+            untitled,
             revision: Revision::OPENED,
             transaction: false,
             status: None,
@@ -555,12 +576,20 @@ impl Tab {
         })
     }
 
-    /// The tab's name: its file's.
+    /// The tab's name: its file's, or, while it's untitled, the name it was given.
     pub fn name(&self) -> &str {
-        std::path::Path::new(&self.path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(&self.path)
+        match &self.path {
+            Some(path) => std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path),
+            None => &self.untitled,
+        }
+    }
+
+    /// Whether it's an untitled part, with no file until its first save (a Save As).
+    pub fn is_untitled(&self) -> bool {
+        self.path.is_none()
     }
 
     /// Whether the document differs from the file: `status.transaction.changed` (#300),
@@ -659,23 +688,30 @@ impl Tab {
 
     /// Save As (`commit` with a path, docs/design/m5.0-app.md §4): once everything asked
     /// before it has answered, as a save, the document written to `path` (replacing a file
-    /// there if `replace`), the tab then of the new file. A file there and no `replace` is
+    /// there if `replace`), the tab then of the new file; then, if `then_close`, closed (an
+    /// untitled part saved by Close's or Quit's Save). A file there and no `replace` is
     /// asked about ([`take_replace_asked`](Self::take_replace_asked)); any other refusal is
-    /// said.
+    /// said, and, if it was to close the tab, the tab kept and that said too.
     pub fn save_as<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
         path: String,
         replace: bool,
+        then_close: bool,
     ) {
         self.message = None;
-        self.edits.queue.push_back(Queued::SaveAs { path, replace });
+        self.edits.queue.push_back(Queued::SaveAs {
+            path,
+            replace,
+            then_close,
+        });
         self.advance(sessions);
     }
 
-    /// The path a Save As found a file at, if one did since this was last asked: whether to
-    /// replace it is the person's to say.
-    pub fn take_replace_asked(&mut self) -> Option<String> {
+    /// The path a Save As found a file at, if one did since this was last asked, and
+    /// whether that Save As was to close the tab: whether to replace it is the person's to
+    /// say.
+    pub fn take_replace_asked(&mut self) -> Option<(String, bool)> {
         self.replace_asked.take()
     }
 
@@ -867,14 +903,20 @@ impl Tab {
                 running,
                 path,
                 began,
+                then_close,
             } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
                     match response.result {
                         // The session holds the new file from now on, by the path given.
                         Ok(committed) => {
-                            self.path = committed.path;
+                            self.path = Some(committed.path);
                             self.disk_choice = DiskChoice::None;
+                            *close |= then_close;
+                            if then_close {
+                                // Closing: nothing after it is sent.
+                                self.edits.queue.clear();
+                            }
                         }
                         Err(problems) => {
                             // Its own transaction, begun for it, ended: it held nothing.
@@ -882,9 +924,12 @@ impl Tab {
                             if problems.errors().first().and_then(|e| e.suggestion())
                                 == Some(silico_core::file::REPLACE_ADVICE)
                             {
-                                self.replace_asked = Some(path);
+                                // Whether to replace it is asked; a Cancel then refuses the
+                                // close, if it was to close.
+                                self.replace_asked = Some((path, then_close));
                             } else {
                                 self.message = Some(said(&problems));
+                                self.close_refused |= then_close;
                             }
                         }
                     }
@@ -894,6 +939,7 @@ impl Tab {
                     running,
                     path,
                     began,
+                    then_close,
                 }),
             },
             Under::Rollback {
@@ -1291,7 +1337,11 @@ impl Tab {
                         then_close,
                     });
                 }
-                Queued::SaveAs { path, replace } => {
+                Queued::SaveAs {
+                    path,
+                    replace,
+                    then_close,
+                } => {
                     // A transaction begun first if none is open: a Save As commits one,
                     // and one with nothing changed writes the document all the same.
                     let began = !self.transaction && !self.beginning;
@@ -1304,6 +1354,7 @@ impl Tab {
                         running: sessions.save_as(&self.id, path.clone(), replace),
                         path,
                         began,
+                        then_close,
                     });
                 }
                 Queued::Save { then_close } => {
@@ -1382,18 +1433,26 @@ impl Tab {
                 .is_none_or(|timeline| timeline.revision < self.revision)
     }
 
-    /// Whether it's closing: a save or a revert that closes it, or its close, queued or
-    /// running. The property panel takes no edit then: it would be dropped.
+    /// Whether it's closing: a save, a Save As, or a revert that closes it, or its close,
+    /// queued or running. The property panel takes no edit then: it would be dropped.
     pub fn closing(&self) -> bool {
         self.edits.queue.iter().any(|queued| {
             matches!(
                 queued,
-                Queued::Save { then_close: true } | Queued::Revert { then_close: true }
+                Queued::Save { then_close: true }
+                    | Queued::SaveAs {
+                        then_close: true,
+                        ..
+                    }
+                    | Queued::Revert { then_close: true }
             )
         }) || self.under.iter().any(|under| {
             matches!(
                 under,
                 Under::Commit {
+                    then_close: true,
+                    ..
+                } | Under::SaveAs {
                     then_close: true,
                     ..
                 } | Under::Rollback {

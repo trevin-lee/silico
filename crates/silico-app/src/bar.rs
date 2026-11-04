@@ -212,12 +212,16 @@ fn tooltip_ui(ui: &mut Ui, title: &str, shortcut: Option<Chord>, description: Op
     }
 }
 
+/// What an untitled part's tab says when hovered, with no edits: it has no file yet.
+pub(crate) const NOT_SAVED_YET: &str = "Not saved to a file yet";
+
 /// An open document's tab, as [`doc_tab`] draws it.
 pub(crate) struct DocTab<'a> {
     /// The document's file name.
     pub name: &'a str,
-    /// Its path, which the tab's tooltip gives.
-    pub path: &'a str,
+    /// Its path, which the tab's tooltip gives: none for an untitled part, whose tooltip
+    /// gives its name and that it has no file yet.
+    pub path: Option<&'a str>,
     /// Whether it holds edits not yet saved: an asterisk after its name.
     pub unsaved: bool,
     /// Whether it's the document shown (not while Home is).
@@ -315,12 +319,12 @@ pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
     if ui.is_rect_visible(rect) {
         paint_tab(ui, tab, &area, &response, &close, name, dirty);
     }
-    let response = tooltip(
-        response,
-        tab.path,
-        None,
-        tab.unsaved.then_some("Unsaved edits"),
-    );
+    let description = match (tab.unsaved, tab.path) {
+        (true, _) => Some("Unsaved edits"),
+        (false, None) => Some(NOT_SAVED_YET),
+        (false, Some(_)) => None,
+    };
+    let response = tooltip(response, tab.path.unwrap_or(tab.name), None, description);
     DocTabResponse {
         tab: response,
         close,
