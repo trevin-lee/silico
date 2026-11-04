@@ -64,7 +64,7 @@ fn mm(text: &str) -> Length {
 /// A 40 × 20 rectangle with its lower left corner at the origin: pa000001 (0, 0), pa000002
 /// (40, 0), pa000003 (40, 20), pa000004 (0, 20), and its sides na000001 to na000004 from
 /// each corner to the next, counter-clockwise; with `constraints`.
-fn rectangle(constraints: Vec<SketchConstraint>) -> Sketch {
+pub(crate) fn rectangle(constraints: Vec<SketchConstraint>) -> Sketch {
     Sketch {
         plane: OriginPlane::Xy.into(),
         points: vec![

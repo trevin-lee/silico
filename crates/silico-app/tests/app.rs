@@ -11652,8 +11652,9 @@ fn finish_or_cancel_back_at_where_it_opened_by_an_undo_changes_nothing_of_the_un
 
 // ---- Sketch tools (M5.11b; section 9, *Sketching*) ----
 
-/// The projection the tools are driven through until the pane's overlay gives its own
-/// (#351): ten points a millimetre, the origin at (100, 500), y up.
+/// The projection the tools are driven through by hand ([`sketch_events`]), which the pane's
+/// own overlay is made to match ([`hand_camera`]): ten points a millimetre, the origin at
+/// (100, 500), y up.
 fn to_screen(at: [f64; 2]) -> Option<eframe::egui::Pos2> {
     Some(eframe::egui::pos2(
         (100.0 + 10.0 * at[0]) as f32,
@@ -11698,9 +11699,11 @@ fn dragged(from: [f64; 2], to: [f64; 2]) -> Vec<silico_app::sketch::PointerEvent
 }
 
 /// `events` given to the first tab's sketch mode as one frame of the viewport's overlay
-/// gives them (`Tab::sketch_frame`, which the pane calls once #351 wires it), on a thread
-/// marked so a wait there counts, the pointer at the last; then one frame of the app's.
+/// gives them (`Tab::sketch_frame`, which the pane's `Tab::overlay` calls), through
+/// [`to_screen`], on a thread marked so a wait there counts, the pointer at the last; then
+/// one frame of the app's, whose pane draws through the same projection ([`hand_camera`]).
 fn sketch_events(f: &Fixture, h: &mut AppHarness, events: &[silico_app::sketch::PointerEvent]) {
+    hand_camera(h);
     {
         let _marked = never_waits::marked();
         let ctx = eframe::egui::Context::default();
@@ -11720,6 +11723,32 @@ fn sketch_events(f: &Fixture, h: &mut AppHarness, events: &[silico_app::sketch::
         output.textures_delta.clear();
     }
     step(h);
+}
+
+/// The viewport's camera set so the pane's own overlay, which draws sketch mode every frame
+/// through the renderer's projection, draws XY as [`to_screen`] does: orthographic, straight
+/// down, a tenth of a millimetre a point, the image's centre over the sketch's place
+/// `to_sketch` gives it. Nothing until the pane has drawn a frame.
+fn hand_camera(h: &mut AppHarness) {
+    let Some(frame) = view(h).frame() else {
+        return;
+    };
+    let ppp = f64::from(frame.pixels_per_point);
+    let [width, height] = frame.size_px.map(f64::from);
+    // The image's centre on the screen, in f64, and where `to_sketch` puts it.
+    let centre = [
+        f64::from(frame.rect.left()) + width / 2.0 / ppp,
+        f64::from(frame.rect.top()) + height / 2.0 / ppp,
+    ];
+    let [x, y] = [(centre[0] - 100.0) / 10.0, (500.0 - centre[1]) / 10.0];
+    view_mut(h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic {
+            view_height: height / ppp / 10.0,
+        },
+        eye: [x, y, 1000.0],
+        target: [x, y, 0.0],
+        up: [0.0, 1.0, 0.0],
+    });
 }
 
 /// The sketch `id` as the session's document holds it.
@@ -13152,13 +13181,15 @@ fn a_dragged_corner_follows_the_newest_cursor_one_move_in_flight_the_ui_never_wa
         })
         .flat_map(silico_app::sketch::draw::Drawn::positions)
         .collect();
-    assert_eq!(
-        points,
-        [
-            to_screen([50.0, 30.0]).unwrap(),
-            to_screen([52.05, 32.03]).unwrap()
-        ]
-    );
+    // Drawn by the pane, through the renderer's f32 projection: to a thousandth of a point.
+    let expected = [
+        to_screen([50.0, 30.0]).unwrap(),
+        to_screen([52.05, 32.03]).unwrap(),
+    ];
+    assert_eq!(points.len(), 2, "{points:?}");
+    for (got, expected) in points.iter().zip(expected) {
+        assert!((*got - expected).length() < 1e-3, "{points:?}");
+    }
     // The sketch worker held: one move sent, solving; three more cursors over frames that
     // go on, none sent, and the UI thread never waiting on the held move.
     f.sketches.hold();

@@ -26,7 +26,8 @@ use crate::dialog::{Dialog, Kind, feature_node, quoted};
 use crate::sketch::dimension::{Ask, ModifyAction};
 use crate::sketch::drag::{Drag, News};
 use crate::sketch::tools::{Choice, Request};
-use crate::sketch::{Deletion, FrameInput, Prefixes, SketchMode};
+use crate::sketch::screen::Screen;
+use crate::sketch::{self, Deletion, FrameInput, Prefixes, SketchMode};
 
 /// What's said when an over-defining dimension's choice is refused as a `conflict`: the
 /// session moved on before it was sent, so it was overtaken, and isn't sent again (SD7: its
@@ -652,13 +653,34 @@ impl Tab {
     /// navigation bar. The end of a drag in a tab no longer shown comes here too, its
     /// painter drawing nothing. A mode sends its commands from here through `sessions`, on
     /// the tab's own queue and its `Running` handles, polled with `try_take`, never waiting:
-    /// a drag's move goes out in the frame it happened. No mode draws or acts yet.
+    /// a drag's move goes out in the frame it happened. Sketch mode's frame
+    /// ([`sketch_frame`](Self::sketch_frame)) is given the frame's events and pointer in
+    /// points, and its sketch's plane on the screen and back through the frame's camera
+    /// ([`Screen`]); M5.7's selection acts on none yet.
     pub fn overlay<P: Clients + 'static>(
         &mut self,
-        _sessions: &Arc<Sessions<P>>,
-        _painter: &eframe::egui::Painter,
-        _frame: &crate::viewport::ViewFrame,
+        sessions: &Arc<Sessions<P>>,
+        painter: &eframe::egui::Painter,
+        frame: &crate::viewport::ViewFrame,
     ) {
+        let Some(mode) = self.sketch.as_ref() else {
+            return;
+        };
+        let (ppp, origin) = (frame.pixels_per_point, frame.rect.left_top());
+        let events = sketch::frame_events(&frame.left, &frame.secondary, ppp, origin);
+        let pointer = frame
+            .pointer_px
+            .map(|at_px| sketch::at_points(at_px, ppp, origin));
+        let screen = mode.drawable().and_then(|read| Screen::of(read, frame));
+        let project = |at| screen.as_ref().and_then(|screen| screen.project(at));
+        let to_plane = |at| screen.as_ref().and_then(|screen| screen.to_plane(at));
+        let input = FrameInput {
+            events: &events,
+            pointer,
+            project: &project,
+            to_plane: &to_plane,
+        };
+        self.sketch_frame(sessions, painter, &input);
     }
 
     /// The tab's name: its file's.
