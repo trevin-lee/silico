@@ -12836,6 +12836,16 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
             .is_some()
     });
     assert!(h.query_by_role_and_label(Role::Menu, "CREATE").is_none());
+    // Its preview built, as `status` says: with it still rebuilding, Esc would stop it,
+    // leaving the dialog open (esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_
+    // dialog_second).
+    step_until(&mut h, "the preview built", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.status.as_ref().is_some_and(|status| {
+            status.rebuild.revision == tab.revision
+                && status.rebuild.state == silico_core::command::RebuildState::Done
+        })
+    });
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| {
         h.query_by_role(Role::Dialog).is_none()
