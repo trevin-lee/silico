@@ -14241,3 +14241,462 @@ fn the_canvas_menus_end_chain_ends_a_chain_under_way_closes_the_menu_and_keeps_s
     assert_eq!(mode.tools.choice(), Some(Choice::Draw(ToolKind::Line)));
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- Sketch mode through the pane (M5.11's wiring: `Tab::overlay`) ----
+
+/// Where the top views below centre the image: (40, 20) on XY.
+const TOP_TARGET: [f64; 2] = [40.0, 20.0];
+/// Their height, in millimetres.
+const TOP_HEIGHT: f64 = 100.0;
+
+/// The viewport's camera straight down on XY, orthographic, [`TOP_HEIGHT`] high, its
+/// image's centre over [`TOP_TARGET`], x right and y up the image; and frames until the
+/// pane's frame has it.
+fn top_view(h: &mut AppHarness) {
+    let [x, y] = TOP_TARGET;
+    let camera = silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic {
+            view_height: TOP_HEIGHT,
+        },
+        eye: [x, y, 1000.0],
+        target: [x, y, 0.0],
+        up: [0.0, 1.0, 0.0],
+    };
+    view_mut(h).set_camera(camera.clone());
+    step_until(h, "the top view drawn", |h| {
+        view(h).frame().is_some_and(|frame| frame.camera == camera)
+    });
+}
+
+/// Where [`top_view`] shows XY's place `at`, worked by hand from the pane's frame: the
+/// image's `size_px` high over [`TOP_HEIGHT`], its centre over [`TOP_TARGET`], then from
+/// physical pixels to points from the viewport's top left.
+fn top_screen(h: &AppHarness, at: [f64; 2]) -> eframe::egui::Pos2 {
+    let frame = view(h).frame().unwrap();
+    let ppp = f64::from(frame.pixels_per_point);
+    let [width, height] = frame.size_px.map(f64::from);
+    let mm = TOP_HEIGHT / height;
+    let pixel = [
+        width / 2.0 + (at[0] - TOP_TARGET[0]) / mm,
+        height / 2.0 - (at[1] - TOP_TARGET[1]) / mm,
+    ];
+    eframe::egui::pos2(
+        (f64::from(frame.rect.left()) + pixel[0] / ppp) as f32,
+        (f64::from(frame.rect.top()) + pixel[1] / ppp) as f32,
+    )
+}
+
+/// The left button pressed at XY's place `at` in [`top_view`], on the screen, as the
+/// window's pointer gives it; a frame.
+fn pane_press(h: &mut AppHarness, at: [f64; 2]) {
+    let at = top_screen(h, at);
+    let none = eframe::egui::Modifiers::NONE;
+    h.hover_at(at);
+    button_event(h, at, eframe::egui::PointerButton::Primary, true, none);
+    step(h);
+}
+
+/// The pointer moved to `at`; a frame.
+fn pane_move(h: &mut AppHarness, at: [f64; 2]) {
+    let at = top_screen(h, at);
+    h.hover_at(at);
+    step(h);
+}
+
+/// The left button let go at `at`; a frame.
+fn pane_release(h: &mut AppHarness, at: [f64; 2]) {
+    let at = top_screen(h, at);
+    let none = eframe::egui::Modifiers::NONE;
+    h.hover_at(at);
+    button_event(h, at, eframe::egui::PointerButton::Primary, false, none);
+    step(h);
+}
+
+/// A click at `at`: pressed and let go a frame apart.
+fn pane_click(h: &mut AppHarness, at: [f64; 2]) {
+    pane_press(h, at);
+    pane_release(h, at);
+}
+
+/// The one point of `sketch` within `within` of (x, y), its ID.
+fn point_near(sketch: &silico_core::document::Sketch, x: f64, y: f64, within: f64) -> String {
+    let found: Vec<&str> = sketch
+        .points
+        .iter()
+        .filter(|p| (p.x.mm() - x).abs() <= within && (p.y.mm() - y).abs() <= within)
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(found.len(), 1, "one point near ({x}, {y}) in {sketch:?}");
+    found[0].to_owned()
+}
+
+/// What a click through the pane comes to on the plane: the pointer's place in f32
+/// points, a ray, and the renderer's f32 projection. A ten-thousandth of a millimetre.
+const THROUGH_THE_PANE: f64 = 1e-4;
+
+/// [`assert_rectangle_in`], each corner within [`THROUGH_THE_PANE`] of where it was asked.
+fn assert_rectangle_near(sketch: &silico_core::document::Sketch, lo: [f64; 2], hi: [f64; 2]) {
+    let corner = |x, y| point_near(sketch, x, y, THROUGH_THE_PANE);
+    let a = corner(lo[0], lo[1]);
+    let b = corner(hi[0], lo[1]);
+    let c = corner(hi[0], hi[1]);
+    let d = corner(lo[0], hi[1]);
+    for (from, to, horizontal) in [
+        (&a, &b, true),
+        (&b, &c, false),
+        (&c, &d, true),
+        (&d, &a, false),
+    ] {
+        let side = line_between(sketch, from, to).unwrap_or_else(|| panic!("{from} to {to}"));
+        assert!(holds_direction(sketch, &side, horizontal), "{side}");
+        assert!(!holds_direction(sketch, &side, !horizontal), "{side}");
+    }
+}
+
+#[test]
+fn a_rectangle_dragged_through_the_panes_left_events_at_two_pixels_a_point_is_four_lines_two_level_two_plumb()
+ {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let (mut h, _) = f.overlaid(EXAMPLE);
+    assert_eq!(h.ctx.pixels_per_point(), 2.0);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    top_view(&mut h);
+    h.key_press(eframe::egui::Key::R);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().tools.choice(),
+        Some(Choice::Draw(ToolKind::CornerRectangle))
+    );
+    // Pressed at (25, 12), dragged through (40, 20), let go at (55, 28): the pane's own
+    // events, at its physical pixels, through `Tab::overlay`, and nothing by hand.
+    let (from, to) = ([25.0, 12.0], [55.0, 28.0]);
+    pane_press(&mut h, from);
+    pane_move(&mut h, [40.0, 20.0]);
+    pane_move(&mut h, to);
+    // The pointer read on the plane, for the status bar.
+    let pointer = sketch_mode(&h).unwrap().pointer.unwrap();
+    assert!((pointer[0] - to[0]).abs() < THROUGH_THE_PANE, "{pointer:?}");
+    assert!((pointer[1] - to[1]).abs() < THROUGH_THE_PANE, "{pointer:?}");
+    pane_release(&mut h, to);
+    settled(&mut h);
+    assert_eq!(adds_sent(&h), 1);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!((sketch.points.len(), sketch.lines.len()), (4, 4));
+    assert_eq!(sketch.constraints.len(), 4, "{:?}", sketch.constraints);
+    assert_rectangle_near(&sketch, from, to);
+    // And it reads back so: four lines, two horizontals and two verticals.
+    read_with_lines(&mut h, 4);
+    let read = sketch_mode(&h).unwrap().drawable().unwrap().clone();
+    let directions = |level: bool| {
+        read.members
+            .lines
+            .iter()
+            .filter(|line| holds_direction(&read.members, line.id.as_str(), level))
+            .count()
+    };
+    assert_eq!((directions(true), directions(false)), (2, 2));
+    // Drawn where the renderer would draw it: each corner's point at its place on the screen
+    // (a thousandth of a point).
+    step(&mut h);
+    for corner in [from, [to[0], from[1]], to, [from[0], to[1]]] {
+        let point = point_near(&read.members, corner[0], corner[1], THROUGH_THE_PANE);
+        let drawn: Vec<eframe::egui::Pos2> = sketch_mode(&h)
+            .unwrap()
+            .last_drawn()
+            .iter()
+            .filter(|d| {
+                matches!(d, silico_app::sketch::draw::Drawn::Point { .. })
+                    && d.of().is_some_and(|i| i.as_str() == point)
+            })
+            .flat_map(silico_app::sketch::draw::Drawn::positions)
+            .collect();
+        assert_eq!(drawn.len(), 1, "{drawn:?}");
+        let expected = top_screen(&h, corner);
+        assert!((drawn[0] - expected).length() < 1e-2, "{drawn:?} {expected:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dimension_placed_through_the_pane_picks_the_side_clicked_and_opens_its_modify_box_there() {
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    h.key_press(eframe::egui::Key::D);
+    step(&mut h);
+    // The right side, na000002 from (50, 10) to (50, 30), clicked at its middle; then the
+    // place, 10 to its right: its length, 20, in the Modify box at the place.
+    pane_click(&mut h, [50.0, 20.0]);
+    pane_click(&mut h, [60.0, 20.0]);
+    let place = top_screen(&h, [60.0, 20.0]);
+    step_until(&mut h, "the Modify box open", |h| {
+        sketch_mode(h).and_then(|mode| mode.modify_view()).is_some()
+    });
+    let view = sketch_mode(&h).unwrap().modify_view().unwrap();
+    let measured: f64 = view.text.parse().unwrap();
+    assert!((measured - 20.0).abs() < THROUGH_THE_PANE, "{}", view.text);
+    assert!(view.placing);
+    // Shown where the place was clicked, as the pane projects it (a hundredth of a point).
+    assert!((view.at - place).length() < 1e-2, "{:?} {place:?}", view.at);
+    modify(&f, &mut h, ModifyAction::Typed("20".to_owned()));
+    modify(&f, &mut h, ModifyAction::Accept);
+    settled(&mut h);
+    read_with_constraints(&mut h, 5);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let lengths = lengths(&sketch);
+    assert_eq!(lengths.len(), 1, "{lengths:?}");
+    let (_, line, value, driving) = &lengths[0];
+    assert_eq!((line.as_str(), value.as_str(), *driving), ("na000002", "20", true));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_corner_dragged_through_the_pane_follows_the_cursor_and_ends_in_one_edit_there() {
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    let text = text_of(&f, &h);
+    // The free corner pa000003, (50, 30), pressed and moved to (52, 32): a drag, begun, its
+    // first frame as the fake answers (the cursor plus a thousandth of where it began).
+    pane_press(&mut h, [50.0, 30.0]);
+    pane_move(&mut h, [52.0, 32.0]);
+    assert_eq!(drag_sends(&h, "drag_begin"), 1);
+    step_until(&mut h, "the first frame", |h| {
+        the_drag(h).is_some_and(|d| d.frames >= 1)
+    });
+    let shown = shown_at(&h, "pa000003").unwrap();
+    assert!((shown[0] - 52.05).abs() < THROUGH_THE_PANE, "{shown:?}");
+    assert!((shown[1] - 32.03).abs() < THROUGH_THE_PANE, "{shown:?}");
+    // Its ghost, where it began, drawn faintly behind it: the point twice, at both places.
+    step(&mut h);
+    let drawn: Vec<eframe::egui::Pos2> = sketch_mode(&h)
+        .unwrap()
+        .last_drawn()
+        .iter()
+        .filter(|d| {
+            matches!(d, silico_app::sketch::draw::Drawn::Point { .. })
+                && d.of().is_some_and(|i| i.as_str() == "pa000003")
+        })
+        .flat_map(silico_app::sketch::draw::Drawn::positions)
+        .collect();
+    assert_eq!(drawn.len(), 2, "{drawn:?}");
+    assert!((drawn[0] - top_screen(&h, [50.0, 30.0])).length() < 1e-2);
+    assert!((drawn[1] - top_screen(&h, [52.05, 32.03])).length() < 1e-2);
+    // Let go there: one `drag_end`, the corner written where its last frame put it.
+    pane_release(&mut h, [52.0, 32.0]);
+    settled(&mut h);
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    point_near(&sketch, 52.05, 32.03, THROUGH_THE_PANE);
+    point_near(&sketch, 10.0, 10.0, 0.0);
+    assert_ne!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drag_held_when_its_tab_is_hidden_ends_from_its_begin_and_its_corner_is_where_it_was_on_return()
+ {
+    let f = fixture();
+    counting(&f);
+    let (mut h, seen) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    let text = text_of(&f, &h);
+    let first = h.state().tabs()[0].id;
+    // The corner pressed and dragged to (60, 40), begun and drawn there, still held.
+    pane_press(&mut h, [50.0, 30.0]);
+    pane_move(&mut h, [60.0, 40.0]);
+    step_until(&mut h, "the first frame", |h| {
+        the_drag(h).is_some_and(|d| d.frames >= 1)
+    });
+    assert!(the_drag(&h).unwrap().held());
+    left_taken(&seen);
+    // Another document opened over it, the button still held: the first tab's press ends in
+    // a Cancel given through its own overlay, which ends the drag from its begin state.
+    let other = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(other.to_str().unwrap(), false);
+    step_until(&mut h, "the second tab", |h| h.state().tabs().len() == 2);
+    let events = left_taken(&seen);
+    let cancels: Vec<_> = events
+        .iter()
+        .filter(|e| e.session == first)
+        .map(|e| e.event.kind)
+        .collect();
+    assert_eq!(cancels, [silico_app::viewport::LeftKind::Cancel], "{events:?}");
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    assert_eq!(drag_sends(&h, "drag_end"), 1);
+    // Let go and moved in the second tab: nothing of the first's.
+    pane_release(&mut h, [62.0, 42.0]);
+    pane_move(&mut h, [64.0, 44.0]);
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), text);
+    // Back on the first: the corner where it was, read and drawn, with no drag.
+    h.get_by_role_and_label(Role::Button, "example.silico")
+        .click();
+    step_until(&mut h, "the first shown", |h| left_shown(h) == Some(first));
+    top_view(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(the_drag(&h).is_none());
+    let read = sketch_mode(&h).unwrap().drawable().unwrap().clone();
+    point_near(&read.members, 50.0, 30.0, 0.0);
+    let drawn: Vec<eframe::egui::Pos2> = sketch_mode(&h)
+        .unwrap()
+        .last_drawn()
+        .iter()
+        .filter(|d| {
+            matches!(d, silico_app::sketch::draw::Drawn::Point { .. })
+                && d.of().is_some_and(|i| i.as_str() == "pa000003")
+        })
+        .flat_map(silico_app::sketch::draw::Drawn::positions)
+        .collect();
+    assert_eq!(drawn.len(), 1, "{drawn:?}");
+    assert!((drawn[0] - top_screen(&h, [50.0, 30.0])).length() < 1e-2);
+    assert_eq!(drag_sends(&h, "drag_begin"), 1);
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The members sketch mode has selected, by ID.
+fn selected(h: &AppHarness) -> Vec<String> {
+    sketch_mode(h)
+        .unwrap()
+        .selected_ids()
+        .iter()
+        .map(|i| i.as_str().to_owned())
+        .collect()
+}
+
+#[test]
+fn esc_on_a_press_of_a_free_corner_lets_the_press_go_so_its_release_selects_nothing() {
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    let corner = [50.0, 30.0];
+    // Unheld, a click on the free corner selects it: what the Esc below takes away.
+    pane_click(&mut h, corner);
+    assert_eq!(selected(&h), ["pa000003"]);
+    pane_click(&mut h, [30.0, 45.0]);
+    assert!(selected(&h).is_empty());
+    // Pressed, Esc, let go where it was pressed: a drag's press, let go, selects nothing.
+    pane_press(&mut h, corner);
+    assert!(the_drag(&h).is_some_and(|d| d.held() && d.shown().is_none()));
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(the_drag(&h).is_none());
+    pane_release(&mut h, corner);
+    step(&mut h);
+    assert!(selected(&h).is_empty(), "{:?}", selected(&h));
+    assert_eq!(drag_sends(&h, "drag_begin"), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_on_an_unmoved_held_press_is_the_presss_alone_the_selection_kept_and_no_drag_after() {
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    // The bottom side, na000001, selected by a click at its middle.
+    pane_click(&mut h, [30.0, 10.0]);
+    assert_eq!(selected(&h), ["na000001"]);
+    // The free corner pressed, not moved: Esc ends the press, and nothing else (the
+    // selection is Esc's next, and it stays).
+    let corner = [50.0, 30.0];
+    pane_press(&mut h, corner);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(the_drag(&h).is_none());
+    assert_eq!(selected(&h), ["na000001"]);
+    // Moved past the drag threshold and let go, still the same press: no drag begins, and
+    // the release selects nothing.
+    pane_move(&mut h, [55.0, 35.0]);
+    pane_release(&mut h, [55.0, 35.0]);
+    settled(&mut h);
+    assert!(the_drag(&h).is_none());
+    assert_eq!(drag_sends(&h, "drag_begin"), 0);
+    assert_eq!(selected(&h), ["na000001"]);
+    // A second Esc clears it, as with no press.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(selected(&h).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The right button pressed and let go at `at`: in one frame (`together`), or a frame apart.
+fn right_click_at(h: &mut AppHarness, at: eframe::egui::Pos2, together: bool) {
+    let right = eframe::egui::PointerButton::Secondary;
+    let none = eframe::egui::Modifiers::NONE;
+    h.hover_at(at);
+    button_event(h, at, right, true, none);
+    if !together {
+        step(h);
+    }
+    button_event(h, at, right, false, none);
+    step(h);
+}
+
+#[test]
+fn a_right_click_on_the_canvas_opens_the_sketch_menu_at_it_and_its_own_release_leaves_it_open() {
+    let f = fixture();
+    let (mut h, _) = f.overlaid(EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    top_view(&mut h);
+    for together in [true, false] {
+        let at = top_screen(&h, [30.0, 15.0]);
+        right_click_at(&mut h, at, together);
+        // Handed on through `ViewFrame.secondary`, and opened at the click in that frame:
+        // its press and release, let go in it, don't close it.
+        assert_eq!(sketch_mode(&h).unwrap().menu_at, Some(at), "{together}");
+        assert!(sketch_menu(&h).is_some(), "{together}");
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        assert!(sketch_menu(&h).is_some(), "{together}");
+        // At the click: its first item just below and right of it.
+        let item = sketch_menu(&h)
+            .unwrap()
+            .get_by_role_and_label(Role::Button, "End chain")
+            .rect();
+        let off = item.min - at;
+        assert!((0.0..24.0).contains(&off.x) && (0.0..24.0).contains(&off.y), "{item:?} {at:?}");
+        // A left click away closes it, and is the canvas's click too.
+        pane_click(&mut h, [60.0, 35.0]);
+        step(&mut h);
+        assert!(sketch_menu(&h).is_none(), "{together}");
+        assert_eq!(sketch_mode(&h).unwrap().menu_at, None);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
