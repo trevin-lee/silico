@@ -1,8 +1,8 @@
 //! A feature's fingerprint (ARCHITECTURE.md, Fingerprints): what its solid measures, kept in
 //! the document with it, as a lockfile keeps what a dependency resolved to. A rebuild that
 //! measures otherwise is drift: a determinism bug or a kernel change, for a person to look
-//! at. Its numbers are rounded to 6 decimals (the box to whole nanometres, the document's
-//! resolution), to the nearest, ties to even, from the measure's exact value; so a diff reads
+//! at. Its numbers are rounded to 6 decimals (the centre and the box to whole nanometres,
+//! the document's resolution), to the nearest, ties to even, from the measure's exact value; so a diff reads
 //! `8000`, not `7999.999999999998`, and the same measure always writes the same text.
 
 use std::borrow::Cow;
