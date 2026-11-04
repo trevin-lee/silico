@@ -840,14 +840,14 @@ mod tests {
                     for tab in [
                         DocTab {
                             name: "bracket.silico",
-                            path: "/parts/bracket.silico",
+                            path: Some("/parts/bracket.silico"),
                             unsaved: true,
                             active: true,
                             first: true,
                         },
                         DocTab {
                             name: "vise-jaw.silico",
-                            path: "/parts/vise-jaw.silico",
+                            path: Some("/parts/vise-jaw.silico"),
                             unsaved: false,
                             active: false,
                             first: false,
