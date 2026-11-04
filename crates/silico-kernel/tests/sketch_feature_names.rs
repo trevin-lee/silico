@@ -1090,3 +1090,148 @@ fn a_two_region_grooves_names_dont_depend_on_the_order_of_its_tools() {
     assert!(!of_a(&after).is_empty());
     assert_eq!(of_a(&after), of_a(&before));
 }
+
+#[test]
+fn a_181_groove_of_two_regions_numbers_each_split_piece_as_freecad_does() {
+    // The oracle's groove_both_sides_181: a pad of a circle r 20 by 20, grooved 181° about
+    // the sketch's y axis by rectangles A (x 15..25, z 5..10) and B (x −25..−15, z 7..12) on
+    // XZ. Edges and faces the cut splits are named by their place in OCCT's list of what
+    // each became (`M2/3`, FreeCAD's `;:M2`), and that order is OCCT's: FreeCAD 1.1.3's
+    // fuzzy value changed it here (with none, FreeCAD's Part cut swaps `Edge8;:M` and
+    // `Edge8;:M3`, docs/ports/booleans.md). Each piece pinned where it is, worked out by
+    // hand, with FreeCAD 1.1.3's PartDesign Groove (its automatic fuzzy value, unrefined) as
+    // the source for which piece holds which place: its name there given beside each.
+    let engine = engine();
+    let model = publish(
+        &engine,
+        &[
+            &circles("cccccccc", "xy", &[([0.0, 0.0], 20.0)]),
+            &pad("pppppppp", None, "cccccccc", &one_side("20")),
+            &rectangles(
+                "ssssssss",
+                "xz",
+                &[[15.0, 5.0, 25.0, 10.0], [-25.0, 7.0, -15.0, 12.0]],
+            ),
+            &turned(
+                "gggggggg",
+                "groove",
+                Some("pppppppp"),
+                "ssssssss",
+                "y_axis",
+                &angle("181"),
+            ),
+        ],
+    );
+    assert_eq!(errors(&model), []);
+    let Some(FeatureOutcome::Built { built, .. }) = model.outcome(&id("gggggggg")) else {
+        panic!("{:?}", model.outcome(&id("gggggggg")));
+    };
+    let mut kernel =
+        KernelWorker::start_worker(Path::new(env!("CARGO_BIN_EXE_silico-kernel-worker"))).unwrap();
+    let described = kernel.describe(&built.shape).unwrap();
+    let map = model.element_map(&id("gggggggg")).unwrap();
+    let by_name: BTreeMap<String, (ElementKind, usize)> = map
+        .iter()
+        .map(|(element, names)| {
+            let index = element.index as usize - 1;
+            (names.first().unwrap().to_string(), (element.kind, index))
+        })
+        .collect();
+    // A degree's arc of radius 15, and the point at an angle on it (A turns from angle 0,
+    // B from 180°, each 181°, so each ends a degree past the other's start).
+    let deg = PI / 180.0;
+    let at = |angle: f64, z: f64| {
+        [
+            15.0 * libm::cos(angle * deg),
+            15.0 * libm::sin(angle * deg),
+            z,
+        ]
+    };
+    let one = 15.0 * deg;
+    let (c, s) = (15.0 * libm::cos(deg), 15.0 * libm::sin(deg));
+    let g = "gggggggg.groove";
+    let a_inner = format!("{g}.Edge(G ssssssss.sketch.Edge.na000004)");
+    let a_start = format!("{g}.Edge(M ssssssss.sketch.Edge.na000004)");
+    let b_inner = format!("{g}.Edge(G ssssssss.sketch.Edge.nb000002)");
+    let b_start = format!("{g}.Edge(M ssssssss.sketch.Edge.nb000002)");
+    let seam = "pppppppp.pad.Edge(G cccccccc.sketch.Vertex(U cccccccc.sketch.Edge.ca000001))";
+    let pa4 = format!("{g}.Edge(G ssssssss.sketch.Vertex.pa000004)");
+    let pb2 = format!("{g}.Edge(G ssssssss.sketch.Vertex.pb000002)");
+    // Each edge's name, its length, and its middle; FreeCAD's name for it.
+    let edges: [(String, f64, [f64; 3]); 17] = [
+        // The pad's seam, x = 20, in three: z 0..5, 5..7, 12..20 (`;:M`, `;:M2`, `;:M3`).
+        (format!("{g}.Edge(M1/3 {seam})"), 5.0, [20.0, 0.0, 2.5]),
+        (format!("{g}.Edge(M2/3 {seam})"), 2.0, [20.0, 0.0, 6.0]),
+        (format!("{g}.Edge(M3/3 {seam})"), 8.0, [20.0, 0.0, 16.0]),
+        // B's inner corner's circle at z 7, in three: 181..360°, 0..1°, 180..181°
+        // (`Edge14;:M`, `Edge14;:M2`, `Edge14;:M3`).
+        (format!("{g}.Edge(M1/3 {pb2})"), 179.0 * one, at(270.5, 7.0)),
+        (format!("{g}.Edge(M2/3 {pb2})"), one, at(0.5, 7.0)),
+        (format!("{g}.Edge(M3/3 {pb2})"), one, at(180.5, 7.0)),
+        // A's inner corner's circle at z 10, in three: 180..181°, 1..180°, 0..1°
+        // (`Edge8;:M`, `Edge8;:M2`, `Edge8;:M3`).
+        (format!("{g}.Edge(M1/3 {pa4})"), one, at(180.5, 10.0)),
+        (format!("{g}.Edge(M2/3 {pa4})"), 179.0 * one, at(90.5, 10.0)),
+        (format!("{g}.Edge(M3/3 {pa4})"), one, at(0.5, 10.0)),
+        // B's inner side at its end (1°), z 7..10 and 10..12 (`Edge19;:M`, `;:M2`), and at its
+        // start (180°) (`Edge18;:M`, `;:M2`).
+        (format!("{g}.Edge(M1/2 {b_inner})"), 3.0, [c, s, 8.5]),
+        (format!("{g}.Edge(M2/2 {b_inner})"), 2.0, [c, s, 11.0]),
+        (format!("{g}.Edge(M1/2 {b_start})"), 3.0, [-15.0, 0.0, 8.5]),
+        (format!("{g}.Edge(M2/2 {b_start})"), 2.0, [-15.0, 0.0, 11.0]),
+        // A's inner side at its end (181°), z 7..10 and 5..7 (`Edge12;:M`, `;:M2`), and at its
+        // start (0°) (`Edge11;:M`, `;:M2`).
+        (format!("{g}.Edge(M1/2 {a_inner})"), 3.0, [-c, -s, 8.5]),
+        (format!("{g}.Edge(M2/2 {a_inner})"), 2.0, [-c, -s, 6.0]),
+        (format!("{g}.Edge(M1/2 {a_start})"), 3.0, [15.0, 0.0, 8.5]),
+        (format!("{g}.Edge(M2/2 {a_start})"), 2.0, [15.0, 0.0, 6.0]),
+    ];
+    let near = |got: [f64; 3], want: [f64; 3]| (0..3).all(|k| (got[k] - want[k]).abs() <= 1e-9);
+    for (name, length, middle) in &edges {
+        let Some(&(ElementKind::Edge, n)) = by_name.get(name) else {
+            panic!(
+                "no edge {name} among:\n{}",
+                by_name.keys().cloned().collect::<Vec<_>>().join("\n")
+            );
+        };
+        let e = &described.edges[n];
+        assert!(
+            (e.length - length).abs() <= 1e-9 && near(e.middle, *middle),
+            "{name}: {} at {:?}, not {length} at {middle:?}",
+            e.length,
+            e.middle
+        );
+    }
+    // The faces both A's and B's inner walls became, z 7..10: 180..181° and 0..1° of the
+    // cylinder r 15 (`Face4;:M(Face2;K2)`, `Face4;:M3(Face2;K3)`): area 15 · 1° · 3, centred
+    // where the band's centroid is, r (sin b − sin a) / θ, r (cos a − cos b) / θ.
+    let a_wall = format!("{g}.Face(G ssssssss.sketch.Edge.na000004)");
+    let b_wall = format!("{g}.Face(G ssssssss.sketch.Edge.nb000002)");
+    let band = |a: f64| {
+        let (a, b) = (a * deg, (a + 1.0) * deg);
+        [
+            15.0 * (libm::sin(b) - libm::sin(a)) / deg,
+            15.0 * (libm::cos(a) - libm::cos(b)) / deg,
+            8.5,
+        ]
+    };
+    for (name, centroid) in [
+        (
+            format!("{g}.Face(M1/2 {a_wall}, M1/2 {b_wall})"),
+            band(180.0),
+        ),
+        (format!("{g}.Face(M2/2 {a_wall}, M2/2 {b_wall})"), band(0.0)),
+    ] {
+        let Some(&(ElementKind::Face, n)) = by_name.get(&name) else {
+            panic!("no face {name}");
+        };
+        let f = &described.faces[n];
+        assert!(
+            (f.area - 3.0 * one).abs() <= 1e-9 && near(f.centroid, centroid),
+            "{name}: {} at {:?}, not {} at {centroid:?}",
+            f.area,
+            f.centroid,
+            3.0 * one
+        );
+    }
+}

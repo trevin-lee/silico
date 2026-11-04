@@ -1,9 +1,9 @@
 //! M3.6: the thin wall OCCT gets wrong (docs/ports/sketch-features.md, *Known OCCT wrong
 //! results*), measured on Silico's own kernel: a profile with a wall g wide flush with a
 //! 10 mm cube's side, made by the faces request, swept by the prism request, and fused with
-//! the cube (a pad) or cut from it (a pocket) by the boolean request, as FreeCAD's Part
-//! booleans were measured without the fuzzy value; and the pad's refusal as adding nothing
-//! (design S7, `silico_core::sweep::check_result`).
+//! the cube (a pad) or cut from it (a pocket) by the boolean request, with FreeCAD 1.1.3's
+//! fuzzy value, as FreeCAD 1.1.3's PartDesign Pad and Pocket were measured; and the pad's
+//! refusal as adding nothing (design S7, `silico_core::sweep::check_result`).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::close;
@@ -81,13 +81,19 @@ fn measured(s: &ShapeSummary) -> Measured {
     }
 }
 
+/// A pad's fuse of the cube and its prism up to 15 runs with a fuzzy value of 1e-6 of
+/// their box's diagonal, √(10² + 10² + 15²) mm: 2.06e-5; a pocket's, its prism inside the
+/// cube, √300 mm: 1.73e-5 (docs/ports/sketch-features.md).
+const PAD_FUZZY: f64 = 2.06e-5;
+const POCKET_FUZZY: f64 = 1.73e-5;
+
 #[test]
-fn a_thin_wall_flush_with_the_base_is_dropped_by_occt_and_the_pad_refused_as_adding_nothing() {
+fn a_thin_wall_flush_with_the_base_under_the_fuzzy_value_is_dropped_and_the_pad_refused() {
     let pad = FeatureId::new("p0000001").unwrap();
     let base = FeatureId::new("b0000001").unwrap();
-    // g = 2e-7: OCCT fuses it to the cube alone, valid, as on FreeCAD's OCCT without the
-    // fuzzy value; the no-op rule refuses it.
-    let (cube, fused) = thin_wall_pad(2e-7);
+    // g = 1e-5, under the fuzzy value: OCCT fuses it to the cube alone, valid, as FreeCAD
+    // 1.1.3's Pad; the no-op rule refuses it.
+    let (cube, fused) = thin_wall_pad(1e-5);
     assert!(fused.valid);
     assert_eq!(fused.volume, cube.volume);
     assert_eq!((fused.faces, fused.edges, fused.vertices), (6, 12, 8));
@@ -105,12 +111,12 @@ fn a_thin_wall_flush_with_the_base_is_dropped_by_occt_and_the_pad_refused_as_add
             .message()
             .starts_with("pad p0000001 adds nothing to its base b0000001")
     );
-    // g = 4e-7: right, 1000 + 5 × (100 − (5 − g) × 6), and accepted.
-    let g = 4e-7;
+    // g = 5e-5, above it: right, 1000 + 5 × (100 − (5 − g) × 6), and accepted.
+    let g = 5e-5;
     let (cube, fused) = thin_wall_pad(g);
     assert!(fused.valid);
     assert_close(
-        "4e-7",
+        "5e-5",
         fused.volume,
         1000.0 + 5.0 * (100.0 - (5.0 - g) * 6.0),
         1e-12,
@@ -129,15 +135,32 @@ fn a_thin_wall_flush_with_the_base_is_dropped_by_occt_and_the_pad_refused_as_add
 }
 
 #[test]
-fn the_thin_wall_band_is_freecads_without_the_fuzzy_value() {
-    // docs/ports/sketch-features.md's first row, on Silico's kernel: for 1e-7 < g ≤ 3e-7 the
-    // pad is dropped (the cube alone) and the pocket valid with its volume 20 × g too large;
-    // from 4e-7 both are right.
+fn the_thin_wall_band_is_freecads_with_its_fuzzy_value() {
+    // docs/ports/sketch-features.md's row with PartDesign's fuzzy value, on Silico's kernel,
+    // its edges as FreeCAD 1.1.3's PartDesign Pad and Pocket measured them: the pad dropped
+    // (the cube alone) up to g = 2e-5 and right from 2.1e-5, either side of its fuzzy value;
+    // the pocket valid with its volume 20 × g too large up to 1.7e-5 and right from 2e-5,
+    // either side of its own.
     let area = |g: f64| 100.0 - (5.0 - g) * 6.0;
-    for g in [1.5e-7, 2e-7, 3e-7] {
+    for g in [1.5e-7, 2e-7, 3e-7, 4e-7, 1e-6, 1e-5, 2e-5] {
+        assert!(g < PAD_FUZZY);
         let (cube, pad) = thin_wall(g, BooleanOp::Fuse);
         assert!(pad.valid);
         assert_eq!((pad.volume, pad.faces), (cube.volume, 6), "pad, g = {g:e}");
+    }
+    for g in [2.1e-5, 5e-5, 1e-4] {
+        assert!(g > PAD_FUZZY);
+        let (_, pad) = thin_wall(g, BooleanOp::Fuse);
+        assert_close(
+            &format!("pad, g = {g:e}"),
+            pad.volume,
+            1000.0 + 5.0 * area(g),
+            1e-12,
+        );
+        assert_eq!(pad.faces, 15);
+    }
+    for g in [1.5e-7, 2e-7, 3e-7, 4e-7, 1e-6, 1e-5, 1.7e-5] {
+        assert!(g < POCKET_FUZZY);
         let (_, pocket) = thin_wall(g, BooleanOp::Cut);
         assert!(pocket.valid);
         assert_eq!(pocket.faces, 11);
@@ -147,15 +170,8 @@ fn the_thin_wall_band_is_freecads_without_the_fuzzy_value() {
             "pocket, g = {g:e}: off by {error:e}"
         );
     }
-    for g in [4e-7, 1e-6, 1e-5] {
-        let (_, pad) = thin_wall(g, BooleanOp::Fuse);
-        assert_close(
-            &format!("pad, g = {g:e}"),
-            pad.volume,
-            1000.0 + 5.0 * area(g),
-            1e-12,
-        );
-        assert_eq!(pad.faces, 15);
+    for g in [2e-5, 5e-5, 1e-4] {
+        assert!(g > POCKET_FUZZY);
         let (_, pocket) = thin_wall(g, BooleanOp::Cut);
         assert_close(
             &format!("pocket, g = {g:e}"),

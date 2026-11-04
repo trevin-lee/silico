@@ -7,6 +7,11 @@
 //! and, of a view change, the CPU's part placing the faces and edges for the view (each
 //! face's anchor and transform, its instance, the edges' strips: `Renderer::placed`).
 //!
+//! Then the ten copies at 1920 by 1080 from inside the first copy's box, the eye at its
+//! centre turning 12 degrees a view (60°): what can have no pixel not placed, the faces
+//! about the eye whose points cross the view's pyramid cut and uploaded again for it, the
+//! rest moved as on the orbit; then the last view again, still (`inside` lines).
+//!
 //! Recorded, never budgeted: it fails on no time. Run with
 //! `SILICO_KERNEL_WORKER=target/release/silico-kernel-worker SILICO_BENCH_BREP=part.brep
 //! pixi run cargo bench -p silico-render --bench views`, the B-rep Silico's (as
@@ -88,8 +93,71 @@ fn main() -> Result<(), Box<dyn Error>> {
             );
         }
     }
+    out += &inside(&mut renderer, &mesh, extent)?;
     std::io::stdout().write_all(out.as_bytes())?;
     Ok(())
+}
+
+/// Ten copies of the part at 1920 by 1080 from inside the first copy's box, turning: each
+/// view change's time, its placing (the cut faces' cutting and upload among it), and how
+/// many face meshes each uploads.
+fn inside(renderer: &mut Renderer, mesh: &Mesh, extent: f64) -> Result<String, Box<dyn Error>> {
+    let bodies = copies_of(mesh, 10, extent);
+    let (low, high) = bounds(&bodies[0].mesh);
+    let eye: [f64; 3] = std::array::from_fn(|k| (low[k] + high[k]) / 2.0);
+    let scene = |view: usize| {
+        let angle = (view as f64 * 12.0).to_radians();
+        RenderScene {
+            bodies: bodies.clone(),
+            camera: Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 60.0,
+                },
+                eye,
+                target: [
+                    eye[0] + libm::cos(angle),
+                    eye[1] + libm::sin(angle),
+                    eye[2] + 0.3,
+                ],
+                up: [0.0, 0.0, 1.0],
+            },
+            width: 1920,
+            height: 1080,
+            ids: false,
+        }
+    };
+    time(renderer, &scene(0))?;
+    let (mut changes, mut placed, mut uploads) = (vec![], vec![], vec![]);
+    for view in 1..=VIEWS {
+        let before = renderer.uploads();
+        changes.push(time(renderer, &scene(view))?);
+        placed.push(renderer.placed());
+        uploads.push(renderer.uploads() - before);
+    }
+    // The last view again, still: nothing to cut again, nothing uploaded.
+    let (mut still, mut still_uploads) = (vec![], 0);
+    for _ in 0..VIEWS {
+        let before = renderer.uploads();
+        time(renderer, &scene(VIEWS))?;
+        still.push(renderer.placed());
+        still_uploads += renderer.uploads() - before;
+    }
+    changes.sort();
+    placed.sort();
+    uploads.sort();
+    still.sort();
+    let ms = |d: Duration| d.as_secs_f64() * 1e3;
+    Ok(format!(
+        "inside copies 10 size 1920x1080 view_change_median_ms {:.2} view_change_p95_ms {:.2} placing_median_ms {:.3} placing_p95_ms {:.3} meshes_uploaded_per_view_median {} max {} still_placing_median_ms {:.3} still_placing_p95_ms {:.3} still_uploads {still_uploads}\n",
+        ms(changes[VIEWS / 2]),
+        ms(changes[VIEWS * 95 / 100]),
+        ms(placed[VIEWS / 2]),
+        ms(placed[VIEWS * 95 / 100]),
+        uploads[VIEWS / 2],
+        uploads[VIEWS - 1],
+        ms(still[VIEWS / 2]),
+        ms(still[VIEWS * 95 / 100]),
+    ))
 }
 
 /// One render's wall time, its readback included.

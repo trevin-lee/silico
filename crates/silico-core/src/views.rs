@@ -5,7 +5,7 @@
 //! trigonometry, so a view's camera is the same on every platform: it's a result.
 
 use silico_protocol::vec3::{cross, dot, sub};
-use silico_protocol::{Camera, Projection};
+use silico_protocol::{Camera, Class, Projection, ViewRegion};
 
 /// A named view: where it looks from, as Fusion's ViewCube names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -143,7 +143,7 @@ impl NamedView {
 /// them for its own direction and up: the box's centre its target, its eye two half
 /// diagonals back, and its view height 1.1 times the larger of the box's corners' extent
 /// along `up` and their extent along the image's right (`up × direction`) times `height /
-/// width`, never under [`least_view_height`] of its half diagonal. Any client's fit (the
+/// width`, never under [`least_view_height`] of its half diagonal at `height`. Any client's fit (the
 /// app's, its view's direction kept) is this one.
 pub fn fit_along(
     direction: [f64; 3],
@@ -177,9 +177,10 @@ pub fn fit_along(
         let d = sub(high, low);
         dot(d, d).sqrt() / 2.0
     };
-    // Never under what the render draws of the box's reach from its centre (its half
-    // diagonal: a rod seen end on).
-    let least = least_view_height(half_diagonal);
+    // Never under what the render draws at this height of the box's reach from its
+    // centre (at most its half diagonal: a rod seen end on), `height × reach / 2^19`,
+    // with a hundredth to spare.
+    let least = least_view_height(height, half_diagonal);
     let view_height = (1.1 * extent_up.max(extent_right)).max(least);
     let side = if extent_up >= extent_right {
         "height"
@@ -202,11 +203,11 @@ pub fn fit_along(
     )
 }
 
-/// The least height an orthographic view draws bodies reaching `reach` mm from its target
-/// at: a renderer drawing in f32 refuses a view under `MIN_VIEW_HEIGHT_OF_REACH` of the
-/// reach, and this leaves a hundredth to spare.
-pub fn least_view_height(reach: f64) -> f64 {
-    reach * silico_protocol::MIN_VIEW_HEIGHT_OF_REACH * 1.01
+/// The least height an orthographic view `height` pixels high draws bodies reaching `reach`
+/// mm from its target at: a renderer drawing in f32 refuses a view under `height × reach /
+/// 2^19` (`silico_protocol::least_view_height`), and this leaves a hundredth to spare.
+pub fn least_view_height(height: u32, reach: f64) -> f64 {
+    silico_protocol::least_view_height(height, reach) * 1.01
 }
 
 /// How far from `from` the farthest corner of any of `boxes` is: the bodies' reach, as a
@@ -311,61 +312,8 @@ pub fn meshing_depth(camera: &Camera, [low, high]: [[f64; 3]; 2]) -> f64 {
 /// fails its check.
 pub fn sees(camera: &Camera, width: u32, height: u32, [low, high]: [[f64; 3]; 2]) -> Option<bool> {
     let frame = camera.frame().ok()?;
-    let corners = (0..8).map(|i| {
-        [
-            if i & 1 == 0 { low[0] } else { high[0] },
-            if i & 2 == 0 { low[1] } else { high[1] },
-            if i & 4 == 0 { low[2] } else { high[2] },
-        ]
-    });
-    let aspect = f64::from(width) / f64::from(height);
-    Some(match camera.projection {
-        Projection::Orthographic { view_height } => {
-            let (half_up, half_right) = (view_height / 2.0, view_height * aspect / 2.0);
-            let (mut up, mut right) = (
-                (f64::INFINITY, f64::NEG_INFINITY),
-                (f64::INFINITY, f64::NEG_INFINITY),
-            );
-            for c in corners {
-                let d = [
-                    c[0] - camera.target[0],
-                    c[1] - camera.target[1],
-                    c[2] - camera.target[2],
-                ];
-                let (u, r) = (dot(d, frame.up), dot(d, frame.right));
-                up = (up.0.min(u), up.1.max(u));
-                right = (right.0.min(r), right.1.max(r));
-            }
-            up.0 <= half_up && up.1 >= -half_up && right.0 <= half_right && right.1 >= -half_right
-        }
-        Projection::Perspective { field_of_view } => {
-            let ty = libm::tan(field_of_view.to_radians() / 2.0);
-            let tx = ty * aspect;
-            // Each corner's depth along the view and its offsets across it, from the eye:
-            // the box is out of view if every corner is behind the eye, or past one side.
-            let mut outside = [true; 5];
-            for c in corners {
-                let d = [
-                    c[0] - camera.eye[0],
-                    c[1] - camera.eye[1],
-                    c[2] - camera.eye[2],
-                ];
-                let depth = -dot(d, frame.back);
-                let (x, y) = (dot(d, frame.right), dot(d, frame.up));
-                let tests = [
-                    depth <= 0.0,
-                    x > depth * tx,
-                    -x > depth * tx,
-                    y > depth * ty,
-                    -y > depth * ty,
-                ];
-                for (side, out) in outside.iter_mut().zip(tests) {
-                    *side = *side && out;
-                }
-            }
-            !outside.iter().any(|&out| out)
-        }
-    })
+    // The image's frustum, as the renderer culls bodies and faces by it.
+    Some(ViewRegion::frustum(camera, &frame, width, height).class_of_box((low, high)) != Class::Out)
 }
 
 #[cfg(test)]
@@ -556,7 +504,7 @@ mod tests {
         for (width, height) in [(800, 600), (300, 900), (1, 1), (4096, 1)] {
             for view in NAMED_VIEWS {
                 let camera = view.camera(BLOCK, width, height);
-                camera.check().unwrap();
+                camera.check(width, height).unwrap();
                 let Projection::Orthographic { view_height } = camera.projection else {
                     panic!();
                 };
@@ -887,13 +835,14 @@ mod tests {
             );
         }
         // A needle 500,000 mm long seen end on: 1 mm across, so 1.1 mm by its extent, but
-        // its half diagonal's least, 250,000 · 1e-5 · 1.01 = 2.525, binds.
+        // its half diagonal's least at 400 rows, 400 · 250,000 / 2^19 · 1.01 = 192.6422 (by
+        // hand), binds.
         let needle = [[0.0; 3], [1.0, 500_000.0, 1.0]];
         let (end_on, _) = fit_along([0.0, -1.0, 0.0], [0.0, 0.0, 1.0], needle, 400, 400);
         let Projection::Orthographic { view_height } = end_on.projection else {
             panic!("orthographic")
         };
-        assert!((view_height - 2.525).abs() < 1e-6, "{view_height}");
+        assert!((view_height - 192.642_211_9).abs() < 1e-6, "{view_height}");
     }
 
     #[test]
@@ -915,7 +864,12 @@ mod tests {
         let off = [[1.0, 2.0, 3.0], [5.0, 6.0, 7.0]];
         assert_eq!(reach([4.0; 3], [off]), 22f64.sqrt());
         assert_eq!(reach([6.0; 3], [off]), 50f64.sqrt());
-        assert_eq!(least_view_height(1e5), 1.01);
+        // By hand: 2^19 mm at 1 row is the renderer's 1 mm, and a hundredth more; at 2048
+        // rows, 2048 mm and a hundredth more; 1e5 mm at 1080 rows, 1080 × 1e5 / 2^19 =
+        // 205.99365234375 mm (exact), and a hundredth more.
+        assert_eq!(least_view_height(1, 524_288.0), 1.01);
+        assert_eq!(least_view_height(2048, 524_288.0), 2048.0 * 1.01);
+        assert_eq!(least_view_height(1080, 1e5), 205.993_652_343_75 * 1.01);
         assert_eq!(
             joined([BLOCK, far]),
             Some([[0.0, 0.0, 0.0], [101.0, 20.0, 10.0]])
