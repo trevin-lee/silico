@@ -389,6 +389,18 @@ pub struct View {
     picking: Option<PixelRect>,
     picked: Option<Picking>,
     frame: Option<ViewFrame>,
+    /// A view a shortcut asked for (F6, Home, Ctrl+1 to Ctrl+7: `crate::shortcuts`), given
+    /// at the pane's next navigation, which knows the canvas's size.
+    asked: Option<ViewAsk>,
+}
+
+/// A view a shortcut asks of the tab's viewport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewAsk {
+    /// The bodies fitted, looking as it looks (F6, the navigation bar's Fit).
+    Fit,
+    /// A named view of the bodies, as the ViewCube gives it (Home, a face, a corner).
+    Named(NamedView),
 }
 
 impl Default for View {
@@ -418,6 +430,7 @@ impl Default for View {
             picking: None,
             picked: None,
             frame: None,
+            asked: None,
         }
     }
 }
@@ -489,6 +502,12 @@ impl View {
     /// The camera.
     pub fn camera(&self) -> &Camera {
         &self.camera
+    }
+
+    /// `ask`ed of the view by a shortcut: given at the pane's next navigation, in place of
+    /// any asked before it that hasn't been.
+    pub fn ask(&mut self, ask: ViewAsk) {
+        self.asked = Some(ask);
     }
 
     /// Looks through `camera`, as a control of the person's does.
@@ -1083,8 +1102,9 @@ impl View {
 
     /// The person's navigation this frame (section 8, *Navigation*, Fusion's preset): the
     /// wheel zooms toward the cursor; the middle button pans, and orbits with Shift; a left
-    /// drag does the navigation bar's tool, if one is chosen; F6, or a double-click of the
-    /// middle button, fits. A drag ends when its button is let go, the pointer leaves the
+    /// drag does the navigation bar's tool, if one is chosen; a double-click of the middle
+    /// button fits; and a view a shortcut asked for ([`ask`](Self::ask): F6's fit, Home's,
+    /// or a named view's) is given. A drag ends when its button is let go, the pointer leaves the
     /// window, or the window loses the focus (whose release may never come).
     fn navigate(&mut self, ui: &mut Ui, response: &egui::Response, size_px: [u32; 2]) {
         let rect = response.rect;
@@ -1173,9 +1193,11 @@ impl View {
                 );
             }
         }
-        let f6 = ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F6));
-        if f6 || response.double_clicked_by(PointerButton::Middle) {
-            self.fit(size_px);
+        match self.asked.take() {
+            Some(ViewAsk::Named(named)) => self.look_from(named, size_px),
+            Some(ViewAsk::Fit) => self.fit(size_px),
+            None if response.double_clicked_by(PointerButton::Middle) => self.fit(size_px),
+            None => {}
         }
     }
 }

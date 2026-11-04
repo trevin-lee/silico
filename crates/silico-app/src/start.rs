@@ -17,6 +17,7 @@ use eframe::egui::{
 
 use crate::icons::{Icon, IconSize};
 use crate::recent::{Recent, Recents};
+use crate::shortcuts::Command;
 use crate::theme;
 use crate::wake::Wake;
 
@@ -263,11 +264,11 @@ fn side(ui: &mut Ui, workspace_known: bool, act: &mut Act) {
         );
     });
     ui.add_space(theme::START_BRAND_MARGIN);
-    if action(ui, Icon::NewDoc, "New part", Key::N, true).clicked() {
+    if action(ui, Icon::NewDoc, Command::New, true).clicked() {
         *act = Act::New;
     }
     ui.add_space(theme::START_ACTION_GAP);
-    if action(ui, Icon::Open, "Open…", Key::O, false).clicked() {
+    if action(ui, Icon::Open, Command::Open, false).clicked() {
         *act = Act::Open;
     }
     ui.add_space(theme::START_NOTE_MARGIN);
@@ -320,9 +321,11 @@ fn side(ui: &mut Ui, workspace_known: bool, act: &mut Act) {
     }
 }
 
-/// One of the left column's actions, the column's width: its icon, its label, and its
-/// shortcut's key caps, the primary one filled as `button_primary` is.
-fn action(ui: &mut Ui, icon: Icon, label: &str, key: Key, primary: bool) -> Response {
+/// One of the left column's actions, the column's width: its icon, its command's label, and
+/// its shortcut's key caps (both from the registry), the primary one filled as
+/// `button_primary` is.
+fn action(ui: &mut Ui, icon: Icon, command: Command, primary: bool) -> Response {
+    let label = command.label();
     let size = Vec2::new(ui.available_width(), theme::START_ACTION_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
@@ -365,20 +368,23 @@ fn action(ui: &mut Ui, icon: Icon, label: &str, key: Key, primary: bool) -> Resp
     key_caps(
         ui,
         Pos2::new(rect.right() - theme::START_ACTION_PADDING, rect.center().y),
-        &shortcut_caps(ui.ctx(), key),
+        &command.caps(ui.ctx()),
         primary,
     );
     response
 }
 
-/// The caps of Command (Ctrl off macOS) and `key`, as the platform names them.
-pub(crate) fn shortcut_caps(ctx: &egui::Context, key: Key) -> Vec<String> {
-    caps(ctx, Modifiers::COMMAND, key)
-}
-
 /// A cap for each of `modifiers`, Command (Ctrl off macOS) first, then Shift, then `key`'s,
 /// as the platform names them (the prototype's `kbd`, in its `Mod Shift` order).
 pub(crate) fn caps(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> Vec<String> {
+    let mut caps = modifier_caps(ctx, modifiers);
+    caps.push(key.symbol_or_name().to_owned());
+    caps
+}
+
+/// A cap for each of `modifiers`, Command (Ctrl off macOS) first, then Shift, as the
+/// platform names them.
+pub(crate) fn modifier_caps(ctx: &egui::Context, modifiers: Modifiers) -> Vec<String> {
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     let names = if mac {
         egui::ModifierNames::SYMBOLS
@@ -389,13 +395,17 @@ pub(crate) fn caps(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> Vec<S
         .into_iter()
         .filter(|modifier| modifiers.contains(*modifier))
         .map(|modifier| names.format(&modifier, mac))
-        .chain(std::iter::once(key.symbol_or_name().to_owned()))
         .collect()
 }
 
 /// The width `caps` take as [`key_caps`] paints them.
 pub(crate) fn key_caps_width(ui: &Ui, caps: &[String]) -> f32 {
-    let gaps = caps.len().saturating_sub(1) as f32 * theme::KEY_CAP_GAP;
+    key_caps_width_spaced(ui, caps, theme::KEY_CAP_GAP)
+}
+
+/// The width `caps` take as [`key_caps_spaced`] paints them, `gap` apart.
+pub(crate) fn key_caps_width_spaced(ui: &Ui, caps: &[String], gap: f32) -> f32 {
+    let gaps = caps.len().saturating_sub(1) as f32 * gap;
     caps.iter()
         .map(|cap| {
             let galley = ui.painter().layout_no_wrap(
@@ -416,6 +426,11 @@ fn key_cap_width(text: f32) -> f32 {
 
 /// `caps` painted as key caps, the last ending at `right` (centred on its height).
 pub(crate) fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
+    key_caps_spaced(ui, right, caps, primary, theme::KEY_CAP_GAP);
+}
+
+/// [`key_caps`], `gap` apart.
+pub(crate) fn key_caps_spaced(ui: &Ui, right: Pos2, caps: &[String], primary: bool, gap: f32) {
     let painter = ui.painter();
     let (fill, stroke, text) = if primary {
         (
@@ -450,7 +465,7 @@ pub(crate) fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
             StrokeKind::Inside,
         );
         painter.galley(rect.center() - galley.size() / 2.0, galley, text);
-        x = rect.left() - theme::KEY_CAP_GAP;
+        x = rect.left() - gap;
     }
 }
 
@@ -1392,7 +1407,7 @@ mod tests {
         ] {
             ctx.set_os(os);
             assert_eq!(
-                shortcut_caps(&ctx, Key::N),
+                Command::New.caps(&ctx),
                 [command.to_owned(), "N".to_owned()],
                 "{os:?}"
             );

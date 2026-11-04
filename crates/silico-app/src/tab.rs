@@ -341,6 +341,10 @@ pub struct Tab {
     ///
     /// [`cancel_own_reads`]: Self::cancel_own_reads
     check_first: bool,
+    /// Whether the check read out is Rebuild everything's (`check` with `fresh`), until it
+    /// answers: its answer has the timeline read again, the model it published being the
+    /// revision's from then on.
+    fresh_out: bool,
     checked: Option<(Revision, Option<Revision>)>,
     pub edits: Edits,
     under: Vec<Under>,
@@ -348,6 +352,8 @@ pub struct Tab {
     pub saves: u64,
     /// How many Rebuilds it has sent: what a test counts.
     pub rebuilds: u64,
+    /// How many Rebuild everythings it has sent: what a test counts.
+    pub rebuilds_all: u64,
     /// One more each time the document moved other than by the person's typing, with none
     /// of it waiting to be applied: an undo, a redo, or a revert done, or the session's own
     /// reload of its file (a revision the tab didn't ask for, with nothing of its own under
@@ -472,11 +478,13 @@ impl Tab {
             check_read: None,
             check_superseded: false,
             check_first: false,
+            fresh_out: false,
             checked: None,
             edits: Edits::default(),
             under: Vec::new(),
             saves: 0,
             rebuilds: 0,
+            rebuilds_all: 0,
             resets: 0,
             beginning: false,
             disk_choice: DiskChoice::None,
@@ -753,6 +761,10 @@ impl Tab {
             match read.try_take() {
                 Ok(response) => {
                     self.check_superseded = false;
+                    if std::mem::take(&mut self.fresh_out) {
+                        // Rebuild everything's: what it published is read again.
+                        self.timeline_asked = None;
+                    }
                     if let Ok(answer) = response.result {
                         self.took_check(&answer, gate);
                     }
@@ -1696,6 +1708,40 @@ impl Tab {
         self.timeline_superseded = false;
         self.rebuild_out = true;
         self.rebuilds += 1;
+    }
+
+    /// Rebuild everything (Shift+Ctrl+B; DESIGN.md, *Keyboard*: "every feature, ignoring
+    /// the cache"): `check` of the current model with `fresh`, which rebuilds the tab's
+    /// revision with every step built anew, reading nothing kept, neither the session's
+    /// steps nor the cache on disk, as SolidWorks' forced rebuild (Ctrl+Q) does, a fault
+    /// kept as the revision's outcome tried again. A stopped rebuild is started so too.
+    /// Read as the tab's own check is, so the stop (Esc, Stop) stops it as it stops that
+    /// one, and an edit supersedes it; its problems are what the property panel says. Only
+    /// while [`can_rebuild_all`](Self::can_rebuild_all).
+    pub fn rebuild_all<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if !self.can_rebuild_all() {
+            return;
+        }
+        let gate = self
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.problems > 0);
+        // Sent after any timeline read out: the later of the two, cancelled first.
+        self.check_first = false;
+        self.check_superseded = false;
+        self.fresh_out = true;
+        self.check_read = Some((
+            gate,
+            sessions.check(&self.id, CheckModel::Current { fresh: true }),
+        ));
+        self.rebuilds_all += 1;
+    }
+
+    /// Whether Rebuild everything may be sent: the document read, no dialog open (its
+    /// preview is its own rebuild), not closing, and no check of the tab's out, which a
+    /// second would only queue behind.
+    pub fn can_rebuild_all(&self) -> bool {
+        self.timeline.is_some() && !self.in_dialog() && !self.closing() && self.check_read.is_none()
     }
 
     /// Whether Rebuild is on: the tab's revision's rebuild stopped, and no read of the

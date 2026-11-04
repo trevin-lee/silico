@@ -15024,15 +15024,874 @@ fn a_dialogs_preview_line_says_its_rebuild_running_stopped_and_with_errors() {
 }
 
 #[test]
-fn shortcuts_is_off_saying_the_sheet_comes_later() {
+fn shortcuts_opens_the_shortcut_sheet() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let shortcuts = h.get_by_role_and_label(Role::Button, "Shortcuts");
-    assert!(shortcuts.accesskit_node().is_disabled());
-    shortcuts.hover();
-    step_until(&mut h, "its tooltip", |h| {
-        anywhere(h, "The shortcut sheet comes later")
+    assert!(!shortcuts.accesskit_node().is_disabled());
+    shortcuts.click();
+    step_until(&mut h, "the sheet", sheet_open);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The keyboard: one registry for the keys, the sheet, and the tooltips ----
+
+use eframe::egui::{Key, Modifiers};
+use silico_app::shortcuts::{Chord, Command, REGISTRY};
+
+/// The shortcut sheet, while it's open.
+fn the_sheet(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::Dialog, "Keyboard shortcuts")
+}
+
+/// Whether the shortcut sheet holds a node labelled `label` (a label's text, too).
+fn sheet_shows(h: &AppHarness, label: &str) -> bool {
+    the_sheet(h).query_all_by_label(label).next().is_some()
+}
+
+/// Whether the shortcut sheet is open.
+fn sheet_open(h: &AppHarness) -> bool {
+    h.query_by_role_and_label(Role::Dialog, "Keyboard shortcuts")
+        .is_some()
+}
+
+/// The keyboard taken from every text field, by a click on the words labelled `words`:
+/// what a key does then is no field's.
+fn off_fields(h: &mut AppHarness, words: &str) {
+    step(h);
+    h.get_by_label(words).click();
+    step(h);
+    step(h);
+    assert!(!h.ctx.text_edit_focused(), "a field still has the keyboard");
+}
+
+/// `chord` pressed, as the registry gives it.
+fn press_chord(h: &mut AppHarness, chord: Chord) {
+    match chord {
+        Chord::Key(shortcut) | Chord::Exact(shortcut) => {
+            h.key_press_modifiers(shortcut.modifiers, shortcut.logical_key);
+        }
+        Chord::Pointer(..) => panic!("{chord:?} is the pointer's"),
+    }
+}
+
+/// `command`'s chords, each a key's.
+fn keys_of(command: Command) -> Vec<Chord> {
+    let keys = command.entry().keys.to_vec();
+    assert!(!keys.is_empty(), "{command:?} has no keys");
+    keys
+}
+
+#[test]
+fn question_mark_opens_the_sheet_its_filter_narrows_it_and_esc_closes_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    // Every command with keys, each under its group, with its keys as the platform names
+    // them (egui_kittest's is neither macOS nor Windows: Ctrl).
+    for (label, keys) in [
+        ("New part", "Ctrl+N"),
+        ("Redo", "Ctrl+Y"),
+        ("Rebuild everything", "Ctrl+Shift+B"),
+        ("Stop rebuild", "Esc"),
+        ("Fit", "F6"),
+        ("Home view", "Home"),
+        ("Front", "Ctrl+1"),
+        ("Isometric", "Ctrl+7"),
+        ("Orbit", "Shift+Middle-drag"),
+        ("Hide or show", "H"),
+        ("OK", "↵"),
+        ("Keyboard shortcuts", "?"),
+    ] {
+        assert!(sheet_shows(&h, label), "{label}");
+        assert!(sheet_shows(&h, keys), "{label}'s {keys}");
+    }
+    for group in [
+        "FILE",
+        "EDIT",
+        "REBUILD",
+        "VIEW",
+        "SELECTION",
+        "DIALOGS",
+        "HELP",
+    ] {
+        assert!(sheet_shows(&h, group), "{group}");
+    }
+    // The filter has the keyboard: what's typed narrows the sheet, by a key too.
+    let filter = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::TextInput, "Filter shortcuts")
+            .accesskit_node()
+            .is_focused()
+    };
+    step_until(&mut h, "the filter focused", filter);
+    h.get_by_role_and_label(Role::TextInput, "Filter shortcuts")
+        .type_text("f6");
+    step_until(&mut h, "narrowed to Fit", |h| {
+        sheet_shows(h, "Fit") && !sheet_shows(h, "Save")
     });
+    assert!(sheet_shows(&h, "VIEW"));
+    assert!(!sheet_shows(&h, "FILE"));
+    // A ? typed in the filter is the filter's.
+    h.get_by_role_and_label(Role::TextInput, "Filter shortcuts")
+        .type_text("?");
+    step(&mut h);
+    assert!(sheet_open(&h));
+    // Esc closes it, though its filter has the keyboard; ? opens it again, its filter
+    // empty, and a name narrows it to its commands.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    step(&mut h);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet again", sheet_open);
+    assert!(sheet_shows(&h, "New part"));
+    step_until(&mut h, "the filter focused", filter);
+    h.get_by_role_and_label(Role::TextInput, "Filter shortcuts")
+        .type_text("save");
+    step_until(&mut h, "narrowed to Save", |h| {
+        sheet_shows(h, "Save") && sheet_shows(h, "Save As…") && !sheet_shows(h, "Fit")
+    });
+    // Nothing found: said.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    step(&mut h);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet again", sheet_open);
+    step_until(&mut h, "the filter focused", filter);
+    h.get_by_role_and_label(Role::TextInput, "Filter shortcuts")
+        .type_text("zzz");
+    step_until(&mut h, "nothing found", |h| {
+        sheet_shows(h, "No shortcut matches.")
+    });
+    // Its × closes it too.
+    the_sheet(&h)
+        .get_by_role_and_label(Role::Button, "Close")
+        .click();
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    assert_eq!(h.state().tabs().len(), 1, "the ×, not File's Close");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn question_mark_opens_the_sheet_on_the_start_page_but_not_while_typing() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    // Typing in a field: the ? is the field's.
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    name_field(&h).focus();
+    step(&mut h);
+    h.key_press(Key::Questionmark);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!sheet_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn under_the_sheet_no_shortcut_acts() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    let path = f.dir.path().join("example.silico");
+    meshes_settled(&mut h);
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    step_until(&mut h, "unsaved", |h| {
+        h.state().tabs()[0].edits.idle() && anywhere(h, "example.silico *")
+    });
+    // Off the field, the sheet opened, and off its filter.
+    h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+    step_until(&mut h, "the sheet", sheet_open);
+    off_fields(&mut h, "FILE");
+    let camera = view(&h).camera().clone();
+    let boxes = f
+        .kernel
+        .calls()
+        .iter()
+        .filter(|call| is_box(&call.op))
+        .count();
+    for (modifiers, key) in [
+        (Modifiers::COMMAND, Key::S),
+        (Modifiers::COMMAND, Key::Z),
+        (Modifiers::COMMAND, Key::W),
+        (Modifiers::COMMAND | Modifiers::SHIFT, Key::B),
+        (Modifiers::NONE, Key::F6),
+        (Modifiers::COMMAND, Key::Num1),
+        (Modifiers::NONE, Key::H),
+        (Modifiers::COMMAND, Key::N),
+    ] {
+        h.key_press_modifiers(modifiers, key);
+        step(&mut h);
+    }
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let tab = &h.state().tabs()[0];
+    assert_eq!((tab.saves, tab.rebuilds_all), (0, 0));
+    assert!(tab.hidden.is_empty());
+    assert!(anywhere(&h, "example.silico *"));
+    assert_eq!(view(&h).camera(), &camera);
+    assert!(!anywhere(&h, "New document"));
+    assert_eq!(
+        f.kernel
+            .calls()
+            .iter()
+            .filter(|call| is_box(&call.op))
+            .count(),
+        boxes
+    );
+    assert_eq!(names_in(&path), ["Block", "Pin", "Hole"]);
+    assert!(sheet_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The unit vector of `v`.
+fn unit(v: [f64; 3]) -> [f64; 3] {
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    [v[0] / n, v[1] / n, v[2] / n]
+}
+
+/// The view moved off where `camera` looks, as a pan does: its eye and target 7 along x.
+fn panned(h: &mut AppHarness) {
+    let mut camera = view(h).camera().clone();
+    camera.eye[0] += 7.0;
+    camera.target[0] += 7.0;
+    view_mut(h).set_camera(camera);
+    step(h);
+}
+
+#[test]
+fn ctrl_1_to_7_are_solidworks_standard_views_and_each_is_the_view_cubes() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let d = 1.0 / 3f64.sqrt();
+    // docs/ux/solidworks.md: Ctrl+1 front, 2 back, 3 left, 4 right, 5 top, 6 bottom, 7
+    // isometric; each the direction from the target to the eye, Z up, by hand.
+    for (digit, cube, toward) in [
+        (Key::Num1, "Front", [0.0, -1.0, 0.0]),
+        (Key::Num2, "Back", [0.0, 1.0, 0.0]),
+        (Key::Num3, "Left", [-1.0, 0.0, 0.0]),
+        (Key::Num4, "Right", [1.0, 0.0, 0.0]),
+        (Key::Num5, "Top", [0.0, 0.0, 1.0]),
+        (Key::Num6, "Bottom", [0.0, 0.0, -1.0]),
+        (Key::Num7, "Top front right", [d, -d, d]),
+    ] {
+        h.key_press_modifiers(Modifiers::COMMAND, digit);
+        step(&mut h);
+        let keyed = view(&h).camera().clone();
+        near(unit(minus(keyed.eye, keyed.target)), toward, 1e-12);
+        // The cut's box's centre, as every named view fits it.
+        near(keyed.target, [20.0, 10.0, 5.0], 1e-12);
+        // Moved off, then the ViewCube's own: the same camera.
+        panned(&mut h);
+        assert_ne!(view(&h).camera(), &keyed);
+        h.get_by_role_and_label(Role::Group, "ViewCube")
+            .get_by_label(cube)
+            .click();
+        step(&mut h);
+        assert_eq!(view(&h).camera(), &keyed, "{cube}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn f6_is_the_navigation_bars_fit_and_home_the_view_cubes_home() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    panned(&mut h);
+    let moved = view(&h).camera().clone();
+    h.key_press(Key::F6);
+    step(&mut h);
+    let keyed = view(&h).camera().clone();
+    assert_ne!(keyed, moved);
+    // Fit looks as it looked: from the front still, onto the box's centre.
+    near(
+        unit(minus(keyed.eye, keyed.target)),
+        [0.0, -1.0, 0.0],
+        1e-12,
+    );
+    near(keyed.target, [20.0, 10.0, 5.0], 1e-12);
+    view_mut(&mut h).set_camera(moved);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+        .get_by_label("Fit")
+        .click();
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &keyed);
+    // Home: the corner's view, as the ViewCube's Home gives it.
+    h.key_press(Key::Home);
+    step(&mut h);
+    let home = view(&h).camera().clone();
+    let d = 1.0 / 3f64.sqrt();
+    near(unit(minus(home.eye, home.target)), [d, -d, d], 1e-12);
+    panned(&mut h);
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Home")
+        .click();
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &home);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_view_keys_do_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    panned(&mut h);
+    let camera = view(&h).camera().clone();
+    let keys = [
+        (Modifiers::NONE, Key::F6),
+        (Modifiers::NONE, Key::Home),
+        (Modifiers::COMMAND, Key::Num1),
+        (Modifiers::COMMAND, Key::Num2),
+        (Modifiers::COMMAND, Key::Num3),
+        (Modifiers::COMMAND, Key::Num4),
+        (Modifiers::COMMAND, Key::Num5),
+        (Modifiers::COMMAND, Key::Num6),
+        (Modifiers::COMMAND, Key::Num7),
+    ];
+    // Typing in the Name field: each key the field's.
+    select(&mut h, "Pin");
+    name_field(&h).focus();
+    step(&mut h);
+    for (modifiers, key) in keys {
+        h.key_press_modifiers(modifiers, key);
+        step(&mut h);
+        assert_eq!(view(&h).camera(), &camera, "{key:?} while typing");
+    }
+    // Home is the field's own: its cursor to its start, so what's typed goes there.
+    h.key_press(Key::End);
+    step(&mut h);
+    h.key_press(Key::Home);
+    step(&mut h);
+    name_field(&h).type_text("Z");
+    step_until(&mut h, "typed at the field's start", |h| {
+        name_field(h).value().as_deref() == Some("ZPin")
+    });
+    // A modal open (Save As's): each key the modal's, the view still.
+    h.key_press(Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
+    step_until(&mut h, "the Save As dialog", |h| {
+        anywhere(h, "Save example.silico as")
+    });
+    // Off its field (a click on its words), so the keys aren't a field's either.
+    off_fields(&mut h, "Save example.silico as");
+    let camera = view(&h).camera().clone();
+    for (modifiers, key) in keys {
+        h.key_press_modifiers(modifiers, key);
+        step(&mut h);
+        assert_eq!(view(&h).camera(), &camera, "{key:?} under a modal");
+    }
+    assert!(anywhere(&h, "Save example.silico as"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "rebuilt", |h| {
+        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
+    });
+    settled(&mut h);
+    let boxes = |f: &Fixture| {
+        f.kernel
+            .calls()
+            .iter()
+            .filter(|call| is_box(&call.op))
+            .count()
+    };
+    assert_eq!(boxes(&f), 1);
+    // Ctrl+B with nothing stopped: nothing rebuilt.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::B);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(boxes(&f), 1);
+    assert_eq!(h.state().tabs()[0].rebuilds, 0);
+    // Ctrl+Shift+B: every step built again, the box too, though the session and the cache
+    // hold it; the same model, at the same revision.
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
+    step_until(&mut h, "the box made again", |h| {
+        boxes(&f) == 2 && !h.state().tabs()[0].checking()
+    });
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 1);
+    assert_eq!(h.state().tabs()[0].rebuilds, 0, "never a Rebuild");
+    step_until(&mut h, "rebuilt again", |h| {
+        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
+    });
+    assert!(shows(&h, "Timeline", "Hole"));
+    // Held at its box: Esc stops it, as Stop does, and the revision keeps the model it
+    // had (`status` says it's rebuilt, of that model): nothing more is built.
+    let hold = f.kernel.hold(is_box);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
+    step(&mut h);
+    assert!(f.kernel.wait_running(1, WAIT));
+    step_until(&mut h, "rebuilding", |h| {
+        status_said(h, "Rebuilding").is_some()
+    });
+    assert_eq!(boxes(&f), 3);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the fresh rebuild stopped", |h| {
+        !h.state().tabs()[0].checking()
+            && status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
+    });
+    assert!(h.state().tabs()[0].message.is_none());
+    hold.release();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(f.kernel.wait_idle(WAIT));
+    assert_eq!(boxes(&f), 3, "nothing built after the stop");
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 2);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_shift_b_does_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "rebuilt", |h| status_said(h, "Rebuilt").is_some());
+    let boxes = |f: &Fixture| {
+        f.kernel
+            .calls()
+            .iter()
+            .filter(|call| is_box(&call.op))
+            .count()
+    };
+    select(&mut h, "Pin");
+    name_field(&h).focus();
+    step(&mut h);
+    // Typing: neither everything rebuilt nor a Rebuild (egui would match it as Ctrl+B).
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(
+        (
+            h.state().tabs()[0].rebuilds_all,
+            h.state().tabs()[0].rebuilds
+        ),
+        (0, 0)
+    );
+    assert_eq!(boxes(&f), 1);
+    // A modal open (New's).
+    h.key_press(Key::Escape);
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::N);
+    step_until(&mut h, "New's dialog", |h| anywhere(h, "New document"));
+    off_fields(&mut h, "New document");
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::B);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 0);
+    assert_eq!(boxes(&f), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Each command's keys do what its button or menu item does ----
+
+/// A question's modal (New's, Open's, Save As's) asked by `chord`, then by `click`: each
+/// asks `title`.
+fn same_question(h: &mut AppHarness, chord: Chord, title: &str, click: impl Fn(&mut AppHarness)) {
+    press_chord(h, chord);
+    step_until(h, title, |h| anywhere(h, title));
+    h.key_press(Key::Escape);
+    step_until(h, "the question gone", |h| !anywhere(h, title));
+    click(h);
+    step_until(h, title, |h| anywhere(h, title));
+    h.key_press(Key::Escape);
+    step_until(h, "the question gone", |h| !anywhere(h, title));
+}
+
+/// The File menu's `item` clicked.
+fn from_file_menu(h: &mut AppHarness, item: &str) {
+    h.get_by_label("File").click();
+    step(h);
+    button_off_start(h, item).click();
+    step(h);
+}
+
+/// The name typed into Pin's field, its edit landed.
+fn renamed(h: &mut AppHarness, typed: &str, name: &str) {
+    type_name(h, typed);
+    step_until(h, "the edit landed", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", name)
+    });
+}
+
+/// A document opened with its rebuild held at its box, stopped by `stop`, then resumed by
+/// `resume` once the box may be made: what each leaves.
+fn stopped_then_resumed(stop: impl Fn(&mut AppHarness), resume: impl Fn(&mut AppHarness)) {
+    let f = fixture();
+    let hold = f.kernel.hold(is_box);
+    let path = f.file("example.silico", EXAMPLE);
+    let mut h = f.app();
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "rebuilding", |h| {
+        status_said(h, "Rebuilding").is_some()
+    });
+    stop(&mut h);
+    step_until(&mut h, "the rebuild stopped", rebuild_stopped);
+    hold.release();
+    resume(&mut h);
+    step_until(&mut h, "rebuilt", |h| {
+        status_said(h, "Rebuilt").as_deref() == Some("Rebuilt · revision 1")
+    });
+    assert_eq!(h.state().tabs()[0].rebuilds, 1);
+}
+
+/// A view command's keys and its ViewCube part (or the navigation bar's Fit): from a view
+/// moved off, the same camera.
+fn same_view(command: Command, part: impl Fn(&AppHarness) -> egui_kittest::Node<'_>) {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    for chord in keys_of(command) {
+        // Looked at from the view the command gives (so its cube part faces the viewer),
+        // then moved off; from there, by its keys, and from there again, by its part.
+        press_chord(&mut h, chord);
+        step(&mut h);
+        panned(&mut h);
+        let moved = view(&h).camera().clone();
+        press_chord(&mut h, chord);
+        step(&mut h);
+        let keyed = view(&h).camera().clone();
+        assert_ne!(keyed, moved, "{command:?} moved nothing");
+        view_mut(&mut h).set_camera(moved);
+        step(&mut h);
+        part(&h).click();
+        step(&mut h);
+        assert_eq!(view(&h).camera(), &keyed, "{command:?}");
+    }
+}
+
+#[test]
+fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
+    for entry in REGISTRY {
+        let command = entry.command;
+        match command {
+            Command::New | Command::Open => {
+                // The start page's own, labelled as the registry names the command.
+                let f = fixture();
+                let mut h = f.app();
+                step(&mut h);
+                let title = if command == Command::New {
+                    "New document"
+                } else {
+                    "Open document"
+                };
+                for chord in keys_of(command) {
+                    same_question(&mut h, chord, title, |h| {
+                        start_page(h).get_by_label(entry.label).click();
+                        step(h);
+                    });
+                }
+            }
+            Command::SaveAs => {
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+                for chord in keys_of(command) {
+                    same_question(&mut h, chord, "Save example.silico as", |h| {
+                        from_file_menu(h, entry.label);
+                    });
+                }
+            }
+            Command::Close => {
+                let f = fixture();
+                let (mut h, path) = f.opened("example.silico", EXAMPLE);
+                for chord in keys_of(command) {
+                    press_chord(&mut h, chord);
+                    step_until(&mut h, "closed by its keys", |h| {
+                        h.state().tabs().is_empty()
+                    });
+                    h.state_mut().open(path.to_str().unwrap(), false);
+                    step_until(&mut h, "open again", |h| h.state().tabs().len() == 1);
+                    from_file_menu(&mut h, entry.label);
+                    step_until(&mut h, "closed by File", |h| h.state().tabs().is_empty());
+                }
+            }
+            Command::Save => {
+                let f = fixture();
+                let (mut h, path) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+                select(&mut h, "Pin");
+                for chord in keys_of(command) {
+                    renamed(&mut h, "K", "KPin");
+                    press_chord(&mut h, chord);
+                    step_until(&mut h, "saved by its keys", |h| {
+                        !anywhere(h, "example.silico *")
+                    });
+                    assert_eq!(names_in(&path), ["Block", "KPin", "Hole"]);
+                    renamed(&mut h, "L", "LKPin");
+                    h.get_by_role_and_label(Role::Button, entry.label).click();
+                    step_until(&mut h, "saved by its button", |h| {
+                        !anywhere(h, "example.silico *")
+                    });
+                    assert_eq!(names_in(&path), ["Block", "LKPin", "Hole"]);
+                }
+            }
+            Command::Undo | Command::Redo => {
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+                select(&mut h, "Pin");
+                renamed(&mut h, "A", "APin");
+                let undo = command == Command::Undo;
+                for chord in keys_of(command) {
+                    // Undo's from APin to Pin, Redo's from Pin to APin: by its keys, then
+                    // by its button, the other's button between.
+                    let (from, to, other) = if undo {
+                        ("APin", "Pin", "Redo")
+                    } else {
+                        ("Pin", "APin", "Undo")
+                    };
+                    if !undo {
+                        h.get_by_role_and_label(Role::Button, other).click();
+                        step_until(&mut h, from, |h| shows(h, "Timeline", from));
+                    }
+                    press_chord(&mut h, chord);
+                    step_until(&mut h, "by its keys", |h| shows(h, "Timeline", to));
+                    h.get_by_role_and_label(Role::Button, other).click();
+                    step_until(&mut h, from, |h| shows(h, "Timeline", from));
+                    h.get_by_role_and_label(Role::Button, entry.label).click();
+                    step_until(&mut h, "by its button", |h| shows(h, "Timeline", to));
+                    if undo {
+                        h.get_by_role_and_label(Role::Button, other).click();
+                        step_until(&mut h, from, |h| shows(h, "Timeline", from));
+                    }
+                }
+            }
+            Command::Stop => {
+                for chord in keys_of(command) {
+                    stopped_then_resumed(
+                        |h| press_chord(h, chord),
+                        |h| h.get_by_role_and_label(Role::Button, "Rebuild").click(),
+                    );
+                }
+                stopped_then_resumed(
+                    |h| h.get_by_role_and_label(Role::Button, "Stop").click(),
+                    |h| h.get_by_role_and_label(Role::Button, "Rebuild").click(),
+                );
+            }
+            Command::Rebuild => {
+                for chord in keys_of(command) {
+                    stopped_then_resumed(
+                        |h| h.get_by_role_and_label(Role::Button, "Stop").click(),
+                        |h| press_chord(h, chord),
+                    );
+                }
+            }
+            // Its own test: no button or menu item has it
+            // (ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it).
+            Command::RebuildAll => assert_eq!(
+                keys_of(command),
+                [Chord::Key(eframe::egui::KeyboardShortcut::new(
+                    Modifiers::COMMAND | Modifiers::SHIFT,
+                    Key::B
+                ))]
+            ),
+            Command::Fit => same_view(command, |h| {
+                h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+                    .get_by_label(entry.label)
+            }),
+            Command::Home => same_view(command, |h| {
+                h.get_by_role_and_label(Role::Group, "ViewCube")
+                    .get_by_label("Home")
+            }),
+            Command::Front
+            | Command::Back
+            | Command::Left
+            | Command::Right
+            | Command::Top
+            | Command::Bottom => same_view(command, |h| {
+                h.get_by_role_and_label(Role::Group, "ViewCube")
+                    .get_by_label(entry.label)
+            }),
+            Command::Isometric => same_view(command, |h| {
+                h.get_by_role_and_label(Role::Group, "ViewCube")
+                    .get_by_label("Top front right")
+            }),
+            // The pointer's: the viewport takes them, no key (their own tests: the middle
+            // button's pan and orbit, the wheel's zoom).
+            Command::Orbit | Command::Pan | Command::Zoom => assert!(
+                entry
+                    .keys
+                    .iter()
+                    .all(|chord| matches!(chord, Chord::Pointer(..)))
+            ),
+            Command::ClearSelection => {
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+                for chord in keys_of(command) {
+                    select(&mut h, "Pin");
+                    pointer_away(&mut h);
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    assert_eq!(h.state().tabs()[0].selected, None, "by its keys");
+                    select(&mut h, "Pin");
+                    pointer_away(&mut h);
+                    h.get_by_role_and_label(Role::Toolbar, "SELECT")
+                        .get_by_role_and_label(Role::Button, "SELECT")
+                        .click();
+                    step_until(&mut h, "SELECT's drop-down", |h| {
+                        h.query_by_role_and_label(Role::Menu, "SELECT").is_some()
+                    });
+                    step(&mut h);
+                    h.get_by_role_and_label(Role::Menu, "SELECT")
+                        .query_all_by_role(Role::Button)
+                        .find(|node| {
+                            node.accesskit_node()
+                                .label()
+                                .is_some_and(|label| label.starts_with(entry.label))
+                        })
+                        .unwrap()
+                        .click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(h.state().tabs()[0].selected, None, "by SELECT's");
+                }
+            }
+            Command::Hide => {
+                let f = fixture();
+                let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES);
+                meshes_settled(&mut h);
+                step_until(&mut h, "the browser's bodies", |h| {
+                    shows(h, "Browser", "Large")
+                });
+                browser(&h).get_by_label("Large").click();
+                step_until(&mut h, "Large selected", |h| {
+                    toggled(&browser(h).get_by_label("Large")) == Some(true)
+                });
+                let hidden = |h: &AppHarness| h.state().tabs()[0].hidden.clone();
+                for chord in keys_of(command) {
+                    // By its keys, hidden and shown again; then by Large's eye, the same.
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    assert!(shows(&h, "Browser", "Show Large"), "hidden by its keys");
+                    let by_keys = hidden(&h);
+                    press_chord(&mut h, chord);
+                    step(&mut h);
+                    step(&mut h);
+                    assert!(shows(&h, "Browser", "Hide Large"), "shown by its keys");
+                    assert!(hidden(&h).is_empty());
+                    browser(&h).get_by_label("Hide Large").click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert!(shows(&h, "Browser", "Show Large"), "hidden by its eye");
+                    assert_eq!(hidden(&h), by_keys);
+                    browser(&h).get_by_label("Show Large").click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert!(hidden(&h).is_empty());
+                }
+            }
+            Command::Ok | Command::Cancel => {
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+                let ok = command == Command::Ok;
+                let boxes = |h: &AppHarness| text_of(&f, h).matches("\"box\"").count();
+                let mut kept = boxes(&h);
+                for chord in keys_of(command) {
+                    for by_keys in [true, false] {
+                        create(&mut h, "Box");
+                        added(&mut h);
+                        settled(&mut h);
+                        // Its preview built: Esc would stop one still rebuilding first.
+                        step_until(&mut h, "the preview built", |h| {
+                            let tab = &h.state().tabs()[0];
+                            tab.status.as_ref().is_some_and(|status| {
+                                status.rebuild.revision == tab.revision
+                                    && status.rebuild.state
+                                        == silico_core::command::RebuildState::Done
+                            })
+                        });
+                        if by_keys {
+                            press_chord(&mut h, chord);
+                        } else {
+                            dialog(&h)
+                                .get_by_role_and_label(Role::Button, entry.label)
+                                .click();
+                        }
+                        step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+                        settled(&mut h);
+                        kept += usize::from(ok);
+                        assert_eq!(boxes(&h), kept, "{command:?}, by its keys: {by_keys}");
+                    }
+                }
+            }
+            Command::Shortcuts => {
+                let f = fixture();
+                let (mut h, _) = f.opened("example.silico", EXAMPLE);
+                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+                for chord in keys_of(command) {
+                    press_chord(&mut h, chord);
+                    step_until(&mut h, "the sheet by its keys", sheet_open);
+                    h.key_press(Key::Escape);
+                    step_until(&mut h, "closed", |h| !sheet_open(h));
+                    h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+                    step_until(&mut h, "the sheet by its button", sheet_open);
+                    h.key_press(Key::Escape);
+                    step_until(&mut h, "closed", |h| !sheet_open(h));
+                }
+            }
+        }
+    }
+    // The tooltips name the keys the registry does: Save's, Undo's, and Redo's.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    for (button, caps) in [
+        ("Save", ["Ctrl", "S"]),
+        ("Undo", ["Ctrl", "Z"]),
+        ("Redo", ["Ctrl", "Y"]),
+    ] {
+        h.get_by_role_and_label(Role::Button, button).hover();
+        step_until(&mut h, "its tooltip", |h| {
+            h.query_all_by_role_and_label(Role::Label, button).count() > 0
+        });
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        let texts: Vec<String> = h
+            .output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                eframe::egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        for cap in caps {
+            assert!(
+                texts.iter().any(|text| text == cap),
+                "{button}'s {cap}: {texts:?}"
+            );
+        }
+        pointer_away(&mut h);
+    }
     assert_eq!(never_waits::waits(), 0);
 }

@@ -174,7 +174,9 @@ fn close_button(ui: &mut Ui, label: &str) -> Response {
         ui,
         Rect::from_center_size(rect.center(), Vec2::splat(IconSize::Small.points())),
     );
-    response.on_hover_text("Cancel (Esc)")
+    let cancel = crate::shortcuts::Command::Cancel;
+    let said = format!("{} ({})", cancel.label(), cancel.keys_text(ui.ctx()));
+    response.on_hover_text(said)
 }
 
 /// The head (`.prop-head`): `icon` in its box, `title` over `sub`.
