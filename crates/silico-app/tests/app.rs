@@ -11505,3 +11505,584 @@ fn a_recent_documents_click_that_starts_an_open_asks_for_the_next_frame_itself()
     assert!(h.state().tabs().is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- The app bar (docs/design/m5-ui/DESIGN.md, *Layout*; styles.css's `.ab-*`, `.doc-tab`) ----
+
+impl Fixture {
+    /// The app drawn in the theme (its fonts and icons, as main.rs applies them), with
+    /// `names` open, each the example, the last shown.
+    fn themed_with(&self, names: &[&str]) -> AppHarness {
+        let mut h = self.app();
+        silico_app::theme::apply(&h.ctx);
+        for name in names {
+            let path = self.file(name, EXAMPLE);
+            open_and_wait(&mut h, &path);
+        }
+        step(&mut h);
+        step(&mut h);
+        h
+    }
+}
+
+/// The app bar's button labelled `label` (a tab's, or its close button's).
+fn bar_button<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
+    h.get_by_role_and_label(Role::Button, label)
+}
+
+/// Every shape the last frame painted wholly inside `rect`.
+fn painted_in(h: &AppHarness, rect: eframe::egui::Rect) -> Vec<eframe::egui::Shape> {
+    painted(h)
+        .into_iter()
+        .filter(|shape| {
+            let bounds = shape.visual_bounding_rect();
+            bounds.is_positive() && rect.expand(0.5).contains_rect(bounds)
+        })
+        .collect()
+}
+
+/// Whether a tab's close button `label` is drawn: its icon, or anything, inside it.
+fn close_drawn(h: &AppHarness, label: &str) -> bool {
+    !painted_in(h, bar_button(h, label).rect()).is_empty()
+}
+
+/// The texts painted inside `rect`, each with its colour.
+fn texts_in(h: &AppHarness, rect: eframe::egui::Rect) -> Vec<(String, eframe::egui::Color32)> {
+    painted_in(h, rect)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) => {
+                let color = text
+                    .override_text_color
+                    .or_else(|| text.galley.job.sections.first().map(|s| s.format.color))
+                    .unwrap_or(text.fallback_color);
+                Some((text.galley.text().to_owned(), color))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The pointer away from the app bar, over the viewport, a frame drawn.
+fn pointer_away(h: &mut AppHarness) {
+    h.hover_at(eframe::egui::pos2(640.0, 400.0));
+    step(h);
+    step(h);
+}
+
+#[test]
+fn the_app_bar_holds_home_file_save_undo_and_redo_then_the_tabs_as_the_prototype_sizes_them() {
+    let f = fixture();
+    // No document: Home on, File offered, nothing to save, undo, or redo.
+    let h = f.themed_with(&[]);
+    let buttons: Vec<String> = h
+        .query_all_by_role(Role::Button)
+        .filter_map(|node| node.accesskit_node().label())
+        .take(5)
+        .collect();
+    assert_eq!(buttons, ["Home", "File", "Save", "Undo", "Redo"]);
+    assert_eq!(toggled(&home_button(&h)), Some(true));
+    assert!(!bar_button(&h, "File").accesskit_node().is_disabled());
+    for off in ["Save", "Undo", "Redo"] {
+        assert!(bar_button(&h, off).accesskit_node().is_disabled(), "{off}");
+    }
+    // Two documents: their tabs after Redo, in the order opened, the last shown.
+    let h = f.themed_with(&["example.silico", "other.silico"]);
+    let buttons: Vec<String> = h
+        .query_all_by_role(Role::Button)
+        .filter_map(|node| node.accesskit_node().label())
+        .take(9)
+        .collect();
+    assert_eq!(
+        buttons,
+        [
+            "Home",
+            "File",
+            "Save",
+            "Undo",
+            "Redo",
+            "example.silico",
+            "Close example.silico",
+            "other.silico",
+            "Close other.silico"
+        ]
+    );
+    assert_eq!(toggled(&home_button(&h)), Some(false));
+    assert_eq!(toggled(&bar_button(&h, "other.silico")), Some(true));
+    assert_eq!(toggled(&bar_button(&h, "example.silico")), Some(false));
+    // `.ab-btn`: 22 high; an icon alone, 14, in 5 of padding at each side; 2 apart
+    // (`#appbar`'s `gap`).
+    let rect = |label: &str| match label {
+        "Home" => home_button(&h).rect(),
+        _ => bar_button(&h, label).rect(),
+    };
+    for icon in ["Home", "Save", "Undo", "Redo"] {
+        assert_eq!(rect(icon).size(), eframe::egui::vec2(24.0, 22.0), "{icon}");
+    }
+    assert_eq!(rect("File").height(), 22.0);
+    for (left, right) in [
+        ("Home", "File"),
+        ("File", "Save"),
+        ("Save", "Undo"),
+        ("Undo", "Redo"),
+    ] {
+        assert_eq!(
+            rect(right).left() - rect(left).right(),
+            2.0,
+            "{left} {right}"
+        );
+    }
+    // `.ab-sep`, 1 wide with 6 at each side, 2 from Redo and from the first tab; each tab
+    // the bar's 30 less its 1 point border, the buttons centred on it.
+    let first = rect("example.silico");
+    // egui places widgets on a grid of 1/16 point; File's text width isn't on it.
+    let near = |a: f32, b: f32| (a - b).abs() <= 1.0 / 16.0;
+    let gap = first.left() - rect("Redo").right();
+    assert!(near(gap, 2.0 + 6.0 + 1.0 + 6.0 + 2.0), "{gap}");
+    assert_eq!(first.height(), 29.0);
+    assert_eq!(rect("Home").center().y, first.center().y);
+    // `.x`: 16 square, centred, 6 of padding and the 1 point border after it; the next tab
+    // starts there.
+    for (tab, close, next) in [
+        (
+            "example.silico",
+            "Close example.silico",
+            Some("other.silico"),
+        ),
+        ("other.silico", "Close other.silico", None),
+    ] {
+        let x = rect(close);
+        assert_eq!(x.size(), eframe::egui::vec2(16.0, 16.0), "{close}");
+        assert_eq!(x.center().y, rect(tab).center().y, "{close}");
+        if let Some(next) = next {
+            assert_eq!(rect(next).left() - x.right(), 6.0 + 1.0, "{close}");
+        }
+    }
+    // `.doc-tab:first-child`'s `border-left`, 1 of Gray.250: the first tab's alone.
+    let gray_250 = eframe::egui::Color32::from_rgb(0x27, 0x26, 0x26);
+    let left_border = |tab: &str| {
+        let x = rect(tab).left() + 0.5;
+        painted(&h).iter().any(|shape| {
+            matches!(shape, eframe::egui::Shape::LineSegment { points, stroke }
+                if *stroke == eframe::egui::Stroke::new(1.0, gray_250)
+                    && points.iter().all(|point| (point.x - x).abs() < 1e-3))
+        })
+    };
+    assert!(left_border("example.silico"));
+    assert!(!left_border("other.silico"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The texts the tooltip titled `title` draws in its title's row, after the title, left to
+/// right: its key caps.
+fn tooltip_caps(h: &AppHarness, title: &str) -> Vec<String> {
+    let row = h.get_by_role_and_label(Role::Label, title).rect();
+    let mut caps: Vec<(f32, String)> = painted(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) => {
+                let at = eframe::egui::Shape::Text(text.clone()).visual_bounding_rect();
+                (at.left() >= row.right() && row.y_range().contains(at.center().y))
+                    .then(|| (at.left(), text.galley.text().to_owned()))
+            }
+            _ => None,
+        })
+        .collect();
+    caps.sort_by(|a, b| a.0.total_cmp(&b.0));
+    caps.into_iter().map(|(_, cap)| cap).collect()
+}
+
+#[test]
+fn save_undo_and_redo_name_their_shortcuts_in_their_tooltips() {
+    use eframe::egui::os::OperatingSystem;
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    // styles.css's `.tooltip`: the title, then the shortcut's key caps, app.js's `CMD`
+    // keys as its `KEYNAME` writes them: Mod is ⌘ on macOS and Ctrl elsewhere, Shift ⇧
+    // on macOS; Redo is Mod Shift Z on macOS and Mod Y elsewhere.
+    for (os, expected) in [
+        (
+            OperatingSystem::Windows,
+            [
+                ("Save", vec!["Ctrl", "S"]),
+                ("Undo", vec!["Ctrl", "Z"]),
+                ("Redo", vec!["Ctrl", "Y"]),
+            ],
+        ),
+        (
+            OperatingSystem::Mac,
+            [
+                ("Save", vec!["⌘", "S"]),
+                ("Undo", vec!["⌘", "Z"]),
+                ("Redo", vec!["⌘", "⇧", "Z"]),
+            ],
+        ),
+    ] {
+        h.ctx.set_os(os);
+        for (button, caps) in expected {
+            pointer_away(&mut h);
+            assert!(h.query_by_role_and_label(Role::Label, button).is_none());
+            bar_button(&h, button).hover();
+            step_until(&mut h, "its tooltip", |h| {
+                h.query_by_role_and_label(Role::Label, button).is_some()
+            });
+            // Drawn from the frame after it's laid out (egui sizes a new popup unseen).
+            step(&mut h);
+            assert_eq!(tooltip_caps(&h, button), caps, "{os:?} {button}");
+        }
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn tab_first_focuses_home() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    pointer_away(&mut h);
+    h.key_press(eframe::egui::Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    assert!(home_button(&h).accesskit_node().is_focused());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_home_save_undo_and_redo_are_off_and_on_again_back_on_the_document() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico"]);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    // Two edits, the second undone: something to save, to undo, and to redo. (Drawn in
+    // the theme's fonts, the field's cursor starts at the name's end.)
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the first edit", |h| {
+        h.state().tabs()[0].edits.idle() && offered(h, "Undo")
+    });
+    select(&mut h, "Hole");
+    type_name(&mut h, "y");
+    step_until(&mut h, "the second edit", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "Holey")
+    });
+    step_until(&mut h, "Undo offered", |h| offered(h, "Undo"));
+    bar_button(&h, "Undo").click();
+    step_until(&mut h, "the second undone", |h| {
+        shows(h, "Timeline", "Hole") && offered(h, "Redo")
+    });
+    step_until(&mut h, "all three offered", |h| {
+        ["Save", "Undo", "Redo"].iter().all(|word| offered(h, word))
+    });
+    // Home: the document hidden, none of them acts on it.
+    home_button(&h).click();
+    step(&mut h);
+    step(&mut h);
+    assert!(start_shown(&h));
+    for word in ["Save", "Undo", "Redo"] {
+        assert!(!offered(&h, word), "{word}");
+    }
+    // Its tab: each offered again.
+    bar_button(&h, "example.silico *").click();
+    step(&mut h);
+    step(&mut h);
+    for word in ["Save", "Undo", "Redo"] {
+        assert!(offered(&h, word), "{word}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn shift_command_z_redoes_and_command_z_undoes() {
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the edit", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].undoable()
+    });
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step_until(&mut h, "undone", |h| {
+        shows(h, "Timeline", "Pin") && h.state().tabs()[0].redoable()
+    });
+    // DESIGN.md, *Keyboard*: ⇧⌘Z is Redo, beside Ctrl+Y.
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z);
+    step_until(&mut h, "redone", |h| {
+        shows(h, "Timeline", "xPin") && !h.state().tabs()[0].redoable()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tabs_close_button_is_drawn_while_the_tab_is_hovered_or_shown() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico", "other.silico"]);
+    // At rest: the shown tab's only (`.doc-tab.active .x`).
+    pointer_away(&mut h);
+    assert!(close_drawn(&h, "Close other.silico"));
+    assert!(!close_drawn(&h, "Close example.silico"));
+    // Hovered: the other's too (`.doc-tab:hover .x`), in Gray.550 on no fill.
+    bar_button(&h, "example.silico").hover();
+    step(&mut h);
+    step(&mut h);
+    assert!(close_drawn(&h, "Close example.silico"));
+    assert!(close_drawn(&h, "Close other.silico"));
+    let x = bar_button(&h, "Close example.silico").rect();
+    let gray_350 = eframe::egui::Color32::from_rgb(0x52, 0x51, 0x51);
+    let filled = |h: &AppHarness| {
+        painted_in(h, x)
+            .iter()
+            .any(|shape| matches!(shape, eframe::egui::Shape::Rect(rect) if rect.fill == gray_350))
+    };
+    assert!(!filled(&h));
+    // The close button itself hovered: Gray.350 behind it (`.x:hover`).
+    bar_button(&h, "Close example.silico").hover();
+    step(&mut h);
+    step(&mut h);
+    assert!(filled(&h));
+    // Home: no tab is shown, so with the pointer away neither is drawn.
+    home_button(&h).click();
+    step(&mut h);
+    pointer_away(&mut h);
+    assert!(start_shown(&h));
+    assert!(!close_drawn(&h, "Close other.silico"));
+    assert!(!close_drawn(&h, "Close example.silico"));
+    // The tab focused by the keyboard: its close button drawn, as hovered.
+    bar_button(&h, "example.silico").focus();
+    step(&mut h);
+    step(&mut h);
+    assert!(close_drawn(&h, "Close example.silico"));
+    assert!(!close_drawn(&h, "Close other.silico"));
+    // Undrawn, it's still there and closes its tab, as `.x` at `opacity: 0` does.
+    bar_button(&h, "Close example.silico").click_accesskit();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().len() == 1);
+    assert_eq!(h.state().tabs()[0].name(), "other.silico");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A left click at `at`.
+fn click_at(h: &mut AppHarness, at: eframe::egui::Pos2) {
+    h.hover_at(at);
+    for pressed in [true, false] {
+        h.event(eframe::egui::Event::PointerButton {
+            pos: at,
+            button: eframe::egui::PointerButton::Primary,
+            pressed,
+            modifiers: eframe::egui::Modifiers::NONE,
+        });
+    }
+    step(h);
+    step(h);
+}
+
+#[test]
+fn a_click_beside_a_tabs_close_button_shows_its_document_and_on_it_closes_nothing_else() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico", "other.silico"]);
+    let shown = |h: &AppHarness, name: &str| toggled(&bar_button(h, name)) == Some(true);
+    // `.doc-tab` is the whole tab: right of its close button, in its 6 of padding, and
+    // above and below the button, each shows the document.
+    let x = bar_button(&h, "Close example.silico").rect();
+    let tab = bar_button(&h, "example.silico").rect();
+    for at in [
+        eframe::egui::pos2(x.right() + 3.0, x.center().y),
+        eframe::egui::pos2(x.center().x, (tab.top() + x.top()) / 2.0),
+        eframe::egui::pos2(x.center().x, (x.bottom() + tab.bottom()) / 2.0),
+    ] {
+        bar_button(&h, "other.silico").click();
+        step_until(&mut h, "other shown", |h| shown(h, "other.silico"));
+        click_at(&mut h, at);
+        assert!(shown(&h, "example.silico"), "{at:?}");
+        assert_eq!(h.state().tabs().len(), 2, "{at:?}");
+    }
+    // The close button itself closes it.
+    click_at(&mut h, x.center());
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().len() == 1);
+    assert_eq!(h.state().tabs()[0].name(), "other.silico");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_unsaved_documents_tab_ends_in_a_white_asterisk_and_the_shown_ones_name_is_white() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico", "other.silico"]);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "unsaved", |h| anywhere(h, "other.silico *"));
+    assert!(anywhere(&h, "example.silico"));
+    pointer_away(&mut h);
+    // `.doc-tab.active`: white; `.doc-tab .dirty`, " *" after the name, white; `.doc-tab`,
+    // Gray.550.
+    let white = eframe::egui::Color32::from_rgb(0xff, 0xff, 0xff);
+    let gray_550 = eframe::egui::Color32::from_rgb(0x93, 0x90, 0x90);
+    assert_eq!(
+        texts_in(&h, bar_button(&h, "other.silico *").rect()),
+        [("other.silico".to_owned(), white), (" *".to_owned(), white)]
+    );
+    assert_eq!(
+        texts_in(&h, bar_button(&h, "example.silico").rect()),
+        [("example.silico".to_owned(), gray_550)]
+    );
+    // Hovered, the other's name is Gray.800 (`.doc-tab:hover`).
+    bar_button(&h, "example.silico").hover();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        texts_in(&h, bar_button(&h, "example.silico").rect()),
+        [(
+            "example.silico".to_owned(),
+            eframe::egui::Color32::from_rgb(0xe0, 0xdf, 0xdf)
+        )]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_long_name_ends_in_an_ellipsis_in_a_tab_no_wider_than_220() {
+    let f = fixture();
+    let long = format!("{}.silico", "a-very-long-document-name".repeat(4));
+    let h = f.themed_with(&[long.as_str()]);
+    // `.doc-tab`'s `max-width: 220px`, borders and padding in it (`box-sizing:
+    // border-box`): from its left to its close button's right, and 6 and 1 after that.
+    let tab = bar_button(&h, &long).rect();
+    let x = bar_button(&h, &format!("Close {long}")).rect();
+    assert_eq!(x.right() + 6.0 + 1.0 - tab.left(), 220.0);
+    let names: Vec<_> = painted_in(&h, tab)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) => Some(text.galley),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names.len(), 1);
+    assert!(names[0].elided);
+    assert_eq!(names[0].text(), long);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn tabs_wider_than_the_bar_scroll_across_rather_than_squeeze() {
+    let f = fixture();
+    // Twelve, and a thirteenth later: a process holds sixteen sessions at most.
+    let names: Vec<String> = (0..12).map(|n| format!("document-{n:02}.silico")).collect();
+    let mut h = f.themed_with(&[]);
+    let close = |name: &str| format!("Close {name}");
+    // A tab's width: from its left to its close button's, and the 6 of padding and the 1
+    // point border after that (`.doc-tab`, `.x`).
+    let width = |h: &AppHarness, name: &str| {
+        bar_button(h, &close(name)).rect().right() + 6.0 + 1.0 - bar_button(h, name).rect().left()
+    };
+    // The first four, opened with room to spare: each tab's width then.
+    let mut alone = Vec::new();
+    for name in &names {
+        let path = f.file(name, EXAMPLE);
+        open_and_wait(&mut h, &path);
+        step(&mut h);
+        if alone.len() < 4 {
+            alone.push(width(&h, name));
+        }
+    }
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let redo = bar_button(&h, "Redo").rect();
+    let window = h.ctx.content_rect();
+    let last = names.last().unwrap();
+    // Wider than the window, so scrolled: the newest, shown, in view at the right; the
+    // first out of view, left of the separator.
+    assert!(width(&h, last) * 12.0 > window.width());
+    assert!(
+        bar_button(&h, &close(last)).rect().right() <= window.right(),
+        "{window:?}"
+    );
+    assert!(bar_button(&h, &names[0]).rect().left() < redo.right());
+    // The wheel over the tabs scrolls them back: the first where it was, after the
+    // separator, and the first four as wide as they were.
+    let over = bar_button(&h, last).rect().center();
+    for _ in 0..10 {
+        wheel(&mut h, over, eframe::egui::MouseWheelUnit::Point, 400.0);
+    }
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    // egui places widgets on a grid of 1/16 point; File's text width isn't on it.
+    let gap = bar_button(&h, &names[0]).rect().left() - redo.right();
+    assert!(
+        (gap - (2.0 + 6.0 + 1.0 + 6.0 + 2.0)).abs() <= 1.0 / 16.0,
+        "{gap}"
+    );
+    let now: Vec<f32> = names[..4].iter().map(|name| width(&h, name)).collect();
+    assert_eq!(now, alone);
+    assert!(bar_button(&h, last).rect().left() > window.right());
+    // A tab shown by an open, past the strip's right as it's scrolled, is scrolled to.
+    let newest = f.file("document-12.silico", EXAMPLE);
+    open_and_wait(&mut h, &newest);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let shown = bar_button(&h, "Close document-12.silico").rect();
+    assert!(shown.right() <= window.right(), "{shown:?}");
+    assert!(shown.left() > redo.right(), "{shown:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_app_bar_draws_the_shown_tab_in_gray_200_on_lavapipe() {
+    on_lavapipe(
+        "the_app_bar_draws_the_shown_tab_in_gray_200_on_lavapipe",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            let path = f.file("bracket.silico", A_BOX);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            let other = f.file("vise-jaw.silico", A_BOX);
+            open_and_wait(&mut h, &other);
+            bar_button(&h, "bracket.silico").click();
+            step_until(&mut h, "bracket shown", |h| {
+                toggled(&bar_button(h, "bracket.silico")) == Some(true)
+            });
+            meshes_settled(&mut h);
+            select(&mut h, "Block");
+            type_name(&mut h, "x");
+            step_until(&mut h, "unsaved", |h| anywhere(h, "bracket.silico *"));
+            pointer_away(&mut h);
+            for _ in 0..5 {
+                step(&mut h);
+            }
+            let image = h.render().unwrap();
+            let ppp = h.ctx.pixels_per_point();
+            let pixel = |at: eframe::egui::Pos2| {
+                image.get_pixel((at.x * ppp) as u32, (at.y * ppp) as u32).0
+            };
+            let shown = bar_button(&h, "bracket.silico *").rect();
+            let other = bar_button(&h, "vise-jaw.silico").rect();
+            // The shown tab: Gray.200 (`.doc-tab.active`), in its left padding, clear of its
+            // left border and its name; and down over the bar's border below it (`::after`).
+            let inside = eframe::egui::pos2(shown.left() + 5.0, shown.center().y);
+            assert_eq!(pixel(inside), [0x21, 0x21, 0x21, 0xff], "{shown:?}");
+            let below = eframe::egui::pos2(shown.left() + 5.0, shown.bottom() + 0.5);
+            assert_eq!(pixel(below), [0x21, 0x21, 0x21, 0xff], "{shown:?}");
+            // The other, at rest: the bar's Gray.100, over the bar's Gray.250 border.
+            let inside = eframe::egui::pos2(other.left() + 5.0, other.center().y);
+            assert_eq!(pixel(inside), [0x0d, 0x0d, 0x0d, 0xff], "{other:?}");
+            let below = eframe::egui::pos2(other.left() + 5.0, other.bottom() + 0.5);
+            assert_eq!(pixel(below), [0x27, 0x26, 0x26, 0xff], "{other:?}");
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
+}

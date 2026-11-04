@@ -372,21 +372,50 @@ fn action(ui: &mut Ui, icon: Icon, label: &str, key: Key, primary: bool) -> Resp
 }
 
 /// The caps of Command (Ctrl off macOS) and `key`, as the platform names them.
-fn shortcut_caps(ctx: &egui::Context, key: Key) -> [String; 2] {
+pub(crate) fn shortcut_caps(ctx: &egui::Context, key: Key) -> Vec<String> {
+    caps(ctx, Modifiers::COMMAND, key)
+}
+
+/// A cap for each of `modifiers`, Command (Ctrl off macOS) first, then Shift, then `key`'s,
+/// as the platform names them (the prototype's `kbd`, in its `Mod Shift` order).
+pub(crate) fn caps(ctx: &egui::Context, modifiers: Modifiers, key: Key) -> Vec<String> {
     let mac = ctx.os() == egui::os::OperatingSystem::Mac;
     let names = if mac {
         egui::ModifierNames::SYMBOLS
     } else {
         egui::ModifierNames::NAMES
     };
-    [
-        names.format(&Modifiers::COMMAND, mac),
-        key.symbol_or_name().to_owned(),
-    ]
+    [Modifiers::COMMAND, Modifiers::SHIFT]
+        .into_iter()
+        .filter(|modifier| modifiers.contains(*modifier))
+        .map(|modifier| names.format(&modifier, mac))
+        .chain(std::iter::once(key.symbol_or_name().to_owned()))
+        .collect()
+}
+
+/// The width `caps` take as [`key_caps`] paints them.
+pub(crate) fn key_caps_width(ui: &Ui, caps: &[String]) -> f32 {
+    let gaps = caps.len().saturating_sub(1) as f32 * theme::KEY_CAP_GAP;
+    caps.iter()
+        .map(|cap| {
+            let galley = ui.painter().layout_no_wrap(
+                cap.clone(),
+                FontId::proportional(theme::KEY_CAP_TEXT_SIZE),
+                theme::KEY_CAP_TEXT,
+            );
+            key_cap_width(galley.size().x)
+        })
+        .sum::<f32>()
+        + gaps
+}
+
+/// A key cap's width, for text `text` wide: its padding and its outline at each side.
+fn key_cap_width(text: f32) -> f32 {
+    (text + 2.0 * (theme::KEY_CAP_PADDING + theme::KEY_CAP_BORDER)).max(theme::KEY_CAP_MIN_WIDTH)
 }
 
 /// `caps` painted as key caps, the last ending at `right` (centred on its height).
-fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
+pub(crate) fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
     let painter = ui.painter();
     let (fill, stroke, text) = if primary {
         (
@@ -408,8 +437,7 @@ fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
             FontId::proportional(theme::KEY_CAP_TEXT_SIZE),
             text,
         );
-        let width = (galley.size().x + 2.0 * (theme::KEY_CAP_PADDING + theme::KEY_CAP_BORDER))
-            .max(theme::KEY_CAP_MIN_WIDTH);
+        let width = key_cap_width(galley.size().x);
         let rect = Rect::from_min_max(
             Pos2::new(x - width, right.y - theme::KEY_CAP_HEIGHT / 2.0),
             Pos2::new(x, right.y + theme::KEY_CAP_HEIGHT / 2.0),
@@ -426,16 +454,15 @@ fn key_caps(ui: &Ui, right: Pos2, caps: &[String], primary: bool) {
     }
 }
 
-/// The focus ring round `rect`, if `response` has the keyboard's focus.
+/// The focus ring round `rect`, outside it, if `response` has the keyboard's focus.
 fn focus_ring(ui: &Ui, response: &Response, rect: Rect) {
-    if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect,
-            theme::NORMAL_CORNER_RADIUS,
-            Stroke::new(theme::FOCUS_WIDTH, theme::FOCUS),
-            StrokeKind::Outside,
-        );
-    }
+    theme::focus_ring(
+        ui,
+        response,
+        rect,
+        theme::NORMAL_CORNER_RADIUS,
+        StrokeKind::Outside,
+    );
 }
 
 /// Copy MCP config, a ghost button whose icon lines up with the note's text above it.
@@ -1304,6 +1331,54 @@ mod tests {
         let open = button(&h, "Open…");
         assert!(ringed(&h, open));
         assert!(!ringed(&h, button(&h, "New part")));
+    }
+
+    #[test]
+    fn caps_take_their_widths_and_one_gap_between_each_two() {
+        // `.keys { gap: 2px }` between caps, none outside them; each `.kbd` its text's width
+        // with 4 of padding and 1 of border at each side, 16 at least. One cap, two, and
+        // four, so no gap count n − 1 times 2 shares a value with n − 1 plus 2 (as three
+        // caps' would: 4 both ways).
+        let sets: [&[&str]; 3] = [&["I"], &["Ctrl", "N"], &["Ctrl", "Shift", "Alt", "Z"]];
+        let measured = std::cell::RefCell::new(Vec::new());
+        // Drawn, then dropped: the harness holds the closure's borrow of `measured`.
+        drop(drawn(|ui| {
+            let mut found = measured.borrow_mut();
+            found.clear();
+            for set in sets {
+                let caps: Vec<String> = set.iter().map(|cap| (*cap).to_owned()).collect();
+                let texts: Vec<f32> = set
+                    .iter()
+                    .map(|cap| {
+                        ui.painter()
+                            .layout_no_wrap(
+                                (*cap).to_owned(),
+                                FontId::proportional(css::KBD_SIZE),
+                                Color32::WHITE,
+                            )
+                            .size()
+                            .x
+                    })
+                    .collect();
+                found.push((texts, key_caps_width(ui, &caps)));
+            }
+        }));
+        let measured = measured.into_inner();
+        assert_eq!(measured.len(), sets.len());
+        let cap =
+            |text: f32| (text + 2.0 * (css::KBD_PADDING + css::KBD_BORDER)).max(css::KBD_MIN_WIDTH);
+        for (set, (texts, got)) in sets.iter().zip(&measured) {
+            let gaps = (set.len() - 1) as f32 * css::KEYS_GAP;
+            let want = texts.iter().map(|&text| cap(text)).sum::<f32>() + gaps;
+            assert!(near(*got, want), "{set:?}: {got}, not {want}");
+        }
+        // "I" is narrower than 6 points, so its cap is the least, 16, and one cap has no gap.
+        assert!(
+            measured[0].0[0] + 10.0 < css::KBD_MIN_WIDTH,
+            "{:?}",
+            measured[0].0
+        );
+        assert!(near(measured[0].1, css::KBD_MIN_WIDTH), "{}", measured[0].1);
     }
 
     #[test]

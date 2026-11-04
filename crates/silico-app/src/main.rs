@@ -26,7 +26,7 @@ fn main() -> ExitCode {
             // Shown in a window too, which needs no worker, for a launch with no terminal.
             let shown = eframe::run_native(
                 "Silico",
-                options(),
+                options(false),
                 Box::new(move |creation| {
                     silico_app::theme::apply(&creation.egui_ctx);
                     Ok(Box::new(silico_app::missing::Missing::new(missing)))
@@ -63,7 +63,7 @@ fn main() -> ExitCode {
     let silico = silico_beside();
     let ran = eframe::run_native(
         "Silico",
-        options(),
+        options(silico_app::bar::TITLE_BAR_IS_APP_BAR),
         Box::new(move |creation| {
             silico_app::theme::apply(&creation.egui_ctx);
             // Browse… opens the platform's own file dialogs.
@@ -114,13 +114,19 @@ fn silico_in(exe: Option<std::path::PathBuf>) -> String {
         .unwrap_or_else(|| "silico".to_owned())
 }
 
-/// The window's options: drawn by eframe on wgpu.
-fn options() -> eframe::NativeOptions {
+/// The window's options: drawn by eframe on wgpu; with `title_bar_is_app_bar` (the app's
+/// window, on macOS), its content under a title bar with no title, drawn through, so the
+/// app bar is the title bar (as Rerun's is). The window for missing workers, which has no
+/// app bar, keeps its title bar.
+fn options(title_bar_is_app_bar: bool) -> eframe::NativeOptions {
     eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Silico")
-            .with_inner_size([1280.0, 800.0]),
+            .with_inner_size([1280.0, 800.0])
+            .with_fullsize_content_view(title_bar_is_app_bar)
+            .with_title_shown(!title_bar_is_app_bar)
+            .with_titlebar_shown(!title_bar_is_app_bar),
         ..Default::default()
     }
 }
@@ -153,5 +159,17 @@ mod tests {
         let exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
         assert!(!exe.with_file_name(silico.file_name().unwrap()).exists());
         assert_eq!(silico_beside(), "silico");
+    }
+
+    #[test]
+    fn the_title_bar_is_drawn_through_only_for_the_app_bar() {
+        // With the app bar as the title bar: the content under it, no title and no title
+        // bar of the platform's (as Rerun's window); without, the platform's own.
+        for (app_bar, platforms) in [(true, false), (false, true)] {
+            let viewport = options(app_bar).viewport;
+            assert_eq!(viewport.fullsize_content_view, Some(app_bar), "{app_bar}");
+            assert_eq!(viewport.title_shown, Some(platforms), "{app_bar}");
+            assert_eq!(viewport.titlebar_shown, Some(platforms), "{app_bar}");
+        }
     }
 }
