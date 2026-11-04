@@ -165,7 +165,8 @@ pub enum Deletion {
 }
 
 /// What a frame's drawing was of: the read (by how many it has taken), the selection, what's
-/// shown, and the view, by where it puts three places of the plane, its scale, its
+/// shown, and the view, by where it puts three places of the plane, its scale, its chord
+/// tolerance, its
 /// rectangle, and the part of the plane in it. A frame with the same key draws the same for
 /// an affine view (the flat one, an orthographic camera), whose three places fix it; a
 /// perspective one could move and keep them, so when the perspective viewport is wired, the
@@ -177,6 +178,7 @@ struct DrawnOf {
     shown: Shown,
     probes: [Option<Pos2>; 3],
     scale: Scale,
+    chord_tolerance: u32,
     clip: Rect,
     visible: Option<([f64; 2], [f64; 2])>,
 }
@@ -441,6 +443,7 @@ impl SketchMode {
             shown: self.shown(),
             probes: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]].map(|p| (view.project)(p)),
             scale: view.scale,
+            chord_tolerance: view.chord_tolerance.to_bits(),
             clip,
             visible: view.visible,
         };

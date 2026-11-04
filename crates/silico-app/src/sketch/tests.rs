@@ -2403,21 +2403,22 @@ fn a_fill_meets_its_outline_vertex_for_vertex_at_every_zoom() {
         construction: false,
     });
     read.regions = vec![region(&["ca000001"], &[])];
-    // At 10 points a millimetre (the fill at 1/16, 160 points of radius: 57 chords) and at
-    // 80 (1/128, 1,280 points: 159).
-    for (zoom, chords) in [(10.0, 57), (80.0, 159)] {
+    // At 10 points a millimetre (the fill at 1/16, 160 points of radius: 57 chords), at 80
+    // (1/128, 1,280 points: 159), and at 10 with a chord tolerance of 0.1 point, the view's
+    // and the fill's alike (2·acos(1 − 0.1/160) = 0.0707 rad a chord: 89).
+    for (zoom, tolerance, chords) in [
+        (10.0, SKETCH_CHORD_TOLERANCE, 57),
+        (80.0, SKETCH_CHORD_TOLERANCE, 159),
+        (10.0, 0.1, 89),
+    ] {
         let (project, _) = zoomed(zoom, 0.0);
         let view = View {
             project: &*project,
             scale: Scale(1.0 / zoom),
             visible: None,
-            chord_tolerance: SKETCH_CHORD_TOLERANCE,
+            chord_tolerance: tolerance,
         };
-        let fills = region_fills(
-            &read,
-            draw::fill_scale(view.scale).1,
-            SKETCH_CHORD_TOLERANCE,
-        );
+        let fills = region_fills(&read, draw::fill_scale(view.scale).1, tolerance);
         let drawn = drawing(&read, &view, Shown::default(), &Default::default(), &fills);
         let key = |p: Pos2| ((p.x * 16.0).round() as i64, (p.y * 16.0).round() as i64);
         let outline: std::collections::BTreeSet<(i64, i64)> = drawn
@@ -2810,4 +2811,17 @@ fn a_region_past_the_vertex_bound_is_left_unfilled_and_said() {
     });
     assert_eq!(filled.len(), 1);
     assert_eq!(warnings.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_region_whose_loop_doesnt_run_end_to_end_is_left_unfilled_and_said() {
+    // The rectangle's bottom and top sides alone: they meet at no end.
+    let mut read = under(rectangle(Vec::new()));
+    read.regions = vec![region(&["na000001", "na000003"], &[])];
+    let warnings = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fills = tracing::subscriber::with_default(Warnings(warnings.clone()), || {
+        region_fills(&read, HAND, SKETCH_CHORD_TOLERANCE)
+    });
+    assert!(fills.is_empty());
+    assert_eq!(warnings.load(std::sync::atomic::Ordering::SeqCst), 1);
 }

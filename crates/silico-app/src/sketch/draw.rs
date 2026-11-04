@@ -803,18 +803,26 @@ pub fn fill_scale(scale: Scale) -> (i32, Scale) {
 /// outline's: [`curve_segments`]), tessellated even-odd
 /// (the outer loop less its holes) by `lyon_tessellation`: the fill meets the drawn outline
 /// vertex for vertex, at every zoom. A region whose loops can't be walked, that holds more
-/// than [`MAX_FILL_VERTICES`], or that lyon refuses (or panics on), has none, and a warning
-/// says so.
+/// than [`MAX_FILL_VERTICES`], or that lyon refuses or panics on, has none, and a warning of
+/// its own says which.
 pub fn region_fills(read: &SketchRead, scale: Scale, tolerance: f32) -> Vec<RegionFill> {
     let geometry = Geometry::of(read);
     read.regions
         .iter()
         .filter_map(|region| {
-            let mut loops = vec![walk(&region.outer, &geometry, scale, tolerance)?];
-            for hole in &region.holes {
-                loops.push(walk(hole, &geometry, scale, tolerance)?);
-            }
             let of = region.outer.first().cloned();
+            let walked = std::iter::once(&region.outer)
+                .chain(&region.holes)
+                .map(|ring| walk(ring, &geometry, scale, tolerance))
+                .collect::<Option<Vec<_>>>();
+            let Some(loops) = walked else {
+                tracing::warn!(
+                    sketch = read.sketch.as_str(),
+                    region = of.as_ref().map_or("", ElementId::as_str),
+                    "a profile region's loop doesn't run end to end: it's left unfilled"
+                );
+                return None;
+            };
             let count = loops.iter().map(Vec::len).sum::<usize>();
             if count > MAX_FILL_VERTICES {
                 tracing::warn!(
@@ -831,11 +839,25 @@ pub fn region_fills(read: &SketchRead, scale: Scale, tolerance: f32) -> Vec<Regi
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tessellate(&loops)));
             match tessellated {
                 Ok(Some(triangles)) => Some(RegionFill { of, triangles }),
-                Ok(None) | Err(_) => {
+                Ok(None) => {
                     tracing::warn!(
                         sketch = read.sketch.as_str(),
                         region = of.as_ref().map_or("", ElementId::as_str),
                         "the tessellator refused a profile region: it's left unfilled"
+                    );
+                    None
+                }
+                Err(payload) => {
+                    let said = payload
+                        .downcast_ref::<&str>()
+                        .map(|said| (*said).to_owned())
+                        .or_else(|| payload.downcast_ref::<String>().cloned())
+                        .unwrap_or_default();
+                    tracing::warn!(
+                        sketch = read.sketch.as_str(),
+                        region = of.as_ref().map_or("", ElementId::as_str),
+                        panic = said.as_str(),
+                        "the tessellator panicked on a profile region: it's left unfilled"
                     );
                     None
                 }

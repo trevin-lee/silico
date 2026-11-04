@@ -8311,9 +8311,14 @@ fn edit_sketch_from_the_browser_opens_it_at_the_revision_its_asked_at_and_reads_
     let read = sketch_mode(&h).unwrap().drawable().unwrap();
     let lines: Vec<&str> = read.members.lines.iter().map(|l| l.id.as_str()).collect();
     assert_eq!(lines, ["na000000", "nb000000", "nc000000"]);
-    // One read, however many frames pass with nothing moving.
+    // One read, of the model the rename published, however many frames pass with nothing
+    // moving.
     let reads = sketch_mode(&h).unwrap().reads;
     assert_eq!(reads, 1);
+    assert_eq!(
+        sketch_mode(&h).unwrap().read.as_ref().unwrap().model,
+        Some(at)
+    );
     for _ in 0..20 {
         step(&mut h);
     }
